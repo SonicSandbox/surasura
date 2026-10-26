@@ -62,3 +62,24 @@ def test_a_level_raise_after_a_deleted_card_does_not_make_its_word_again():
         jobs = [ledger.job_by_id(j["id"]) for j in ledger.jobs("ja") if j["kind"] == LEVEL]
     assert [j["words"] for j in jobs] == [[("老婆", "ロウバ")]], \
         "G1.3-4: a word made once is never made again, even when its card was deleted"
+
+
+def test_a_tier_count_leaves_away_and_gone_items_out():
+    # why: an item whose file is away or gone is not available on disk, so it is not counted toward its tier even
+    # though its tier and watched state would count it; the tier's count reads only what is on disk.
+    (a, _fa), (b, _fb), _d = _line()
+    with c.store() as s:
+        tier = s.conn.execute("SELECT tier FROM items WHERE id = ?", (a,)).fetchone()[0]
+        before = library.counting(s, tier)
+    with c.store() as w:        # written under the store's write helper: a bare execute is refused (query_only) outside it
+        with w._writing():
+            w.conn.execute("UPDATE items SET availability = 'away' WHERE id = ?", (a,))
+            w.conn.execute("UPDATE items SET availability = 'gone' WHERE id = ?", (b,))
+    with c.store() as s:
+        after = library.counting(s, tier)
+    assert a in before and b in before, "precondition: both top items count toward their tier while on disk"
+    assert a not in after and b not in after, "an away or gone item is left out of the tier's count"
+    # why: pin that nothing else moved - the tier's count is exactly its old count minus the two away / gone items,
+    # and it is not empty, so a count that drops everything (or inverts the filter) cannot pass
+    assert after and after == [i for i in before if i not in (a, b)], \
+        "only the away and gone items leave the tier's count; everything else stays counted"

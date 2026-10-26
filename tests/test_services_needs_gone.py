@@ -109,3 +109,13 @@ def test_prune_keeps_a_gone_folders_seen_key_while_it_is_gone_and_lets_it_go_onc
 def _store_view():
     from app.services import view_rows as vr
     return vr.build({}, {}, {"mine_line": 20, "soon_line": None})
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+# why: a folder marked finished that holds no episodes has nothing to report as finished, so its card must name the
+# show without reading "all Finished, 0 episodes".
+def test_a_finished_folder_with_no_episodes_never_reads_all_finished_0_episodes(language):
+    title = names(language)[71]
+    [card] = _cards([_row(language, items=0, finished=True)])
+    assert title in card.say and "0 episodes" not in card.say
+    assert "Finished" not in card.say

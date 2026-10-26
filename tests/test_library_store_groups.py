@@ -919,3 +919,20 @@ def test_IK12_rows_taken_out_of_a_show_with_a_whole_named_group_take_its_name_an
     part = store.group(item_ids=[mc[0], ma[0]])                 # one row of the named group: it keeps its name
     assert part is not None and _title(store, _piece(store, mc[0])) is None and _title(store, ga) == label
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_of_a_title_skips_a_title_the_learner_changed_since(language):
+    """A rename's undo puts the old title back only where the title still holds the name that rename wrote; a title
+    the learner renamed again after it stays as the learner left it."""
+    store = _library(language)
+    try:
+        (pa, ma), (pb, mb) = _shows(store, "goal")
+        store.join([pa, pb], how="group")
+        group = _piece(store, ma[0])
+        first = store.rename_piece(group, names(language)[44])
+        store.rename_piece(group, names(language)[45])              # the learner's newer name
+        store.undo(first)
+        assert _title(store, group) == names(language)[45]
+    finally:
+        store.close()

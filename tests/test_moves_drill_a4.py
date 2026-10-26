@@ -596,3 +596,64 @@ def test_4a_rename_an_episode_renamed_in_its_folder_is_never_read_again(language
 def test_d1_a_2x_tier_show_moved_out_to_a_nas_source():
     pytest.skip("D1 is dropped (the moves scope's header and §0): a 2.x tier show moved out to a NAS source is out "
                 "of this scope — no rule is built for it")
+
+
+def test_a_row_whose_recorded_mtime_differs_from_the_note_is_not_re_keyed(tmp_path):
+    # why: the old row's recorded time is not the note's, so the row stands for another file and the move note must
+    # re-key nothing (this pins the row-versus-note check only; the on-disk mtime rule is not exercised here)
+    show = tmp_path / "番組"
+    show.mkdir()
+    new = show / "第二話.srt"
+    new.write_bytes("また来週、ここで会おうね。\n".encode("utf-8") * 3)
+    t_ns = 1_700_000_000_000_000_000
+    os.utime(str(new), ns=(t_ns, t_ns))
+    st = os.stat(str(new))
+    old_key, new_key = ti._norm("番組/第一話.srt"), ti._norm(str(new))
+    moved = [("番組/第一話.srt", st.st_size, t_ns, str(new), st.st_size, st.st_mtime_ns)]
+    signatures, listed = {new_key: b"signature"}, {new_key: str(new)}
+
+    # the old row was written 5 s after the note's time: it is not the note's file, so nothing is re-keyed
+    touched = {old_key: {"size": st.st_size, "mtime": t_ns / 1e9 + 5}}
+    assert ti._noted_moves(moved, {old_key}, touched, signatures, listed) == []
+
+    # control: the same file with its time unchanged is re-keyed, so the empty answer above is the rule at work
+    unchanged = {old_key: {"size": st.st_size, "mtime": t_ns / 1e9}}
+    assert ti._noted_moves(moved, {old_key}, unchanged, signatures, listed) == [(old_key, new_key)]
+
+
+def test_a_file_whose_mtime_changed_on_disk_is_not_re_keyed(tmp_path):
+    # why: the row and the note agree on the old file, but the new file's time on disk is not the note's, so it is
+    # another file and the move note must re-key nothing (the row-versus-note check is pinned by the test above)
+    show = tmp_path / "番組"
+    show.mkdir()
+    new = show / "第二話.srt"
+    new.write_bytes("また来週、ここで会おうね。\n".encode("utf-8") * 3)
+    t_ns = 1_700_000_000_000_000_000
+    os.utime(str(new), ns=(t_ns, t_ns))
+    st = os.stat(str(new))
+    old_key, new_key = ti._norm("番組/第一話.srt"), ti._norm(str(new))
+    # the note recorded the new file 5 s later than it is on disk now
+    moved = [("番組/第一話.srt", st.st_size, t_ns, str(new), st.st_size, st.st_mtime_ns + 5_000_000_000)]
+    signatures, listed = {new_key: b"signature"}, {new_key: str(new)}
+    unchanged = {old_key: {"size": st.st_size, "mtime": t_ns / 1e9}}
+    assert ti._noted_moves(moved, {old_key}, unchanged, signatures, listed) == []
+
+
+def test_rekey_onto_a_path_with_kept_text_replaces_it_and_sets_nothing_aside(tmp_path):
+    # why: a moved file's kept text takes over the path, replacing the text kept there, with no integrity error and no
+    # damaged-file set aside: the moved file's text is what the path holds afterwards, and the old path holds nothing
+    data_dir = str(tmp_path)
+    db = os.path.join(data_dir, "kept_text_ja_moves.db")
+    kept = ti._KeptText(db, data_dir)
+    old = ti._norm(os.path.join(data_dir, "A", "[Grp] Show - 01.srt"))
+    new = ti._norm(os.path.join(data_dir, "A", "[Grp] Show - 01 (moved).srt"))
+    moved_text = "今日はいい天気ですね。また来週、ここで会おうね。"
+    try:
+        kept.put({old: (moved_text, {"captions": 2}, 1.0, 10), new: ("昨日の雨が上がった。", {}, 2.0, 20)})
+        kept.rekey(old, new)
+        assert kept.get(new) == (moved_text, {"captions": 2}, 1.0, 10)
+        assert kept.get(old) is None
+    finally:
+        kept.close()
+    assert sorted(f for f in os.listdir(data_dir) if not f.endswith(("-wal", "-shm"))) == [os.path.basename(db)], \
+        "nothing set aside: the kept file is the only file the folder holds"

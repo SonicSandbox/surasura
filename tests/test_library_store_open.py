@@ -20,7 +20,7 @@ import pytest
 
 from app import library_store as ls
 from app import path_utils
-from tests.test_library_store_support import (LANGUAGES, library, migrated, paths, roots, subprocess_env,
+from tests.test_library_store_support import (LANGUAGES, library, migrated, names, paths, roots, subprocess_env,
                                               write_manifest)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -908,3 +908,22 @@ def test_a_malformed_error_inside_a_write_marks_the_store_damaged(language):
         if os.path.exists(ls.damaged_marker(store.db_path)):
             os.remove(ls.damaged_marker(store.db_path))
         store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_salvage_copies_the_write_ahead_log_so_rows_still_in_it_are_read(language, tmp_path):
+    # why: a row committed but not yet checkpointed lives in the -wal file; a salvage that copies only the main
+    # file loses it, so the salvaged table must still hold the row written through the open connection
+    word = names(language)[0]
+    db = str(tmp_path / "library.db")
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE items (id TEXT, title TEXT)")
+        conn.execute("INSERT INTO items VALUES ('i1', ?)", (word,))
+        conn.commit()
+        assert os.path.exists(db + "-wal"), "the row is still in the write-ahead log"
+        out = ls._image_from_db(db)
+    finally:
+        conn.close()
+    assert out["items"] is not None and out["items"]["rows"] == [["i1", word]]

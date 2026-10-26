@@ -533,3 +533,66 @@ def test_todokes_press_opens_needs_you_at_the_gone_card(world):
     area = ny.cards.parentWidget().parentWidget()
     top = card.mapTo(area.viewport(), card.rect().topLeft())
     assert area.viewport().rect().intersects(QRect(top, card.size()))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_find_on_a_stopped_folder_finds_its_record_and_is_not_refused(language):
+    """A folder the learner stopped is still a record: Find on it reads the new place and never says the
+    folder isn't being read any more (the record is looked up with stopped folders included)."""
+    from tests.test_library_store_sources import _empty, _scanned_show
+    from tests.test_sources_scan import _settle
+    store, _data_dir = _empty(language)
+    title = names(language)[71]
+    old = os.path.join(_elsewhere("Downloads"), title)
+    new = os.path.join(_elsewhere("Video", "Anime"), title)
+    _scanned_show(language, os.path.dirname(old), title, 3)
+    with store:
+        root_a = store.add_source(old)
+        assert store.stop_source(root_a) is not None                      # the learner stops the old folder
+    shutil.copytree(old, new, copy_function=shutil.copy2)
+    _settle(new)
+    shutil.rmtree(old)                                                    # the folder moved: the old place is gone
+    data_dir, user_files_dir = roots(language)
+    looks = source_looks.SourceLooks(ls.StoreOpener(language, data_dir, user_files_dir), language,
+                                     kind=lambda _p: "network")
+    answers = []
+    looks._find(root_a, new, answers.append)
+    assert len(answers) == 1
+    answer = answers[0]
+    assert answer["refused"] is None                                      # not "isn't being read any more"
+    assert answer["root"] is not None and answer["root"] != root_a
+    assert answer["result"] is not None
+    assert not answer["stop"]                                             # a stopped folder is never stopped again
+
+
+# why: Find reads the picked folder into the gone card's own language's library, even after the window has moved on to
+# another language; reading it into the window's current language would join the show to the wrong library.
+def test_find_on_a_gone_card_reads_into_the_cards_own_language_not_the_windows_current_one(world):
+    looks = Looks()
+    seed, win, writer, ny = world("ja", looks=looks)
+    _told(win, "ja", _gone_row("ja"))
+    card = _card_in(win, ny)
+    ny.language = "zh"                                    # the window has moved on to Chinese since the card was made
+    ny.pick_folder = lambda title, start: "S:\\Video\\Anime\\X"
+    _button(ny, card.key, "find_folder").click()
+    assert wait_until(lambda: looks.finds, 5)
+    assert looks.finds[-1][2] == "ja"
+    # the answer comes back through the GUI thread's signal; wait for the press to end so the callback doesn't run after the test
+    assert wait_until(lambda: not qpress.live(win, ny._press_key("find_folder", card)), 5)
+
+
+def test_undo_of_a_stopped_folder_marks_the_connect_copy_dirty(tmp_path):
+    """An Undo that puts a folder's kind back changes what Connect must read, so the Connect copy is marked dirty
+    once more (the copy's dirty count moves by one); without the mark Connect keeps reading the old kind."""
+    from tests.test_library_store_sources import _empty, _scanned_show
+    title = names("ja")[71]
+    folder = os.path.join(str(tmp_path), title)
+    store, _data_dir = _empty("ja")
+    with store:
+        _scanned_show("ja", str(tmp_path), title, 3)
+        root = store.add_source(folder)                       # stop_source takes the source's id, not its path
+        change = store.stop_source(root)
+        assert change is not None
+        before = int(store.meta().get("copy_dirty") or 0)
+        store.undo(change)
+        assert int(store.meta().get("copy_dirty") or 0) == before + 1

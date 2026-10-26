@@ -1274,3 +1274,37 @@ def test_read_again_brings_skipped_extras_back_as_new_arrivals(language):
         names = sorted(os.path.basename(store.item(i)["rel_path"]) for i in back["ids"])
         assert names == ["Cast Talk.srt", "Commentary 01.srt", "Making Of.mkv"]
         assert _look(store, language, root, full=True)["added"] == 0
+
+
+@pytest.mark.parametrize("queued_after_copies", [True, False])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_replayed_skip_never_takes_a_trash_copy_made_before_it_was_queued(language, queued_after_copies):
+    """A copy trashed before the skip was queued is an older copy, not this skip's. A replay whose file is already
+    gone takes no older copy: nothing in the trash it names is that old copy, and no row points at it. A copy made at
+    or after the queue stamp is still this skip's, and the replay takes it."""
+    from app.services import moves as M
+    store, data_dir = _empty(language)
+    src = _drive("Media")
+    _card_and_show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        folder = os.path.join(src, CARD)
+        ids = store.items_under(folder)
+        for i in ids:
+            ls.trash_file(data_dir, store.item(i)["rel_path"])   # an earlier copy, made before the skip is queued
+        old = {os.path.relpath(os.path.join(d, n), data_dir).replace(os.sep, "/")
+               for d, _sub, names in os.walk(data_dir) for n in names}
+        # constant stamps, far from now, so neither the clock nor the time zone can decide the case:
+        # the copies are older than a stamp in the far future, and newer than one in the far past
+        queued = "00000101000000" if queued_after_copies else "99991231235959"
+        change = M.Writer._skip_folder(None, store, {"op": "skip_folder", "path": folder, "replay": True, "at": queued})
+        rows = store.trash_rows(change.trash_ids)
+        assert rows, "the replay names its items"
+        if queued_after_copies:
+            # the copies count as this skip's: each row names one of them
+            assert all(r["trashed_path"] in old for r in rows), "a copy made after the queue is the replay's copy"
+        else:
+            # the copies are older than the queue: the replay takes none, and every older copy stays where it was
+            for p in old:
+                assert os.path.exists(os.path.join(data_dir, *p.split("/"))), f"older copy was touched: {p}"
+            assert not any(r["trashed_path"] in old for r in rows), "no row names the older copy"

@@ -1605,3 +1605,169 @@ def test_take_in_marks_only_its_own_items_live_records(language):
         assert _moved_to(store, f["origin"]) == ls.path_key(os.path.abspath(h["origin"]))
         assert "moved_from" not in json.loads(store.conn.execute(
             "SELECT pairing FROM pairings WHERE content_key = ?", (ls.origin_key(h["origin"]),)).fetchone()[0])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_busy_store_while_the_back_list_is_handed_over_is_tolerated_and_the_list_is_cleared(language, monkeypatch):
+    """The store is busy when the known originals are listed in their old place again. The look must not crash
+    (a busy store is tolerated), the back list is cleared, the mark is kept (nothing is lost), and the next look
+    hands the same original over again and the mark comes off. Why the real store with one patched call: the busy
+    path is the look's own handling of StoreBusy, and the recovery is only real if the store still holds what the
+    next look needs."""
+    from app import sources
+
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        f = _found(language, data_dir, src, w[69], "ep1.srt", 1)
+        g = _found(language, data_dir, src, w[70], "ep2.srt", 2)
+        first = store.take_in(root, [f, g], first=True).recorded[os.path.abspath(f["origin"])]
+        h = _found(language, data_dir, src, w[69], "moved/ep1.srt", 1, copy=False, item_id=first,
+                   moved_from=[ls.path_key(os.path.abspath(f["origin"]))])
+        store.take_in(root, [h])
+        assert _moved_to(store, f["origin"]) is not None
+        origin = os.path.abspath(f["origin"])
+
+        real_origins_back = store.origins_back
+
+        def busy(paths):
+            raise ls.StoreBusy("the store is busy")
+
+        monkeypatch.setattr(store, "origins_back", busy)
+        look = sources._Look(store, language, root, first=False, progress=None, stop=None, full=False, rules=None)
+        look.back = [origin]
+        look._back()
+        assert look.back == [], "a busy store must not leave the back list to be retried inside this look"
+        assert _moved_to(store, f["origin"]) is not None, "a busy store must keep the mark for the next look"
+
+        monkeypatch.setattr(store, "origins_back", real_origins_back)
+        next_look = sources._Look(store, language, root, first=False, progress=None, stop=None, full=False, rules=None)
+        next_look.back = [origin]
+        next_look._back()
+        assert next_look.back == []
+        assert _moved_to(store, f["origin"]) is None, "the next look hands the original over and its mark comes off"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_numbered_name_with_same_size_other_bytes_gets_a_new_name(language):
+    # why: a file at the target name counts as the copy already there only with the same bytes (sha256); a different
+    # file of the same size must take the next free name, never be re-used as the copy.
+    _store, data_dir = _empty(language)
+    _store.close()
+    src = _source_root()
+    show = names(language)[44]
+    origin = _origin(language, src, show, "ep01.srt", 1)
+    size, sha = os.path.getsize(origin), _sha(origin)
+    rel = f"{ls.CONTENT_FOLDER}/{show}/ep01.srt"
+    _copied(data_dir, origin, show)
+    target = os.path.join(data_dir, *rel.split("/"))
+    with open(origin, "rb") as fh:
+        data = fh.read()
+    with open(target, "wb") as fh:                                                   # same size, one byte changed
+        fh.write(bytes([data[0] ^ 1]) + data[1:])
+    assert os.path.getsize(target) == size and _sha(target) != sha
+    assert ls.content_target(data_dir, rel, size, sha) == \
+        (f"{ls.CONTENT_FOLDER}/{show}/ep01 (2).srt", False)                          # other bytes: a new name
+    assert ls.sha256_of(origin) == sha
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_skipped_folder_list_is_read_under_the_reader_guard(language, monkeypatch):
+    """The skipped-folder list is read inside the store's reader guard: the guard's read
+    transaction is open when the list is read."""
+    # why: the guard is what opens the read transaction; the list must be read while that
+    # transaction is open, so the store reports it open at the moment the SELECT runs.
+    from contextlib import contextmanager
+    store, data_dir = _empty(language)
+    show = names(language)[71]
+    src = _source_root("skipped")
+    os.makedirs(os.path.join(src, show))
+    seen = []
+    real = store._reading
+
+    @contextmanager
+    def recording():
+        with real():
+            seen.append(store.conn.in_transaction)
+            yield
+
+    with store:
+        store.add_source(src)
+        store.skip_folder(os.path.join(src, show))
+        store.conn.commit()
+        assert store.conn.in_transaction is False, "no transaction may be open before the guard runs"
+        monkeypatch.setattr(store, "_reading", recording)
+        rows = store.skipped_folders()
+    assert seen == [True], "skipped_folders() must read inside an open read transaction"
+    assert [r["path"] for r in rows] == [ls.folder_path(os.path.join(src, show))]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_file_naming_its_item_records_the_show_group_on_that_items_title(language):
+    """A look's show group goes on the title of the item the file names (its own item_id) when the file's origin
+    is not in the changes taken in this scan; a title with no group yet takes the group the look decided."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        f = _found(language, data_dir, src, w[69], "ep1.srt", 1)
+        other = _found(language, data_dir, src, w[70], "ep2.srt", 2)
+        recorded = store.take_in(root, [f, other], first=True).recorded
+        first = recorded[os.path.abspath(f["origin"])]
+        work = store.conn.execute("SELECT work_id FROM items WHERE id = ?", (first,)).fetchone()[0]
+        # the same file again in a later scan: its origin is already recorded, so this scan's changes don't name it
+        # and only its own item_id can find the title
+        g = _found(language, data_dir, src, w[69], "ep1.srt", 1, copy=False, item_id=first,
+                   show_group={"group": ["subsc", "x"], "label": "SubsC"})
+        store.take_in(root, [g])
+        assert tuple(store.group_of(work)["group"]) == ("subsc", "x")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_hato_item_paired_twice_reports_its_newest_video(language):
+    """`_store_hato_items` reads an item's hato records newest first: a second hato pairing made later is the video the
+    look holds, never the older one's (a show's episode counts as held by the video it was taken from)."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    show = names(language)[67]
+    with store:
+        path = os.path.join(data_dir, "HighPriority", show, f"{show}_1.srt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(_episode_text(language, 1))
+        item = store.register(path, _hato("v1-1", 1, show)).added[0]
+        newer = _hato("v1-2", 2, show)
+        with store._writing():                                                # the first pairing is the older one
+            store.conn.execute("UPDATE pairings SET paired_at = ? WHERE item_id = ?",
+                               ("2000-01-01T00:00:00.000000Z", item))
+            store.conn.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                               ("v1-2", item, json.dumps(newer), ls._now()))
+        origins = [o for group in store.hato_items().values() for o in group]
+        assert [o.video_path for o in origins] == [newer["video_path"]]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a folder link is made with _winapi.CreateJunction")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_trash_file_refuses_a_link_into_a_sibling_folder_named_like_the_data_folder(language):
+    """A folder link into `<data folder>2`, a sibling whose name starts like the data folder's, is outside the data
+    folder: the copy it points to is not moved to .trash."""
+    # why: the guard must match the data folder with its separator, so a sibling sharing its prefix is not inside it
+    import _winapi
+    data_dir, _u = roots(language)
+    sibling = os.path.join(os.path.dirname(data_dir), os.path.basename(data_dir) + "2")
+    link = os.path.join(data_dir, "Library", "linked")
+    os.makedirs(sibling)
+    os.makedirs(os.path.join(data_dir, "Library"))
+    try:
+        with open(os.path.join(sibling, "ep.srt"), "w", encoding="utf-8") as fh:
+            fh.write(_episode_text(language, 3))
+        _winapi.CreateJunction(sibling, link)
+        assert ls.trash_file(data_dir, "Library/linked/ep.srt") is None
+        assert os.path.exists(os.path.join(sibling, "ep.srt"))
+    finally:
+        if os.path.exists(link):
+            os.rmdir(link)
+        shutil.rmtree(sibling, ignore_errors=True)

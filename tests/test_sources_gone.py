@@ -952,3 +952,22 @@ def test_the_join_marks_only_an_original_that_is_gone_and_whose_bytes_are_there(
         assert _marked(store, files) == [False, True, True]
         for folder in (old, os.path.dirname(old)):                      # itself, or a folder above it: nothing
             assert store.join_moved(root_a, folder) == 0
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folder_time_cache_from_another_epoch_is_not_reused(language):
+    """The folder-time cache is keyed on the store's epoch (a rebuilt store is a new one): the volume a folder was read
+    on is found while the epoch holds, and is no longer found once the epoch moves — the old cache is dropped, not used."""
+    # why: a cache written under the old epoch must not answer for the rebuilt store, or a gone folder could be
+    # read on the wrong volume
+    store, data_dir = _empty(language)
+    title = names(language)[71]
+    old = os.path.join(_elsewhere("Downloads"), title)
+    _show(language, old)
+    with store:
+        root = store.add_source(old)
+        _look(store, language, root, first=True)
+        epoch = int(store.meta()["epoch"])
+        assert sources.volume_of(store, language, root, old) is not None      # the cache holds this epoch
+        store.bookkeeping({"epoch": epoch + 1})                               # a rebuilt store: a new epoch
+        assert sources.volume_of(store, language, root, old) is None

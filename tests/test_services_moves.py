@@ -4226,3 +4226,59 @@ def test_LM11_G7_a_queued_group_another_window_made_in_the_other_order_meanwhile
     assert heard2.notes == [WORDS["crash_one"]]
     assert [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id",
                                              (pb,))] == after
+
+
+def test_a_wake_starts_a_live_writer_and_never_restarts_a_stopped_one(tmp_path):
+    # why: a refused press wakes the writer; a live one must have its thread running so the wake is heard, but a
+    # writer the window has finished for good must never get a thread back (it would write after the window let go)
+    # the writers are built without start(), so the first refused press is the wake that must start the live one;
+    # the finally blocks let go of both writers if an assertion fails, so no polling thread outlives the test
+    heard = Heard()
+    opener = StubOpener(StubStore(), "json", "not ready")
+    w = M.Writer(opener, "ja", journal_file=str(tmp_path / "window_pending_ja.json"), numbers=None, words=WORDS,
+                 **heard.kw(), retry=0.02)
+    store2, heard2 = StubStore(), Heard()
+    w2 = M.Writer(StubOpener(store2, "json", "not ready"), "ja",
+                  journal_file=str(tmp_path / "window_pending_ja2.json"), numbers=None, words=WORDS,
+                  **heard2.kw(), retry=0.02)
+    try:
+        assert w._thread is None
+        assert not w.can_write()                        # the wake on a live writer starts its thread
+        assert w._thread is not None and w._thread.is_alive()
+        thread = w._thread
+        assert w.finish(time.monotonic() + 5)
+        thread.join(5)
+        assert not thread.is_alive()
+        assert not w.can_write()                        # the wake on a stopped writer restarts nothing
+        assert w._thread is thread and not thread.is_alive()
+        # a writer the window finished before it ever had a thread: a wake must not start one (it would write after
+        # the window let go), and nothing asked of it reaches the store
+        assert w2.finish(time.monotonic() + 5)
+        assert not w2.can_write()
+        assert w2._thread is None
+    finally:
+        w.finish(time.monotonic() + 5)
+        w2.finish(time.monotonic() + 5)
+
+
+def test_the_trash_helper_passes_over_the_copies_it_is_told_are_taken(lib):
+    # why: the helper's `taken` contract only. Each command's loop (Remove's `_remove`, Skip's `_skip_folder`) passes the
+    # copies it has already taken, and this test mirrors that loop's call shape by hand; it does not drive a Skip. Two
+    # items of one name each find an unnamed copy of their own. The second must take the next copy, never the first's,
+    # or the two rows name one file and a Put back of either brings back the other's copy
+    x = lib.ids("soon")[2]
+    row = lib.store.item(x)
+    rel = row["rel_path"]
+    with open(_file(lib, x), "rb") as f:
+        body = f.read()
+    ls.trash_file(lib.data_dir, rel)                    # the file's move before the crash: none in its place now
+    base, ext = os.path.splitext(os.path.basename(rel))
+    trash = os.path.join(lib.data_dir, ".trash")
+    for n in (0, 1):                                    # two unnamed copies of its name and size, oldest first
+        with open(os.path.join(trash, f"{base}_2000010100000{n}{ext}"), "wb") as f:
+            f.write(body)
+    trashed = {}
+    trashed[x] = first = M._trash(ls, lib.store, rel, row, taken=trashed.values(), since=None)
+    second = M._trash(ls, lib.store, rel, row, taken=trashed.values(), since=None)
+    assert first == f".trash/{base}_20000101000000{ext}"
+    assert second == f".trash/{base}_20000101000001{ext}", "the second item takes the next copy, never the first's"

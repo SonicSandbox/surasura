@@ -28,7 +28,7 @@ from app import library_store as ls
 from app import sources
 from app.connect import library, videos
 from tests.test_library_store_support import LANGUAGES, RESOURCES
-from tests.test_sources_groups import _group_b, _show, _sub
+from tests.test_sources_groups import _group_b, _picks, _show, _sub, _work
 from tests.test_sources_scenarios import _THIN
 from tests.test_sources_scan import (_OURS, _SHOWS, _drive, _empty, _fresh_module_state, _library_files,  # noqa: F401
                                      _look, _text, _video, _write)
@@ -690,3 +690,300 @@ def test_another_volume_is_never_an_edition_and_one_splitter_reads_every_book(la
         _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
         assert _look(store, language, root)["switched"] == len(before)
         assert split == [f"{_BOOKS[language]}.epub", f"{_BOOKS[language]} 2.epub", f"{_EDITION[language]}.epub"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_different_file_at_a_part_name_is_never_overwritten_by_a_book_write(language, monkeypatch):
+    """`_write_parts` meets another file (not the part's bytes) at a part's name: it raises before any rename, so the
+    other file keeps its bytes, nothing is renamed over it, and the book waits. The rename is a spy that overwrites
+    (`os.replace`): a write that fell through would replace the other file's bytes and report success."""
+    store, data_dir = _empty(language)
+    rel = f"{ls.CONTENT_FOLDER}/{_OTHER[language]}/part.txt"
+    full = os.path.join(data_dir, *rel.split("/"))
+    new = {"ja": "別れの言葉\n", "zh": "别离的话\n"}[language].encode("utf-8")       # the book's part (real text)
+    other = {"ja": "月の庭の話\n", "zh": "江边的小记\n"}[language].encode("utf-8")   # another file, at the same name
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "wb") as f:
+        f.write(other)
+    renamed = []
+
+    def overwrite(src, dst):
+        renamed.append(dst)
+        os.replace(src, dst)
+    monkeypatch.setattr(ls, "rename_no_overwrite", overwrite)
+    with store:
+        look = sources._Look(store, language, None, True, None, None, True, None)
+        assert look._write_parts(os.path.dirname(full), [rel], [new], [0]) is False, "the book waits"
+        assert renamed == [] and not os.path.exists(full + ".part")
+        assert _copy(data_dir, rel) == other, "the other file keeps its bytes"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_away_episode_is_held_and_never_switched_while_the_rest_switch(language):
+    """An episode whose file is away (`missing`) holds its place: the switch to B takes the episodes it can read and
+    names the away one as held (`held_items`), never planning it for a switch."""
+    # why: an away item has no file to read, so it can't be swapped in place; planning it would write into a missing copy.
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        work = store.conn.execute("SELECT DISTINCT work_id FROM items").fetchone()[0]
+        ids = [i for i, _r in _items(store)]
+        with store._writing():
+            store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (ids[0],))
+        change = store.switch_group(work, _group_b(store), by="user")
+        assert change.switched == [ids[1]]
+        assert change.held == [ids[0]]
+        last = store.last_switch(work)
+        assert (last["switched"], last["held"], last["held_items"]) == (1, 1, [ids[0]])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_switched_copy_is_trashed_under_the_name_it_had_so_undo_finds_it(language):
+    """A group switch renames each copy to the new subtitle's name (`.ass` -> `.srt`), so the old copy's trash
+    name must carry the OLD file name (its `rel`), not the new one: Undo swaps back to the old name and finds the
+    trashed copy by the name it was trashed under. The old copies are `.ass`; their trash names start with their base."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        work = _work(store)
+        copies, rels = _picks(store, data_dir)
+        ids = sorted(copies)
+        old_rels = {i: rels[i] for i in ids[:2]}
+        change = store.switch_group(work, _group_b(store))
+        assert change.switched == ids[:2]
+        after, rels_after = _picks(store, data_dir)
+        assert [rels_after[i].rsplit("/", 1)[1] for i in ids[:2]] == [os.path.basename(b[1]), os.path.basename(b[2])], \
+            "the copies are renamed to B's subtitles (their new names differ from the old ones)"
+        trash = _trash(data_dir)
+        for i in ids[:2]:
+            old_base = os.path.splitext(os.path.basename(old_rels[i]))[0]
+            assert any(t.startswith(old_base + "_") and t.endswith(".ass") for t in trash), \
+                "the trashed copy keeps the name it had when it was trashed (Undo swaps back to it)"
+        assert store.undo(change).kind == "undo"
+        restored, rels_restored = _picks(store, data_dir)
+        assert rels_restored == rels, "Undo puts every copy back under its old name"
+        assert {i: restored[i] for i in ids[:2]} == {i: copies[i] for i in ids[:2]}, \
+            "Undo restores the trashed copy's own bytes, so it found that copy and not another file"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_staged_book_part_starts_its_trash_clock_in_the_data_trash(language, monkeypatch):
+    """A new edition's part is staged in the data folder's trash before the switch takes it; its 30-day trash clock must
+    start there, or the trash could purge the bytes the switch is about to use."""
+    # why: a staged part with no clock started could be purged from .trash before the switch, losing the new edition.
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    started = []
+    stages = []
+    real_clock = ls.restart_trash_clock
+    real_stage = ls._stage
+
+    def spy(p):
+        # what the clock was started on: the file's folder and bytes at that moment
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                started.append((os.path.normpath(os.path.dirname(p)), f.read()))
+        return real_clock(p)
+
+    def stage(store_, rel, data):
+        # the clock starts this staging made, against the bytes it wrote: only the staging's own call counts
+        before_calls = len(started)
+        real_stage(store_, rel, data)
+        stages.append((started[before_calls:], data))
+    monkeypatch.setattr(ls, "restart_trash_clock", spy)
+    monkeypatch.setattr(ls, "_stage", stage)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        assert _look(store, language, root)["switched"] == len(before)
+    trash = os.path.normpath(os.path.join(data_dir, ".trash"))
+    new_parts = _parts(new, language)
+    staged = [(calls, data) for calls, data in stages if data in new_parts]
+    assert staged, "the new edition's parts were never staged in .trash"
+    for calls, data in staged:
+        assert any(folder == trash and data == data_written for folder, data_written in calls), \
+            "a staged part of the new edition had no trash clock started by its own staging"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_batch_of_switches_is_retried_one_item_at_a_time(language, monkeypatch):
+    """A batch of better-version switches that raises a generic error is not given up: each pending item is tried on its
+    own, so every re-timed copy takes its new text in place in this same look, not only the first one."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, v, s = _synced_show(language, src)
+    t = _OURS[language]
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        for n in (1, 2):
+            _write(os.path.join(src, show, "synced", f"{show} - {n:02d}.{t}.srt"), _text(language, n, " synced"))
+        real = store.switch_versions
+
+        calls = []
+
+        def batch_fails(todo, *args, **kwargs):
+            # why: only a batch of two or more raises; a single item goes through the real switch, as it would in a run
+            calls.append(len(todo))
+            if len(todo) > 1:
+                raise RuntimeError("the batch failed part way")
+            return real(todo, *args, **kwargs)
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "switch_versions", batch_fails)
+            result = _look(store, language, root)
+        # why: the batch was really tried and failed, and then each item went through on its own
+        assert any(n > 1 for n in calls)
+        assert calls[-2:] == [1, 1]
+        assert result["switched"] == 2 and result["added"] == 0
+        for (_item, rel), n in zip(before, (1, 2)):
+            assert _copy(data_dir, rel) == _text(language, n, " synced").encode("utf-8")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_book_is_moved_only_when_no_edition_record_still_matches_the_file(language, tmp_path):
+    """A known book is moved only when every edition record differs from its file's bytes: one record that still
+    matches (the copy the file came from) keeps it where it is. Records are stubbed at the origins read, not the check."""
+    # why: `_book_moved` is `all(...)` over the records, so one matching record must mean "not moved" (a `any` would not).
+    from types import SimpleNamespace
+    path = _epub(os.path.join(str(tmp_path), f"{_BOOKS[language]}.epub"), _chapters(language, "一"), language)
+    st = os.stat(path)
+    same = SimpleNamespace(size=st.st_size, mtime_ns=st.st_mtime_ns, version=None)
+    other = SimpleNamespace(size=st.st_size + 1, mtime_ns=st.st_mtime_ns + 1, version=None)
+    other_again = SimpleNamespace(size=st.st_size + 2, mtime_ns=st.st_mtime_ns + 2, version=None)
+
+    def look_with(records):
+        return SimpleNamespace(_book_origins=lambda: {path: records})
+
+    assert sources._Look._book_moved(look_with({1: same, 2: other}), path, st) is False
+    assert sources._Look._book_moved(look_with({1: other, 2: other_again}), path, st) is True
+    assert sources._Look._book_moved(look_with({}), path, st) is False
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_part_write_leaves_no_partial_file_beside_the_copy(language, monkeypatch):
+    """A switch: a part whose write fails after some bytes are on disk is removed at once; the copy keeps its old
+    bytes and no `.part` file is left in the data folder."""
+    # why: a torn `.part` left behind would be picked up as debris and could be mistaken for a switched copy later
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, v, s = _synced_show(language, src)
+    t = _OURS[language]
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        old = _copy(data_dir, before[0][1])
+        _write(os.path.join(src, show, "synced", f"{show} - 01.{t}.srt"), _text(language, 1, " synced"))
+        real_open = open
+        torn = []
+
+        def torn_open(path, mode="r", *args, **kwargs):
+            if str(path).endswith(".part") and "w" in mode:
+                torn.append(str(path))
+                with real_open(path, "wb") as f:
+                    f.write(b"torn")
+                raise OSError("disk full")
+            return real_open(path, mode, *args, **kwargs)
+        with monkeypatch.context() as patched:
+            patched.setattr("builtins.open", torn_open)
+            held = _look(store, language, root)
+        assert held["switched"] == 0 and _copy(data_dir, before[0][1]) == old
+        assert torn and all(p.endswith(".part") for p in torn), "the synced copy's part write was attempted and failed"
+        leftovers = [name for _d, _dirs, files in os.walk(data_dir) for name in files if name.endswith(".part")]
+        assert leftovers == [], "a failed part write removes its partial file"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_undo_whose_old_part_cannot_be_read_is_refused_and_undoes_nothing(language, monkeypatch):
+    """A book's new edition whose old part can't be read is not undone: the Undo is refused with a message, and every
+    part keeps the new edition's bytes and its place."""
+    # why: the old part's sha256 is needed before the Undo may go on; an unreadable part must refuse it, never pass it.
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    old = _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        changes = []
+        real = store.switch_parts
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "switch_parts", lambda *a, **k: changes.append(real(*a, **k)) or changes[-1])
+            assert _look(store, language, root)["switched"] == len(before)
+        records = _records(store)
+        for swap in changes[0].swaps:
+            swap.pop("sha256", None)              # a record without the new bytes' sha256: the old part is read now
+
+        real_sha256 = ls.sha256_of
+
+        def unreadable(path, *a, **k):
+            # why: the trash copy's check must still read; only the current book file can't be read
+            if ".trash" in str(path):
+                return real_sha256(path, *a, **k)
+            raise OSError("the part can't be read just now")
+        with monkeypatch.context() as patched:
+            patched.setattr(ls, "sha256_of", unreadable)
+            with pytest.raises(ls.UndoRefused, match="can't be read"):
+                store.undo(changes[0])
+        assert [_copy(data_dir, rel) for _i, rel in before] == _parts(new, language), "nothing was undone"
+        assert _items(store) == before
+        assert _records(store) == records, "the refused Undo leaves no changed record"
+        # why: a refused Undo must leave no edition claim behind, or the next Undo would wait on it.
+        assert not store.conn.execute("SELECT key FROM meta WHERE key >= ? AND key < ?",
+                                      (ls.EDITION_PENDING, ls.EDITION_PENDING[:-1] + ";")).fetchall(), \
+            "the refused Undo leaves no edition claim"
+        for n, (item, _rel) in enumerate(before, 1):
+            assert library.pairing_of(store, item)["origin"] == f"{os.path.abspath(new)}#{n}"
+        # why: a refusal must leave the book undoable: once the part reads again, the same Undo goes through.
+        undone = store.undo(changes[0])
+        assert undone.switched == [i for i, _r in before]
+        assert [_copy(data_dir, rel) for _i, rel in before] == _parts(old, language)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+# why: a version whose file can't be read is not judged thin; its swap holds it, so no switch is made from it
+def test_a_version_that_cannot_be_read_is_never_thin(language):
+    """A better version whose file cannot be read (here: never written, so the open fails) is not passed over as thin:
+    `_thin_switch` returns (False, None) and the item keeps its copy."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, t = _SHOWS[language][1], _OURS[language]
+    pick = _write(os.path.join(src, show, f"[SubsA] {show} - 01.{t}.srt"), _text(language, 4, " A"))
+    with store:
+        root = store.add_source(src)
+        (item,) = _look(store, language, root, first=True)["ids"]
+        rel = store.item(item)["rel_path"]
+        unreadable = os.path.join(src, show, f"[SubsB] {show} - 01.{t}.ass")
+        assert ls._thin_switch(store, {"origins": [unreadable], "rel": rel}) == (False, None)
+        assert _copy(data_dir, rel) == open(pick, "rb").read()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_switch_onto_another_items_file_name_is_held_and_a_free_name_is_taken(language):
+    """A switched copy takes the name of the subtitle it now holds (`Library/<show>/<its name>`), so the taken check
+    must read that NEW name. Another episode already living there holds the switch (None); a
+    free name is taken. Checking the item's own old name instead would let the switch land on another item's file."""
+    store, _ = _empty(language)
+    src = _drive("Anime")
+    show, t = _SHOWS[language][1], _OURS[language]
+    _write(os.path.join(src, show, f"{show} - 01.{t}.srt"), _text(language, 1))
+    _write(os.path.join(src, show, f"{show} - 02.{t}.srt"), _text(language, 2, " two"))
+    with store:
+        root = store.add_source(src)
+        first, second = _look(store, language, root, first=True)["ids"]
+        rel, other = store.item(first)["rel_path"], store.item(second)["rel_path"]
+        folder = rel.rsplit("/", 1)[0]
+        other_name = other.rsplit("/", 1)[1]
+        assert ls._switch_rel(store, rel, os.path.join(src, show, other_name), first) is None, "the other episode's file holds"
+        free = os.path.join(src, show, f"{show} - 03.{t}.ass")
+        assert ls._switch_rel(store, rel, free, first) == folder + "/" + os.path.basename(free), "a free name is taken"

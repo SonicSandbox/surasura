@@ -744,3 +744,56 @@ def test_a_layout_is_read_as_a_learner_would_want(row, language, record_property
     shows = sorted({os.path.dirname(k) for k in want})
     assert got == (shows, want)
     assert again == got, "a Refresh changed what the looks made"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_skipped_folder_is_never_walked_and_the_folder_beside_it_still_is(language):
+    # why: a language folder the user skipped inside a show's Subs/ is never listed or read, so its subtitles never
+    # enter the library, while the show beside it and the folder beside the skipped one still come in on the same look.
+    store, data_dir = _empty(language)
+    drive = _drive("Anime")
+    made = {}
+    lang_skipped, lang_kept = _fill("{S}/Subs/{LF0}", language), _fill("{S}/Subs/{LF1}", language)
+    _make(drive, [(_fill(p, language), c) for p, c in [
+        ("{S}/ep1.mkv", "V"), ("{S}/Subs/{LF0}/ep1.srt", "J"), ("{S}/Subs/{LF1}/ep1.srt", "J"),
+        ("{S2}/ep1.mkv", "V"), ("{S2}/ep1.srt", "J")]], language, made)
+    with store:
+        rid = store.add_source(drive)
+        store.skip_folder(os.path.join(drive, lang_skipped))
+        _look(store, language, rid, first=True)
+        got = _state(store, data_dir, drive, made)
+    # The items are keyed by their library place, so the source folder is read from each item's copy (its value, the
+    # source file's rel path before any " @ video").
+    assert not [p for p, v in got[1].items() if v.startswith(lang_skipped + "/")], "a skipped folder's file was read"
+    assert [p for p, v in got[1].items() if v.startswith(lang_kept + "/")], "the folder beside a skipped one was not read"
+    other = _fill("{S2}", language)
+    assert [p for p, v in got[1].items() if v.startswith(other + "/")], "the show beside it was not read"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_subtitle_folder_is_classified_in_the_look_language(language):
+    """A library's own-language `<LF>/` folder inside an other-language-tagged folder (under `Subs/`) is read as this
+    look's language, so its subtitles are listed with their show, each episode paired with its video. Run in both a
+    Japanese and a Chinese library, so a constant language in the call would fail one of them."""
+    # why: a folder's name is judged in the look's language (self.language), never in the tongue of the folder it sits
+    # in — an other-language-tagged parent must not turn the own-language folder beside its own texts into a folder of
+    # its own.
+    store, data_dir = _empty(language)
+    drive = _drive("Anime")
+    show = _NAMES[language]["S"]
+    tag = _NAMES[language]["T"]
+    parent = {"ja": "zh-Hans", "zh": "ja-JP"}[language]
+    child = _LANG_FOLDERS[language][0]
+    eps = [f"[Grp] {show} - {n:02d} (1080p)" for n in (1, 2)]
+    made = {}
+    _make(drive, [(f"{show}/{e}.mkv", "V") for e in eps]
+          + [(f"{show}/Subs/{parent}/{child}/{e}.{tag}.srt", "J") for e in eps], language, made)
+    want = {f"{show}/{e}.{tag}.srt": f"{show}/Subs/{parent}/{child}/{e}.{tag}.srt @ {show}/{e}.mkv" for e in eps}
+    with store:
+        rid = store.add_source(drive)
+        _look(store, language, rid, first=True)
+        got = _state(store, data_dir, drive, made)
+        _look(store, language, rid, full=True)
+        again = _state(store, data_dir, drive, made)
+    assert got == ([show], want)
+    assert again == got, "a Refresh changed what the looks made"

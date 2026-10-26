@@ -886,3 +886,27 @@ def test_R3_a_gap_that_no_longer_waits_inside_the_command_fills_nothing_and_hato
         change = store.register(hato_path, _hato(key, show))
         assert len(change.added) == 1 and store.item_id(ls.library_rel(data_dir, hato_path)) == change.added[0]
         assert store.conn.execute("SELECT item_id FROM pairings WHERE content_key = ?", (key,)).fetchone()[0] ==             change.added[0]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_taking_out_a_sync_row_leaves_no_empty_piece_behind(language):
+    """The sync's row for hato's file, taken out by the register, tidies its piece; a piece the row alone held
+    never stays behind empty in the library (the source item's piece is still in use and stays)."""
+    # why: an empty piece is a phantom shelf entry; taking an item out must leave the pieces as the items hold them.
+    store, data_dir = _empty(language)
+    show = _SHOWS[language][0]
+    with store:
+        item, _key, sub = _source_episode(store, language, data_dir, video=False)
+        hato_path = _hato_file(data_dir, f"{show} - 01.srt", like=sub)
+        synced = _sync_first(store, data_dir, hato_path)
+        piece = store.conn.execute("SELECT piece_id FROM items WHERE id = ?", (synced,)).fetchone()[0]
+        assert piece is not None
+        source_piece = store.conn.execute("SELECT piece_id FROM items WHERE id = ?", (item,)).fetchone()[0]
+        assert source_piece is not None
+        change = store.register(hato_path, _hato("v1-piece-tidy", show))
+        assert change.pairing_item == item and store.item(synced) is None
+        assert store.conn.execute("SELECT COUNT(*) FROM pieces WHERE id = ?", (piece,)).fetchone()[0] == 0
+        assert store.conn.execute("SELECT COUNT(*) FROM pieces WHERE id = ?", (source_piece,)).fetchone()[0] == 1
+        assert store.conn.execute(
+            "SELECT COUNT(*) FROM pieces WHERE NOT EXISTS (SELECT 1 FROM items WHERE items.piece_id = pieces.id)"
+        ).fetchone()[0] == 0

@@ -204,6 +204,25 @@ def test_a_review_at_the_suspends_leaves_the_take_out_owed(lib):
     assert _owed(store), "still owed: the next look takes them out"
 
 
+def test_a_name_two_items_carry_is_not_returned_as_one_items_out_name(lib, monkeypatch):
+    """The take-out's names: a name two items carry is shared, so it is no out item's own name. The item that
+    stays in carries 山田 too, so read_out's `names` for the out item keep only 小鳥遊; 山田 is in no kept name either.
+    The names are patched so the shared name is known exactly."""
+    from modules.junban import pins
+    language, root, store = lib
+    fake, host, a, out, _shared, _listed, _other, _reviewed, _said, _reports = _take_out(lib)
+    a, b = store.ids("now")[:2]
+    store.finish([a], keep_cards=False)
+    _after_its_generate(lib, fake, host, out, 0)
+    paths = dict(store.conn.execute("SELECT id, rel_path FROM items").fetchall())
+    carried = {paths[a]: {"小鳥遊", "山田"}, paths[b]: {"山田"}}
+    monkeypatch.setattr(pins, "names_of", lambda path, video=None: carried.get(path, set()))
+    got = pins.read_out(language)
+    assert [item_id for item_id, _path in got["out"]] == [a]
+    assert got["names"] == {a: {"小鳥遊"}}, "山田 is carried by the item that stays in: not the out item's own"
+    assert "山田" not in got["kept_names"]
+
+
 def test_with_automation_off_nothing_reaches_anki_and_nothing_is_recorded(lib):
     """T-6: D29 off — the window's words stay *Leave its new cards out of your order*; Anki is never asked."""
     language, root, store = lib
@@ -215,3 +234,49 @@ def test_with_automation_off_nothing_reaches_anki_and_nothing_is_recorded(lib):
         host._job("move")
     assert fake.requests == [] and [card["queue"] for card in out] == [0, 0]
     assert store.anki_changes_of([a]) == []
+
+
+def test_a_refused_put_back_tag_removal_is_reported_in_note_failures(lib, monkeypatch):
+    """A note whose Put-back tag removal Anki refuses is a failure the job reports in its note_failures. Real
+    Anki refusals are answered through the fake's `urlopen`; here the removal is refused on the module the host
+    calls it through."""
+    from modules.junban import ankiconnect
+    language, root, store = lib
+    fake, host, a, out, _shared, _listed, _other, _reviewed, _said, reports = _take_out(lib)
+    store.finish([a], keep_cards=False)
+    _after_its_generate(lib, fake, host, out, 0)
+    assert all(OUT_TAG in _tags(fake, card) for card in out), "the take-out tagged the cards first"
+    store.put_back_finished([a])
+    assert _owed(store), "the Put back is owed to Anki"
+
+    def refuse(url, note_ids, tag, chunk=150):          # touched nothing; every note a (note_id, reason) failure, as _tag_action returns
+        return [], [(note_id, "refused") for note_id in note_ids]
+    monkeypatch.setattr(ankiconnect, "remove_tags", refuse)
+    _after_its_generate(lib, fake, host, out, -1)
+    report = reports[-1]                                        # the job's report: _put_back_owed puts the failures here
+    assert sorted(note_id for note_id, _reason in report["note_failures"]) == sorted(card["note"] for card in out), \
+        "Each refused removal is a note failure of the job's report"
+    assert {reason for _note_id, reason in report["note_failures"]} == {"refused"}
+
+
+def test_only_cards_out_records_are_held_as_cards_out(lib):
+    """The cards held out of a learner's order are the ones the take-out itself recorded as cards out; the
+    read-back `held` list must hold those records and nothing else, or a card the learner never took out would count."""
+    from modules.junban import pins
+    language, root, store = lib
+    fake, host, a, out, _shared, _listed, _other, _reviewed, _said, _reports = _take_out(lib)
+    store.finish([a], keep_cards=False)
+    _after_its_generate(lib, fake, host, out, 0)
+    assert [card["queue"] for card in out] == [-1, -1], "the take-out ran, so the cards are out"
+    # a non-cards-out record on the same out item (a suspend the learner made elsewhere) is open too; it must not be held
+    store.record_anki_changes([(a, "suspend", [999000001], {"queue": 0}, {"queue": -1})])
+    store.record_anki_changes([(a, "tag", [999000002], {"tag": ""}, {"tag": "Surasura::other"})])
+    open_records = store.anki_changes_of([a])
+    assert any(record["action"] == "suspend" for record in open_records), "the stray record is open"
+    assert any(record["action"] == "tag" for record in open_records), "the second stray record is open"
+    cards_out = [record for record in open_records if record["action"] == pins.OUT_ACTION]
+    assert cards_out, "the take-out recorded its cards as cards out"
+    held = pins.read_out(language).get("held") or []
+    assert held, "the taken-out cards are held out"
+    assert all(record["action"] == pins.OUT_ACTION for record in held), held
+    assert sorted(record["id"] for record in held) == sorted(record["id"] for record in cards_out), held

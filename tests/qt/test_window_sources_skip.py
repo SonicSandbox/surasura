@@ -128,3 +128,122 @@ def test_the_looks_answer_whether_a_folder_can_be_skipped_on_their_worker():
         looks.close()
         looks.idle(5)
     assert looks.skip_refused(card, got.append) is False                         # closed
+
+
+def test_a_sibling_folder_sharing_a_name_prefix_is_not_inside_the_source_folder():
+    # why: a folder named like the source plus more letters (Source + "b") is a sibling, not inside the source, so a
+    # backup in it is refused as outside the folders Surasura reads, never allowed as one of the source's own files.
+    opener, _data, _uf = _library()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    try:
+        folder = _source()
+        sibling = folder.rstrip("/\\") + "b"
+        sibling_card = _with_card(sibling)
+        _added(looks, folder)
+        got = []
+        assert looks.skip_refused(sibling_card, lambda why: got.append(why), language="ja")
+        assert looks.idle(10) and len(got) == 1
+        assert got == [ls.SKIP_OUTSIDE]                                          # the sibling is outside the folder
+    finally:
+        looks.close()
+        looks.idle(5)
+
+
+def test_skipping_a_folder_bumps_copy_dirty_so_the_connect_copy_carries_the_skip():
+    # why: the Connect copy takes the skipped folders only when copy_dirty moves, so a skip change must bump it
+    opener, data_dir, user_files_dir = _library()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    try:
+        folder = _source()
+        card = _with_card(folder)
+        _added(looks, folder)
+        store = _read_store(data_dir, user_files_dir)
+        try:
+            before = int(store._meta().get("copy_dirty") or 0)
+            store.skip_folder(card)
+            assert len(store.skipped_folders()) == 1                         # the skip landed, not just the bump
+            assert int(store._meta().get("copy_dirty") or 0) == before + 1
+            # why: Read again moves the skip too, so it must carry the copy just as the skip does
+            assert store.read_folder_again(store.skipped_folders()[0]["id"]) is True
+            assert store.skipped_folders() == []
+            assert int(store._meta().get("copy_dirty") or 0) == before + 2
+        finally:
+            store.close()
+    finally:
+        looks.close()
+        looks.idle(5)
+
+
+def test_a_folder_named_only_with_version_and_subtitle_words_is_a_versions_folder():
+    # why: "synced_subtitles" is another version of the episodes above (a versions folder), not a folder of its own
+    # that Surasura would list as a separate source. Glued with `_`, the subtitle word is kept (a bare "Subtitles" is
+    # stripped first by _FOLDER_MARKS), so only the subtitle-word rule places it.
+    from app.sources import _subtitle_folder
+    assert _subtitle_folder("synced_subtitles", "Show", "ja") == "versions"
+
+
+def test_a_stop_during_the_better_version_pass_ends_it_before_the_switch():
+    # a Stop asked during the better-version pass (`_switch_better`) must end the pass before the store is asked
+    # to switch anything — a stopped look keeps what it took in, and no switch starts after the Stop. The control
+    # half runs the same pass unstopped and sees the store asked, so the stopped half can't pass by asking nothing.
+    from types import SimpleNamespace
+    from app.sources import _Look
+
+    asked = []
+
+    def fake_switch(ids, stop=None):
+        asked.append(list(ids))
+        raise ls.StoreError("busy: the next look tries again")
+
+    store = SimpleNamespace(data_dir="unused", switch_versions=fake_switch)
+    stopped_look = _Look(store, "ja", None, False, None, lambda: True, False, None)
+    stopped_look.better = {"item-a"}
+    stopped_look._switch_better()
+    assert asked == [], "a Stop before the switch: the store is never asked"
+
+    running_look = _Look(store, "ja", None, False, None, lambda: False, False, None)
+    running_look.better = {"item-a"}
+    running_look._switch_better()
+    assert asked == [["item-a"]], "no Stop: the pass asks the store for the better version"
+
+
+def test_the_recorded_volume_is_refreshed_when_the_folder_can_be_read_and_kept_when_it_cannot(monkeypatch):
+    # why: a look records the volume its folder was read on (`dev`, which `reach` needs to tell gone from away);
+    # a read that works refreshes it, and a stat that fails keeps the one already recorded, never drops it
+    import sys
+    from app import sources
+    opener, data_dir, user_files_dir = _library()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    try:
+        folder = _source()
+        _added(looks, folder)
+        assert looks.idle(10)
+        store = _read_store(data_dir, user_files_dir)
+        try:
+            root = next(s["id"] for s in store.sources(all=True, counts=False) if s["path"] == folder)
+            meta = store.meta()
+        finally:
+            store.close()
+        stamp = (meta.get("store_id"), meta.get("epoch"))
+        cache = sources._load_cache("ja", stamp)
+        assert cache["roots"][str(root)]["dev"] == os.stat(folder).st_dev     # read fine: the volume is current
+        sentinel = 424242
+        cache["roots"][str(root)]["dev"] = sentinel
+        sources._save_cache("ja", cache)
+        real_stat = os.stat
+
+        def unreadable_folder(p, *args, **kwargs):             # the look's own stat of its folder (its `run`, the
+            # recorded volume's read) fails; the walk's stats still work, so the look reaches that record
+            if sys._getframe(1).f_code.co_name == "run" and os.path.abspath(str(p)) == os.path.abspath(folder):
+                raise OSError("the folder can't be read just now")
+            return real_stat(p, *args, **kwargs)
+
+        with monkeypatch.context() as patched:                 # scoped: the harness's own patches stay in place
+            patched.setattr(os, "stat", unreadable_folder)
+            _added(looks, folder)
+            assert looks.idle(10)
+        cache = sources._load_cache("ja", stamp)
+        assert cache["roots"][str(root)]["dev"] == sentinel                    # can't be read: the recorded one stays
+    finally:
+        looks.close()
+        looks.idle(5)

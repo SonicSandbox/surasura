@@ -2081,3 +2081,26 @@ def test_an_undo_with_no_parts_killed_between_its_tail_moves_and_restore_finishe
         for r in rows:
             assert store.item_id(r["rel_path"]) is not None
             assert os.path.isfile(os.path.join(data_dir, *r["rel_path"].split("/")))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+# why: an Undo of swapped parts skips a part the learner removed since and still puts every other part back to the old
+# edition; stopping at the removed part would leave the rest of the book on the new edition.
+def test_an_undo_of_swapped_parts_skips_a_removed_part_and_still_puts_the_others_back(language):
+    """Every old part changed in place (none dropped; a longer edition adds its extra parts at the end). The learner
+    removed the first part since; the Undo keeps that part removed and puts every other part back to the old edition's
+    bytes."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _epub(os.path.join(src, "Books", f"{_BOOKS[language]}.epub"), _chapters(language, "", 2), language)
+    with store:
+        root = store.add_source(src)
+        before, olds, _news, work = _switched(store, data_dir, language, src, root, more=2)
+        assert _items(store)[:len(before)] == before      # the switch dropped no old part; a longer edition adds at the end
+        now = _items(store)                               # the parts the store holds after the switch, not the old list
+        assert len(now) > 1
+        store.remove([now[0][0]])
+        assert _items(store) == now[1:]
+        store.undo_switch(work)
+        assert _items(store) == before[1:]
+        assert [_copy(data_dir, rel) for _i, rel in _items(store)] == olds[1:]

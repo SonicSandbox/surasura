@@ -967,3 +967,267 @@ def test_the_shells_open_folder_and_open_file_go_through_the_same_opener_on_a_wo
     assert wait_until(lambda: len(asked) == 2, 10)
     assert sorted(p for p, _t in asked) == sorted([logs, log])
     assert all(t is not threading.main_thread() for _p, t in asked)
+
+
+def test_a_watch_whose_drive_went_is_removed_from_the_held_watches(looks_world):
+    # why: a watch that ended (its drive went) must leave the held watches, or the watch thread keeps it and the
+    # folder is never watched again when the drive comes back; a watch that is still watching stays held.
+    looks, clock, _seen, _dirs = looks_world(kind="local")
+    answer = _added(looks, _source())
+    root = answer["root"]
+    watch = FakeWatch.made[0]
+    looks.set_shown(False)                                    # behind: the watch thread only notes its roots (no look
+                                                              # runs, so nothing else tidies the held watches)
+    assert looks._watches.get(root) is watch                  # held while its drive is there
+    watch.report()                                            # a report while still watching...
+    assert wait_until(lambda: root in looks._dirty, 5)        # ...is taken and noted by the watch thread
+    assert looks._watches.get(root) is watch                  # and the watch that is still watching stays held
+    looks._dirty.clear()
+    watch.state = "closed"                                    # the drive went: the watch has ended
+    watch.report()                                            # (wakes the watch thread to look at it)
+    assert wait_until(lambda: root in looks._dirty, 5)        # the watch thread has looked at it...
+    assert root not in looks._watches                         # ...and let the ended watch go
+
+
+def test_a_watch_started_while_the_looks_are_closing_is_closed_at_once(looks_world):
+    # why: a watch the window's close overtook while it was being set up is closed on the spot, never kept: a kept
+    # watch would outlive the window and keep reporting into it.
+    class ShutsAsItStarts(FakeWatch):
+        def start(self):
+            looks._closing.set()                       # the window shuts while this watch is being set up
+            return super().start()
+
+    looks, _clock, _seen, _dirs = looks_world(kind="local", watch=ShutsAsItStarts)
+    assert looks.add(_source(), lambda answer: None)
+    assert looks.idle(30)
+    assert len(FakeWatch.made) == 1
+    assert FakeWatch.made[0].state == "closed"
+    assert not looks._watches                          # never kept: nothing holds the closing window's watch
+
+
+def test_a_refresh_merged_into_a_held_focus_look_keeps_every_folder_and_raises_nothing(looks_world, monkeypatch):
+    # why: a focus look held for a folder a watch reported while the window was behind, then a Refresh folded into
+    # it: the merged look must read every folder (full), and folding the two asks together must not raise
+    looks, clock, _seen, _dirs = looks_world(kind="local")
+    _added(looks, _source())
+    gate, kws = threading.Event(), []
+    real = sources.scan
+
+    def slow(store, language, root, **kw):
+        kws.append(dict(kw))
+        gate.wait(10)
+        return real(store, language, root, **kw)
+    monkeypatch.setattr(sources, "scan", slow)
+    try:
+        assert looks.asked(focused=True)                      # the first look runs and holds the worker
+        looks.set_shown(False)
+        FakeWatch.made[0].report()
+        assert wait_until(lambda: bool(looks._dirty), 10)     # the watch's folder is recorded while the window is behind
+        looks.set_shown(True)
+        assert not looks.asked(focused=True)                  # its focus: that folder held for one more look
+        assert not looks.asked(refreshed=True)                # Refresh folded into it: still every folder, no error
+    finally:
+        gate.set()                                            # the worker is released even when an assert above failed
+    assert looks.idle(20)
+    assert looks.looks == 2
+    assert len(kws) == 2 and all(kw["full"] is True for kw in kws)
+
+
+def test_a_watch_folder_merged_into_a_held_refresh_keeps_every_folder_and_raises_nothing(looks_world, monkeypatch):
+    # why: the reverse order: a Refresh held first (every folder, so the held roots are None), then a watch's folder
+    # folded into it on the window's focus: the merge must not raise on None | set, and the merged look reads every
+    # folder (full)
+    looks, clock, _seen, _dirs = looks_world(kind="local")
+    _added(looks, _source())
+    gate, kws = threading.Event(), []
+    real = sources.scan
+
+    def slow(store, language, root, **kw):
+        kws.append(dict(kw))
+        gate.wait(10)
+        return real(store, language, root, **kw)
+    monkeypatch.setattr(sources, "scan", slow)
+    try:
+        assert looks.asked(focused=True)                      # the first look runs and holds the worker
+        assert not looks.asked(refreshed=True)                # Refresh held for one more look: every folder (roots None)
+        looks.set_shown(False)
+        FakeWatch.made[0].report()
+        assert wait_until(lambda: bool(looks._dirty), 10)     # the watch's folder is recorded while the window is behind
+        assert not looks.asked(focused=True)                  # its focus: that folder folded into the held Refresh
+    finally:
+        gate.set()                                            # the worker is released even when an assert above failed
+    assert looks.idle(20)
+    assert looks.looks == 2
+    assert len(kws) == 2 and all(kw["full"] is True for kw in kws)
+
+
+def test_a_watch_report_made_while_the_window_is_behind_waits_until_it_is_in_front(looks_world, scans):
+    # why: a folder that changed while the window was behind is looked at when the window comes to the front, not
+    # on the first focus event that happens to arrive while another program still has the window's place
+    looks, clock, _seen, _dirs = looks_world(kind="local")    # a local folder is the one Windows reports arrivals for
+    _added(looks, _source())
+    assert not looks.asked(shown=False)                       # behind another program: the window is not in front
+    scans.clear()
+    watch = FakeWatch.made[-1]
+    watch.report()                                            # Windows: a file arrived under the folder, behind the window
+    assert wait_until(lambda: not watch.pending, 10)          # the watch thread has taken the report
+    assert wait_until(lambda: bool(looks._dirty), 10)         # its quiet time has passed: the folder is kept for the focus
+    assert looks.idle(10)
+    assert not looks.asked(focused=True, shown=False)         # focus while still behind: nothing is looked at yet
+    assert looks.idle(10)
+    assert scans == []
+    assert looks.asked(focused=True, shown=True)              # in front: the report's folder is looked at now
+    assert looks.idle(10)
+    assert len(scans) == 1
+
+
+def test_a_full_look_asked_while_a_partial_one_runs_runs_full_after_it(looks_world, monkeypatch):
+    # why: a Refresh asked while a cadence look is still reading must read every folder once the running look ends;
+    # a partial follow-up skips the folders whose time did not move, so a learner's new episode in an unchanged folder
+    # would stay unread until the next look.
+    looks, clock, _seen, _dirs = looks_world()
+    _added(looks, _source())
+    gate, scans = threading.Event(), []
+    real = sources.scan
+
+    def slow(store, language, root, **kw):
+        # why: a stop callback is a new closure each look, so only the plain options are compared
+        scans.append((root, sorted((k, v) for k, v in kw.items() if not callable(v))))
+        gate.wait(10)
+        return real(store, language, root, **kw)
+    monkeypatch.setattr(sources, "scan", slow)
+    try:                                                      # the gate opens even when an assertion fails
+        assert looks.asked(focused=True)                      # a cadence look starts and waits at the gate
+        assert not looks.asked(refreshed=True)                # held: it runs full after the running look
+    finally:
+        gate.set()
+    assert looks.idle(20)
+    assert len(scans) == 2
+    assert looks.asked(refreshed=True)                        # an idle Refresh now: the reference for a full read
+    assert looks.idle(20)
+    assert len(scans) == 3
+    assert ("full", True) in scans[1][1]                      # the held Refresh reads full...
+    assert scans[1][1] == scans[2][1]                         # ...exactly as an idle Refresh does
+
+
+def test_a_held_full_look_merged_with_a_later_partial_ask_still_runs_full(looks_world, monkeypatch):
+    # why: a Refresh (full) held behind a running look must not be made partial by a watch's partial ask asked after it.
+    looks, clock, _seen, _dirs = looks_world(kind="local")
+    folder = _source()
+    _added(looks, folder)
+    gate, asks = threading.Event(), []
+    real = sources.scan
+
+    def slow(store, language, root, **kw):
+        asks.append(kw["full"])
+        gate.wait(10)
+        return real(store, language, root, **kw)
+    monkeypatch.setattr(sources, "scan", slow)
+    queued, real_queue = [], looks._queue
+
+    def record(full, roots):                                  # record each look offered to the worker, in order
+        queued.append(full)
+        return real_queue(full, roots)
+    monkeypatch.setattr(looks, "_queue", record)
+    try:                                                      # the gate opens even when an assertion fails: no worker left parked
+        assert looks.asked(refreshed=True)                    # a full look runs and waits at the gate
+        assert not looks.asked(refreshed=True)                # a full ask held behind it (folded, one more after it)
+        FakeWatch.made[0].report()                            # Windows: a file arrived: the watch's partial ask
+        assert wait_until(lambda: False in queued, 5)         # the partial ask has been folded into the held look
+        gate.set()
+        assert wait_until(lambda: len(asks) == 2, 10)
+        assert looks.idle(20)
+        assert asks == [True, True]                           # the look after it is still full
+    finally:
+        gate.set()
+
+
+def test_stop_takes_the_folder_out_of_the_followed_set(looks_world):
+    # why: a stopped folder must leave the followed set, or the watch keeps reading a folder the learner has stopped
+    looks, _clock, _seen, _dirs = looks_world(kind="local")   # only a local folder gets a watch to follow
+    answer = _added(looks, _source())
+    assert looks.asked(focused=True)                          # a look follows the folder
+    assert looks.idle(20)
+    assert answer["root"] in looks._watches                   # the folder is followed before the Stop
+    assert looks.stop(answer["root"], language="ja")
+    assert looks.idle(20)
+    assert answer["root"] not in looks._watches
+
+
+def test_stop_reading_clears_its_flag_so_the_folder_reads_again_when_added_back(looks_world, monkeypatch):
+    """Once *Stop reading* has answered, the folder's stop flag is gone, so a later read of it is not stopped."""
+    # why: `_stopping` holds the folder only while its stop runs; if the flag outlives the stop, a folder added back
+    # (its row turned on again) has its scan stopped at once, and nothing reports that it was never read.
+    looks, _clock, _seen, _dirs = looks_world()
+    answer = _added(looks, _source())
+    flags = []
+    real = sources.scan
+
+    def watched(store, language, root, **kw):
+        flags.append(kw["stop"]())
+        return real(store, language, root, **kw)
+    monkeypatch.setattr(sources, "scan", watched)
+    assert looks.stop(answer["root"], language="ja")
+    assert looks.idle(20)
+    flags.clear()
+    assert _added(looks, _source())
+    assert flags and not any(flags)                          # the re-added folder's read is not stopped
+
+
+def test_after_close_a_waiting_watch_pass_queues_nothing_for_the_window(looks_world, scans):
+    # why: a watch pass that wakes after the looks are closed must return at once; a window that is closing
+    # must not be queued a look (the drive went while the pass waited, so the pass would otherwise report it)
+    class Signalling(FakeWatch):
+        # the pass calls due() once it has taken its snapshot of the watches, then waits: that call is the sync point
+        def __init__(self, path, wake, start=True):
+            super().__init__(path, wake, start)
+            self.snapshotted = threading.Event()
+
+        def due(self):
+            self.snapshotted.set()
+            return super().due()
+
+    looks, _clock, _seen, _dirs = looks_world(kind="local", watch=Signalling)
+    folder = _source()
+    _added(looks, folder)
+    scans.clear()
+    queued = []
+    looks._queue = lambda *args, **kwargs: queued.append(args)   # a look queued for the window (its own method)
+    looks._dirty = set()
+    watch = FakeWatch.made[0]
+    watch.state = "ended"                                 # the drive went while the pass waits
+    assert watch.snapshotted.wait(5)                      # the pass has its snapshot and is waiting now
+    looks.close()
+    watch.report()                                        # wakes the waiting pass, now that the looks are closed
+    looks._watcher.join(5)                                # the pass has returned: nothing after this can still come
+    assert not looks._watcher.is_alive()
+    assert queued == [] and not looks._dirty
+    assert scans == []
+
+
+def test_a_new_watch_is_stored_only_once_the_watches_lock_is_free(looks_world):
+    # why: the closing flag is read and the watch stored under the watches lock, so a close cannot slip in between;
+    # a watch that finishes starting while the lock is held waits for it and is not stored until it is free.
+    entered, go = threading.Event(), threading.Event()
+
+    class GatedWatch(FakeWatch):
+        def start(self):
+            entered.set()
+            go.wait(5)
+            return super().start()
+
+    looks, _clock, _seen, _dirs = looks_world(kind="local", watch=GatedWatch)
+    answers = []
+    assert looks.add(_source(), answers.append)
+    assert entered.wait(5)
+    with looks._lock:
+        go.set()
+        assert wait_until(lambda: FakeWatch.made[-1].state == "watching", 5)   # the watch has finished starting
+        # why: storing is the very next step after the start returns, so a watch stored without the lock shows within
+        # this grace however loaded the machine (a wait on a condition can't stand in: the right answer is no change)
+        time.sleep(0.3)
+        assert looks._watches == {}
+        looks._closing.set()                                  # the close lands while the watch waits for the lock
+    assert wait_until(lambda: FakeWatch.made[-1].state == "closed", 5)   # closed, not stored: the flag was read under the lock
+    assert looks._watches == {}
+    assert looks.idle(30)

@@ -11,10 +11,12 @@ fincov root). Show names are made up; the texts are real Japanese / Chinese from
 """
 import json
 import os
+import stat
 
 import pytest
 
 from app import library_store as ls
+from app import sources
 from app.connect import library, videos
 from tests.test_library_store_support import LANGUAGES
 from tests.test_sources_scan import (_OURS, _SHOWS, _drive, _empty, _fresh_module_state, _library_files,  # noqa: F401
@@ -534,3 +536,256 @@ def test_never_read_this_folder_takes_an_item_whose_versions_lie_elsewhere(langu
         assert len(_versions(store)) == 1
         assert store.items_under(os.path.join(src, a)) == [item]
         assert [s.get("items") for s in store.sources() if s["id"] == second] in ([0], [None])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_unreadable_waiting_twin_is_no_guess_the_look_answers_none(language, monkeypatch):
+    """A same-name, same-size video in another folder is taken for a waiting item's moved copy only when the old copy
+    can be read and is gone. An old copy that can't be read is no guess: the look does not raise, and the moved copy
+    is taken in as a video of its own, a second item, while the waiting item stays unmatched."""
+    import sys
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][1]
+    src = _drive("driveA")
+    old = _video(os.path.join(src, a, f"{a} - 06.mkv"), body=b"\x1a\x45\xdf\xa3 episode six " * 3)
+    real_stat = os.stat
+    real_is_placeholder = ls.is_placeholder
+    old_path = os.path.abspath(old)
+    placeholder_mtime = [real_stat(old).st_mtime_ns]
+    # why: the first look reads the old copy as a cloud placeholder, so its waiting item records no video key and the
+    # moved copy's lookup reaches the old copy's stat, the one that must not be taken for a guess
+    monkeypatch.setattr(ls, "is_placeholder", lambda st: st.st_mtime_ns == placeholder_mtime[0] or real_is_placeholder(st))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        placeholder_mtime[0] = None
+
+        def unreadable_old(path, *args, **kwargs):
+            # only the app's own stat of the old copy is refused; every other read of the folder is real
+            if os.path.abspath(str(path)) == old_path and sys._getframe(1).f_code.co_filename.endswith("sources.py"):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", unreadable_old)
+        _video(os.path.join(src, a, "moved", f"{a} - 06.mkv"), body=b"\x1a\x45\xdf\xa3 episode vix " * 3)
+        _settle(src)
+        result = _look(store, language, root, full=True)
+        assert (result["added"], _items(store), result["waiting"]) == (1, 2, 0)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_one_epub_part_among_an_episodes_picks_makes_its_copies_unreadable(language):
+    """`_group_copies` (the reading behind Connect's other-subtitle list and the group switch): an episode whose picks
+    include ONE EPUB part (`<book>.epub#3`, a book's part, never a folder's episode) has no copies at all — None — even
+    when its other pick is an ordinary episode file."""
+    store, _data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, f"{a} - 04.{_OURS[language]}.srt"), _text(language, 4))
+    with store:
+        item = _look(store, language, store.add_source(src), first=True)["ids"][0]
+        with store._reading():
+            assert ls._group_copies(store, item) is not None           # the episode alone reads its copies
+        with store._writing():
+            store.conn.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                               ("src:book-part", item, json.dumps({"producer": "source",
+                                                                  "origin": os.path.join(src, "Book.epub#3")}),
+                                ls._now()))
+        with store._reading():
+            assert ls._group_copies(store, item) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_regular_file_where_a_source_folder_should_be_is_not_reached(language):
+    """A file where a source folder should be is no folder: its reach is never REACHED."""
+    # why: the look would otherwise read a file in place of the folder and take its listing as the show's.
+    from app import sources
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, a), _text(language, 1))
+    with store:
+        assert sources.reach(os.path.join(src, a)) != sources.REACHED
+
+
+# why: a video already recorded to one item is never attached to another known text of the folder when it is
+# found again later, even where the record holds no video key to tell the items apart (the scan's own claim is
+# the only guard then); the other text stays a record with no video, and the first keeps its own.
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_video_recorded_to_one_item_is_not_attached_to_a_second_item_later(language):
+    """A video recorded to an item's text (no video key on the record) is not attached to another known text of the
+    folder when it is found again — that text stays a record with no video, and the first keeps its video."""
+    store, data_dir = _empty(language)
+    a, b = _SHOWS[language][0], _SHOWS[language][1]
+    src = _drive("driveA")
+    ep = _write(os.path.join(src, a, f"{a} 第3話.{_OURS[language]}.srt"), _text(language, 3))
+    plain = _write(os.path.join(src, a, f"{b} 第3話.{_OURS[language]}.srt"), _text(language, 9))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        video = _video(os.path.join(src, a, f"[Grp] {a} - 03 (1080p).mkv"))
+        _settle(src)
+        rec = _record(store, ep)
+        rec.update(video_path=os.path.abspath(video), video_size=os.path.getsize(video))   # recorded, no video_key
+        with store._writing():
+            store.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                               (json.dumps(rec), ls.origin_key(ep)))
+        _look(store, language, root)
+        assert (_record(store, ep) or {}).get("video_path") == os.path.abspath(video)
+        second = _record(store, plain)
+        assert second is not None and second.get("video_path") is None   # a record, never given the first's video
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_waiting_videos_read_takes_the_store_reader_guard(language):
+    # why: the look reads the waiting items inside the store's reader guard, so no writer changes the
+    # waiting set while it is read: every read of the waiting videos happens with the guard held.
+    import contextlib
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][1]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, f"{a} 第3話.{_OURS[language]}.srt"), _text(language, 3))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        _video(os.path.join(src, a, f"[Grp] {a} - 03 (1080p).mkv"))
+        _settle(src)
+        real_reading, real_waiting = store._reading, store._waiting_videos
+        depth, seen = [0], []
+
+        @contextlib.contextmanager
+        def guard():
+            depth[0] += 1
+            try:
+                with real_reading():
+                    yield
+            finally:
+                depth[0] -= 1
+
+        def waiting(*args, **kwargs):
+            seen.append(depth[0] > 0)
+            return real_waiting(*args, **kwargs)
+
+        store._reading, store._waiting_videos = guard, waiting
+        try:
+            _look(store, language, root)
+        finally:
+            store._reading, store._waiting_videos = real_reading, real_waiting
+        assert seen and all(seen)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_changed_while_it_is_copied_is_never_accepted(language, monkeypatch):
+    """A subtitle whose bytes change while it is being copied is dropped, not recorded: that look copies
+    nothing, and once the file settles the next look copies it."""
+    # why: a copy taken while the original changes may match neither the old nor the new bytes, so it must never count.
+    from app import sources
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][1]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, f"{a} 第3話.{_OURS[language]}.srt"), _text(language, 3))
+    sub = os.path.join(src, a, f"{a} 第4話.{_OURS[language]}.srt")
+    _write(sub, _text(language, 4))
+    _video(os.path.join(src, a, f"[Grp] {a} - 04 (1080p).mkv"))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        old = _sha(sub)
+        # why: a new subtitle is copied from memory, never through `_copy_part`; only a recorded one that changes is re-copied through it.
+        assert _record(store, sub)["sha256"] == old
+        _write(sub, _text(language, 4, " edited, a little longer than it was"))
+        _settle(src)
+        real_copy = sources._copy_part
+
+        changed = []
+
+        def copy_then_change(path, part, size):
+            digest = real_copy(path, part, size)
+            if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(sub)):
+                _write(sub, _text(language, 4, " changed while it was being copied, a little longer"))
+                changed.append(sub)
+            return digest
+
+        monkeypatch.setattr(sources, "_copy_part", copy_then_change)
+        # why: the hook writes the subtitle during this look, which `_look`'s no-write guard would reject; the test's own
+        # write is the change under test, so this look calls `sources.scan` directly.
+        assert sources.scan(store, language, root)["recopied"] == 0
+        # why: the hook must have fired, or the look proves nothing; and the copy taken while the bytes changed is never on record.
+        assert changed == [sub] and _record(store, sub)["sha256"] == old
+        monkeypatch.setattr(sources, "_copy_part", real_copy)
+        _settle(src)
+        # why: a recorded subtitle whose new bytes settle is a re-copy, so `recopied` counts it once.
+        assert _look(store, language, root)["recopied"] == 1
+        assert _record(store, sub)["sha256"] == _sha(sub)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_waiting_items_for_one_episode_the_first_listed_is_kept(language):
+    """(PROVISIONAL) Of two items waiting for the text of one episode, the one listed first is the one that
+    waits — a later item never replaces it (`_waits` keeps the first by `setdefault`). Built on a bare look so
+    both origins sit in the listed order a look would hold them in."""
+    from types import SimpleNamespace
+    from app import sources
+    a = _SHOWS[language][0]
+    # The listed-first origin is deliberately the one that sorts LAST by name, has the HIGHER item_id, and sits under
+    # the key that sorts last, so a rule of "smallest id", "smallest name" or "smallest key" would not pass.
+    first_name, second_name = f"[B] {a} - 05 (720p).mkv", f"[A] {a} - 05 (1080p).mkv"
+    look = sources._Look.__new__(sources._Look)
+    look.language, look.years, look.origin_years, look.by_show = language, {}, {}, None
+    look.origins = {
+        "zeta": SimpleNamespace(origin=first_name, rel_path=f"{ls.CONTENT_FOLDER}/{a}/{first_name}",
+                                availability="waiting", version=None, item_id=102),
+        "alpha": SimpleNamespace(origin=second_name, rel_path=f"{ls.CONTENT_FOLDER}/{a}/{second_name}",
+                                 availability="waiting", version=None, item_id=101),
+    }
+    key = look._episode_key(first_name, a)
+    assert key is not None and look._episode_key(second_name, a) == key
+    assert look._waits(a) == {key: 102}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_of_two_videos_for_one_episode_the_better_ranked_is_kept_not_the_name_first(language):
+    """Two videos of one episode with no subtitle: the one ranked first (here the larger, the name-later file)
+    waits as the item; the name-first smaller file is dropped, not waiting beside it."""
+    # why: the waiting video kept per episode is the better-ranked one (rank, not name order)
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    folder = os.path.join(src, a)
+    small = os.path.join(folder, f"[AAA] {a} - 01 (1080p).mkv")
+    large = os.path.join(folder, f"[ZZZ] {a} - 01 (1080p).mkv")
+    _video(small, body=b"fake matroska small")
+    _video(large, body=b"fake matroska " + b"large " * 40)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        rows = store.conn.execute("SELECT rel_path FROM items WHERE availability = 'waiting'").fetchall()
+        assert len(rows) == 1
+        assert [os.path.basename(r[0]) for r in rows] == [os.path.basename(large)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_cloud_placeholder_is_never_matched_to_a_waiting_item_by_its_content(language, monkeypatch):
+    """A cloud placeholder's content is never read to find its waiting item, whatever its size. The video is
+    renamed (same bytes, same size) and now a placeholder: its name matches no waiting item, so it is a new item."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    old = os.path.join(src, a, f"{a} - 01.mkv")
+    _video(old)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
+        os.rename(old, os.path.join(src, a, f"{a} - 02.mkv"))
+        # why: a placeholder is never read, so its bytes must not match the waiting video even at its recorded size;
+        # only files are placeholders here (a folder patched too would never be listed, and the video with it)
+        monkeypatch.setattr(ls, "is_placeholder", lambda st: stat.S_ISREG(st.st_mode))
+        # why: record every content read during the second look; the renamed placeholder must never be among them
+        renamed = os.path.join(src, a, f"{a} - 02.mkv")
+        reads = []
+        read_content = sources._Look._content_key
+        monkeypatch.setattr(sources._Look, "_content_key",
+                            lambda self, p: (reads.append(p), read_content(self, p))[1])
+        _look(store, language, root, full=True)
+        assert not any(os.path.normcase(p) == os.path.normcase(renamed) for p in reads)
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2

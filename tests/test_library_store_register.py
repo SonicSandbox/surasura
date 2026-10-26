@@ -357,3 +357,31 @@ def test_a_waiting_video_is_found_by_its_pairings_video_keys_too(language):
             assert store._waiting_video("v1-no-such-content", pairing) == 7, key
     finally:
         store.close()
+
+
+def test_two_unreadable_files_are_never_the_same_file(tmp_path):
+    """An unreadable file has no hash: `_sha_once` stores None for it, and `holding()` guards its duplicate check with
+    `mine is not None`, so two unreadable files (None == None) are never taken as one file. None (not an empty string)
+    keeps an unreadable hash distinguishable from a real empty-file hash."""
+    # why: without the guard in holding(), two missing files of the same size would match each other.
+    hashes = {}
+    gone_a = str(tmp_path / "gone-a.srt")
+    gone_b = str(tmp_path / "gone-b.srt")
+    assert ls._sha_once(hashes, gone_a) is None
+    assert ls._sha_once(hashes, gone_b) is None
+    assert hashes[gone_a] is None and hashes[gone_b] is None, "the unreadable hash stays None, never an empty string"
+    # the rule itself: holding() never matches two unreadable files, in either direction
+    data_dir = str(tmp_path)
+    assert ls.holding(data_dir, [(gone_a, 5)], {5: [(1, "gone-b.srt", "b")]}) == {}
+    assert ls.holding(data_dir, [(gone_b, 5)], {5: [(1, "gone-a.srt", "a")]}) == {}
+    readable = tmp_path / "here.srt"
+    readable.write_bytes(b"1\n")
+    assert ls.holding(data_dir, [(str(readable), 2)], {2: [(1, "gone-a.srt", "a")]}) == {}
+    assert ls.holding(data_dir, [(gone_a, 2)], {2: [(1, "here.srt", "h")]}) == {}
+    # positive control: two readable files with the same bytes DO match, so the empty results above are the guard's
+    # effect and not a holding() that never matches anything
+    twin_a = tmp_path / "twin-a.srt"
+    twin_b = tmp_path / "twin-b.srt"
+    twin_a.write_bytes(b"1\n")
+    twin_b.write_bytes(b"1\n")
+    assert ls.holding(data_dir, [(str(twin_a), 2)], {2: [(1, "twin-b.srt", "t")]}) == {str(twin_a): (1, "t")}

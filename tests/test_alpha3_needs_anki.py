@@ -180,6 +180,20 @@ def test_a_waits_hover_names_its_click_once_whatever_its_colour(kind, reason):
     assert name == "mine-now" and tip.count("Click") == 1, tip
 
 
+def test_open_anki_still_starts_anki_on_its_own_choice_when_the_profile_lookup_fails(monkeypatch):
+    # why: Open Anki is the user's press; a profile lookup that raises must fall back to no profile, not stop the start.
+    from app.connect import open_anki, setup
+    started = []
+
+    def broken_lookup():
+        raise RuntimeError("profile file unreadable")
+    monkeypatch.setattr(open_anki, "start", lambda profile=None: started.append(profile) or object())
+    monkeypatch.setattr(setup, "anki_profile", broken_lookup)
+    monkeypatch.setattr(open_anki, "running", lambda: False)
+    assert open_anki.for_you({}, after=lambda settings: None) is True and started == [None], \
+        "a failed profile lookup starts Anki with no profile"
+
+
 def test_with_anki_closed_the_line_gives_the_closed_reason_even_when_another_wait_is_commoner():
     # why: with Anki closed the amber line keeps Anki's closed reason, not the commonest wait (a permission prompt here)
     entry, = _anki_entries(_record(anki_session.UNUSABLE, anki_session.UNUSABLE, runner.ANKI_CLOSED, openable=True))

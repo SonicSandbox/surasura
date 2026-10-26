@@ -969,6 +969,42 @@ def test_the_shells_open_folder_and_open_file_go_through_the_same_opener_on_a_wo
     assert all(t is not threading.main_thread() for _p, t in asked)
 
 
+def test_a_watch_whose_drive_went_is_removed_from_the_held_watches(looks_world):
+    # why: a watch that ended (its drive went) must leave the held watches, or the watch thread keeps it and the
+    # folder is never watched again when the drive comes back; a watch that is still watching stays held.
+    looks, clock, _seen, _dirs = looks_world(kind="local")
+    answer = _added(looks, _source())
+    root = answer["root"]
+    watch = FakeWatch.made[0]
+    looks.set_shown(False)                                    # behind: the watch thread only notes its roots (no look
+                                                              # runs, so nothing else tidies the held watches)
+    assert looks._watches.get(root) is watch                  # held while its drive is there
+    watch.report()                                            # a report while still watching...
+    assert wait_until(lambda: root in looks._dirty, 5)        # ...is taken and noted by the watch thread
+    assert looks._watches.get(root) is watch                  # and the watch that is still watching stays held
+    looks._dirty.clear()
+    watch.state = "closed"                                    # the drive went: the watch has ended
+    watch.report()                                            # (wakes the watch thread to look at it)
+    assert wait_until(lambda: root in looks._dirty, 5)        # the watch thread has looked at it...
+    assert root not in looks._watches                         # ...and let the ended watch go
+
+
+def test_a_watch_started_while_the_looks_are_closing_is_closed_at_once(looks_world):
+    # why: a watch the window's close overtook while it was being set up is closed on the spot, never kept: a kept
+    # watch would outlive the window and keep reporting into it.
+    class ShutsAsItStarts(FakeWatch):
+        def start(self):
+            looks._closing.set()                       # the window shuts while this watch is being set up
+            return super().start()
+
+    looks, _clock, _seen, _dirs = looks_world(kind="local", watch=ShutsAsItStarts)
+    assert looks.add(_source(), lambda answer: None)
+    assert looks.idle(30)
+    assert len(FakeWatch.made) == 1
+    assert FakeWatch.made[0].state == "closed"
+    assert not looks._watches                          # never kept: nothing holds the closing window's watch
+
+
 def test_a_refresh_merged_into_a_held_focus_look_keeps_every_folder_and_raises_nothing(looks_world, monkeypatch):
     # why: a focus look held for a folder a watch reported while the window was behind, then a Refresh folded into
     # it: the merged look must read every folder (full), and folding the two asks together must not raise

@@ -508,3 +508,53 @@ def test_K3_a_split_with_one_part_already_in_copies_and_adds_only_the_new_parts(
     assert (added, why) == (True, None)
     assert os.listdir(os.path.join(data_dir, ls.CONTENT_FOLDER, "旅の本")) == ["旅の本_02.txt"]
     assert "Library/旅の本/旅の本_02.txt" in _paths("ja", "soon") + _paths("ja", "now")
+
+
+def test_a_file_that_vanishes_before_its_stat_is_skipped_and_the_rest_are_still_answered(tmp_path):
+    """A part listed but gone by the time the sizes are read is no error: it is passed over, and the files still
+    there are answered as held by the item they match."""
+    # why: a file removed between the folder listing and its stat must not raise and abort the whole twin check.
+    data_dir, _uf = _store_library("ja")
+    store = _open("ja")
+    try:
+        item_id, entry, _a = store.ordered("now")[0]
+        present = os.path.join(data_dir, *entry["physical_path"].split("/"))
+    finally:
+        store.close()
+    # a twin of the item's file, outside the library, so its own row is never the match
+    twin = tmp_path / "旅の本_twin.txt"
+    with open(present, "rb") as f:
+        twin.write_bytes(f.read())
+    gone = str(tmp_path / "旅の本_vanished.txt")          # listed, never created: its stat raises
+    store = _open("ja")
+    try:
+        held = store.items_holding([gone, str(twin)])
+    finally:
+        store.close()
+    assert set(held) == {str(twin)}
+    assert held[str(twin)][0] == item_id
+
+
+def test_a_file_that_vanishes_before_its_stat_is_skipped_and_the_rest_are_still_answered(tmp_path):
+    """A part listed but gone by the time the sizes are read is no error: it is passed over, and the files still
+    there are answered as held by the item they match."""
+    # why: a file removed between the folder listing and its stat must not raise and abort the whole twin check.
+    data_dir, _uf = _store_library("ja")
+    store = _open("ja")
+    try:
+        item_id, entry, _a = store.ordered("now")[0]
+        present = os.path.join(data_dir, *entry["physical_path"].split("/"))
+    finally:
+        store.close()
+    # a twin of the item's file, outside the library, so its own row is never the match
+    twin = tmp_path / "旅の本_twin.txt"
+    with open(present, "rb") as f:
+        twin.write_bytes(f.read())
+    gone = str(tmp_path / "旅の本_vanished.txt")          # listed, never created: its stat raises
+    store = _open("ja")
+    try:
+        held = store.items_holding([gone, str(twin)])
+    finally:
+        store.close()
+    assert set(held) == {str(twin)}
+    assert held[str(twin)][0] == item_id

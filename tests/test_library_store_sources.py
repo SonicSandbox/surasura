@@ -1608,6 +1608,49 @@ def test_take_in_marks_only_its_own_items_live_records(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_busy_store_while_the_back_list_is_handed_over_is_tolerated_and_the_list_is_cleared(language, monkeypatch):
+    """D5: the store is busy when the known originals are listed in their old place again. The look must not crash
+    (a busy store is tolerated), the back list is cleared, the mark is kept (nothing is lost), and the next look
+    hands the same original over again and the mark comes off. Why the real store with one patched call: the busy
+    path is the look's own handling of StoreBusy, and the recovery is only real if the store still holds what the
+    next look needs."""
+    from app import sources
+
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        f = _found(language, data_dir, src, w[69], "ep1.srt", 1)
+        g = _found(language, data_dir, src, w[70], "ep2.srt", 2)
+        first = store.take_in(root, [f, g], first=True).recorded[os.path.abspath(f["origin"])]
+        h = _found(language, data_dir, src, w[69], "moved/ep1.srt", 1, copy=False, item_id=first,
+                   moved_from=[ls.path_key(os.path.abspath(f["origin"]))])
+        store.take_in(root, [h])
+        assert _moved_to(store, f["origin"]) is not None
+        origin = os.path.abspath(f["origin"])
+
+        real_origins_back = store.origins_back
+
+        def busy(paths):
+            raise ls.StoreBusy("the store is busy")
+
+        monkeypatch.setattr(store, "origins_back", busy)
+        look = sources._Look(store, language, root, first=False, progress=None, stop=None, full=False, rules=None)
+        look.back = [origin]
+        look._back()
+        assert look.back == [], "a busy store must not leave the back list to be retried inside this look"
+        assert _moved_to(store, f["origin"]) is not None, "a busy store must keep the mark for the next look"
+
+        monkeypatch.setattr(store, "origins_back", real_origins_back)
+        next_look = sources._Look(store, language, root, first=False, progress=None, stop=None, full=False, rules=None)
+        next_look.back = [origin]
+        next_look._back()
+        assert next_look.back == []
+        assert _moved_to(store, f["origin"]) is None, "the next look hands the original over and its mark comes off"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_numbered_name_with_same_size_other_bytes_gets_a_new_name(language):
     # why: a file at the target name counts as the copy already there only with the same bytes (sha256); a different
     # file of the same size must take the next free name, never be re-used as the copy.

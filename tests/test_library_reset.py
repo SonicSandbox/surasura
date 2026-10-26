@@ -809,3 +809,105 @@ def test_a_group_and_its_name_go_with_the_library_and_nothing_queued_or_undone_b
         assert copy.execute("SELECT kind, title FROM pieces WHERE id = ?", (group,)).fetchone() == ("group", title)
     finally:
         copy.close()
+
+
+def test_a_restore_never_overwrites_a_file_that_came_back_at_the_original_path(tmp_path):
+    # why: a put-back of a single file over one already at the original path leaves that file as it is; the backup's
+    # copy is written only where nothing is, so a file that came back by hand is never replaced by the older backup
+    src, dst = tmp_path / "data" / "Library" / "Show" / "01.srt", tmp_path / "backup" / "Show" / "01.srt"
+    src.parent.mkdir(parents=True)
+    dst.parent.mkdir(parents=True)
+    src.write_text(_text("ja", 1), encoding="utf-8")     # came back at the original path
+    dst.write_text(_text("ja", 2), encoding="utf-8")     # the backup's copy, older
+    ls._put_back(str(dst), str(src))
+    assert src.read_text(encoding="utf-8") == _text("ja", 1)
+    assert dst.read_text(encoding="utf-8") == _text("ja", 2)
+
+
+def test_a_single_file_set_aside_is_copied_checked_then_its_original_is_removed(tmp_path, monkeypatch):
+    # why: a single file set aside across volumes (rename refused) is copied, every byte checked, then the original
+    # is removed; a left-behind original would be walked back into the library by the disk sync
+    src = tmp_path / "data" / "ja" / "第一話.srt"
+    src.parent.mkdir(parents=True)
+    content = "1\n00:00:01,000 --> 00:00:02,000\n桜の下で待っていた\n".encode("utf-8")
+    src.write_bytes(content)
+    dst = tmp_path / "backup" / "data" / "第一話.srt"
+    real = os.rename
+
+    def no_rename(a, b, *args, **kw):
+        if os.path.abspath(a) == os.path.abspath(str(src)):
+            raise OSError(18, "Invalid cross-device link")
+        return real(a, b, *args, **kw)
+    monkeypatch.setattr(ls.os, "rename", no_rename)
+    left = ls._set_aside(str(src), str(dst))
+    assert left == []
+    assert dst.read_bytes() == content
+    assert not src.exists(), "the checked original is removed, not left beside the library"
+
+
+def test_a_single_file_set_aside_is_copied_checked_then_its_original_is_removed(tmp_path, monkeypatch):
+    # why: a single file set aside across volumes (rename refused) is copied, every byte checked, then the original
+    # is removed; a left-behind original would be walked back into the library by the disk sync
+    src = tmp_path / "data" / "ja" / "第一話.srt"
+    src.parent.mkdir(parents=True)
+    content = "1\n00:00:01,000 --> 00:00:02,000\n桜の下で待っていた\n".encode("utf-8")
+    src.write_bytes(content)
+    dst = tmp_path / "backup" / "data" / "第一話.srt"
+    real = os.rename
+
+    def no_rename(a, b, *args, **kw):
+        if os.path.abspath(a) == os.path.abspath(str(src)):
+            raise OSError(18, "Invalid cross-device link")
+        return real(a, b, *args, **kw)
+    monkeypatch.setattr(ls.os, "rename", no_rename)
+    left = ls._set_aside(str(src), str(dst))
+    assert left == []
+    assert dst.read_bytes() == content
+    assert not src.exists(), "the checked original is removed, not left beside the library"
+
+
+def test_a_restore_never_overwrites_a_file_that_came_back_at_the_original_path(tmp_path):
+    # why: a put-back of a single file over one already at the original path leaves that file as it is; the backup's
+    # copy is written only where nothing is, so a file that came back by hand is never replaced by the older backup
+    src, dst = tmp_path / "data" / "Library" / "Show" / "01.srt", tmp_path / "backup" / "Show" / "01.srt"
+    src.parent.mkdir(parents=True)
+    dst.parent.mkdir(parents=True)
+    src.write_text(_text("ja", 1), encoding="utf-8")     # came back at the original path
+    dst.write_text(_text("ja", 2), encoding="utf-8")     # the backup's copy, older
+    ls._put_back(str(dst), str(src))
+    assert src.read_text(encoding="utf-8") == _text("ja", 1)
+    assert dst.read_text(encoding="utf-8") == _text("ja", 2)
+
+
+def test_a_single_file_set_aside_is_copied_checked_then_its_original_is_removed(tmp_path, monkeypatch):
+    # why: a single file set aside across volumes (rename refused) is copied, every byte checked, then the original
+    # is removed; a left-behind original would be walked back into the library by the disk sync
+    src = tmp_path / "data" / "ja" / "第一話.srt"
+    src.parent.mkdir(parents=True)
+    content = "1\n00:00:01,000 --> 00:00:02,000\n桜の下で待っていた\n".encode("utf-8")
+    src.write_bytes(content)
+    dst = tmp_path / "backup" / "data" / "第一話.srt"
+    real = os.rename
+
+    def no_rename(a, b, *args, **kw):
+        if os.path.abspath(a) == os.path.abspath(str(src)):
+            raise OSError(18, "Invalid cross-device link")
+        return real(a, b, *args, **kw)
+    monkeypatch.setattr(ls.os, "rename", no_rename)
+    left = ls._set_aside(str(src), str(dst))
+    assert left == []
+    assert dst.read_bytes() == content
+    assert not src.exists(), "the checked original is removed, not left beside the library"
+
+
+def test_a_restore_never_overwrites_a_file_that_came_back_at_the_original_path(tmp_path):
+    # why: a put-back of a single file over one already at the original path leaves that file as it is; the backup's
+    # copy is written only where nothing is, so a file that came back by hand is never replaced by the older backup
+    src, dst = tmp_path / "data" / "Library" / "Show" / "01.srt", tmp_path / "backup" / "Show" / "01.srt"
+    src.parent.mkdir(parents=True)
+    dst.parent.mkdir(parents=True)
+    src.write_text(_text("ja", 1), encoding="utf-8")     # came back at the original path
+    dst.write_text(_text("ja", 2), encoding="utf-8")     # the backup's copy, older
+    ls._put_back(str(dst), str(src))
+    assert src.read_text(encoding="utf-8") == _text("ja", 1)
+    assert dst.read_text(encoding="utf-8") == _text("ja", 2)

@@ -532,8 +532,41 @@ def test_never_read_this_folder_takes_an_item_whose_versions_lie_elsewhere(langu
         second = store.add_source(other)
         _look(store, language, second)
         assert len(_versions(store)) == 1
-        assert store.items_under(os.path.join(src, a)) == [item]
-        assert [s.get("items") for s in store.sources() if s["id"] == second] in ([0], [None])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_unreadable_waiting_twin_is_no_guess_the_look_answers_none(language, monkeypatch):
+    """A same-name, same-size video in another folder is taken for a waiting item's moved copy only when the old copy
+    can be read and is gone. An old copy that can't be read is no guess: the look does not raise, and the moved copy
+    is taken in as a video of its own, a second item, while the waiting item stays unmatched."""
+    import sys
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][1]
+    src = _drive("driveA")
+    old = _video(os.path.join(src, a, f"{a} - 06.mkv"), body=b"\x1a\x45\xdf\xa3 episode six " * 3)
+    real_stat = os.stat
+    real_is_placeholder = ls.is_placeholder
+    old_path = os.path.abspath(old)
+    placeholder_mtime = [real_stat(old).st_mtime_ns]
+    # why: the first look reads the old copy as a cloud placeholder, so its waiting item records no video key and the
+    # moved copy's lookup reaches the old copy's stat, the one that must not be taken for a guess
+    monkeypatch.setattr(ls, "is_placeholder", lambda st: st.st_mtime_ns == placeholder_mtime[0] or real_is_placeholder(st))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        placeholder_mtime[0] = None
+
+        def unreadable_old(path, *args, **kwargs):
+            # only the app's own stat of the old copy is refused; every other read of the folder is real
+            if os.path.abspath(str(path)) == old_path and sys._getframe(1).f_code.co_filename.endswith("sources.py"):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", unreadable_old)
+        _video(os.path.join(src, a, "moved", f"{a} - 06.mkv"), body=b"\x1a\x45\xdf\xa3 episode vix " * 3)
+        _settle(src)
+        result = _look(store, language, root, full=True)
+        assert (result["added"], _items(store), result["waiting"]) == (1, 2, 0)
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

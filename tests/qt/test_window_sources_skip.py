@@ -205,3 +205,45 @@ def test_a_stop_during_the_better_version_pass_ends_it_before_the_switch():
     running_look.better = {"item-a"}
     running_look._switch_better()
     assert asked == [["item-a"]], "no Stop: the pass asks the store for the better version"
+
+
+def test_the_recorded_volume_is_refreshed_when_the_folder_can_be_read_and_kept_when_it_cannot(monkeypatch):
+    # why: a look records the volume its folder was read on (T6, `dev`, which `reach` needs to tell gone from away);
+    # a read that works refreshes it, and a stat that fails keeps the one already recorded, never drops it
+    import sys
+    from app import sources
+    opener, data_dir, user_files_dir = _library()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    try:
+        folder = _source()
+        _added(looks, folder)
+        assert looks.idle(10)
+        store = _read_store(data_dir, user_files_dir)
+        try:
+            root = next(s["id"] for s in store.sources(all=True, counts=False) if s["path"] == folder)
+            meta = store.meta()
+        finally:
+            store.close()
+        stamp = (meta.get("store_id"), meta.get("epoch"))
+        cache = sources._load_cache("ja", stamp)
+        assert cache["roots"][str(root)]["dev"] == os.stat(folder).st_dev     # read fine: the volume is current
+        sentinel = 424242
+        cache["roots"][str(root)]["dev"] = sentinel
+        sources._save_cache("ja", cache)
+        real_stat = os.stat
+
+        def unreadable_folder(p, *args, **kwargs):             # the look's own stat of its folder (its `run`, the
+            # recorded volume's read) fails; the walk's stats still work, so the look reaches that record
+            if sys._getframe(1).f_code.co_name == "run" and os.path.abspath(str(p)) == os.path.abspath(folder):
+                raise OSError("the folder can't be read just now")
+            return real_stat(p, *args, **kwargs)
+
+        with monkeypatch.context() as patched:                 # scoped: the harness's own patches stay in place
+            patched.setattr(os, "stat", unreadable_folder)
+            _added(looks, folder)
+            assert looks.idle(10)
+        cache = sources._load_cache("ja", stamp)
+        assert cache["roots"][str(root)]["dev"] == sentinel                    # can't be read: the recorded one stays
+    finally:
+        looks.close()
+        looks.idle(5)

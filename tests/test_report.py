@@ -519,6 +519,51 @@ def test_scrub_counts_every_content_key_and_blanks_secrets_at_any_depth():
                    "nested": {"api_key": core.BLANKED, "title": core.BLANKED, "made_today": 3}}
 
 
+def test_a_results_subfolder_named_like_a_secret_is_left_out_with_its_files(root, tmp_path):
+    # why: a folder named like a secret (api_key) can hold a key in its files; the folder's name alone must drop the
+    # whole folder, its files included, while an ordinary folder beside it still goes in.
+    results = os.path.join(path_utils.get_user_data_path(), "results")
+    secret_dir = os.path.join(results, "api_key_notes")
+    plain_dir = os.path.join(results, "plain")
+    os.makedirs(secret_dir, exist_ok=True)
+    os.makedirs(plain_dir, exist_ok=True)
+    with open(os.path.join(secret_dir, "notes.txt"), "w", encoding="utf-8") as f:
+        f.write("sk-folder-secret")
+    with open(os.path.join(plain_dir, "keep.txt"), "w", encoding="utf-8") as f:
+        f.write("進撃の巨人 第3話")
+    core.save(JA_WHAT)
+    _p, files = _zip(tmp_path, root=root)
+    assert not any(n.startswith("results/api_key_notes") for n in files)
+    assert b"sk-folder-secret" not in b"".join(files.values())
+    assert "進撃の巨人 第3話".encode("utf-8") in b"".join(files.values())
+
+
+def test_a_ledger_missing_its_batches_and_outcomes_tables_still_gives_its_jobs_and_meta(root, tmp_path):
+    # why: an older or damaged ledger without its batches / outcomes tables still gives the rest of the ledger.
+    from app.connect import ledger as book
+    core.save(JA_WHAT, JA_EXPECTED, [PNG])                 # the zip needs at least one saved report
+    job = _ledger_with_a_sentence()
+    conn = sqlite3.connect(book.path())
+    try:
+        conn.execute("DROP TABLE batches")
+        conn.execute("DROP TABLE outcomes")
+        conn.commit()
+    finally:
+        conn.close()
+    _p, files = _zip(tmp_path)
+    ledger = json.loads(files["connect/ledger.json"])
+    assert [j["id"] for j in ledger["jobs"]] == [job]
+    assert ledger["meta"]["schema"] == str(book.SCHEMA) and "uid" in ledger["meta"]
+
+
+def test_a_note_for_a_report_that_is_not_there_is_refused_by_its_id(root):
+    # why: a note sent for a report the list no longer has (deleted, or never saved) must fail loudly, never vanish.
+    missing = "20261024-210000-abcdef"
+    with pytest.raises(FileNotFoundError, match=missing):
+        core.add_note(missing, "重启以后又出现了一次")
+    assert core.listed() == [] and os.listdir(root) == []
+
+
 def test_a_cloud_placeholder_in_the_logs_is_left_out_and_said(root, tmp_path, monkeypatch):
     # why: a file the cloud has not downloaded must not be read into the zip; it is left out and the manifest says why.
     logs = os.path.join(path_utils.get_local_data_path(), "logs")

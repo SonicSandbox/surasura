@@ -21,8 +21,9 @@ from app.services import moves as M
 from tests import services_helpers as h
 from tests.fixtures import window_seed
 from tests.test_services_chores import _make as _make_chores, indexing_on  # noqa: F401 (a fixture)
-from tests.test_services_moves import (WORDS, Recorder, _engine_from_scratch, _in_order, big,  # noqa: F401
-                                       lib, make_writer, write_plan)
+from tests.test_services_moves import (WORDS, LockHolder, Recorder, _engine_from_scratch, _in_order,  # noqa: F401
+                                       _two_titles, big, journal, journalled, lib, make_writer, short_lock_wait,
+                                       write_plan)
 
 BENCH = os.environ.get("SURASURA_STORE_BENCH") == "1"
 
@@ -383,3 +384,56 @@ def test_W1_the_numbers_verdict_signs_the_watched_episodes_as_the_host_does(lib,
     assert "reference" not in seen[0] and len(want) == 1
     assert seen[1]["reference"] == analyzer.run_signature_parts(lib.language, [], analyzer.parse_analysis_args(
         ["--language", lib.language]), want)["reference"]
+
+
+def _items_of_piece(store, piece_id):
+    return [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id", (piece_id,))]
+
+
+def test_L10_an_ungroup_queued_before_a_crash_is_checked_against_the_group_it_met(lib, make_writer, short_lock_wait):
+    """An Ungroup queued while the library was busy, then a crash, then another program took an episode out of that
+    group: the replay sees the group changed since the click and lets the Ungroup go (the group and its episodes stay
+    as the other program left them). Ungroup goes through the moves guard like group and add_to_group do, so its
+    as-queued state is journalled and compared at the replay."""
+    store = lib.store
+    pa, ma, pb, mb = _two_titles(lib)
+    store.join([pa, pb], how="group")
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    try:
+        w.ungroup(pa)
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["ungroup"])
+        w._abandon()
+    finally:
+        holder.release()
+    store.move([ma[0]], "now")                          # meanwhile another program takes an episode out of the group
+    held = _items_of_piece(store, pa)                   # the group as the other program left it
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None and heard2.notes)
+    assert heard2.notes == [WORDS["crash_one"]]
+    assert store.conn.execute("SELECT kind FROM pieces WHERE id = ?", (pa,)).fetchone() == ("group",)
+    assert _items_of_piece(store, pa) == held           # the refused Ungroup left the group's episodes where they were
+
+
+# why: the other branch of the same guard: a replayed Ungroup whose group is as it was when queued goes through
+def test_L10_an_ungroup_queued_before_a_crash_goes_through_when_the_group_is_unchanged(lib, make_writer,
+                                                                                      short_lock_wait):
+    """An Ungroup queued while the library was busy, then a crash, and nothing else touched the group: the replay finds
+    the group as it was when the click came, so the Ungroup goes through and the group is broken up."""
+    store = lib.store
+    pa, ma, pb, mb = _two_titles(lib)
+    store.join([pa, pb], how="group")
+    w, heard = make_writer()
+    holder = LockHolder(lib.db)
+    try:
+        w.ungroup(pa)
+        assert h.until(lambda: [e[0] for e in journalled(lib.language)] == ["ungroup"])
+        w._abandon()
+    finally:
+        holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert store.conn.execute("SELECT kind FROM pieces WHERE id = ?", (pa,)).fetchone() != ("group",)
+    assert not set(mb) & set(_items_of_piece(store, pa))  # the other show's episodes are no longer in that group

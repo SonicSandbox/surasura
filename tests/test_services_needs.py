@@ -650,3 +650,23 @@ def test_find_videos_lists_a_video_by_connects_one_rule_never_a_mac_copy_or_a_sm
     (tmp_path / "星屑の街 - 06.ts").write_bytes(b"\0" * runner.TS_MIN)
     got = sorted(os.path.basename(p) for p in needs._Lister().videos(str(tmp_path), False))
     assert got == ["星屑の街 - 05.mkv", "星屑の街 - 06.ts"]
+
+
+def test_two_gone_pieces_of_one_work_give_the_same_row_whatever_order_they_are_listed_in():
+    # why: two pieces of one work give the same row whatever order the view lists them in, so the card keeps its key,
+    # lines and folder; a row that followed the listing order would change its key and its item ids between two looks.
+    eps = frieren_eps(9, 10)
+    listed_as_is = [
+        view_of([(1, FRIEREN_DIR, eps, {0: MISSING, 1: MISSING})]),
+        view_of([(1, FRIEREN_DIR, list(reversed(eps)), {0: MISSING, 1: MISSING})]),
+        # ep 9 (item 1) is given a later place in the list than ep 10 (item 2): the row lists ep 10 first
+        view_of([(1, FRIEREN_DIR, eps, {0: dict(MISSING, ord=99999.0), 1: MISSING})]),
+    ]
+
+    def gone_rows(out):
+        return [(e.key, e.title, e.data, [line.key for line in e.lines]) for e in out if e.kind == needs.GONE]
+
+    rows = [gone_rows(needs.entries(view, connect=no_video_jobs(1, 2))) for view in listed_as_is]
+    assert rows[0], "the two missing pieces should give a gone row"
+    for got in rows[1:]:
+        assert got == rows[0]

@@ -172,3 +172,36 @@ def test_skipping_a_folder_bumps_copy_dirty_so_the_connect_copy_carries_the_skip
     finally:
         looks.close()
         looks.idle(5)
+
+
+def test_a_folder_named_only_with_version_and_subtitle_words_is_a_versions_folder():
+    # why: "synced_subtitles" is another version of the episodes above (a versions folder), not a folder of its own
+    # that Surasura would list as a separate source. Glued with `_`, the subtitle word is kept (a bare "Subtitles" is
+    # stripped first by _FOLDER_MARKS), so only the subtitle-word rule places it.
+    from app.sources import _subtitle_folder
+    assert _subtitle_folder("synced_subtitles", "Show", "ja") == "versions"
+
+
+def test_a_stop_during_the_better_version_pass_ends_it_before_the_switch():
+    # a Stop asked during the better-version pass (`_switch_better`) must end the pass before the store is asked
+    # to switch anything — a stopped look keeps what it took in, and no switch starts after the Stop. The control
+    # half runs the same pass unstopped and sees the store asked, so the stopped half can't pass by asking nothing.
+    from types import SimpleNamespace
+    from app.sources import _Look
+
+    asked = []
+
+    def fake_switch(ids, stop=None):
+        asked.append(list(ids))
+        raise ls.StoreError("busy: the next look tries again")
+
+    store = SimpleNamespace(data_dir="unused", switch_versions=fake_switch)
+    stopped_look = _Look(store, "ja", None, False, None, lambda: True, False, None)
+    stopped_look.better = {"item-a"}
+    stopped_look._switch_better()
+    assert asked == [], "a Stop before the switch: the store is never asked"
+
+    running_look = _Look(store, "ja", None, False, None, lambda: False, False, None)
+    running_look.better = {"item-a"}
+    running_look._switch_better()
+    assert asked == [["item-a"]], "no Stop: the pass asks the store for the better version"

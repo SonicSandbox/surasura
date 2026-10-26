@@ -556,3 +556,126 @@ def test_one_epub_part_among_an_episodes_picks_makes_its_copies_unreadable(langu
                                 ls._now()))
         with store._reading():
             assert ls._group_copies(store, item) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_regular_file_where_a_source_folder_should_be_is_not_reached(language):
+    """A file where a source folder should be is no folder: its reach is never REACHED."""
+    # why: the look would otherwise read a file in place of the folder and take its listing as the show's.
+    from app import sources
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, a), _text(language, 1))
+    with store:
+        assert sources.reach(os.path.join(src, a)) != sources.REACHED
+
+
+# why: a video already recorded to one item is never attached to another known text of the folder when it is
+# found again later, even where the record holds no video key to tell the items apart (the scan's own claim is
+# the only guard then); the other text stays a record with no video, and the first keeps its own.
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_video_recorded_to_one_item_is_not_attached_to_a_second_item_later(language):
+    """A video recorded to an item's text (no video key on the record) is not attached to another known text of the
+    folder when it is found again — that text stays a record with no video, and the first keeps its video."""
+    store, data_dir = _empty(language)
+    a, b = _SHOWS[language][0], _SHOWS[language][1]
+    src = _drive("driveA")
+    ep = _write(os.path.join(src, a, f"{a} 第3話.{_OURS[language]}.srt"), _text(language, 3))
+    plain = _write(os.path.join(src, a, f"{b} 第3話.{_OURS[language]}.srt"), _text(language, 9))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        video = _video(os.path.join(src, a, f"[Grp] {a} - 03 (1080p).mkv"))
+        _settle(src)
+        rec = _record(store, ep)
+        rec.update(video_path=os.path.abspath(video), video_size=os.path.getsize(video))   # recorded, no video_key
+        with store._writing():
+            store.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                               (json.dumps(rec), ls.origin_key(ep)))
+        _look(store, language, root)
+        assert (_record(store, ep) or {}).get("video_path") == os.path.abspath(video)
+        assert (_record(store, plain) or {}).get("video_path") is None   # never attached to the second item
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_waiting_videos_read_takes_the_store_reader_guard(language):
+    # why: the look reads the waiting items inside the store's reader guard, so no writer changes the
+    # waiting set while it is read: every read of the waiting videos happens with the guard held.
+    import contextlib
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][1]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, f"{a} 第3話.{_OURS[language]}.srt"), _text(language, 3))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        _video(os.path.join(src, a, f"[Grp] {a} - 03 (1080p).mkv"))
+        _settle(src)
+        real_reading, real_waiting = store._reading, store._waiting_videos
+        depth, seen = [0], []
+
+        @contextlib.contextmanager
+        def guard():
+            depth[0] += 1
+            try:
+                with real_reading():
+                    yield
+            finally:
+                depth[0] -= 1
+
+        def waiting(*args, **kwargs):
+            seen.append(depth[0] > 0)
+            return real_waiting(*args, **kwargs)
+
+        store._reading, store._waiting_videos = guard, waiting
+        try:
+            _look(store, language, root)
+        finally:
+            store._reading, store._waiting_videos = real_reading, real_waiting
+        assert seen and all(seen)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_changed_while_it_is_copied_is_never_accepted(language, monkeypatch):
+    """A subtitle whose bytes change while it is being copied is dropped, not recorded: that look copies
+    nothing, and once the file settles the next look copies it."""
+    # why: a copy taken while the original changes may match neither the old nor the new bytes, so it must never count.
+    from app import sources
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][1]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, f"{a} 第3話.{_OURS[language]}.srt"), _text(language, 3))
+    sub = os.path.join(src, a, f"{a} 第4話.{_OURS[language]}.srt")
+    _write(sub, _text(language, 4))
+    _video(os.path.join(src, a, f"[Grp] {a} - 04 (1080p).mkv"))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        old = _sha(sub)
+        # why: a new subtitle is copied from memory, never through `_copy_part`; only a recorded one that changes is re-copied through it.
+        assert _record(store, sub)["sha256"] == old
+        _write(sub, _text(language, 4, " edited, a little longer than it was"))
+        _settle(src)
+        real_copy = sources._copy_part
+
+        changed = []
+
+        def copy_then_change(path, part, size):
+            digest = real_copy(path, part, size)
+            if os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(sub)):
+                _write(sub, _text(language, 4, " changed while it was being copied, a little longer"))
+                changed.append(sub)
+            return digest
+
+        monkeypatch.setattr(sources, "_copy_part", copy_then_change)
+        # why: the hook writes the subtitle during this look, which `_look`'s no-write guard would reject; the test's own
+        # write is the change under test, so this look calls `sources.scan` directly.
+        assert sources.scan(store, language, root)["recopied"] == 0
+        # why: the hook must have fired, or the look proves nothing; and the copy taken while the bytes changed is never on record.
+        assert changed == [sub] and _record(store, sub)["sha256"] == old
+        monkeypatch.setattr(sources, "_copy_part", real_copy)
+        _settle(src)
+        # why: a recorded subtitle whose new bytes settle is a re-copy, so `recopied` counts it once.
+        assert _look(store, language, root)["recopied"] == 1
+        assert _record(store, sub)["sha256"] == _sha(sub)

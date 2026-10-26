@@ -220,3 +220,33 @@ def test_a_library_with_no_store_still_answers_no_library(language):
     finally:
         looks.close()
     assert answer["refused"] == "no-library", answer
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_closing_the_looks_closes_the_store_handle_on_the_worker_that_opened_it(language):
+    # why: a store handle belongs to the thread that opened it, so the looks' worker closes its own handle when the
+    # window lets go — never the window's thread, which opened none of them, and never a thread close() spawns: the
+    # close must land on the very thread that opened the handle
+    opener, _data_dir, _user_files_dir = _library(language)
+    opened_on, closed_on = [], []
+    real_handle, real_close = opener.handle, opener.close
+
+    def recording_handle():
+        opened_on.append(threading.current_thread())
+        return real_handle()
+
+    def recording_close():
+        closed_on.append(threading.current_thread())
+        real_close()
+
+    opener.handle = recording_handle
+    opener.close = recording_close
+    looks = source_looks.SourceLooks(opener, language, kind=lambda _p: "network")
+    try:
+        _added(looks, _folder(language))   # the worker opens its store handle for the add
+    finally:
+        looks.close()
+    assert h.until(lambda: closed_on, seconds=10), "the worker never closed its store handle"
+    assert opened_on, "the worker never opened a store handle"
+    assert closed_on[0] is opened_on[0], "the handle was closed on a thread other than the one that opened it"
+    assert closed_on[0] is not threading.current_thread()

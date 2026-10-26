@@ -732,3 +732,66 @@ def test_stop_and_quit_ends_the_real_upkeep_helper_and_never_another_process():
                 proc.kill()
             proc.wait(10)
         chores.close(store=False)
+
+
+# --- a forced re-index asked after close never runs ------------------------------------------------------------ #
+def test_a_forced_reindex_remembered_before_close_does_not_run_after_the_indexer_ends(indexing_on, monkeypatch):
+    """A forced ask remembered while the indexer runs is dropped when close comes first: the indexer's end takes
+    nothing, so no second indexer starts after close."""
+    # why: a forced re-index remembered before close must not come back once the indexer ends; close clears it.
+    monkeypatch.setitem(sys.modules, "modules.koe", None)
+    chores, registry, popen = _make()
+    closed = False
+    try:
+        chores.index(force=True)
+        assert h.until(lambda: len(popen) == 1, seconds=5)
+        assert chores.index(force=True) == "busy"             # a forced ask while the indexer runs is remembered
+        chores.close()
+        closed = True
+        taken = []                                            # what the indexer's end takes: a forced ask or nothing
+        not_busy = chores._not_busy
+
+        def record():
+            again = not_busy()
+            taken.append(again)
+            return again
+
+        monkeypatch.setattr(chores, "_not_busy", record)
+        popen[0].end(0)
+        assert h.until(lambda: bool(taken), seconds=5), "the indexer's end never reached the busy check"
+        assert taken == [False], "a forced ask remembered before close was taken after close"
+        assert len(popen) == 1
+    finally:
+        if not closed:
+            chores.close()
+
+
+def test_the_indexing_and_again_flags_change_together_under_the_lock(indexing_on):
+    """`_not_busy` clears `_indexing` and reads-and-clears `_again` inside one hold of `self._lock`, so a forced ask
+    never sees the pair half-changed. The test records the flag values at each entry and exit of the lock: the pair
+    must be the old values on entry and the new values on exit, and the lock is entered and left once."""
+    chores, registry, popen = _make()
+    events = []
+    real_lock = chores._lock
+
+    class _Recording:
+        def __enter__(self):
+            events.append(("enter", chores._indexing, chores._again))
+            return real_lock.__enter__()
+
+        def __exit__(self, *exc):
+            events.append(("exit", chores._indexing, chores._again))
+            return real_lock.__exit__(*exc)
+
+    chores._lock = _Recording()
+    chores._indexing = True
+    chores._again = True
+    try:
+        again = chores._not_busy()
+    finally:
+        chores._lock = real_lock
+        chores.close(store=False)
+    assert again is True, "a forced ask that came while the indexer ran is taken, once"
+    assert chores._indexing is False and chores._again is False
+    assert events == [("enter", True, True), ("exit", False, False)], \
+        "the flags change inside one hold of the lock, not before or after it"

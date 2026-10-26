@@ -533,3 +533,33 @@ def test_todokes_press_opens_needs_you_at_the_gone_card(world):
     area = ny.cards.parentWidget().parentWidget()
     top = card.mapTo(area.viewport(), card.rect().topLeft())
     assert area.viewport().rect().intersects(QRect(top, card.size()))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_find_on_a_stopped_folder_finds_its_record_and_is_not_refused(language):
+    """# why: a folder the learner stopped is still a record: Find on it reads the new place and never says the
+    folder isn't being read any more (the record is looked up with stopped folders included)."""
+    from tests.test_library_store_sources import _empty, _scanned_show
+    from tests.test_sources_scan import _settle
+    store, _data_dir = _empty(language)
+    title = names(language)[71]
+    old = os.path.join(_elsewhere("Downloads"), title)
+    new = os.path.join(_elsewhere("Video", "Anime"), title)
+    _scanned_show(language, os.path.dirname(old), title, 3)
+    with store:
+        root_a = store.add_source(old)
+        assert store.stop_source(root_a) is not None                      # the learner stops the old folder
+    shutil.copytree(old, new, copy_function=shutil.copy2)
+    _settle(new)
+    shutil.rmtree(old)                                                    # the folder moved: the old place is gone
+    data_dir, user_files_dir = roots(language)
+    looks = source_looks.SourceLooks(ls.StoreOpener(language, data_dir, user_files_dir), language,
+                                     kind=lambda _p: "network")
+    answers = []
+    looks._find(root_a, new, answers.append)
+    assert len(answers) == 1
+    answer = answers[0]
+    assert answer["refused"] is None                                      # not "isn't being read any more"
+    assert answer["root"] is not None and answer["root"] != root_a
+    assert answer["result"] is not None
+    assert not answer["stop"]                                             # a stopped folder is never stopped again

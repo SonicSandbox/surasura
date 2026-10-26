@@ -785,3 +785,58 @@ def test_a_staged_book_part_starts_its_trash_clock_in_the_data_trash(language, m
     for calls, data in staged:
         assert any(folder == trash and data == data_written for folder, data_written in calls), \
             "a staged part of the new edition had no trash clock started by its own staging"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_failed_batch_of_switches_is_retried_one_item_at_a_time(language, monkeypatch):
+    """A batch of better-version switches that raises a generic error is not given up: each pending item is tried on its
+    own, so every re-timed copy takes its new text in place in this same look, not only the first one."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, v, s = _synced_show(language, src)
+    t = _OURS[language]
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        for n in (1, 2):
+            _write(os.path.join(src, show, "synced", f"{show} - {n:02d}.{t}.srt"), _text(language, n, " synced"))
+        real = store.switch_versions
+
+        calls = []
+
+        def batch_fails(todo, *args, **kwargs):
+            # why: only a batch of two or more raises; a single item goes through the real switch, as it would in a run
+            calls.append(len(todo))
+            if len(todo) > 1:
+                raise RuntimeError("the batch failed part way")
+            return real(todo, *args, **kwargs)
+        with monkeypatch.context() as patched:
+            patched.setattr(store, "switch_versions", batch_fails)
+            result = _look(store, language, root)
+        # why: the batch was really tried and failed, and then each item went through on its own
+        assert any(n > 1 for n in calls)
+        assert calls[-2:] == [1, 1]
+        assert result["switched"] == 2 and result["added"] == 0
+        for (_item, rel), n in zip(before, (1, 2)):
+            assert _copy(data_dir, rel) == _text(language, n, " synced").encode("utf-8")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_book_is_moved_only_when_no_edition_record_still_matches_the_file(language, tmp_path):
+    """A known book is moved only when every edition record differs from its file's bytes: one record that still
+    matches (the copy the file came from) keeps it where it is. Records are stubbed at the origins read, not the check."""
+    # why: `_book_moved` is `all(...)` over the records, so one matching record must mean "not moved" (a `any` would not).
+    from types import SimpleNamespace
+    path = _epub(os.path.join(str(tmp_path), f"{_BOOKS[language]}.epub"), _chapters(language, "一"), language)
+    st = os.stat(path)
+    same = SimpleNamespace(size=st.st_size, mtime_ns=st.st_mtime_ns, version=None)
+    other = SimpleNamespace(size=st.st_size + 1, mtime_ns=st.st_mtime_ns + 1, version=None)
+    other_again = SimpleNamespace(size=st.st_size + 2, mtime_ns=st.st_mtime_ns + 2, version=None)
+
+    def look_with(records):
+        return SimpleNamespace(_book_origins=lambda: {path: records})
+
+    assert sources._Look._book_moved(look_with({1: same, 2: other}), path, st) is False
+    assert sources._Look._book_moved(look_with({1: other, 2: other_again}), path, st) is True
+    assert sources._Look._book_moved(look_with({}), path, st) is False

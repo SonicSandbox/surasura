@@ -178,3 +178,10 @@ def test_a_waits_hover_names_its_click_once_whatever_its_colour(kind, reason):
                     rel_path="HighPriority/x.srt", play_tip="", can_play=True)
     name, tip, ask = rows.action_of(st, (ep,))
     assert name == "mine-now" and tip.count("Click") == 1, tip
+
+
+def test_with_anki_closed_the_line_gives_the_closed_reason_even_when_another_wait_is_commoner():
+    # why: with Anki closed the amber line keeps Anki's closed reason, not the commonest wait (a permission prompt here)
+    entry, = _anki_entries(_record(anki_session.UNUSABLE, anki_session.UNUSABLE, runner.ANKI_CLOSED, openable=True))
+    assert entry.title == "Anki isn't open: 3 episodes wait for it"
+    assert entry.data["reason"] == runner.ANKI_CLOSED != anki_session.UNUSABLE, entry.data

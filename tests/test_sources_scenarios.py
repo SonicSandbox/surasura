@@ -744,3 +744,25 @@ def test_a_layout_is_read_as_a_learner_would_want(row, language, record_property
     shows = sorted({os.path.dirname(k) for k in want})
     assert got == (shows, want)
     assert again == got, "a Refresh changed what the looks made"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_skipped_folder_is_never_walked_and_the_folder_beside_it_still_is(language):
+    # why: a language folder the user skipped inside a show's Subs/ is never listed or read, so its subtitles never
+    # enter the library, while the show beside it and the folder beside the skipped one still come in on the same look.
+    store, data_dir = _empty(language)
+    drive = _drive("Anime")
+    made = {}
+    lang_skipped, lang_kept = _fill("{S}/Subs/{LF0}", language), _fill("{S}/Subs/{LF1}", language)
+    _make(drive, [(_fill(p, language), c) for p, c in [
+        ("{S}/ep1.mkv", "V"), ("{S}/Subs/{LF0}/ep1.srt", "J"), ("{S}/Subs/{LF1}/ep1.srt", "J"),
+        ("{S2}/ep1.mkv", "V"), ("{S2}/ep1.srt", "J")]], language, made)
+    with store:
+        rid = store.add_source(drive)
+        store.skip_folder(os.path.join(drive, lang_skipped))
+        _look(store, language, rid, first=True)
+        got = _state(store, data_dir, drive, made)
+    # The items are keyed by their library place, so the source folder is read from each item's copy (its value, the
+    # source file's rel path before any " @ video").
+    assert not [p for p, v in got[1].items() if v.startswith(lang_skipped + "/")], "a skipped folder's file was read"
+    assert [p for p, v in got[1].items() if v.startswith(lang_kept + "/")], "the folder beside a skipped one was not read"

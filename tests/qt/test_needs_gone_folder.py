@@ -579,3 +579,20 @@ def test_find_on_a_gone_card_reads_into_the_cards_own_language_not_the_windows_c
     assert looks.finds[-1][2] == "ja"
     # the answer comes back through the GUI thread's signal; wait for the press to end so the callback doesn't run after the test
     assert wait_until(lambda: not qpress.live(win, ny._press_key("find_folder", card)), 5)
+
+
+def test_undo_of_a_stopped_folder_marks_the_connect_copy_dirty(tmp_path):
+    """An Undo that puts a folder's kind back changes what Connect must read, so the Connect copy is marked dirty
+    once more (the copy's dirty count moves by one); without the mark Connect keeps reading the old kind."""
+    from tests.test_library_store_sources import _empty, _scanned_show
+    title = names("ja")[71]
+    folder = os.path.join(str(tmp_path), title)
+    store, _data_dir = _empty("ja")
+    with store:
+        _scanned_show("ja", str(tmp_path), title, 3)
+        root = store.add_source(folder)                       # stop_source takes the source's id, not its path
+        change = store.stop_source(root)
+        assert change is not None
+        before = int(store.meta().get("copy_dirty") or 0)
+        store.undo(change)
+        assert int(store.meta().get("copy_dirty") or 0) == before + 1

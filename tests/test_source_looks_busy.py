@@ -250,3 +250,35 @@ def test_closing_the_looks_closes_the_store_handle_on_the_worker_that_opened_it(
     assert opened_on, "the worker never opened a store handle"
     assert closed_on[0] is opened_on[0], "the handle was closed on a thread other than the one that opened it"
     assert closed_on[0] is not threading.current_thread()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_close_wakes_a_quiet_watch_thread_so_it_exits_at_once(language):
+    # why: a closed window's watch thread must not stay blocked on a quiet folder — close() wakes it, and it exits now
+    opener, _data_dir, _user_files_dir = _library(language)
+
+    class QuietWatch:
+        state = "watching"
+
+        def start(self):
+            return True
+
+        def due(self):
+            return None                               # nothing pending: the thread waits on its wake event alone
+
+        def take(self):
+            return set(), False
+
+        def close(self):
+            pass
+
+    looks = source_looks.SourceLooks(opener, language, kind=lambda _p: "local",
+                                     watch=lambda _path, _wake: QuietWatch())
+    try:
+        _added(looks, _folder(language))
+        assert h.until(lambda: looks._watcher is not None, seconds=10), "a local folder's watch thread should be running"
+        thread = looks._watcher
+    finally:
+        looks.close()
+    thread.join(timeout=2)
+    assert not thread.is_alive(), "close() should wake the watch thread so it exits at once"

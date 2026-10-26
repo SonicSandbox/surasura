@@ -966,3 +966,24 @@ def test_a_version_that_cannot_be_read_is_never_thin(language):
         unreadable = os.path.join(src, show, f"[SubsB] {show} - 01.{t}.ass")
         assert ls._thin_switch(store, {"origins": [unreadable], "rel": rel}) == (False, None)
         assert _copy(data_dir, rel) == open(pick, "rb").read()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_switch_onto_another_items_file_name_is_held_and_a_free_name_is_taken(language):
+    """A switched copy takes the name of the subtitle it now holds (`Library/<show>/<its name>`), so the taken check
+    must read that NEW name. Another episode already living there holds the switch (None); a
+    free name is taken. Checking the item's own old name instead would let the switch land on another item's file."""
+    store, _ = _empty(language)
+    src = _drive("Anime")
+    show, t = _SHOWS[language][1], _OURS[language]
+    _write(os.path.join(src, show, f"{show} - 01.{t}.srt"), _text(language, 1))
+    _write(os.path.join(src, show, f"{show} - 02.{t}.srt"), _text(language, 2, " two"))
+    with store:
+        root = store.add_source(src)
+        first, second = _look(store, language, root, first=True)["ids"]
+        rel, other = store.item(first)["rel_path"], store.item(second)["rel_path"]
+        folder = rel.rsplit("/", 1)[0]
+        other_name = other.rsplit("/", 1)[1]
+        assert ls._switch_rel(store, rel, os.path.join(src, show, other_name), first) is None, "the other episode's file holds"
+        free = os.path.join(src, show, f"{show} - 03.{t}.ass")
+        assert ls._switch_rel(store, rel, free, first) == folder + "/" + os.path.basename(free), "a free name is taken"

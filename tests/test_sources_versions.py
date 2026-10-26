@@ -11,10 +11,12 @@ fincov root). Show names are made up; the texts are real Japanese / Chinese from
 """
 import json
 import os
+import stat
 
 import pytest
 
 from app import library_store as ls
+from app import sources
 from app.connect import library, videos
 from tests.test_library_store_support import LANGUAGES
 from tests.test_sources_scan import (_OURS, _SHOWS, _drive, _empty, _fresh_module_state, _library_files,  # noqa: F401
@@ -712,3 +714,75 @@ def test_a_file_changed_while_it_is_copied_is_never_accepted(language, monkeypat
         # why: a recorded subtitle whose new bytes settle is a re-copy, so `recopied` counts it once.
         assert _look(store, language, root)["recopied"] == 1
         assert _record(store, sub)["sha256"] == _sha(sub)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_waiting_items_for_one_episode_the_first_listed_is_kept(language):
+    """(PROVISIONAL) Of two items waiting for the text of one episode, the one listed first is the one that
+    waits — a later item never replaces it (`_waits` keeps the first by `setdefault`). Built on a bare look so
+    both origins sit in the listed order a look would hold them in."""
+    from types import SimpleNamespace
+    from app import sources
+    a = _SHOWS[language][0]
+    # The listed-first origin is deliberately the one that sorts LAST by name, has the HIGHER item_id, and sits under
+    # the key that sorts last, so a rule of "smallest id", "smallest name" or "smallest key" would not pass.
+    first_name, second_name = f"[B] {a} - 05 (720p).mkv", f"[A] {a} - 05 (1080p).mkv"
+    look = sources._Look.__new__(sources._Look)
+    look.language, look.years, look.origin_years, look.by_show = language, {}, {}, None
+    look.origins = {
+        "zeta": SimpleNamespace(origin=first_name, rel_path=f"{ls.CONTENT_FOLDER}/{a}/{first_name}",
+                                availability="waiting", version=None, item_id=102),
+        "alpha": SimpleNamespace(origin=second_name, rel_path=f"{ls.CONTENT_FOLDER}/{a}/{second_name}",
+                                 availability="waiting", version=None, item_id=101),
+    }
+    key = look._episode_key(first_name, a)
+    assert key is not None and look._episode_key(second_name, a) == key
+    assert look._waits(a) == {key: 102}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_of_two_videos_for_one_episode_the_better_ranked_is_kept_not_the_name_first(language):
+    """Two videos of one episode with no subtitle: the one ranked first (here the larger, the name-later file)
+    waits as the item; the name-first smaller file is dropped, not waiting beside it."""
+    # why: the waiting video kept per episode is the better-ranked one (rank, not name order)
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    folder = os.path.join(src, a)
+    small = os.path.join(folder, f"[AAA] {a} - 01 (1080p).mkv")
+    large = os.path.join(folder, f"[ZZZ] {a} - 01 (1080p).mkv")
+    _video(small, body=b"fake matroska small")
+    _video(large, body=b"fake matroska " + b"large " * 40)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        rows = store.conn.execute("SELECT rel_path FROM items WHERE availability = 'waiting'").fetchall()
+        assert len(rows) == 1
+        assert [os.path.basename(r[0]) for r in rows] == [os.path.basename(large)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_cloud_placeholder_is_never_matched_to_a_waiting_item_by_its_content(language, monkeypatch):
+    """A cloud placeholder's content is never read to find its waiting item, whatever its size. The video is
+    renamed (same bytes, same size) and now a placeholder: its name matches no waiting item, so it is a new item."""
+    store, data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    old = os.path.join(src, a, f"{a} - 01.mkv")
+    _video(old)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
+        os.rename(old, os.path.join(src, a, f"{a} - 02.mkv"))
+        # why: a placeholder is never read, so its bytes must not match the waiting video even at its recorded size;
+        # only files are placeholders here (a folder patched too would never be listed, and the video with it)
+        monkeypatch.setattr(ls, "is_placeholder", lambda st: stat.S_ISREG(st.st_mode))
+        # why: record every content read during the second look; the renamed placeholder must never be among them
+        renamed = os.path.join(src, a, f"{a} - 02.mkv")
+        reads = []
+        read_content = sources._Look._content_key
+        monkeypatch.setattr(sources._Look, "_content_key",
+                            lambda self, p: (reads.append(p), read_content(self, p))[1])
+        _look(store, language, root, full=True)
+        assert not any(os.path.normcase(p) == os.path.normcase(renamed) for p in reads)
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2

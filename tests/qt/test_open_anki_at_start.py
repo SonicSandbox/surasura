@@ -355,3 +355,20 @@ def test_a_quit_ends_the_looks_wait_at_once_and_a_wait_without_one_still_waits(q
     real_services, _said, _log = _services(ON)
     real_services._session(dict(ON), True)
     assert handed and handed[0] == real_services.closing.wait, handed
+
+
+def test_a_focus_look_never_starts_while_the_window_starts_session_look_runs(qapp, anki):
+    """A focus look is refused while the window start's session look still runs, even once the focus's own
+    minute has passed (the time gate is switched off here, so only the running look can hold the focus back)."""
+    gate = {"open": False}
+    anki.on_look = lambda: _until(lambda: gate["open"], 60.0)   # the start's look waits on Anki's answer, held for the whole test (the finally releases it)
+    services, _said, _log = _services(ON)
+    services.SESSION_LOOK_EVERY = 0
+    try:
+        assert services.start()
+        assert _until(lambda: anki.looks >= 1), "the window start's look never began"
+        assert services._look_at_anki(dict(ON), False) is None
+    finally:
+        gate["open"] = True
+        _settled(services)
+        services.shutdown(0.05)

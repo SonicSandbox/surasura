@@ -1279,7 +1279,7 @@ def test_read_again_brings_skipped_extras_back_as_new_arrivals(language):
 @pytest.mark.parametrize("queued_after_copies", [True, False])
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_replayed_skip_never_takes_a_trash_copy_made_before_it_was_queued(language, queued_after_copies):
-    """H7: a copy trashed before the skip was queued is an older copy, not this skip's. A replay whose file is already
+    """A copy trashed before the skip was queued is an older copy, not this skip's. A replay whose file is already
     gone takes no older copy: nothing in the trash it names is that old copy, and no row points at it. A copy made at
     or after the queue stamp is still this skip's, and the replay takes it."""
     from app.services import moves as M

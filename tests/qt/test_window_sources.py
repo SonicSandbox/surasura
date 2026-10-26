@@ -1018,12 +1018,12 @@ def test_a_refresh_merged_into_a_held_focus_look_keeps_every_folder_and_raises_n
         gate.wait(10)
         return real(store, language, root, **kw)
     monkeypatch.setattr(sources, "scan", slow)
-    assert looks.asked(focused=True)                          # the first look runs and holds the worker
-    looks.set_shown(False)
-    FakeWatch.made[0].report()
-    assert wait_until(lambda: bool(looks._dirty), 10)         # the watch's folder is recorded while the window is behind
-    looks.set_shown(True)
     try:
+        assert looks.asked(focused=True)                      # the first look runs and holds the worker
+        looks.set_shown(False)
+        FakeWatch.made[0].report()
+        assert wait_until(lambda: bool(looks._dirty), 10)     # the watch's folder is recorded while the window is behind
+        looks.set_shown(True)
         assert not looks.asked(focused=True)                  # its focus: that folder held for one more look
         assert not looks.asked(refreshed=True)                # Refresh folded into it: still every folder, no error
     finally:
@@ -1047,12 +1047,12 @@ def test_a_watch_folder_merged_into_a_held_refresh_keeps_every_folder_and_raises
         gate.wait(10)
         return real(store, language, root, **kw)
     monkeypatch.setattr(sources, "scan", slow)
-    assert looks.asked(focused=True)                          # the first look runs and holds the worker
-    assert not looks.asked(refreshed=True)                    # Refresh held for one more look: every folder (roots None)
-    looks.set_shown(False)
-    FakeWatch.made[0].report()
-    assert wait_until(lambda: bool(looks._dirty), 10)         # the watch's folder is recorded while the window is behind
     try:
+        assert looks.asked(focused=True)                      # the first look runs and holds the worker
+        assert not looks.asked(refreshed=True)                # Refresh held for one more look: every folder (roots None)
+        looks.set_shown(False)
+        FakeWatch.made[0].report()
+        assert wait_until(lambda: bool(looks._dirty), 10)     # the watch's folder is recorded while the window is behind
         assert not looks.asked(focused=True)                  # its focus: that folder folded into the held Refresh
     finally:
         gate.set()                                            # the worker is released even when an assert above failed
@@ -1096,9 +1096,11 @@ def test_a_full_look_asked_while_a_partial_one_runs_runs_full_after_it(looks_wor
         gate.wait(10)
         return real(store, language, root, **kw)
     monkeypatch.setattr(sources, "scan", slow)
-    assert looks.asked(focused=True)                          # a cadence look starts and waits at the gate
-    assert not looks.asked(refreshed=True)                    # held: it runs full after the running look
-    gate.set()
+    try:                                                      # the gate opens even when an assertion fails
+        assert looks.asked(focused=True)                      # a cadence look starts and waits at the gate
+        assert not looks.asked(refreshed=True)                # held: it runs full after the running look
+    finally:
+        gate.set()
     assert looks.idle(20)
     assert len(scans) == 2
     assert looks.asked(refreshed=True)                        # an idle Refresh now: the reference for a full read
@@ -1220,7 +1222,10 @@ def test_a_new_watch_is_stored_only_once_the_watches_lock_is_free(looks_world):
     assert entered.wait(5)
     with looks._lock:
         go.set()
-        time.sleep(0.3)                                       # a watch stored without the lock would show by now
+        assert wait_until(lambda: FakeWatch.made[-1].state == "watching", 5)   # the watch has finished starting
+        # why: storing is the very next step after the start returns, so a watch stored without the lock shows within
+        # this grace however loaded the machine (a wait on a condition can't stand in: the right answer is no change)
+        time.sleep(0.3)
         assert looks._watches == {}
         looks._closing.set()                                  # the close lands while the watch waits for the lock
     assert wait_until(lambda: FakeWatch.made[-1].state == "closed", 5)   # closed, not stored: the flag was read under the lock

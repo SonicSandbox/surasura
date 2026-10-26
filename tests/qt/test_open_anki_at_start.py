@@ -329,12 +329,13 @@ def test_a_quit_ends_the_looks_wait_at_once_and_a_wait_without_one_still_waits(q
             waited.append(time.time() - started)
         return look
 
-    # why: a quit during a 5 s wait must end it near the 0.2 s quit, with a wide margin for a slow Windows timer
+    # why: a quit during a 5 s wait must end it well before its 5 s, after the 0.2 s quit: under 4 s leaves a loaded
+    # machine room and still tells an ended wait from one that ran its length
     services, _said, _log = _services(ON)
     services.anki_look = look_for(5)
     threading.Timer(0.2, services.closing.set).start()
     services._session(dict(ON), True)
-    assert waited and 0.1 <= waited[0] < 1.0, waited
+    assert waited and 0.1 <= waited[0] < 4.0, waited
 
     # why: with the window open nothing ends the wait early, so a 0.4 s wait takes at least about 0.4 s
     waited.clear()

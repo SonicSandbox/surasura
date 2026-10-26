@@ -1197,27 +1197,29 @@ def test_a_damaged_kept_text_file_takes_its_wal_and_shm_sidecars_aside_with_it(l
     the sidecars can never be read against the new file that replaces it. Each sidecar keeps its own bytes."""
     # why: a sidecar left behind would be read by the next connection as if it belonged to the fresh kept text.
     store = ti.open_store(language)
-    kept = _kept_text(store)
-    kept_db = kept.path
-    with open(kept_db, "wb") as f:
-        f.write(b"\x00garbage" * 512)
-    with open(kept_db + "-wal", "wb") as f:
-        f.write(b"WAL-SIDECAR-MARK")
-    with open(kept_db + "-shm", "wb") as f:
-        f.write(b"SHM-SIDECAR-MARK")
-    assert kept._set_aside("damaged for the test") is True
-    folder = os.path.dirname(kept_db)
-    assert not os.path.exists(kept_db + "-wal") and not os.path.exists(kept_db + "-shm")
-    moved_db = [n for n in os.listdir(folder) if ".damaged-" in n and not n.endswith(("-wal", "-shm"))]
-    moved_wal = [n for n in os.listdir(folder) if ".damaged-" in n and n.endswith("-wal")]
-    moved_shm = [n for n in os.listdir(folder) if ".damaged-" in n and n.endswith("-shm")]
-    assert len(moved_db) == 1 and len(moved_wal) == 1 and len(moved_shm) == 1
-    # why: each sidecar must carry the moved file's exact new name, not just any .damaged- name.
-    assert moved_wal == [moved_db[0] + "-wal"] and moved_shm == [moved_db[0] + "-shm"]
-    with open(os.path.join(folder, moved_db[0]), "rb") as f:
-        assert f.read() == b"\x00garbage" * 512
-    with open(os.path.join(folder, moved_wal[0]), "rb") as f:
-        assert f.read() == b"WAL-SIDECAR-MARK"
-    with open(os.path.join(folder, moved_shm[0]), "rb") as f:
-        assert f.read() == b"SHM-SIDECAR-MARK"
-    store.close()
+    try:
+        kept = _kept_text(store)
+        kept_db = kept.path
+        with open(kept_db, "wb") as f:
+            f.write(b"\x00garbage" * 512)
+        with open(kept_db + "-wal", "wb") as f:
+            f.write(b"WAL-SIDECAR-MARK")
+        with open(kept_db + "-shm", "wb") as f:
+            f.write(b"SHM-SIDECAR-MARK")
+        assert kept._set_aside("damaged for the test") is True
+        folder = os.path.dirname(kept_db)
+        assert not os.path.exists(kept_db + "-wal") and not os.path.exists(kept_db + "-shm")
+        moved_db = [n for n in os.listdir(folder) if ".damaged-" in n and not n.endswith(("-wal", "-shm"))]
+        moved_wal = [n for n in os.listdir(folder) if ".damaged-" in n and n.endswith("-wal")]
+        moved_shm = [n for n in os.listdir(folder) if ".damaged-" in n and n.endswith("-shm")]
+        assert len(moved_db) == 1 and len(moved_wal) == 1 and len(moved_shm) == 1
+        # why: each sidecar must carry the moved file's exact new name, not just any .damaged- name.
+        assert moved_wal == [moved_db[0] + "-wal"] and moved_shm == [moved_db[0] + "-shm"]
+        with open(os.path.join(folder, moved_db[0]), "rb") as f:
+            assert f.read() == b"\x00garbage" * 512
+        with open(os.path.join(folder, moved_wal[0]), "rb") as f:
+            assert f.read() == b"WAL-SIDECAR-MARK"
+        with open(os.path.join(folder, moved_shm[0]), "rb") as f:
+            assert f.read() == b"SHM-SIDECAR-MARK"
+    finally:
+        store.close()

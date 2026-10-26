@@ -260,7 +260,7 @@ def test_a_refused_put_back_tag_removal_is_reported_in_note_failures(lib, monkey
 
 
 def test_only_cards_out_records_are_held_as_cards_out(lib):
-    """# why: the cards held out of a learner's order are the ones the take-out itself recorded as cards out; the
+    """The cards held out of a learner's order are the ones the take-out itself recorded as cards out; the
     read-back `held` list must hold those records and nothing else, or a card the learner never took out would count."""
     from modules.junban import pins
     language, root, store = lib

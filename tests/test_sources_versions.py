@@ -632,7 +632,8 @@ def test_a_video_recorded_to_one_item_is_not_attached_to_a_second_item_later(lan
                                (json.dumps(rec), ls.origin_key(ep)))
         _look(store, language, root)
         assert (_record(store, ep) or {}).get("video_path") == os.path.abspath(video)
-        assert (_record(store, plain) or {}).get("video_path") is None   # never attached to the second item
+        second = _record(store, plain)
+        assert second is not None and second.get("video_path") is None   # a record, never given the first's video
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

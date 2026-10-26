@@ -208,7 +208,7 @@ def test_a_stop_during_the_better_version_pass_ends_it_before_the_switch():
 
 
 def test_the_recorded_volume_is_refreshed_when_the_folder_can_be_read_and_kept_when_it_cannot(monkeypatch):
-    # why: a look records the volume its folder was read on (T6, `dev`, which `reach` needs to tell gone from away);
+    # why: a look records the volume its folder was read on (`dev`, which `reach` needs to tell gone from away);
     # a read that works refreshes it, and a stat that fails keeps the one already recorded, never drops it
     import sys
     from app import sources

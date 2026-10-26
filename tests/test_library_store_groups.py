@@ -926,11 +926,13 @@ def test_undo_of_a_title_skips_a_title_the_learner_changed_since(language):
     """A rename's undo puts the old title back only where the title still holds the name that rename wrote; a title
     the learner renamed again after it stays as the learner left it."""
     store = _library(language)
-    (pa, ma), (pb, mb) = _shows(store, "goal")
-    store.join([pa, pb], how="group")
-    group = _piece(store, ma[0])
-    first = store.rename_piece(group, names(language)[44])
-    store.rename_piece(group, names(language)[45])              # the learner's newer name
-    store.undo(first)
-    assert _title(store, group) == names(language)[45]
-    store.close()
+    try:
+        (pa, ma), (pb, mb) = _shows(store, "goal")
+        store.join([pa, pb], how="group")
+        group = _piece(store, ma[0])
+        first = store.rename_piece(group, names(language)[44])
+        store.rename_piece(group, names(language)[45])              # the learner's newer name
+        store.undo(first)
+        assert _title(store, group) == names(language)[45]
+    finally:
+        store.close()

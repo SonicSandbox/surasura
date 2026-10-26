@@ -870,7 +870,7 @@ def test_a_book_is_moved_only_when_no_edition_record_still_matches_the_file(lang
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_failed_part_write_leaves_no_partial_file_beside_the_copy(language, monkeypatch):
-    """A9's switch: a part whose write fails after some bytes are on disk is removed at once; the copy keeps its old
+    """A switch: a part whose write fails after some bytes are on disk is removed at once; the copy keeps its old
     bytes and no `.part` file is left in the data folder."""
     # why: a torn `.part` left behind would be picked up as debris and could be mistaken for a switched copy later
     store, data_dir = _empty(language)

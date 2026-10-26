@@ -391,9 +391,9 @@ def _items_of_piece(store, piece_id):
 
 
 def test_an_ungroup_queued_before_a_crash_is_checked_against_the_group_it_met(lib, make_writer, short_lock_wait):
-    """An Ungroup queued while the library was busy, then a crash, then another program took an episode out of that
-    group: the replay sees the group changed since the click and lets the Ungroup go (the group and its episodes stay
-    as the other program left them). Ungroup goes through the moves guard like group and add_to_group do, so its
+    """An Ungroup queued while the library was busy, then a crash, then another program moved one of that group's
+    episodes: the replay sees the group changed since the click and refuses the Ungroup (the group and its episodes
+    stay as the other program left them). Ungroup goes through the moves guard like group and add_to_group do, so its
     as-queued state is journalled and compared at the replay."""
     store = lib.store
     pa, ma, pb, mb = _two_titles(lib)
@@ -406,7 +406,7 @@ def test_an_ungroup_queued_before_a_crash_is_checked_against_the_group_it_met(li
         w._abandon()
     finally:
         holder.release()
-    store.move([ma[0]], "now")                          # meanwhile another program takes an episode out of the group
+    store.move([ma[0]], "now")                          # meanwhile another program moves one of the group's episodes
     held = _items_of_piece(store, pa)                   # the group as the other program left it
     w2, heard2 = make_writer()
     assert w2.replay()
@@ -439,7 +439,7 @@ def test_an_ungroup_queued_before_a_crash_goes_through_when_the_group_is_unchang
     assert not set(mb) & set(_items_of_piece(store, pa))  # the other show's episodes are no longer in that group
 
 
-def test_W1_a_drop_before_an_unheld_watched_anchor_lands_on_the_before_side_of_the_store_order(tmp_path):
+def test_a_drop_before_an_unheld_watched_anchor_lands_on_the_before_side_of_the_store_order(tmp_path, monkeypatch):
     """A drop given `before_id` (or `after_id`) for an anchor the engine doesn't hold (a watched episode set aside) is
     followed on the side asked for: the engine receives the held neighbour on that side of the anchor in the store's
     order. The order here puts the anchor between two held NOW items, so each side names a different one."""
@@ -448,36 +448,37 @@ def test_W1_a_drop_before_an_unheld_watched_anchor_lands_on_the_before_side_of_t
     for language in ("ja", "zh"):
         seed, plan_file = _small_plan(tmp_path / language, language)
         numbers, resyncs, order = _loaded(seed, plan_file)
-        hero = _hero(seed)
-        eng = numbers._engine
-        assert not M._holds(eng, hero[0])                   # the anchor is a watched episode the engine doesn't hold
-        seq = list(order("now"))
-        now = [i for i in seq if i not in hero and M._holds(eng, i)
-               and eng._tier[eng._f_of[i]] == M.ANALYSED.index("now")]
-        assert len(now) >= 2, "two held NOW items to put the anchor between"
-        base = [i for i in seq if i not in hero]            # the hero items are already in seq: take them out so the anchor appears once
-        k = base.index(now[1])
-        ahead = [i for i in base[:k] if i in now][-1]       # the held item before the anchor (nearest)
-        behind = now[1]                                     # the held item after the anchor (nearest)
-        seq_with_anchor = base[:k] + [hero[0]] + base[k:]
-        goal = sorted((r for r in seed.library.items() if r["tier"] == "goal"), key=lambda r: (r["ord"], r["id"]))
+        try:
+            hero = _hero(seed)
+            eng = numbers._engine
+            assert not M._holds(eng, hero[0])                   # the anchor is a watched episode the engine doesn't hold
+            seq = list(order("now"))
+            now = [i for i in seq if i not in hero and M._holds(eng, i)
+                   and eng._tier[eng._f_of[i]] == M.ANALYSED.index("now")]
+            assert len(now) >= 2, "two held NOW items to put the anchor between"
+            base = [i for i in seq if i not in hero]        # the hero items are in seq: out, so the anchor is there once
+            k = base.index(now[1])
+            ahead = [i for i in base[:k] if i in now][-1]       # the held item before the anchor (nearest)
+            behind = now[1]                                     # the held item after the anchor (nearest)
+            seq_with_anchor = base[:k] + [hero[0]] + base[k:]
+            goal = sorted((r for r in seed.library.items() if r["tier"] == "goal"), key=lambda r: (r["ord"], r["id"]))
 
-        calls = []
-        real_move = eng.move
+            calls = []
+            real_move = eng.move
 
-        def spy(item_ids, tier, before_id=None, after_id=None):
-            calls.append((before_id, after_id))
-            return real_move(item_ids, tier, before_id=before_id, after_id=after_id)
+            def spy(item_ids, tier, before_id=None, after_id=None):
+                calls.append((before_id, after_id))
+                return real_move(item_ids, tier, before_id=before_id, after_id=after_id)
 
-        eng.move = spy
-        mover = goal[-1]["id"]
-        touched = numbers.after_move([mover], "now", before_id=hero[0], order=lambda t: seq_with_anchor)
-        assert touched and mover in touched and resyncs == []
-        assert calls[-1] == (behind, None), calls          # before the anchor: before the held item after it
+            monkeypatch.setattr(eng, "move", spy)        # put back by the fixture, even on a failure
+            mover = goal[-1]["id"]
+            touched = numbers.after_move([mover], "now", before_id=hero[0], order=lambda t: seq_with_anchor)
+            assert touched and mover in touched and resyncs == []
+            assert calls[-1] == (behind, None), calls          # before the anchor: before the held item after it
 
-        mover = goal[-2]["id"]
-        touched = numbers.after_move([mover], "now", after_id=hero[0], order=lambda t: seq_with_anchor)
-        assert touched and mover in touched and resyncs == []
-        assert calls[-1] == (None, ahead), calls           # after the anchor: after the held item before it
-        eng.move = real_move
-        numbers.close()
+            mover = goal[-2]["id"]
+            touched = numbers.after_move([mover], "now", after_id=hero[0], order=lambda t: seq_with_anchor)
+            assert touched and mover in touched and resyncs == []
+            assert calls[-1] == (None, ahead), calls           # after the anchor: after the held item before it
+        finally:
+            numbers.close()

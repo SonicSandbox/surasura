@@ -766,6 +766,8 @@ def test_a_skipped_folder_is_never_walked_and_the_folder_beside_it_still_is(lang
     # source file's rel path before any " @ video").
     assert not [p for p, v in got[1].items() if v.startswith(lang_skipped + "/")], "a skipped folder's file was read"
     assert [p for p, v in got[1].items() if v.startswith(lang_kept + "/")], "the folder beside a skipped one was not read"
+    other = _fill("{S2}", language)
+    assert [p for p, v in got[1].items() if v.startswith(other + "/")], "the show beside it was not read"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

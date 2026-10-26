@@ -1609,7 +1609,7 @@ def test_take_in_marks_only_its_own_items_live_records(language):
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_busy_store_while_the_back_list_is_handed_over_is_tolerated_and_the_list_is_cleared(language, monkeypatch):
-    """D5: the store is busy when the known originals are listed in their old place again. The look must not crash
+    """The store is busy when the known originals are listed in their old place again. The look must not crash
     (a busy store is tolerated), the back list is cleared, the mark is kept (nothing is lost), and the next look
     hands the same original over again and the mark comes off. Why the real store with one patched call: the busy
     path is the look's own handling of StoreBusy, and the recovery is only real if the store still holds what the
@@ -1706,7 +1706,7 @@ def test_the_skipped_folder_list_is_read_under_the_reader_guard(language, monkey
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_new_file_naming_its_item_records_the_show_group_on_that_items_title(language):
-    """# why: a look's show group goes on the title of the item the file names (its own item_id) when the file's origin
+    """A look's show group goes on the title of the item the file names (its own item_id) when the file's origin
     is not in the changes taken in this scan; a title with no group yet takes the group the look decided."""
     store, data_dir = _empty(language)
     src = _source_root()

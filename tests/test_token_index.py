@@ -1089,8 +1089,9 @@ def test_prepare_preview_decodes_ahead_and_changes_no_number(tmp_path, monkeypat
 
 
 def test_text_rebuilt_from_store_keeps_its_mtime_and_size_in_place(tmp_path):
-    """A file that can't be read now has its text rebuilt from the sentences it was handed; the (text, facts, mtime,
-    size) it returns keeps the mtime and the size the store holds in their own places, never swapped (`Store._text_of`)."""
+    """A file not read again (no source handed) has its text rebuilt from the sentences it was handed; the (text,
+    facts, mtime, size) it returns keeps the mtime and the size the store holds in their own places, never swapped
+    (`Store._text_of`)."""
     f = tmp_path / "adv.txt"; _write(f, JA_ADVENTURE)
     store = ti.open_store("ja", path=_db(tmp_path))
     try:
@@ -1099,7 +1100,7 @@ def test_text_rebuilt_from_store_keeps_its_mtime_and_size_in_place(tmp_path):
         key = ti._norm(str(f))
         row = {"mtime": 1700000000.25, "size": 4321}
         text, facts, mtime, size = store._text_of(store.conn.cursor(), key, row, None, None, result)
-        assert text, "the text is rebuilt from the cached sentences"
+        assert text and (text, facts) == ti._rebuilt_text(result["sentences"], result.get("names")), "rebuilt from them"
         assert mtime == 1700000000.25, "the mtime stays in the mtime place"
         assert size == 4321, "the size stays in the size place"
     finally:
@@ -1129,7 +1130,7 @@ def test_kept_file_moved_to_a_new_folder_keeps_its_row_when_nothing_else_leaves(
 
 
 def test_chinese_preview_never_applies_the_japanese_one_kanji_rule(tmp_path, monkeypatch):
-    """# why: the one-character rule is Japanese only (analyzer.single_kind reads Japanese one-kanji words), so a
+    """The one-character rule is Japanese only (analyzer.single_kind reads Japanese one-kanji words), so a
     Chinese Rarity preview keeps every word even with Settings' one-kanji switch on; Japanese still applies it."""
     monkeypatch.setattr(ti, "singles_rule", lambda: True)
     uf = tmp_path / "User Files" / "zh"

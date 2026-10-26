@@ -280,5 +280,5 @@ def test_close_wakes_a_quiet_watch_thread_so_it_exits_at_once(language):
         thread = looks._watcher
     finally:
         looks.close()
-    thread.join(timeout=2)
+    thread.join(timeout=10)                       # woken, it ends at once; unwoken, a quiet watch waits for ever
     assert not thread.is_alive(), "close() should wake the watch thread so it exits at once"

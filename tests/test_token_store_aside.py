@@ -545,22 +545,7 @@ def test_an_everyday_reconcile_of_set_aside_files_with_nothing_kept_writes_no_te
 
 
 def test_an_alter_table_failure_other_than_a_duplicate_column_is_raised_not_passed_over(tmp_path):
-    """# why: the counted / aside columns are added by ALTER TABLE; a failure that is not a duplicate column (here a
-    `files` that is a view, so the column can't be added) must raise, never read as the columns already being there."""
-    conn = sqlite3.connect(str(tmp_path / "view.db"))
-    try:
-        conn.executescript(
-            "CREATE TABLE files_base (path TEXT PRIMARY KEY);"
-            "CREATE VIEW files AS SELECT path FROM files_base;")
-        with pytest.raises(sqlite3.OperationalError) as info:
-            ti._add_counted(conn)
-        assert "duplicate column" not in str(info.value).lower()
-    finally:
-        conn.close()
-
-
-def test_an_alter_table_failure_other_than_a_duplicate_column_is_raised_not_passed_over(tmp_path):
-    """# why: the counted / aside columns are added by ALTER TABLE; a failure that is not a duplicate column (here a
+    """The counted / aside columns are added by ALTER TABLE; a failure that is not a duplicate column (here a
     `files` that is a view, so the column can't be added) must raise, never read as the columns already being there."""
     conn = sqlite3.connect(str(tmp_path / "view.db"))
     try:

@@ -890,7 +890,7 @@ def test_R3_a_gap_that_no_longer_waits_inside_the_command_fills_nothing_and_hato
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_taking_out_a_sync_row_leaves_no_empty_piece_behind(language):
-    """K3 R1: the sync's row for hato's file, taken out by the register, tidies its piece; a piece the row alone held
+    """The sync's row for hato's file, taken out by the register, tidies its piece; a piece the row alone held
     never stays behind empty in the library (the source item's piece is still in use and stays)."""
     # why: an empty piece is a phantom shelf entry; taking an item out must leave the pieces as the items hold them.
     store, data_dir = _empty(language)
@@ -903,7 +903,7 @@ def test_taking_out_a_sync_row_leaves_no_empty_piece_behind(language):
         assert piece is not None
         source_piece = store.conn.execute("SELECT piece_id FROM items WHERE id = ?", (item,)).fetchone()[0]
         assert source_piece is not None
-        change = store.register(hato_path, _hato("v1-k3-piece-tidy", show))
+        change = store.register(hato_path, _hato("v1-piece-tidy", show))
         assert change.pairing_item == item and store.item(synced) is None
         assert store.conn.execute("SELECT COUNT(*) FROM pieces WHERE id = ?", (piece,)).fetchone()[0] == 0
         assert store.conn.execute("SELECT COUNT(*) FROM pieces WHERE id = ?", (source_piece,)).fetchone()[0] == 1

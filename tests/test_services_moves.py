@@ -4261,7 +4261,7 @@ def test_a_wake_starts_a_live_writer_and_never_restarts_a_stopped_one(tmp_path):
         w2.finish(time.monotonic() + 5)
 
 
-def test_H7_the_trash_copies_taken_so_far_in_one_command_are_passed_over_by_the_next_item(lib):
+def test_the_trash_helper_passes_over_the_copies_it_is_told_are_taken(lib):
     # why: the helper's `taken` contract only. Each command's loop (Remove's `_remove`, Skip's `_skip_folder`) passes the
     # copies it has already taken, and this test mirrors that loop's call shape by hand; it does not drive a Skip. Two
     # items of one name each find an unnamed copy of their own. The second must take the next copy, never the first's,

@@ -178,7 +178,7 @@ def test_phrase_sums_read_one_snapshot_while_the_indexer_commits_between_its_rea
 
 
 def test_phrase_sums_leave_a_transaction_its_caller_opened_open(tmp_path):
-    """E2.3 (planted bug): phrase_sums commits only the transaction it opened itself. A caller that holds one (the
+    """phrase_sums commits only the transaction it opened itself. A caller that holds one (the
     arrivals gate reads inside its own) keeps it open after the read, so the caller's own writes are not committed
     early."""
     store = _store_with(tmp_path, ("phrases_sample.srt", "library_episode.ass"))
@@ -201,7 +201,7 @@ def test_phrase_sums_leave_a_transaction_its_caller_opened_open(tmp_path):
 
 
 def test_phrase_sums_commit_the_transaction_it_opened_itself(tmp_path):
-    """E2.3 (planted bug): the other half of the rule. With no caller transaction, phrase_sums opens one for its reads
+    """The other half of the rule. With no caller transaction, phrase_sums opens one for its reads
     and commits it, so nothing is left open after a plain call."""
     store = _store_with(tmp_path, ("phrases_sample.srt", "library_episode.ass"))
     try:

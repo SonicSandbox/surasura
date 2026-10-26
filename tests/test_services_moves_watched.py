@@ -390,7 +390,7 @@ def _items_of_piece(store, piece_id):
     return [r[0] for r in store.conn.execute("SELECT id FROM items WHERE piece_id = ? ORDER BY ord, id", (piece_id,))]
 
 
-def test_L10_an_ungroup_queued_before_a_crash_is_checked_against_the_group_it_met(lib, make_writer, short_lock_wait):
+def test_an_ungroup_queued_before_a_crash_is_checked_against_the_group_it_met(lib, make_writer, short_lock_wait):
     """An Ungroup queued while the library was busy, then a crash, then another program took an episode out of that
     group: the replay sees the group changed since the click and lets the Ungroup go (the group and its episodes stay
     as the other program left them). Ungroup goes through the moves guard like group and add_to_group do, so its
@@ -417,7 +417,7 @@ def test_L10_an_ungroup_queued_before_a_crash_is_checked_against_the_group_it_me
 
 
 # why: the other branch of the same guard: a replayed Ungroup whose group is as it was when queued goes through
-def test_L10_an_ungroup_queued_before_a_crash_goes_through_when_the_group_is_unchanged(lib, make_writer,
+def test_an_ungroup_queued_before_a_crash_goes_through_when_the_group_is_unchanged(lib, make_writer,
                                                                                       short_lock_wait):
     """An Ungroup queued while the library was busy, then a crash, and nothing else touched the group: the replay finds
     the group as it was when the click came, so the Ungroup goes through and the group is broken up."""

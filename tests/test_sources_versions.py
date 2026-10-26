@@ -534,6 +534,8 @@ def test_never_read_this_folder_takes_an_item_whose_versions_lie_elsewhere(langu
         second = store.add_source(other)
         _look(store, language, second)
         assert len(_versions(store)) == 1
+        assert store.items_under(os.path.join(src, a)) == [item]
+        assert [s.get("items") for s in store.sources() if s["id"] == second] in ([0], [None])
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

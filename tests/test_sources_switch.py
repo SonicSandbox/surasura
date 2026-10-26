@@ -28,7 +28,7 @@ from app import library_store as ls
 from app import sources
 from app.connect import library, videos
 from tests.test_library_store_support import LANGUAGES, RESOURCES
-from tests.test_sources_groups import _group_b, _show, _sub
+from tests.test_sources_groups import _group_b, _picks, _show, _sub, _work
 from tests.test_sources_scenarios import _THIN
 from tests.test_sources_scan import (_OURS, _SHOWS, _drive, _empty, _fresh_module_state, _library_files,  # noqa: F401
                                      _look, _text, _video, _write)
@@ -690,3 +690,98 @@ def test_another_volume_is_never_an_edition_and_one_splitter_reads_every_book(la
         _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
         assert _look(store, language, root)["switched"] == len(before)
         assert split == [f"{_BOOKS[language]}.epub", f"{_BOOKS[language]} 2.epub", f"{_EDITION[language]}.epub"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_away_episode_is_held_and_never_switched_while_the_rest_switch(language):
+    """An episode whose file is away (`missing`) holds its place: the switch to B takes the episodes it can read and
+    names the away one as held (`held_items`), never planning it for a switch."""
+    # why: an away item has no file to read, so it can't be swapped in place; planning it would write into a missing copy.
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        work = store.conn.execute("SELECT DISTINCT work_id FROM items").fetchone()[0]
+        ids = [i for i, _r in _items(store)]
+        with store._writing():
+            store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (ids[0],))
+        change = store.switch_group(work, _group_b(store), by="user")
+        assert change.switched == [ids[1]]
+        assert change.held == [ids[0]]
+        last = store.last_switch(work)
+        assert (last["switched"], last["held"], last["held_items"]) == (1, 1, [ids[0]])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_switched_copy_is_trashed_under_the_name_it_had_so_undo_finds_it(language):
+    """A group switch renames each copy to the new subtitle's name (`.ass` -> `.srt`), so the old copy's trash
+    name must carry the OLD file name (its `rel`), not the new one: Undo swaps back to the old name and finds the
+    trashed copy by the name it was trashed under. The old copies are `.ass`; their trash names start with their base."""
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        work = _work(store)
+        copies, rels = _picks(store, data_dir)
+        ids = sorted(copies)
+        old_rels = {i: rels[i] for i in ids[:2]}
+        change = store.switch_group(work, _group_b(store))
+        assert change.switched == ids[:2]
+        after, rels_after = _picks(store, data_dir)
+        assert [rels_after[i].rsplit("/", 1)[1] for i in ids[:2]] == [os.path.basename(b[1]), os.path.basename(b[2])], \
+            "the copies are renamed to B's subtitles (their new names differ from the old ones)"
+        trash = _trash(data_dir)
+        for i in ids[:2]:
+            old_base = os.path.splitext(os.path.basename(old_rels[i]))[0]
+            assert any(t.startswith(old_base + "_") and t.endswith(".ass") for t in trash), \
+                "the trashed copy keeps the name it had when it was trashed (Undo swaps back to it)"
+        assert store.undo(change).kind == "undo"
+        restored, rels_restored = _picks(store, data_dir)
+        assert rels_restored == rels, "Undo puts every copy back under its old name"
+        assert {i: restored[i] for i in ids[:2]} == {i: copies[i] for i in ids[:2]}, \
+            "Undo restores the trashed copy's own bytes, so it found that copy and not another file"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_staged_book_part_starts_its_trash_clock_in_the_data_trash(language, monkeypatch):
+    """A new edition's part is staged in the data folder's trash before the switch takes it; its 30-day trash clock must
+    start there, or the trash could purge the bytes the switch is about to use."""
+    # why: a staged part with no clock started could be purged from .trash before the switch, losing the new edition.
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    started = []
+    stages = []
+    real_clock = ls.restart_trash_clock
+    real_stage = ls._stage
+
+    def spy(p):
+        # what the clock was started on: the file's folder and bytes at that moment
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                started.append((os.path.normpath(os.path.dirname(p)), f.read()))
+        return real_clock(p)
+
+    def stage(store_, rel, data):
+        # the clock starts this staging made, against the bytes it wrote: only the staging's own call counts
+        before_calls = len(started)
+        real_stage(store_, rel, data)
+        stages.append((started[before_calls:], data))
+    monkeypatch.setattr(ls, "restart_trash_clock", spy)
+    monkeypatch.setattr(ls, "_stage", stage)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        assert _look(store, language, root)["switched"] == len(before)
+    trash = os.path.normpath(os.path.join(data_dir, ".trash"))
+    new_parts = _parts(new, language)
+    staged = [(calls, data) for calls, data in stages if data in new_parts]
+    assert staged, "the new edition's parts were never staged in .trash"
+    for calls, data in staged:
+        assert any(folder == trash and data == data_written for folder, data_written in calls), \
+            "a staged part of the new edition had no trash clock started by its own staging"

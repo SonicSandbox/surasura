@@ -832,3 +832,46 @@ def test_undo_takes_the_trash_copy_when_the_old_original_was_edited_since(langua
         _write(a[2], _text(language, 2, " edited after the switch"))
         undone = store.undo(change)
         assert undone.switched == change.switched and _picks(store, data_dir) == copies
+
+
+def test_second_keep_with_new_groups_tried_keeps_the_groups_tried_before():
+    """A keep that finds no fitting group records the groups it tried; a second keep that tries another group adds it
+    to those, so every group tried so far stays recorded and the check stays open."""
+    # why: a group ruled out earlier must stay on record, or Connect would try it again on the next look.
+    language = "ja"
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    show, a, b, v = _show(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        work = _work(store)
+        mine, other = store.group_of(work)["group"], _group_b(store)
+        assert store.keep_group(work, tried=[mine]) is True
+        assert store.keep_group(work, tried=[other]) is True
+        got = store.group_of(work)
+        assert (got["checked"], got["tried"]) == (False, [mine, other])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_settling_a_stale_switch_keeps_a_new_copy_whose_bytes_differ_from_the_record(language):
+    """A switch's new copy edited after the switch (its bytes no longer the recorded sha256): settling the stale
+    switch keeps that copy on disk, never deletes it."""
+    # why: the old copy is only safe to drop while the new copy still holds the switched bytes; an edited copy is
+    # the user's own work and must survive the settle.
+    import hashlib
+    store, data_dir = _empty(language)
+    with store:
+        new = os.path.join(data_dir, "files", "new.srt")
+        _write(new, _text(language, 1, " changed since the switch"))
+        _write(os.path.join(data_dir, "trash", "old.srt"), _text(language, 1, " old copy"))
+        recorded = hashlib.sha256(_text(language, 1, " the switched bytes").encode("utf-8")).hexdigest()
+        note = {"at": 0, "moves": [{"rel": "files/old.srt", "to_rel": "files/new.srt",
+                                    "trash": "trash/old.srt", "sha256": recorded}]}
+        with store._writing():
+            store.conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)",
+                               (ls.SWITCH_PENDING + "stale", json.dumps(note)))
+        with open(new, "rb") as f:
+            before = f.read()
+        assert store.settle_switches(now=10 ** 9) == 1
+        with open(new, "rb") as f:
+            assert f.read() == before

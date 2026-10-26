@@ -324,3 +324,29 @@ def test_a_waiting_video_of_a_show_already_shown_still_waits_in_new_arrivals(lan
         assert list(led.placed.values()) == ["arrivals"], "its show only in 6+ Months: it still waits"
         assert _tier(store, "arrivals") == [f"Library/{w[110]}/ep2.mkv", f"Library/{w[111]}/ep2.mkv"]
         assert {store.item(i)["availability"] for i in joined.added + led.added} == {"waiting"}
+
+# why: putting one removed video back deletes only its own exclusion; another removed video's exclusion stays, so
+# its later subtitle is still kept out (an OR in the delete would clear every removed exclusion and bring it back)
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_putting_back_one_removed_video_keeps_another_removed_video_out(language):
+    """Put back of one removed waiting video brings only that video back, waiting; the other removed video's
+    exclusion stays, and its subtitle found later is still kept out."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        va = _video(src, w[78], "ep1.mkv", "v1-put-back-a")
+        vb = _video(src, w[79], "ep1.mkv", "v1-put-back-b")
+        a = store.take_in(root, [va]).added[0]
+        b = store.take_in(root, [vb]).added[0]
+        removed_a = store.remove([a])
+        store.remove([b])
+        assert len(_exclusions(store)) == 2
+        store.restore(removed_a.trash_ids)
+        assert store.item(a)["availability"] == "waiting"
+        assert _exclusions(store) == [(root, ls.path_key(os.path.abspath(vb["video_path"])), "removed",
+                                       {"size": vb["size"], "sha256": None, "video_key": "v1-put-back-b"})]
+        assert store.take_in(root, [dict(vb)]).skipped["excluded"]
+        sub = _subtitle(language, data_dir, src, vb, "ep1.srt", 3)
+        assert store.take_in(root, [sub]).skipped["excluded"]

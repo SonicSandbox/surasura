@@ -534,3 +534,25 @@ def test_never_read_this_folder_takes_an_item_whose_versions_lie_elsewhere(langu
         assert len(_versions(store)) == 1
         assert store.items_under(os.path.join(src, a)) == [item]
         assert [s.get("items") for s in store.sources() if s["id"] == second] in ([0], [None])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_one_epub_part_among_an_episodes_picks_makes_its_copies_unreadable(language):
+    """`_group_copies` (the reading behind Connect's other-subtitle list and the group switch): an episode whose picks
+    include ONE EPUB part (`<book>.epub#3`, a book's part, never a folder's episode) has no copies at all — None — even
+    when its other pick is an ordinary episode file."""
+    store, _data_dir = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("driveA")
+    _write(os.path.join(src, a, f"{a} - 04.{_OURS[language]}.srt"), _text(language, 4))
+    with store:
+        item = _look(store, language, store.add_source(src), first=True)["ids"][0]
+        with store._reading():
+            assert ls._group_copies(store, item) is not None           # the episode alone reads its copies
+        with store._writing():
+            store.conn.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                               ("src:book-part", item, json.dumps({"producer": "source",
+                                                                  "origin": os.path.join(src, "Book.epub#3")}),
+                                ls._now()))
+        with store._reading():
+            assert ls._group_copies(store, item) is None

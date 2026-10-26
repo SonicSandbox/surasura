@@ -226,3 +226,134 @@ def test_kuras_review_rows_paths_and_names(language, tmp_path):
     assert store.item(added)["rel_path"] == f"{ls.HATO_FOLDER}/{w[91]}.srt"
     assert {r[3] for r in store.read_events("connect")[0] if r[1] == added} == {"hato"}, "never logged as the user's"
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_hand_off_whose_video_is_held_is_never_checked_against_a_same_size_twin(language):
+    """K3 (1): the same-size twin look runs only when no waiting video gap and no video holder came first. Why it
+    matters: a hand-off whose video an item already holds is that item's subtitle, whatever bytes it has, so a same-size
+    file elsewhere in the library must not be read as its twin (the twin check hashes files of that size). The control
+    half: with no holder, the same bytes in the library are found as the twin, so the look itself works."""
+    store = migrated(language)
+    w = names(language)
+    text = f"{w[92]}\n{w[93]}\n"
+    holder = touch(store.data_dir, f"{ls.HATO_FOLDER}/{w[90]}.srt", text)
+    held = store.register(holder, _record("v1-held-video")).added[0]
+    twin = touch(store.data_dir, f"{ls.HATO_FOLDER}/{w[91]}.srt", text)
+    assert os.path.getsize(twin) == os.path.getsize(holder)
+
+    _stamp, gap, video, same = store._twin_seen(twin, "v1-held-video", _record("v1-held-video"))
+    assert gap is None and video is not None and same is None, "a held video answers; no twin look"
+
+    _stamp, gap, video, same = store._twin_seen(twin, "v1-nobody", _record("v1-nobody"))
+    assert gap is None and video is None and same is not None and same[0] == held, "no holder: the twin is found"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_hand_off_whose_video_waits_for_its_subtitle_is_never_checked_against_a_same_size_twin(language, tmp_path):
+    """K3 (1), the gap half: a video waiting for its subtitle (K5) answers first, so the same-size twin look does not
+    run. Why it matters: the hand-off is the subtitle that waiting item is waiting for, whatever bytes it has, and a
+    same-size file elsewhere must not be read as its twin. The control half: a hand-off with no waiting video and no
+    holder still finds the twin, so the look itself works."""
+    store = migrated(language)
+    w = names(language)
+    src = str(tmp_path / "src")
+    show = w[89]
+    video_path = os.path.join(src, show, "ep5.mkv")
+    os.makedirs(os.path.dirname(video_path))
+    with open(video_path, "wb") as f:
+        f.write(b"\x1aE\xdf\xa3" + b"ep5")
+    st = os.stat(video_path)
+    video = {"origin": video_path, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "show": show,
+             "rel": f"{ls.CONTENT_FOLDER}/{show}/ep5.mkv", "video_path": video_path, "video_size": st.st_size,
+             "video_key": None}
+    change = store.take_in(store.add_source(src), [video])
+    assert {store.item(i)["availability"] for i in change.added} == {"waiting"}
+
+    text = f"{w[92]}\n{w[93]}\n"
+    holder = touch(store.data_dir, f"{ls.HATO_FOLDER}/{w[90]}.srt", text)
+    store.register(holder, _record("v1-held-sub"))
+    twin = touch(store.data_dir, f"{ls.HATO_FOLDER}/{w[91]}.srt", text)
+    assert os.path.getsize(twin) == os.path.getsize(holder)
+
+    _stamp, gap, video_held, same = store._twin_seen(
+        twin, "v1-gap-sub", _record("v1-gap-sub", video_path=video_path))
+    assert gap is not None and video_held is None and same is None, "a waiting video answers; no twin look"
+
+    _stamp, gap, video_held, same = store._twin_seen(twin, "v1-nobody", _record("v1-nobody"))
+    assert gap is None and video_held is None and same is not None, "no waiting video, no holder: the twin is found"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_pairing_moves_the_twin_stamp_to_max_rowid_and_not_min(language):
+    """# why: the twin look reads `_twin_stamp` before `register`'s command; a stamp that does not move when a
+    pairing is added lets a twin reuse a stale answer. The stamp's first element is MAX(rowid) of `pairings`: a second
+    pairing on a store that already holds one must move it to the newest row. MIN(rowid) is the first pairing and is
+    not what the stamp reads, so after the second pairing the stamp equals MAX and differs from MIN."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    first = touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[83]}.srt")
+    store.register(first, _record("v1-p1"))
+    before = store._twin_stamp()
+    second = touch(data_dir, f"{ls.HATO_FOLDER}/{names(language)[84]}.srt")
+    store.register(second, _record("v1-p2"))
+    after = store._twin_stamp()
+    assert before[0] is not None and after[0] != before[0], "a new pairing moves the stamp: a stale twin answer is refused"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_pairing_with_broken_json_is_skipped_by_the_video_lookup(language):
+    # why: one record with broken JSON must not make the video lookup fail; the lookup answers with the intact item
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    w = names(language)
+    touch(data_dir, f"{ls.HATO_FOLDER}/{w[80]}.srt")
+    touch(data_dir, f"{ls.HATO_FOLDER}/{w[81]}.srt")
+    intact = store.register(os.path.join(data_dir, ls.HATO_FOLDER, f"{w[80]}.srt"), _record("v1-aa")).added[0]
+    broken = store.register(os.path.join(data_dir, ls.HATO_FOLDER, f"{w[81]}.srt"), _record("v1-bb")).added[0]
+    # why: the lookup reads an origin's video through SQLite's JSON functions, so only an origin row can meet broken JSON
+    with store._writing():
+        store.conn.execute("UPDATE pairings SET content_key = ?, pairing = ? WHERE item_id = ?",
+                           (ls.SOURCE_KEY + "v1-bb", "{not json", broken))
+    assert store._video_holder("v1-aa") == intact, "the intact item answers; the broken record is skipped"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_sync_never_takes_out_an_item_that_has_an_anki_link(language):
+    """# why: a hato drop with no pairing and no person's mark is taken out by a sync, unless an Anki link holds it —
+    its cards would point at nothing once the row is gone."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    drop = touch(data_dir, f"{ls.HATO_FOLDER}/{w[86]}.srt")
+    record = _record("v1-linked")
+    item = store.register(drop, record).added[0]
+    rel = store.item(item)["rel_path"]
+    with store._writing():
+        store.conn.execute("DELETE FROM pairings WHERE item_id = ?", (item,))
+    assert store._sync_drop(item, rel, record) is True
+    with store._writing():
+        store.conn.execute("INSERT INTO anki_links (item_id, note_id, source, linked_at) VALUES (?, 1, 'test', "
+                           "'2026-10-06T00:00:00')", (item,))
+    assert store._sync_drop(item, rel, record) is False, "an item with an Anki link is never taken out"
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_waiting_video_is_found_by_its_pairings_video_keys_too(language):
+    # why: a waiting video is found by its pairing's video keys too, not the content key alone, so a subtitle whose
+    # record names the video under another key still finds the item waiting for it.
+    store = migrated(language)
+    try:
+        pairing = _record("v1-pp", video_key="vk-1")
+        keys = ls._video_keys(pairing)
+        assert len(keys) == 2, "the pairing names its video twice: its video key and its path's key"
+        for key in keys:                             # each one alone finds the waiting item
+            store._waiting_videos = lambda key=key: {key: 7}
+            assert store._waiting_video("v1-no-such-content", pairing) == 7, key
+    finally:
+        store.close()

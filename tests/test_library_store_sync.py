@@ -1517,3 +1517,55 @@ def test_a_scoped_sync_never_takes_a_missing_item_whose_file_is_back(language):
         assert store.item(item)["availability"] == "available"
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_relinking_to_a_same_size_file_with_another_time_notes_no_move(language):
+    """A relink notes a move only for the item's own file, same size AND same time (rule 2b): a file of the same
+    size with another modified time is another file, so the token store is given no note to re-key the item's
+    tokenized row by. The note list stays empty, and the item still points at the file it was relinked to."""
+    store = migrated(language)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[0]
+        old = store.item(item)["rel_path"]
+        held = _cut(data_dir, old)
+        original_time = os.stat(held).st_mtime_ns
+        assert store.sync_disk()["missing"] == [item]
+        w = names(language)
+        other = touch(data_dir, f"GoalContent/{w[115]}/{old.rsplit('/', 1)[-1]}")
+        shutil.copy2(held, other)                                    # the same bytes, so the same size
+        _set_time(other, original_time + 10 * 1_000_000_000)         # ten seconds on: not the item's file
+        assert store.text_moved() == []
+        store.relink(item, other)
+        assert store.text_moved() == []
+        assert store.item(item)["availability"] == "available"
+        assert store.item(item)["rel_path"] == f"GoalContent/{w[115]}/{old.rsplit('/', 1)[-1]}"
+    finally:
+        store.close()
+
+
+# why: a rename is only a rename once the old path is gone; while the old file still sits at its path, a copy
+# under a new name is a new file, and the item keeps its own path (no item on two files).
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_rename_whose_old_path_still_exists_is_never_repointed(language):
+    """A copy beside a still-present file is a stale walk, not a move."""
+    store = migrated(language, shows=2, episodes=3)
+    try:
+        data_dir, _u = roots(language)
+        item = store.ids("soon")[1]
+        old = store.item(item)["rel_path"]
+        folder = os.path.dirname(os.path.join(data_dir, *old.split("/")))
+        new_name = f"{names(language)[118]}{os.path.splitext(old)[1]}"
+        shutil.copy2(os.path.join(data_dir, *old.split("/")), os.path.join(folder, new_name))
+        # why: the walk is stale — it lists the copy under its new name but not the old file that still sits on
+        # disk, so the item looks gone and the copy looks like its move (same folder, size and mtime). Only the
+        # old-path check stops it; without that check the item would be repointed to the copy.
+        walk = ls.walk_library(data_dir)
+        walk["files"] = [f for f in walk["files"] if ls.path_key(f[0]) != ls.path_key(old)]
+        summary = store.sync_disk(walk=walk)              # None when nothing changed
+        assert not (summary or {}).get("renamed")
+        assert store.item(item)["rel_path"] == old
+        assert os.path.exists(os.path.join(data_dir, *old.split("/")))
+    finally:
+        store.close()

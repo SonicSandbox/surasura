@@ -128,3 +128,47 @@ def test_the_looks_answer_whether_a_folder_can_be_skipped_on_their_worker():
         looks.close()
         looks.idle(5)
     assert looks.skip_refused(card, got.append) is False                         # closed
+
+
+def test_a_sibling_folder_sharing_a_name_prefix_is_not_inside_the_source_folder():
+    # why: a folder named like the source plus more letters (Source + "b") is a sibling, not inside the source, so a
+    # backup in it is refused as outside the folders Surasura reads, never allowed as one of the source's own files.
+    opener, _data, _uf = _library()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    try:
+        folder = _source()
+        sibling = folder.rstrip("/\\") + "b"
+        sibling_card = _with_card(sibling)
+        _added(looks, folder)
+        got = []
+        assert looks.skip_refused(sibling_card, lambda why: got.append(why), language="ja")
+        assert looks.idle(10) and len(got) == 1
+        assert got == [ls.SKIP_OUTSIDE]                                          # the sibling is outside the folder
+    finally:
+        looks.close()
+        looks.idle(5)
+
+
+def test_skipping_a_folder_bumps_copy_dirty_so_the_connect_copy_carries_the_skip():
+    # why: the Connect copy takes the skipped folders only when copy_dirty moves, so a skip change must bump it
+    opener, data_dir, user_files_dir = _library()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    try:
+        folder = _source()
+        card = _with_card(folder)
+        _added(looks, folder)
+        store = _read_store(data_dir, user_files_dir)
+        try:
+            before = int(store._meta().get("copy_dirty") or 0)
+            store.skip_folder(card)
+            assert len(store.skipped_folders()) == 1                         # the skip landed, not just the bump
+            assert int(store._meta().get("copy_dirty") or 0) == before + 1
+            # why: Read again moves the skip too, so it must carry the copy just as the skip does
+            assert store.read_folder_again(store.skipped_folders()[0]["id"]) is True
+            assert store.skipped_folders() == []
+            assert int(store._meta().get("copy_dirty") or 0) == before + 2
+        finally:
+            store.close()
+    finally:
+        looks.close()
+        looks.idle(5)

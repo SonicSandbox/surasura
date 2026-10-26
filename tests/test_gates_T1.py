@@ -175,3 +175,44 @@ def test_phrase_sums_read_one_snapshot_while_the_indexer_commits_between_its_rea
         assert store.phrase_sums()[0] != expected[0], "read again, the new table is current and read"
     finally:
         store.close()
+
+
+def test_phrase_sums_leave_a_transaction_its_caller_opened_open(tmp_path):
+    """E2.3 (planted bug): phrase_sums commits only the transaction it opened itself. A caller that holds one (the
+    arrivals gate reads inside its own) keeps it open after the read, so the caller's own writes are not committed
+    early."""
+    store = _store_with(tmp_path, ("phrases_sample.srt", "library_episode.ass"))
+    try:
+        kept = json.loads(store.get_meta("phrase_files"))
+        first, second = list(kept["files"])
+        kept["files"][first][3] = {"7": [2, ["気がする", "気がした"]]}
+        kept["files"][second][3] = {"7": [3, ["気がした", "気がして"]], "9": [1, ["腑に落ちる"]]}
+        _rewrite(store, kept)
+        store.conn.execute("BEGIN")
+        try:
+            result = store.phrase_sums()
+            assert result is not None, "the read ran, so the caller's transaction is what is under test"
+            assert store.conn.in_transaction, "the caller's transaction is still open after the read"
+        finally:
+            if store.conn.in_transaction:
+                store.conn.execute("ROLLBACK")
+    finally:
+        store.close()
+
+
+def test_phrase_sums_commit_the_transaction_it_opened_itself(tmp_path):
+    """E2.3 (planted bug): the other half of the rule. With no caller transaction, phrase_sums opens one for its reads
+    and commits it, so nothing is left open after a plain call."""
+    store = _store_with(tmp_path, ("phrases_sample.srt", "library_episode.ass"))
+    try:
+        kept = json.loads(store.get_meta("phrase_files"))
+        first, second = list(kept["files"])
+        kept["files"][first][3] = {"7": [2, ["気がする", "気がした"]]}
+        kept["files"][second][3] = {"7": [3, ["気がした", "気がして"]], "9": [1, ["腑に落ちる"]]}
+        _rewrite(store, kept)
+        assert not store.conn.in_transaction, "no transaction is open before the call"
+        result = store.phrase_sums()
+        assert result is not None, "the read ran, so the commit is what is under test"
+        assert not store.conn.in_transaction, "the transaction phrase_sums opened is committed after the read"
+    finally:
+        store.close()

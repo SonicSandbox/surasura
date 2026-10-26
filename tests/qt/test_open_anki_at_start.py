@@ -292,3 +292,66 @@ def test_a_quit_during_the_wait_for_anki_ends_the_wait_at_once(qapp, anki):
     assert not services.anki_session_thread.is_alive(), "the wait outlived the window"
     assert anki.begins == [] and anki.kicks == [] and BEGAN not in log
     services.shutdown(0.05)
+
+
+# why: one session look at a time; a second one asked while the first still waits on Anki starts no thread and asks
+# Anki nothing more, even at the window's start, so one window never runs two looks at once.
+def test_a_second_session_look_while_one_is_under_way_starts_nothing(qapp, anki):
+    import threading
+    release = threading.Event()
+    anki.state = "open"
+    anki.on_look = lambda: release.wait(5)
+    services, _said, _log = _services(ON)
+    first = services._look_at_anki(dict(ON), True)
+    try:
+        assert first is not None and _until(lambda: anki.looks == 1), "the first look never began"
+        assert services._look_at_anki(dict(ON), True) is None, "a second look started while the first was under way"
+        assert anki.looks == 1, "a second look asked Anki while the first was under way"
+    finally:
+        release.set()
+        if first is not None:
+            first.join(10)
+        services.shutdown(0.05)
+    assert not first.is_alive(), "the first look never ended"
+
+
+def test_a_quit_ends_the_looks_wait_at_once_and_a_wait_without_one_still_waits(qapp, anki, monkeypatch):
+    """The look waits on the window's closing event: with the window open a wait lasts its full length, and a quit ends
+    it at once, well before the wait's own length, so the window's thread never outlives a closed window."""
+    import threading
+    from app.connect import anki_session
+    waited = []
+
+    def look_for(length):
+        def look(settings, opening, say, sleep, clock, cancel):
+            started = time.time()
+            sleep(length)
+            waited.append(time.time() - started)
+        return look
+
+    # why: a quit during a 5 s wait must end it near the 0.2 s quit, with a wide margin for a slow Windows timer
+    services, _said, _log = _services(ON)
+    services.anki_look = look_for(5)
+    threading.Timer(0.2, services.closing.set).start()
+    services._session(dict(ON), True)
+    assert waited and 0.1 <= waited[0] < 1.0, waited
+
+    # why: with the window open nothing ends the wait early, so a 0.4 s wait takes at least about 0.4 s
+    waited.clear()
+    open_services, _said, _log = _services(ON)
+    open_services.anki_look = look_for(0.4)
+    open_services._session(dict(ON), True)
+    assert waited and waited[0] >= 0.3, waited
+
+    # why: the real look (`anki_session.at_window`) is the one the window runs, so the wiring is pinned on it: the
+    # sleep it is handed is the window's closing event's wait, which is what makes a quit end its wait
+    handed = []
+
+    def spy_at_window(settings, opening, say, sleep, clock, cancel):
+        handed.append(sleep)
+        return None
+
+    monkeypatch.setattr(anki_session, "at_window", spy_at_window)
+    real_services, _said, _log = _services(ON)
+    real_services._session(dict(ON), True)
+    assert handed and handed[0] == real_services.closing.wait, handed

@@ -1162,3 +1162,62 @@ def test_a_move_note_whose_new_path_holds_a_row_already_is_never_used(tmp_path):
     assert ti._noted_moves(note, {old_key}, {old_key: row}, signatures, listed) == [(old_key, new_key)], \
         "precondition: the note is good with no row at the new path"
     assert ti._noted_moves(note, {old_key}, {old_key: row, new_key: dict(row)}, signatures, listed) == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_locked_kept_text_read_raises_and_sets_no_file_aside(language, capsys):
+    """A locked database is not a damaged one: the OperationalError is raised as it is, the kept-text file stays where
+    it is (never renamed to .damaged-, nothing printed as set aside), and nothing is started over in its place."""
+    a, finished, *_rest = _files(language)
+    store = ti.open_store(language)
+    try:
+        store.reconcile([a], ti.make_tokenizer(language), kept=[finished])
+        kept = _kept_text(store)
+        assert os.path.exists(kept.path), "precondition: the kept text is on disk"
+        before_bytes = open(kept.path, "rb").read()
+        held_before = kept.held()
+
+        def locked(conn):
+            raise sqlite3.OperationalError("database is locked")
+
+        with pytest.raises(sqlite3.OperationalError):
+            kept._run(locked, None)
+        assert os.path.exists(kept.path), "the locked file is still where it was"
+        assert open(kept.path, "rb").read() == before_bytes, "the locked file's bytes are untouched (not recreated)"
+        assert kept.held() == held_before, "nothing is started over in its place: the same texts are kept"
+        assert not [n for n in os.listdir(os.path.dirname(kept.path)) if ".damaged-" in n]
+        assert "set aside" not in capsys.readouterr().out
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_damaged_kept_text_file_takes_its_wal_and_shm_sidecars_aside_with_it(language):
+    """A damaged kept-text file set aside takes its -wal and -shm sidecars along, each under the same new name, so
+    the sidecars can never be read against the new file that replaces it. Each sidecar keeps its own bytes."""
+    # why: a sidecar left behind would be read by the next connection as if it belonged to the fresh kept text.
+    store = ti.open_store(language)
+    kept = _kept_text(store)
+    kept_db = kept.path
+    with open(kept_db, "wb") as f:
+        f.write(b"\x00garbage" * 512)
+    with open(kept_db + "-wal", "wb") as f:
+        f.write(b"WAL-SIDECAR-MARK")
+    with open(kept_db + "-shm", "wb") as f:
+        f.write(b"SHM-SIDECAR-MARK")
+    assert kept._set_aside("damaged for the test") is True
+    folder = os.path.dirname(kept_db)
+    assert not os.path.exists(kept_db + "-wal") and not os.path.exists(kept_db + "-shm")
+    moved_db = [n for n in os.listdir(folder) if ".damaged-" in n and not n.endswith(("-wal", "-shm"))]
+    moved_wal = [n for n in os.listdir(folder) if ".damaged-" in n and n.endswith("-wal")]
+    moved_shm = [n for n in os.listdir(folder) if ".damaged-" in n and n.endswith("-shm")]
+    assert len(moved_db) == 1 and len(moved_wal) == 1 and len(moved_shm) == 1
+    # why: each sidecar must carry the moved file's exact new name, not just any .damaged- name.
+    assert moved_wal == [moved_db[0] + "-wal"] and moved_shm == [moved_db[0] + "-shm"]
+    with open(os.path.join(folder, moved_db[0]), "rb") as f:
+        assert f.read() == b"\x00garbage" * 512
+    with open(os.path.join(folder, moved_wal[0]), "rb") as f:
+        assert f.read() == b"WAL-SIDECAR-MARK"
+    with open(os.path.join(folder, moved_shm[0]), "rb") as f:
+        assert f.read() == b"SHM-SIDECAR-MARK"
+    store.close()

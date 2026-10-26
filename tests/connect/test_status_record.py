@@ -75,3 +75,20 @@ def test_stamp_is_equal_when_nothing_changed_and_differs_after_a_need(tmp_path, 
         ledger.need("ja", "known-sync", "気配 is not in the known words yet")
 
     assert status.stamp(path, ["ja"]) != before
+
+
+def test_a_refusal_dismissed_then_fixed_is_not_counted_as_skipped(tmp_path, quiet_running):
+    # Why: a dismissed refusal is "skipped" only while its need stays open; once the fix closes it, the item must
+    # leave the skipped list, or the window keeps showing a refusal the learner already dealt with.
+    path = str(tmp_path / "ledger.sqlite")
+    with Ledger(path) as ledger:
+        assert ledger.need("ja", "not-timed", "上層部: no timing in the video yet", item_id=3) is True
+        need_id = ledger.needs("ja")[0]["id"]
+
+    assert status.dismiss(need_id, path=path) is True
+    assert status.read(["ja"], path=path)["languages"]["ja"]["skipped"] == [3]
+
+    with Ledger(path) as ledger:
+        ledger.fix("ja", item_id=3)
+
+    assert status.read(["ja"], path=path)["languages"]["ja"]["skipped"] == []

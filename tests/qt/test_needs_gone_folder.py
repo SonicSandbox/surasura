@@ -563,3 +563,19 @@ def test_find_on_a_stopped_folder_finds_its_record_and_is_not_refused(language):
     assert answer["root"] is not None and answer["root"] != root_a
     assert answer["result"] is not None
     assert not answer["stop"]                                             # a stopped folder is never stopped again
+
+
+# why: Find reads the picked folder into the gone card's own language's library, even after the window has moved on to
+# another language; reading it into the window's current language would join the show to the wrong library.
+def test_find_on_a_gone_card_reads_into_the_cards_own_language_not_the_windows_current_one(world):
+    looks = Looks()
+    seed, win, writer, ny = world("ja", looks=looks)
+    _told(win, "ja", _gone_row("ja"))
+    card = _card_in(win, ny)
+    ny.language = "zh"                                    # the window has moved on to Chinese since the card was made
+    ny.pick_folder = lambda title, start: "S:\\Video\\Anime\\X"
+    _button(ny, card.key, "find_folder").click()
+    assert wait_until(lambda: looks.finds, 5)
+    assert looks.finds[-1][2] == "ja"
+    # the answer comes back through the GUI thread's signal; wait for the press to end so the callback doesn't run after the test
+    assert wait_until(lambda: not qpress.live(win, ny._press_key("find_folder", card)), 5)

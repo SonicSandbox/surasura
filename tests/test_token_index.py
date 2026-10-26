@@ -1086,3 +1086,49 @@ def test_prepare_preview_decodes_ahead_and_changes_no_number(tmp_path, monkeypat
     ti.prepare_preview("zh", str(tmp_path / "missing"))
     monkeypatch.setattr(analyzer, "compound_parts", lambda: 1 / 0)
     ti.prepare_preview("ja", str(uf))
+
+
+def test_kept_file_moved_to_a_new_folder_keeps_its_row_when_nothing_else_leaves(tmp_path):
+    """A kept file moved to another folder, with no other file leaving the store, is matched to its own row: the row
+    follows the file to its new path and the file is never read again."""
+    # why: the move is matched by the row orphaned when its file is gone, not only when some other row leaves.
+    old = tmp_path / "adv.txt"; _write(old, JA_ADVENTURE)
+    (tmp_path / "moved").mkdir()
+    new = tmp_path / "moved" / "adv.txt"
+    data_dir = str(tmp_path / "data")
+    tok = _counting_tokenizer("ja")
+    store = ti.open_store("ja", path=_db(tmp_path))
+    try:
+        store.reconcile([], tok, kept=[str(old)], data_dir=data_dir)
+        os.replace(str(old), str(new))
+        tok.calls.clear()
+        store.reconcile([], tok, kept=[str(new)], data_dir=data_dir)
+        assert tok.calls == [], "the moved file is matched to its row, not read again"
+        rows = [r[0] for r in store.conn.execute("SELECT path FROM files")]
+        assert rows == [ti._norm(str(new))], "the row follows the file to its new path"
+    finally:
+        store.close()
+
+
+def test_chinese_preview_never_applies_the_japanese_one_kanji_rule(tmp_path, monkeypatch):
+    """# why: the one-character rule is Japanese only (analyzer.single_kind reads Japanese one-kanji words), so a
+    Chinese Rarity preview keeps every word even with Settings' one-kanji switch on; Japanese still applies it."""
+    monkeypatch.setattr(ti, "singles_rule", lambda: True)
+    uf = tmp_path / "User Files" / "zh"
+    uf.mkdir(parents=True)
+    (uf / "KnownWord.json").write_text(json.dumps({"words": []}), encoding="utf-8")
+    f = tmp_path / "adv_zh.txt"; _write(f, ZH_ADVENTURE)
+    store = ti.open_store("zh", path=_db(tmp_path))
+    try:
+        store.reconcile([str(f)], ti.make_tokenizer("zh"))
+        assert ti.preview_lists(store, "zh", str(uf))["skip_singles"] is False, "Chinese keeps every word"
+        assert ti.preview_lists(store, "ja", str(uf))["skip_singles"] is True, "Japanese applies the rule"
+    finally:
+        store.close()
+
+
+def test_each_statement_of_a_schema_script_starts_fresh_after_the_last():
+    # why: a finished statement's text must not carry into the next one; the split clears its buffer after every
+    # complete statement, so a schema script yields its statements one by one (each run by its own execute)
+    script = "CREATE TABLE words(w TEXT); CREATE INDEX idx_words ON words(w);"
+    assert ti._statements(script) == ["CREATE TABLE words(w TEXT)", "CREATE INDEX idx_words ON words(w)"]

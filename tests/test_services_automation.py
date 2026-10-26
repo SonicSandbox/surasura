@@ -1445,3 +1445,33 @@ def test_a_sync_by_hand_with_no_language_named_is_the_windows_language_and_nothi
     auto.close()
     auto.anki_synced(result, "ja")
     assert len(ended) == 2, "closed: nothing"
+
+
+def test_sync_now_with_the_closed_flag_set_asks_nothing_and_answers_closed_even_on_a_live_worker(live, monkeypatch):
+    # why: close() stops the worker, so a put is refused there anyway; the closed flag itself must answer "closed" at
+    # once and queue nothing, or a sync asked for after the window closed would run on a worker that still takes work.
+    h.seed_library("ja")
+    _synced_once("ja")
+    anki = _Anki(monkeypatch)
+    auto, _registry, _c, _l = _make(_settings())
+    auto.closed = True
+    # the spy records every put and still hands it to the real worker, so an ask queued after close would run
+    puts = []
+    real_put = auto.worker.put
+
+    def spy(call, *args):
+        puts.append(call)
+        return real_put(call, *args)
+    monkeypatch.setattr(auto.worker, "put", spy)
+    answered = threading.Event()
+    answers = []
+
+    def then(why):
+        answers.append(why)
+        answered.set()
+    try:
+        auto.sync_now(then=then)
+        answered.wait(0.5)
+        assert answers == ["closed"] and anki.syncs == [] and puts == []
+    finally:
+        auto.close()

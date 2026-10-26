@@ -517,3 +517,107 @@ def test_scrub_counts_every_content_key_and_blanks_secrets_at_any_depth():
                       "nested": {"api_key": "sk-x", "title": "進撃の巨人", "made_today": 3}})
     assert got == {"jobs": [{"state": "done", "sentence": core.BLANKED, "words": "1 left out"}],
                    "nested": {"api_key": core.BLANKED, "title": core.BLANKED, "made_today": 3}}
+
+
+def test_a_cloud_placeholder_in_the_logs_is_left_out_and_said(root, tmp_path, monkeypatch):
+    # why: a file the cloud has not downloaded must not be read into the zip; it is left out and the manifest says why.
+    logs = os.path.join(path_utils.get_local_data_path(), "logs")
+    os.makedirs(logs, exist_ok=True)
+    with open(os.path.join(logs, "cloud-note.log"), "w", encoding="utf-8") as f:
+        f.write("まだダウンロードされていない")
+    monkeypatch.setattr(core, "is_placeholder", lambda path: os.path.basename(path) == "cloud-note.log")
+    core.save(JA_WHAT)
+    _p, files = _zip(tmp_path, root=root)
+    assert "logs/cloud-note.log" not in files
+    assert "cloud-note.log: a cloud placeholder (not downloaded)" in files["MANIFEST.txt"].decode("utf-8")
+
+
+def test_a_database_sidecar_of_a_secret_is_refused_as_the_secret_is():
+    # why: a -wal / -shm / -journal beside a key or .env holds the same secret's pages, so it is refused by the name
+    # of the secret it belongs to (".env-wal" is ".env", "signing.key-shm" is "*.key"); the suffix must come off
+    # before the pattern match, or a sidecar slips into a zip the tester sends
+    assert core.is_secret(".env-wal") is True
+    assert core.is_secret("signing.key-shm") is True
+    assert core.is_secret(".env-journal") is True
+    assert core.is_secret("ledger.sqlite-journal") is False
+
+
+def test_a_settings_file_that_is_a_cloud_placeholder_is_left_out_and_never_read(tmp_path, monkeypatch):
+    # why: a OneDrive placeholder downloads on read, so a settings.json still in the cloud is left out, not opened
+    settings = tmp_path / "settings.json"
+    settings.write_text('{"logic": {"exclude_single": true}}', encoding="utf-8")
+    reads = []
+    monkeypatch.setattr(path_utils, "get_settings_path", lambda: str(settings))
+    monkeypatch.setattr(core, "is_placeholder", lambda path: True)
+    monkeypatch.setattr(path_utils, "read_text", lambda *a, **k: reads.append(a) or "{}")
+    assert core._settings_bytes() is None
+    assert reads == []
+
+
+def test_scrub_blanks_a_content_key_whatever_its_letter_case():
+    # why: a key written in capitals or mixed case is still a content key, so its learner's text is never zipped
+    got = core.scrub({"Title": "進撃の巨人", "Sentence": ["壁の向こう", "巨人"], "WORDS": "巨人"})
+    assert got == {"Title": core.BLANKED, "Sentence": "2 left out", "WORDS": core.BLANKED}
+
+
+def test_an_anki_sync_state_file_that_is_a_link_is_left_out_and_never_followed(tmp_path, monkeypatch):
+    # why: a link to a file elsewhere must not be read into the report; the same file held as a plain file is read.
+    from app import anki_sync
+    user_files = tmp_path / "User Files" / "ja"
+    user_files.mkdir(parents=True)
+    monkeypatch.setattr(path_utils, "get_user_files_path", lambda language: str(user_files))
+    state = user_files / anki_sync.STATE_FILE
+    state.write_text(json.dumps({"added": {"ids": [101, 102]}}), encoding="utf-8")
+    # spy on the real reader (it still runs): every path a read is asked for is recorded
+    real_read_text = path_utils.read_text
+    reads = []
+
+    def spy(path, language):
+        reads.append(str(path))
+        return real_read_text(path, language)
+    monkeypatch.setattr(path_utils, "read_text", spy)
+    assert core._anki_bytes("ja") is not None              # control: a plain state file is read
+    assert str(state) in reads                             # the spy sees the read, so the check below means something
+    reads.clear()
+    # the link check is stubbed, so the rule is pinned whether or not this machine may make links (Windows often may not)
+    monkeypatch.setattr(core, "is_link", lambda p: str(p) == str(state))
+    assert core._anki_bytes("ja") is None                  # the link is left out
+    assert str(state) not in reads                         # and it is never read
+
+
+def test_a_shared_file_over_64_kb_is_zipped_whole(root, tmp_path):
+    # why: a shared file is read whole; a read capped at 64 KB would zip a log's first part and still pass the read-back.
+    core.save(JA_WHAT)
+    logs = os.path.join(path_utils.get_local_data_path(), "logs")
+    os.makedirs(logs, exist_ok=True)
+    big = os.path.join(logs, "big-session.log")
+    data = ("進撃の巨人の第3話、終わった。\r\n" * 60000).encode("utf-8")       # about 2.7 MB: a larger cap fails too
+    assert len(data) > 65536
+    with open(big, "wb") as f:
+        f.write(data)
+    try:
+        _p, files = _zip(tmp_path, root=root)
+    finally:
+        os.remove(big)
+    names = [n for n in files if n.endswith("big-session.log")]
+    assert len(names) == 1 and files[names[0]] == data
+
+
+def test_zip_name_skips_a_name_whose_part_file_is_being_written(tmp_path):
+    # why: a zip still being written exists only as its .part file; a second zip must not take that name
+    import datetime
+    now = datetime.datetime(2026, 10, 25, 12, 0, 0)
+    base = core.ZIP_NAME.format(stamp="2026-10-25-120000")
+    (tmp_path / (base + core.PART)).write_bytes(b"")
+    assert core.zip_name(str(tmp_path), now=now) == os.path.join(str(tmp_path), "Surasura-problems-2026-10-25-120000-2.zip")
+
+
+def test_zip_name_skips_a_numbered_name_whose_part_file_is_being_written(tmp_path):
+    # why: the rule holds for every candidate, not only the first; a -2 still being written must not be taken either
+    import datetime
+    now = datetime.datetime(2026, 10, 25, 12, 0, 0)
+    base = core.ZIP_NAME.format(stamp="2026-10-25-120000")
+    second = core.ZIP_NAME.format(stamp="2026-10-25-120000-2")
+    (tmp_path / (base + core.PART)).write_bytes(b"")
+    (tmp_path / (second + core.PART)).write_bytes(b"")
+    assert core.zip_name(str(tmp_path), now=now) == os.path.join(str(tmp_path), "Surasura-problems-2026-10-25-120000-3.zip")

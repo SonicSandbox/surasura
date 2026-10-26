@@ -2002,7 +2002,6 @@ def _switched_off(language, key):
 # (never as they finish), and only the parent writes the store. `index_pool_workers` in settings.json: None (the
 # default) sizes it from the CPU count and the free memory, 0 is one process, N is N workers.
 POOL_MIN_FILES = 64          # fewer changed files: one process (a worker's start costs about what 60 files do)
-POOL_MAX_WORKERS = 4         # the laptop: 4 cores (research/11 §5)
 POOL_WORKER_MB = 100         # measured 67 MB private per worker; the rest is headroom
 POOL_BATCH_PER_WORKER = 8    # files handed out at a time per worker: what can wait for the writer is bounded
 _POOL_WORKER = {}
@@ -2032,9 +2031,9 @@ def _free_memory_mb():
 
 def pool_workers(n_files, setting=None, cpus=None, free_mb=None):
     """How many processes tokenize `n_files` changed files: 1 is this process alone. `setting`: settings.json's
-    `index_pool_workers` (None = automatic: half the logical CPUs, at most 4, at most what a quarter of the free memory
-    holds, and only from POOL_MIN_FILES files; N asks for N, never more than the CPUs, the files or what half the free
-    memory holds)."""
+    `index_pool_workers` (None = automatic: half the logical CPUs — no fixed ceiling since 2026-10-25, the laptop's 8
+    threads still give 4 — at most what a quarter of the free memory holds, and only from POOL_MIN_FILES files; N asks
+    for N, never more than the CPUs, the files or what half the free memory holds)."""
     if n_files < 2:
         return 1
     if setting is not None:
@@ -2051,7 +2050,7 @@ def pool_workers(n_files, setting=None, cpus=None, free_mb=None):
         return max(1, size)
     if n_files < POOL_MIN_FILES:
         return 1
-    size = min(POOL_MAX_WORKERS, max(1, cpus // 2))
+    size = max(1, cpus // 2)
     if free_mb is not None:
         size = min(size, max(1, int(free_mb * 0.25) // POOL_WORKER_MB))
     return size if size >= 2 else 1

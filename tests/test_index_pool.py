@@ -143,7 +143,9 @@ def test_the_workers_are_gone_before_the_reconcile_works_out_its_tables(monkeypa
     (400, None, 8, 8000, 4),        # the laptop: 4 cores / 8 threads
     (400, None, 4, 8000, 2),
     (400, None, 2, 8000, 1),        # two logical CPUs: no pool
-    (400, None, 16, 8000, 4),       # never more than 4
+    (400, None, 16, 8000, 8),       # no fixed ceiling: half of 16 threads
+    (400, None, 32, 8000, 16),      # a big PC: half its threads, the memory permitting
+    (400, None, 32, 3000, 7),       # …a quarter of 3,000 MB holds 7 workers
     (400, None, 8, 600, 1),         # a quarter of 600 MB holds one worker: no pool
     (400, None, 8, 1000, 2),
     (30, None, 8, 8000, 1),         # too few files to pay for the workers' start

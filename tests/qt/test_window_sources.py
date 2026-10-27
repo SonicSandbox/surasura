@@ -535,12 +535,12 @@ def test_an_arrival_from_a_source_names_its_folder_and_is_repainted_once(window)
     win.services.source_looks = looks
     win._open_looks(None)
     win._show_arrivals(win._arrivals_view)
-    row = tray.rows[first.key]
-    assert row.arrival.chip == "Anime"
-    assert strings.SOURCES_FROM.format(name="Anime") in row.arrival.accessible
-    shown = row.arrival
+    shown = tray.arrival(first.key)                           # (A4: what the tray holds, open or not)
+    assert shown.chip == "Anime"
+    assert strings.SOURCES_FROM.format(name="Anime") in shown.accessible
+    groups = tray.groups
     win._show_arrivals(win._arrivals_view)                    # the same view again: nothing asked, nothing repainted
-    assert row.arrival is shown and len(looks.asked_folders) == 1
+    assert tray.groups is groups and tray.arrival(first.key) is shown and len(looks.asked_folders) == 1
 
 
 # --- a video waiting for its subtitle (K5's `waiting`) ------------------------------------------------------------- #

@@ -701,6 +701,21 @@ TRAY_NO_FOLDER = "Couldn't open its folder: {path}"
 TRAY_NUMBER_NONE = "—"
 TRAY_NUMBER_UNIT = "new / {unit}"
 # --- end W3.2 Q1
+# --- A4: the tray's picks (Ctrl / Shift+click, Ctrl+A) and its groups' All to Soon / All to Goal ------------------ #
+TRAY_ALL_SOON = "All to Soon"
+TRAY_ALL_SOON_TIP = "Move every arrival in this group to Soon, in the tray's order\n• Undo puts them back"
+TRAY_ALL_GOAL = "All to Goal"
+TRAY_ALL_GOAL_TIP = "Move every arrival in this group to Goal\n• Undo puts them back"
+TRAY_TITLES = "{n} titles"                            # the picks or a group, named in a toast or a drag
+TRAY_PICKS_MENU_NAME = "What you can do with the {n} picked"
+TRAY_PICKS_MENU = {
+    "top": ("Up next", "Put all {n} at the top of Current, in the tray's order"),
+    "soon": ("Soon", "Move all {n} to Soon, in the tray's order"),
+    "goal": ("Goal", "Move all {n} to Goal"),
+    "finished": ("Finished", "Record all {n} as finished: you've watched them already"),
+    "remove": ("Remove…", "Send all {n} to the trash (kept 30 days; Undo puts them back). Asks first"),
+}
+# --- end A4
 # --- W3.2 Q2: Goal's sheet (goal_sheet.py) ------------------------------------------------------------------------ #
 GOAL_SHEET_NAME = "Goal: everything you'll get to someday"
 GOAL_SHEET_TIP = "Goal: someday, in no order. Drag a title into Current, or use its ⋯"

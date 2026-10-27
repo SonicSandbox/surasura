@@ -373,7 +373,17 @@ def book_parts(path, language, by=None):
 # A book's part (`book_parts`): its bytes, its name's label after its number (`extract.part_label`: None for an even
 # part) and its place in the book (`extract.book_split`'s record, kept on its origin record as "chapter")
 BookPart = namedtuple("BookPart", "data label chapter")
-_CHAPTER_STEM = re.compile(r"(.+)_([0-9]{2,})(?: \(\d+(?:-\d+)?\)(?: .*)?)?")   # `<base>_NN`, a chapter's label after it
+_CHAPTER_TAIL = re.compile(r" \(\d+(?:-\d+)?\)(?: .*)?")       # a chapter's label after a part's `_NN`
+
+
+def _part_stem(stem, number):
+    """A book's part's file stem whose part number is `number` -> (its book's base, named by a chapter?), or None:
+    the last `_NN` that is that number with nothing, or a chapter's label (`extract.part_label`), after it."""
+    for m in reversed(list(re.finditer(r"_([0-9]{2,})", stem))):
+        rest = stem[m.end():]
+        if int(m.group(1)) == number and (not rest or _CHAPTER_TAIL.fullmatch(rest)):
+            return stem[:m.start()], bool(rest)
+    return None
 
 
 def part_names(base, count, labels=None):
@@ -2470,10 +2480,12 @@ class _Look:
         if touched:                                          # touched (LM3), or a declined edition's bytes still
             self.store.update_origins(touched)               # (A3): only its records' stats follow
             return
-        if known:
+        if known:                                            # moved or renamed: each part's place kept (Hon)
+            places = {o.item_id: o.chapter for o in self.origins.values() if o.sha256 == sha and o.chapter}
             change = self._commit([dict({"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns,
                                          "sha256": sha, "show": rel.split("/")[1] if rel.count("/") >= 2 else show,
-                                         "item_id": item, "episode": i}, **({"version": True} if version else {}))
+                                         "item_id": item, "episode": i}, **({"version": True} if version else {}),
+                                        **({"chapter": json.loads(places[item])} if item in places else {}))
                                    for i, (item, rel, version) in sorted(known.items())])
             self._refresh([item for item, _rel, _v in known.values()], change)
             return
@@ -2618,10 +2630,10 @@ class _Look:
         numbers = sorted(target)
         first = target[numbers[0]].rel_path or ""
         stem = os.path.splitext(first.rsplit("/", 1)[-1])[0]
-        named = _CHAPTER_STEM.fullmatch(stem)                # `<base>_0n` (`part_names`), else one part's `<base>`
+        named = _part_stem(stem, numbers[0])                 # `<base>_0n` (`part_names`), else one part's `<base>`
         # a book keeps the split it was made with (never the setting as it is now), so part n pairs with part n: a
         # book cut by its chapters names its parts by them; every other (each book from before chapters) is even
-        by = "chapters" if named and named.group(0) != f"{named.group(1)}_{named.group(2)}" else "even"
+        by = "chapters" if named and named[1] else "even"
         data, _why = book_parts(path, self.language, by=by)
         if data is None:
             self._pass_over(path, st)
@@ -2631,7 +2643,7 @@ class _Look:
             return
         origin = os.path.abspath(path)
         book = first.split("/")[1] if first.count("/") >= 2 else os.path.splitext(os.path.basename(path))[0]
-        base = named.group(1) if named and int(named.group(2)) == numbers[0] else stem
+        base = named[0] if named else stem
         names = part_names(base, len(data), [p.label for p in data])
         chapters = [p.chapter for p in data]
         data = [p.data for p in data]

@@ -282,7 +282,8 @@ STRINGS = {
 
 _EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 _YT_ID = re.compile(r"\s*\[[0-9A-Za-z_-]{6,11}\]$")
-_CHAPTER = re.compile(r".+_([0-9]{2,}) \(([0-9]+)(?:-([0-9]+))?\)(?: (.+))?")   # `extract.part_name`'s chapter part
+_CHAPTER = re.compile(r".+?_([0-9]{2,}) \(([0-9]+)(?:-([0-9]+))?\)(?: (.+))?")  # `extract.part_name`'s chapter part
+_PLAIN_PART = re.compile(r".*_[0-9]{2,}")                                              # `<base>_NN`: a part, no chapter
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -303,6 +304,8 @@ def stem(name):
 def chapter_part(name):
     """A book's part named by its chapter (`<book>_07 (3-2) 第一章 出会い.txt`) -> (its number, its label: *第一章 出会い ·
     Part 2*, *Chapter 3 · Part 2*, *プロローグ*, *Chapter 3*), else None."""
+    if not str(name or "").lower().endswith(".txt") or _PLAIN_PART.fullmatch(stem(name)):
+        return None                              # a video's or a subtitle's name is never a book's part
     m = _CHAPTER.fullmatch(stem(name))
     if m is None:
         return None

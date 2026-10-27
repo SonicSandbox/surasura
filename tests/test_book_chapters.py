@@ -102,8 +102,8 @@ def _between(docs, record):
     first, last = record["docs"]
     if first == last:
         return docs[first].text[record["start"]:record["end"]]
-    return "\n\n".join([docs[first].text[record["start"]:]] + [docs[i].text for i in range(first + 1, last)] +
-                       [docs[last].text[:record["end"]]])
+    return "\n\n".join([docs[first].text[record["start"]:]] + [docs[i].text for i in range(first + 1, last)
+                                                                if docs[i].text] + [docs[last].text[:record["end"]]])
 
 
 # --- reading: the spine, in order ----------------------------------------------------------------------------------- #
@@ -305,3 +305,117 @@ def test_extract_names_a_books_parts_by_their_chapters(tmp_path, monkeypatch):
     from app.path_utils import get_data_path
     names = sorted(n for n in os.listdir(os.path.join(get_data_path("ja"), "Processed", "旅の記録")) if n.endswith(".txt"))
     assert names[0] == "旅の記録_01 (1) プロローグ.txt" and names[-1] == "旅の記録_06 (4) あとがき.txt"
+
+
+# --- the review's fixes (Hon a4 register) --------------------------------------------------------------------------- #
+def test_an_image_only_page_never_moves_an_even_cut_nor_a_records_text(tmp_path):
+    """A light novel's illustration pages have no text: even parts stay exactly `split_by_length` of the book's text
+    (documents with text joined by a blank line), and each record still reads back, its documents counted as Anki
+    Miner counts them (the empty page has its index)."""
+    docs = [{"href": "c1.xhtml", "body": _prose(1700)}, {"href": "pic.xhtml", "body": "<img src='a.png'/>"},
+            {"href": "c2.xhtml", "body": _prose(1700)}, {"href": "pic2.xhtml", "body": "<img src='b.png'/>"},
+            {"href": "c3.xhtml", "body": _prose(1700)}]
+    path = _epub(tmp_path / "挿絵.epub", docs)
+    read, _ = extract.epub_documents(path)
+    assert [d.text == "" for d in read] == [False, True, False, True, False]
+    parts = extract.book_split(read, 1500, by="even")
+    text, _ = extract.convert_epub_to_text(path)
+    assert [p.text for p in parts] == extract.split_by_length(text, 1500)
+    for p in parts:
+        assert _between(read, p.chapter) == p.text
+    assert any(p.chapter["docs"][0] < 2 < p.chapter["docs"][1] or p.chapter["docs"][0] == 2 for p in parts)
+
+
+def test_a_labelled_picture_page_starts_its_chapter_at_the_text_after_it(tmp_path):
+    """A TOC label on an image-only page (a chapter's title picture): the chapter starts with the text after it."""
+    docs = [{"href": "c1.xhtml", "body": _prose(900)}, {"href": "t2.xhtml", "body": "<img src='a.png'/>"},
+            {"href": "c2.xhtml", "body": _prose(900)}]
+    read, _ = extract.epub_documents(_epub(tmp_path / "扉絵.epub", docs, [("c1.xhtml", "第一章"),
+                                                                         ("t2.xhtml", "第二章")]))
+    parts = extract.book_split(read, 1500)
+    assert [(p.chapter["title"], p.chapter["docs"]) for p in parts] == [("第一章", [0, 0]), ("第二章", [2, 2])]
+
+
+def test_numbers_under_named_chapters_are_sections_and_a_chapter_keeps_its_title(tmp_path):
+    """第一章 with 1, 2 under it: the chapters are 第一章 and 第二章, never each number (and never 第一章's title lost
+    to the 1 after it)."""
+    body = "".join(f"<p>{h}</p><p>1</p>" + _prose(900) + "<p>2</p>" + _prose(900) for h in ("第一章　出会い", "第二章　別れ"))
+    read, _ = extract.epub_documents(_epub(tmp_path / "節.epub", [{"href": "c.xhtml", "body": body}]))
+    titles = []
+    for p in extract.book_split(read, 1500):
+        if p.chapter["title"] not in titles:
+            titles.append(p.chapter["title"])
+    assert titles == ["第一章　出会い", "第二章　別れ"]
+
+
+@pytest.mark.parametrize("line", ["第3回目の会議が始まった。", "一、二、三と数えた。", "三話目を見た", "一章分だけ読んだ",
+                                  "第一話のあらすじを話した。"])
+def test_a_line_of_narration_is_never_a_heading(line):
+    assert extract._headings(line, 0, len(line)) == []
+
+
+def test_a_damaged_toc_leaves_a_book_without_labels_never_unread(tmp_path):
+    docs = [{"href": f"c{n}.xhtml", "body": _prose(300)} for n in range(3)]
+    path = _epub(tmp_path / "壊目次.epub", docs, [("c0.xhtml", "第一章"), ("c1.xhtml", "第二章")])
+    good = tmp_path / "copy.epub"
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(good, "w") as out:
+        for info in src.infolist():
+            data = src.read(info)
+            out.writestr(info, data if info.filename != "OEBPS/nav.xhtml" else b"\x00" * 10, zipfile.ZIP_DEFLATED)
+    read, error = extract.epub_documents(str(good))
+    assert error is None and [d.label for d in read] == [None, None, None] and all(d.text for d in read)
+
+
+def test_a_video_or_subtitle_name_is_never_read_as_a_books_part():
+    assert view_rows.chapter_part("Show_05 (3) Title.mkv") is None
+    assert view_rows.chapter_part("[Sub] Show - 05_00 (1).ass") is None
+    assert view_rows.chapter_part("X_01 (2) 上_05.txt") is None and view_rows.episode_number("X_01 (2) 上_05.txt") == 5
+
+
+def test_a_title_never_ends_as_a_parts_number_does():
+    """`/` in a title becomes `・`, so `第一章 1/12` is never `…1_12` (read back as part 12)."""
+    label = extract.part_label({"chapter": 1, "part": 1, "parts": 1, "title": "第一章 1/12"})
+    name = extract.part_name("本", 1, 3, label)
+    assert name == "本_01 (1) 第一章 1・12.txt" and view_rows.chapter_part(name) == (1, "第一章 1・12")
+
+
+def test_a_book_part_stem_is_read_at_its_own_number():
+    from app import sources
+    assert sources._part_stem("X_01 (2) 上_01", 1) == ("X_01 (2) 上", False)      # an old book named like a chapter
+    assert sources._part_stem("本_01 (1) 第一章 1_12", 1) == ("本", True)
+    assert sources._part_stem("Book_01_03", 3) == ("Book_01", False)
+    assert sources._part_stem("Book", 1) is None
+
+
+def test_a_length_under_one_is_refused():
+    with pytest.raises(ValueError):
+        extract.book_split([extract.Doc("c.xhtml", "第一章", "冒険だ。")], 0)
+
+
+def test_extract_records_each_parts_place_and_a_folder_read_later_knows_the_book(tmp_path, monkeypatch):
+    """An EPUB extracted into the library: each part's origin record is `<epub>#<n>` with its place (so Anki Miner's
+    results can be placed); reading the EPUB's folder later adds nothing (the same book, SRC-7)."""
+    from app import library_store as ls
+    from app import sources
+    from app.path_utils import get_data_path, get_user_files_path
+    from tests.test_sources_scan import _drive, _empty, _look
+    monkeypatch.setattr(extract, "_settings_by", lambda: "chapters")
+    monkeypatch.setattr(ls, "spawn_maintain", lambda *a: None)
+    store, _data = _empty("ja")
+    store.close()
+    shelf = _drive("Shelf")
+    book = _novel(type(tmp_path)(shelf))
+    t = os.path.getmtime(book) - 120
+    os.utime(book, (t, t))
+    result = extract.extract(book, "旅の記録", "ja", section="soon", spawn=False)
+    assert result.code == extract.EXIT_DONE and result.in_library
+    store = ls.open_store("ja", get_data_path("ja"), get_user_files_path("ja"))
+    with store:
+        records = [json.loads(t) for k, t in store.conn.execute("SELECT content_key, pairing FROM pairings")
+                   if "#" in k]
+        assert sorted(r["episode"] for r in records) == list(range(1, 7))
+        assert all(r["origin"].startswith(os.path.abspath(book) + "#") and r["chapter"]["hrefs"] for r in records)
+        items = store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+        again = _look(store, "ja", store.add_source(shelf), first=True)
+        assert again["added"] == 0 and store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == items
+    assert sources                                      # (imported for the look's module state)

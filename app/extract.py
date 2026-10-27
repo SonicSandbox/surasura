@@ -23,12 +23,15 @@ fixes the port carries:
 """
 import bisect
 import json
+import lzma
 import math
 import os
 import re
 import shutil
 import sys
 import time
+import zipfile
+import zlib
 from collections import namedtuple
 
 # Ensure package root is in sys.path
@@ -238,6 +241,10 @@ def _resolve(base, href):
     return posixpath.normpath(posixpath.join(base, href) if base else href)
 
 
+_READ_ERRORS = (KeyError, zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, EOFError, zlib.error,
+                lzma.LZMAError)                 # a member that can't be read: skipped, as Anki Miner skips it
+
+
 def _member(zf, entry):
     if zf.getinfo(entry).file_size > _MAX_MEMBER:
         return None
@@ -246,13 +253,21 @@ def _member(zf, entry):
     return None if len(data) > _MAX_MEMBER else data
 
 
+def _optional(zf, entry):
+    """A nav or NCX member's bytes, or None when it can't be read (the book then has no TOC labels)."""
+    try:
+        return _member(zf, entry)
+    except _READ_ERRORS:
+        return None
+
+
 def _toc(zf, names, manifest, spine_toc, opf_dir):
     """({entry: its first usable TOC label}, the landmarks' matter entries): the EPUB3 nav, else the EPUB2 NCX the
     spine names; boilerplate labels dropped; fewer than two usable entries -> no labels."""
     import posixpath
     entries, landmarks = [], set()
     nav = next((href for href, _mt, props in manifest.values() if "nav" in props), None)
-    root = _xml(_member(zf, _resolve(opf_dir, nav)) or b"") if nav and _resolve(opf_dir, nav) in names else None
+    root = _xml(_optional(zf, _resolve(opf_dir, nav)) or b"") if nav and _resolve(opf_dir, nav) in names else None
     if root is not None:
         nav_dir = posixpath.dirname(_resolve(opf_dir, nav))
         navs = [el for el in root.iter() if _local(el) == "nav"]
@@ -260,7 +275,7 @@ def _toc(zf, names, manifest, spine_toc, opf_dir):
             if "landmarks" in _types(el):
                 for a in el.iter():
                     href = a.get("href") if _local(a) == "a" else None
-                    if href and "#" not in href and _types(a) & _MATTER_TYPES:
+                    if href and not href.partition("#")[2] and _types(a) & _MATTER_TYPES:
                         landmarks.add(_resolve(nav_dir, href))
         chosen = next((el for el in navs if "toc" in _types(el)), None)   # (an element with no children is falsy)
         if chosen is None:
@@ -272,7 +287,7 @@ def _toc(zf, names, manifest, spine_toc, opf_dir):
                        for a in chosen.iter() if _local(a) == "a" and a.get("href")]
     if not entries and spine_toc and spine_toc in manifest:
         entry = _resolve(opf_dir, manifest[spine_toc][0])
-        root = _xml(_member(zf, entry) or b"") if entry in names else None
+        root = _xml(_optional(zf, entry) or b"") if entry in names else None
         if root is not None:
             ncx_dir = posixpath.dirname(entry)
             for point in root.iter():
@@ -348,7 +363,6 @@ def epub_documents(epub_path):
     within 15% of either end. Each Doc's `label` is its TOC label (the EPUB3 nav, else the NCX; 表紙 / 目次 / 奥付 /
     扉 / 中扉 dropped; none under two usable entries), its text as the File Importer cleans it ('' for none)."""
     import posixpath
-    import zipfile
     try:
         zf = zipfile.ZipFile(epub_path)
     except (zipfile.BadZipFile, OSError) as e:
@@ -376,7 +390,7 @@ def epub_documents(epub_path):
                     spine_toc = el.get("toc")
                 elif name == "itemref" and el.get("idref") and (el.get("linear") or "").lower() != "no":
                     spine.append(el.get("idref"))
-                elif name == "reference" and el.get("href") and "#" not in el.get("href") and \
+                elif name == "reference" and el.get("href") and not el.get("href").partition("#")[2] and \
                         (el.get("type") or "").strip().lower() in _MATTER_TYPES:
                     matter.add(_resolve(opf_dir, el.get("href")))
             labels, landmarks = _toc(zf, names, manifest, spine_toc, opf_dir)
@@ -403,7 +417,7 @@ def epub_documents(epub_path):
                     continue
                 try:
                     raw = _member(zf, entry)
-                except (KeyError, zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError, EOFError) as e:
+                except _READ_ERRORS as e:
                     print(f"Warning: Failed to read {entry}: {e}")
                     continue
                 if raw is None:
@@ -476,7 +490,7 @@ def _length_cuts(text, lo, hi, limit, overflow):
                     actual_end += 1
                 found_boundary = actual_end
                 break
-        end_pos = found_boundary if found_boundary != -1 else search_end
+        end_pos = max(found_boundary if found_boundary != -1 else search_end, pos + 1)
         spans.append((pos, end_pos))
         pos = end_pos
     return spans
@@ -487,8 +501,9 @@ def _length_cuts(text, lo, hi, limit, overflow):
 # with no TOC, divided where a heading line stands (第一章, 第1話, プロローグ, あとがき, Episode 1, a number alone on its
 # line, …: the forms measured on 436 books); else even parts, as before. A part never crosses a
 # chapter; a chapter is cut into parts of about `limit` characters, evenly, each ended at a sentence end.
-HEADING = re.compile(
-    r"(?:第[0-9０-９一二三四五六七八九十百〇零]+[章話幕部節回]|[0-9０-９一二三四五六七八九十]+[章話]"
+HEADING = re.compile(                    # (never 第3回目の…, 三話目, 一章分: a count's word goes on)
+    r"(?:第[0-9０-９一二三四五六七八九十百〇零]+[章話幕部節回](?![ぁ-ゖ目分間前後以内])"
+    r"|[0-9０-９一二三四五六七八九十]+[章話](?![ぁ-ゖ目分間前後以内])"
     r"|プロローグ|エピローグ|序章|終章|幕間|間章|断章|序幕|終幕|閑話|番外編|あとがき|後書き"
     r"|(?:prologue|epilogue|interlude|chapter|episode)(?![a-z])"
     r"|[─━―—\-－＊*＃#◆◇■□\s]*(?:[0-9０-９]{1,3}|[一二三四五六七八九十]{1,3})"
@@ -503,14 +518,27 @@ Part = namedtuple("Part", "text chapter")      # chapter: where the part sits in
 _NUMBER_ONLY = re.compile(r"[─━―—\-－＊*＃#◆◇■□\s]*(?:[0-9０-９]{1,3}|[一二三四五六七八九十]{1,3})[─━―—\-－＊*＃#◆◇■□\s]*")
 
 
+_CHAPTER_WORD = re.compile(r"第[0-9０-９一二三四五六七八九十百〇零]+[章話部]|[0-9０-９一二三四五六七八九十]+[章話]"
+                           r"|(?:chapter|episode)(?![a-z])", re.IGNORECASE)
+
+
 def _headings(book, lo, hi):
-    """[(offset, its title)] of each heading line in book[lo:hi]; a number alone is no title (None: *Chapter N*)."""
+    """[(offset, its title)] of each heading line in book[lo:hi]; a number alone is no title (None: *Chapter N*). A
+    line that ends a sentence (。、) is never a heading."""
     out = []
     for m in re.finditer(r"[^\n]+", book[lo:hi]):
         line = m.group().strip()
-        if line and len(line) <= HEADING_LINE and HEADING.match(line):
+        if line and len(line) <= HEADING_LINE and not line.endswith(("。", "、")) and HEADING.match(line):
             out.append((lo + m.start(), None if _NUMBER_ONLY.fullmatch(line) else line))
     return out
+
+
+def _chapter_heads(heads):
+    """A book's chapters among its heading lines: where two or more name a chapter (第N章, N話, Chapter N …), the
+    numbers alone under them are its sections, not chapters."""
+    if sum(1 for _o, t in heads if t and _CHAPTER_WORD.match(t)) >= 2:
+        return [h for h in heads if h[1] is not None]
+    return heads
 
 
 def book_split(docs, limit=DEFAULT_LENGTH, overflow=DEFAULT_OVERFLOW, by="chapters"):
@@ -522,27 +550,36 @@ def book_split(docs, limit=DEFAULT_LENGTH, overflow=DEFAULT_OVERFLOW, by="chapte
        or the heading line (or None), "part": its number in the chapter, "parts": the chapter's count,
        "docs": [first, last] document indexes, "hrefs": those documents' zip entries in order,
        "start": where it starts in the first document's text, "end": where it ends in the last's (exclusive)}."""
+    if limit < 1:
+        raise ValueError("the length must be at least 1")
     texts = [d.text for d in docs]
-    book = "\n\n".join(texts)
+    kept = [i for i, t in enumerate(texts) if t]  # the documents with text: joined as `convert_epub_to_text` joins them
+    book = "\n\n".join(texts[i] for i in kept)
     starts, at = [], 0
-    for t in texts:
+    for i in kept:
         starts.append(at)
-        at += len(t) + 2
+        at += len(texts[i]) + 2
+    begin, j = [], 0                             # each document's offset: an empty one's is the next text's
+    for i in range(len(docs)):
+        while j < len(kept) and kept[j] < i:
+            j += 1
+        begin.append(starts[j] if j < len(kept) else len(book))
     bounds = []                                  # [(offset, title, by)]: each chapter's start
     if by != "even":
-        labelled = [(starts[i], d.label, "toc") for i, d in enumerate(docs) if d.label is not None]
+        labelled = [(begin[i], d.label, "toc") for i, d in enumerate(docs) if d.label is not None]
         if labelled:
             bounds = ([(0, None, "toc")] if labelled[0][0] > 0 else []) + labelled
             ends = [b[0] for b in bounds[1:]] + [len(book)]
             more = []
             for (a, _t, _b), b in zip(bounds, ends):
                 if b - a > BIG_CHAPTER and 3 * (b - a) > len(book):
-                    heads = [h for h in _headings(book, a, b) if book[a:h[0]].strip()]   # never its own title line
+                    lead = a + len(book[a:b]) - len(book[a:b].lstrip())
+                    heads = _chapter_heads([h for h in _headings(book, a, b) if h[0] > lead])   # never its own title
                     if len(heads) >= 2:
                         more += [(o, line, "headings") for o, line in heads]
             bounds = sorted(bounds + more, key=lambda b: b[0])
         else:
-            heads = _headings(book, 0, len(book))
+            heads = _chapter_heads(_headings(book, 0, len(book)))
             if len(heads) >= 2:
                 bounds = ([(0, None, "headings")] if book[:heads[0][0]].strip() else []) + \
                          [(o, line, "headings") for o, line in heads]
@@ -552,7 +589,8 @@ def book_split(docs, limit=DEFAULT_LENGTH, overflow=DEFAULT_OVERFLOW, by="chapte
         if not book[a:b].strip():
             continue
         if chapters and len(book[chapters[-1][0]:chapters[-1][1]].strip()) < TINY_CHAPTER:
-            chapters[-1][1:] = [b, title, how]   # the tiny one before joins this one, under its name
+            # the tiny one before joins this one, under this one's name, else its own (第一章 then 1 under it)
+            chapters[-1][1:] = [b, title if title is not None else chapters[-1][2], how]
         else:
             chapters.append([a, b, title, how])
     if len(chapters) > 1 and len(book[chapters[-1][0]:chapters[-1][1]].strip()) < TINY_CHAPTER:
@@ -574,12 +612,13 @@ def book_split(docs, limit=DEFAULT_LENGTH, overflow=DEFAULT_OVERFLOW, by="chapte
             continue
         a += len(seg) - len(seg.lstrip())
         b -= len(seg) - len(seg.rstrip())
-        first = bisect.bisect_right(starts, a) - 1
-        last = bisect.bisect_right(starts, b - 1) - 1
+        x = bisect.bisect_right(starts, a) - 1
+        y = bisect.bisect_right(starts, b - 1) - 1
+        first, last = kept[x], kept[y]
         number[c] = number.get(c, 0) + 1
         record = {"by": how, "chapter": c, "title": title, "part": number[c], "parts": count,
                   "docs": [first, last], "hrefs": [docs[i].href for i in range(first, last + 1)],
-                  "start": a - starts[first], "end": b - starts[last]}
+                  "start": a - starts[x], "end": b - starts[y]}
         if how == "even":
             record.update(chapter=None, part=None, parts=None)
         out.append(Part(text, record))
@@ -597,7 +636,8 @@ def part_label(chapter):
         return None
     head = f"({chapter['chapter']}" + (f"-{chapter['part']})" if chapter.get("parts", 1) > 1 else ")")
     title = chapter.get("title") or ""
-    title = "" if _NUMBER_ONLY.fullmatch(title) else clean_name(re.sub(r"\s+", " ", title)[:TITLE_LIMIT])  # a TOC's "3"
+    title = "" if _NUMBER_ONLY.fullmatch(title) else clean_name(    # a TOC's "3": no title; "/" and the rest: "・",
+        _RESERVED.sub("・", re.sub(r"\s+", " ", title))[:TITLE_LIMIT]) or ""   # so no title ends as `_NN` does
     return f"{head} {title}" if title else head
 
 
@@ -762,8 +802,27 @@ def extract(file_path, name, language, section=None, method="length", value=DEFA
         return Result(EXIT_FAILED, 0, clean, section, False, "save")
     if section is None:
         return Result(EXIT_DONE, len(rels), clean, None, False, None)
-    added, note, title = add_to_library(final, clean, rels, language, section, spawn=spawn)
+    added, note, title = add_to_library(final, clean, rels, language, section, spawn=spawn,
+                                        places=_book_origins(file_path, clean, rels, pieces))
     return Result(EXIT_DONE if added else EXIT_PROCESSED_ONLY, len(rels), clean, section, added, note, title)
+
+
+def _book_origins(file_path, name, rels, pieces):
+    """An EPUB's parts' origins, as a folder's look records a book's (`<epub>#<n>`, the EPUB's stats and sha256, each
+    part's place in the book): {rel: origin}, so Anki Miner's results can be placed on an extracted book's parts too
+    and a folder read later knows the book (SRC-7); None for anything else, or an EPUB that can't be read again."""
+    if not file_path.lower().endswith(".epub") or len(rels) != len(pieces):
+        return None
+    from app import library_store
+    try:
+        st = os.stat(file_path)
+        sha = library_store.sha256_of(file_path)
+    except OSError:
+        return None
+    origin = os.path.abspath(file_path)
+    return {rel: {"origin": f"{origin}#{n}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
+                  "show": name, "episode": n, "chapter": p.chapter}
+            for n, (rel, p) in enumerate(zip(rels, pieces), 1)}
 
 
 def _drop(staging):
@@ -771,13 +830,13 @@ def _drop(staging):
     shutil.rmtree(staging, ignore_errors=True)
 
 
-def add_to_library(source, name, rels, language, section, spawn=True):
+def add_to_library(source, name, rels, language, section, spawn=True, places=None):
     """Copy `source` (Processed/<name>) into the content folder, `Library/<name>` (SRC K3: the place is `section`, the
     store's alone), and add its files with one `Store.insert` into `section` -> (added, why not, title): 'store' — the
     store isn't there or can't be written; 'taken' — the name was taken meanwhile; 'already' — every part's bytes are a
     live item's file's already (SRC-7: never a duplicate; `title` names it); 'insert' — the store refused the files,
     their copies sent to the trash. A part already in is never copied (the rest are). The parts always stay in
-    Processed."""
+    Processed. `places` ({rel: origin}, `_book_origins`): each new part's origin record (K21's + Add records)."""
     from app import library_store
     data_dir, user_files_dir = get_data_path(language), get_user_files_path(language)
     store = library_store.open_store(language, data_dir, user_files_dir, role="window")
@@ -806,7 +865,8 @@ def add_to_library(source, name, rels, language, section, spawn=True):
             return False, "insert", None
         files = [os.path.join(dest, *rel.split("/")) for rel in new]
         try:
-            change = store.insert(files, section, "show", started_at=started_at)
+            origins = {f: places[rel] for f, rel in zip(files, new) if rel in places} if places else None
+            change = store.insert(files, section, "show", started_at=started_at, origins=origins)
         except Exception as e:
             print(f"The library didn't take the parts ({e}), so they stay in Processed.")
             _trash_copies(data_dir, dest)

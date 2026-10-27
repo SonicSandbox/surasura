@@ -1060,3 +1060,28 @@ def test_a_books_new_edition_keeps_the_split_the_book_was_made_with(language, mo
         assert [_copy(data_dir, rel) for _i, rel in before] == [p.data for p in
                                                                  sources.book_parts(new, language, by="even")[0]]
         assert {rec["by"] for rec in _chapter_records(store).values()} == {"even"}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_book_moved_in_its_folder_keeps_each_parts_place(language):
+    """The same EPUB moved to another folder of the source: its parts are the same items (nothing read again), and the
+    records at its new place keep each part's place in the book."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    book = _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        places = _chapter_records(store)
+        moved = os.path.join(src, "Moved", os.path.basename(book))
+        os.makedirs(os.path.dirname(moved))
+        os.replace(book, moved)
+        _look(store, language, root, full=True)
+        assert _items(store) == before
+        new = {}
+        for key, text in _records(store).items():
+            record = json.loads(text)
+            if os.path.join("Moved", "") in record.get("origin", "") and "#" in key:
+                new[int(key.rpartition("#")[2])] = record.get("chapter")
+        assert new == places

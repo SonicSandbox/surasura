@@ -685,7 +685,6 @@ class NeedsYou(QObject):
                                                                  self.find_offline, self.read_settings)
         find_miner = self.find_miner
         gone_folders = self.gone_folders
-        library_gone = self.available("start_fresh") and self.available("find_library")     # K3: Kura's calls there
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
 
         def gather():
@@ -705,7 +704,7 @@ class NeedsYou(QObject):
                                   miner_found=bool(find_miner(settings)),     # row 13: D1's line waits for it
                                   gone_folders=gone_folders or (),
                                   hidden=service.read_hidden(lang),           # alpha 4 D2: Not now, Stop asking
-                                  library_gone=library_gone)
+                                  settled=bool(self._gone_judged))            # K1: every folder had its look
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 

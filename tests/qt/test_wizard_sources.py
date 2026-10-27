@@ -104,9 +104,9 @@ class SourcesApi(FakeApi):
     def folder_refused(self, language, path):
         return setup_wizard.folder_refused(language, path)
 
-    def read_folders(self, language, paths, progress=None, stop=None):
+    def read_folders(self, language, paths, progress=None, stop=None, **kw):
         self.read_threads.append(threading.current_thread())
-        return setup_wizard.read_folders(language, paths, progress, stop)
+        return setup_wizard.read_folders(language, paths, progress, stop, **kw)
 
     def library_rows(self, settings, language):
         self.calls.append(("library_rows", language))

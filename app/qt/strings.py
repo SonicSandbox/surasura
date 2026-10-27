@@ -1481,3 +1481,29 @@ REMOVED_BRING_BACK_TIP = ("You removed {n:,} files of {path}: Surasura keeps the
 REMOVED_BROUGHT_BACK = "{n:,} removed files of {name} are back in your library"
 REMOVED_BROUGHT_BACK_ONE = "A removed file of {name} is back in your library"
 # --- end alpha 4 P-removed
+
+# --- A4 picks: Ctrl / Shift+click and Ctrl+A in Current, Soon, Goal and Finished, and what the picks can do -------- #
+PICKS_TITLES = "{n} titles"                           # the picks named in a toast, the drag's card and the question
+PICKS_MENU_NAME = "What you can do with the {n} picked"
+PICKS_MENU = {
+    "top": ("Up next", "Put all {n} at the top of Current, in the list's order"),
+    "soon": ("Soon", "Move all {n} to Soon, in the list's order"),
+    "goal": ("Goal", "Move all {n} to Goal"),
+    "finished": ("Finished", "Move all {n} to Finished: you're done with them\n• Then choose whether their new cards "
+                             "stay"),
+    "remove": ("Remove…", "Send all {n} to the trash (kept 30 days; Undo puts them back). Asks first"),
+}
+PICKS_GOAL_FIRST_TIP = "{tip}\n• A title in parts brings up its first part; the rest stays in Goal"
+PICKS_DONE = {
+    "top": "{title} are up next",
+    "soon": "{title} → Soon",
+    "goal": "{title} moved to Goal",
+}
+PICKS_FINISHED = "{title} finished · their cards stay put"
+PICKS_TAKEN_OUT = "{title}: their new cards are out of your order"
+PICKS_REMOVE_ASK = "Remove {title}?"
+PICKS_REMOVE_BODY = "Their {n} files go to the trash for 30 days. Undo puts them back where they were."
+PICKS_REMOVE_YES = "Remove {n} files"
+PICKS_REMOVE_YES_TIP = "Take them out of your library: their files go to the trash for 30 days"
+PICKS_REMOVED = "Removed {title} · in the trash for 30 days"
+# --- end A4 picks

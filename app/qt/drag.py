@@ -139,6 +139,20 @@ def split_first(rows_, row):
     return False
 
 
+def any_split_first(rows_, picked):
+    """A4: whether any row of `picked` (keys) is a split's first part (`split_first`'s rule), worked out once per title
+    — never every row against every row (2,500 picks of a 20,000-file library)."""
+    by_work = {}
+    for r in rows_:
+        if r.work_id is not None and not getattr(r, "group", False):
+            by_work.setdefault(r.work_id, []).append(r)
+    for r in rows_:
+        if r.key in picked and len(by_work.get(r.work_id, ())) > 1 and not getattr(r, "group", False) and \
+                split_first(by_work[r.work_id], r):
+            return True
+    return False
+
+
 def _first_number(row):
     return next((e.number for e in row.episodes if e.number is not None), None)
 
@@ -252,25 +266,33 @@ def reordered(view, keys, tiers=None):
 def without(view, key, where):
     """`view` with Current's row `key` gone to a well (`where`: "goal" or "finished"): Goal's bar or Finished's count
     takes it at once (the reader's next view says the same)."""
-    row = next((r for r in view.rows if r.key == key), None)
-    if row is None:
+    return without_many(view, {key}, where)
+
+
+def without_many(view, keys, where):
+    """`without` for every row of `keys` at once (A4: the picks sent to Goal or Finished) — one pass, one reorder."""
+    gone = [r for r in view.rows if r.key in keys]
+    if not gone:
         return view
-    rest = tuple(r for r in view.rows if r.key != key)
+    rest = tuple(r for r in view.rows if r.key not in keys)
     v = view._replace(rows=rest)
     if where == "goal" and view.goal is not None:
         g = view.goal
-        cover = row.cover_title
-        titles = g.titles + (1 if getattr(row, "group", False) or cover not in g.covers else 0)   # LM11b G1
-        covers = g.covers if cover in g.covers or len(g.covers) >= 9 else g.covers + (cover,)
-        files = g.files + row.n_files
+        titles, files, covers = g.titles, g.files, g.covers
+        for row in gone:
+            cover = row.cover_title
+            titles += 1 if getattr(row, "group", False) or cover not in covers else 0     # LM11b G1
+            covers = covers if cover in covers or len(covers) >= 9 else covers + (cover,)
+            files += row.n_files
         line = view_rows.STRINGS["goal_one"].format(files=view_rows.thousands(files)) if titles == 1 else \
             view_rows.STRINGS["goal_line"].format(titles=titles, files=view_rows.thousands(files))
         v = v._replace(goal=g._replace(titles=titles, files=files, covers=covers, line=line),
                        counts=v.counts._replace(goal_titles=titles, goal_files=files))
     elif where == FINISHED:
+        n = v.counts.finished + len(gone)
         badges = dict(v.badges or {})
-        badges["finished"] = v.counts.finished + 1
-        v = v._replace(counts=v.counts._replace(finished=v.counts.finished + 1), badges=badges)
+        badges["finished"] = n
+        v = v._replace(counts=v.counts._replace(finished=n), badges=badges)
     return reordered(v, [r.key for r in rest])
 
 
@@ -798,11 +820,13 @@ def _aside(settings, language):
 class _Drag:
     """One drag in progress."""
     __slots__ = ("src", "key", "row", "ids", "title", "source", "grab", "target", "parting", "at", "external",
-                 "holding")
+                 "holding", "many", "keys")
 
     def __init__(self):
         self.src = self.key = self.row = self.title = self.source = None
         self.ids = []
+        self.many = 0                                # A4: a drag of the picks — how many titles it carries
+        self.keys = ()                               # ... and the Current rows they are (none from Goal's sheet)
         self.grab = QPointF()
         self.target = None
         self.parting = None
@@ -988,9 +1012,12 @@ class DragController(QObject):
         if sorted(rest) != sorted(self.expect):
             return None
         v = view
+        gone = {}
         for k in keys:
             if k in self.expect_gone:
-                v = without(v, k, self.expect_gone[k])
+                gone.setdefault(self.expect_gone[k], set()).add(k)
+        for where, ks in gone.items():                   # A4: the picks sent to a well go in one pass
+            v = without_many(v, ks, where)
         if tuple(r.key for r in v.rows) == self.expect and all(
                 r.tier == self.expect_tiers.get(r.key, r.tier) for r in v.rows):
             return v
@@ -1093,6 +1120,9 @@ class DragController(QObject):
         kind, row, lines = model.entries[src]
         rect = self.lst.visualRect(model.index(src, 0))
         slot = self.lst.delegate.slot_rect(kind, rect, lines)
+        picked = self.lst.picked_rows
+        if row.key in picked and len(picked) > 1:        # --- A4: a picked row's drag carries every pick
+            return self._begin_picks(picked, global_pos, slot.size())
         d = _Drag()
         d.src, d.key, d.row, d.ids, d.title = src, row.key, row, ids_of(row), row.title
         d.source = "current"
@@ -1106,19 +1136,36 @@ class DragController(QObject):
             unlit = strings.WELL_UNLIT_SPLIT
         return self._lift_safely(d, pix, slot.size(), height, global_pos, unlit)
 
-    def begin_by_id(self, item_ids, source, title, global_pos, size=None):
+    def begin_by_id(self, item_ids, source, title, global_pos, size=None, many=0, keys=(), unlit=None):
         """A drag of items the list doesn't show (W3.2's tray, the Goal sheet: `source` its tier, "goal" leaves the
-        Goal well out): a card with its title as the ghost, the same drop."""
+        Goal well out): a card with its title as the ghost, the same drop. A4: `many` titles picked (their card says how
+        many; a drop sends them as the picks' ⋯ does, `send_picks`), `keys` the Current rows they are, `unlit` why the
+        Finished well stays dark (a split's first part among them)."""
         if self.running is not None or self.refused() is not None:
             return False
         d = _Drag()
         d.ids, d.title, d.source, d.external = list(item_ids), title, source, True
+        d.many, d.keys = many, tuple(keys)
         w = size.width() if size is not None else self.lst.viewport().width()
         h = size.height() if size is not None else rows.RowDelegate._line_h()
         dpr = self.lst.viewport().devicePixelRatioF() or 1.0
         d.grab = QPointF(min(w / 2, 40), h / 2)
         return self._lift_safely(d, title_card(title, w, h, dpr), QRect(0, 0, w, h).size(),
-                                 h + theme.ROW_LINE["gap"], global_pos, None)
+                                 h + theme.ROW_LINE["gap"], global_pos, unlit)
+
+    def _begin_picks(self, picked, global_pos, size):
+        """A4: a press on a picked row travelled `drag-start-px` — every picked row lifts as one card (*5 titles*), its
+        items in the list's order; the Finished well dark when a split's first part is among them."""
+        view = self.page.view_model
+        rows_ = view.rows if view is not None else ()
+        mine = [r for r in rows_ if r.key in picked]
+        if not mine:
+            return False
+        ids = [i for r in mine for i in ids_of(r)]
+        unlit = strings.WELL_UNLIT_SPLIT if any_split_first(rows_, picked) else None
+        title = strings.PICKS_TITLES.format(n=f"{len(mine):,}")
+        return self.begin_by_id(ids, "current", title, global_pos, size, many=len(mine), keys=[r.key for r in mine],
+                                unlit=unlit)
 
     def _row_picture(self, kind, row, lines, rect, slot):
         """The row's cached picture (its hover look, as the hand lifts it), else the list's own pixels there."""
@@ -1433,6 +1480,10 @@ class DragController(QObject):
             if not d.external and split_first(self.page.view_model.rows, d.row):
                 self.cancel(strings.WELL_UNLIT_SPLIT)
                 return
+            unlit = self.win.dock.unlit_tip("finished") if d.external and self.win.dock is not None else None
+            if unlit:                                # A4: picks holding a split's first part
+                self.cancel(unlit)
+                return
             self._to_well(d, "finished")
         elif kind == "join":                         # --- W3.2 Q8: dropped on another part of the same title
             self._end(d)
@@ -1452,6 +1503,9 @@ class DragController(QObject):
     def _to_place(self, d, slot):
         view = self.page.view_model
         rows_ = view.rows
+        if d.many:                                   # A4: the picks dropped in a gap
+            self._picks_to_place(d, rows_, slot)
+            return
         tier, before_id, after_id, near = placement(rows_, d.src, slot)
         if d.external:
             self._end(d)
@@ -1479,6 +1533,27 @@ class DragController(QObject):
                                                       label=t))
         self._glide_home(d.key)
 
+    def _picks_to_place(self, d, rows_, slot):
+        """A4: the picks dropped in a gap — ONE `move` beside the painted neighbour that isn't picked (an anchor among
+        the picks would be no move), shown at once in their new place (Current's rows) with one toast and one Undo."""
+        picked = set(d.keys)
+        rest = [r for r in rows_ if r.key not in picked]
+        at = sum(1 for r in rows_[:slot] if r.key not in picked)
+        tier, before_id, after_id, near = placement(rest, None, at)
+        self._end(d)
+        self._glide_away()
+        base = self.base()
+        mine = [r for r in rows_ if r.key in picked]
+        if mine and base is not None and {r.key for r in base.rows} == {r.key for r in rows_}:
+            keys = [r.key for r in rest[:at]] + [r.key for r in mine] + [r.key for r in rest[at:]]
+            self.held = None
+            self._ahead(reordered(base, keys, {k: tier for k in picked}))
+        text = strings.PICKS_DONE["top"].format(title=d.title) if at == 0 else \
+            strings.DRAG_PLACED.format(title=d.title, n=at + 1)
+        ids = d.ids
+        self._give(Ticket(text, d.keys, ids), lambda t: self.writer.move(ids, tier, before_id=before_id,
+                                                                          after_id=after_id, near=near, label=t))
+
     @staticmethod
     def _fit(keys, moved, key):
         """The drop's order laid onto `keys` (the reader's newest, which may hold a row the screen didn't): the moved
@@ -1498,6 +1573,11 @@ class DragController(QObject):
         return out
 
     def _to_well(self, d, name):
+        if d.many:                                   # A4: the picks into a well — as the picks' ⋯ sends them
+            self._end(d)
+            self._glide_away()
+            self.send_picks(name, d.ids, d.many, d.keys, d.source)
+            return
         if d.external:
             self._end(d)
             self._glide_away()
@@ -1540,18 +1620,19 @@ class DragController(QObject):
         else:
             self._finish(d.title, d.ids, keys)
 
-    def _finish(self, title, ids, keys=()):
+    def _finish(self, title, ids, keys=(), many=False):
         """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Leave its new cards out of
         your order*, each written as `set_finished` (live, never greyed). finish-pending: the drop and *Leave its new
         cards out* each a press until the host's re-order for it lands (Anki moves after the Generate it starts: the
         bar's arc — the row has left this list)."""
-        ticket = Ticket(strings.DRAG_FINISHED.format(title=title), keys, ids)
+        ticket = Ticket((strings.PICKS_FINISHED if many else strings.DRAG_FINISHED).format(title=title), keys, ids)
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False,
                       anki=on_bar) is None:
             return None
 
         def choose(keep):
-            choice = Ticket(strings.DRAG_TAKEN_OUT.format(title=title), keys, ids)
+            choice = Ticket((strings.PICKS_TAKEN_OUT if many else strings.DRAG_TAKEN_OUT).format(title=title), keys,
+                            ids)
             choice.follows = ticket
             self._give(choice, lambda t: self._set_finished(list(ids), keep, t, ticket), toast=not keep,
                        anki=None if keep else on_bar)
@@ -2195,6 +2276,52 @@ class DragController(QObject):
         expect = getattr(self.reader, "expect", None)
         if expect is not None:
             expect(tiers)
+
+    # --- A4: the picks, sent ------------------------------------------------------------------------------------ #
+    def send_picks(self, where, ids, n, keys=(), src="current"):
+        """*Up next* · *Soon* · *Goal* · *Finished* for `n` picked titles at once (their ⋯, or a drag of them into a
+        well): ONE writer command — one ticket, one toast naming the count, one Undo; the store keeps the list's own
+        order. Up next: `place(…, "top")`; Soon: after the Soon line, past a show it runs through (`soon_slot`, as a
+        single row's *Soon*); Goal: Goal's end (`end=True`, as a single *Goal*); Finished: `_finish` (D14's Keep / Leave
+        out, once). `keys`: the Current rows they are — shown moved (or gone) at once, as a single row's move is.
+        `src` "finished": out of Finished their cards come back into the order — *Up next* is *Put back*'s command, and
+        each a press until Anki has them (finish-pending). -> the command's number (Finished: its ticket), or None."""
+        if not ids or self.refused() is not None:
+            return None
+        ids, keys = list(ids), tuple(keys)
+        title = strings.PICKS_TITLES.format(n=f"{n:,}")
+        base = self.base()
+        anki = on_bar if src == "finished" else None
+        picked = set(keys)
+        rows_ = base.rows if base is not None else ()
+        mine = [r for r in rows_ if r.key in picked]
+        if where in ("goal", "finished"):
+            if mine:
+                where_to = "goal" if where == "goal" else FINISHED
+                for r in mine:
+                    self.expect_gone[r.key] = where_to
+                self._ahead(without_many(base, picked, where_to))
+            if where == "finished":
+                return self._finish(title, ids, keys, many=True)
+            return self._give(Ticket(strings.PICKS_DONE["goal"].format(title=title), keys, ids),
+                              lambda t: self.writer.move(ids, "goal", end=True, label=t), anki=anki)
+        rest = [r for r in rows_ if r.key not in picked]
+        if where == "soon":
+            slot, _files, after_id = soon_slot(rest, None)
+            if mine:
+                self._ahead(reordered(base, [r.key for r in rest[:slot] + mine + rest[slot:]],
+                                      {k: "soon" for k in picked}))
+            return self._give(Ticket(strings.PICKS_DONE["soon"].format(title=title), keys, ids),
+                              lambda t: self.writer.move(ids, "soon", after_id=after_id, label=t), anki=anki)
+        if mine:
+            self._ahead(reordered(base, [r.key for r in mine + rest], {k: "now" for k in picked}))
+        if src == "finished":
+            def command(t):
+                return self.writer.put_back(ids, label=t)
+        else:
+            def command(t):
+                return self.writer.place(ids, "top", label=t)
+        return self._give(Ticket(strings.PICKS_DONE["top"].format(title=title), keys, ids), command, anki=anki)
 
     # --- ↑ ↓ and ⋯ ---------------------------------------------------------------------------------------------- #
     def nudge(self, row, step):

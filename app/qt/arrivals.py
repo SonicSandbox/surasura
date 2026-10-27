@@ -1242,6 +1242,7 @@ class ArrivalsTray(motion.Overlay):
         self.paints = 0
         self.picks = set()                  # A4: the picked rows' keys (Ctrl / Shift+click, Ctrl+A)
         self._pick_anchor = None            # the row Ctrl picked last: a Shift range starts there
+        rows.picks_join(self)               # A4 (picks): picks in one list at a time
         self.shadow = shadow.Follower(self, self.shadow_name)
         self._away = _Away(self)
         parent.installEventFilter(self)
@@ -1518,6 +1519,8 @@ class ArrivalsTray(motion.Overlay):
     def _repaint_picks(self, keys):
         for k in keys:
             self.repaint_row(k)
+        if self.picks:
+            rows.picks_here(self)           # A4 (picks): the window's other lists let theirs go
 
     def pick(self, key):
         """Ctrl+click (Ctrl+Space): the row picked, or let go."""

@@ -220,6 +220,12 @@ def finish():
     return not thread.is_alive()
 
 
+def approved_page():
+    """The approved release's own page (alpha 4 M5): where every *Install* fallback and the notice send you — never the
+    releases list, whose newest release isn't approved yet."""
+    return f"{RELEASES}/tag/v{APPROVED}"
+
+
 def _key(version):
     """A version to compare: its numbers, trailing zeros dropped (3.8 is 3.8.0)."""
     from app import update_checker
@@ -253,19 +259,16 @@ def installed():
 
 
 def notice(installed_version, state=None):
-    """{"version", "url"} when the kept latest — held at `APPROVED` (alpha 4 M5: a release Surasura hasn't approved is
-    never offered) — is newer than `installed_version`, else None (nothing kept, Anki Miner not known to be installed,
+    """{"version", "url"} of the approved release (`APPROVED`, alpha 4 M5: a release Surasura hasn't approved is never
+    offered, newer or older) once a check has kept a release and it is newer than `installed_version`, else None (nothing kept, Anki Miner not known to be installed,
     up to date). No fetch. Never raises."""
     try:
         state = read_state() if state is None else state
         latest = state.get("latest")
         if not known(latest) or not known(installed_version):
             return None
-        url = state.get("url")
-        if _key(latest) > _key(APPROVED):
-            latest, url = APPROVED, f"{RELEASES}/tag/v{APPROVED}"
-        if _key(latest) <= _key(installed_version):
-            return None
-        return {"version": latest, "url": _page(url)}
+        if _key(APPROVED) <= _key(installed_version):
+            return None                     # up to the approved version, or past it by hand: nothing to offer
+        return {"version": APPROVED, "url": approved_page()}
     except Exception:
         return None

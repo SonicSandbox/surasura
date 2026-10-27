@@ -414,7 +414,8 @@ def icon(p, kind, rect, colour, width=1.6):
 
 STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mine_rest": "check", "mine": "mine",
                "no_media": "no_media", "no_subs": "waiting",           # SRC W1b: a video waiting for its subtitle
-               "asked": "waiting"}                                     # R47: an ask Connect has read
+               "asked": "waiting",                                     # R47: an ask Connect has read
+               "books": "waiting"}                                     # alpha 4 M1: waits for Anki Miner to read books
 
 # --- P4.1 L2: the stones' actions (4.1.11; RUNBOOK C2, C3, C6, IK S7). A status that is a button: Waiting's icon is
 # *Mine now*, Mine is *Mine this*, No video offers *Link…* (alpha 4 M1: *Mine text* gone). Its part's payload is an `Ask` (`id`: its first
@@ -525,7 +526,7 @@ def asks_connect(name, word="video"):
 def action_of(status, episodes, off=None, word="video"):
     """(part name, tip, payload) for a status shown as an icon: a button while Connect may run, its tip naming the
     click; Connect off (`off`: why, `feed.OFF_*`) the same part, its tip saying why nothing happens (an ask only:
-    `asks_connect`). `word`: the row's media word — a non-video item's button opens Anki Miner, and its tip says so.
+    `asks_connect`). `word`: the row's media word — a non-video item's button asks nothing (alpha 4 M1: the bar says it waits).
     Not a button: ("status", its tip, None) — *Not timed* too (its way on is *Mine anyway* in Needs you), so its tip
     names the wait, never a click. A wait on Anki or on the battery is *Mine now* as every *Waiting* is (P4.1's C3
     as amended by Sonic 2026-10-22, M-3 A): its tip, worded by `view_rows`, already says what the click does."""

@@ -349,10 +349,10 @@ def test_shipped_install_without_a_yes_fetches_nothing(monkeypatch):
     monkeypatch.setattr(M, "open_url", opened.append)
     monkeypatch.setattr(M, "_launch", lambda path: pytest.fail("an installer was opened"))
     assert M.install(None, None, ends.append) == "opened-releases"
-    assert opened == [setup.RELEASES]
+    assert opened == [M.am_release.approved_page()]
     assert M.install(None, None, ends.append, confirm=lambda: False) == "declined"
     assert calls == []
-    assert opened == [setup.RELEASES]                        # a no opens nothing more
+    assert opened == [M.am_release.approved_page()]                        # a no opens nothing more
     assert ends == ["opened-releases", "declined"]
     assert not os.path.exists(M.staging_folder())
 
@@ -367,7 +367,7 @@ def test_switched_off_install_only_opens_the_releases_page(monkeypatch):
     monkeypatch.setattr(M, "_launch", lambda path: pytest.fail("an installer was opened"))
     assert M.install(None, None, ends.append, confirm=lambda: True) == "opened-releases"
     assert calls == []
-    assert opened == [setup.RELEASES]
+    assert opened == [M.am_release.approved_page()]
     assert ends == ["opened-releases"]
     assert not os.path.exists(M.staging_folder())
 
@@ -401,7 +401,7 @@ def test_a_digest_that_does_not_match_opens_the_releases_page_and_leaves_nothing
     route.net.release = _release(digest="sha256:" + hashlib.sha256(b"another file").hexdigest())
     assert route.run() == "opened-releases"
     assert route.launcher.started == []
-    assert route.opened == [setup.RELEASES]
+    assert route.opened == [M.am_release.approved_page()]
     assert _staging_empty()
 
 
@@ -410,7 +410,7 @@ def test_no_sha256_from_github_means_no_download_at_all(route, digest):
     route.net.release = _release(digest=digest)
     assert route.run() == "opened-releases"
     assert route.net.calls == [(M.release_api(), True)]         # the release answer only: the file is never asked for
-    assert route.opened == [setup.RELEASES]
+    assert route.opened == [M.am_release.approved_page()]
     assert _staging_empty()
 
 
@@ -498,7 +498,7 @@ def test_windows_blocking_the_installer_opens_the_releases_page(route, monkeypat
     blocked.winerror = 225
     monkeypatch.setattr(M, "_launch", Launcher(error=blocked))
     assert route.run() == "opened-releases"
-    assert route.opened == [setup.RELEASES]
+    assert route.opened == [M.am_release.approved_page()]
     assert _staging_empty()
 
 
@@ -578,7 +578,7 @@ def test_a_confirm_that_raises_fetches_nothing_and_opens_the_releases_page(route
         raise RuntimeError("the dialog went away")
     assert route.run(confirm=broken) == "opened-releases"
     assert route.net.calls == []
-    assert route.opened == [setup.RELEASES]
+    assert route.opened == [M.am_release.approved_page()]
 
 
 def test_on_end_raising_never_breaks_install(monkeypatch):

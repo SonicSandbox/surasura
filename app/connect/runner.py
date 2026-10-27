@@ -52,7 +52,7 @@ import time
 from types import SimpleNamespace
 
 from app.connect import fit_check, inbox, stopping
-from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, NOT_STARTED, PREPARE_KINDS, STOPPED_REASON,
+from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, STOPPED_REASON,
                                 Ledger)
 
 log = logging.getLogger("surasura-cli")
@@ -283,7 +283,7 @@ def _consume(steps, ledger, lang):
             line = steps.mine_line(lang)
             with ledger.transaction():
                 ledger.reopen_skipped(lang, line, MINER_ABSENT)
-        _books_aside(steps, ledger, lang, ledger.jobs(lang, states=NOT_STARTED))
+        _books_aside(steps, ledger, lang, ledger.jobs(lang, states=OPEN))
     except Exception:
         log.exception("Connect couldn't read its inbox (%s); it looks again", lang)
         return True
@@ -291,8 +291,9 @@ def _consume(steps, ledger, lang):
 
 
 def _books_aside(steps, ledger, lang, jobs):
-    """Alpha 4 M1: while Anki Miner can't read books (`steps.reads_books`), each of `jobs` (not started) whose item is a
-    book or a text ends `skipped` with BOOKS_WAIT, before any pick — so it is no open job, no *No video*, nothing on
+    """Alpha 4 M1: while Anki Miner can't read books (`steps.reads_books`), each of `jobs` still before its mining (queued,
+    waiting, or left mid-pick by a kill: `_resume_of` in BEFORE_MINING, no batch started) whose item is a book or a
+    text (`library.text_only`, the rows' rule too) ends `skipped` with BOOKS_WAIT, before any pick — so it is no open job, no *No video*, nothing on
     the circles; once it can, every job set aside so is queued again (its ask kept; one beyond the line is dropped at
     its start as any). -> how many set aside. A store busy now: none (looked at again next look)."""
     reads, texts_of = getattr(steps, "reads_books", None), getattr(steps, "text_items", None)
@@ -304,8 +305,7 @@ def _books_aside(steps, ledger, lang, jobs):
             with ledger.transaction():
                 ledger.reopen_skipped(lang, aside, BOOKS_WAIT)
         return 0
-    jobs = [j for j in jobs if j.get("state") in NOT_STARTED and j.get("resume") in BEFORE_MINING
-            and not _started(ledger, j["id"])]
+    jobs = [j for j in jobs if _resume_of(j) in BEFORE_MINING and not _started(ledger, j["id"])]
     texts = texts_of(lang, {j["item_id"] for j in jobs}) if jobs else set()
     n = 0
     for job in jobs:

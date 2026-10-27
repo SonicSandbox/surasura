@@ -34,7 +34,7 @@ def _work():
     with c.store() as s:
         s.bookkeeping({"mine_line": 2}, copy_carries=True)
         library.ensure_reader(s)
-        item = s.ids("now")[-1]
+        item = [i for i in s.ids("now") if not library.text_only(s.item(i))][-1]     # a subtitle (alpha 4 M1: a book waits)
         library.place(s, item, "now", source="user")
     return item
 

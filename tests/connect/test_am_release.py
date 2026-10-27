@@ -25,6 +25,8 @@ ON = {"connect_enabled": True}
 DAY = 24 * 3600
 NOON = datetime.datetime(2026, 10, 13, 12, 0, tzinfo=datetime.timezone.utc).timestamp()
 PAGE = "https://github.com/0xzerolight/anki_miner/releases/tag/v3.8.0"
+# Alpha 4 M5: what the notice offers is always the approved release, whatever newer one a check kept
+OFFER = {"version": am_release.APPROVED, "url": am_release.approved_page()}
 REAL_FETCH = am_release._fetch
 
 
@@ -180,10 +182,11 @@ def test_an_unreadable_state_file_is_a_check_due():
 def test_a_newer_release_is_a_notice_and_catching_up_clears_it_with_no_fetch():
     fetch = Fetch(release("v3.8.0"))
     am_release.check(ON, now=NOON, fetch=fetch)
-    assert am_release.notice("3.7.0") == {"version": "3.8.0", "url": PAGE}
-    assert am_release.notice("3.8.0") is None, "Anki Miner updated by hand: the notice goes at once"
-    assert am_release.notice("3.8") is None, "3.8 is 3.8.0"
-    assert am_release.notice("3.9.1") is None
+    approved = {"version": am_release.APPROVED, "url": am_release.approved_page()}
+    assert am_release.notice("3.7.0") == approved, "alpha 4 M5: the approved version, never the kept 3.8.0 itself"
+    assert am_release.notice(am_release.APPROVED) is None, "Anki Miner updated by hand: the notice goes at once"
+    assert am_release.notice("3.10.1.0") is None, "3.10.1.0 is 3.10.1"
+    assert am_release.notice("3.11.0") is None
     assert am_release.notice(None) is None, "Anki Miner not known to be installed: no notice"
     assert fetch.calls == 1
 
@@ -292,11 +295,11 @@ def test_the_status_record_carries_the_notice_with_or_without_a_ledger():
     _installed("3.7.0")
     am_release.check(ON, now=NOON, fetch=Fetch(release("v3.8.0")))
     record = status.read(["ja"])
-    assert record["anki_miner_update"] == {"version": "3.8.0", "url": PAGE}
-    assert status.language_record(record, "ja")["anki_miner_update"] == {"version": "3.8.0", "url": PAGE}
+    assert record["anki_miner_update"] == OFFER
+    assert status.language_record(record, "ja")["anki_miner_update"] == OFFER
     assert status.language_record(record, "ja")["line"] == "Up to date"
-    _installed("3.8.0")
-    assert status.read(["ja"])["anki_miner_update"] is None, "Anki Miner caught up: gone, no fetch"
+    _installed(am_release.APPROVED)
+    assert status.read(["ja"])["anki_miner_update"] is None, "Anki Miner caught up (the approved version): gone, no fetch"
 
 
 def test_the_stamp_moves_when_the_release_state_or_the_setup_record_changes():
@@ -322,9 +325,9 @@ def test_a1_the_stamp_moves_when_anki_miner_is_updated_by_hand(monkeypatch):
     am_release.check(ON, now=NOON, fetch=Fetch(release("v3.8.0")))
     monkeypatch.setattr(anki_miner, "installed_version", lambda: "3.7.0")
     before = status.stamp(languages=["ja"])
-    assert status.read(["ja"])["anki_miner_update"] == {"version": "3.8.0", "url": PAGE}
+    assert status.read(["ja"])["anki_miner_update"] == OFFER
     assert status.stamp(languages=["ja"]) == before, "nothing changed: the same stamp"
-    monkeypatch.setattr(anki_miner, "installed_version", lambda: "3.8.0")
+    monkeypatch.setattr(anki_miner, "installed_version", lambda: am_release.APPROVED)
     assert status.stamp(languages=["ja"]) != before, "updated by hand: the stamp moves, the row reads again"
     assert status.read(["ja"])["anki_miner_update"] is None
 
@@ -422,7 +425,7 @@ def test_a7_an_installed_version_with_no_digits_is_unknown(monkeypatch):
     assert am_release.notice("unknown") is None and am_release.notice("  ") is None
     monkeypatch.setattr(anki_miner, "installed_version", lambda: "3.7.0")
     assert am_release.installed() == "3.7.0", "the one known version counts"
-    assert am_release.notice("3.7.0") == {"version": "3.8.0", "url": PAGE}
+    assert am_release.notice("3.7.0") == OFFER
 
 
 @pytest.mark.parametrize("failure", [OSError(5, "no local data folder"), RuntimeError("ledger folder")])

@@ -20,11 +20,12 @@
   existing core touchpoint's kind, Sonic's yes 2026-10-15 as relayed by the W3.5 lead; the §1 line is the lead's):
   Anki Miner's official installer from its own GitHub releases, checked by GitHub's sha256, only when the learner
   presses Install and says yes. `DOWNLOAD_ENABLED` (True as shipped) is the one switch: False opens Anki Miner's
-  releases page in the browser (`setup.RELEASES`, as 2.x's *Install*) -> `"opened-releases"`, `_fetch` never called.
+  approved release's page in the browser (`am_release.approved_page`; 2.x opened `setup.RELEASES`) -> `"opened-releases"`, `_fetch` never called.
   On: Windows only · never while Anki Miner runs or a Connect run holds its lock (`"busy"`, nothing opened) ·
   `confirm()` once, **before any byte**: no `confirm` handed in -> the releases page, nothing fetched; False ->
   `"declined"`, nothing fetched or opened · the release of `0xzerolight/anki_miner` Surasura has approved
-  (`am_release.APPROVED`, alpha 4 M5: the version its drill passed at; never GitHub's latest) · exactly one
+  (`am_release.APPROVED`, alpha 4 M5: the version its drill passed at; never GitHub's latest — his installer refuses
+  a downgrade, so a newer one you installed stays) · exactly one
   `*-Windows-x86_64-Setup.exe` asset, its size under `SIZE_CAP`, GitHub's `sha256:` digest present and the one
   approved with it (`am_release.APPROVED_SHA256`) · streamed into a staging folder under local data
   (`path_utils.get_local_data_path()`), only from GitHub's hosts (`HOSTS`, https; a redirect elsewhere is refused),
@@ -54,7 +55,7 @@ import urllib.request
 import webbrowser
 
 from app.connect import am_release
-from app.connect.setup import RELEASES
+from app.connect.setup import RELEASES  # noqa: F401  (2.x's page; the fallback opens the approved release's, alpha 4 M5)
 
 DOWNLOAD_ENABLED = True         # the download (Sonic's yes, 2026-10-15); False = the releases page, as 2.x
 
@@ -343,7 +344,7 @@ def _launch(path):
 
 def _releases():
     try:
-        (open_url or webbrowser.open)(RELEASES)
+        (open_url or webbrowser.open)(am_release.approved_page())     # alpha 4 M5: the approved release's page
     except Exception:
         pass
     return OPENED_RELEASES

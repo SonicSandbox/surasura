@@ -10,8 +10,8 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   the store's `availability` = missing — the view's `Episode.missing`; one line per missing file of Current, wherever
   it stands: *Choose file…* · *Choose a folder…* → the writer's `relink`, *Keep its words*, *Remove*) and *no
   video* (`no-video`: the content is there and Connect's job for it waits on its video, `runner.NO_VIDEO`: *Find
-  videos* · *Link these · N* → the writer's `link_video`, never `relink`; *Mine the text only*, hidden until P4.1 wires
-  it). Shows in Current's order; a show with both gets both cards, its gone files first.
+  videos* · *Link these · N* → the writer's `link_video`, never `relink`; alpha 4 M1: never a book's, and no *Mine
+  the text only*). Shows in Current's order; a show with both gets both cards, its gone files first.
 - **9a's questions** (IK-3, `Store.rename_asks()` read on the reader's worker by `asks_of`): *Is this the one from …?*
   with the missing files it may be; *This one* → `relink`, *It's new* → `its_new`.
 - **a source folder that is GONE** (T6, Sonic 2026-10-24: "Yes your lean is exactly what i'd do"): one card per
@@ -237,7 +237,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         if hit is None:
             unplaced.append(job)
             continue
-        if hit[1].media_word in view_rows.TEXT_WORDS:
+        if hit[1].text:
             continue                        # alpha 4 M1: a book waits for Anki Miner (Connect's next look sets it aside)
         novideo.setdefault(_group(hit[0]), []).append(hit)
     shows = []

@@ -297,7 +297,8 @@ def test_G6_find_all_missing_videos_looks_for_every_show_at_once(world):
     shows = []
     for r in rows_of(win):                                   # two shows, every file there (a split's parts: one)
         eps = [e for e in r.episodes if not e.missing and e.number is not None]
-        if eps and not any(e.missing for e in r.episodes) and r.work_id not in {x.work_id for x, _e in shows}                 and r.media_word == "video":                 # alpha 4 M1: a book is never a *No video* card
+        if eps and not any(e.missing for e in r.episodes) and r.work_id not in {x.work_id for x, _e in shows} \
+                and not any(e.text for e in r.episodes):     # alpha 4 M1: a book is never a *No video* card
             shows.append((r, eps[0]))
     assert len(shows) >= 2
     shows = shows[:2]

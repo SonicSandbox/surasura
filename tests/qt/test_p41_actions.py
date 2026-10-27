@@ -157,12 +157,12 @@ def test_a_book_row_waits_quietly_for_anki_miner_its_status_no_button_and_nothin
     opened = []
     monkeypatch.setattr(anki_miner, "find", lambda _s: opened.append("looked"))
     entries = lst.model().entries
-    books = [e[1] for e in entries if e[0] == rows.ROW and e[1].media_word in view_rows.TEXT_WORDS]
+    books = [e[1] for e in entries if e[0] == rows.ROW and e[1].episodes and all(ep.text for ep in e[1].episodes)]
     assert books, "the seed holds a book or a text"
     for row in books:
         assert row.status.kind == "books" and row.status.label == view_rows.STRINGS["books_wait"]
         assert row.status.tone == "faint"
-    i = next(n for n, e in enumerate(entries) if e[0] == rows.ROW and e[1].media_word in view_rows.TEXT_WORDS)
+    i = next(n for n, e in enumerate(entries) if e[0] == rows.ROW and e[1] is books[0])
     assert not any(p[0] in rows.ACTION_NAMES for p in parts_of(lst, i)), "nothing to press"
     assert asks(writer) == [] and opened == []
 

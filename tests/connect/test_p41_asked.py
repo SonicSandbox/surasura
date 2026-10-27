@@ -302,6 +302,22 @@ def test_a_book_waiting_on_no_video_from_before_is_set_aside_at_the_next_look(tm
     assert ("pick", text) not in steps.log
 
 
+def test_a_book_left_mid_pick_by_a_kill_is_set_aside_too_never_picked(tmp_path):
+    """Alpha 4 M1 (review A-2): a job a kill left in `picking` (before any batch reached Anki Miner) is still before
+    its mining — set aside as a queued one is, never picked into a *No video* wait."""
+    ids, kinds = _library()
+    text = [i for i in ids if kinds[i] == ".txt"][-1]
+    _place_top(text)
+    _look()
+    with Ledger() as ledger:
+        job = [j for j in ledger.jobs("ja") if j["item_id"] == text][-1]
+        ledger.set_state(job["id"], "picking")
+    steps = _steps(tmp_path, {text: WORDS[0]})
+    _run(steps)
+    assert (_jobs(text)[-1]["state"], _jobs(text)[-1]["reason"]) == ("skipped", runner.BOOKS_WAIT)
+    assert ("pick", text) not in steps.log and _mined(steps) == []
+
+
 def test_asks_made_while_connect_was_off_are_never_mined(tmp_path):
     ids, kinds = _library()
     early, late = _srt(ids, kinds)[-2:]

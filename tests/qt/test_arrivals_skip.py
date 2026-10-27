@@ -66,7 +66,7 @@ class FakeLooks:
         threading.Thread(target=then, args=(list(self.choices),), daemon=True).start()
         return True
 
-    def folders(self, ids, then):                                     # (the rows' folder names: none here)
+    def folders(self, ids, then, detail=False):                       # (the rows' folder names: none here)
         then(dict.fromkeys(ids))
         return True
 

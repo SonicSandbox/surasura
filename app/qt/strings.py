@@ -1453,3 +1453,31 @@ NEEDS_RELINK_WHY = "{why} ({n:,})"
 # T6 option 2: *Find its new folder…* read a folder that held none of the show's episodes: it isn't read any more
 NEEDS_FIND_DROPPED = "None of {show}'s episodes were there: {folder} isn't read"
 # --- end alpha 4 seams
+
+# --- alpha 4 P-removed (D3, Mattias #6): the 🗑 Removed list and Settings' *Bring back N removed* (app/qt/removed.py)
+REMOVED_NAME = "Removed"
+REMOVED_OPEN = "🗑 Removed…"
+REMOVED_OPEN_TIP = ("What you removed in the last 30 days, each with Put back\nRemoved files wait in the trash for 30 "
+                    "days, then they're gone for good")
+REMOVED_LINE = "What you removed in the last 30 days. Put back brings a title back where it was."
+REMOVED_LOOKING = "Looking in the trash…"
+REMOVED_NONE = "Nothing removed in the last 30 days"
+REMOVED_UNREADABLE = "The Removed list couldn't be read: your library is busy or can't be opened. Try again in a moment"
+REMOVED_FILES = "{n:,} files"
+REMOVED_FILES_ONE = "1 file"
+REMOVED_DAYS = "{n} days left"
+REMOVED_DAYS_ONE = "1 day left"
+REMOVED_DAYS_LAST = "last day"
+REMOVED_FROM_FOLDER = "from a folder Surasura reads"          # nothing in the trash: its original comes back in its stead
+REMOVED_PUT_BACK = "Put back"
+REMOVED_PUT_BACK_NAME = "Put back {title}"
+REMOVED_PUT_BACK_TIP = "Put {title} back where it was in your library\nUndo sends it back to the trash"
+REMOVED_BACK = "{title} is back in your library"
+REMOVED_BRING_BACK = "Bring back {n:,} removed"
+REMOVED_BRING_BACK_NAME = "Bring back {n:,} removed files of {path}"
+REMOVED_BRING_BACK_TIP = ("You removed {n:,} files of {path}: Surasura keeps them out even when this folder is read "
+                          "again\nBring them back into your library where they were (Undo sends them back to the "
+                          "trash)")
+REMOVED_BROUGHT_BACK = "{n:,} removed files of {name} are back in your library"
+REMOVED_BROUGHT_BACK_ONE = "A removed file of {name} is back in your library"
+# --- end alpha 4 P-removed

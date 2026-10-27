@@ -194,9 +194,10 @@ def look_again(shell, control=None):
 
 
 class SourceLine(QWidget):
-    """One folder's line: its path, its count and *Stop reading* (`on_stop(root_id)`; `tip`: its own words)."""
+    """One folder's line: its path, its count and *Stop reading* (`on_stop(root_id)`; `tip`: its own words); alpha 4
+    (Mattias's note 6): *Bring back N removed* (`back`, `on_back(root_id)`) while that folder has removed files."""
 
-    def __init__(self, source, on_stop, parent=None):
+    def __init__(self, source, on_stop, parent=None, on_back=None):
         super().__init__(parent)
         self.setObjectName("settingssource")
         self.root = source["id"]
@@ -211,6 +212,15 @@ class SourceLine(QWidget):
         self.count = QLabel(self)
         self.count.setObjectName("settingsvalue")
         line.addWidget(self.count)
+        # --- alpha 4 P-removed: *Bring back N removed* (hidden while none; `show_removed`)
+        self.removed = ()                                 # the trash ids of its removed files (`removed_under`)
+        self.back_tip = ""                                # its own words (greyed: why, the window's `_enable`)
+        self.back = sc.Door(strings.REMOVED_BRING_BACK.format(n=0), parent=self)
+        self.back.setVisible(False)
+        if on_back is not None:
+            self.back.clicked.connect(lambda _c=False: on_back(self.root))
+        line.addWidget(self.back)
+        # --- end alpha 4 P-removed
         self.stop = qpress.room(sc.Door(S.SOURCES_STOP, name=S.SOURCES_STOP_NAME.format(path=source["path"]),
                                         parent=self))
         self.stop.clicked.connect(lambda _c=False: on_stop(self.root))
@@ -226,6 +236,22 @@ class SourceLine(QWidget):
         if self.count.text() != words:
             self.count.setText(words)
         self.tip = S.SOURCES_STOP_TIP.format(path=source["path"], n=source.get("items") or 0)
+        return True
+
+    def show_removed(self, ids):
+        """alpha 4 P-removed: its removed files' trash ids (`removed_under`): *Bring back N removed*, hidden at 0.
+        -> True when it moved (repainted only then, S19)."""
+        ids = tuple(ids or ())
+        if ids == self.removed:
+            return False
+        self.removed = ids
+        n, path = len(ids), self.source["path"] if self.source else ""
+        if n:
+            self.back.setText(strings.REMOVED_BRING_BACK.format(n=n))
+            self.back_tip = strings.REMOVED_BRING_BACK_TIP.format(n=n, path=path)
+            self.back.setAccessibleName(strings.REMOVED_BRING_BACK_NAME.format(n=n, path=path))
+        if self.back.isHidden() == bool(n):
+            self.back.setVisible(bool(n))
         return True
 
 
@@ -371,6 +397,17 @@ class FoldersWindow(windows.SecondaryWindow):
         self.skip_undo.setVisible(False)
         skip_line.addWidget(self.skip_undo)
         self.skip_ticket = self.skip_language = None      # the skip whose line shows (its Undo's), its library
+        # --- alpha 4 P-removed (D3): 🗑 *Removed…* beside the skips — always shown, as *Skip a folder…* is (the list says
+        # *Nothing removed…* when empty: no read only to decide whether it shows)
+        self.removed = sc.Door(strings.REMOVED_OPEN, tooltip=strings.REMOVED_OPEN_TIP, parent=self.box)
+        self.removed.clicked.connect(lambda _c=False: self.open_removed())
+        skip_line.addWidget(self.removed)
+        self._removed_reading = {}                        # root id -> a `removed_under` read under way (True: again)
+        from app.qt import bridge, removed
+        self._removed_relay = bridge.Relay(self)
+        self._removed_relay.said.connect(self._removed_landed)
+        removed.follow_trash(shell, self._trash_heard)
+        # --- end alpha 4 P-removed
         skip_line.addStretch(1)
         column.addLayout(skip_line)
         # the folder picker (the system's own dialog, as the wizard's; tests replace it)
@@ -415,6 +452,8 @@ class FoldersWindow(windows.SecondaryWindow):
                 _turn(control, why is None, why or line.tip)
                 if (kind, self.lines_of, key) in acting and qpress.mark(control) is None:
                     qpress.adopt(control, _press_key((kind, self.lines_of, key)), win=self.shell)
+        for line in self.lines.values():                  # alpha 4 P-removed: *Bring back N removed*, greyed with why
+            _turn(line.back, why is None, why or line.back_tip)
 
     def look_again(self):
         """*Look again*: every folder looked at in full — the Refresh key's press, on this button (round 8 row 45, P3's
@@ -427,9 +466,9 @@ class FoldersWindow(windows.SecondaryWindow):
         line's *Undo* (while it shows), *Look again*, *Add a folder…* (lines made later would otherwise join the chain's end)."""
         def shown(layout):
             return [layout.itemAt(i).widget() for i in range(layout.count())]
-        chain = [w.stop for w in shown(self.box.layout()) if isinstance(w, SourceLine)]
+        chain = [b for w in shown(self.box.layout()) if isinstance(w, SourceLine) for b in (w.back, w.stop)]
         chain += [w.read for w in shown(self.skip_box.layout()) if isinstance(w, SkippedLine)]
-        chain += [self.skip, self.skip_undo, self.look, self.add]
+        chain += [self.skip, self.skip_undo, self.removed, self.look, self.add]
         for a, b in zip(chain, chain[1:]):
             QWidget.setTabOrder(a, b)
 
@@ -486,10 +525,12 @@ class FoldersWindow(windows.SecondaryWindow):
         for source in moved:
             self.lines[source["id"]].show_source(source)
         for source in added:
-            line = SourceLine(source, self.stop, parent=self.box)
+            line = SourceLine(source, self.stop, parent=self.box, on_back=self.bring_back)
             column.insertWidget(ids.index(source["id"]), line)
             self.lines[source["id"]] = line
             line.show()
+        if added:
+            self.read_removed([s["id"] for s in added])  # alpha 4 P-removed: its removed files, on the looks' worker
         if self.none.isHidden() == empty:
             self.none.setVisible(empty)
         if added:
@@ -713,6 +754,85 @@ class FoldersWindow(windows.SecondaryWindow):
         _acting(self.shell).add(key)                      # before the ask: an answer may land at once
         if give_stop(self.shell, root_id, text, self.lines_of, told=told) is None:
             self._answered(key, failed=True)              # refused (the bar says why) or another language's
+            return False
+        return True
+
+    # --- alpha 4 P-removed: 🗑 *Removed…* and a folder's *Bring back N removed* ------------------------------------ #
+    def open_removed(self):
+        """🗑 *Removed…*: its window (`app/qt/removed.py`), read as it opens."""
+        from app.qt import removed
+        return removed.open_window(self.shell)
+
+    def read_removed(self, roots=None):
+        """Each folder's removed files (`SourceLooks.removed_under`, on the looks' worker; `roots`: these folders only,
+        else every line's): its *Bring back N removed* follows. Read as its line shows and when the trash moved, never
+        on a look's summary (S19). One read per folder at a time (asked meanwhile: one more after it). -> how many were
+        asked."""
+        looks = _looks(self.shell)
+        if looks is None or not hasattr(looks, "removed_under") or self.gone:
+            return 0
+        asked = 0
+        for root in list(self.lines) if roots is None else roots:
+            if root not in self.lines:
+                continue
+            if root in self._removed_reading:
+                self._removed_reading[root] = True        # one more after the one under way
+                continue
+            language = self.lines_of
+            self._removed_reading[root] = False
+            if looks.removed_under(root, lambda found, r=root: self._removed_relay.call((language, r, found)),
+                                   language=language):
+                asked += 1
+            else:
+                self._removed_reading.pop(root, None)
+        return asked
+
+    def _removed_landed(self, said):
+        language, root, found = said
+        again = self._removed_reading.pop(root, False)
+        if self.gone:
+            return
+        if again:
+            self.read_removed([root])
+            return
+        line = self.lines.get(root)
+        if line is not None and language == self.lines_of and found is not None and line.show_removed(found):
+            why = why_not(self.shell)
+            _turn(line.back, why is None, why or line.back_tip)
+
+    def _trash_heard(self, change, _label=None):
+        from app.qt import removed
+        if removed.trash_moved(change):
+            self.read_removed()
+
+    def bring_back(self, root_id):
+        """*Bring back N removed*: the writer's `restore` of that folder's removed files (one change, its toast's one
+        Undo); the button goes at once; once saved, that folder is looked at so its look sees them (the looks'
+        `look_at(root)` when they offer it, else a focus's look, `asked`). -> True when given."""
+        line = self.lines.get(root_id)
+        if line is None or not line.removed or why_not(self.shell) is not None:
+            return False
+        from app.qt import removed
+        ids, path = list(line.removed), line.source["path"]
+        name = os.path.basename(os.path.normpath(path)) or path
+        text = strings.REMOVED_BROUGHT_BACK_ONE.format(name=name) if len(ids) == 1 else \
+            strings.REMOVED_BROUGHT_BACK.format(n=len(ids), name=name)
+        shell, language = self.shell, self.lines_of
+
+        def told(event):
+            if event == "saved":
+                looks = _looks(shell)
+                if looks is not None and language == getattr(shell, "language", language):
+                    look_at = getattr(looks, "look_at", None)     # (Seams: a one-folder look, when the looks offer it)
+                    if look_at is not None:
+                        look_at(root_id, language=language)
+                    elif hasattr(looks, "asked"):
+                        looks.asked(focused=True)
+            elif event in ("refused", "ended") and not self.gone:
+                self.read_removed([root_id])                  # (nothing written: its button as the store has it)
+        line.show_removed(())                                 # the press's answer, in the frame
+        if removed.give_back(shell, ids, text, told=told) is None:
+            self.read_removed([root_id])
             return False
         return True
 

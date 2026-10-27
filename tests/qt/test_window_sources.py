@@ -319,7 +319,7 @@ class RecordingLooks:
     def set_shown(self, shown):
         self.shown.append(shown)
 
-    def folders(self, ids, then):
+    def folders(self, ids, then, detail=False):
         self.asked_folders.append(list(ids))
         then({i: self._folders.get(i) for i in ids})
         return True

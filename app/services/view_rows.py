@@ -31,6 +31,7 @@ frozen `View`:
 Every user-facing word is here or in the window's strings; nothing here imports Qt, Tk or pandas (the import guard).
 """
 import operator
+import os
 import re
 from collections import namedtuple
 from itertools import chain
@@ -1225,53 +1226,19 @@ def _arrival(piece, works, cards, estimates, guessed):
                                                             number=number).replace(" ·  · ", " · "))
 
 
-_TIER_FOLDERS = frozenset(("HighPriority", "LowPriority", "GoalContent", "Graduated"))   # the store's own folders
-
-
-def arrival_folder(rel_paths):
-    """(A4) The folder holding an arrival's files as its row names it: their common parent, its last one or two parts
-    (`ハリー・ポッター › 2 秘密の部屋`) — never one of the store's tier folders (HighPriority…); None when none is left."""
-    parents = [(r or "").replace("\\", "/").split("/")[:-1] for r in rel_paths if r]
-    if not parents:
+def arrival_folder(where):
+    """(K7, alpha 4) The folder an arrival's row names when another row shares its title, from where its original sits
+    (`SourceLooks.folders(detail=True)`: {"root", "folder", "rel"}): the last one or two parts of `rel`
+    (`ハリー・ポッター › 2 秘密の部屋`), the source folder's own name for a file at its top; None without an answer. Never
+    the library copy's path (that is where Surasura keeps it, not where it came from)."""
+    if not isinstance(where, dict):
         return None
-    common = parents[0]
-    for parts in parents[1:]:
-        n = 0
-        while n < len(common) and n < len(parts) and common[n] == parts[n]:
-            n += 1
-        common = common[:n]
-    while common and common[0] in _TIER_FOLDERS:
-        common = common[1:]
-    return STRINGS["arr_folder_sep"].join(common[-2:]) or None
-
-
-def _with_folders(made, before, entries):
-    """(A4) A row whose title another row of the tray shares names its folder first on its line (and in what is read
-    aloud); a lone title's row is left as it was. A row shown with its folder at the last build, still sharing its
-    title, is that same object (S19)."""
-    seen, twice = set(), set()
-    for a in made:
-        (twice if a.title in seen else seen).add(a.title)
-    if not twice:
-        return made
-    out = []
-    for a in made:
-        if a.title not in twice:
-            out.append(a)
-            continue
-        held = before.get(("folder", a.key))
-        if held is not None and held[0] is a:
-            shown = held[1]
-        else:
-            folder = arrival_folder(a.rel_paths)
-            head = a.title + " · "
-            spoken = f"{head}{folder} · {a.accessible[len(head):]}" if a.accessible.startswith(head) else \
-                f"{a.accessible} · {folder}"
-            shown = a if folder is None else a._replace(folder=folder, parts=((folder, "dim"),) + a.parts,
-                                                        accessible=spoken)
-        entries[("folder", a.key)] = (a, shown)
-        out.append(shown)
-    return out
+    parts = [p for p in (where.get("rel") or "").split("/") if p]
+    if not parts:
+        root = where.get("root")
+        name = os.path.basename(os.path.normpath(root)) if root else ""
+        parts = [name] if name else []
+    return STRINGS["arr_folder_sep"].join(parts[-2:]) or None
 
 
 def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, changed_works):
@@ -1309,7 +1276,6 @@ def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, chang
                 row = row._replace(key=key)
         entries[key] = (tuple(p), work, s, row)
         made.append(row)
-    made = _with_folders(made, before, entries)                     # A4: one title in several folders
     made.sort(key=lambda a: a.added_at or "", reverse=True)          # stable: equal stamps keep the store's order
     rows = tuple(a for a in made if a.group == "new") + tuple(a for a in made if a.group == "watched")
     if hit is not None and len(hit[4][0]) == len(rows) and all(a is b for a, b in zip(hit[4][0], rows)):

@@ -2715,14 +2715,16 @@ class Store:
 
     # --- remove and put back ------------------------------------------------------------------- #
 
-    def remove(self, ids, trashed_paths=None, check=None, by="user", kind="remove", exclude=True):
+    def remove(self, ids, trashed_paths=None, check=None, by="user", kind="remove", exclude=True, why=None):
         """Rows → the trash table, each with its neighbours just before the removal (removed ones
         included), its entry, its state, its pairings and Anki links, and where its file went
         (`trashed_paths`: {id: path relative to data/<lang>}, the caller's file work). The trash rows are
         written first, then the item rows deleted; their pairings and links follow by ON DELETE CASCADE. An item that
         came from a source folder leaves an exclusion per origin (SRC-8 / S6: `_exclude_origins`); its Put back or
         Undo deletes them. `exclude=False` (K21: the Undo of an add — + Add's origins) leaves none: an Undo is no
-        Remove, so a folder read later brings the file in as any new one."""
+        Remove, so a folder read later brings the file in as any new one. `why` (K2, alpha 4): what took them out, kept
+        in each trash row's state — None a learner's Remove, "skip" *Never read this folder*, "edition" a book's part
+        given up; an Undo of an add keeps its `kind` — so the Removed list (`removed`) names only his own Removes."""
         trashed_paths = trashed_paths or {}
         with self._command(kind, by) as cmd:
             self._recheck(check)
@@ -2751,6 +2753,8 @@ class Store:
                 item = full[r[0]]
                 state = {k: v for k, v in item.items() if k not in ("entry", "rel_path", "tier", "ord")}
                 state = {"columns": state, "pairings": pairs.get(r[0], []), "anki_links": links.get(r[0], [])}
+                if why or kind != "remove":
+                    state["why"] = why or kind
                 trash_rows.append((r[0], item["root_id"], item["rel_path"], item["tier"], near[r[0]][0],
                                    near[r[0]][1], item["entry"], _dumps(state), trashed_paths.get(r[0]), now))
             first = self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM trash").fetchone()[0] + 1
@@ -5025,7 +5029,8 @@ class Store:
                 if not ok:
                     return self._skipped(cmd, len(skipped))
                 explicit = 0 if kind == "register" else 1
-                out = self._remove_as(ok, trashed_paths, explicit, exclude=kind not in ("insert", "insert_at"))
+                out = self._remove_as(ok, trashed_paths, explicit, exclude=kind not in ("insert", "insert_at"),
+                                      why="remove" if kind == "restore" else None)   # K2: a Put back undone is removed again
                 if kind == "register" and getattr(change, "pairing_before", (None, None))[1] is not None:
                     content_key, old = change.pairing_before          # the key's pairing before hato moved it
                     if self.conn.execute("SELECT 1 FROM items WHERE id = ?", (old[0],)).fetchone():
@@ -5135,12 +5140,12 @@ class Store:
                          f"{'were' if n != 1 else 'was'} left as {'they are' if n != 1 else 'it is'}")
         return out
 
-    def _remove_as(self, ids, trashed_paths, explicit, exclude=True):
+    def _remove_as(self, ids, trashed_paths, explicit, exclude=True, why=None):
         """Undo-Add: the rows go to the trash table, as `remove` does (pairings and links included, so
-        Put back works); the files went to `.trash` by the caller's file code. `exclude`: `remove`'s."""
+        Put back works); the files went to `.trash` by the caller's file code. `exclude`, `why`: `remove`'s."""
         cmd = self._cmd
         events_before = len(cmd.events)
-        out = self.remove(ids, trashed_paths, by="undo", kind="undo_add", exclude=exclude)
+        out = self.remove(ids, trashed_paths, by="undo", kind="undo_add", exclude=exclude, why=why)
         cmd.events[events_before:] = [(i, k, explicit, b) for i, k, _e, b in cmd.events[events_before:]]
         for item in out.items:
             item["explicit"] = explicit
@@ -8781,6 +8786,67 @@ def _store_let_origins_back(self, keys):
                           chunk)
 
 
+# --- K2 (alpha 4, Mattias's note 6): the Removed list — his own Removes, to put back ------------------------------- #
+REMOVED_DAYS = 30               # a removed file's days in the data folder's trash (`path_utils`' purge, by its clock)
+
+
+def _store_removed(self, now=None):
+    """The Removed list: the trash rows of his own Removes not put back (never a skipped folder's — *Read again* brings
+    those — nor a book's part given up, nor an Undo of an add: the `why` `remove` keeps), one entry per Remove and title,
+    newest first -> [{"trash_ids", "title", "removed_at", "days_left", "count", "can_return", "roots"}]. `days_left`:
+    the days before the purge takes the last of its files still in the trash (by each file's own clock, which the
+    Remove restarted), None when none is there; `can_return`: a file still in the trash, or an original in a folder
+    Surasura reads (`roots`: those folders' ids) — else Put back brings its rows back missing. A row whose place is
+    an item again (added again since) is left out: Put back would refuse it. One read transaction; one stat per
+    trashed file."""
+    now = time.time() if now is None else now
+    groups, order = {}, []
+    with self._reading():
+        works = dict(self.conn.execute("SELECT id, title FROM works"))
+        taken = {r[0] for r in self.conn.execute("SELECT rel_key FROM items")}
+        rows = self.conn.execute("SELECT id, rel_path, trashed_path, removed_at, item_state FROM trash "
+                                 "WHERE restored_at IS NULL ORDER BY id DESC").fetchall()
+    for trash_id, rel, trashed, removed_at, raw in rows:
+        state = _json_dict(raw) or {}
+        if state.get("why") not in (None, "remove") or path_key(rel) in taken:
+            continue
+        cols = state.get("columns") if isinstance(state.get("columns"), dict) else {}
+        work = cols.get("work_id")
+        title = works.get(work) or cols.get("title") or rel.rsplit("/", 1)[-1]
+        key = (removed_at, work if work is not None else ("item", trash_id))
+        entry = groups.get(key)
+        if entry is None:
+            entry = groups[key] = {"trash_ids": [], "title": title, "removed_at": removed_at, "days_left": None,
+                                   "count": 0, "can_return": False, "roots": []}
+            order.append(key)
+        entry["trash_ids"].append(trash_id)
+        entry["count"] += 1
+        if trashed:
+            st = _stat(os.path.join(self.data_dir, *trashed.split("/")))
+            if st is not None:
+                left = max(0, REMOVED_DAYS - int((now - st.st_mtime) // 86400))
+                entry["days_left"] = left if entry["days_left"] is None else max(entry["days_left"], left)
+                entry["can_return"] = True
+        for key_, text, _at in state.get("pairings") or ():
+            if isinstance(key_, str) and key_.startswith(SOURCE_KEY):
+                root = (_json_dict(text) or {}).get("root")
+                if root is not None:
+                    entry["can_return"] = True
+                    if root not in entry["roots"]:
+                        entry["roots"].append(root)
+    out = [groups[k] for k in order]
+    for entry in out:
+        entry["trash_ids"].sort()                           # Put back's order: as they were removed
+    return out
+
+
+def _store_removed_under(self, root_id, now=None):
+    """Settings' *Bring back N removed* on a folder's line (Mattias's note 6: read again, it brings nothing back — a
+    Remove keeps its files out for good): the trash ids of the Removed list's entries holding an original in that
+    folder -> [trash_id], oldest first. Their Put back (`Writer.restore`) lets the originals back in."""
+    return sorted(i for e in self.removed(now) if root_id in e["roots"] for i in e["trash_ids"])
+
+
 # --- K6: a folder no look reads (*Never read this folder*) ------------------------------------------------------- #
 # A skipped folder is one `exclusions` row: kind FOLDER_SKIP, `pattern` its path key, `root_id` the innermost source
 # being read that holds it, `note` {"path": the folder as written}. Its skip removes the items whose every origin lies
@@ -8911,7 +8977,7 @@ def _store_skip_folder(self, path, trashed_paths=None):
                                                        _dumps({"path": norm}))).lastrowid
         self._skips_moved()
         ids = self.items_under(norm)
-        change = (self.remove(ids, trashed_paths) if ids else None) or self._change(cmd, "remove")
+        change = (self.remove(ids, trashed_paths, why="skip") if ids else None) or self._change(cmd, "remove")
         for chunk in _chunks(list(getattr(change, "excluded", None) or ()), 500):
             self.conn.execute(f"UPDATE exclusions SET note = json_set(CASE WHEN json_valid(note) THEN note ELSE '{{}}' "
                               f"END, '$.folder', ?) WHERE id IN ({','.join('?' * len(chunk))})", [folder] + chunk)
@@ -10607,7 +10673,7 @@ def _give_up(self, key, took, aside, by):
     recorded = getattr(took, "recorded", None) or {}
     ids = {recorded[o]: p for o, p in aside.items() if recorded.get(o) in added}
     if ids:
-        self.remove(sorted(ids), trashed_paths=ids, by=by, exclude=False)
+        self.remove(sorted(ids), trashed_paths=ids, by=by, exclude=False, why="edition")
     stored = _edition_note(self, key)
     if stored is not None:
         self._set_meta({key: _dumps(dict(stored, extras=_given_up(stored["extras"], aside)))})
@@ -10715,7 +10781,7 @@ def _store_edition_go(self, key):
         failing = None
         if left:
             self.remove([s["item"] for s in left], trashed_paths={s["item"]: s["trash"] for s in moved}, by=by,
-                        exclude=False)
+                        exclude=False, why="edition")
     except Exception as e:                                   # held open (B2), or the store failing (S3): back whole
         print(f"Library store: a book's part couldn't be taken out ({e!a}); the change waits")
         for s in moved:
@@ -11043,6 +11109,8 @@ Store.update_origins = _store_update_origins
 Store.copies_back = _store_copies_back
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
+Store.removed = _store_removed
+Store.removed_under = _store_removed_under
 Store._read_sources = _store_read_sources
 Store.skipped_folders = _store_skipped_folders
 Store.skip_refused = _store_skip_refused

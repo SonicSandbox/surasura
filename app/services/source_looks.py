@@ -198,6 +198,22 @@ class SourceLooks:
         ids = list(item_ids)
         return self._worker.put(self._folders, ids, then) if ids and not self._closing.is_set() else False
 
+    def removed(self, then, language=None):
+        """K2, the Removed list (🗑 beside Skipped): `then([{"trash_ids", "title", "removed_at", "days_left", "count",
+        "can_return", "roots"}])` on the worker, newest first (`Store.removed`), or `then(None)` when the store can't be
+        read. Put back is the writer's `restore(trash_ids)` (its Undo sends them back). `language`: as `stop`'s."""
+        if self._closing.is_set() or (language is not None and language != self.language):
+            return False
+        return self._worker.put(self._removed, None, then)
+
+    def removed_under(self, root_id, then, language=None):
+        """Settings' *Bring back N removed* on a folder's line (Mattias's note 6): `then([trash_id])` — the Removed
+        list's files whose original lies in that folder (`Store.removed_under`), or `then(None)`; `len()` is the N, the
+        writer's `restore(ids)` brings them back (one Undo), the folder's next look reads them again."""
+        if self._closing.is_set() or (language is not None and language != self.language):
+            return False
+        return self._worker.put(self._removed, root_id, then)
+
     def skippable(self, item_ids, then):
         """`then([folder path])` on the worker: ⋯'s *Never read this folder* choices for these items, deepest first (K6;
         [] for items that came from no folder being read)."""
@@ -601,6 +617,16 @@ class SourceLooks:
                         out[item_id] = paths.get(record.get("root"))
         except Exception as e:
             print(f"Sources: the arrivals' folders couldn't be read: {e!r}")
+        then(out)
+
+    def _removed(self, root_id, then):
+        out = None
+        try:
+            store = self._store()
+            if store is not None:
+                out = store.removed() if root_id is None else store.removed_under(root_id)
+        except Exception as e:
+            print(f"Sources: the Removed list couldn't be read: {e!r}")
         then(out)
 
     def _let_go(self, watches=()):

@@ -30,8 +30,10 @@ frozen `View`:
 
 Every user-facing word is here or in the window's strings; nothing here imports Qt, Tk or pandas (the import guard).
 """
+import operator
 import re
 from collections import namedtuple
+from itertools import chain
 
 from app.connect import feed as connect_feed     # P4.1 L2: Connect's kinds (a light module: no Qt, no Tk)
 from app.episode_names import identity           # LM1a: the one reading of a file name (pure)
@@ -460,14 +462,16 @@ def soon_line_after(rows):
 def pieces(rows):
     """Contiguous runs of one piece (`piece_id`; without one: one work, then one folder) -> [[item, …], …]."""
     out = []
-    last = None
+    last = run = None
     for r in rows:
-        key = ("p", r["piece_id"]) if r.get("piece_id") is not None else \
-            ("w", r["work_id"]) if r.get("work_id") is not None else ("f", r.get("parent_folder") or r["id"])
-        if out and key == last:
-            out[-1].append(r)
+        piece = r.get("piece_id")
+        key = piece if piece is not None else ("w", r["work_id"]) if r.get("work_id") is not None else \
+            ("f", r.get("parent_folder") or r["id"])
+        if run is not None and key == last:
+            run.append(r)
         else:
-            out.append([r])
+            run = [r]
+            out.append(run)
             last = key
     return out
 
@@ -961,7 +965,7 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
     key = (tier, finished, first.get("piece_id"), first["id"])
     hit = cache.rows.get(key)
     same_items = hit is not None and _same(hit[1], made) and len(hit[2]) == len(piece) and \
-        all(a is b for a, b in zip(hit[2], piece))
+        all(map(operator.is_, hit[2], piece))       # (a4: C's walk, not a generator's)
     # row 55: as shown — found, not found, and not answered yet (R55-A: Up Next's *Looking…*, its tip) each its own
     play = None if playable is None else tuple(playable.get(it["id"]) for it in piece)
     if same_items and cache.same_global and hit[0].hero == hero and hit[0].guess == guess and hit[0].play == play:
@@ -1317,23 +1321,28 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
     tile)} — a title whose items and work are the same objects and whose guess is equal gives back its tile (S19).
     -> (tiles, entries)."""
     groups, order, group_meta = {}, [], {}
+    groups_metas = {p["id"] for p in metas.values() if p.get("kind") == "group"} if metas else ()
     for p in pieces(goal_items):
         first = p[0]
-        meta = _group_meta(metas, p)                 # its runs read together below (`_is_group`, H-B3 / H-B4)
+        # its runs read together below (`_is_group`, H-B3 / H-B4); a4: the feed's group pieces looked up once
+        meta = _group_meta(metas, p) if first.get("piece_id") in groups_metas else None
         key = f"p{first['piece_id']}" if meta is not None else \
             f"w{first['work_id']}" if first.get("work_id") is not None else \
             f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
         if meta is not None:
             group_meta[key] = meta
-        if key not in groups:
-            groups[key] = []
+        held = groups.get(key)
+        if held is None:
+            groups[key] = [p]
             order.append(key)
-        groups[key].append(p)
+        else:
+            held.append(p)
     before = before or {}
     entries, tiles = {}, []
+    is_ = operator.is_
     for key in order:
         ps = groups[key]
-        items = tuple(it for p in ps for it in p)
+        items = tuple(chain.from_iterable(ps)) if len(ps) > 1 else tuple(ps[0])
         meta = group_meta.get(key)
         if meta is not None and not _is_group(meta, items):
             meta = None                              # one show (H-B4): that show's run tile, as its row reads
@@ -1345,7 +1354,7 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
             work, guess = (meta,) + group_works, tuple(_guess(guessed, w) for w in group_works)
         old = before.get(key)
         if old is not None and _same(old[1], work) and old[2] == guess and len(old[0]) == len(items) and \
-                all(a is b for a, b in zip(old[0], items)):
+                all(map(is_, old[0], items)):        # (a4: C's walk, not a generator's: ~16,000 items a Goal move)
             tile = old[3]
         else:
             tile = _goal_work(key, ps, works, guessed) if meta is None else _goal_group(key, ps, works, guessed, meta)

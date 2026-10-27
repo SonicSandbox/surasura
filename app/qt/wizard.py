@@ -688,6 +688,46 @@ def _enable(widget, on):
         widget.setEnabled(bool(on))
 
 
+def closed_words(look):
+    """(line, what to do or "", the From Anki card's short line) for an Anki that didn't answer (§C11): open without
+    AnkiConnect answering, closed, or can't tell which (`setup_wizard.anki_look`'s `running`: an Anki process seen,
+    none, or None)."""
+    running = (look or {}).get("running", False)
+    if running is True:
+        return S.ANKI_NO_CONNECT, S.ANKI_NO_CONNECT_HOW, S.ANKI_NO_CONNECT_CARD
+    if running is None:
+        return S.ANKI_UNSURE, S.ANKI_UNSURE_HOW, S.ANKI_UNSURE_CARD
+    return S.ANKI_CLOSED, "", S.ANKI_CLOSED
+
+
+def _closed_part(wiz, parent):
+    """*Anki isn't open* (or why it didn't answer) + *Check again*, the line of what to do under them. -> (the part,
+    its line, its how, the button)."""
+    part = QWidget(parent)
+    col = QVBoxLayout(part)
+    col.setContentsMargins(0, 0, 0, 0)
+    col.setSpacing(_px(6))
+    row = QHBoxLayout()
+    row.setSpacing(_px(14))
+    line = _label("wizclosed", S.ANKI_CLOSED, part)
+    row.addWidget(line)
+    button = qpress.room(_button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, lambda: wiz.look_anki(button), part))
+    row.addWidget(button)
+    row.addStretch(1)
+    col.addLayout(row)
+    how = _label("wizsub", "", part, wrap=True)
+    how.setVisible(False)
+    col.addWidget(how)
+    return part, line, how, button
+
+
+def _say_closed(line, how, look):
+    words, todo, _card = closed_words(look)
+    _set_text(line, words)
+    _set_text(how, todo)
+    _show(how, bool(todo))
+
+
 def _tabular(font):
     """Tabular figures (Qt 6.7+): a count that grows doesn't jiggle (the window's rule for numbers)."""
     if hasattr(QFont, "Tag"):
@@ -1286,16 +1326,7 @@ class KnownPage(_Page):
         self.no_decks = _label("wizsub", S.NO_DECKS, self.decks_part)
         decks.addWidget(self.no_decks)
         self.box.addWidget(self.decks_part)
-        self.closed_part = QWidget(self)
-        closed = QHBoxLayout(self.closed_part)
-        closed.setContentsMargins(0, 0, 0, 0)
-        closed.setSpacing(_px(14))
-        self.closed_line = _label("wizclosed", S.ANKI_CLOSED, self.closed_part)
-        closed.addWidget(self.closed_line)
-        self.btn_check = qpress.room(_button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP,
-                                             lambda: self.wiz.look_anki(self.btn_check), self.closed_part))
-        closed.addWidget(self.btn_check)
-        closed.addStretch(1)
+        self.closed_part, self.closed_line, self.closed_how, self.btn_check = _closed_part(self.wiz, self)
         self.box.addWidget(self.closed_part)
         self.import_part = QWidget(self)
         doors = QHBoxLayout(self.import_part)
@@ -1349,7 +1380,8 @@ class KnownPage(_Page):
         elif is_open:
             self.anki.set_parts(line=S.FROM_ANKI_OPEN, recommended=True, dot="ok")
         else:
-            self.anki.set_parts(line=look.get("say") or S.ANKI_CLOSED, recommended=False, dot="off")
+            self.anki.set_parts(line=look.get("say") or closed_words(look)[2], recommended=False, dot="off")
+            _say_closed(self.closed_line, self.closed_how, look)
         how = self._effective()
         self.channel.choose(how)
         self.sentence.set_language(self.wiz.language)
@@ -1719,15 +1751,7 @@ class OrderPage(_Page):
         super().__init__(wiz, S.ORDER_TITLE)
         self.picture = CardsPicture(wiz.language, self)
         self.box.addWidget(self.picture)
-        self.closed_part = QWidget(self)
-        closed = QHBoxLayout(self.closed_part)
-        closed.setContentsMargins(0, 0, 0, 0)
-        closed.setSpacing(_px(14))
-        closed.addWidget(_label("wizclosed", S.ANKI_CLOSED, self.closed_part))
-        self.btn_check = qpress.room(_button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP,
-                                             lambda: self.wiz.look_anki(self.btn_check), self.closed_part))
-        closed.addWidget(self.btn_check)
-        closed.addStretch(1)
+        self.closed_part, self.closed_line, self.closed_how, self.btn_check = _closed_part(self.wiz, self)
         self.box.addWidget(self.closed_part)
         # 順 switched off or not in this Surasura: no control that does nothing (the intent keeper's IK-14)
         self.off_line = _label("wizclosed", S.ORDER_OFF, self, wrap=True)
@@ -1793,6 +1817,8 @@ class OrderPage(_Page):
         _show(self.off_line, bool(off))
         is_open = bool(look and look.get("open")) and not off
         _show(self.closed_part, not off and look is not None and not is_open)
+        if look is not None and not look.get("open"):
+            _say_closed(self.closed_line, self.closed_how, look)
         _show(self.controls, is_open)
         _show(self.automation_line, is_open and not settings_manager.automation(self.wiz._settings()))
         self.picture.set_language(self.wiz.language)

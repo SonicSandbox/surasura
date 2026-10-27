@@ -15,8 +15,10 @@ tokens, the overlay animator, the spinner, and reduced motion.
   jumps, a fade is kept but no longer than `FAST`, a spinner is a static mark — live, mid-motion too (M4.1: a running
   move lands, a running fade ends within `FAST`, a loop stops; back to Full nothing restarts). Direct manipulation is
   not motion: auto-scroll during a drag and the ghost under the hand go on. *Follow* reads Windows' *Show animations*
-  (`SPI_GETCLIENTAREAANIMATION`) at start and again when Windows says it changed (`WM_SETTINGCHANGE`): Qt 6.11 can't see
-  it (05 §5.11); off Windows it answers "animations on".
+  (`SPI_GETCLIENTAREAANIMATION`) at start and again each time the app comes back to the front (the switch lives in
+  Windows' Settings, so the app is behind when it changes): Qt 6.11 can't see it (05 §5.11). No native event filter
+  listens for it — one saw every Windows message, in Python, under Python's lock (A4 P-gil). Off Windows it answers
+  "animations on".
 - **Springs** (W3.1a §3; `clock().spring(...)`, `Spring`): physics on the same clock, stepped from its own time in
   sub-steps of at most `theme.SPRINGS["sub-step-ms"]` (semi-implicit Euler, as the reference), never from how often a
   frame comes; at rest a spring snaps to its target and leaves the clock. Presets (ω, ζ) and the rest thresholds live in
@@ -29,8 +31,7 @@ import time
 from collections import deque
 
 from PyQt6 import sip
-from PyQt6.QtCore import (QAbstractNativeEventFilter, QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt,
-                          QTimer, pyqtSignal)
+from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QBackingStore, QGuiApplication, QKeyEvent, QMouseEvent, QPainter, QPixmap, QRegion,
                          QSurfaceFormat, QWindow)
 from PyQt6.QtWidgets import QApplication, QWidget
@@ -84,8 +85,6 @@ def duration(name):
 
 # --- reduced motion ------------------------------------------------------------------------------------------------ #
 SPI_GETCLIENTAREAANIMATION = 0x1042
-SPI_SETCLIENTAREAANIMATION = 0x1043
-WM_SETTINGCHANGE = 0x001A
 SETTINGS = ("follow", "full", "reduced")        # `app_motion` (05 §5.7, §5.10); anything else reads as follow
 
 
@@ -137,35 +136,6 @@ class Mode(QObject):
         self.system = bool(self._reader())
         if self.reduced != before:
             self.changed.emit(self.reduced)
-
-
-class SettingChangeFilter(QAbstractNativeEventFilter):
-    """Hears Windows' `WM_SETTINGCHANGE` for the animation switch (any window of the app) and tells the mode, on the
-    next turn of the loop (never inside the native call). Without a mode of its own it tells the clock's."""
-
-    def __init__(self, mode=None):
-        super().__init__()
-        self._mode = mode
-        self.heard = 0
-        self._msg = None
-        if sys.platform == "win32":
-            from ctypes import wintypes
-            self._msg = wintypes.MSG
-
-    @property
-    def mode(self):
-        return self._mode if self._mode is not None else clock().mode
-
-    def nativeEventFilter(self, event_type, message):
-        if self._msg is not None and event_type == b"windows_generic_MSG":
-            try:
-                msg = self._msg.from_address(int(message))
-                if msg.message == WM_SETTINGCHANGE and msg.wParam == SPI_SETCLIENTAREAANIMATION:
-                    self.heard += 1
-                    QTimer.singleShot(0, lambda: self.mode.system_changed())
-            except Exception:
-                pass
-        return False, 0
 
 
 # --- the clock ------------------------------------------------------------------------------------------------------ #
@@ -604,35 +574,14 @@ def fall_into_place(on_value, depth=None, owner=None, on_rest=None):
 
 
 def install_mode_filter(app=None):
-    """Follow Windows' animation switch: Windows' `WM_SETTINGCHANGE` for it (a native filter, on Windows and only while
-    the setting is *Follow*: it sees every message, ~8 µs each — P-motion), and a fresh read whenever the app comes back
-    to the front (the switch lives in Windows' Settings, so the app is in the back when it changes). Idempotent."""
+    """Follow Windows' animation switch: read again whenever the app comes back to the front (the switch lives in
+    Windows' Settings, so the app is behind when it changes). No native event filter: one saw every Windows message
+    (~8 µs each, in Python, under Python's lock) only to catch this switch (A4 P-gil). Idempotent: one connection."""
     app = app or QApplication.instance()
-    state = getattr(app, "_surasura_motion", None)
-    if state is None:
-        state = {"filter": SettingChangeFilter(), "installed": False, "mode": None}
-        app._surasura_motion = state
+    if not getattr(app, "_surasura_motion", False):
+        app._surasura_motion = True
         app.applicationStateChanged.connect(
             lambda st: clock().mode.system_changed() if st == Qt.ApplicationState.ApplicationActive else None)
-    mode = clock().mode
-    if state.get("mode") is not mode:              # (a clock made again — tests — is followed too)
-        state["mode"] = mode
-        mode.changed.connect(lambda _r: _sync_mode_filter(app))
-        mode.setting_changed.connect(lambda: _sync_mode_filter(app))
-    _sync_mode_filter(app)
-    return state["filter"]
-
-
-def _sync_mode_filter(app):
-    state = getattr(app, "_surasura_motion", None)
-    if state is None:
-        return
-    want = sys.platform == "win32" and clock().mode.setting == "follow"
-    if want and not state["installed"]:
-        app.installNativeEventFilter(state["filter"])
-    elif not want and state["installed"]:
-        app.removeNativeEventFilter(state["filter"])
-    state["installed"] = want
 
 
 # --- the overlay animator ------------------------------------------------------------------------------------------- #

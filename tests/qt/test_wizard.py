@@ -602,6 +602,31 @@ def test_card_order_with_anki_closed_shows_check_again_and_enter_is_skip(make):
     assert W.PAGES[wiz.index] == "cards" and settings.calls == []
 
 
+@pytest.mark.parametrize("running, words, how, card", [
+    (True, S.ANKI_NO_CONNECT, S.ANKI_NO_CONNECT_HOW, S.ANKI_NO_CONNECT_CARD),
+    (None, S.ANKI_UNSURE, S.ANKI_UNSURE_HOW, S.ANKI_UNSURE_CARD),
+    (False, S.ANKI_CLOSED, "", S.ANKI_CLOSED),
+], ids=["open-no-ankiconnect", "cant-tell", "closed"])
+def test_C11_setup_says_anki_is_open_without_ankiconnect_and_what_to_do_on_both_anki_pages(make, running, words, how,
+                                                                                            card):
+    # §C11: Anki open but AnkiConnect not answering said so, with what to do (the add-on, its code, a restart) — never
+    # "Anki isn't open"; a look that can't tell the two apart says both; a closed Anki keeps its one line
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": [], "running": running})
+    wiz, _shell, api, _settings, _m = make(api=api)
+    wiz.next()
+    known = wiz.page
+    assert wait_until(lambda: wiz.anki is not None and not known.closed_part.isHidden())
+    assert known.closed_line.text() == words and known.anki.line == card
+    assert known.closed_how.text() == how and known.closed_how.isHidden() == (not how)
+    if how:
+        assert "AnkiConnect" in how and "2055492159" in how and "restart Anki" in how
+    go_to(wiz, "order")
+    order = wiz.page
+    assert wait_until(lambda: not order.closed_part.isHidden() and not wiz._anki_looking)
+    assert order.closed_line.text() == words
+    assert order.closed_how.text() == how and order.closed_how.isHidden() == (not how)
+
+
 # --- 5 · cards made for you -------------------------------------------------------------------------------------------------- #
 def _question(wiz):
     """The install's question in the window (a card answered before may not be deleted yet: the open one)."""

@@ -3533,10 +3533,11 @@ def main(argv=None):
     if not start_gate.gate(app):                      # W3.5: the 2.x import, the refusals, the merge — before the store
         instance.release()
         return 0
-    # W3.2 P0: the library and its writer (nothing read yet). The reader's collector freeze stays off (W2.2's A-18;
-    # M4.1 may measure it again): frozen, a library a language switch let go would never be freed
+    # W3.2 P0: the library and its writer (nothing read yet). A4 P-gil: the reader freezes Python's collector after each
+    # view (a full collection walking the library held the window 40-75 ms at 20,000 files); its stop thaws it, so a
+    # library a language switch let go is still freed (`library_reader`'s *Python's collector*)
     try:
-        services = open_services()
+        services = open_services(freeze_gc=True)
         failed = None
     except Exception as e:                            # (AD0-12) the window opens without its library, and says so
         applog.log("shell", f"the library couldn't be opened: {e!r}\n{traceback.format_exc()}")

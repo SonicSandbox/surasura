@@ -75,5 +75,6 @@ def test_status_carries_anki_miners_update_notice_null_until_one_is_kept():
     am_release.check({"connect_enabled": True}, fetch=lambda: {"tag_name": "v3.8.0", "html_url": page})
     code, line = h.call("status")
     assert code == 0, line
-    assert line["connect"]["anki_miner_update"] == {"version": "3.8.0", "url": page}
+    # alpha 4 M5: the notice offers the approved release, whatever newer one a check kept
+    assert line["connect"]["anki_miner_update"] == {"version": am_release.APPROVED, "url": am_release.approved_page()}
     assert line["connect"]["line"] == "Up to date", "the record's own fields unchanged"

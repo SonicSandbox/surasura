@@ -235,8 +235,8 @@ STRINGS = {
     "no_subs": "No subtitles yet", "no_subs_n": "No subtitles yet · {n}",
     # alpha 4 M1: a book or a text, while Anki Miner reads none — quiet, nothing to press (never its window)
     "books_wait": "Waits for Anki Miner",
-    "tip_books_wait": "Anki Miner makes cards from videos only for now. Once it can read books and texts (a later "
-                      "update), Connect makes these cards by itself: nothing to do meanwhile.",
+    "tip_books_wait": "Anki Miner makes cards from videos only for now. Once a later update lets it read books and "
+                      "texts, Connect makes these cards by itself: nothing to do meanwhile.",
     "tip_no_subs": "Its {word} is in your folder, its subtitle file isn't yet: nothing to read or mine until one "
                    "arrives. Surasura fills it in by itself",
     "arr_no_subs": "no subtitles yet",

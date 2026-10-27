@@ -304,12 +304,25 @@ def test_the_look_lists_every_deck_with_its_studied_cards_and_picks_the_studied_
 
 
 def test_the_look_says_anki_is_closed_or_what_it_asked_as_written(ja_words):
-    with mock.patch("urllib.request.urlopen", FakeAnki(offline=True)):
+    from app.connect import open_anki
+    with mock.patch("urllib.request.urlopen", FakeAnki(offline=True)),             mock.patch.object(open_anki, "running", lambda: False):
         closed = SW.anki_look({}, "ja")
-    assert closed == {"open": False, "say": None, "decks": [], "preselected": []}
+    assert closed == {"open": False, "say": None, "decks": [], "preselected": [], "running": False}
     with mock.patch("urllib.request.urlopen", FakeAnki([{"word": ja_words[0]}], permission="denied")):
         asked = SW.anki_look({}, "ja")
     assert asked["open"] is False and asked["say"] and "grant" in asked["say"].lower()
+    assert "running" not in asked, "Anki answered: no process look"
+
+
+@pytest.mark.parametrize("running", [True, False, None], ids=["anki-running", "no-anki", "cant-tell"])
+def test_C11_an_unanswered_look_asks_whether_an_anki_is_running_without_ankiconnect(running):
+    # §C11: no answer on AnkiConnect's port is the same for Anki closed and Anki open without the add-on; Connect's own
+    # process look (`open_anki.running`) tells them apart for setup's words — None when it can't tell
+    from app.connect import open_anki
+    asked = []
+    with mock.patch("urllib.request.urlopen", FakeAnki(offline=True)),             mock.patch.object(open_anki, "running", lambda: asked.append(1) or running):
+        look = SW.anki_look({}, "ja")
+    assert look["open"] is False and look["say"] is None and look["running"] is running and asked == [1]
 
 
 class _Automation:

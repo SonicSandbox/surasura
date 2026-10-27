@@ -20,8 +20,12 @@ as the window runs it:
   source-again    the same folder looked at again, nothing changed (Kura's)
   add-insert      + Add's insert of `--files` / 4 files already copied (`Store.insert`, Kura's)
 
-Printed: per job its time and the ticks' lateness p50 / p95 / max (ms), and how many ticks were over 4 and 16 ms.
-`--child` runs a job through the child-process path where one exists (the cover scan, the needs gather) for the after.
+Printed: per job its time, the ticks' lateness p50 / p95 / max (ms), how many ticks were over 4 and 16 ms (and how
+many of those a collection held), the full collections (`gc2`: how many, the longest, the thread that set them off) and a
+2 ms window step's wall time p50 / p95 (Python's lock handed back and forth stretches it). The A/Bs:
+`SURASURA_READER_GC_FREEZE=1` (the reader freezes the collector after each view, as the window process does since A4;
+each rep's `reader-full` after the first is a new reader after a stop — a language switch's path) and
+`SURASURA_BENCH_SWITCH_S` (another switch interval).
 """
 import argparse
 import json
@@ -69,7 +73,6 @@ def _jpeg():
 
 def build_library(files):
     """The store (big_store) and its files on disk, a cover beside every third show."""
-    from app import library_store as ls
     from tests import test_library_store_support as support
     t0 = time.perf_counter()
     store = support.big_store(LANGUAGE, files)
@@ -225,10 +228,9 @@ def stats(name, took, late, at=(), gcs=(), steps=()):
 
 
 class Bench:
-    def __init__(self, files, child=False):
+    def __init__(self, files):
         from app import library_store as ls, path_utils
         self.files = files
-        self.child = child
         self.data_dir = path_utils.get_data_path(LANGUAGE)
         self.user_dir = path_utils.get_user_files_path(LANGUAGE)
         self.ls = ls
@@ -270,8 +272,6 @@ class Bench:
         from app.services import needs as service
         from app import settings_manager
         view, lang, data_dir = self.view, LANGUAGE, self.data_dir
-        if self.child:
-            return service.gather_in_child(view, (), lang, data_dir, settings={}, gone_folders=(), gone_judged=())
         settings = {}
         connect = None
         rels = [e.rel_path for r in view.rows for e in r.episodes if e.rel_path] if view.mode == "store" else []
@@ -352,7 +352,6 @@ def main():
     ap.add_argument("--files", type=int, default=20000)
     ap.add_argument("--jobs", default=",".join(JOBS))
     ap.add_argument("--reps", type=int, default=3)
-    ap.add_argument("--child", action="store_true", help="the cover scan and the needs gather in their child process")
     ap.add_argument("--json")
     a = ap.parse_args()
     if not os.environ.get("SURASURA_TEST_ROOT"):
@@ -374,7 +373,7 @@ def main():
         sys.setswitchinterval(float(os.environ["SURASURA_BENCH_SWITCH_S"]))
     jobs = [j for j in a.jobs.split(",") if j]
     build_library(a.files)
-    bench = Bench(a.files, child=a.child)
+    bench = Bench(a.files)
     probe = Probe()
     gclog = GcLog()
     results = []
@@ -435,7 +434,8 @@ def main():
               f"{max(r['gc_full_max'] for r in runs):6.1f}  {max(r['step_p95'] for r in runs):8.2f}")
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
-            json.dump({"files": a.files, "child": a.child, "runs": results}, f, ensure_ascii=False, indent=1)
+            json.dump({"files": a.files, "freeze": os.environ.get("SURASURA_READER_GC_FREEZE") == "1",
+                       "runs": results}, f, ensure_ascii=False, indent=1)
     app.quit()
 
 

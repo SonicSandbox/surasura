@@ -9105,7 +9105,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     (S6) — is skipped; an `item_id` gets the origin recorded and nothing else; a copy that is already an item is that
     item; else the item is added and placed. `first` (setup's own first scan, SRC-1): the end of Current, shows in name
     order, episodes in natural order (`ep2` before `ep10`), logged quiet like a back-fill — no placement event, so
-    nothing is mined by itself (S1). Later (SRC-2, S2, S3, S14; Decision 1, lean): it lands in New arrivals (in its
+    nothing is mined by itself (S1); a show read from inside a 2.x library's Goal folder at Goal's end (K8, `_tier_2x`). Later (SRC-2, S2, S3, S14; Decision 1, lean): it lands in New arrivals (in its
     show's run there, in order) and the placing rule for the source takes it on (D30: `source:<id>`, then `source`;
     `rules` None = settings.json's default, `source: after-show`): after-show puts a show with rows in Current in its
     run, before the first episode whose number (K4's, or hato's) or natural-order name is higher, else after the last;
@@ -9336,7 +9336,13 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
         prepared = prepared[:3] + (entry, (None, None, "waiting"))
     work = self._source_work(rel, record, cmd, works)
     runs = runs if first and not waiting else None
-    tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first and not waiting, waiting, episodes, runs)
+    if first and not waiting and _tier_2x(record.get("origin")) == "goal" and not self.conn.execute(
+            "SELECT 1 FROM items WHERE work_id = ? AND tier IN ('now', 'soon') LIMIT 1", (work,)).fetchone():
+        tier, where = "goal", ("end",)               # K8: a 2.x library's Goal folder read as his library's folder
+        runs = None                                  # (no Current run of its show to keep)
+    else:
+        tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first and not waiting, waiting, episodes,
+                                        runs)
     item_id = self._add_rows([prepared + (tier,)], cmd.version)[0]
     self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
     self._write_origin(key, item_id, record)
@@ -9356,6 +9362,20 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
             self._apply_rule(item_id, record, rules)
     change.placed[item_id] = self.conn.execute("SELECT tier FROM items WHERE id = ?", (item_id,)).fetchone()[0]
     return item_id
+
+
+def _tier_2x(origin):
+    """K8 (alpha 4, Mattias's note 9; A4K-3 PROVISIONAL): the tier a 2.x library's own folders give a file read from
+    inside them on setup's first look — `…/data/<ja|zh>/GoalContent/<show>/…` "goal" (`HighPriority` "now",
+    `LowPriority` "soon": Current either way, in the order a look reads them) — or None. No content migration (Sonic
+    2026-10-23): it is still the folder he points setup at; his 2.x Goal stays his Goal. A show in Current keeps its
+    run."""
+    parts = os.path.normpath(origin).split(os.sep) if isinstance(origin, str) else []
+    for i in range(len(parts) - 2, 1, -1):
+        tier = TIER_OF_FOLDER.get(parts[i])
+        if tier and parts[i - 1].casefold() in ("ja", "zh") and parts[i - 2].casefold() == "data":
+            return tier
+    return None
 
 
 def _video_keys(record):

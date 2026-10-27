@@ -333,7 +333,8 @@ class ArrivalsInset(QToolButton):
         self.count = 0
         self.titles = ()
         self.refs = ()                       # --- W3.2 L3: the covers' records, beside `titles`
-        self.keys = frozenset()              # the arrivals' keys shown
+        self.keys = ()                       # the newest arrivals' keys (its covers')
+        self._rows = 0                       # A4: how many arrivals it last showed
         self._shown = None                   # A4: the view's arrivals last given (the same tuple: nothing to look at)
         self.lit = False                     # its tray is open
         self.press = 0.0                     # 0 at rest, 1 sunk
@@ -361,13 +362,19 @@ class ArrivalsInset(QToolButton):
         self._shown = arrivals
         top = newest(arrivals)               # A4: one pass for the three newest, never a sort of every arrival
         titles = tuple((a.cover_title or a.title or "") for a in top)
-        keys = frozenset(map(operator.attrgetter("key"), arrivals))
+        keys = tuple(a.key for a in top)
         refs = tuple(getattr(a, "cover", None) for a in top)          # --- W3.2 L3: the newest's records, in order
-        if count == self.count and titles == self.titles and keys == self.keys and refs == self.refs:
-            return False
+        rows, before = len(arrivals), self._rows
+        self._rows = rows
+        if count == self.count and titles == self.titles and refs == self.refs:
+            self.keys = keys
+            return False                     # nothing it shows moved: nothing repainted
         self.refs = refs                                                # --- end W3.2 L3
-        new = keys - self.keys               # A4: what came, against the keys shown as one set (never one per key)
-        moved = self._had and count > 0 and bool(new) and self.window().isVisible()
+        # A4: something came when there are more rows than before — never a set of every arrival's key (at 60,000,
+        # 19 ms an arrival); the covers that drop in are the newest not among the newest before
+        grew = rows - before
+        moved = self._had and count > 0 and grew > 0 and self.window().isVisible()
+        fresh = min(grew, sum(1 for k in keys if k not in self.keys))
         self.count, self.titles, self.keys = count, titles, keys
         one = count == 1
         self.setToolTip(strings.ARRIVALS_TIP_ONE if one else strings.ARRIVALS_TIP.format(n=count))
@@ -378,7 +385,7 @@ class ArrivalsInset(QToolButton):
         self._had = self._had or shown
         self.updateGeometry()
         if moved:
-            self.fresh = sum(1 for a in top if a.key in new)
+            self.fresh = fresh
             self._play_arrival()
         self.paints += 1
         self.update()
@@ -537,6 +544,7 @@ class ArrivalsInset(QToolButton):
 # view that comes while it is closed waits for `open`), and the list lays itself out in batches (no step of it holds
 # the window's thread at 20,000 rows).
 HEAD = "head:"
+_KEY = operator.attrgetter("key")
 PARTS = ("more", "icon", "number")          # a row's controls, hit-tested in this order (anything else: the row)
 
 
@@ -690,6 +698,7 @@ class TrayModel(QStandardItemModel):
         super().__init__(parent)
         self.keys = []
         self.objs = []
+        self.keyset = set()                     # `keys` as a set, kept as rows come and go
         self.paints = {}
         self.heads = {}                         # a head's key -> its row height
         self.size_of = lambda key: QSize(0, row_height())
@@ -727,6 +736,7 @@ class TrayModel(QStandardItemModel):
             return
         self.invisibleRootItem().insertRows(at, self._items(keys, objs))
         self.keys[at:at] = keys
+        self.keyset.update(keys)
         self.objs[at:at] = objs
         paints = self.paints
         for k in keys:
@@ -738,6 +748,7 @@ class TrayModel(QStandardItemModel):
             return
         self.removeRows(at, n)
         for k in self.keys[at:at + n]:
+            self.keyset.discard(k)
             if self.heads.pop(k, None) is not None:
                 self.gone_heads.append(k)
         del self.keys[at:at + n]
@@ -783,11 +794,14 @@ class TrayModel(QStandardItemModel):
         while p < top and keys[p] == new_keys[p]:
             p += 1
         d = n_new - n_old
-        if d > 0 and keys[p:] == new_keys[p + d:]:                  # rows came in at one place (an arrival)
-            self._insert(p, new_keys[p:p + d], new_objs[p:p + d])
+        came = new_keys[p:p + d] if d > 0 else ()
+        if d > 0 and keys[p:] == new_keys[p + d:] and len(set(came)) == d and self.keyset.isdisjoint(came):
+            self._insert(p, came, new_objs[p:p + d])                # rows came in at one place (an arrival)
         elif d < 0 and keys[p - d:] == new_keys[p:]:                # rows went from one place (a placement)
             self._remove(p, -d)
         else:
+            if len(set(new_keys)) != len(new_keys):                # never two rows on one key (the model's identity)
+                new_keys = _unique(new_keys)
             self._reorder(new_keys, new_objs)
         self._take(new_objs)
         return self.changed
@@ -817,6 +831,16 @@ class TrayModel(QStandardItemModel):
                 j += 1
             self._insert(i, new_keys[i:j], new_objs[i:j])
             i = j
+
+
+def _unique(keys):
+    seen, out = set(), []
+    for k in keys:
+        while k in seen:
+            k = f"{k}+"
+        seen.add(k)
+        out.append(k)
+    return out
 
 
 def _longest_rising(seq):
@@ -1266,15 +1290,8 @@ class ArrivalsTray(motion.Overlay):
         for g in groups:
             keys.append(HEAD + g.kind)
             objs.append(self._head_obj(g))
-            keys += [a.key for a in g.rows]
+            keys += map(_KEY, g.rows)
             objs += g.rows
-        if len(set(keys)) != len(keys):                      # never two rows on one key (the model's identity)
-            seen = set()
-            for n, k in enumerate(keys):
-                while k in seen:
-                    k = f"{k}+"
-                seen.add(k)
-                keys[n] = k
         self._row_h = row_height()
         changed = self.model.apply(keys, objs)
         for key in self.model.gone_heads:                      # a head's row removed: the list let its widget go

@@ -1706,9 +1706,7 @@ class DragController(QObject):
         if anki is not None:
             ticket.anki = anki
             self._anki_begin(ticket)
-        urgent = getattr(self.reader, "urgent", None)
-        if urgent is not None:                       # a4: its views build at once, an import's burst aside
-            urgent()
+        self._urgent()
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
             _tell(ticket, "refused")
@@ -1787,12 +1785,20 @@ class DragController(QObject):
         if self._undoing is None:
             self._undoing = qpress.begin(None, "undo", busy=strings.UNDOING, win=self.win)
 
+    def _urgent(self):
+        """(a4) The learner's own command on its way to the writer: its views build at once, an import's burst aside
+        (the reader's `urgent`) — every command `_give` hands over, and every Undo (fix round, A4A-6)."""
+        urgent = getattr(self.reader, "urgent", None)
+        if urgent is not None:
+            urgent()
+
     def _undo_to_writer(self, change=None, label=None):
         """An undo handed to the writer — watched until the writer is idle, as every command `_give` hands it is
         (`_settled`): one that finds nothing to undo answers nothing at all, and *Undoing…* ends there. `label`
         (finish-pending): the undo's own ticket, so a change whose Anki half waited waits the same way back. -> the
         writer's answer (None: refused)."""
         self._undos += 1
+        self._urgent()
         seq = self.writer.undo(change) if label is None else self.writer.undo(change, label=label)
         self._settle.start()
         return seq

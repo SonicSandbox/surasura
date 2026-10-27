@@ -117,7 +117,8 @@ def answer_star(answer):
 
 def card_state(result):
     """What the Anki Miner card shows, from `setup.checks` -> {"state": "missing" | "setup" | "ready", "say",
-    "missing": [plain sentences], "steps": bool (the two guided steps), "path", "version"}."""
+    "missing": [plain sentences], "steps": bool (the two guided steps), "path", "version", "can_set_up": bool (A4M1-2:
+    what is missing is what Anki Miner's own setup installs — Surasura runs it, `check["setup"]`)}."""
     checks = {c["id"]: c for c in (result or {}).get("checks") or ()}
     found = (result or {}).get("anki_miner") or {}
     first = checks.get("anki_miner") or {}
@@ -133,4 +134,5 @@ def card_state(result):
     profile = checks.get("anki_miner_profile") or {}
     return {"state": "setup", "say": f"Installed {version or ''} — needs setup".replace("  ", " "),
             "missing": [c["say"] for c in missing if c.get("say")], "steps": profile.get("state") == "needs-you",
-            "path": found.get("path"), "version": version}
+            "path": found.get("path"), "version": version,
+            "can_set_up": bool((checks.get("anki_miner_setup") or {}).get("setup"))}

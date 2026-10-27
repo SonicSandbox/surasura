@@ -36,6 +36,10 @@ from app.connect import runfile, stopping
 API_SCHEMA = 1
 QUICK_TIMEOUT = 60.0            # version / profiles / check / settings-export
 MINE_TIMEOUT = 3 * 60 * 60.0    # one mine call (sim.py's 3 h; R03:249)
+SETUP_TIMEOUT = 60 * 60.0       # one `setup` call (Z-11): a language's dictionaries downloaded and indexed
+# What Anki Miner's own `setup` (Z-11) sets right by itself: these of its `check` items (its language pack and its
+# recommended dictionaries, frequency and pitch lists). A deck, a note type, a tool are never its (A4M1-2)
+SETUP_ITEMS = frozenset(("dictionary", "resources", "language_pack"))
 LINE_TOLERANCE = 0.05           # seconds: a returned line_start further off is another line (sim.py, IS:311)
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{15B09250-AC39-4792-A15A-B73BD8E218A1}_is1"
 EXE = "AnkiMiner.exe"
@@ -59,8 +63,13 @@ FEATURES = {"named-words-whitelisted": "Z-1", runfile.WORD_FROM_LINE: "Z-2", "se
             runfile.DRY_RUN: "Z-7", "fetch": "Z-8", "render": "Z-10", "media": "Z-10", "setup": "Z-11",
             "script-fold": "Z-12", "beside-window": "Z-13"}
 # Round 2's Z-9 (books and text in `mine`): the `features` name its draft asks for. Not in FEATURES until Surasura
-# mines books: `reads_books` is False with every Anki Miner until then (alpha 4 M1)
+# mines books: `mines("books")` is False with every Anki Miner until then (alpha 4 M1)
 READING = "reading"
+# Round 2's Z-16 (an episode naming `audio_file`): its `features` name. Not in FEATURES until Surasura mines audio:
+# `mines("audio")` is False with every Anki Miner until then (alpha 4 A4M1-3)
+AUDIO = "audio-episodes"
+# What Connect sets aside until Anki Miner mines it (`library.waits_for`'s kinds) -> the Z-ask that opens it
+WAITS = {"books": "Z-9", "audio": "Z-16"}
 
 # A verdict's error code -> the kind Surasura acts on
 KINDS = {"BUSY": "busy", "ANKI_UNREACHABLE": "anki-closed", "SETUP_ERROR": "setup", "PROFILE_UNREADABLE": "setup",
@@ -332,14 +341,44 @@ def features(info):
     return {FEATURES[name] for name in info.get("features") or () if name in FEATURES}
 
 
-def reads_books(info=None):
-    """Can Connect make cards from books and texts (Z-9)? Only once Surasura knows the ask (`FEATURES` maps `READING`
-    to Z-9) and — given `info`, a `version` answer — this Anki Miner names it. Until then a book or a text waits by
-    itself, never a *No video* (alpha 4 M1, Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner.
-    Ever."); `info` None asks only whether this Surasura could."""
-    if "Z-9" not in FEATURES.values():
+def mines(kind, info=None):
+    """Can Connect make cards from `kind` (`WAITS`: "books" — books and texts, Z-9; "audio" — audiobooks and podcasts,
+    Z-16)? Only once Surasura knows the ask (`FEATURES` maps its name to it) and — given `info`, a `version` answer —
+    this Anki Miner names it. Until then such an item waits by itself, never a *No video* (alpha 4 M1 / A4M1-3, Sonic
+    2026-10-27: "I honestly don't want to ever have to open anki miner. Ever."); `info` None asks only whether this
+    Surasura could."""
+    ask = WAITS[kind]
+    if ask not in FEATURES.values():
         return False
-    return info is None or "Z-9" in features(info or {})
+    return info is None or ask in features(info or {})
+
+
+
+def can_set_up(info, items):
+    """A4M1-2: can Surasura finish this Anki Miner's setup itself — it names `setup` (Z-11) and every `check` item
+    `items` names (their names) is one its `setup` sets right (`SETUP_ITEMS`)?"""
+    names = set(items or ())
+    return bool(names) and names <= SETUP_ITEMS and "Z-11" in features(info or {})
+
+
+def run_setup(path, language, profile, progress_path, on_poll=None):
+    """Anki Miner's own `setup` (Z-11) for `language` under `profile` (None: its current settings): its language pack
+    and recommended dictionaries downloaded and switched on, as its setup wizard does — Anki Miner's downloads, never
+    Surasura's. Its `--progress` file is `progress_path` (its folder must exist). Under Anki Miner's run lock: its
+    window open or a run of its own -> AnkiMinerError `busy`. Never stopped part-way (only a signal stops it cleanly,
+    and a hidden program gets none): it runs to its end, at most SETUP_TIMEOUT. -> its `result`; a setup that
+    installed only part -> AnkiMinerError `failed` naming what didn't install."""
+    args = ["setup", "--language", language, "--progress", str(progress_path)] + (["--profile", profile]
+                                                                                    if profile else [])
+    verdict = api(path, args, timeout=SETUP_TIMEOUT, on_poll=on_poll)
+    if verdict.get("ok") or verdict.get("error"):
+        return _result(verdict)
+    result = verdict.get("result") or {}
+    pieces = [("its language pack", result.get("language_pack"))] + \
+        [(r.get("name") or r.get("id"), r) for r in result.get("resources") or () if isinstance(r, dict)]
+    failed = [f"{name}: {r.get('message') or 'not installed'}" for name, r in pieces
+              if isinstance(r, dict) and r.get("status") == "failed"]
+    raise AnkiMinerError("failed", "Anki Miner's setup didn't finish" + (" — " + "; ".join(failed) if failed else "."))
 
 
 def profiles(path):

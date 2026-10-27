@@ -176,7 +176,7 @@ def test_needs_setup_names_its_own_setup_as_the_fix(monkeypatch):
     result = M.look({}, "ja")
     assert result["state"] == "needs-setup"
     assert result["fix"] == {"say": "Anki Miner's own setup isn't finished (deck: no deck chosen).",
-                             "do": "Open Anki Miner and finish its setup", "update": False}
+                             "do": "Open Anki Miner and finish its setup", "update": False, "setup": False}
     assert _dots(result)["Its setup"] == ("warn", "Its setup: Needs you. Anki Miner's own setup isn't finished "
                                                   "(deck: no deck chosen).")
     assert _dots(result)["Anki Miner"][0] == "ok"

@@ -168,8 +168,8 @@ def look(settings, language):
         mine = [by_id[i] for ids in _DOT_CHECKS for i in ids if i in by_id]
         yours = [c for c in mine if c.get("state") == "needs-you"]
         first = next((c for c in yours if c.get("blocks")), None) or (yours[0] if yours else None)
-        fix = ({"say": first.get("say"), "do": first.get("do"), "update": bool(first.get("update"))}
-               if first else None)
+        fix = ({"say": first.get("say"), "do": first.get("do"), "update": bool(first.get("update")),
+                "setup": bool(first.get("setup"))} if first else None)
         return {"state": state, "version": version, "dots": dots, "fix": fix}
     except Exception:
         return _off(settings)
@@ -449,3 +449,79 @@ def install(on_progress, cancel, on_end, confirm=None):
         except Exception:
             pass
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Anki Miner's own setup, run by Surasura (A4M1-2, lean taken — PROVISIONAL)
+# --------------------------------------------------------------------------- #
+SETUP_JOB_KIND = "anki-miner-setup"         # its kind in the window's registry (`jobs.RESOURCES`)
+SETUP_JOB_LABEL = "Finishing Anki Miner's setup"
+SETUP_STAGING = "anki-miner-setup"          # under local data: its `--progress` file, emptied after
+SET_UP, SETUP_FAILED = "set-up", "failed"
+
+
+def finish_setup(settings, language, on_progress=None):
+    """*Finish its setup* (Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever."): Anki
+    Miner's own `setup` (Z-11, `anki_miner.run_setup`) for `language`, under the profile Connect mines with, when its
+    check says only what that installs is missing (`setup.checks`' `anki_miner_setup` marked `setup`). Its downloads
+    are Anki Miner's, from its own catalogue, as its setup wizard's would be — Surasura fetches nothing. Blocking (a
+    worker); never stopped part-way (`run_setup`). `on_progress(stage, stages, item)` as its progress file moves.
+    -> (result, detail): "set-up" · "busy" (Anki Miner running, a Connect run, an install or another setup) ·
+    "failed" with Anki Miner's words · "ready" (nothing to set up: its check found nothing missing) · "missing"."""
+    if not _ONE_INSTALL.acquire(blocking=False):
+        return BUSY, None
+    try:
+        if _busy():
+            return BUSY, None
+        from app.connect import anki_miner, setup
+        result = setup.checks(settings, language, keep=False)
+        found = result.get("anki_miner") or {}
+        by_id = {c.get("id"): c for c in result.get("checks") or () if isinstance(c, dict)}
+        if not found.get("path"):
+            return "missing", None
+        if not (by_id.get("anki_miner_setup") or {}).get("setup"):
+            return "ready", None
+        from app import path_utils
+        folder = os.path.join(path_utils.get_local_data_path(), SETUP_STAGING)
+        os.makedirs(folder, exist_ok=True)
+        progress = os.path.join(folder, "progress.json")
+
+        def poll():
+            if on_progress is None:
+                return
+            try:
+                with open(progress, encoding="utf-8") as f:
+                    state = json.load(f)
+            except (OSError, ValueError):
+                return
+            on_progress(state.get("stage") or 0, state.get("stages") or 0, state.get("item"))
+        try:
+            anki_miner.run_setup(found["path"], language, found.get("profile"), progress, on_poll=poll)
+        except anki_miner.AnkiMinerError as e:
+            return (BUSY, None) if e.kind == "busy" else (SETUP_FAILED, e.message)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        return SET_UP, None
+    except Exception as e:          # never raises: the page says it didn't finish
+        return SETUP_FAILED, str(e)
+    finally:
+        _ONE_INSTALL.release()
+
+
+def finish_setup_as_job(registry, settings, language, on_progress=None):
+    """`finish_setup` as an `anki-miner-setup` job in `registry` while it runs: the bottom bar shows it and its stage;
+    no Cancel (it can't be stopped part-way), and a quit waits for it (`on_quit="wait"`). No registry: alone."""
+    if registry is None:
+        return finish_setup(settings, language, on_progress)
+    job = registry.record(SETUP_JOB_KIND, SETUP_JOB_LABEL, on_quit="wait")
+
+    def progress(stage, stages, item):
+        if on_progress is not None:
+            on_progress(stage, stages, item)
+        job.progress(SETUP_JOB_LABEL, stage, stages)
+    answer = (SETUP_FAILED, None)
+    try:
+        answer = finish_setup(settings, language, progress)
+    finally:
+        job.finish(ok=answer[0] in (SET_UP, "ready"), message=answer[1] if answer[0] == SETUP_FAILED else None)
+    return answer

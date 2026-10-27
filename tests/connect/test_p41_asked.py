@@ -37,11 +37,11 @@ class StoreSteps(FakeSteps):
     the store still holds)."""
 
     _open = runner.Steps._open
-    text_items = runner.Steps.text_items
-    books = False                       # alpha 4 M1: whether Anki Miner reads books (`Steps.reads_books`'s answer)
+    waiting_items = runner.Steps.waiting_items
+    can = frozenset()                   # alpha 4 M1 / A4M1-3: the kinds Anki Miner mines now (`Steps.mines`'s answer)
 
-    def reads_books(self, lang):
-        return self.books
+    def mines(self, lang, kind):
+        return kind in self.can
 
     def __init__(self, folder, lang="ja", plan=None):
         super().__init__(folder, plan)
@@ -278,12 +278,34 @@ def test_a_book_entering_the_line_is_no_open_job_and_is_mined_by_itself_once_ank
         assert text not in [j["item_id"] for j in ledger.open_jobs(lang)], "the book is no open job"
     _run(steps, lang)
     assert len(_jobs(text, lang)) == 1 and _mined(steps) == mined, "set aside once, not again at every look"
-    steps.books = True                  # Anki Miner names `reading` (round 2's Z-9) and this Surasura mines books
+    steps.can = {"books"}               # Anki Miner names `reading` (round 2's Z-9) and this Surasura mines books
     _run(steps, lang)
     assert len(_jobs(text, lang)) == 1, "the same job, queued again: no second one"
     assert _jobs(text, lang)[-1]["reason"] != runner.BOOKS_WAIT
     if lang == "ja":
         assert _jobs(text, lang)[-1]["state"] == "done" and _mined(steps) == [episode, text]
+
+
+@pytest.mark.parametrize("kind", ["audiobook", "podcast"])
+def test_an_audio_title_s_episode_waits_like_a_book_until_anki_miner_mines_audio(tmp_path, kind):
+    """A4M1-3 (lean taken, PROVISIONAL): an episode of a title you marked an audiobook or a podcast (audio, no video)
+    is set aside with AUDIO_WAIT the look it enters the line — never a *No video* card, nothing mined; books opening
+    leaves it aside (one kind, one ask: Z-16); once Anki Miner mines audio the same job is queued again and mined."""
+    ids, kinds = _library()
+    episode = _srt(ids, kinds)[-1]
+    with c.store("ja") as s:
+        s.set_media_type([s.item(episode)["work_id"]], kind)
+    steps = _steps(tmp_path, {episode: WORDS[1]})
+    _place_top(episode)
+    out = _run(steps)["languages"]["ja"]
+    assert (_jobs(episode)[-1]["state"], _jobs(episode)[-1]["reason"]) == ("skipped", runner.AUDIO_WAIT)
+    assert out["needs"] == [] and _mined(steps) == []
+    steps.can = {"books"}
+    _run(steps)
+    assert _jobs(episode)[-1]["reason"] == runner.AUDIO_WAIT, "books opening is no audio"
+    steps.can = {"books", "audio"}
+    _run(steps)
+    assert len(_jobs(episode)) == 1 and _jobs(episode)[-1]["state"] == "done" and _mined(steps) == [episode]
 
 
 def test_a_book_waiting_on_no_video_from_before_is_set_aside_at_the_next_look(tmp_path):

@@ -62,6 +62,27 @@ def text_only(item):
     return infer_source_type(item.get("rel_path") or "", declared=item.get("source_type")) in ("epub", "text")
 
 
+# A4M1-3 (lean taken, PROVISIONAL): a title's types whose items are listened to — audio, no video (the window's
+# `view_rows.MEDIA_WORD` "audio"). Never guessed (`library_store.media_type_guess`): you or hato named it
+AUDIO_TYPES = ("podcast", "audiobook")
+
+
+def waits_for(item, media=None):
+    """What Anki Miner can't mine yet, this item (a `store.item` dict) being one — the one rule for Connect's jobs, the
+    gaps and the rows -> "books" (a book or a text, by its file's own type: `text_only`), "audio" (an item of a title
+    whose type is a podcast's or an audiobook's, `media`: alpha 4 A4M1-3), else None. Whether Anki Miner mines that
+    kind now is `anki_miner.mines`'s."""
+    if text_only(item):
+        return "books"
+    return "audio" if item and media in AUDIO_TYPES else None
+
+
+def media_of(store, item):
+    """The title's type an item (a `store.item` dict) belongs to (`Store.media_type`: stored, else guessed), or None."""
+    work = (item or {}).get("work_id")
+    return store.media_type(work)[0] if work is not None else None
+
+
 def counting(store, tier):
     """[item ids] of `tier` in the store's order, available on disk, that count — W-1's one rule
     (`library_store.counts_sql` with the library's `keep_watched`): a watched one while it's off has nothing left to

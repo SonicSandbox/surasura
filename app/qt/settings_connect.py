@@ -454,8 +454,10 @@ class MinerCard(QWidget):
                                              self, kind="settingsmore"), end=True)                 # AM★
         self.browse = _button(S.BROWSE_MINER, S.BROWSE_MINER_TIP, self._browse, self)
         self.open_miner = qpress.room(_button(S.OPEN_MINER, S.OPEN_MINER_TIP, self._open, self))
+        # A4M1-2: what Anki Miner's own setup installs, Surasura runs it (the wizard's Anki Miner page, as Install)
+        self.finish_setup = _button(S.FINISH_MINER_SETUP, S.FINISH_MINER_SETUP_TIP, self._install, self)
         self.check_again = _button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, self.check, self)
-        for b in (self.install, self.star_line, self.browse, self.open_miner, self.check_again):
+        for b in (self.install, self.star_line, self.browse, self.finish_setup, self.open_miner, self.check_again):
             buttons.addWidget(b)
         box.addLayout(buttons)
         self.star_link = qpress.room(_button(S.STAR_LINK, S.STAR_LINK_TIP, lambda: self._open_star(self.star_link),
@@ -570,6 +572,7 @@ class MinerCard(QWidget):
         self.star_line.setVisible(missing)
         self.browse.setVisible(missing)
         self.open_miner.setVisible(not missing)
+        self.finish_setup.setVisible(not missing and bool((self.state or {}).get("can_set_up")))
         self.star_box.setVisible(not missing and not answered)
         self.star_link.setVisible(not missing and answered)
 

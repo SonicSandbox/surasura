@@ -51,10 +51,12 @@ def keeps(job, event=None):
 
 
 def _waits_for_books(store, item_id):
-    """Alpha 4 M1: a book or a text while this Surasura mines none (`anki_miner.reads_books()`): no gap names it, as
-    no job is made of it (`runner._books_aside`)."""
+    """Alpha 4 M1 / A4M1-3: a book, a text or an audio item while this Surasura mines none of its kind
+    (`library.waits_for`, `anki_miner.mines`): no gap names it, as no job is made of it (`runner._books_aside`)."""
     from app.connect import anki_miner
-    return not anki_miner.reads_books() and library.text_only(store.item(item_id) or {})
+    item = store.item(item_id) or {}
+    kind = library.waits_for(item, library.media_of(store, item))
+    return kind is not None and not anki_miner.mines(kind)
 
 
 def _gone(store, ledger, language):

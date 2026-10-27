@@ -159,7 +159,7 @@ class MineActions(QObject):
             return None
         videos, other = videos_of(row, ids)
         if not videos:
-            self.win.say(strings.MINE_BOOKS_WAIT)
+            self.win.say(_waits_line(other))
             return None
         text = strings.MINE_ASKED if len(videos) == len(ids) else strings.MINE_ASKED_VIDEOS
         return self._ask(text.format(title=row.title), (row.key,), videos)
@@ -186,7 +186,7 @@ class MineActions(QObject):
             other = other or o
         asked = [i for i in ids if i in videos]
         if not asked:
-            self.win.say(strings.MINE_BOOKS_WAIT)
+            self.win.say(_waits_line(other))
             return None
         if len(asked) < len(ids):
             text = strings.MINE_ASKED_N_VIDEOS[len(asked) == 1].format(n=len(asked))
@@ -407,6 +407,12 @@ class MineActions(QObject):
             service.answer(language, keys)
             return made
         needs._press("make_cards", entry, run, then=lambda made: needs._connect_done(_made_words(made)))   # (its arc)
+
+
+def _waits_line(ep):
+    """The bar's line for a *Mine* on files Anki Miner can't mine yet (alpha 4 M1, A4M1-3): audio's when the first such
+    file is a podcast's or an audiobook's (`Episode.text`), else books'."""
+    return strings.MINE_AUDIO_WAIT if getattr(ep, "text", None) == "audio" else strings.MINE_BOOKS_WAIT
 
 
 def videos_of(row, ids):

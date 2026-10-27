@@ -301,22 +301,45 @@ def test_a_surasura_profile_is_used_when_there_is_one(monkeypatch, fake_miner):
     assert check_call[-2:] == ["--profile", "p-s"], "Anki Miner's own setup is checked in the profile Connect uses"
 
 
-@pytest.mark.parametrize("language, items, named", [
+@pytest.mark.parametrize("language, items, named, ours", [
     ("ja", [{"name": "dictionary", "ok": False, "message": "No dictionary is installed."},
-            {"name": "anki", "ok": True, "message": None}], "dictionary: No dictionary is installed."),
+            {"name": "anki", "ok": True, "message": None}], "dictionary: No dictionary is installed.", True),
+    ("zh", [{"name": "language_pack", "ok": False, "message": "The Chinese language pack isn't installed."},
+            {"name": "resources", "ok": False, "message": "Its frequency list is out of date."}],
+     "The Chinese language pack isn't installed.", True),
+    # a deck is Anki's, never what Anki Miner's own `setup` installs: the old words (A4M1-2's later step)
+    ("ja", [{"name": "dictionary", "ok": False, "message": "No dictionary is installed."},
+            {"name": "deck", "ok": False, "message": "no deck chosen"}], "deck: no deck chosen", False),
     ("zh", [{"name": "language-pack", "ok": False, "message": "The Chinese language pack isn't installed."}],
-     "The Chinese language pack isn't installed."),
+     "The Chinese language pack isn't installed.", False),         # an item name Surasura doesn't know: never ours
 ])
-def test_anki_miners_own_setup_unfinished_names_what_it_says(monkeypatch, ready_37, language, items, named):
+def test_anki_miners_own_setup_unfinished_names_what_it_says(monkeypatch, ready_37, language, items, named, ours):
+    """A4M1-2 (lean taken, PROVISIONAL): what Anki Miner's own `setup` installs (its dictionaries, resources, language
+    pack) Surasura finishes itself — the check says so and is marked `setup` (the wizard's *Finish its setup*), never
+    "open Anki Miner"; anything else keeps naming what Anki Miner says."""
     StandInAnki(monkeypatch)
     _synced_once(language)
     ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
                   check={"ready": False, "items": items})
     check = _by_id(setup.checks(_settings(ready_37), language))["anki_miner_setup"]
     assert check["state"] == "needs-you" and named in check["say"]
-    assert check["do"] == "Open Anki Miner and finish its setup"
+    if ours:
+        assert check["do"] == setup.SETUP_DO and check["setup"] is True and "Open Anki Miner" not in check["do"]
+    else:
+        assert check["do"] == "Open Anki Miner and finish its setup" and not check.get("setup")
     asked = [c["argv"] for c in ready_37.calls() if c["argv"][1] == "check"][0]
     assert asked[2:4] == ["--language", language]
+
+
+def test_an_anki_miner_that_names_no_setup_is_never_set_up_by_surasura(monkeypatch, ready_37):
+    """A4M1-2: Surasura runs only a verb the Anki Miner names (`features`: Z-11's `setup`)."""
+    StandInAnki(monkeypatch)
+    _synced_once()
+    ready_37.plan(app="3.7.0", features=[f for f in FEATURES_37 if f != "setup"],
+                  profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check={"ready": False, "items": [{"name": "dictionary", "ok": False, "message": "none"}]})
+    check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
+    assert not check.get("setup") and check["do"] == "Open Anki Miner and finish its setup"
 
 
 def test_anki_miner_not_reaching_anki_while_anki_is_closed_is_only_a_wait(monkeypatch, ready_37):

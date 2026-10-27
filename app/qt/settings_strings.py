@@ -635,7 +635,12 @@ BROWSE_MINER_TIP = "Anki Miner is installed somewhere else: show Surasura where.
 BROWSE_MINER_TITLE = "Where is Anki Miner?"
 BROWSE_MINER_FILTER = "Anki Miner (AnkiMiner.exe);;Programs (*.exe);;All files (*)"
 OPEN_MINER = "Open Anki Miner"
-OPEN_MINER_TIP = "Start Anki Miner, to finish its setup."
+# A4M1-2 (lean taken, PROVISIONAL): its own window, for its own settings — Surasura never needs it opened
+OPEN_MINER_TIP = ("Start Anki Miner's own window, for its own settings.\n"
+                  "• Surasura never needs it open: Connect runs Anki Miner by itself")
+FINISH_MINER_SETUP = "Finish its setup…"
+FINISH_MINER_SETUP_TIP = ("Anki Miner still needs its dictionaries: Surasura has it download them by itself, on "
+                          "the setup's Anki Miner page.\n• Nothing to open in Anki Miner")
 MINER_NOT_OPENED = "Couldn't open Anki Miner: {}"
 CHECK_AGAIN = "Check again"
 CHECK_AGAIN_TIP = "Look at Anki Miner's setup again."

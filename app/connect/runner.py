@@ -88,11 +88,14 @@ TURN = "Waiting its turn: Connect is making another episode's cards now."
 WATCHED = "you've watched it: its new words go to the episodes ahead of you"
 LEVEL_NO_VIDEO = "Its video isn't on this computer: its new words' cards wait for it."
 # Alpha 4 M1 (Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever."): until Anki Miner reads
-# books (`anki_miner.reads_books`: round 2's Z-9), a book's or a text's job — Connect's own, an ask, a gap's — is set
+# books (`anki_miner.mines`: round 2's Z-9), a book's or a text's job — Connect's own, an ask, a gap's — is set
 # aside with this line (`_books_aside`): never picked, never a *No video* card, nothing on the circles. Once Anki Miner
 # reads them, they're queued again by themselves (`ledger.reopen_skipped`): nothing to undo. K67's asked-only rule is
 # this one now.
 BOOKS_WAIT = "Waits for Anki Miner to read books: Connect makes its cards by itself once Anki Miner can."
+# A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio (Z-16)
+AUDIO_WAIT = "Waits for Anki Miner to mine audio: Connect makes its cards by itself once Anki Miner can."
+WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT}       # `library.waits_for`'s kinds -> the job's line
 NO_LIST = "Waiting for a current list: Generate didn't finish."
 LIBRARY_BUSY = "Surasura's library is busy: tried again shortly."
 STOPPED_FOR_UPDATE = "Surasura is installing an update."
@@ -291,26 +294,33 @@ def _consume(steps, ledger, lang):
 
 
 def _books_aside(steps, ledger, lang, jobs):
-    """Alpha 4 M1: while Anki Miner can't read books (`steps.reads_books`), each of `jobs` still before its mining (queued,
-    waiting, or left mid-pick by a kill: `_resume_of` in BEFORE_MINING, no batch started) whose item is a book or a
-    text (`library.text_only`, the rows' rule too) ends `skipped` with BOOKS_WAIT, before any pick — so it is no open job, no *No video*, nothing on
-    the circles; once it can, every job set aside so is queued again (its ask kept; one beyond the line is dropped at
-    its start as any). -> how many set aside. A store busy now: none (looked at again next look)."""
-    reads, texts_of = getattr(steps, "reads_books", None), getattr(steps, "text_items", None)
-    if reads is None or texts_of is None:
+    """Alpha 4 M1 / A4M1-3: for each kind Anki Miner can't mine yet (`steps.mines`: books and texts, audio), each of
+    `jobs` still before its mining (queued, waiting, or left mid-pick by a kill: `_resume_of` in BEFORE_MINING, no batch
+    started) whose item is of that kind (`steps.waiting_items`: `library.waits_for`, the rows' rule too) ends `skipped`
+    with its line (`WAIT_REASONS`), before any pick — so it is no open job, no *No video*, nothing on the circles; once
+    it can, every job set aside for that kind is queued again (its ask kept; one beyond the line is dropped at its start
+    as any). -> how many set aside. A store busy now: none (looked at again next look)."""
+    mines, kinds_of = getattr(steps, "mines", None), getattr(steps, "waiting_items", None)
+    if mines is None or kinds_of is None:
         return 0
-    if reads(lang):
-        if ledger.skipped_for(lang, BOOKS_WAIT):
-            aside = [j["item_id"] for j in ledger.jobs(lang, states=("skipped",)) if j.get("reason") == BOOKS_WAIT]
+    waiting = set()
+    for kind, reason in WAIT_REASONS.items():
+        if not mines(lang, kind):
+            waiting.add(kind)
+        elif ledger.skipped_for(lang, reason):
+            aside = [j["item_id"] for j in ledger.jobs(lang, states=("skipped",)) if j.get("reason") == reason]
             with ledger.transaction():
-                ledger.reopen_skipped(lang, aside, BOOKS_WAIT)
+                ledger.reopen_skipped(lang, aside, reason)
+    if not waiting:
         return 0
     jobs = [j for j in jobs if _resume_of(j) in BEFORE_MINING and not _started(ledger, j["id"])]
-    texts = texts_of(lang, {j["item_id"] for j in jobs}) if jobs else set()
+    kinds = kinds_of(lang, {j["item_id"] for j in jobs}) if jobs else {}
     n = 0
     for job in jobs:
-        if job["item_id"] in texts:
-            ledger.set_state(job["id"], "skipped", reason=BOOKS_WAIT, skipped={"mining": BOOKS_WAIT})
+        kind = kinds.get(job["item_id"])
+        if kind in waiting:
+            reason = WAIT_REASONS[kind]
+            ledger.set_state(job["id"], "skipped", reason=reason, skipped={"mining": reason})
             n += 1
     return n
 
@@ -1397,24 +1407,31 @@ class Steps:
         with self._open(lang) as store:
             return library.store_id(store)
 
-    def text_items(self, lang, item_ids):
-        """Alpha 4 M1 (was P4.1's K67 `text_only`): which of `item_ids` are books or texts (no video to mine from) ->
-        a set, by `library.text_only`, in one store read; a busy store → none (the next look asks again)."""
+    def waiting_items(self, lang, item_ids):
+        """Alpha 4 M1 / A4M1-3 (was P4.1's K67 `text_only`): of `item_ids`, those Anki Miner can't mine yet ->
+        {item id: kind} by `library.waits_for` (books and texts by their file's type, audio by their title's), in one
+        store read; a busy store → none (the next look asks again)."""
         from app.connect import library
         try:
             store = self._open(lang)
         except (Wait, Needs):
-            return set()
+            return {}
+        out = {}
         with store:
-            return {i for i in item_ids if library.text_only(store.item(i) or {})}
+            for i in item_ids:
+                item = store.item(i) or {}
+                kind = library.waits_for(item, library.media_of(store, item))
+                if kind:
+                    out[i] = kind
+        return out
 
-    def reads_books(self, lang):
-        """Alpha 4 M1: can Connect make cards from books and texts now — this Surasura knows Z-9 and the Anki Miner
-        its setup record last found names it (`anki_miner.reads_books`)? No record yet: no."""
+    def mines(self, lang, kind):
+        """Alpha 4 M1 / A4M1-3: can Connect make cards from `kind` ("books", "audio") now — this Surasura knows its ask
+        and the Anki Miner its setup record last found names it (`anki_miner.mines`)? No record yet: no."""
         from app.connect import anki_miner, setup
-        if not anki_miner.reads_books():
-            return False                    # this build mines no book whatever Anki Miner says: no record read
-        return anki_miner.reads_books(setup.read_record().get("anki_miner") or {"features": []})
+        if not anki_miner.mines(kind):
+            return False                    # this build mines none of it whatever Anki Miner says: no record read
+        return anki_miner.mines(kind, setup.read_record().get("anki_miner") or {"features": []})
 
     def show(self, lang, job):
         """The title of the show the job's episode belongs to (its work's), for the cards' `Surasura::from::` tag; None

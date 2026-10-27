@@ -497,6 +497,9 @@ MAKE_CARDS_GONE = "Connect has no record of those episodes now: nothing was made
 # alpha 4 M1: a book's or a text's *Mine* while Anki Miner reads no book — never its window
 MINE_BOOKS_WAIT = ("Anki Miner makes cards from videos only for now: Connect makes these cards by itself once it can "
                    "read books and texts")
+# A4M1-3: an audiobook's or a podcast's *Mine*, the same way
+MINE_AUDIO_WAIT = ("Anki Miner makes cards from videos only for now: Connect makes these cards by itself once it can "
+                   "mine audio")
 LINK_TITLE = "Choose the video for {label}"
 LINK_FILTER = "Videos ({patterns})"
 LINKING_ONE = "Linking {label}'s video"

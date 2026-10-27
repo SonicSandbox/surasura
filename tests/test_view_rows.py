@@ -1652,3 +1652,23 @@ def test_alpha4_M1_a_book_waits_quietly_by_its_files_type_and_a_group_says_so_on
     video = group.episodes[0].id
     mined = vr.build(items_of(spec), dict(WORKS), {"mine_line": 20}, pieces=pieces, cards={video: 3}).rows[0]
     assert mined.status.kind == "books", "only the EPUB is left: it waits for Anki Miner, never *Waiting* for ever"
+
+
+@pytest.mark.parametrize("media", ["audiobook", "podcast"])
+def test_A4M1_3_an_audio_titles_parts_wait_quietly_like_a_book_with_audios_words(media):
+    """A4M1-3 (lean taken, PROVISIONAL): the parts of a title you typed an audiobook or a podcast (audio, no video) read
+    the same quiet *Waits for Anki Miner* as a book — never "N parts have no file", nothing to press — its hover naming
+    audio, through the same one rule (`connect.library.waits_for`, the title's type); a subtitle of an anime beside it
+    is untouched."""
+    from app.services import view_rows as vr
+    work(1, "星降る街の小さな工房")
+    work(7, "銀河鉄道の夜 朗読", media=media)
+    items = items_of([("now", 7, 70, eps("銀河鉄道の夜 朗読", 1, 2), {}),
+                      ("now", 1, 10, eps("星降る街の小さな工房", 1, 1), {})])
+    rows = {r.title: r for r in vr.build(items, dict(WORKS), {"mine_line": 20}).rows}
+    audio = rows["銀河鉄道の夜 朗読"]
+    assert (audio.status.kind, audio.status.label, audio.status.tone) == ("books", vr.STRINGS["books_wait"], "faint")
+    assert audio.status.tip == vr.STRINGS["tip_audio_wait"] and "audio" in audio.status.tip
+    assert all(e.text == "audio" for e in audio.episodes)
+    anime = rows["星降る街の小さな工房"]
+    assert anime.status.kind != "books" and not anime.episodes[0].text

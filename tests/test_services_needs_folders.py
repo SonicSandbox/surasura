@@ -177,7 +177,7 @@ def test_choose_a_folder_matches_each_file_by_its_place_then_by_a_name_no_other_
     assert [(ln.item_id, path) for ln, path in found] == [(1, a1), (2, b2)]
     assert [ln.item_id for ln, _p in needs.match_tree(picked, "library/アニメ", lines)] == [1, 2]   # a case apart
     sharp = [ln._replace(rel_path="Library/Straße/" + ln.rel_path.split("/", 2)[2]) for ln in lines]
-    assert [ln.item_id for ln, _p in needs.match_tree(picked, "Library/STRASSE", sharp)] == [1, 2]  # ß is ss, part by part
+    assert [ln.item_id for ln, _p in needs.match_tree(picked, "Library/STRASSE", sharp)] == [1, 2]  # ß is ss
 
 
 def test_choose_a_folder_never_gives_one_file_to_two_gone_lines(tmp_path):

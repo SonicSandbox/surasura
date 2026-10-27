@@ -491,7 +491,8 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
     as the folder holding it is added, before its look; one no folder read holds is refused (`refused`, its reason).
     K4: a busy library — another save, another look — is waited for (`waiting(True)` / `waiting(False)`,
     page 3's *Waiting for your library…*) and the read goes on by itself; *Stop* ends the wait (`stopped`; the folder
-    not reached stays listed). `busy` stays False (kept for an older caller).    `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
+    not reached stays listed). `busy` stays False (kept for an older caller).
+    `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
     *Make cards for your first 20 episodes?* (D1); none there (Current was already full: *Set up again*, an upgrade)
     → no line."""
     from app import library_store, sources

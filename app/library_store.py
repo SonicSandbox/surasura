@@ -5076,7 +5076,7 @@ class Store:
                     return self._skipped(cmd, len(skipped))
                 explicit = 0 if kind == "register" else 1
                 out = self._remove_as(ok, trashed_paths, explicit, exclude=kind not in ("insert", "insert_at"),
-                                      why="remove" if kind == "restore" else None)   # K2: a Put back undone is removed again
+                                      why="remove" if kind == "restore" else None)   # K2: a Put back undone: removed
                 if kind == "register" and getattr(change, "pairing_before", (None, None))[1] is not None:
                     content_key, old = change.pairing_before          # the key's pairing before hato moved it
                     if self.conn.execute("SELECT 1 FROM items WHERE id = ?", (old[0],)).fetchone():
@@ -8887,9 +8887,9 @@ def _store_removed(self, now=None):
     Remove and title, newest first -> [{"trash_ids", "title", "removed_at", "days_left", "count", "can_return",
     "roots"}]. `days_left`: the days before the purge takes the FIRST of its files still in the trash (each file's own
     clock, which the Remove restarted; 0 … REMOVED_DAYS), None when none is there; `can_return`: a file still in the
-    trash, or an original in a folder Surasura still reads (`roots`: its originals' folders' ids). An entry that can't come back (no
-    file left, no original read) is left out: Put back would bring nothing back. One read transaction; one stat per
-    trashed file."""
+    trash, or an original in a folder Surasura still reads (`roots`: its originals' folders' ids). An entry that can't
+    come back (no file left, no original read) is left out: Put back would bring nothing back. One read transaction; one
+    stat per trashed file."""
     now = time.time() if now is None else now
     groups, order = {}, []
     rows = self._removed_rows()
@@ -9105,13 +9105,14 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     (S6) — is skipped; an `item_id` gets the origin recorded and nothing else; a copy that is already an item is that
     item; else the item is added and placed. `first` (setup's own first scan, SRC-1): the end of Current, shows in name
     order, episodes in natural order (`ep2` before `ep10`), logged quiet like a back-fill — no placement event, so
-    nothing is mined by itself (S1); a show read from inside a 2.x library's Goal folder at Goal's end (K8, `_tier_2x`). Later (SRC-2, S2, S3, S14; Decision 1, lean): it lands in New arrivals (in its
-    show's run there, in order) and the placing rule for the source takes it on (D30: `source:<id>`, then `source`;
-    `rules` None = settings.json's default, `source: after-show`): after-show puts a show with rows in Current in its
-    run, before the first episode whose number (K4's, or hato's) or natural-order name is higher, else after the last;
-    a show only in 6+ Months or Finished at the top of Current (Q4-9); a show never shown, or one still waiting, waits.
-    With New arrivals off (`arrivals_on`; no rule runs): its show's run in Current, else the top of Current. Logged as
-    `source`'s: the landing never explicit, the rule's move explicit (the user's own setting, D30).
+    nothing is mined by itself (S1); a show read from inside a 2.x library's Goal folder at Goal's end (K8, `_tier_2x`).
+    Later (SRC-2, S2, S3, S14; Decision 1, lean): it lands in New arrivals (in its show's run there, in order) and the
+    placing rule for the source takes it on (D30: `source:<id>`, then `source`; `rules` None = settings.json's default,
+    `source: after-show`): after-show puts a show with rows in Current in its run, before the first episode whose number
+    (K4's, or hato's) or natural-order name is higher, else after the last; a show only in 6+ Months or Finished at the
+    top of Current (Q4-9); a show never shown, or one still waiting, waits. With New arrivals off (`arrivals_on`; no
+    rule runs): its show's run in Current, else the top of Current. Logged as `source`'s: the landing never explicit,
+    the rule's move explicit (the user's own setting, D30).
 
     -> the change (kind 'take_in': never on the user's Undo, S6 — Remove takes an item out), with `added`, `attached`,
     `recorded` {origin (absolute): item_id}, `placed` {item_id: tier}, `skipped` {"known", "excluded", "gone":

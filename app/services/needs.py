@@ -264,7 +264,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         novideo.setdefault(_group(hit[0]), []).append(hit)
     big, folded = ([], set()) if view is None or getattr(view, "cached", False) else \
         _fold_gone(rows, gone, offline, seen, getattr(view, "counts", None), settled and not roots)   # K3 / K1
-    #                                                                   (never the first screen's cache: a part of Current)
+    #                                                         (never the first screen's cache: a part of Current)
     if folded:
         gone = {g: [hit for hit in hits if hit[1].id not in folded] for g, hits in gone.items()}
         gone = {g: hits for g, hits in gone.items() if hits}

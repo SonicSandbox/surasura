@@ -64,6 +64,8 @@ _CRACK = ((13, 1.6), (11.6, 4.6), (13.4, 6.6))
 _STONES = {}                                # (size, dpr) -> QPixmap: drawn once each
 LINES_SHOWN = 12                            # a card's per-file lines shown (*and N more*: a 300-file show is no
 #                                             1,000 widgets; the card's own answers still count every line — IK-L1-4)
+FOLDER_LINES_SHOWN = 3                      # ... on a folder's or the library's card (K3 / K1): its own answers
+#                                             stay in sight above them, and *and N more* says the rest
 drawn = [0]                                 # stones drawn (tests)
 BUILT_AT_ONCE = 30                          # alpha 4 B (Mattias: 3,000 cards opened in ~10 s, frozen): the cards built
 #                                             as the page opens, and again each time it is scrolled near its end
@@ -411,7 +413,8 @@ class NeedsCards(QWidget):
         if e.say:
             box.addWidget(_label(e.say, "sheetline", card))
         by_line = dict(zip((ln.key for ln in e.lines), results or ())) if results else {}
-        for ln in e.lines[:LINES_SHOWN]:
+        shown = FOLDER_LINES_SHOWN if e.kind in (service.FILES_FOLDER, service.LIBRARY_GONE) else LINES_SHOWN
+        for ln in e.lines[:shown]:
             row = QHBoxLayout()
             row.setSpacing(round(8 * f))
             words = QVBoxLayout()
@@ -432,8 +435,8 @@ class NeedsCards(QWidget):
                 if self.shown(name, e, ln):
                     row.addWidget(self._button(card, name, e, ln))
             box.addLayout(row)
-        if len(e.lines) > LINES_SHOWN:
-            box.addWidget(_label(strings.NEEDS_MORE_LINES.format(n=f"{len(e.lines) - LINES_SHOWN:,}"), "sheetline",
+        if len(e.lines) > shown:
+            box.addWidget(_label(strings.NEEDS_MORE_LINES.format(n=f"{len(e.lines) - shown:,}"), "sheetline",
                                  card))
         acts = QHBoxLayout()
         acts.setSpacing(round(8 * f))

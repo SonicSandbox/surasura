@@ -279,9 +279,9 @@ def test_a_folders_card_of_3000_files_draws_a_few_lines_and_and_n_more(world, la
     win.show_tab("needs")
     built = ny.cards.card(card.key)
     lines = [b for b in built.findChildren(QPushButton) if b.property("line")]
-    assert len({b.property("line") for b in lines}) == needs_ui.LINES_SHOWN
+    assert len({b.property("line") for b in lines}) == needs_ui.FOLDER_LINES_SHOWN
     words = [lab.text() for lab in built.findChildren(QLabel)]
-    assert strings.NEEDS_MORE_LINES.format(n=f"{3000 - needs_ui.LINES_SHOWN:,}") in words
+    assert strings.NEEDS_MORE_LINES.format(n=f"{3000 - needs_ui.FOLDER_LINES_SHOWN:,}") in words
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

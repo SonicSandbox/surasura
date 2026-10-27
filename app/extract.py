@@ -492,7 +492,7 @@ HEADING = re.compile(
     r"|プロローグ|エピローグ|序章|終章|幕間|間章|断章|序幕|終幕|閑話|番外編|あとがき|後書き"
     r"|(?:prologue|epilogue|interlude|chapter|episode)(?![a-z])"
     r"|[─━―—\-－＊*＃#◆◇■□\s]*(?:[0-9０-９]{1,3}|[一二三四五六七八九十]{1,3})"
-    r"(?:[─━―—\-－＊*＃#◆◇■□\s]*$|\s*[．.:：、]\s*\S))", re.IGNORECASE)
+    r"(?:[─━―—\-－＊*＃#◆◇■□\s]*$|\s*[．.:：、]\s*\S|\s+\S))", re.IGNORECASE)    # `３`, `３．<title>`, `３　<title>`
 HEADING_LINE = 40          # a heading is a line this short or shorter
 BIG_CHAPTER = 20000        # a TOC chapter this long (and a third of the book) is divided by its heading lines too
 TINY_CHAPTER = 200         # a chapter with less text joins the next one (a title page, a picture's caption)

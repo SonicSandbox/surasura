@@ -218,6 +218,16 @@ def test_a_book_with_no_toc_is_split_at_its_heading_lines(tmp_path):
         assert _between(read, p.chapter) == p.text
 
 
+@pytest.mark.parametrize("line, title", [("１　冒険の準備", "１　冒険の準備"), ("2．冒険", "2．冒険"), ("三", None),
+                                         ("─ 4 ─", None), ("Episode1　最後", "Episode1　最後"), ("一章　冒険", "一章　冒険")])
+def test_the_heading_forms_measured_start_a_chapter(line, title):
+    """The forms the measured books use: a number with its title after a space or a full stop, a number alone (no
+    title), Episode N, N章 without 第. Never a sentence that begins with a number (3人は冒険に出た。)."""
+    book = f"{line}\n本文\n第二章\n本文"
+    assert extract._headings(book, 0, len(book))[0] == (0, title)
+    assert extract._headings("3人は冒険に出た。\n1年後\n", 0, 12) == []
+
+
 def test_a_toc_chapter_a_whole_book_long_is_divided_by_its_heading_lines(tmp_path):
     """A TOC that names only the work and its afterword: the work's chapter, over 20,000 characters and a third of the
     book, is divided where its heading lines stand — its own title line never starts an empty chapter."""

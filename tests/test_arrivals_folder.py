@@ -53,3 +53,5 @@ def test_an_item_from_no_folder_read_has_no_place_and_an_arrival_carries_none_un
     assert source_looks._where(None, "C:\\x\\a.srt") is None
     assert source_looks._where("D:\\Shows", None) == {"root": "D:\\Shows", "folder": "D:\\Shows", "rel": ""}
     assert "folder" in view_rows.Arrival._fields and view_rows.Arrival._field_defaults["folder"] is None
+    assert view_rows.Arrival._field_defaults["episodes"] == ()          # the field before it keeps its default
+    assert source_looks._where("D:\\Shows", "D:\\Shows\\..notes\\a.srt")["rel"] == "..notes"   # a folder named so

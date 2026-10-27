@@ -144,7 +144,8 @@ Arrival = namedtuple("Arrival", Arrival._fields + ("cover", "waiting"), defaults
 Arrival = namedtuple("Arrival", Arrival._fields + ("episodes",), defaults=((),))
 # --- K7 (alpha 4): `folder`, the folder its files are in under their source (`SourceLooks.folders(detail=True)`'s
 # `rel`), set by the window once the looks' worker answers; None until then (and for a file from no folder read)
-Arrival = namedtuple("Arrival", Arrival._fields + ("folder",), defaults=(None,))
+Arrival = namedtuple("Arrival", Arrival._fields + ("folder",), defaults=tuple(Arrival._field_defaults.values()) +
+                     (None,))
 Goal = namedtuple("Goal", Goal._fields + ("cover_refs",), defaults=tuple(Goal._field_defaults.values()) + ((),))    # beside `covers`, the first nine works'
 # --- W3.2 L3: a Goal tile's cover record (the sheet paints its picture)
 GoalWork = namedtuple("GoalWork", GoalWork._fields + ("cover",), defaults=(None,))

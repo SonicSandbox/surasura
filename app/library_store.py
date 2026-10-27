@@ -8790,29 +8790,65 @@ def _store_let_origins_back(self, keys):
 REMOVED_DAYS = 30               # a removed file's days in the data folder's trash (`path_utils`' purge, by its clock)
 
 
+def _store_removed_rows(self):
+    """(One read transaction.) The trash rows of his own Removes not put back -> [(trash_id, rel, trashed_path,
+    removed_at, title, work_id, roots)], newest first. His own: `why` None or "remove" (`remove`); a row written before
+    `why` was kept is his when it left a `removed` exclusion for an original (only his Remove does: a book's part given
+    up and an undone add leave none), else — a file from no folder read — by its removal's log entry while one is kept
+    (`placement_log`, written while a reader is registered: removed by "user"), and never a row whose original lies
+    under a folder he skipped (*Read again* brings those back). A row whose
+    place is an item again (added again since) is left out: Put back would refuse it."""
+    out = []
+    with self._reading():
+        rows = self.conn.execute("SELECT id, item_id, rel_path, trashed_path, removed_at, item_state FROM trash "
+                                 "WHERE restored_at IS NULL ORDER BY id DESC").fetchall()
+        if not rows:
+            return out
+        works = dict(self.conn.execute("SELECT id, title FROM works"))
+        skips = [r[0] for r in self.conn.execute("SELECT pattern FROM exclusions WHERE kind = ?", (FOLDER_SKIP,))]
+        by = dict(self.conn.execute("SELECT item_id, by FROM placement_log WHERE kind = 'removed' ORDER BY id"))
+        excluded = {r[0] for r in self.conn.execute("SELECT pattern FROM exclusions WHERE kind = 'removed'")}
+        for trash_id, item_id, rel, trashed, removed_at, raw in rows:
+            state = _json_dict(raw) or {}
+            keys = [k[len(SOURCE_KEY):] for k, _t, _a in state.get("pairings") or ()
+                    if isinstance(k, str) and k.startswith(SOURCE_KEY)]
+            if "why" in state:
+                if state["why"] not in (None, "remove"):
+                    continue
+            elif keys and not any(k in excluded for k in keys):
+                continue                                   # written before `why`: a book's part, an undone add
+            elif not keys and by.get(item_id, "user") != "user":
+                continue
+            if any(_under(k, f) for k in keys for f in skips):
+                continue
+            if self.conn.execute("SELECT 1 FROM items WHERE rel_key = ?", (path_key(rel),)).fetchone():
+                continue
+            cols = state.get("columns") if isinstance(state.get("columns"), dict) else {}
+            work = cols.get("work_id")
+            title = works.get(work) or cols.get("title") or rel.rsplit("/", 1)[-1]
+            roots = []
+            for k, text, _at in state.get("pairings") or ():
+                if isinstance(k, str) and k.startswith(SOURCE_KEY):
+                    root = (_json_dict(text) or {}).get("root")
+                    if root is not None and root not in roots:
+                        roots.append(root)
+            out.append((trash_id, rel, trashed, removed_at, title, work, roots))
+    return out
+
+
 def _store_removed(self, now=None):
-    """The Removed list: the trash rows of his own Removes not put back (never a skipped folder's — *Read again* brings
-    those — nor a book's part given up, nor an Undo of an add: the `why` `remove` keeps), one entry per Remove and title,
-    newest first -> [{"trash_ids", "title", "removed_at", "days_left", "count", "can_return", "roots"}]. `days_left`:
-    the days before the purge takes the last of its files still in the trash (by each file's own clock, which the
-    Remove restarted), None when none is there; `can_return`: a file still in the trash, or an original in a folder
-    Surasura reads (`roots`: those folders' ids) — else Put back brings its rows back missing. A row whose place is
-    an item again (added again since) is left out: Put back would refuse it. One read transaction; one stat per
+    """The Removed list (K2, alpha 4, Mattias's note 6): his own Removes not put back (`_removed_rows`), one entry per
+    Remove and title, newest first -> [{"trash_ids", "title", "removed_at", "days_left", "count", "can_return",
+    "roots"}]. `days_left`: the days before the purge takes the FIRST of its files still in the trash (each file's own
+    clock, which the Remove restarted; 0 … REMOVED_DAYS), None when none is there; `can_return`: a file still in the
+    trash, or an original in a folder Surasura still reads (`roots`: its originals' folders' ids). An entry that can't come back (no
+    file left, no original read) is left out: Put back would bring nothing back. One read transaction; one stat per
     trashed file."""
     now = time.time() if now is None else now
     groups, order = {}, []
-    with self._reading():
-        works = dict(self.conn.execute("SELECT id, title FROM works"))
-        taken = {r[0] for r in self.conn.execute("SELECT rel_key FROM items")}
-        rows = self.conn.execute("SELECT id, rel_path, trashed_path, removed_at, item_state FROM trash "
-                                 "WHERE restored_at IS NULL ORDER BY id DESC").fetchall()
-    for trash_id, rel, trashed, removed_at, raw in rows:
-        state = _json_dict(raw) or {}
-        if state.get("why") not in (None, "remove") or path_key(rel) in taken:
-            continue
-        cols = state.get("columns") if isinstance(state.get("columns"), dict) else {}
-        work = cols.get("work_id")
-        title = works.get(work) or cols.get("title") or rel.rsplit("/", 1)[-1]
+    rows = self._removed_rows()
+    live = {i for i, _path in self._read_sources()} if rows else set()
+    for trash_id, _rel, trashed, removed_at, title, work, roots in rows:
         key = (removed_at, work if work is not None else ("item", trash_id))
         entry = groups.get(key)
         if entry is None:
@@ -8824,27 +8860,24 @@ def _store_removed(self, now=None):
         if trashed:
             st = _stat(os.path.join(self.data_dir, *trashed.split("/")))
             if st is not None:
-                left = max(0, REMOVED_DAYS - int((now - st.st_mtime) // 86400))
-                entry["days_left"] = left if entry["days_left"] is None else max(entry["days_left"], left)
+                left = min(REMOVED_DAYS, max(0, REMOVED_DAYS - int((now - st.st_mtime) // 86400)))
+                entry["days_left"] = left if entry["days_left"] is None else min(entry["days_left"], left)
                 entry["can_return"] = True
-        for key_, text, _at in state.get("pairings") or ():
-            if isinstance(key_, str) and key_.startswith(SOURCE_KEY):
-                root = (_json_dict(text) or {}).get("root")
-                if root is not None:
-                    entry["can_return"] = True
-                    if root not in entry["roots"]:
-                        entry["roots"].append(root)
-    out = [groups[k] for k in order]
+        if any(r in live for r in roots):
+            entry["can_return"] = True                      # its original in a folder still read
+        entry["roots"] += [r for r in roots if r not in entry["roots"]]
+    out = [groups[k] for k in order if groups[k]["can_return"]]
     for entry in out:
         entry["trash_ids"].sort()                           # Put back's order: as they were removed
     return out
 
 
-def _store_removed_under(self, root_id, now=None):
+def _store_removed_under(self, root_id):
     """Settings' *Bring back N removed* on a folder's line (Mattias's note 6: read again, it brings nothing back — a
-    Remove keeps its files out for good): the trash ids of the Removed list's entries holding an original in that
-    folder -> [trash_id], oldest first. Their Put back (`Writer.restore`) lets the originals back in."""
-    return sorted(i for e in self.removed(now) if root_id in e["roots"] for i in e["trash_ids"])
+    Remove keeps its files out for good): the trash ids of his Removes whose own original lies in that folder ->
+    [trash_id], oldest first — never another folder's file removed with them. Their Put back (`Writer.restore`) lets
+    the originals back in. No file is looked at."""
+    return sorted(r[0] for r in self._removed_rows() if root_id in r[6])
 
 
 # --- K6: a folder no look reads (*Never read this folder*) ------------------------------------------------------- #
@@ -11109,6 +11142,7 @@ Store.update_origins = _store_update_origins
 Store.copies_back = _store_copies_back
 Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
+Store._removed_rows = _store_removed_rows
 Store.removed = _store_removed
 Store.removed_under = _store_removed_under
 Store._read_sources = _store_read_sources

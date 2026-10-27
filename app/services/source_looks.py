@@ -85,7 +85,7 @@ def _where(root, origin):
         rel = os.path.relpath(folder, root)
     except ValueError:                                  # another drive than its source's (never, but never a crash)
         rel = ""
-    rel = "" if rel in (".", "") or rel.startswith("..") else rel.replace(os.sep, "/")
+    rel = "" if rel in (".", "", "..") or rel.startswith(".." + os.sep) else rel.replace(os.sep, "/")
     return {"root": root, "folder": folder, "rel": rel}
 
 

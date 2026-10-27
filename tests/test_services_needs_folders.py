@@ -95,6 +95,21 @@ def test_the_cards_keys_are_pruned_once_their_files_are_back(tmp_path, monkeypat
     assert needs.read_seen("ja") == set() or card.key not in needs.read_seen("ja")
 
 
+def test_the_librarys_folder_is_the_one_its_gone_files_share_whatever_their_case():
+    assert needs._common_folder(["Library/アニメ/A/1.srt", "library/アニメ/B/2.srt"]) == "Library/アニメ"
+    assert needs._common_folder(["Library/A/1.srt", "HighPriority/B/2.srt"]) == ""
+    assert needs._common_folder(["Library/A/1.srt"]) == "Library/A"
+
+
+def test_a_few_gone_files_never_fold(monkeypatch):
+    """Under FOLDER_MIN gone files nothing can fold: the page builds the shows' cards without walking the library."""
+    spec = _spec([(0, "Library/X/A"), (1, "Library/X/B")], gone={0, 1})
+    called = []
+    monkeypatch.setattr(needs, "_prefixes", lambda rel: called.append(rel) or [])
+    out = needs.entries(view_of(spec))
+    assert called == [] and _kinds(out).count(needs.GONE) == 2
+
+
 def _write(path, text="字幕"):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -113,4 +128,7 @@ def test_choose_a_folder_matches_each_file_by_its_place_then_by_a_name_no_other_
              for i, n in enumerate(["A - 01.ja.srt", "B - 02.ja.srt", "C - 03.ja.srt"], start=1)]
     found = needs.match_tree(picked, "Library/アニメ", lines)
     assert [(ln.item_id, path) for ln, path in found] == [(1, a1), (2, b2)]
+    assert [ln.item_id for ln, _p in needs.match_tree(picked, "library/アニメ", lines)] == [1, 2]   # a case apart
+    sharp = [ln._replace(rel_path="Library/Straße/" + ln.rel_path.split("/", 2)[2]) for ln in lines]
+    assert [ln.item_id for ln, _p in needs.match_tree(picked, "Library/STRASSE", sharp)] == [1, 2]  # ß is ss, part by part
     assert needs.match_tree(str(tmp_path / "not there"), "Library", lines) == []

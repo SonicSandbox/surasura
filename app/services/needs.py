@@ -418,7 +418,7 @@ def _fold_gone(rows, gone, offline, seen):
     above it holding FOLDER_MIN gone files or more, of two shows or more, more than half of its files gone -> one
     `files-folder` card each, in the order of their first gone file. Pure: the view's own flags, no file looked at."""
     hits = [hit for g in gone for hit in gone[g]]
-    if len({_group(r) for r, _e in hits}) < 2:
+    if len(hits) < min(FOLDER_MIN, LIBRARY_MIN) or len({_group(r) for r, _e in hits}) < 2:
         return [], set()
     files, names, total = {}, {}, 0
     for r in rows:
@@ -446,6 +446,24 @@ def _fold_gone(rows, gone, offline, seen):
     return out, {e.id for k in held for _r, e in held[k]}
 
 
+def _common_folder(rels):
+    """The deepest library folder every one of `rels` lies under, as the first one writes it ('' none), compared as
+    the store compares paths (a case apart is one folder)."""
+    common = None
+    for rel in rels:
+        keys = [k for k, _n in _prefixes(rel)]
+        if common is None:
+            common = keys
+            continue
+        n = 0
+        while n < len(common) and n < len(keys) and common[n] == keys[n]:
+            n += 1
+        common = common[:n]
+    if not common:
+        return ""
+    return _prefixes(rels[0])[len(common) - 1][1]
+
+
 def _titles(hits):
     return list(dict.fromkeys(r.title for r, _e in hits))
 
@@ -465,8 +483,7 @@ def _files_folder_entry(folder, hits, total, seen):
 def _library_entry(hits, total, seen):
     hits = sorted(hits, key=lambda hit: hit[1].id)
     ids = [e.id for _r, e in hits]
-    folders = [_folder(e.rel_path) for _r, e in hits]
-    base = os.path.commonpath(folders).replace(os.sep, "/") if all(folders) else ""
+    base = _common_folder([e.rel_path for _r, e in hits])
     key = f"library:{_digest(ids)}"
     return Entry(key=key, kind=LIBRARY_GONE,
                  title=STRINGS["library_title"].format(n=view_rows.thousands(len(ids)),
@@ -481,20 +498,22 @@ def match_tree(folder, base, lines):
     """*Choose a folder…* on a folder's or the library's card (a worker): each gone line's file in `folder` at its own
     place under `base` (its library folder: `Library/A/ep01.srt` under `Library` is `<folder>/A/ep01.srt`), else the
     one file under `folder` with its name -> [(line, path)]. One walk of `folder`; never a name two files share."""
-    by_name = {}
-    for where, _dirs, names in os.walk(folder):
-        for name in names:
-            by_name.setdefault(name.casefold(), []).append(os.path.join(where, name))
-    base = _norm(base).casefold()
+    by_name = None
+    base = [p.casefold() for p in _norm(base).split("/") if p]
     out = []
     for ln in lines:
-        rel = _norm(ln.rel_path)
-        inside = rel[len(base):].lstrip("/") if base and rel.casefold().startswith(base + "/") else rel
-        there = os.path.join(folder, *inside.split("/"))
-        if os.path.isfile(there):
+        parts = [p for p in _norm(ln.rel_path).split("/") if p]
+        inside = parts[len(base):] if base and [p.casefold() for p in parts[:len(base)]] == base else parts
+        there = os.path.join(folder, *inside) if inside else ""
+        if there and os.path.isfile(there):
             out.append((ln, there))
             continue
-        same = by_name.get(rel.rsplit("/", 1)[-1].casefold()) or ()
+        if by_name is None:                          # walked once, only when a file isn't at its place
+            by_name = {}
+            for where, _dirs, names in os.walk(folder):
+                for name in names:
+                    by_name.setdefault(name.casefold(), []).append(os.path.join(where, name))
+        same = by_name.get(parts[-1].casefold() if parts else "") or ()
         if len(same) == 1:
             out.append((ln, same[0]))
     return out

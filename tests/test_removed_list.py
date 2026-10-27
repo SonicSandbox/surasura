@@ -114,64 +114,69 @@ def test_days_left_follow_each_files_own_clock(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_removed_file_with_no_trash_copy_and_no_original_cannot_come_back(language):
-    """A 2.x-era file (no folder Surasura reads holds its original) removed with no copy in the trash: listed, but it
-    would come back missing — the window greys its Put back."""
+def test_a_removed_file_with_no_trash_copy_and_no_original_is_left_out(language):
+    """A 2.x-era file (no folder Surasura reads holds its original) removed with no copy left in the trash: nothing of
+    it can come back, so the list never offers it (Put back would bring back only a missing row)."""
     store = migrated(language)
     with store:
         first = store.ids("now")[0]
         store.remove([first])
-        entry = [e for e in store.removed() if first in [r["item_id"] for r in store.trash_rows(e["trash_ids"])]]
-        assert len(entry) == 1 and not entry[0]["can_return"] and entry[0]["roots"] == []
+        assert all(first not in [r["item_id"] for r in store.trash_rows(e["trash_ids"])] for e in store.removed())
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_put_back_through_the_writer_brings_the_files_back_and_one_undo_sends_them_away_again(language):
-    store, data_dir = _empty(language)
+def test_bring_back_on_one_folder_brings_only_that_folders_files(language):
+    """One Remove of a title whose episodes sit in two folders: *Bring back* on folder A's line puts back A's file
+    only — never B's, which he didn't ask about (its exclusion stays)."""
+    store, _data = _empty(language)
     a = _SHOWS[language][0]
+    first, second = _drive("first"), _drive("second")
+    _write(os.path.join(first, a, f"{a} - 01.srt"), _text(language, 1, extra="「一」"))
+    _write(os.path.join(second, a, f"{a} - 02.srt"), _text(language, 2, extra="「二」"))
+    with store:
+        root_a, ids_a = _taken(store, language, first)
+        root_b, ids_b = _taken(store, language, second)
+        store.remove(ids_a + ids_b)
+        assert [e["count"] for e in store.removed()] == [2]           # one entry: one Remove of one title
+        back = store.removed_under(root_a)
+        assert [r["item_id"] for r in store.trash_rows(back)] == ids_a
+        store.restore(back)
+        assert _excluded(store) == 1 and [e["count"] for e in store.removed()] == [1]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_rows_written_before_the_why_go_by_their_exclusions_and_a_skipped_folder_never_shows(language):
+    """A library from alpha 3: its trash rows carry no `why`. His own Remove left an exclusion for its original (on the
+    list); a book's part given up or an undone add left none (off it); a skipped folder's files never show."""
+    store, _data = _empty(language)
+    a, b = _SHOWS[language]
     src = _drive("shows")
     _show(language, src, a)
+    _show(language, src, b, n=2)
+    with store:
+        _root, ids = _taken(store, language, src)
+        store.skip_folder(os.path.join(src, b))
+        mine = [i for i in ids if store.conn.execute("SELECT 1 FROM items WHERE id = ?", (i,)).fetchone()]
+        store.remove(mine[:1])
+        store.remove(mine[1:2], exclude=False)                       # as a book's part given up: no exclusion
+        with store._writing():                                       # as alpha 3 wrote them: no `why`
+            store.conn.execute("UPDATE trash SET item_state = json_remove(item_state, '$.why')")
+        assert [(e["title"], e["count"]) for e in store.removed()] == [(a, 1)]
+        assert [r["item_id"] for e in store.removed() for r in store.trash_rows(e["trash_ids"])] == mine[:1]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_original_in_a_folder_no_longer_read_is_no_way_back(language):
+    """Removed with no copy left in the trash, its folder then no longer read (*Stop reading*): nothing of it can come
+    back, so the list leaves it out (its folder's own line still counts it)."""
+    store, _data = _empty(language)
+    a = _SHOWS[language][0]
+    src = _drive("shows")
+    _show(language, src, a, n=2)
     with store:
         root, ids = _taken(store, language, src)
-    heard = Heard()
-    w = M.Writer(ls.StoreOpener(language, data_dir, store.user_files_dir, role="window"), language,
-                 journal_file=M.journal_path(language), retry=0.05, words=WORDS, **heard.kw())
-    w.start()
-    try:
-        w.remove(ids, label="removed")
-        assert h.until(lambda: heard.saved)
-        with ls.open_store(language, data_dir, store.user_files_dir) as s:
-            entries = s.removed()
-            assert [(e["title"], e["count"], e["days_left"]) for e in entries] == [(a, 3, ls.REMOVED_DAYS)]
-            back = s.removed_under(root)
-        w.restore(back, label="put back")
-        assert h.until(lambda: len(heard.saved) == 2)
-        with ls.open_store(language, data_dir, store.user_files_dir) as s:
-            assert s.removed() == [] and _excluded(s) == 0
-            assert s.conn.execute("SELECT COUNT(*) FROM items WHERE availability = 'available'").fetchone()[0] == 3
-        w.undo(label="undo")
-        assert h.until(lambda: heard.undone)
-        with ls.open_store(language, data_dir, store.user_files_dir) as s:
-            assert [e["count"] for e in s.removed()] == [3] and _items(s) == 0
-    finally:
-        w.finish(time.monotonic() + 5)
-
-
-def test_the_looks_worker_answers_the_list_and_none_for_another_language():
-    store, data_dir = _empty("ja")
-    a = _SHOWS["ja"][0]
-    src = _drive("shows")
-    _show("ja", src, a, n=2)
-    with store:
-        root, ids = _taken(store, "ja", src)
-        store.remove(ids)
-    looks = source_looks.SourceLooks(ls.StoreOpener("ja", data_dir, store.user_files_dir, role="window"), "ja")
-    try:
-        got = []
-        assert looks.removed(got.append)
-        assert looks.removed_under(root, got.append)
-        assert looks.removed(got.append, language="zh") is False      # another language's list: never this one's
-        assert looks.idle(5)
-        assert [e["count"] for e in got[0]] == [2] and got[1] == sorted(ids and got[0][0]["trash_ids"])
-    finally:
-        looks.close()
+        store.remove(ids)                                            # (store level: no copy in the trash)
+        assert [e["count"] for e in store.removed()] == [2]
+        store.stop_source(root)
+        assert store.removed() == []
+        assert len(store.removed_under(root)) == 2

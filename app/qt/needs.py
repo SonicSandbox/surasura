@@ -41,8 +41,8 @@ import time
 
 from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QPainterPath, QPen, QPixmap, QPolygonF
-from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout,
-                             QWidget)
+from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton,
+                             QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
 from app.qt import bridge, strings, style, toast
@@ -165,6 +165,32 @@ class _Words(QLabel):
     def changeEvent(self, event):
         self._hfw.clear()                       # (a font or style change measures it again)
         super().changeEvent(event)
+
+
+class _More(QToolButton):
+    """A card's ⋯ (alpha 4 D2): the arrivals tray's ⋯ square, painted by the tray's own rule (`arrivals._paint_square`,
+    one look for a ⋯ beside buttons)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        side = round(theme.size("icon-square", style.current()[1]))
+        self.setFixedSize(side, side)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, _event):
+        from app.qt.arrivals import _paint_square
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        _paint_square(p, self.rect(), "more", self.underMouse() or self.isDown())
+        p.end()
 
 
 def _label(text, name, parent, wrap=True):
@@ -423,8 +449,7 @@ class NeedsCards(QWidget):
             acts.addWidget(b)
         acts.addStretch(1)
         if self.has_more(e):                        # alpha 4 D2: *Not now* · *Stop asking*, tucked in its ⋯
-            from app.qt.arrivals import _Square     # (the tray's ⋯ square: one look for a ⋯ beside buttons)
-            more = _Square("more", card)
+            more = _More(card)
             more.setProperty("action", "more")
             more.setAccessibleName(strings.NEEDS_MORE_NAME.format(title=e.title))
             more.setToolTip(strings.NEEDS_MORE_TIP)

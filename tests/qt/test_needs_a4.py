@@ -34,13 +34,14 @@ def _stones_sheet(qapp):
 
 
 def many(language, n, missing=None):
-    """A view of `n` shows with one episode each, `missing` of them gone (all by default) — real titles."""
+    """A view of `n` shows with one episode each, `missing` of them gone (all by default) — real titles, each show in a
+    folder of its own at the library's top (K3: shows gone together under one folder are that folder's one card)."""
     titles = names(language)
     rows = []
     for i in range(n):
         t = f"{titles[i % len(titles)]} 第{i // len(titles) + 1}期"
         ep = SimpleNamespace(id=900000 + i, label=f"第{(i % 12) + 1}話", number=(i % 12) + 1,
-                             rel_path=f"Library/{t}/{t} - {(i % 12) + 1:02d}.srt",
+                             rel_path=f"{t}/{t} - {(i % 12) + 1:02d}.srt",
                              missing=i < (n if missing is None else missing))
         rows.append(SimpleNamespace(key=f"w{i}", work_id=900000 + i, title=t, media="anime", tier="now",
                                     episodes=(ep,)))

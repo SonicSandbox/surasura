@@ -192,6 +192,7 @@ class LibraryReader:
         self._numbers_at = None            # when a numbers' version with the store unchanged was first seen
         self._numbers_dv = None            # ... and the store's data_version then (the write moves it)
         self.held_back = 0                 # looks whose build waited (tests)
+        self._held_at = None               # fix round (IK-2): when a look's build last waited (a burst under way)
         self._urgent_until = 0.0           # the window's own command on its way (`urgent`)
         self.coalesce = bool(coalesce)     # off by default (a test's looks each build); the window turns it on
         # --- end a4
@@ -458,7 +459,8 @@ class LibraryReader:
         if again:
             self._republish = False
         if h is None:                                   # nothing to read: the last rows stay, under the mode's bar
-            if changed_mode or self._view is None or version != self._numbers_version or released or again:
+            owed, self._view_owed = self._view_owed, False  # fix round (A4A-2): a view owed is this build (or the drop's)
+            if changed_mode or self._view is None or version != self._numbers_version or released or again or owed:
                 self._numbers_version = version         # the numbers' own version: a new one empties the row cache
                 if held:
                     self._held_dirty = True
@@ -468,6 +470,7 @@ class LibraryReader:
             return
         with self._lock:                                # W3.2 Q1: new estimates from the window
             estimates_new, self._estimates_new = self._estimates_new, False
+            numbers_new = estimates_new                 # fix round (IK-2): the arrivals' own numbers
             estimates_new, self._playable_new = estimates_new or self._playable_new, False     # row 55: ▶'s answers
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
         expected_moved = self._take_expected()                      # LM11b G5: and the window's expectation
@@ -501,6 +504,7 @@ class LibraryReader:
         urgent = (changed_mode or released or again or expected_moved or feed["full"] or self._view is None
                   or self._view.busy or self._view.cached)
         numbers_only = dv == self._data_version and version != self._numbers_version
+        estimates_only = numbers_new and dv == self._data_version and version == self._numbers_version    # IK-2
         self._cards = cards
         self._data_version = dv
         self._numbers_version = version
@@ -510,7 +514,8 @@ class LibraryReader:
         if held:                                        # E6: merged, never built or shown under the hand; a quiet
             if changed:                                 # look later in the drag never forgets what came in (AD-1)
                 self._held_dirty = True
-            return
+            self._view_owed = False                     # fix round (A4A-2): a view owed is the drop's build now — owed
+            return                                      # under the hand it fell due and the reader looked back to back
         self._held_dirty = False
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)
             self.skipped += 1
@@ -518,7 +523,7 @@ class LibraryReader:
                 self._publish(self._view)
             self._flush_cache()                         # a look with nothing new: as quiet as one that read nothing
             return
-        if self.coalesce and not urgent and self._hold_back(now, numbers_only, dv):
+        if self.coalesce and not urgent and self._hold_back(now, numbers_only, dv, estimates_only):
             return                                      # a4: built once it falls due (`_timeout` wakes the reader)
         view = self._build(numbers, mode, reason, rows_known=True)
         self._publish(view)
@@ -540,11 +545,16 @@ class LibraryReader:
                 self._flush_cache()                     # a store that never rests: written anyway, now and then
 
     # --- a4 (A2, C2): one view for a burst, one for a move ------------------------------------------------------ #
-    def _hold_back(self, now, numbers_only, dv):
+    def _hold_back(self, now, numbers_only, dv, estimates_only=False):
         """Whether this look's build waits -> True (owed: `_timeout` wakes the reader when it falls due). A change
         within `COALESCE_S` of the last view built waits for that much to pass (a burst of commits: a few views a
         second, the last change in the last one); the numbers' new version with the store unchanged waits
-        `NUMBERS_GRACE_S` for the write it comes before (the bell wakes the reader at the write: one build)."""
+        `NUMBERS_GRACE_S` for the write it comes before (the bell wakes the reader at the write: one build). New
+        arrivals' numbers alone (`estimates_only`, handed on at most four a second) wait only while a burst is under
+        way — a view owed, or a build held back within `COALESCE_S` — else a lone arrival's *N new* came a burst's wait
+        after its own view (fix round, IK-2)."""
+        if estimates_only and not self._view_owed and (self._held_at is None or now - self._held_at >= COALESCE_S):
+            return False
         due = self._built_at + COALESCE_S if self._built_at is not None and now >= self._urgent_until else now
         if numbers_only and self._numbers_at is None:
             self._numbers_at, self._numbers_dv = now, dv
@@ -552,7 +562,7 @@ class LibraryReader:
             due = max(due, self._numbers_at + NUMBERS_GRACE_S)
         if due <= now:
             return False
-        self._view_owed, self._owed_at = True, due
+        self._view_owed, self._owed_at, self._held_at = True, due, now
         self.held_back += 1
         return True
     # --- end a4
@@ -569,15 +579,18 @@ class LibraryReader:
         """The wait's seconds. While the store can't be used `_watching` (which takes what the watch says is due) isn't
         reached, so a timer already due would wake the reader at once, every time: floored at `poll` then (L1 B1)."""
         lookout = self._lookout
+        view = self._view
+        # fix round (A4A-2): a view owed wakes the reader when it falls due — never while a drag holds the view (the
+        # drop builds it) or the store is busy (tried again at `poll`): either looked back to back once it fell due
+        owed_due = self._view_owed and not self._hold.is_set() and not (view is not None and view.busy)
         if lookout is None or lookout.deaf:
             timeout = self.poll
-            if self._view_owed:                         # a4: the view held back, built when it falls due
+            if owed_due:                                # a4: the view held back, built when it falls due
                 timeout = min(timeout, max(0.0, self._owed_at - time.monotonic()))
         else:
             timeout = lookout.timeout()
             with self._lock:
                 owed = any(self._owed) and not self._syncing
-            view = self._view
             if owed or self._cache_due is not None or self._recheck or self._held_dirty or \
                     (view is not None and view.busy):
                 timeout = min(timeout, self.poll)       # a sync, a read or the cache's quiet look to try again
@@ -586,7 +599,7 @@ class LibraryReader:
                 timeout = min(timeout, max(0.0, self._cards_all_at + CARDS_ALL_S - time.monotonic()))
             if self._mode is not None and self._mode[0] != "store":
                 timeout = max(self.poll, min(timeout, MODE_RECHECK_S))
-            elif self._view_owed:                       # a4: the view held back, built when it falls due
+            elif owed_due:                              # a4: the view held back, built when it falls due
                 timeout = min(timeout, max(0.0, self._owed_at - time.monotonic()))
         return timeout
 

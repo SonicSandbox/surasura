@@ -14,7 +14,7 @@ import time
 import pytest
 
 from app.services import library_reader
-from tests.fixtures import window_seed
+from tests.fixtures import standin_store, window_seed
 
 
 def _reader(seed, **kw):
@@ -250,5 +250,126 @@ def test_a_drag_holding_the_view_still_gets_the_held_back_change_at_its_drop():
         reader.release()
         assert _wait(lambda: len(views) > n, 1.0)
         assert any(rows[0]["id"] in a.item_ids for a in views[-1][1].arrivals)
+    finally:
+        reader.stop()
+
+
+# --- fix round (A4A-2, IK-2) ------------------------------------------------------------------------------------------ #
+class _Listening:
+    """The window's bell, live, with nothing of its own due for an hour (the store's bell and the tree watch)."""
+    deaf = False
+
+    def timeout(self):
+        return 3600.0
+
+
+def _owed_view(seed, reader, views, title):
+    """A view held back by the burst rule (a second commit right after a view built) -> the commit's first id."""
+    rows, works = _arrival(seed, 1, title)
+    seed.library.commit(items=rows, works=works, order=True)
+    reader.refresh()
+    assert _wait(lambda: any(rows[0]["id"] in a.item_ids for a in views[-1][1].arrivals))
+    rows, works = _arrival(seed, 1, title + " 二")
+    seed.library.commit(items=rows, works=works, order=True)       # within COALESCE_S of that view: held back
+    reader.refresh()
+    assert _wait(lambda: reader._view_owed, 1.0)
+    return rows[0]["id"]
+
+
+@pytest.mark.parametrize("bell", ["deaf", "listening"])
+def test_a_drag_over_a_held_back_view_reads_the_store_no_faster_than_its_poll_and_the_drop_builds_it(bell):
+    """A4A-2: a view held back by an import's burst, then the learner starts a drag. The reader kept looking back to
+    back — 44,869 feed reads a second, Python's lock taken from the window just as the hand moves — because the owed
+    view fell due while nothing could be built. Held for a second it reads the store a few times at most, looks no
+    faster than its poll, and the drop still builds the change it held back."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    if bell == "listening":
+        reader._lookout = _Listening()
+    views = _collect(reader)
+    reader.start()
+    try:
+        reader.refresh()
+        assert _wait(lambda: views and not views[-1][1].loading)
+        owed_id = _owed_view(seed, reader, views, "星空キャンプ部 外伝")
+        reader.hold()                                               # the drag starts
+        time.sleep(library_reader.COALESCE_S + 0.05)                # the owed view falls due under the hand
+        looks, reads, n = reader.looks, reader.reads, len(views)
+        time.sleep(1.0)
+        looks, reads = reader.looks - looks, reader.reads - reads
+        assert reads <= 12, reads                                   # the store read a few times, not thousands
+        assert looks <= 1.0 / reader.poll + 10, looks               # never faster than the poll
+        assert len(views) == n                                      # nothing built under the hand
+        reader.release()
+        assert _wait(lambda: any(owed_id in a.item_ids for a in views[-1][1].arrivals), 1.0)
+    finally:
+        reader.stop()
+
+
+@pytest.mark.parametrize("bell", ["deaf", "listening"])
+def test_a_busy_store_with_a_held_back_view_is_tried_again_at_the_poll_and_the_view_lands_once_it_frees(bell,
+                                                                                                    monkeypatch):
+    """A4A-2: the store busy (another program's commit holds it) while a view is owed: every look raised and the next
+    came at once, a loop on the reader's thread. It tries again once a poll, and the held-back change shows once the
+    store frees."""
+    seed = window_seed.build(language="zh")
+    reader = _reader(seed)
+    if bell == "listening":
+        reader._lookout = _Listening()
+    views = _collect(reader)
+    reader.start()
+    try:
+        reader.refresh()
+        assert _wait(lambda: views and not views[-1][1].loading)
+        owed_id = _owed_view(seed, reader, views, "第七扇门 外传")
+        real_read = standin_store.StandinStore.read_feed
+        busy = [True]
+
+        def read_feed(store, *a, **k):                              # another program's commit holds the store
+            if busy[0]:
+                raise standin_store.OperationalError("database is locked")
+            return real_read(store, *a, **k)
+        monkeypatch.setattr(standin_store.StandinStore, "read_feed", read_feed)
+        time.sleep(library_reader.COALESCE_S + 0.05)
+        looks = reader.looks
+        time.sleep(0.5)
+        looks = reader.looks - looks
+        assert looks <= 0.5 / reader.poll + 10, looks
+        busy[0] = False
+        reader.refresh()
+        assert _wait(lambda: any(owed_id in a.item_ids for a in views[-1][1].arrivals), 3.0)
+    finally:
+        reader.stop()
+
+
+def test_numbers_for_a_lone_arrival_show_at_once_but_ride_with_a_burst_that_is_under_way():
+    """IK-2: a lone arrival's *N new* (the window's numbers, handed on just after the arrival's own view) waited out the
+    burst rule — the arrival had just built a view — so with the window's reader the number came ~500 ms after the
+    file. With no burst under way the numbers build at once; while a burst's view is owed they ride in it (one view)."""
+    seed = window_seed.build()
+    reader = _reader(seed)
+    views = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and not views[-1][1].loading)
+        time.sleep(library_reader.COALESCE_S + 0.05)
+        rows, works = _arrival(seed, 1, "雲の上の郵便屋さん 外伝")
+        seed.library.commit(items=rows, works=works, order=True)     # a lone arrival: shown at once
+        assert _wait(lambda: any(rows[0]["id"] in a.item_ids for a in views[-1][1].arrivals), 1.0)
+        n, held = len(views), reader.held_back
+        t0 = time.monotonic()
+        reader.set_estimates({rows[0]["id"]: 9})                     # its number, a moment after its view
+        assert _wait(lambda: len(views) > n, 1.0)
+        assert views[n][0] - t0 < library_reader.COALESCE_S / 2      # at once, not behind the arrival's own view
+        assert any(a.per_ep == 9 for a in views[n][1].arrivals if rows[0]["id"] in a.item_ids)
+        assert reader.held_back == held
+        # a burst under way: a commit held back, then numbers — they wait for the burst's view and come in it
+        owed_id = _owed_view(seed, reader, views, "雲の上の郵便屋さん 続")
+        n, builds = len(views), reader.builds
+        reader.set_estimates({rows[0]["id"]: 9, owed_id: 4})
+        assert _wait(lambda: len(views) > n and not reader._view_owed, 2.0)
+        time.sleep(library_reader.COALESCE_S + 0.1)
+        assert reader.builds == builds + 1                            # one view: the burst's change and the numbers
+        assert any(a.per_ep == 4 for a in views[-1][1].arrivals if owed_id in a.item_ids)
     finally:
         reader.stop()

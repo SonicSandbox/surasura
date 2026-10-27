@@ -589,8 +589,10 @@ def book_split(docs, limit=DEFAULT_LENGTH, overflow=DEFAULT_OVERFLOW, by="chapte
         if not book[a:b].strip():
             continue
         if chapters and len(book[chapters[-1][0]:chapters[-1][1]].strip()) < TINY_CHAPTER:
-            # the tiny one before joins this one, under this one's name, else its own (第一章 then 1 under it)
-            chapters[-1][1:] = [b, title if title is not None else chapters[-1][2], how]
+            # the tiny one before joins this one, under this one's name, else its own when both are headings (第一章
+            # then 1 under it; never a TOC chapter's name, the work's, on the first chapter its headings divide)
+            keep = title is None and how == chapters[-1][3]
+            chapters[-1][1:] = [b, chapters[-1][2] if keep else title, how]
         else:
             chapters.append([a, b, title, how])
     if len(chapters) > 1 and len(book[chapters[-1][0]:chapters[-1][1]].strip()) < TINY_CHAPTER:

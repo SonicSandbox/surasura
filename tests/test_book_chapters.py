@@ -293,7 +293,7 @@ def test_an_untitled_chapter_reads_chapter_n_and_an_even_part_keeps_part_n():
 
 def test_a_chapters_title_in_a_file_name_is_cleaned_and_cut_short():
     label = extract.part_label({"chapter": 2, "part": 1, "parts": 1, "title": "第二章：「彼方/此方」？" + "あ" * 30})
-    assert label.startswith("(2) 第二章：「彼方_此方」？") and len(label) <= 4 + extract.TITLE_LIMIT   # "/" never
+    assert label.startswith("(2) 第二章：「彼方・此方」？") and len(label) <= 4 + extract.TITLE_LIMIT   # "/" never
     assert extract.part_label(None) is None and extract.part_label({"chapter": None}) is None
 
 

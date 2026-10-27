@@ -20,6 +20,15 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   the folder, where it was and the shows it held: *Find its new folder…* (`SourceLooks.find_new_folder`, MV-1's join),
   *Stop reading it* (the writer's `stop_reading`, one Undo) and *Keep waiting* (the offline line's own dismissal). A
   Finished show's folder, or one whose episodes a look already reads elsewhere, leads with *Stop reading it*.
+- **a folder whose files are mostly gone as ONE entry** (K3, alpha 4: a moved or deleted folder of copies made one card
+  per show it held — 3,000 of them for Mattias): a library folder holding FOLDER_MIN gone files of two shows or more,
+  more than half of its files gone, is one `files-folder` card (the top-most such folder) holding every gone line under
+  it — *Choose a folder…* (`match_tree`: each file by its place under the folder, then by its name) · *Remove* (one
+  Undo); its shows' cards keep only the files left outside it. **The library mostly gone** (K1, Mattias's note 3: a
+  reinstall over the same folder found the old record with every file gone): LIBRARY_MIN gone files of two shows or
+  more, more than half of Current's files, never under an offline root, is ONE `library-gone` card first, folding in
+  every show's and folder's — *Start fresh* (`SourceLooks.fresh`: the old library backed up in the trash, never
+  deleted) · *Choose a folder…*; a card until answered (asked once, Sonic 2026-10-27: "Your lean is good").
 - **an offline root as ONE entry** (E8, IK-8): *Drive E: is offline — 312 files* (`find_offline` finds the roots on a
   worker: the library folder not there, or a folder in it that links to a drive or share that isn't); it offers *Keep
   their words* and never *Remove*.
@@ -84,7 +93,13 @@ KNOWN_OFFER = "known-offer"         # #43: Known from Anki's first read, asked o
 ANKI_WAIT = "anki-wait"
 # T6 (Sonic 2026-10-24): a source folder moved or deleted while its drive is there — never one only away
 FOLDER_GONE = "folder-gone"
-KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE)
+# K3 / K1 (alpha 4): a library folder's files mostly gone, and the library's — one card each, never one per show
+FILES_FOLDER = "files-folder"
+LIBRARY_GONE = "library-gone"
+FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
+LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
+KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
+         FILES_FOLDER, LIBRARY_GONE)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2; IK-2: *Mine the text only*)
 WIRED_LATER = frozenset(("mine_text_only", "make_cards"))
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
@@ -123,6 +138,12 @@ STRINGS = {
     "shows_more": "{shows} and {n} more", "shows_and": "{a} and {b}",
     "episode_one": "1 episode", "episode_n": "{n:,} episodes",
     "offline_title": "{label} is offline — {n} files", "offline_title_one": "{label} is offline — 1 file",
+    "files_folder_title": "{n} files are gone from {folder}",
+    "files_folder_say": "{shows} were in it. Moved it? Choose its folder… to point them at their files there, or "
+                        "remove them to the trash (30 days).",
+    "library_title": "Most of your library's files are gone ({n} of {total})",
+    "library_say": "Was Surasura installed again, or its library moved? Start fresh keeps this library's record in "
+                   "the trash; choose a folder… if you moved its files.",
     "offline_say": "Its files keep their places and their words. They come back by themselves once it's connected.",
     "drive": "Drive {d}", "folder": "The folder {p}",
     "gap_title": "Connect lost track of your moves {span}: {n} {noun} in the top 20 {have} no cards",
@@ -237,6 +258,10 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
             unplaced.append(job)
             continue
         novideo.setdefault(_group(hit[0]), []).append(hit)
+    big, folded = _fold_gone(rows, gone, offline, seen)          # K3 / K1: a folder's, or the library's, one card
+    if folded:
+        gone = {g: [hit for hit in hits if hit[1].id not in folded] for g, hits in gone.items()}
+        gone = {g: hits for g, hits in gone.items() if hits}
     shows = []
     for group in order:
         if group in gone:
@@ -252,9 +277,13 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
+    if big and big[0].kind == LIBRARY_GONE:
+        out.append(big[0])                          # K1 leads the page
+        big = big[1:]
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
+    out += big
     out += shows
     for ask in asks or ():
         entry = _ask_entry(ask, by_id, seen)
@@ -368,6 +397,107 @@ def _video_entry(group, hits, seen, mine_line):
 def _folder(rel):
     rel = _norm(rel)
     return rel.rsplit("/", 1)[0] if "/" in rel else ""
+
+
+def _line(e):
+    return NeedLine(key=item_key(e.id), text=STRINGS["gone_line"].format(label=e.label, rel=shown(e.rel_path)),
+                    item_id=e.id, label=e.label, number=e.number, rel_path=e.rel_path,
+                    actions=("choose_file", "keep_words", "remove"))
+
+
+def _prefixes(rel):
+    """A library path's folders, top first, as (key, as written): `Library/A/ep01.srt` -> Library, Library/A."""
+    parts = _norm(rel).split("/")[:-1]
+    return [("/".join(parts[:i]).casefold(), "/".join(parts[:i])) for i in range(1, len(parts) + 1)]
+
+
+def _fold_gone(rows, gone, offline, seen):
+    """K1 / K3: the cards that hold many shows' gone files -> ([Entry], {item_id folded into them}). The library
+    first: LIBRARY_MIN gone files or more, of two shows or more, more than half of Current's files (never one under an
+    offline root) -> one `library-gone` card holding them all. Else each gone file goes to the top-most library folder
+    above it holding FOLDER_MIN gone files or more, of two shows or more, more than half of its files gone -> one
+    `files-folder` card each, in the order of their first gone file. Pure: the view's own flags, no file looked at."""
+    hits = [hit for g in gone for hit in gone[g]]
+    if len({_group(r) for r, _e in hits}) < 2:
+        return [], set()
+    files, names, total = {}, {}, 0
+    for r in rows:
+        for e in r.episodes:
+            if offline(e.rel_path):
+                continue
+            total += 1
+            for key, name in _prefixes(e.rel_path):
+                files[key] = files.get(key, 0) + 1
+                names.setdefault(key, name)
+    if len(hits) >= LIBRARY_MIN and 2 * len(hits) > total:
+        return [_library_entry(hits, total, seen)], {e.id for _r, e in hits}
+    lost, groups = {}, {}
+    for r, e in hits:
+        for key, _name in _prefixes(e.rel_path):
+            lost[key] = lost.get(key, 0) + 1
+            groups.setdefault(key, set()).add(_group(r))
+    held = {}
+    for r, e in hits:
+        for key, _name in _prefixes(e.rel_path):
+            if lost[key] >= FOLDER_MIN and len(groups[key]) >= 2 and 2 * lost[key] > files.get(key, 0):
+                held.setdefault(key, []).append((r, e))
+                break
+    out = [_files_folder_entry(names[k], held[k], files.get(k, 0), seen) for k in held]
+    return out, {e.id for k in held for _r, e in held[k]}
+
+
+def _titles(hits):
+    return list(dict.fromkeys(r.title for r, _e in hits))
+
+
+def _files_folder_entry(folder, hits, total, seen):
+    hits = sorted(hits, key=lambda hit: hit[1].id)
+    ids = [e.id for _r, e in hits]
+    key = f"files:{_digest([folder.casefold()] + ids)}"
+    return Entry(key=key, kind=FILES_FOLDER,
+                 title=STRINGS["files_folder_title"].format(n=view_rows.thousands(len(ids)), folder=shown(folder)),
+                 lines=tuple(_line(e) for _r, e in hits), actions=("choose_folder", "remove"), unseen=key not in seen,
+                 say=STRINGS["files_folder_say"].format(shows=_shows(_titles(hits))),
+                 data={"folder": folder, "item_ids": tuple(ids), "shows": tuple(_titles(hits)), "n": len(ids),
+                       "files": total})
+
+
+def _library_entry(hits, total, seen):
+    hits = sorted(hits, key=lambda hit: hit[1].id)
+    ids = [e.id for _r, e in hits]
+    folders = [_folder(e.rel_path) for _r, e in hits]
+    base = os.path.commonpath(folders).replace(os.sep, "/") if all(folders) else ""
+    key = f"library:{_digest(ids)}"
+    return Entry(key=key, kind=LIBRARY_GONE,
+                 title=STRINGS["library_title"].format(n=view_rows.thousands(len(ids)),
+                                                       total=view_rows.thousands(total)),
+                 lines=tuple(_line(e) for _r, e in hits), actions=("start_fresh", "choose_folder"),
+                 unseen=key not in seen, say=STRINGS["library_say"],
+                 data={"folder": base, "item_ids": tuple(ids), "shows": tuple(_titles(hits)), "n": len(ids),
+                       "files": total})
+
+
+def match_tree(folder, base, lines):
+    """*Choose a folder…* on a folder's or the library's card (a worker): each gone line's file in `folder` at its own
+    place under `base` (its library folder: `Library/A/ep01.srt` under `Library` is `<folder>/A/ep01.srt`), else the
+    one file under `folder` with its name -> [(line, path)]. One walk of `folder`; never a name two files share."""
+    by_name = {}
+    for where, _dirs, names in os.walk(folder):
+        for name in names:
+            by_name.setdefault(name.casefold(), []).append(os.path.join(where, name))
+    base = _norm(base).casefold()
+    out = []
+    for ln in lines:
+        rel = _norm(ln.rel_path)
+        inside = rel[len(base):].lstrip("/") if base and rel.casefold().startswith(base + "/") else rel
+        there = os.path.join(folder, *inside.split("/"))
+        if os.path.isfile(there):
+            out.append((ln, there))
+            continue
+        same = by_name.get(rel.rsplit("/", 1)[-1].casefold()) or ()
+        if len(same) == 1:
+            out.append((ln, same[0]))
+    return out
 
 
 def _bulk(shows):
@@ -547,7 +677,7 @@ def answer_keys(thing):
     """What *Keep its words* / *Keep all their words* / *Leave them* records for an Entry or a NeedLine -> [key]."""
     if isinstance(thing, NeedLine):
         return [item_key(thing.item_id)]
-    if thing.kind in (GONE, BULK):
+    if thing.kind in (GONE, BULK, FILES_FOLDER, LIBRARY_GONE):
         return [item_key(i) for i in (thing.data or {}).get("item_ids") or ()]
     return [thing.key]
 
@@ -652,7 +782,7 @@ def prune(language, view, offline_roots=None, connect=None, asks=None, lines=Non
     store = view is not None and view.mode == "store"
     if not store and lines is None:
         return 0
-    judged = ({"item", "gone"} | ({"offline"} if offline_roots is not None else set()) |
+    judged = ({"item", "gone", "files", "library"} | ({"offline"} if offline_roots is not None else set()) |
               ({"video", "gap", KNOWN_OFFER, "anki"} if connect is not None else set()) |
               ({"ask"} if asks is not None else set()) |
               ({"folder"} if gone_folders is not None else set())) if store else set()

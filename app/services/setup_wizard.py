@@ -32,6 +32,7 @@ each of the six pages starts with, what it writes on *Next*, and the reads and j
 Nothing here waits on the caller's thread except the calls named as a worker's.
 """
 import os
+import time
 
 PAGES = ("language", "known", "shows", "order", "cards", "level")
 LATER = ("leave", "mark", "aside")
@@ -46,6 +47,8 @@ LISTED_TIERS = ("now", "soon", "goal", "arrivals")    # page 3's rows: what is i
 SEEN = "setup_seen"             # the version whose setup pages the learner has seen ("" never: a 2.x profile)
 SETUP_VERSION = "3.0"           # this version's pages (3.1 may show only the pages added since: the follow-up list)
 PASSED = "setup_passed"         # the pages a profile that never finished saved with *Next* (shown as saved next time)
+BUSY_WAIT_S = 0.5               # K4: a busy library (another save, another look) is asked again this often while page
+                                # 3 waits — never given up on (*Stop* ends the wait)
 
 
 # --- opening ---------------------------------------------------------------------------------------------------- #
@@ -446,7 +449,38 @@ def skip_refused(language, path, chosen=()):
     return library_store.skip_refusal(path, sources, skipped)[0]
 
 
-def read_folders(language, paths, progress=None, stop=None, skips=()):
+class _Waiting(Exception):
+    """(Inside `read_folders`.) Another look is reading the library: wait for it, as for a busy store."""
+
+
+def _patient(call, stop, waiting):
+    """K4 (alpha 4, Mattias's note 5: page 3 said "couldn't be read: the library is busy" and gave up): `call()`, asked
+    again every BUSY_WAIT_S while the library is busy — another window's or program's save (`StoreBusy`), or another
+    look reading it — with `waiting(True)` once it has to wait and `waiting(False)` when it goes on. -> `call()`'s
+    answer, or `_STOPPED` when *Stop* was pressed while it waited (a look keeps what it took in before)."""
+    from app import library_store
+    told = False
+    try:
+        while True:
+            try:
+                return call()
+            except (library_store.StoreBusy, _Waiting):
+                pass
+            if stop is not None and stop():
+                return _STOPPED
+            if not told and waiting is not None:
+                waiting(True)
+                told = True
+            time.sleep(BUSY_WAIT_S)
+    finally:
+        if told and waiting is not None:
+            waiting(False)
+
+
+_STOPPED = object()
+
+
+def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=None):
     """(A worker; SRC W1a.) *Next* on page 3 with folders picked: each one added (`Store.add_source`) and given its first
     look (`sources.scan(first=True)`: SRC-1 — Current, by show, quietly: no card is made for them by itself, S1) ->
     {"ready", "found", "shows", "added", "stopped", "busy", "read" [path], "refused" [(path, why)], "unreachable"
@@ -455,7 +489,9 @@ def read_folders(language, paths, progress=None, stop=None, skips=()):
     `progress(found, shows)`: every folder's so far; `stop()` is asked between files — a stopped look keeps what it
     took in. `skips` (K6, *Skip a folder…*): folders inside them never read — each skipped (`Store.skip_folder`) as soon
     as the folder holding it is added, before its look; one no folder read holds is refused (`refused`, its reason).
-    `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
+    K4: a busy library — another save, another look — is waited for (`waiting(True)` / `waiting(False)`,
+    page 3's *Waiting for your library…*) and the read goes on by itself; *Stop* ends the wait (`stopped`; the folder
+    not reached stays listed). `busy` stays False (kept for an older caller).    `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
     *Make cards for your first 20 episodes?* (D1); none there (Current was already full: *Set up again*, an upgrade)
     → no line."""
     from app import library_store, sources
@@ -474,18 +510,22 @@ def read_folders(language, paths, progress=None, stop=None, skips=()):
                 out["stopped"] = True
                 break
             try:
-                root = store.add_source(path)
+                root = _patient(lambda path=path: store.add_source(path), stop, waiting)
             except library_store.NotASource as e:
                 out["refused"].append((path, e.reason))
                 out["read"].append(path)
                 continue
-            except Exception as e:                       # a busy or damaged store: this folder's, never the others'
+            except Exception as e:                       # a damaged store: this folder's, never the others'
                 out["failed"].append((path, str(e)))
                 out["read"].append(path)
                 continue
+            if root is _STOPPED:
+                out["stopped"] = True
+                break
             for skip in list(pending):                   # K6: before its look, so nothing of it is ever read
                 try:
-                    store.skip_folder(skip)
+                    if _patient(lambda skip=skip: store.skip_folder(skip), stop, waiting) is _STOPPED:
+                        break
                     pending.remove(skip)
                 except library_store.NotASource:
                     pass                                 # (inside a folder added later, perhaps)
@@ -497,14 +537,19 @@ def read_folders(language, paths, progress=None, stop=None, skips=()):
             def told(found, shows, before=before):
                 if progress is not None:
                     progress(before[0] + found, before[1] + shows)
-            try:
+            def look(root=root, told=told):
                 got = sources.scan(store, language, root, first=True, progress=told, stop=stop)
+                if got.get("busy"):
+                    raise _Waiting()                     # another look is reading: wait for it, then look
+                return got
+            try:
+                got = _patient(look, stop, waiting)     # a busy store mid-look: what came in is kept, the look goes on
             except Exception as e:                       # one folder's failure never ends the others' looks
                 out["failed"].append((path, str(e)))
                 out["read"].append(path)
                 continue
-            if got.get("busy"):
-                out["busy"] = True
+            if got is _STOPPED:
+                out["stopped"] = True
                 break
             out["read"].append(path)
             if not got.get("reachable", True):

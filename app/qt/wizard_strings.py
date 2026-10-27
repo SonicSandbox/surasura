@@ -125,6 +125,7 @@ READ_STOPPED = "Stopped: {episodes} in {shows} came in, and they're kept."
 READ_UNREACHABLE = "{folder} isn't reachable: nothing was read from it."
 READ_FAILED = "{folder} couldn't be read: {why}"
 READ_BUSY = "Surasura is already reading your folders: try again in a moment."
+READ_WAITING = "Waiting for your library: another part of Surasura is saving. Reading goes on by itself…"   # K4
 READ_NOT_READY = "Your library isn't ready yet: try again in a moment."
 EPISODES = ("1 episode", "{n:,} episodes")
 SHOWS_N = ("1 show", "{n:,} shows")

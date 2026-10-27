@@ -321,6 +321,8 @@ def route(monkeypatch):
     monkeypatch.setattr(M, "_fetch", net)
     monkeypatch.setattr(M, "_launch", launcher)
     monkeypatch.setattr(M, "open_url", opened.append)
+    monkeypatch.setattr(M.am_release, "APPROVED", "3.7.0")       # alpha 4 M5: the stand-in release is the approved one
+    monkeypatch.setattr(M.am_release, "APPROVED_SHA256", DIGEST)
 
     class Route:
         pass
@@ -374,7 +376,7 @@ def test_switched_off_the_network_function_itself_refuses(monkeypatch):
     """The gate is inside `_fetch` too: called directly with the flag off, it reaches nothing."""
     monkeypatch.setattr(M, "DOWNLOAD_ENABLED", False)
     with pytest.raises(M._Refused):
-        M._fetch(M.LATEST_API, as_json=True)
+        M._fetch(M.release_api(), as_json=True)
 
 
 def test_the_whole_route_hands_the_verified_installer_to_the_launcher_then_cleans_staging(route):
@@ -382,7 +384,7 @@ def test_the_whole_route_hands_the_verified_installer_to_the_launcher_then_clean
     result = route.run(confirm=lambda: asked.append(len(route.net.calls)) or True)
     assert result == "installer-closed"
     assert asked == [0]                                      # the yes came before any byte
-    assert route.net.calls == [(M.LATEST_API, True), (DOWNLOAD, False)]
+    assert route.net.calls == [(M.release_api(), True), (DOWNLOAD, False)]
     [(path, on_disk)] = route.launcher.started
     assert os.path.basename(path) == ASSET
     assert os.path.dirname(path) == M.staging_folder()
@@ -407,7 +409,7 @@ def test_a_digest_that_does_not_match_opens_the_releases_page_and_leaves_nothing
 def test_no_sha256_from_github_means_no_download_at_all(route, digest):
     route.net.release = _release(digest=digest)
     assert route.run() == "opened-releases"
-    assert route.net.calls == [(M.LATEST_API, True)]         # the release answer only: the file is never asked for
+    assert route.net.calls == [(M.release_api(), True)]         # the release answer only: the file is never asked for
     assert route.opened == [setup.RELEASES]
     assert _staging_empty()
 
@@ -415,7 +417,7 @@ def test_no_sha256_from_github_means_no_download_at_all(route, digest):
 def test_an_asset_larger_than_the_cap_is_never_downloaded(route):
     route.net.release = _release(size=M.SIZE_CAP + 1)
     assert route.run() == "opened-releases"
-    assert route.net.calls == [(M.LATEST_API, True)]
+    assert route.net.calls == [(M.release_api(), True)]
     assert _staging_empty()
 
 
@@ -441,7 +443,7 @@ def test_a_content_length_that_differs_from_the_release_is_refused_before_a_byte
 def test_an_installer_link_off_githubs_hosts_is_never_fetched(route):
     route.net.release = _release(url=f"https://example.com/mirror/{ASSET}")
     assert route.run() == "opened-releases"
-    assert route.net.calls == [(M.LATEST_API, True)]
+    assert route.net.calls == [(M.release_api(), True)]
     assert _staging_empty()
 
 
@@ -548,7 +550,7 @@ def test_a_staging_folder_left_by_a_crash_is_emptied_before_a_new_download(route
 
 
 @pytest.mark.parametrize("url, ok", [
-    (M.LATEST_API, True), (DOWNLOAD, True), (STORED, True),
+    (M.release_api(), True), (DOWNLOAD, True), (STORED, True),
     ("https://objects.githubusercontent.com/a/b", True),
     ("http://github.com/0xzerolight/anki_miner", False),          # never plain http
     ("https://github.com.example.com/x", False),
@@ -594,7 +596,7 @@ def test_on_end_raising_never_breaks_install(monkeypatch):
 class Opener:
     """`urllib.request.build_opener`'s stand-in: the handlers it was built with, and one answer per open."""
 
-    def __init__(self, body, final=M.LATEST_API):
+    def __init__(self, body, final=M.release_api()):
         self.body, self.final, self.handlers, self.opened = body, final, [], []
 
     def __call__(self, *handlers):
@@ -619,16 +621,16 @@ def test_the_release_answer_follows_githubs_hosts_only_and_is_capped(monkeypatch
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: pytest.fail("the default opener was used"))
     opener = Opener(_json(_release()))
     monkeypatch.setattr(urllib.request, "build_opener", opener)
-    assert M._fetch(M.LATEST_API, as_json=True) == _release()
+    assert M._fetch(M.release_api(), as_json=True) == _release()
     assert any(isinstance(h, M._GitHubOnly) for h in opener.handlers)
-    assert opener.opened == [M.LATEST_API]
+    assert opener.opened == [M.release_api()]
 
     monkeypatch.setattr(urllib.request, "build_opener", Opener(_json(_release()), final="https://api.example.net/x"))
     with pytest.raises(M._Refused):
-        M._fetch(M.LATEST_API, as_json=True)
+        M._fetch(M.release_api(), as_json=True)
     monkeypatch.setattr(urllib.request, "build_opener", Opener(b"{" + b" " * M.JSON_CAP + b"}"))
     with pytest.raises(M._Refused):
-        M._fetch(M.LATEST_API, as_json=True)
+        M._fetch(M.release_api(), as_json=True)
 
 
 @pytest.mark.parametrize("url", [
@@ -641,7 +643,7 @@ def test_an_installer_link_outside_anki_miners_own_releases_is_never_fetched(rou
     """AD-7: a GitHub host is not enough: the link must be 0xzerolight/anki_miner's own release download."""
     route.net.release = _release(url=url)
     assert route.run() == "opened-releases"
-    assert route.net.calls == [(M.LATEST_API, True)]
+    assert route.net.calls == [(M.release_api(), True)]
     assert route.launcher.started == [] and _staging_empty()
 
 
@@ -759,3 +761,25 @@ def test_the_install_kind_conflicts_with_nothing_but_itself():
     from app.services import jobs
     assert jobs.RESOURCES[M.JOB_KIND] == set()
     assert jobs.conflicts(M.JOB_KIND, M.JOB_KIND) and not jobs.conflicts(M.JOB_KIND, "generate")
+
+
+def test_the_install_asks_github_for_the_approved_tag_never_the_latest(route):
+    """Alpha 4 M5: the one release asked for is the approved version's tag (`am_release.APPROVED`), never
+    `releases/latest` — a newer, untested Anki Miner is never installed by Surasura."""
+    assert route.run() == "installer-closed"
+    assert route.net.calls[0] == (f"https://api.github.com/repos/0xzerolight/anki_miner/releases/tags/v3.7.0", True)
+    assert "latest" not in route.net.calls[0][0]
+
+
+@pytest.mark.parametrize("approved, sha", [("3.10.1", None), (None, "0" * 64)])
+def test_a_release_that_is_not_the_approved_version_or_installer_is_refused_before_any_byte(route, monkeypatch,
+                                                                                               approved, sha):
+    """Alpha 4 M5: GitHub answering another version than the approved one, or the approved version with another
+    installer than the one approved (its sha256), downloads nothing: the releases page opens, staging stays empty."""
+    if approved is not None:
+        monkeypatch.setattr(M.am_release, "APPROVED", approved)     # the tag's answer still names 3.7.0
+    if sha is not None:
+        monkeypatch.setattr(M.am_release, "APPROVED_SHA256", sha)
+    assert route.run() == "opened-releases"
+    assert [c for c in route.net.calls if c[0] == DOWNLOAD] == [], "no byte of the installer"
+    assert route.launcher.started == [] and _staging_empty()

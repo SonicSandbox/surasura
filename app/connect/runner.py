@@ -52,7 +52,8 @@ import time
 from types import SimpleNamespace
 
 from app.connect import fit_check, inbox, stopping
-from app.connect.ledger import ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, PREPARE_KINDS, STOPPED_REASON, Ledger
+from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, NOT_STARTED, PREPARE_KINDS, STOPPED_REASON,
+                                Ledger)
 
 log = logging.getLogger("surasura-cli")
 
@@ -86,9 +87,12 @@ TURN = "Waiting its turn: Connect is making another episode's cards now."
 # Laptop round 8 #49 (LF4-1 ⭐ A, PROVISIONAL): a level raise's job for an episode you've watched, or whose video is gone
 WATCHED = "you've watched it: its new words go to the episodes ahead of you"
 LEVEL_NO_VIDEO = "Its video isn't on this computer: its new words' cards wait for it."
-# K67 (IK S3): Anki Miner's API mines video only — an asked job for a book or a text ends skipped with this line
-TEXT_ONLY = ("Anki Miner makes cards from videos only: open Anki Miner's own window to mine this one by hand "
-             "(Mine text).")
+# Alpha 4 M1 (Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever."): until Anki Miner reads
+# books (`anki_miner.reads_books`: round 2's Z-9), a book's or a text's job — Connect's own, an ask, a gap's — is set
+# aside with this line (`_books_aside`): never picked, never a *No video* card, nothing on the circles. Once Anki Miner
+# reads them, they're queued again by themselves (`ledger.reopen_skipped`): nothing to undo. K67's asked-only rule is
+# this one now.
+BOOKS_WAIT = "Waits for Anki Miner to read books: Connect makes its cards by itself once Anki Miner can."
 NO_LIST = "Waiting for a current list: Generate didn't finish."
 LIBRARY_BUSY = "Surasura's library is busy: tried again shortly."
 STOPPED_FOR_UPDATE = "Surasura is installing an update."
@@ -279,10 +283,36 @@ def _consume(steps, ledger, lang):
             line = steps.mine_line(lang)
             with ledger.transaction():
                 ledger.reopen_skipped(lang, line, MINER_ABSENT)
+        _books_aside(steps, ledger, lang, ledger.jobs(lang, states=NOT_STARTED))
     except Exception:
         log.exception("Connect couldn't read its inbox (%s); it looks again", lang)
         return True
     return False
+
+
+def _books_aside(steps, ledger, lang, jobs):
+    """Alpha 4 M1: while Anki Miner can't read books (`steps.reads_books`), each of `jobs` (not started) whose item is a
+    book or a text ends `skipped` with BOOKS_WAIT, before any pick — so it is no open job, no *No video*, nothing on
+    the circles; once it can, every job set aside so is queued again (its ask kept; one beyond the line is dropped at
+    its start as any). -> how many set aside. A store busy now: none (looked at again next look)."""
+    reads, texts_of = getattr(steps, "reads_books", None), getattr(steps, "text_items", None)
+    if reads is None or texts_of is None:
+        return 0
+    if reads(lang):
+        if ledger.skipped_for(lang, BOOKS_WAIT):
+            aside = [j["item_id"] for j in ledger.jobs(lang, states=("skipped",)) if j.get("reason") == BOOKS_WAIT]
+            with ledger.transaction():
+                ledger.reopen_skipped(lang, aside, BOOKS_WAIT)
+        return 0
+    jobs = [j for j in jobs if j.get("state") in NOT_STARTED and j.get("resume") in BEFORE_MINING
+            and not _started(ledger, j["id"])]
+    texts = texts_of(lang, {j["item_id"] for j in jobs}) if jobs else set()
+    n = 0
+    for job in jobs:
+        if job["item_id"] in texts:
+            ledger.set_state(job["id"], "skipped", reason=BOOKS_WAIT, skipped={"mining": BOOKS_WAIT})
+            n += 1
+    return n
 
 
 def _open_jobs(ledger, lang, parked, tried=()):
@@ -689,10 +719,8 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         ledger.set_state(jid, "dropped", reason=WATCHED)
         out["dropped"].append(item_id)
         return
-    if droppable and job.get("kind") == ASKED and getattr(steps, "text_only", lambda _l, _j: False)(lang, job):
-        # K67 (IK S3, defensive: the window sends *Mine this* on a book to Anki Miner's own window, no ask): ended,
-        # the ask used up with it
-        ledger.set_state(jid, "skipped", reason=TEXT_ONLY, skipped={"mining": TEXT_ONLY})
+    if droppable and _books_aside(steps, ledger, lang, [job]):
+        # alpha 4 M1: a job queued since this look read its inbox (a press's), set aside as the inbox's are
         out["skipped"].append(item_id)
         return
     record = not foreign
@@ -1369,19 +1397,24 @@ class Steps:
         with self._open(lang) as store:
             return library.store_id(store)
 
-    def text_only(self, lang, job):
-        """P4.1 (K67): is the job's item a book or a text (no video to mine from)? Its file's type as the window
-        reads it (`infer_source_type`); a busy store → False (the pick looks at it as for any job)."""
-        from app.path_utils import infer_source_type
+    def text_items(self, lang, item_ids):
+        """Alpha 4 M1 (was P4.1's K67 `text_only`): which of `item_ids` are books or texts (no video to mine from) ->
+        a set, by `library.text_only`, in one store read; a busy store → none (the next look asks again)."""
+        from app.connect import library
         try:
             store = self._open(lang)
         except (Wait, Needs):
-            return False
+            return set()
         with store:
-            item = store.item(job["item_id"]) or {}
-        if not item:
-            return False
-        return infer_source_type(item.get("rel_path") or "", declared=item.get("source_type")) in ("epub", "text")
+            return {i for i in item_ids if library.text_only(store.item(i) or {})}
+
+    def reads_books(self, lang):
+        """Alpha 4 M1: can Connect make cards from books and texts now — this Surasura knows Z-9 and the Anki Miner
+        its setup record last found names it (`anki_miner.reads_books`)? No record yet: no."""
+        from app.connect import anki_miner, setup
+        if not anki_miner.reads_books():
+            return False                    # this build mines no book whatever Anki Miner says: no record read
+        return anki_miner.reads_books(setup.read_record().get("anki_miner") or {"features": []})
 
     def show(self, lang, job):
         """The title of the show the job's episode belongs to (its work's), for the cards' `Surasura::from::` tag; None

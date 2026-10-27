@@ -58,6 +58,9 @@ FEATURES = {"named-words-whitelisted": "Z-1", runfile.WORD_FROM_LINE: "Z-2", "se
             runfile.SENTENCE_RULES_OFF: "Z-4", runfile.BOLD_TARGET: "Z-5", "filter-names": "Z-6",
             runfile.DRY_RUN: "Z-7", "fetch": "Z-8", "render": "Z-10", "media": "Z-10", "setup": "Z-11",
             "script-fold": "Z-12", "beside-window": "Z-13"}
+# Round 2's Z-9 (books and text in `mine`): the `features` name its draft asks for. Not in FEATURES until Surasura
+# mines books: `reads_books` is False with every Anki Miner until then (alpha 4 M1)
+READING = "reading"
 
 # A verdict's error code -> the kind Surasura acts on
 KINDS = {"BUSY": "busy", "ANKI_UNREACHABLE": "anki-closed", "SETUP_ERROR": "setup", "PROFILE_UNREADABLE": "setup",
@@ -327,6 +330,16 @@ def version(path):
 def features(info):
     """The Z-asks this Anki Miner says it answers (from `version`'s `features`)."""
     return {FEATURES[name] for name in info.get("features") or () if name in FEATURES}
+
+
+def reads_books(info=None):
+    """Can Connect make cards from books and texts (Z-9)? Only once Surasura knows the ask (`FEATURES` maps `READING`
+    to Z-9) and — given `info`, a `version` answer — this Anki Miner names it. Until then a book or a text waits by
+    itself, never a *No video* (alpha 4 M1, Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner.
+    Ever."); `info` None asks only whether this Surasura could."""
+    if "Z-9" not in FEATURES.values():
+        return False
+    return info is None or "Z-9" in features(info or {})
 
 
 def profiles(path):

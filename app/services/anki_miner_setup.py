@@ -23,9 +23,10 @@
   releases page in the browser (`setup.RELEASES`, as 2.x's *Install*) -> `"opened-releases"`, `_fetch` never called.
   On: Windows only · never while Anki Miner runs or a Connect run holds its lock (`"busy"`, nothing opened) ·
   `confirm()` once, **before any byte**: no `confirm` handed in -> the releases page, nothing fetched; False ->
-  `"declined"`, nothing fetched or opened · GitHub's latest release of `0xzerolight/anki_miner` (never a pinned
-  version: his installer refuses a downgrade) · exactly one `*-Windows-x86_64-Setup.exe` asset, its size under
-  `SIZE_CAP`, GitHub's `sha256:` digest present · streamed into a staging folder under local data
+  `"declined"`, nothing fetched or opened · the release of `0xzerolight/anki_miner` Surasura has approved
+  (`am_release.APPROVED`, alpha 4 M5: the version its drill passed at; never GitHub's latest) · exactly one
+  `*-Windows-x86_64-Setup.exe` asset, its size under `SIZE_CAP`, GitHub's `sha256:` digest present and the one
+  approved with it (`am_release.APPROVED_SHA256`) · streamed into a staging folder under local data
   (`path_utils.get_local_data_path()`), only from GitHub's hosts (`HOSTS`, https; a redirect elsewhere is refused),
   with `on_progress(done, total)`, `cancel` looked at every chunk and the cap counted as it comes · the digest and
   size must match · his installer opened as he made it (`updater.launch_installer`: visible, his licence page, his
@@ -58,7 +59,6 @@ from app.connect.setup import RELEASES
 DOWNLOAD_ENABLED = True         # the download (Sonic's yes, 2026-10-15); False = the releases page, as 2.x
 
 STAR_URL = f"https://github.com/{am_release.REPO}"      # = connect.settings_panel.STAR_URL (a Tk module: not imported)
-LATEST_API = f"https://api.github.com/repos/{am_release.REPO}/releases/latest"
 ASSET_PATTERN = "*-Windows-x86_64-Setup.exe"
 # GitHub's own hosts: the API, the release's download link and the asset stores it redirects to. Nothing else.
 HOSTS = frozenset({"api.github.com", "github.com", "objects.githubusercontent.com",
@@ -349,6 +349,20 @@ def _releases():
     return OPENED_RELEASES
 
 
+def release_api():
+    """GitHub's answer for the approved release's tag (alpha 4 M5: never `releases/latest`)."""
+    return f"https://api.github.com/repos/{am_release.REPO}/releases/tags/v{am_release.APPROVED}"
+
+
+def _approved(asset):
+    """The approved release's installer (alpha 4 M5): its version and its sha256 the ones Surasura approved, else
+    _Refused (the releases page opens instead)."""
+    version, _name, _url, _size, sha256 = asset
+    if version != am_release.APPROVED or sha256 != am_release.APPROVED_SHA256.lower():
+        raise _Refused(f"Anki Miner {version} isn't the approved {am_release.APPROVED}, or its installer changed")
+    return asset
+
+
 def _route(on_progress, cancel, confirm):
     if not DOWNLOAD_ENABLED or sys.platform != "win32":
         return _releases()
@@ -359,7 +373,7 @@ def _route(on_progress, cancel, confirm):
     if not confirm():               # the one confirm, before any byte
         return DECLINED
     try:
-        _version, name, url, size, sha256 = _asset(_fetch(LATEST_API, as_json=True))
+        _version, name, url, size, sha256 = _approved(_asset(_fetch(release_api(), as_json=True)))
         _clean()
         folder = staging_folder()
         os.makedirs(folder, exist_ok=True)

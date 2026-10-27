@@ -37,7 +37,11 @@ class StoreSteps(FakeSteps):
     the store still holds)."""
 
     _open = runner.Steps._open
-    text_only = runner.Steps.text_only
+    text_items = runner.Steps.text_items
+    books = False                       # alpha 4 M1: whether Anki Miner reads books (`Steps.reads_books`'s answer)
+
+    def reads_books(self, lang):
+        return self.books
 
     def __init__(self, folder, lang="ja", plan=None):
         super().__init__(folder, plan)
@@ -235,19 +239,67 @@ def test_an_asked_job_that_ends_without_cards_uses_the_ask_up(tmp_path, ending):
         assert inbox.pending(s) is False, "nothing left for Connect to read"
 
 
-def test_an_asked_book_ends_skipped_with_k67s_line_and_the_ask_used_up(tmp_path):
-    """IK S3 (defensive: the window sends *Mine this* on a book to Anki Miner's own window, no ask): a job asked for a
-    text item ends skipped, never picked, never waiting for a video it can't have."""
+def test_an_asked_book_is_set_aside_until_anki_miner_reads_books_never_picked(tmp_path):
+    """Alpha 4 M1 (was K67's asked-only rule): a job asked for a text item is set aside with BOOKS_WAIT, never picked,
+    never waiting for a video it can't have; the ask is used up — no second job at the next look."""
     ids, kinds = _library()
     text = [i for i in ids if kinds[i] == ".txt"][-1]
     steps = _steps(tmp_path, {text: WORDS[2]})
     _ask([text])
     _run(steps)
     job = _jobs(text)[-1]
-    assert (job["kind"], job["state"], job["reason"]) == (ASKED, "skipped", runner.TEXT_ONLY)
+    assert (job["kind"], job["state"], job["reason"]) == (ASKED, "skipped", runner.BOOKS_WAIT)
     assert ("pick", text) not in steps.log and steps.anki.words() == []
     _run(steps)
     assert len(_jobs(text)) == 1, "the ask used up: no second job"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_book_entering_the_line_is_no_open_job_and_is_mined_by_itself_once_anki_miner_reads_books(tmp_path, lang):
+    """Alpha 4 M1 (Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever."): Connect's own job
+    for a book or a text is set aside the look it is read (no open job: no *No video* card, nothing on the circles),
+    and a subtitle beside it is mined as before; once Anki Miner reads books the same job is queued again by itself,
+    and mined (nothing to undo)."""
+    ids, kinds = _library(lang)
+    text = [i for i in ids if kinds[i] == ".txt"][-1]
+    *others, episode = _srt(ids, kinds)[-3:]
+    steps = _steps(tmp_path, {text: WORDS[0], episode: WORDS[1]}, lang=lang)
+    for other in others:                # the book out of the top 2 first (the zh library starts with it at the top)
+        _place_top(other, lang)
+    _place_top(episode, lang)
+    _place_top(text, lang)              # it enters the line: Connect's own job (no ask)
+    out = _run(steps, lang)["languages"][lang]
+    book = _jobs(text, lang)[-1]
+    assert (book["state"], book["reason"]) == ("skipped", runner.BOOKS_WAIT)
+    assert text not in out["waiting"] and out["needs"] == [], "no wait and no Needs-you line for the book"
+    mined = [episode] if lang == "ja" else []     # Connect makes no Chinese cards in 3.0 ("Chinese cards come later")
+    assert _mined(steps) == mined, "the episode as before; the book never reaches Anki Miner"
+    with Ledger() as ledger:
+        assert text not in [j["item_id"] for j in ledger.open_jobs(lang)], "the book is no open job"
+    _run(steps, lang)
+    assert len(_jobs(text, lang)) == 1 and _mined(steps) == mined, "set aside once, not again at every look"
+    steps.books = True                  # Anki Miner names `reading` (round 2's Z-9) and this Surasura mines books
+    _run(steps, lang)
+    assert len(_jobs(text, lang)) == 1, "the same job, queued again: no second one"
+    assert _jobs(text, lang)[-1]["reason"] != runner.BOOKS_WAIT
+    if lang == "ja":
+        assert _jobs(text, lang)[-1]["state"] == "done" and _mined(steps) == [episode, text]
+
+
+def test_a_book_waiting_on_no_video_from_before_is_set_aside_at_the_next_look(tmp_path):
+    """Alpha 4 M1: a book's job left waiting on *No video* by an earlier Surasura (its Needs-you card "N parts have no
+    file") is set aside at Connect's next look, before any pick: the card goes, nothing is mined."""
+    ids, kinds = _library()
+    text = [i for i in ids if kinds[i] == ".txt"][-1]
+    _place_top(text)
+    _look()
+    with Ledger() as ledger:
+        job = [j for j in ledger.jobs("ja") if j["item_id"] == text][-1]
+        ledger.set_state(job["id"], "waiting", reason=runner.NO_VIDEO)
+    steps = _steps(tmp_path, {text: WORDS[0]})
+    _run(steps)
+    assert (_jobs(text)[-1]["state"], _jobs(text)[-1]["reason"]) == ("skipped", runner.BOOKS_WAIT)
+    assert ("pick", text) not in steps.log
 
 
 def test_asks_made_while_connect_was_off_are_never_mined(tmp_path):

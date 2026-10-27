@@ -52,6 +52,7 @@ MEDIA_WORD = {"anime": "video", "drama": "video", "movie": "video", "youtube": "
               "audiobook": "audio", "book": "EPUB", "lightnovel": "EPUB", "manga": "EPUB", "game": "file",
               "text": "file", None: "video"}
 VERB = {"video": "Watch", "audio": "Listen", "EPUB": "Read", "file": "Open"}
+TEXT_WORDS = ("EPUB", "file")           # alpha 4 M1: what Anki Miner can't mine yet (`anki_miner.reads_books`)
 EPISODIC = ("anime", "drama", "movie", None)
 
 Status = namedtuple("Status", "kind label tip tone")          # tone: ok · accent · dim · ink · faint · warn
@@ -229,6 +230,10 @@ STRINGS = {
     "play_waiting": "No subtitles yet: its {word} is in your folder, its subtitle file isn't\nIt can be watched and "
                     "mined once one arrives there",
     "no_subs": "No subtitles yet", "no_subs_n": "No subtitles yet · {n}",
+    # alpha 4 M1: a book or a text, while Anki Miner reads none — quiet, nothing to press (never its window)
+    "books_wait": "Waits for Anki Miner",
+    "tip_books_wait": "Anki Miner makes cards from videos only for now: Connect makes this {word}'s cards by itself "
+                      "once Anki Miner can read books and texts.",
     "tip_no_subs": "Its {word} is in your folder, its subtitle file isn't yet: nothing to read or mine until one "
                    "arrives. Surasura fills it in by itself",
     "arr_no_subs": "no subtitles yet",
@@ -526,6 +531,10 @@ def status_of(eps, word, line_n):
         label = STRINGS["in_anki"].format(n=cards)      # mined = its cards are there, so cards > 0 (B-13, IK-27)
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
         st = Status("in_anki", label, tip, "ok")
+    elif ready and word in TEXT_WORDS and not _reads_books():
+        # alpha 4 M1: nothing to press while Anki Miner reads no book — Connect sets its job aside, and mines it by
+        # itself once it can (no *Mine*, no *Waiting*, never Anki Miner's window)
+        st = Status("books", STRINGS["books_wait"], STRINGS["tip_books_wait"].format(word=word), "faint")
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
@@ -556,6 +565,13 @@ def status_of(eps, word, line_n):
     elif removed:
         mark = Mark(len(removed), "faint", STRINGS["mark_removed"].format(Word=Word, eps=_eps_list(removed)))
     return st, mark
+
+
+def _reads_books():
+    """Could this Surasura make cards from books at all (`anki_miner.reads_books()`, no Anki Miner asked)? False in
+    this build: the row's quiet line is right whatever Anki Miner is installed. Alpha 4 M1."""
+    from app.connect import anki_miner
+    return anki_miner.reads_books()
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #

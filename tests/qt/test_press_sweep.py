@@ -309,21 +309,6 @@ def test_p3_a7_an_arc_over_an_icon_has_the_ground_a_rows_mark_has(stage):
     m.off()
 
 
-def test_p3_a8_mine_texts_path_is_on_the_clipboard_before_anki_miner_starts(shown_window, monkeypatch):  # noqa: F811
-    from app.connect import anki_miner
-    from app.qt import screens
-    win = shown_window
-    if getattr(win, "mine", None) is None:
-        pytest.skip("no mining actions in this window")
-    seen = []
-    monkeypatch.setattr(anki_miner, "find", lambda _s: r"C:\AnkiMiner.exe")
-    monkeypatch.setattr(screens, "open_with_system", lambda _p: seen.append(QApplication.clipboard().text()))
-    QApplication.clipboard().setText("before")
-    win.mine.mine_text("第3話", "HighPriority/葬送のフリーレン/葬送のフリーレン 第3話.srt")
-    assert wait_until(lambda: seen, 5)
-    assert seen[0].endswith("葬送のフリーレン 第3話.srt")
-
-
 def test_p3_a9_off_windows_the_open_itself_stays_on_the_windows_thread(shown_window, monkeypatch):  # noqa: F811
     import threading
     from app.qt import screens

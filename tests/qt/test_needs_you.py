@@ -297,7 +297,7 @@ def test_G6_find_all_missing_videos_looks_for_every_show_at_once(world):
     shows = []
     for r in rows_of(win):                                   # two shows, every file there (a split's parts: one)
         eps = [e for e in r.episodes if not e.missing and e.number is not None]
-        if eps and not any(e.missing for e in r.episodes) and r.work_id not in {x.work_id for x, _e in shows}:
+        if eps and not any(e.missing for e in r.episodes) and r.work_id not in {x.work_id for x, _e in shows}                 and r.media_word == "video":                 # alpha 4 M1: a book is never a *No video* card
             shows.append((r, eps[0]))
     assert len(shows) >= 2
     shows = shows[:2]
@@ -316,7 +316,7 @@ def test_G6_find_all_missing_videos_looks_for_every_show_at_once(world):
     assert bulk.data["videos"] == (2, 2)
 
 
-def test_G7_a_line_with_no_match_offers_choose_file_and_remove_episode_mine_text_hidden_until_hooked(world, tmp_path):
+def test_G7_a_line_with_no_match_offers_choose_file_and_remove_episode_never_mine_the_text_only(world, tmp_path):
     seed, win, writer, ny = world()
     row, eps = no_video_show(win, n=1)
     ny.read_connect = lambda _lang: jobs(*eps)
@@ -327,7 +327,7 @@ def test_G7_a_line_with_no_match_offers_choose_file_and_remove_episode_mine_text
     assert wait_until(lambda: card.key in ny.found and not ny.looking, 10)
     names = [b.property("action") for b in ny.cards.buttons(card.key)]
     assert "choose_video" in names and "remove_episode" in names
-    assert "mine_text_only" in names                           # P4.1 4.1.12: the window's routing sets its callable
+    assert "mine_text_only" not in names                       # alpha 4 M1: never Anki Miner's window
     elsewhere = tmp_path / f"{row.title} 第{eps[0].number}話.mp4"
     elsewhere.write_bytes(b"\x00\x00\x00\x18ftypmp42")
     asked = []
@@ -341,12 +341,6 @@ def test_G7_a_line_with_no_match_offers_choose_file_and_remove_episode_mine_text
     ny.confirming.yes.click()
     assert wait_until(lambda: any(c[0] == "remove" for c in writer.calls), 5)
     assert [c for c in writer.calls if c[0] == "remove"][0][1] == [eps[0].id]
-    hooked = []
-    ny.hooks["mine_text_only"] = lambda entry, line: hooked.append(line.item_id)
-    ny.rewire()                                                  # (P4.1's call once it sets its hook)
-    b = next(b for b in ny.cards.buttons(card.key) if b.property("action") == "mine_text_only")
-    b.click()
-    assert hooked
 
 
 # --- a file gone: Choose file, Choose a folder, Keep, Remove (+ the bulk answer) ----------------------------------- #

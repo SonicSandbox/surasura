@@ -4,16 +4,17 @@ IK S3, S7). What the rows, Finished, the arrivals and *Needs you* ask for, route
 - **One way to ask for mining (C2):** *Mine now* (Waiting's icon) and *Mine this* (a *Mine* status) — the rows'
   `mine_requested` —, Finished's *Mine* / *Mine it too* and the arrivals' *Mine them too* are all `Writer.ask_mining(ids)`,
   given through the drag controller's tickets (its toast's Undo, Ctrl+Z). The writer's after-commit hook
-  (`shell.connect_after_commit`) then kicks Connect. A non-video item's *Mine this* makes no ask: it is *Mine text* (K67,
-  IK S3: Anki Miner mines video only).
+  (`shell.connect_after_commit`) then kicks Connect. A book's or a text's makes no ask: Anki Miner mines video only, so
+  the bar says it waits for Anki Miner to read books (alpha 4 M1; K67, IK S3).
 - ***Link…*** (No video's): the system's file picker, videos only (`runner.VIDEO_EXTENSIONS`) → `Writer.link_video`.
 - ***Find its folder…*** (MV-2, Sonic: yes; a *No video* whose video left the folder it was in — Connect's line
   names it, `view_rows.Status.moved`): the system's folder picker, opened near where it was, then Settings' own *Add
   a folder…* (`settings_sources.add_folder`: `Store.add_source` and its look, on the looks' worker) — one way in;
   the store's join (MV-1) makes the show find its episodes there, and the look that recorded their videos kicks
   Connect (the shell's `_sources_looked`). Offered on the status's menu and on the episode's ⋯.
-- ***Mine text*** (C6), and *Needs you*'s *Mine the text only*: Anki Miner's own window (as Settings' *Open Anki Miner*
-  does) with the file's path on the clipboard, and a toast saying so — mining by hand.
+- ***Mine text*** (C6) and *Needs you*'s *Mine the text only* are gone (alpha 4 M1, Sonic 2026-10-27: "I honestly
+  don't want to ever have to open anki miner. Ever."): nothing here opens Anki Miner's window. A book waits quietly
+  (`view_rows`' *Waits for Anki Miner*) and Connect mines it by itself once Anki Miner reads books.
 - **Connect off** (`settings_manager.connect_on` false): the rows' `connect_off` holds why (`feed.OFF_*`): their buttons
   ask nothing and their tips say why; the other asks say it in the bar. Read on a worker when the window opens and when
   Connect's switch or D29's automation is written.
@@ -84,12 +85,6 @@ def _stop(language, job_id):
     return actions.stop(language, job_id)
 
 
-def _miner_and_file(settings, path):
-    """(A worker.) -> (Anki Miner's program or None, the file's path)."""
-    from app.connect import anki_miner
-    return anki_miner.find(settings), path
-
-
 class MineActions(QObject):
     """Made by the shell when it has a writer (as Finished's actions). The controller, the writer and the language are
     the window's as they are at each call (a language switch rebuilds `win.moves`: nothing here is rebuilt)."""
@@ -115,8 +110,6 @@ class MineActions(QObject):
             lst.mine_requested.connect(self.mine_row)
             lst.link_requested.connect(lambda row, ep, lst=lst: self.link(row, ep, lst))
             lst.find_folder_requested.connect(lambda row, ep: self.find_folder(ep))         # --- MV-2
-            lst.mine_text_requested.connect(lambda row, ep, lst=lst: self.mine_text(          # (round 8 row 45: its
-                ep.label, ep.rel_path, at=qpress.row_mark(lst, [ep.id], "no-media")))      # ... status turns, IK-2)
         fin = getattr(win, "finished", None)
         if fin is not None:
             fin.on_mine = lambda row: self.mine_row(row, self._askable(row.episodes))      # P4.1 WF (S5)
@@ -126,7 +119,6 @@ class MineActions(QObject):
             tray.mine_too = self.mine_ids
         needs = getattr(win, "needs_you", None)
         if needs is not None:
-            needs.hooks["mine_text_only"] = self._needs_mine_text
             needs.hooks["make_cards"] = self._needs_make_cards
             needs.rewire()
         items = getattr(win, "items", None)
@@ -159,16 +151,16 @@ class MineActions(QObject):
 
     def mine_row(self, row, ids):
         """*Mine now* / *Mine this* / Finished's *Mine* and *Mine it too*: the ask for the files Anki Miner can mine
-        (`videos_of`), the others left out and the toast saying so; none of them a video: the first one's *Mine text*.
-        Nothing left to ask for: the bar says so."""
+        (`videos_of`), the others left out and the toast saying so; none of them a video: the bar says they wait for
+        Anki Miner to read books (alpha 4 M1). Nothing left to ask for: the bar says so."""
         ids = list(dict.fromkeys(ids))
         if not ids:
             self.win.say(strings.MINE_NOTHING)
             return None
         videos, other = videos_of(row, ids)
         if not videos:
-            ep = other or row.episodes[0]
-            return self.mine_text(ep.label, ep.rel_path)
+            self.win.say(strings.MINE_BOOKS_WAIT)
+            return None
         text = strings.MINE_ASKED if len(videos) == len(ids) else strings.MINE_ASKED_VIDEOS
         return self._ask(text.format(title=row.title), (row.key,), videos)
 
@@ -176,7 +168,7 @@ class MineActions(QObject):
         """The arrivals' *Mine them too*: of `ids`, the files the rows' rule may ask for (P4.1 WF, S5), told by the
         tray's own rows' episodes (a file the tray doesn't show isn't asked for); none left: the bar says so. Of those,
         the videos are asked for (`videos_of`, each tray row by its own files' types, as `mine_row`), the others left out
-        and the toast saying so; none of them a video: the first one's *Mine text*."""
+        and the toast saying so; none of them a video: the bar says they wait for Anki Miner to read books."""
         if self.off:                                 # Connect off: that is why nothing is asked, said first
             self.win.say(self.off)
             return None
@@ -194,7 +186,8 @@ class MineActions(QObject):
             other = other or o
         asked = [i for i in ids if i in videos]
         if not asked:
-            return self.mine_text(other.label, other.rel_path)
+            self.win.say(strings.MINE_BOOKS_WAIT)
+            return None
         if len(asked) < len(ids):
             text = strings.MINE_ASKED_N_VIDEOS[len(asked) == 1].format(n=len(asked))
         else:
@@ -383,42 +376,6 @@ class MineActions(QObject):
         if not folder:
             return False
         return bool(settings_sources.add_folder(self.win, self.win, folder))
-
-    # --- Mine text (C6) --------------------------------------------------------------------------------------- #
-    def mine_text(self, label, rel_path, control=None, at=None, key=None):
-        """Anki Miner's own window, the file's path on the clipboard, a toast saying so (never hidden: K67). Round 8
-        row 45: a press (`press.open`, under `key` — default the file's) — `control`'s arc turns (or `at`: the row's
-        status; neither: the bar's) while Anki Miner is looked for and opened, both on a worker (never on the window's
-        thread). The path is on the clipboard before Anki Miner starts (P3-A8: as it was)."""
-        path = os.path.join(path_utils.get_data_path(self.win.language), *(rel_path or "").split("/"))
-        get = self.win.services.settings.get
-        found = []
-
-        def miner():
-            got = _miner_and_file(get(), path)[0]
-            found.append(got)
-            return got
-
-        def opened(miner_path):
-            if not miner_path:
-                self.win.say(strings.MINE_TEXT_NO_MINER)
-                return
-            self.win.toasts.show(strings.MINE_TEXT_COPIED.format(name=label))
-
-        def failed(_info):
-            self.win.say(strings.MINE_TEXT_NOT_OPENED.format(path=found[0]) if found and found[0] else
-                         strings.MINE_TEXT_NO_MINER)
-        QApplication.clipboard().setText(path)      # (before the worker can start Anki Miner)
-        return qpress.open(self.win, miner, control=control, key=key or ("mine-text", path), at=at, then=opened,
-                           failed=failed)
-
-    def _needs_mine_text(self, entry, line):
-        needs = self.win.needs_you
-        control = needs._control("mine_text_only", entry, line) if needs is not None else None    # (its arc, under
-        key = needs._press_key("mine_text_only", entry, line and line.key) if needs is not None else None  # its card's)
-        line = line if line is not None else (entry.lines[0] if entry.lines else None)
-        if line is not None:
-            self.mine_text(line.label, line.rel_path, control=control, key=key)
 
     def _needs_make_cards(self, entry, _line=None):
         """A gap's *Make their cards* (P4.1 WF, IK D-1 lean (a)): Connect's ordinary work, not an ask — so no store

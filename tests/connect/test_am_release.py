@@ -477,3 +477,15 @@ def test_final_review_a_state_file_there_but_held_open_is_not_due(monkeypatch):
     with open(am_release.path(), "w", encoding="utf-8") as f:
         f.write('{"checked_at": "2026-10')
     assert am_release._claim(NOON + 2 * am_release.EVERY_S)[1] is not None, "a torn file is due and rewritten"
+
+
+def test_a_release_newer_than_the_approved_one_is_never_offered_the_approved_one_is():
+    """Alpha 4 M5 (Sonic 2026-10-27: "approved versions that go out for each time"): GitHub's latest past
+    `am_release.APPROVED` is no notice of its own — the notice offers the approved version, its own page, and only
+    while the installed one is older; a newer one installed by hand is left alone."""
+    fetch = Fetch(release("v99.0.0"))
+    am_release.check(ON, now=NOON, fetch=fetch)
+    approved = am_release.APPROVED
+    assert am_release.notice("3.7.0") == {"version": approved, "url": f"{am_release.RELEASES}/tag/v{approved}"}
+    assert am_release.notice(approved) is None, "up to the approved version: nothing to offer"
+    assert am_release.notice("99.0.0") is None, "a newer one you installed yourself: no notice, never a downgrade"

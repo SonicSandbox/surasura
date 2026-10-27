@@ -53,6 +53,15 @@ def mine_line(store):
         return store._mine_ids(n)
 
 
+def text_only(item):
+    """Is this item (a `store.item` dict) a book or a text — nothing Anki Miner mines yet (alpha 4 M1; P4.1's K67)?
+    Its file's type as the window reads it (`path_utils.infer_source_type`: its stamped type, else its extension)."""
+    from app.path_utils import infer_source_type
+    if not item:
+        return False
+    return infer_source_type(item.get("rel_path") or "", declared=item.get("source_type")) in ("epub", "text")
+
+
 def counting(store, tier):
     """[item ids] of `tier` in the store's order, available on disk, that count — W-1's one rule
     (`library_store.counts_sql` with the library's `keep_watched`): a watched one while it's off has nothing left to

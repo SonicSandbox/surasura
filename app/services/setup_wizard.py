@@ -47,6 +47,7 @@ LISTED_TIERS = ("now", "soon", "goal", "arrivals")    # page 3's rows: what is i
 SEEN = "setup_seen"             # the version whose setup pages the learner has seen ("" never: a 2.x profile)
 SETUP_VERSION = "3.0"           # this version's pages (3.1 may show only the pages added since: the follow-up list)
 PASSED = "setup_passed"         # the pages a profile that never finished saved with *Next* (shown as saved next time)
+BIG_LIBRARY = 15000             # K5 (Sonic 2026-10-25): setup's first look warns once it has found this many items
 BUSY_WAIT_S = 0.5               # K4: a busy library (another save, another look) is asked again this often while page
                                 # 3 waits — never given up on (*Stop* ends the wait)
 
@@ -480,7 +481,7 @@ def _patient(call, stop, waiting):
 _STOPPED = object()
 
 
-def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=None):
+def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=None, copying=None):
     """(A worker; SRC W1a.) *Next* on page 3 with folders picked: each one added (`Store.add_source`) and given its first
     look (`sources.scan(first=True)`: SRC-1 — Current, by show, quietly: no card is made for them by itself, S1) ->
     {"ready", "found", "shows", "added", "stopped", "busy", "read" [path], "refused" [(path, why)], "unreachable"
@@ -491,7 +492,8 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
     as the folder holding it is added, before its look; one no folder read holds is refused (`refused`, its reason).
     K4: a busy library — another save, another look — is waited for (`waiting(True)` / `waiting(False)`,
     page 3's *Waiting for your library…*) and the read goes on by itself; *Stop* ends the wait (`stopped`; the folder
-    not reached stays listed). `busy` stays False (kept for an older caller).
+    not reached stays listed). `busy` stays False (kept for an older caller). K5: `copying(done, total)` while a
+    folder's new files are copied in (`sources.scan`'s, that folder's); page 3 warns once `found` reaches BIG_LIBRARY.
     `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
     *Make cards for your first 20 episodes?* (D1); none there (Current was already full: *Set up again*, an upgrade)
     → no line."""
@@ -544,7 +546,7 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
                 if progress is not None:
                     progress(before[0] + found, before[1] + shows)
             def look(root=root, told=told):
-                got = sources.scan(store, language, root, first=True, progress=told, stop=stop)
+                got = sources.scan(store, language, root, first=True, progress=told, stop=stop, copying=copying)
                 if got.get("busy"):
                     raise _Waiting()                     # another look is reading: wait for it, then look
                 return got

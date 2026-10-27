@@ -165,7 +165,7 @@ def local_or_network(path):
     return "local" if kind in (2, 3, 6) else "network"   # REMOVABLE · FIXED · RAMDISK
 
 
-def scan(store, language, root, first=False, progress=None, stop=None, full=False, rules=None):
+def scan(store, language, root, first=False, progress=None, stop=None, full=False, rules=None, copying=None):
     """One look at the source `root` (its id) -> {reachable, found, shows, added, attached, skipped, short, waiting,
     recopied, restored, paired, switched, switched_works, stopped, busy, ids} (`short`: of those skipped, the loose
     texts too short to be a book, T2-B4; `paired`: known texts whose video was found and recorded on them, `_late` —
@@ -174,7 +174,9 @@ def scan(store, language, root, first=False, progress=None, stop=None, full=Fals
     `Store.undo_switch(work)`: the window's note "1 book updated to its new edition · Undo").
     `first`: setup's own first scan (SRC-1: Current, quiet); `full`: Refresh (S4); `progress(found, shows)` every
     PROGRESS_S; `stop()` is asked between files (a stopped look keeps what it took in, whole); `rules`: the placing
-    rules `take_in` applies to an arrival. A source not being read raises NotASource.
+    rules `take_in` applies to an arrival. A source not being read raises NotASource. `copying(done, total)` (K5: a
+    25,000-book first look said nothing for hours once its listing was done) every PROGRESS_S while the new files and
+    books found are checked, copied and taken in: how many of them are done.
     Another look at the same store running → {"busy": True}, nothing done."""
     key = _store_key(store)
     with _GUARD:
@@ -182,7 +184,7 @@ def scan(store, language, root, first=False, progress=None, stop=None, full=Fals
             return _result(busy=True)
         _RUNNING.add(key)
     try:
-        return _Look(store, language, root, first, progress, stop, full, rules).run()
+        return _Look(store, language, root, first, progress, stop, full, rules, copying).run()
     finally:
         with _GUARD:
             _RUNNING.discard(key)
@@ -743,9 +745,10 @@ def _listing(folder):
 
 
 class _Look:
-    def __init__(self, store, language, root, first, progress, stop, full, rules):
+    def __init__(self, store, language, root, first, progress, stop, full, rules, copying=None):
         self.store, self.language, self.root_id = store, language, root
         self.first, self.progress, self.stop, self.rules = first, progress, stop, rules
+        self.copying, self.copy_said, self.copied, self.to_copy = copying, 0.0, 0, 0   # K5: the take's progress
         self.full = bool(full or first)
         self.data_dir = store.data_dir
         self.out = _result()
@@ -876,6 +879,8 @@ class _Look:
             texts = [c[2].st_size for c in new if len(c) == 6]
             self.sizes = self.store.items_of_size(texts) if texts else {}
             self._take(new, books)
+            if self.to_copy:
+                self._copy_done(final=True)
         self._say(final=True)
         self.out["shows"] = len(self.shows)
         if self.out["stopped"]:
@@ -933,6 +938,16 @@ class _Look:
         if self.progress is not None and (final or now - self.said >= PROGRESS_S):
             self.said = now
             self.progress(self.out["found"], len(self.shows))
+
+    def _copy_done(self, final=False):
+        """K5: one more of the found files and books dealt with (copied and taken in, or passed over): told every
+        PROGRESS_S, and at the end."""
+        if not final:
+            self.copied += 1
+        now = time.monotonic()
+        if self.copying is not None and (final or now - self.copy_said >= PROGRESS_S):
+            self.copy_said = now
+            self.copying(self.copied, self.to_copy)
 
     def _wait(self, folder):
         self.out["waiting"] += 1
@@ -1438,11 +1453,13 @@ class _Look:
         for group in editions.values():
             group.sort(key=lambda b: -b[3].st_mtime_ns)
             by_show.setdefault(clean_name(os.path.splitext(group[0][1])[0]) or "Book", []).extend(group)
+        self.to_copy = sum(len(v) for v in by_show.values())
         for show in sorted(by_show, key=lambda s: (ls.search_fold(s, self.language), s)):
             batch = []
             for c in by_show[show]:
                 if self.stopped():
                     break
+                self._copy_done()
                 if len(c) == 5:                              # a book: taken in on its own, all its parts at once
                     try:
                         self._book(*c)
@@ -2499,6 +2516,8 @@ class _Look:
         rels = [f"{ls.CONTENT_FOLDER}/{book}/{x}" for x in names]
         if not self._write_parts(folder, rels, data, todo):
             return
+        for i in todo:                                       # K5: its bytes are known — check (b) never reads it again
+            self.hashes[rels[i]] = shas[i]
         if todo:
             write_source_marker(os.path.join(self.data_dir, ls.CONTENT_FOLDER, book), "epub", origin=name)
         found = []

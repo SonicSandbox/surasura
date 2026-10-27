@@ -216,7 +216,7 @@ class SourceLooks:
         return self._worker.put(self._folders, ids, then, detail) if ids and not self._closing.is_set() else False
 
     def removed(self, then, language=None):
-        """K2, the Removed list (🗑 beside Skipped): `then([{"trash_ids", "title", "removed_at", "days_left", "count",
+        """K2, the window's Removed list: `then([{"trash_ids", "title", "removed_at", "days_left", "count",
         "can_return", "roots"}])` on the worker, newest first (`Store.removed`), or `then(None)` when the store can't be
         read. Put back is the writer's `restore(trash_ids)` (its Undo sends them back). `language`: as `stop`'s."""
         if self._closing.is_set() or (language is not None and language != self.language):

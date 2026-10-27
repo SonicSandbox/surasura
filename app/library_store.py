@@ -50,8 +50,8 @@ if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app import library_watch
-from app.path_utils import (CONTENT_EXTENSIONS, backup_to_trash, decode_text, infer_source_type, read_source_marker,
-                            restart_trash_clock)
+from app.path_utils import (CONTENT_EXTENSIONS, TRASH_DAYS, backup_to_trash, decode_text, infer_source_type,
+                            read_source_marker, restart_trash_clock)
 
 try:
     import msvcrt
@@ -4684,21 +4684,67 @@ class Store:
         if kept != asks:
             self._set_meta({"rename_asks": _dumps(kept), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
 
+    def relink_many(self, pairs):
+        """K3 / K1 (alpha 4): *Choose a folder…* on a folder's or the library's card — many missing items each pointed at
+        its file (`pairs`: [(item_id, path)]), as `relink` does one, in ONE command: one change, one Undo (3,000 gone
+        files never make 3,000). A pair that can't be (not in the library, no file there, its place another item's, the
+        item gone or already there) is left out and named in `change.left` [(item_id, why)]. Returns the change, or None
+        when none was relinked."""
+        with self._command("relink") as cmd:
+            change = None
+            done, left = [], []
+            taken = set()
+            for item_id, path in pairs:
+                rel = library_rel(self.data_dir, path)
+                if rel is None:
+                    left.append((item_id, "not in the library"))
+                    continue
+                st = _stat(os.path.join(self.data_dir, rel))
+                if st is None:
+                    left.append((item_id, "no file there"))
+                    continue
+                row = self.conn.execute("SELECT rel_path, rel_key, size, mtime_ns, availability, tier FROM items "
+                                        "WHERE id = ?", (item_id,)).fetchone()
+                if row is None or row[1] == path_key(rel):
+                    continue
+                if path_key(rel) in taken or self.conn.execute("SELECT id FROM items WHERE rel_key = ?",
+                                                               (path_key(rel),)).fetchone() is not None:
+                    left.append((item_id, "another item's file"))
+                    continue
+                if change is None:
+                    change = self._change(cmd, "relink")
+                taken.add(path_key(rel))
+                done.append({"id": item_id, "old": list(row[:5]), "new": rel})
+                self._repoint(item_id, rel, st.st_size, st.st_mtime_ns)
+                if row[2] == st.st_size and _same_time(row[3], st.st_mtime_ns):
+                    _note_moves(self, [(row[0], row[2], row[3], rel, st.st_size, st.st_mtime_ns)])
+                self._drop_ask(rel)
+                cmd.touch({row[5]}, availability=row[4] != "available")
+            if change is None:
+                return None
+            change.relink, change.relinks, change.left = done[0], done, left
+            return change
+
     def _undo_relink(self, cmd, change):
+        """Undo a relink (one item, or `relink_many`'s list): each item pointed back where it was, by the value check —
+        one relinked again since, or whose old place is another item's now, is skipped."""
         out = self._change(cmd, "undo")
-        info = change.relink
-        row = self.conn.execute("SELECT rel_path, tier FROM items WHERE id = ?", (info["id"],)).fetchone()
-        if row is None or row[0] != info["new"]:
-            return out, [info["id"]]
-        old_rel, _key, size, mtime_ns, _availability = info["old"]
-        if self.conn.execute("SELECT 1 FROM items WHERE rel_key = ? AND id != ?",
-                             (path_key(old_rel), info["id"])).fetchone():
-            return out, [info["id"]]                           # its old path is another item's now (§12.8)
-        self._repoint(info["id"], old_rel, size, mtime_ns)
-        if not os.path.exists(os.path.join(self.data_dir, _strip(old_rel))):
-            self.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (info["id"],))
-        cmd.touch({row[1]}, availability=True)
-        return out, []
+        skipped = []
+        for info in getattr(change, "relinks", None) or [change.relink]:
+            row = self.conn.execute("SELECT rel_path, tier FROM items WHERE id = ?", (info["id"],)).fetchone()
+            if row is None or row[0] != info["new"]:
+                skipped.append(info["id"])
+                continue
+            old_rel, _key, size, mtime_ns, _availability = info["old"]
+            if self.conn.execute("SELECT 1 FROM items WHERE rel_key = ? AND id != ?",
+                                 (path_key(old_rel), info["id"])).fetchone():
+                skipped.append(info["id"])                     # its old path is another item's now (§12.8)
+                continue
+            self._repoint(info["id"], old_rel, size, mtime_ns)
+            if not os.path.exists(os.path.join(self.data_dir, _strip(old_rel))):
+                self.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (info["id"],))
+            cmd.touch({row[1]}, availability=True)
+        return out, skipped
 
     def its_new(self, path):
         """9a's other answer, *It's new*: its question goes and the file joins the library as any new file does
@@ -8787,7 +8833,7 @@ def _store_let_origins_back(self, keys):
 
 
 # --- K2 (alpha 4, Mattias's note 6): the Removed list — his own Removes, to put back ------------------------------- #
-REMOVED_DAYS = 30               # a removed file's days in the data folder's trash (`path_utils`' purge, by its clock)
+REMOVED_DAYS = TRASH_DAYS        # a removed file's days in the trash (`path_utils`' purge: one number)
 
 
 def _store_removed_rows(self):

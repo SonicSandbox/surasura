@@ -1256,11 +1256,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "later_all": ("Not now for all", "Hide every card below with this reason until tomorrow"),
     "stop_all": ("Stop asking for all", "Never ask about any card below with this reason again. Their items and words "
                                         "stay in your library"),
-    # alpha 4 K3: most of the library's files gone at once
-    "find_library": ("Find the folder…", "Choose where this library's files are now: Surasura reads them there and "
-                                         "they keep their places, words and cards"),
-    "start_fresh": ("Start fresh", "Begin a new library from your folders. The old one goes to the trash, never "
-                                   "deleted"),
+    # alpha 4 K1: most of the library's files gone at once (*Start fresh*: Settings' *Start a fresh library* sheet)
+    "start_fresh": ("Start fresh", "Set this library aside in one backup in the trash, never deleted, and read your "
+                                   "folders again from scratch. It asks first"),
 }
 NEEDS_LOOKING = "Looking…"
 NEEDS_MORE_LINES = "and {n} more"
@@ -1273,14 +1271,6 @@ NEEDS_STOPPED_N = "{n:,} cards won't ask again · their items and words stay"
 NEEDS_FORGET_TITLE = "Forget {n:,} missing files?"   # alpha 4 B: the line for every missing file
 NEEDS_FORGET_YES = "Forget {n:,} files"
 NEEDS_FORGOT = "Forgot {n:,} missing files · in the trash 30 days"
-NEEDS_START_FRESH_TITLE = "Start a fresh library?"   # alpha 4 K3
-NEEDS_START_FRESH_BODY = ("The old library goes to the trash, never deleted. Your folders are read again from the "
-                          "start; your known words stay.")
-NEEDS_START_FRESH_YES = "Start fresh"
-NEEDS_START_FRESH_YES_TIP = "Begin a new library; the old one is kept in the trash"
-NEEDS_START_FRESH_DONE = "A fresh library is being read from your folders"
-NEEDS_LIBRARY_FOUND = "Your library is read from {folder} now"
-NEEDS_LIBRARY_TITLE = "Where are this library's files now?"
 NEEDS_LOOK_FAILED = "Couldn't look for its videos: {why}"
 NEEDS_REMOVE_TITLE_ONE = "Remove {name}?"
 NEEDS_REMOVE_TITLE = "Remove {n} files?"
@@ -1454,3 +1444,12 @@ REPORT_ZIPPED = "Made {name} in {folder}. Send this zip to Sonic"
 REPORT_ZIP_FAILED = "The zip couldn't be made: {why}. Your list is as it was"
 REPORT_HINT = "Send this zip to Sonic. Nothing is sent by Surasura: the zip stays on this PC until you send it"
 # --- end Report a problem
+
+# --- alpha 4 seams (P-seams: K1 / K3 / T6 option 2; app/qt/needs.py) ----------------------------------------------- #
+# K3 / K1: *Choose a folder…* on a folder's or the library's card (`needs.match_tree`, one `Writer.relink_many`)
+NEEDS_RELINKED_NONE_TREE = "Nothing in that folder, or the folders in it, has these files' names"
+NEEDS_RELINK_LEFT = "{n:,} of them weren't pointed at: {why}"
+NEEDS_RELINK_WHY = "{why} ({n:,})"
+# T6 option 2: *Find its new folder…* read a folder that held none of the show's episodes: it isn't read any more
+NEEDS_FIND_DROPPED = "None of {show}'s episodes were there: {folder} isn't read"
+# --- end alpha 4 seams

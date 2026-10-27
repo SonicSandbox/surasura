@@ -1274,6 +1274,7 @@ class ShellWindow(QMainWindow):
         # the first frame (`_start_looks`: the store's module stays off the first paint)
         self.looks = None
         self.sources = ()                                 # the last look's sources ({id, path, on, items, reachable})
+        self.sources_listed = False                       # ... once a listing of this library landed (none is news)
         self._folders_of = {}                             # an arrival's first item -> its source folder (None: none)
         self._folders_asked = set()
         self._folders_version = 0
@@ -2850,6 +2851,7 @@ class ShellWindow(QMainWindow):
         """A language switch: that library's folders, looked at once (its own cadence); the last one's line goes."""
         self._open_looks(writer)
         self.sources = ()
+        self.sources_listed = False
         self.offline_hidden = set()
         self._folders_of.clear()
         self._folders_asked.clear()
@@ -2910,6 +2912,7 @@ class ShellWindow(QMainWindow):
         if not isinstance(summary, dict) or summary.get("language", self.language) != self.language:
             return                                        # B2: a language left never paints over the one open
         self.sources = tuple(summary.get("sources") or ())
+        self.sources_listed = True
         self._refresh_ended()                             # round 8 row 45: Refresh's press, ended by its look
         self.offline_hidden = (self.offline_hidden | set(summary.get("kept_lines") or ())) & \
             standing_service.not_back(self.sources)       # round 8 row 54: a folder back lets its ✕ go
@@ -2989,9 +2992,9 @@ class ShellWindow(QMainWindow):
                  if len(gone) == 1 else strings.PHASE_FOLDERS_GONE.format(n=len(gone)))
         self.phase.set_extra(phase_service.ARRIVALS, "gone", "needs" if gone else None, words)
         self.phase.set_needs_asks(bool(gone))
-        if getattr(self, "needs_you", None) is not None:      # (judged: every folder being read was looked at)
-            judged = bool(self.sources) and all(r.get("reachable") is not None for r in self.sources
-                                                if r.get("on", True))
+        if getattr(self, "needs_you", None) is not None:      # (judged: every folder being read was looked at —
+            judged = self.sources_listed and all(r.get("reachable") is not None   # none read, once listed: K1's
+                                                 for r in self.sources if r.get("on", True))   # card waits on no look)
             self.needs_you.gone_in(gone, self.language, judged=judged)
 
     def moves_saving(self, on):

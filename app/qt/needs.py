@@ -32,7 +32,13 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
   (`stop`), the old folder stops being read through the writer (`stop_reading`: the toast's Undo, Ctrl+Z), else the bar
   says why and the card stays. *Stop reading it*: the writer's `stop_reading` (one Undo; nothing on disk moves, every
   episode stays). Either's save, and its Undo, lists the folders again (`drag._sources_stopped`): the card goes, or comes
-  back. *Keep waiting*: the shell's `keep_waiting_for` (the offline line's dismissal, kept in the seen file).
+  back. *Keep waiting*: the shell's `keep_waiting_for` (the offline line's dismissal, kept in the seen file). B14: the
+  looks let the folder go first, and read it again on the stop's Undo (`settings_sources.give_stop`, Settings' rule).
+- **A folder's files, or the library's, mostly gone** (K3 / K1, Kura's cards): *Choose a folder…* matches each file at
+  its place under the folder picked (`needs.match_tree`, a worker) and points them all back in ONE writer command
+  (`relink_many`: one toast, one Undo; what the store couldn't take said in the bar). The library's card waits for
+  every folder's look (`settled`: the shell's judged summary) and offers *Start fresh* — Settings' own sheet, then
+  `SourceLooks.fresh` (the old library backed up in the trash, never deleted).
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
@@ -209,7 +215,7 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
            "start_fresh")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "mine_text_only", "open_logs", "save_logs",
-                     "open_anki", "find_library")
+                     "open_anki")
 
 
 class NeedsCards(QWidget):
@@ -791,8 +797,8 @@ class NeedsYou(QObject):
             return getattr(self.win, "moves", None) is not None
         if name == "find_folder":                    # ... and the looks read the folder picked
             return getattr(self.win, "moves", None) is not None and getattr(self.win, "looks", None) is not None
-        if name in ("start_fresh", "find_library"):  # K3: Kura's two calls on the looks (Seams), else no card
-            return callable(getattr(getattr(self.win, "looks", None), name, None))
+        if name == "start_fresh":                    # K1: the looks start the fresh library (`SourceLooks.fresh`)
+            return callable(getattr(getattr(self.win, "looks", None), "fresh", None))
         return True
 
     def act(self, name, entry, line=None):
@@ -845,14 +851,15 @@ class NeedsYou(QObject):
         return self.data_dir or path_utils.get_data_path(self.language)
 
     def _give(self, text, ids, command, toast_it=True, told=None):
-        """A write through the drag controller's tickets (its toast's Undo, Ctrl+Z) -> its number, or None. `told`:
-        the ticket's events ("saved", "refused", "undone", "ended": `drag.Ticket`)."""
+        """A write through the drag controller's tickets (its toast's Undo, Ctrl+Z) -> its number, or None.
+        `told(ticket, event)`: the ticket's events ("saved", "refused", "undone", "ended": `drag.Ticket`)."""
         from app.qt import drag
         moves = self.win.moves
         if moves is None or moves.refused() is not None:
             return None
         ticket = drag.Ticket(text, (), ids)
-        ticket.told = told
+        if told is not None:
+            ticket.told = lambda event: told(ticket, event)
         return moves._give(ticket, command, toast=toast_it)
 
     def _offline_ids(self):
@@ -925,10 +932,14 @@ class NeedsYou(QObject):
     def _do_choose_folder(self, entry, _line):
         """*Choose a folder…*: one press from the click to the toast (round 8 row 45) — its arc turns while the folder
         is looked for (a drive may be offline: its stat can take a while), and again once one is chosen, while its
-        files are matched; a second click meanwhile does nothing."""
+        files are matched; a second click meanwhile does nothing. A folder's or the library's card (K3 / K1) matches
+        each file at its place under the folder picked, then by its name, in the folders inside it too
+        (`needs.match_tree`), and points them all at once (`_relink_many`); a show's card, by name or episode number
+        in that folder (`match_folder`)."""
         data = self._data()
         start = os.path.join(data, *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
         lines = tuple(entry.lines)
+        tree = entry.kind in (service.FILES_FOLDER, service.LIBRARY_GONE)
         p = qpress.begin(self._control("choose_folder", entry), self._press_key("choose_folder", entry), win=self.win)
         if p is None:
             return
@@ -948,12 +959,16 @@ class NeedsYou(QObject):
 
             def matched(pairs):
                 ended()
-                self._relink_all(pairs, len(lines))
+                (self._relink_many if tree else self._relink_all)(pairs, len(lines))
 
             def broke(info):
                 ended(info[0] if info else None)
                 self._failed(info)
-            bridge.run_in_worker(match_folder, folder, lines, then=matched, failed=broke)
+            if tree:
+                bridge.run_in_worker(service.match_tree, folder, (entry.data or {}).get("folder", ""), lines,
+                                     then=matched, failed=broke)
+            else:
+                bridge.run_in_worker(match_folder, folder, lines, then=matched, failed=broke)
         bridge.run_in_worker(os.path.isdir, start, then=pick, failed=lambda _info: pick(False))
 
     def _relink_all(self, pairs, n):
@@ -965,6 +980,27 @@ class NeedsYou(QObject):
             self._give(ln.label, (ln.item_id,), lambda t, i=ln.item_id, p=path: writer.relink(i, p, label=t),
                        toast_it=False)
         self.win.toasts.show(strings.NEEDS_RELINKED_N.format(k=len(pairs), n=n))
+
+    def _relink_many(self, pairs, n):
+        """K3 / K1: every file `match_tree` matched pointed at in ONE writer command (`Writer.relink_many`: one ticket,
+        one toast, one Undo — never one per file); once saved, what the store couldn't take (`change.left`: another
+        item's file, outside the library, no file there…) is said in the bar, how many and why."""
+        if not pairs:
+            self._say(strings.NEEDS_RELINKED_NONE_TREE)
+            return
+        writer = self.win.services.writer
+        pairs = [(ln.item_id, path) for ln, path in pairs]
+
+        def told(ticket, event):
+            left = getattr(ticket.change, "left", None) if event == "saved" else None
+            if left:
+                whys = {}
+                for _item, why in left:
+                    whys[why] = whys.get(why, 0) + 1
+                self._say(strings.NEEDS_RELINK_LEFT.format(n=len(left), why=" · ".join(
+                    strings.NEEDS_RELINK_WHY.format(why=why, n=k) for why, k in whys.items())))
+        self._give(strings.NEEDS_RELINKED_N.format(k=len(pairs), n=n), [i for i, _p in pairs],
+                   lambda t: writer.relink_many(pairs, label=t), told=told)
 
     def _do_keep_words(self, entry, line):
         self._answer("keep_words", entry, service.answer_keys(line if line is not None else entry), line=line)
@@ -1079,9 +1115,12 @@ class NeedsYou(QObject):
     def _found(self, entry, folder, answer):
         """The looks' answer to *Find its new folder…* (the window's thread) -> True when the old folder is stopped."""
         from app import sources
+        from app.services import source_looks
         name = entry.data["name"]
         left = answer.get("language") not in (None, getattr(self.win, "language", None))   # a library left since
-        if answer.get("refused"):
+        if answer.get("refused") == source_looks.FIND_NONE.format(folder=folder):
+            self._say(answer["refused"])             # T6 option 2: none of its files there — the folder isn't read
+        elif answer.get("refused"):
             self._say(strings.NEEDS_FIND_REFUSED.format(folder=folder, why=answer["refused"]))
         elif answer.get("failed"):
             self._say(strings.NEEDS_FIND_FAILED.format(folder=folder, why=answer["failed"]))
@@ -1099,6 +1138,9 @@ class NeedsYou(QObject):
                 self._say(strings.NEEDS_FIND_JOINED_LEFT.format(name=name, folder=folder))
                 return False
             return self._stop(entry, text)
+        elif answer.get("dropped"):                  # T6 option 2: read, none of them there: not read any more
+            show = (entry.data.get("shows") or (name,))[0]
+            self._say(strings.NEEDS_FIND_DROPPED.format(folder=folder, show=show))
         else:
             show = (entry.data.get("shows") or (name,))[0]
             self._say(strings.NEEDS_FIND_NONE.format(folder=folder, show=show))
@@ -1117,17 +1159,18 @@ class NeedsYou(QObject):
 
     def _stop(self, entry, text):
         """The gone folder `entry` no longer read, through the window's writer (one Undo), once per card -> True when
-        it was given."""
+        it was given. B14 (alpha 4): Settings' one rule (`settings_sources.give_stop`) — the looks let it go first (a
+        look reading it stops between files), and read it again on its Undo, or when it is refused."""
+        from app.qt import settings_sources
         root, language = entry.data["root"], entry.data.get("language") or self.language
         if root in self._stopping:
             return True                              # given already: the card goes with its listing
-        writer = self.win.services.writer
 
-        def told(event):                             # undone, refused or let go unsaved — it can be asked again
+        def told(_ticket, event):                    # undone, refused or let go unsaved — it can be asked again
             if event in ("undone", "refused", "ended"):
                 self._stopping.discard(root)
         self._stopping.add(root)
-        if self._give(text, (), lambda t: writer.stop_reading(root, t, language=language), told=told) is None:
+        if settings_sources.give_stop(self.win, root, text, language, told=told) is None:
             self._stopping.discard(root)
             return False
         return True
@@ -1214,47 +1257,68 @@ class NeedsYou(QObject):
         bridge.run_in_worker(service.ask_again, self.language, list(keys),
                              then=lambda _n: self._alive() and self.refresh(), failed=self._failed)
 
-    # K3 (Kura's two calls on the looks: `start_fresh(language, then)`, `find_library(language, folder, then)`;
-    # the card shows only while both are there)
-    def _do_find_library(self, entry, _line):
-        looks = self.win.looks
-        folder = self.pick_folder(strings.NEEDS_LIBRARY_TITLE, os.path.dirname(os.path.normpath(self._data())))
-        if not folder:
-            return
-        folder = os.path.normpath(folder)
-        self._looks_press("find_library", entry, lambda then: looks.find_library(self.language, folder, then),
-                          lambda: strings.NEEDS_LIBRARY_FOUND.format(folder=folder), goes=False)   # (the folder may
-        #                                                                     hold only some: the card can stay)
-
+    # K1: the library mostly gone — *Start fresh* (`SourceLooks.fresh`, with Settings' own sheet)
     def _do_start_fresh(self, entry, _line):
-        from app.qt import confirm
-        looks = self.win.looks
+        """*Start fresh*: Settings' *Start a fresh library?* sheet (`settings_sources.fresh_sheet`: what goes, what
+        stays, the store's counts read on the looks' worker first; *Also forget my known words* off; Enter, Esc or a
+        click outside is No), then `SourceLooks.fresh` on the looks' worker — the old library in one dated backup in
+        the trash, never deleted — and the bar says how it went (Settings' words). The arc turns from the press while
+        the counts are read, and from Yes until the reset answers."""
+        from app.qt import settings_sources
+        looks = getattr(self.win, "looks", None)
+        if looks is None:
+            self._say(strings.NEEDS_FIND_CLOSED)
+            return
+        p = qpress.begin(self._control("start_fresh", entry), self._press_key("start_fresh", entry), win=self.win)
+        if p is None:
+            return                                   # one press: its counts or its reset under way
 
-        def answered(go):
-            if go:
-                self._looks_press("start_fresh", entry, lambda then: looks.start_fresh(self.language, then),
-                                  lambda: strings.NEEDS_START_FRESH_DONE)
-        self.confirming = confirm.ask(self.win, strings.NEEDS_START_FRESH_TITLE, strings.NEEDS_START_FRESH_BODY,
-                                      strings.NEEDS_START_FRESH_YES, strings.NEEDS_START_FRESH_YES_TIP,
-                                      default_no=True, danger=True, on_answer=answered)
+        def ask(counts):
+            if p.live():
+                qpress.end(p, self.win)
+                p.release()                          # (the sheet is up: its Yes presses again, or No asks again)
+            if not self._alive():
+                return
 
-    def _looks_press(self, name, entry, call, said, goes=True):
-        """A call on the looks' worker, its button's arc turning until it answers ({refused | failed: why} or done)."""
-        p = qpress.begin(self._control(name, entry), self._press_key(name, entry), win=self.win, goes=goes)
+            def answered(yes):
+                card, self.confirming = self.confirming, None
+                if yes:
+                    forget = bool(card is not None and card.checked)
+                    self._looks_press("start_fresh", entry, lambda then: looks.fresh(forget, then))
+            self.confirming = settings_sources.fresh_sheet(self.win, counts, answered)
+        counts = getattr(looks, "fresh_counts", None)
+        if counts is None:
+            ask(None)
+            return
+        relay = bridge.Relay(self.win)
+
+        def counted(found):
+            relay.deleteLater()
+            ask(found)
+        relay.said.connect(counted)
+        if not counts(relay.call):
+            relay.deleteLater()
+            ask(None)
+
+    def _looks_press(self, name, entry, call):
+        """`SourceLooks.fresh` on the looks' worker, its button's arc turning until it answers; the bar says how it
+        went (`settings_sources.fresh_said`). Done, the card goes with the fresh library's view; refused or failed,
+        it stays (pressed again, it asks again)."""
+        from app.qt import settings_sources
+        p = qpress.begin(self._control(name, entry), self._press_key(name, entry), win=self.win, goes=True)
         if p is None:
             return
         relay = bridge.Relay(self.win)
 
         def answered(answer):
             relay.deleteLater()
-            why = (answer or {}).get("refused") or (answer or {}).get("failed")
+            answer = answer or {}
+            failed = not answer.get("done")
             if p.live():
-                qpress.end(p, self.win, failed=bool(why))
-            if why:
+                qpress.end(p, self.win, failed=failed)
+            if failed:
                 self._stays(name, entry)
-                self._say(strings.NEEDS_FAILED.format(why=why))
-            else:
-                self._say(said())
+            self._say(settings_sources.fresh_said(answer))
             self.refresh()
         relay.said.connect(answered)
         if not call(relay.call):

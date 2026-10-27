@@ -101,8 +101,7 @@ LIBRARY_MIN = 20                # gone files (of two shows or more) before the l
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2; IK-2: *Mine the text only*)
-WIRED_LATER = frozenset(("mine_text_only", "make_cards", "start_fresh"))   # K1's *Start fresh*: until the window
-#                                                                               maps it (`SourceLooks.fresh`'s sheet)
+WIRED_LATER = frozenset(("mine_text_only", "make_cards"))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
                    "mine-failed": ("open_logs",), "error": ("open_logs",)}

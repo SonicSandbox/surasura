@@ -16,7 +16,7 @@ import pytest
 from app.services import needs
 from tests.test_library_store_support import LANGUAGES, names
 
-GONE = "Library/{t}/{t} - {n:02d}.srt"
+GONE = "{t}/{t} - {n:02d}.srt"            # each show in a folder of its own (K3: a shared folder is one card)
 
 
 def view(language, n=4, missing=None, start=0):
@@ -153,31 +153,31 @@ def test_gone_folders_come_on_top_before_the_shows_files(language):
     assert kinds.index(needs.FOLDER_GONE) < kinds.index(needs.GONE)
 
 
-# --- K3: most of the library's files gone ------------------------------------------------------------------------- #
+# --- K1: most of the library's files gone (Kura's card: `settled`, every folder had its look) --------------------- #
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_library_whose_files_are_mostly_gone_is_one_card_on_top_only_when_its_answers_are_there(language):
+def test_a_library_whose_files_are_mostly_gone_is_one_card_on_top_once_every_folder_had_its_look(language):
     dead = view(language, 40, missing=30)
-    assert needs.LIBRARY_GONE not in [e.kind for e in needs.entries(dead)]          # Kura's calls absent: no card
-    out = needs.entries(dead, library_gone=True)
-    assert out[0].kind == needs.LIBRARY_GONE and out[0].title == "Most of this library's files are gone (30 of 40)"
-    assert out[0].actions == ("find_library", "start_fresh")
+    assert needs.LIBRARY_GONE not in [e.kind for e in needs.entries(dead)]          # a look still to come: no card
+    out = needs.entries(dead, settled=True)
+    assert out[0].kind == needs.LIBRARY_GONE and out[0].title == "Most of your library's files are gone (30 of 40)"
+    assert out[0].actions == ("start_fresh", "choose_folder")
     few = view(language, 40, missing=10)                                             # a quarter: each show's card
-    assert needs.LIBRARY_GONE not in [e.kind for e in needs.entries(few, library_gone=True)]
+    assert needs.LIBRARY_GONE not in [e.kind for e in needs.entries(few, settled=True)]
     small = view(language, 6)                                                       # 6 of 6, but only 6
-    assert needs.LIBRARY_GONE not in [e.kind for e in needs.entries(small, library_gone=True)]
+    assert needs.LIBRARY_GONE not in [e.kind for e in needs.entries(small, settled=True)]
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_library_on_a_drive_only_offline_is_never_called_gone(language):
     dead = view(language, 40)
-    root = needs.Root(path="E:\\Anime", rel="Library", label="Drive E:", files=40)
-    out = needs.entries(dead, offline_roots=[root], library_gone=True)
+    root = needs.Root(path="E:\\Anime", rel="", label="Drive E:", files=40)
+    out = needs.entries(dead, offline_roots=[root], settled=True)
     assert needs.LIBRARY_GONE not in [e.kind for e in out]
 
 
 def test_3000_cards_are_worked_out_off_the_window_in_well_under_a_second():
-    """The gather (a worker's) at Mattias's size: 3,000 shows with a file gone."""
+    """The gather (a worker's) at Mattias's size: 3,000 shows with a file gone — one library card holding them all."""
     t = time.perf_counter()
-    out = needs.entries(view("ja", 3000), hidden=frozenset(), library_gone=True)
+    out = needs.entries(view("ja", 3000), hidden=frozenset(), settled=True)
     assert time.perf_counter() - t < 1.0
-    assert out[0].kind == needs.LIBRARY_GONE and sum(1 for e in out if e.kind == needs.GONE) == 3000
+    assert out[0].kind == needs.LIBRARY_GONE and len(out[0].lines) == 3000

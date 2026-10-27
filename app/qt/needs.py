@@ -196,6 +196,7 @@ class NeedsCards(QWidget):
     long step; a card asked for (`card`, `reveal`) is built with those before it. The cards built are always the
     entries' first ones, each built once."""
     action = pyqtSignal(str, object, object)
+    more = pyqtSignal(object, object)           # alpha 4 D2: a card's ⋯ pressed (entry, the ⋯)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -209,6 +210,7 @@ class NeedsCards(QWidget):
         self.epoch = 0                          # bumped when the callables change (`NeedsYou.rewire`): every card again
         self.shown = lambda name, entry, line=None: True
         self.adopt = lambda button, name, entry: None   # a button made again while its press is live: it shows it
+        self.has_more = lambda entry: False     # alpha 4 D2: whether a card shows a ⋯ (`NeedsYou.more_entries`)
         self._owed = None                       # C1: the entries given while the page is hidden, built when it shows
         self._want = ()                         # alpha 4 B: every entry, in order (built or not)
         self._found, self._looking = {}, ()
@@ -420,6 +422,16 @@ class NeedsCards(QWidget):
                 b.setEnabled(False)
             acts.addWidget(b)
         acts.addStretch(1)
+        if self.has_more(e):                        # alpha 4 D2: *Not now* · *Stop asking*, tucked in its ⋯
+            from app.qt.arrivals import _Square     # (the tray's ⋯ square: one look for a ⋯ beside buttons)
+            more = _Square("more", card)
+            more.setProperty("action", "more")
+            more.setAccessibleName(strings.NEEDS_MORE_NAME.format(title=e.title))
+            more.setToolTip(strings.NEEDS_MORE_TIP)
+            more.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            more.clicked.connect(lambda _c=False, en=e, m=more: self.more.emit(en, m))
+            card.more = more
+            acts.addWidget(more)
         box.addLayout(acts)
         return card
 
@@ -507,6 +519,9 @@ class NeedsYou(QObject):
         self._asked = 0
         self._running = False
         self._again = False
+        self._hidden_now = {}                    # alpha 4 D2: key -> the day *Not now* hid it (None: *Stop asking*) —
+        #                                          off the page at the press, before its write lands
+        self.last_menu = None
         reader = getattr(win.services, "library", None)
         opener = getattr(reader, "opener", None)
         # what the entries are read from, each on a worker (tests replace them)
@@ -533,12 +548,31 @@ class NeedsYou(QObject):
                               "open_anki": _connect_callable("open_anki", "for_you")}     # A3W-6
         self.cards = page.cards
         self.cards.shown = self.available
+        self.cards.has_more = lambda e: e.kind not in service.NO_LATER
+        self.cards.more.connect(self.more_menu)
         self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry, b.property("line")),
                                                                win=self.win)
         self.cards.action.connect(self.act)
         heard = getattr(win, "bridge", None)
         if heard is not None and hasattr(heard, "settings_written"):
             heard.settings_written.connect(self._settings_written)
+        self._day = QTimer(self)                 # alpha 4 D2: *Not now*'s cards come back the next day
+        self._day.setSingleShot(True)
+        self._day.timeout.connect(self._new_day)
+        self._arm_day()
+
+    def _arm_day(self):
+        now = time.localtime()
+        left = 86400 - (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec)
+        self._day.start((left + 2) * 1000)
+
+    def _new_day(self):
+        """Midnight: what *Not now* hid yesterday is asked again (the next gather finds it, if it still needs you)."""
+        today = service._today()
+        self._hidden_now = {k: d for k, d in self._hidden_now.items() if d is None or d >= today}
+        self._arm_day()
+        if self._alive():
+            self.refresh()
 
     # --- what comes in ------------------------------------------------------------------------------------------- #
     def _settings_written(self, keys):
@@ -611,14 +645,25 @@ class NeedsYou(QObject):
         if first is not None:
             self.cards.reveal(first.key)
 
+    def shown_entries(self):
+        """The entries on the page: the gather's, less those *Not now* / *Stop asking* hid since (alpha 4 D2: off at
+        once, before the write lands and the next gather leaves them out by itself) — a line for many whose cards are
+        all hidden goes with them."""
+        if not self._hidden_now:
+            return self.entries
+        hid = self._hidden_now
+        return tuple(e for e in self.entries if e.key not in hid and not (
+            e.kind == service.BULK and (e.data or {}).get("keys") and all(k in hid for k in e.data["keys"])))
+
     def counts(self):
         """(listed, unseen) for the tab: the entries but the bulk answer, and the unseen ones (P1.2-1)."""
-        return sum(1 for e in self.entries if e.kind != service.BULK), service.badge(self.entries)
+        shown = self.shown_entries()
+        return sum(1 for e in shown if e.kind != service.BULK), service.badge(shown)
 
     def opened(self):
         """The page was shown: its unseen entries stop counting (still listed): the seen file and Connect's
         `seen_at`, on a worker; read again only when something was marked."""
-        unseen = [e for e in self.entries if e.unseen and e.kind != service.FAILURE]
+        unseen = [e for e in self.shown_entries() if e.unseen and e.kind != service.FAILURE]
         if not unseen:
             return
         lang = self.language
@@ -659,6 +704,7 @@ class NeedsYou(QObject):
                                   cards_on=settings_manager.connect_on(settings),    # B2-8: the one rule
                                   miner_found=bool(find_miner(settings)),     # row 13: D1's line waits for it
                                   gone_folders=gone_folders or (),
+                                  hidden=service.read_hidden(lang),           # alpha 4 D2: Not now, Stop asking
                                   library_gone=library_gone)
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
@@ -693,7 +739,7 @@ class NeedsYou(QObject):
     def _paint(self):
         if not self._alive():
             return
-        self.page.show_entries(self.entries, self.found, self.looking)
+        self.page.show_entries(self.shown_entries(), self.found, self.looking)
         self.changed.emit()
 
     def rewire(self):
@@ -1070,6 +1116,79 @@ class NeedsYou(QObject):
         if keep is not None:
             keep([entry.data["path"]])
             self._say(strings.NEEDS_KEEP_WAITING.format(name=entry.data["name"]))
+
+    # alpha 4 D2: every card's ⋯ — *Not now* (until tomorrow) and *Stop asking* (with Undo); a line for many's "for all"
+    def more_entries(self, entry):
+        """The ⋯'s entries for `entry` -> [name]: a card's *Not now* · *Stop asking*; a line for many's *Not now for
+        all* (when it isn't one of its buttons) · *Stop asking for all*."""
+        if entry.kind in service.NO_LATER:
+            return []
+        if entry.kind == service.BULK:
+            return [n for n in ("later_all", "stop_all") if n not in entry.actions]
+        return ["later", "stop_asking"]
+
+    def more_menu(self, entry, control=None):
+        """The ⋯ pressed: a plain menu in the theme's style (Esc closes it), each entry's tip shown -> the menu."""
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QAction
+        from app.qt import drag
+        m = drag.list_menu(self.cards, entry.title)
+        for name in self.more_entries(entry):
+            label, tip = strings.NEEDS_ACTIONS[name]
+            act = QAction(label, m)
+            act.setToolTip(tip)
+            act.setProperty("action", name)
+            act.triggered.connect(lambda _c=False, n=name, e=entry: self.act(n, e))
+            m.addAction(act)
+        self.last_menu = m
+        if control is not None and control.isVisible():      # under the ⋯, its right edge on the ⋯'s
+            m.popup(control.mapToGlobal(QPoint(control.width() - m.sizeHint().width(), control.height())))
+        return m
+
+    def _covered(self, entry):
+        """The cards a line for many answers (its `keys`), and the line itself."""
+        return tuple((entry.data or {}).get("keys") or ()) + (entry.key,)
+
+    def _do_later(self, entry, _line):
+        self._hide((entry.key,), service.put_off, strings.NEEDS_LATER_ONE, later=True)
+
+    def _do_stop_asking(self, entry, _line):
+        self._hide((entry.key,), service.stop_asking, strings.NEEDS_STOPPED_ONE)
+
+    def _do_later_all(self, entry, _line):
+        keys = self._covered(entry)
+        self._hide(keys, service.put_off, strings.NEEDS_LATER_N.format(n=len(keys) - 1), later=True)
+
+    def _do_stop_all(self, entry, _line):
+        keys = self._covered(entry)
+        self._hide(keys, service.stop_asking, strings.NEEDS_STOPPED_N.format(n=len(keys) - 1))
+
+    def _hide(self, keys, write, said, later=False):
+        """*Not now* / *Stop asking*: the cards off the page at the press (one frame — no pending mark), the seen file
+        written on a worker (its one writer), a toast with Undo. A write that fails puts them back and says why."""
+        day = service._today() if later else None
+        for k in keys:
+            self._hidden_now[k] = day
+        self._paint()
+        lang = self.language
+
+        def failed(info):
+            for k in keys:
+                self._hidden_now.pop(k, None)
+            if self._alive():
+                self._paint()
+            self._failed(info)
+        bridge.run_in_worker(write, lang, list(keys), then=lambda _n: self._alive() and self.refresh(),
+                             failed=failed)
+        self.win.toasts.show(said, undo=lambda: self._ask_again(keys))
+
+    def _ask_again(self, keys):
+        """Undo: the cards asked again — back at once while the page still holds them, and in the seen file."""
+        for k in keys:
+            self._hidden_now.pop(k, None)
+        self._paint()
+        bridge.run_in_worker(service.ask_again, self.language, list(keys),
+                             then=lambda _n: self._alive() and self.refresh(), failed=self._failed)
 
     # K3 (Kura's two calls on the looks: `start_fresh(language, then)`, `find_library(language, folder, then)`;
     # the card shows only while both are there)

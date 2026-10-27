@@ -1235,6 +1235,12 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "keep_waiting": ("Keep waiting", "Hide this until the folder is back. If it goes again later, it asks again"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
+    # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
+    "later": ("Not now", "Hide this until tomorrow. If it still needs you then, it comes back"),
+    "stop_asking": ("Stop asking", "Never ask about this again. The item and its words stay in your library"),
+    "later_all": ("Not now for all", "Hide every card below with this reason until tomorrow"),
+    "stop_all": ("Stop asking for all", "Never ask about any card below with this reason again. Their items and words "
+                                        "stay in your library"),
     # alpha 4 K3: most of the library's files gone at once
     "find_library": ("Find the folder…", "Choose where this library's files are now: Surasura reads them there and "
                                          "they keep their places, words and cards"),
@@ -1243,6 +1249,12 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
 }
 NEEDS_LOOKING = "Looking…"
 NEEDS_MORE_LINES = "and {n} more"
+NEEDS_MORE_NAME = "More for {title}"             # alpha 4 D2: a card's ⋯
+NEEDS_MORE_TIP = "Not now · Stop asking"
+NEEDS_LATER_ONE = "Not now: back tomorrow if it still needs you"
+NEEDS_LATER_N = "Not now: {n:,} cards back tomorrow if they still need you"
+NEEDS_STOPPED_ONE = "It won't ask again · its item and words stay"
+NEEDS_STOPPED_N = "{n:,} cards won't ask again · their items and words stay"
 NEEDS_FORGET_TITLE = "Forget {n:,} missing files?"   # alpha 4 B: the line for every missing file
 NEEDS_FORGET_YES = "Forget {n:,} files"
 NEEDS_FORGOT = "Forgot {n:,} missing files · in the trash 30 days"

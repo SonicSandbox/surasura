@@ -295,10 +295,10 @@ def test_G5_link_these_links_every_match_through_link_video_never_relink(world):
 def test_G6_find_all_missing_videos_looks_for_every_show_at_once(world):
     seed, win, writer, ny = world()
     shows = []
-    for r in rows_of(win):                                   # two shows, every file there (a split's parts: one)
+    for r in rows_of(win):                     # two shows, the episode's own file there (a split's parts: one)
         eps = [e for e in r.episodes if not e.missing and e.number is not None]
-        if eps and not any(e.missing for e in r.episodes) and r.work_id not in {x.work_id for x, _e in shows} \
-                and not any(e.text for e in r.episodes):     # alpha 4 M1: a book is never a *No video* card
+        if eps and r.work_id not in {x.work_id for x, _e in shows} \
+                and not any(e.text for e in r.episodes):     # alpha 4 M1 / A4M1-3: a book, a podcast: no *No video*
             shows.append((r, eps[0]))
     assert len(shows) >= 2
     shows = shows[:2]

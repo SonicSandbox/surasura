@@ -640,9 +640,10 @@ def test_find_its_new_folder_when_its_look_cant_run_or_the_join_fails_never_stop
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_find_its_new_folder_holding_none_of_its_episodes_stops_nothing(language):
-    """The wrong folder picked (none of the show's episodes there): it is read now,
-    but nothing joined, so the old folder isn't stopped — its card stays, and the answer says none were found."""
+def test_find_its_new_folder_holding_none_of_its_episodes_reads_nothing_of_it(language):
+    """T6 option 2 (alpha 4; alpha 3 read it, option 1): the wrong folder picked — no file there of the gone show's
+    names or sizes — is refused before anything is read: never added, nothing of it in New arrivals, the old folder
+    not stopped (its card stays) and the answer says why."""
     store, data_dir = _empty(language)
     title = names(language)[71]
     old = os.path.join(_elsewhere("Downloads"), title)
@@ -650,6 +651,7 @@ def test_find_its_new_folder_holding_none_of_its_episodes_stops_nothing(language
     with store:
         root_a = store.add_source(old)
         _look(store, language, root_a, first=True)
+        before = (store.sources(all=True), store.ordered("arrivals"))
     shutil.rmtree(old)
     other = os.path.join(_elsewhere("Elsewhere"), names(language)[72])
     from tests.test_sources_scan import _text, _write
@@ -662,8 +664,47 @@ def test_find_its_new_folder_holding_none_of_its_episodes_stops_nothing(language
     finally:
         looks.close()
         looks.idle(10)
-    assert (heard[0]["refused"], heard[0]["joined"], heard[0]["stop"], heard[0]["state"]) == \
-        (None, 0, False, sources.GONE)
+    assert heard[0]["refused"] == source_looks.FIND_NONE.format(folder=other)
+    assert (heard[0]["root"], heard[0]["joined"], heard[0]["stop"]) == (None, 0, False)
+    store = ls.open_store(language, *roots(language))
+    try:
+        assert (store.sources(all=True), store.ordered("arrivals")) == before
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_find_its_new_folder_whose_look_joins_none_is_stopped_again(language):
+    """T6 option 2: a folder holding a look-alike (an episode's name, other words in it) passes the check and is read,
+    but none of the show's episodes join — the folder this press added is stopped again (`dropped`), the old one not."""
+    store, data_dir = _empty(language)
+    title = names(language)[71]
+    old = os.path.join(_elsewhere("Downloads"), title)
+    paths = _show(language, old)
+    with store:
+        root_a = store.add_source(old)
+        _look(store, language, root_a, first=True)
+    shutil.rmtree(old)
+    other = os.path.join(_elsewhere("Elsewhere"), title)
+    from tests.test_sources_scan import _text, _write
+    _write(os.path.join(other, os.path.basename(paths[0])), _text(language, 9, " 別の字幕"))
+    _settle(other)
+    looks, heard = _looks(language), []
+    try:
+        assert looks.find_new_folder(root_a, other, heard.append)
+        assert looks.idle(60)
+    finally:
+        looks.close()
+        looks.idle(10)
+    got = heard[0]
+    assert got["refused"] is None and got["root"] is not None and got["joined"] == 0
+    assert got["dropped"] is True and got["stop"] is False
+    store = ls.open_store(language, *roots(language))
+    try:
+        on = {s["id"]: s["on"] for s in store.sources(all=True)}
+        assert on[got["root"]] is False and on[root_a] is True
+    finally:
+        store.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

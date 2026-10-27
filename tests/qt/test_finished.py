@@ -747,7 +747,7 @@ def test_LM11b_H_C1_ctrl_or_shift_on_a_finished_rows_part_never_acts(fin, mods):
          "ctrl-shift": Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier}[mods]
     _seed, win, writer, _e = fin()
     lst = lst_of(win)
-    assert lst.pickable is None                                       # Finished picks nothing
+    assert lst.pickable is not None                                   # A4: Finished picks too — never on a button
     i, _row = finished_rows(win)[0]
     menus, plays = [], []
     lst.menu_requested.connect(lambda *a: menus.append(a))
@@ -763,6 +763,6 @@ def test_LM11b_H_C1_ctrl_or_shift_on_a_finished_rows_part_never_acts(fin, mods):
         mouse(lst.viewport(), QEvent.Type.MouseButtonRelease, pos, Qt.MouseButton.LeftButton,
               Qt.MouseButton.NoButton, m)
         settle(20)
-    assert calls(writer) == [] and menus == [] and plays == []
+    assert calls(writer) == [] and menus == [] and plays == [] and not lst.picked_rows
     click(lst, part(lst, i, "put-back")[1].center())                  # a plain click still acts
     assert calls(writer, "put_back")

@@ -1829,11 +1829,17 @@ def test_G4_IK11_a_pick_repaints_only_the_rows_whose_state_changed(world, monkey
     assert asked == [b]
 
 
-def test_G4_finisheds_list_picks_nothing(world):
-    # Current's list only: Finished's rows never join a selection (a group never lives in Finished)
+def test_G4_finisheds_picks_never_offer_group(world):
+    # A4 (picks): Finished's rows are picked too (to move them together), but a group never lives in Finished: its
+    # picks' ⋯ has no *Group…*
     _seed, win, _w = world()
-    assert win.page_widgets["finished"].list.pickable is None
-    assert lst_of(win).pickable is not None
+    fin = win.page_widgets["finished"].list
+    assert fin.pickable is not None and lst_of(win).pickable is not None
+    rs = [e[1] for e in fin.model().entries if e[0] == rows.FINISHED][:2]
+    assert fin.pick_row(rs[0]) and fin.pick_row(rs[1])
+    m = win.finished.picks_menu(rs[0], win.mapToGlobal(QPoint(300, 300)))
+    assert strings.ITEM_MENU["group"][0] not in [x.text() for x in m.actions()]
+    m.close()
 
 
 def test_real_store_G4_two_shows_ctrl_clicked_and_grouped_are_one_row_and_undo_makes_them_two(real):

@@ -16,6 +16,9 @@ Finished keeps today's layout (`screens.FinishedPage`, `rows.py`'s FINISHED rows
   new words with their readings, in the order he'd meet them; *Put back* · *Open your journey*. Nothing moves. Esc,
   Back, ✕ and a click outside close it. N = the distinct words over its files (each file's `words`: its list words, none
   known): a word in every episode is one new word. M = known ÷ counted over its files (G1.2-4's one definition).
+- **The picks (A4):** Ctrl / Shift+click and Ctrl+A pick Finished's rows as Current's; ⋯ or a right-click on a
+  picked row while 2+ are picked offers *Up next* (*Put back*'s command) · *Soon* · *Goal* · *Remove…* for all of them,
+  each one store command (`item_menu.fill_picks_menu`, `drag.DragController.send_picks`).
 - **Add what you finished before…** (the heading's button): files or a folder → `finished_import.ImportJob` (a registry
   job: its progress on the hairline and the bar's line; the button says *Stop adding* while it runs), then the toast
   *Added N to Finished* with Undo (only the job's copies go to the trash). **Files dropped from Explorer** on the
@@ -33,7 +36,7 @@ from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QMe
                              QVBoxLayout)
 
 from app import path_utils, theme
-from app.qt import bridge, drag, motion, shadow, strings, style, windows
+from app.qt import bridge, drag, motion, rows, shadow, strings, style, windows
 from app.qt import press as qpress
 
 WORDS_SHOWN = 20                                     # Sonic's W3.2-1: the first 20 new words
@@ -323,6 +326,10 @@ class FinishedActions(QObject):
         self.page.importer.setVisible(True)
         qpress.room(self.page.importer)              # round 8 row 45: *Stop adding*'s arc has its room at rest
         self.lst.drag = self                        # Explorer's files on the list come here (`files_dropped`)
+        self.lst.pickable = lambda row: row.piece_id is not None     # --- A4: Finished's rows are picked too
+        register = getattr(win, "register_overlay", None)
+        if register is not None:                    # ... Esc / Back let them go (the shell's router)
+            register(self.lst.picks)
         self.lst.setAcceptDrops(True)
         self.tab = win.tab_buttons.get("finished")
         if self.tab is not None:                    # ... and on the Finished tab (lean 8)
@@ -427,8 +434,44 @@ class FinishedActions(QObject):
         out.append(entry("folder", writes=False))
         return out
 
+    # --- A4: the picks ------------------------------------------------------------------------------------------- #
+    def picked_rows(self):
+        """Finished's picked rows in the list's order."""
+        keys = self.lst.picked_rows
+        return [e[1] for e in self.lst.model().entries if e[0] == rows.FINISHED and e[1].key in keys] if keys else []
+
+    def picks_menu(self, row, at):
+        """⋯ / right-click on a picked row while 2+ are picked: *Up next* · *Soon* · *Goal* · *Remove…* for all of
+        them. -> the menu."""
+        from app.qt import item_menu                # (item_menu imports this module)
+        n = len(self.picked_rows())
+        m = drag.list_menu(self.lst, strings.PICKS_TITLES.format(n=f"{n:,}"))
+        item_menu.fill_picks_menu(m, n, "finished", self.writer, self.send_picks)
+        self.last_menu = m
+        m.popup(at)
+        return m
+
+    def send_picks(self, name):
+        """A picks' ⋯ entry: ONE store command for every picked row (`DragController.send_picks`, their cards back in
+        the order as they leave Finished), the picks let go; *Remove…* asks first."""
+        from app.qt import item_menu
+        rows_ = self.picked_rows()
+        if not rows_ or self.moves is None:
+            return None
+        ids = [i for r in rows_ for i in drag.ids_of(r)]
+        keys = [r.key for r in rows_]
+        if name == "remove":
+            return item_menu.ask_remove_picks(self.win, self.moves, len(rows_), ids, keys, then=self.lst.clear_picks)
+        seq = self.moves.send_picks(name, ids, len(rows_), keys, "finished")
+        if seq is not None:
+            self.lst.clear_picks()
+        return seq
+
     def menu(self, row, at):
-        """⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown."""
+        """⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown. A4: on a picked row while 2+
+        are picked, the picks' own (`picks_menu`)."""
+        if row.key in self.lst.picked_rows and len(self.lst.picked_rows) > 1:
+            return self.picks_menu(row, at)
         m = QMenu(self.lst)
         m.aboutToHide.connect(m.deleteLater)            # one menu per click, gone once it closes (L1 N7)
         m.setObjectName("rowmenu")

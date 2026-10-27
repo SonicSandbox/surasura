@@ -35,6 +35,7 @@ import os
 import re
 import time
 import unicodedata
+import weakref
 from collections import OrderedDict, namedtuple
 
 from PyQt6.QtCore import (QAbstractListModel, QItemSelectionModel, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize,
@@ -53,6 +54,8 @@ KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 
 # Entry kinds the model holds
 HERO, ROW, MONTH, FINISHED, NEED, FAILURE, EMPTY = "hero", "row", "month", "finished", "need", "failure", "empty"
+PICK_KINDS = (HERO, ROW, FINISHED)                  # A4: the rows Ctrl / Shift+click and Ctrl+A pick (Current, Soon,
+#                                                     Finished; Goal's sheet picks its tiles)
 
 
 # --- text and fonts ---------------------------------------------------------------------------------------------- #
@@ -1659,6 +1662,9 @@ class RowDelegate(QStyledItemDelegate):
         if row.key in self.view.picked_rows:
             if kind == HERO:
                 boxes.append(QRectF(rect.left(), rect.top(), rect.width(), self._hero_head_h()))
+            elif kind == FINISHED:                   # --- A4: Finished's row, its body as it is painted
+                boxes.append(QRectF(rect.left(), rect.top(), rect.width(), rect.height() - theme.SPACING["list-gap"] -
+                                    self._lines_h(lines)))
             else:
                 slab = self.slab_of(rect)
                 dy = 0.0 if is_open else self.view.touch(i, row.key)[0]
@@ -1862,7 +1868,7 @@ class RowDelegate(QStyledItemDelegate):
                       dpr=dpr)
             TEXT.draw(p, rect.left(), mid + 14 * fz(), line_, "body", rect.width(), c("ink-dim"), weight=400,
                       align="centre", dpr=dpr)
-        if body and kind in (HERO, ROW) and (self.view.picked_rows or self.view.picked_eps):    # --- LM11b G4
+        if body and kind in PICK_KINDS and (self.view.picked_rows or self.view.picked_eps):    # --- LM11b G4, A4
             self._paint_picked(p, index.row(), kind, payload, rect, lines, is_open)
         if body and kind == ROW and payload.key in self.view.saving:
             self._paint_saving(p, payload, rect, dpr)
@@ -2866,6 +2872,24 @@ class _Touch:
         self.on = False
 
 
+_PICKERS = weakref.WeakSet()                         # A4: every list that picks (`picks_join`)
+
+
+def picks_join(owner):
+    """A4: `owner` picks (a list, Goal's sheet, New arrivals' tray): it has `clear_picks()`."""
+    _PICKERS.add(owner)
+
+
+def picks_here(owner):
+    """A4 (PROVISIONAL): the picks live in one list at a time — `owner` picked something, so every other list of its
+    window lets its picks go (picking in Goal drops Current's)."""
+    from PyQt6 import sip
+    win = owner.window()
+    for other in list(_PICKERS):
+        if other is not owner and not sip.isdeleted(other) and other.window() is win:
+            other.clear_picks()
+
+
 class _Picks(QObject):
     """LM11b G4: the list's picks as the shell's `EscapeRouter` sees an overlay — open while anything is picked; Esc
     and Back close it (every pick let go), as they close every overlay of the window."""
@@ -2999,12 +3023,16 @@ class RowsView(QListView):
         # opened row's stone that episode; under Ctrl or
         # Shift a row's part never acts (no Done, no ▶, no ⋯). A plain click, a drag, Esc or Back (the shell's router,
         # through `picks`) and a view without its key let them go
-        self.pickable = None                         # (row) -> whether it may be picked: Current's list only (item_menu)
+        self.pickable = None                         # (row) -> whether it may be picked: Current's (item_menu) and,
+        #                                              A4, Finished's list (finished.py); None picks nothing
         self.picked_rows = set()                     # row keys
         self.picked_eps = set()                      # (row key, episode id)
         self.picks = _Picks(self)
         self._press_pick = None                      # the press's pick: "ctrl", "shift" or None
         self._pick_anchor = None                     # the row key Ctrl picked last: a Shift range starts there
+        self._keep_picks = False                     # A4: a plain press on a picked row keeps them for its drag (its
+        #                                              release, a click, lets them go)
+        picks_join(self)                             # A4: picks in one list at a time
         # --- end LM11b G4
         self.opened.connect(self._closed_picks)                         # --- LM11b H-B5
         stones.notifier().ready.connect(self._sheet_ready)
@@ -3760,10 +3788,10 @@ class RowsView(QListView):
             self._touch.pop(key, None)               # back at rest: nothing kept
 
     def _row_of_key(self, key):
-        """The place of Current's row `key` (Up Next or a row) in the model now, or None."""
+        """The place of the row `key` (Up Next, a row, A4: a Finished row) in the model now, or None."""
         keys = self.model().keys
         if self._key_rows[0] is not keys:
-            self._key_rows = (keys, {k[1]: i for i, k in enumerate(keys) if k[0] in (HERO, ROW)})
+            self._key_rows = (keys, {k[1]: i for i, k in enumerate(keys) if k[0] in PICK_KINDS})
         return self._key_rows[1].get(key)
 
     # --- LM11b G4: the picks ------------------------------------------------------------------------------------ #
@@ -3772,6 +3800,28 @@ class RowsView(QListView):
         if i is not None:
             self.update(self.model().index(i, 0))
 
+    def _repaint_keys(self, keys):
+        """A4 (S19): the rows of `keys` repainted — those on screen only when there are many (Ctrl+A at 20,000: a row
+        off screen is painted as it comes into view, from the picks as they are then)."""
+        if len(keys) <= 32:
+            for key in keys:
+                self._repaint_key(key)
+            return
+        model = self.model()
+        vp = self.viewport().rect()
+        top, bottom = self.indexAt(vp.topLeft()), self.indexAt(vp.bottomLeft())
+        first = max(0, (top.row() if top.isValid() else 0) - 2)
+        last = min(model.rowCount() - 1, (bottom.row() if bottom.isValid() else model.rowCount() - 1) + 2)
+        for i in range(first, last + 1):
+            k = model.keys[i]
+            if k[0] in PICK_KINDS and k[1] in keys:
+                self.update(model.index(i, 0))
+
+    def _picked_now(self):
+        """A4: something is picked here: the window's other lists let theirs go."""
+        if self.picked_rows or self.picked_eps:
+            picks_here(self)
+
     def pick_row(self, row):
         """Ctrl+click on its slab, Ctrl+Space: `row` in the selection, or out of it again (its row alone repainted)."""
         if self.pickable is None or not self.pickable(row):
@@ -3779,7 +3829,20 @@ class RowsView(QListView):
         self.picked_rows ^= {row.key}
         self._pick_anchor = row.key
         self._repaint_key(row.key)
+        self._picked_now()
         return True
+
+    def pick_all(self):
+        """A4: Ctrl+A — every row this list can pick (an opened row's episode picks go: its row is picked whole); only
+        the rows whose pick changed repainted. -> whether anything is picked."""
+        if self.pickable is None:
+            return False
+        span = {e[1].key for e in self.model().entries if e[0] in PICK_KINDS and self.pickable(e[1])}
+        changed = (span ^ self.picked_rows) | {k for k, _e in self.picked_eps}
+        self.picked_rows, self.picked_eps = span, set()
+        self._repaint_keys(changed)
+        self._picked_now()
+        return bool(span)
 
     def pick_range(self, row, add=False):
         """Shift+click: the picks become every row from the anchor (the row Ctrl picked last; with none, `row` itself)
@@ -3793,7 +3856,7 @@ class RowsView(QListView):
             self._pick_anchor, there = row.key, here
         entries = self.model().entries
         span = {entries[i][1].key for i in range(min(here, there), max(here, there) + 1)
-                if entries[i][0] in (HERO, ROW) and self.pickable(entries[i][1])}
+                if entries[i][0] in PICK_KINDS and self.pickable(entries[i][1])}
         before_rows, before_eps = self.picked_rows, self.picked_eps
         if add:
             self.picked_rows = before_rows | span
@@ -3801,8 +3864,8 @@ class RowsView(QListView):
         else:
             self.picked_rows, self.picked_eps = span, set()
             changed = (span ^ before_rows) | {k for k, _e in before_eps}
-        for key in changed:
-            self._repaint_key(key)
+        self._repaint_keys(changed)
+        self._picked_now()
         return True
 
     def pick_episode(self, row, ep):
@@ -3811,6 +3874,7 @@ class RowsView(QListView):
             return False
         self.picked_eps ^= {(row.key, ep.id)}
         self._repaint_key(row.key)
+        self._picked_now()
         return True
 
     def clear_picks(self):
@@ -3820,14 +3884,14 @@ class RowsView(QListView):
         keys = self.picked_rows | {k for k, _e in self.picked_eps}
         self.picked_rows, self.picked_eps = set(), set()
         self._pick_anchor = None
-        for key in keys:
-            self._repaint_key(key)
+        self._keep_picks = False
+        self._repaint_keys(keys)
 
     def _trim_picks(self):
         """A new view: the picks whose row (or episode in it) is gone let go — an episode's with its row closed too."""
         if not self.picked_rows and not self.picked_eps:
             return
-        shown = {e[1].key: e[1] for e in self.model().entries if e[0] in (HERO, ROW)}
+        shown = {e[1].key: e[1] for e in self.model().entries if e[0] in PICK_KINDS}
         self.picked_rows &= shown.keys()
         open_key = self.model().open_key
         self.picked_eps = {(k, i) for k, i in self.picked_eps
@@ -3849,7 +3913,7 @@ class RowsView(QListView):
         anything else picks the row (a closed row's stone too), Shift the rows from the anchor to it (Ctrl+Shift adds
         them). -> whether anything was picked."""
         kind, row, _lines = self.model().entries[idx.row()]
-        if kind not in (HERO, ROW):
+        if kind not in PICK_KINDS:
             return False
         name, payload = part[0], part[3]
         if name in NO_DRAG or name == "seam" or name.endswith("-line"):
@@ -4016,13 +4080,18 @@ class RowsView(QListView):
         self._show_focus(False)
         self._set_ep("ep_key", None)                 # --- row 28 (AD-1): the hand's now: the keyboard's episode let go
         self._press = None
+        self._keep_picks = False
         if event.button() == Qt.MouseButton.LeftButton:
             idx, part = self.part_at(event.pos())
             mods = event.modifiers()                 # --- LM11b G4
             ctrl, shift = mods & Qt.KeyboardModifier.ControlModifier, mods & Qt.KeyboardModifier.ShiftModifier
             self._press_pick = ("ctrl-shift" if shift else "ctrl") if ctrl else "shift" if shift else None
             if self._press_pick is None and (part is None or part[0] != "more"):
-                self.clear_picks()                   # a plain click lets the picks go (⋯ keeps them: *Group…*)
+                key = getattr(self.model().entries[idx.row()][1], "key", None) if idx.isValid() else None
+                if key is not None and key in self.picked_rows and len(self.picked_rows) > 1:
+                    self._keep_picks = True          # A4: a picked row's press keeps them: its drag carries them all
+                else:
+                    self.clear_picks()               # a plain click lets the picks go (⋯ keeps them: *Group…*)
             if idx.isValid():
                 scrolls = self.hasAutoScroll()
                 self.setAutoScroll(False)            # row 28: made current where it stands — Qt's scrollTo would pull
@@ -4048,6 +4117,8 @@ class RowsView(QListView):
 
     def mouseReleaseEvent(self, event):
         press, self._press = self._press, None
+        if self._keep_picks and event.button() == Qt.MouseButton.LeftButton:
+            self.clear_picks()                       # A4: no drag came of it — a plain click lets the picks go
         if press is None or event.button() != Qt.MouseButton.LeftButton:
             super().mouseReleaseEvent(event)
             return
@@ -4059,7 +4130,7 @@ class RowsView(QListView):
                 getattr(entries[row][1], "key", None) != key or not _same_payload(part[3], payload):
             return                                       # let go somewhere else: nothing happens
         if self._press_pick is not None:             # --- LM11b G4: Ctrl / Shift+click picks, never acts — on any list
-            if self.pickable is not None and entries[row][0] in (HERO, ROW):     # (H-C1: Finished's Put back, ▶, ⋯ too)
+            if self.pickable is not None and entries[row][0] in PICK_KINDS:     # (H-C1: Finished's Put back, ▶, ⋯ too)
                 self._pick_at(idx, part, self._press_pick)
             return
         if name == "play" and payload is not None:
@@ -4199,7 +4270,18 @@ class RowsView(QListView):
                                           -1 if event.key() == Qt.Key.Key_Up else 1)
             event.accept()
             return
-        idx = self.currentIndex()                    # --- W3.2 Q4: Enter, Space or the menu key: a Finished row's ⋯
+        idx = self.currentIndex()
+        ctrl = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        if event.key() == Qt.Key.Key_A and ctrl and self.pickable is not None:      # --- A4: Ctrl+A picks every row
+            self.pick_all()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Space and ctrl and idx.isValid() and \
+                self.model().entries[idx.row()][0] in PICK_KINDS:                  # --- LM11b G4 (A4: Finished's too)
+            self.pick_row(self.model().entries[idx.row()][1])
+            event.accept()
+            return
+        # --- W3.2 Q4: Enter, Space or the menu key: a Finished row's ⋯
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space, Qt.Key.Key_Menu) and \
                 idx.isValid() and self.model().entries[idx.row()][0] == FINISHED:
             more = next(pt for pt in self.delegate.parts(self.model().entries[idx.row()], self.visualRect(idx))
@@ -4208,11 +4290,6 @@ class RowsView(QListView):
                                      self.viewport().mapToGlobal(more[1].bottomLeft()))
             event.accept()
             return                                   # --- end W3.2 Q4
-        if event.key() == Qt.Key.Key_Space and event.modifiers() & Qt.KeyboardModifier.ControlModifier and \
-                idx.isValid() and self.model().entries[idx.row()][0] in (HERO, ROW):     # --- LM11b G4
-            self.pick_row(self.model().entries[idx.row()][1])
-            event.accept()
-            return
         if self._action_key(event):                  # --- P4.1 L2: → to a status's button, Enter / Space press it
             event.accept()
             return

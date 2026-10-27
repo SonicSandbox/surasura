@@ -11,9 +11,9 @@ rows' packages — never by the page itself.
   words moved (S19), inside the page's hold.
 - **The window** (`FoldersWindow`, on `windows.SecondaryWindow`; one of its kind, `open_window`): **one line per folder
   being read**, in the order added — its path (cut in the middle when narrow, whole on hover), how many episodes came
-  from it (*not reachable now* when the last look couldn't reach it) and *Stop reading* (`Store.stop_source` on the
-  looks' worker: its items and their records stay — the tooltip says so, and the bar after); ***Skipped folders*** (K6)
-  under them, each with ***Read again*** (`SourceLooks.read_again` on the looks' worker: its files come back at once),
+  from it (*not reachable now* when the last look couldn't reach it) and *Stop reading* (K9: `give_stop`, the window's
+  writer — a toast with Undo, as a gone folder's card stops one: its items and their records stay, the tooltip says
+  so); ***Skipped folders*** (K6) under them, each with ***Read again*** (`SourceLooks.read_again` on the looks' worker: its files come back at once),
   hidden while there is none, then ***Skip a folder…*** (Q7, shown with none skipped too: the wizard's picker, the
   store's rule asked on the looks' worker — refused, why in the window's line — then ⋯'s own write,
   `item_menu.give_skip`, its toast with Undo; `skips_moved` reads the lines again as any skip lands or is undone);
@@ -693,37 +693,53 @@ class FoldersWindow(windows.SecondaryWindow):
         self.skip_undo.setVisible(ticket is not None)
 
     def stop(self, root_id):
-        """*Stop reading*: on the looks' worker; the bar says its episodes stay; the line goes once the stop landed."""
-        looks = _looks(self.shell)
+        """*Stop reading* (K9, alpha 4): through the window's writer, as a gone folder's card stops one (`give_stop`):
+        a look reading the folder lets it go between files, then one change — its toast says the episodes stay, with
+        Undo (Ctrl+Z too), which reads it again. The line goes with the folders' listing once the stop is saved
+        (`drag._sources_stopped`), and comes back with its Undo; its arc turns from the press until it is saved."""
         line = self.lines.get(root_id)
-        if looks is None or line is None or why_not(self.shell) is not None:
+        if _looks(self.shell) is None or line is None or why_not(self.shell) is not None:
             return False
         source = dict(line.source)
         key = ("stop", self.lines_of, root_id)
-        from app.qt import bridge
-        relay = bridge.Relay(self.shell)
+        n = source.get("items") or 0
+        text = S.SOURCES_STOPPED_ONE.format(path=source["path"]) if n == 1 else \
+            S.SOURCES_STOPPED.format(path=source["path"], n=n)
 
-        def stopped(answer):
-            relay.deleteLater()
-            n = source.get("items") or 0
-            text = S.SOURCES_STOPPED_ONE.format(path=source["path"]) if n == 1 else \
-                S.SOURCES_STOPPED.format(path=source["path"], n=n)
-            if answer.get("stopped") and self.shell is not None:
-                windows.say_in_bar(self.shell, text)
-            self._answered(key)
-        relay.said.connect(stopped)
-        busy = looks.busy() if hasattr(looks, "busy") else False
-        if not self._press(key, line.stop):               # one stop per click: its arc, painted before the ask
-            relay.deleteLater()
+        def told(_ticket, event):                         # (the window may have closed meanwhile: `_answered` knows)
+            self._answered(key, failed=event in ("refused", "ended"))
+        if not self._press(key, line.stop):               # one stop per click: its arc, painted before the writer
             return False
-        _acting(self.shell).add(key)
-        if not looks.stop(root_id, relay.call, language=self.lines_of):
-            relay.deleteLater()                           # refused (closed, another language): nothing stopped
-            self._answered(key, failed=True)
+        _acting(self.shell).add(key)                      # before the ask: an answer may land at once
+        if give_stop(self.shell, root_id, text, self.lines_of, told=told) is None:
+            self._answered(key, failed=True)              # refused (the bar says why) or another language's
             return False
-        if busy and self.shell is not None:               # S6: a look under way lets it go after the file it's on
-            windows.say_in_bar(self.shell, S.SOURCES_STOPPING.format(path=source["path"]))
         return True
+
+
+def give_stop(shell, root_id, text, language, told=None):
+    """K9 / B14 (alpha 4): a folder no longer read, through the window's writer — one rule for Settings' *Stop
+    reading* and a gone folder's card. The looks let it go first (`SourceLooks.let_go`: a look reading it stops
+    between files, and none reads it while it is stopped), then `Writer.stop_reading`: one change, its toast (`text`)
+    with Undo. Refused, or settled unsaved: the looks read it again (`let_go(on=False)`); an Undo does the same as it
+    lands, from the toast or Ctrl+Z (`drag._sources_stopped`). `told(ticket, event)` as `item_menu.give_skip`'s. ->
+    the writer's number, or None (nothing given: the folder is read as before)."""
+    from app.qt import drag
+    moves, looks = getattr(shell, "moves", None), _looks(shell)
+    if moves is None or moves.refused() is not None:
+        return None
+    let_go = getattr(looks, "let_go", None)
+    if let_go is not None and not let_go(root_id, language=language):
+        return None                                       # the looks closing, or another language's library
+    ticket = drag.Ticket(text, (), ())
+
+    def heard(event):
+        if event in ("refused", "ended") and let_go is not None:
+            let_go(root_id, on=False, language=language)
+        if told is not None:
+            told(ticket, event)
+    ticket.told = heard
+    return moves._give(ticket, lambda t: moves.writer.stop_reading(root_id, t, language=language))
 
 
 class FreshRow(QObject):
@@ -811,10 +827,7 @@ class FreshRow(QObject):
         return None
 
     def _sheet(self, counts):
-        from app.qt import confirm
-        self.card = confirm.ask(self.page, S.FRESH_ASK, fresh_body(counts), S.FRESH_YES, S.FRESH_YES_TIP,
-                                default_no=True, danger=True, check=S.FRESH_KNOWN, check_tip=S.FRESH_KNOWN_TIP,
-                                on_answer=self._answered)
+        self.card = fresh_sheet(self.page, counts, self._answered)
         return self.card
 
     def _answered(self, yes):
@@ -839,24 +852,8 @@ class FreshRow(QObject):
                 qpress.end(p, self.shell, failed=not answer.get("done"))
             self.running = False
             self.enable()
-            if answer.get("done"):
-                known = answer.get("known") or ""
-                text = S.FRESH_DONE_KNOWN_KEPT.format(why=known[len("kept: "):]) if known.startswith("kept: ") \
-                    else S.FRESH_DONE
-            elif answer.get("aside"):
-                text = S.FRESH_NOT_ALL_BACK.format(folder=answer["aside"])
-            elif answer.get("failed"):
-                text = S.FRESH_FAILED.format(reason=answer["failed"])
-            else:
-                reason = answer.get("refused")
-                if reason == "no-library":
-                    reason = S.STORE_NO_LIBRARY_TIP
-                elif reason == "busy" or reason in strings.READ_ONLY_REASONS or str(reason).startswith("io"):
-                    why = strings.STORE_BUSY_NOW if reason == "busy" else strings.store_reason(reason)
-                    reason = why[:1].upper() + why[1:] + "."         # P-1: the store's own words, as a sentence
-                text = S.FRESH_REFUSED.format(reason=reason)
             if self.shell is not None:
-                windows.say_in_bar(self.shell, text)
+                windows.say_in_bar(self.shell, fresh_said(answer))
         relay.said.connect(landed)
         self.running = True                               # before the ask: an answer may land at once
         self.enable()
@@ -868,6 +865,34 @@ class FreshRow(QObject):
             self.enable()
             return False
         return True
+
+
+def fresh_sheet(parent, counts, on_answer):
+    """*Start a fresh library?* — the one sheet (Settings' row, and *Needs you*'s card for a library mostly gone, K1):
+    what goes, what comes back, what stays (`fresh_body`), *Also forget my known words* (off); Esc, Back, Enter or a
+    click outside is No. `on_answer(yes)`; the card's `checked` is the box. -> the card."""
+    from app.qt import confirm
+    return confirm.ask(parent, S.FRESH_ASK, fresh_body(counts), S.FRESH_YES, S.FRESH_YES_TIP, default_no=True,
+                       danger=True, check=S.FRESH_KNOWN, check_tip=S.FRESH_KNOWN_TIP, on_answer=on_answer)
+
+
+def fresh_said(answer):
+    """The bar's words for `SourceLooks.fresh`'s answer: the folders being read, or why nothing was changed."""
+    if answer.get("done"):
+        known = answer.get("known") or ""
+        return S.FRESH_DONE_KNOWN_KEPT.format(why=known[len("kept: "):]) if known.startswith("kept: ") \
+            else S.FRESH_DONE
+    if answer.get("aside"):
+        return S.FRESH_NOT_ALL_BACK.format(folder=answer["aside"])
+    if answer.get("failed"):
+        return S.FRESH_FAILED.format(reason=answer["failed"])
+    reason = answer.get("refused")
+    if reason == "no-library":
+        reason = S.STORE_NO_LIBRARY_TIP
+    elif reason == "busy" or reason in strings.READ_ONLY_REASONS or str(reason).startswith("io"):
+        why = strings.STORE_BUSY_NOW if reason == "busy" else strings.store_reason(reason)
+        reason = why[:1].upper() + why[1:] + "."         # P-1: the store's own words, as a sentence
+    return S.FRESH_REFUSED.format(reason=reason)
 
 
 def fresh_body(counts):

@@ -44,6 +44,8 @@ class Change:
     def __init__(self, op, ids, **kw):
         self.op, self.ids, self.kw = op, list(ids), kw
         self.kind = op
+        if op == "stop_source":                       # (as the store's: the folder it stopped, K9's Undo reads it)
+            self.roots = [(kw["root"], "source", "source-off")]
 
 
 class FakeWriter:
@@ -144,6 +146,9 @@ class FakeWriter:
     def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None):
         return self._put("insert_at", [], label, files=list(paths), tier=tier, before_id=before_id, after_id=after_id,
                          near=list(near))
+
+    def stop_reading(self, root_id, label=None, language=None):
+        return self._put("stop_source", [], label, root=root_id, language=language)
 
     def undo(self, change=None, label=None):
         self.calls.append(("undo", [], {"change": change}))

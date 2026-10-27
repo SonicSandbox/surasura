@@ -474,6 +474,16 @@ def test_settings_lists_the_folders_and_stop_reading_keeps_every_episode(window)
     opener, data_dir, user_files_dir = _library()
     looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
     seed, win = window(looks)
+    writer = win.services.writer
+
+    def stop_reading(root_id, label=None, language=None):     # K9: through the writer — written to the real store
+        store = _read_store(data_dir, user_files_dir)          # as `Writer.stop_reading` writes it
+        try:
+            store.stop_source(root_id)
+        finally:
+            store.close()
+        return writer._put("stop_source", [], label, root=root_id, language=language)
+    writer.stop_reading = stop_reading
     folder = _source()
     answer = _added(looks, folder)
     page, row, folders = _folders_window(win)
@@ -485,7 +495,7 @@ def test_settings_lists_the_folders_and_stop_reading_keeps_every_episode(window)
     assert row.add.toolTip() and folders.add.toolTip() and folders.look.toolTip()
     line.stop.click()
     assert wait_until(lambda: not folders.lines, 10)
-    assert win.bar_line.full() == S.SOURCES_STOPPED.format(path=ls.folder_path(folder), n=2)
+    assert win.toasts.card.base == S.SOURCES_STOPPED.format(path=ls.folder_path(folder), n=2)   # its toast, with Undo
     assert not folders.none.isHidden()                        # the empty state, its Add a folder… beside it
     assert row.summary.text() == S.SOURCES_NONE                # the page's summary followed the stop
     store = _read_store(data_dir, user_files_dir)

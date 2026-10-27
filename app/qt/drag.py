@@ -748,15 +748,19 @@ def _tell(ticket, event):
         ticket.told(event)
 
 
-def _sources_stopped(win, change):
-    """T6: a *Stop reading it* (`Writer.stop_reading`, a gone folder's card) saved or undone — the folders listed again
-    by the looks (`SourceLooks.listing`, its worker), so the card goes, or comes back with its Undo, and Settings'
-    *Library folders* follows."""
+def _sources_stopped(win, change, undone=False):
+    """T6: a *Stop reading it* (`Writer.stop_reading`, a gone folder's card, Settings' *Stop reading*) saved or undone
+    — the folders listed again by the looks (`SourceLooks.listing`, its worker), so the card goes, or comes back with
+    its Undo, and Settings' *Library folders* follows. K9 (alpha 4): `undone` (the toast's Undo, or Ctrl+Z) — the looks
+    read the folder again (`let_go(on=False)`: they let it go as the stop was given)."""
     if getattr(change, "kind", None) != "stop_source":
         return
     looks = getattr(win, "looks", None)
     if looks is not None:
         try:
+            if undone and hasattr(looks, "let_go"):
+                for root, *_kinds in getattr(change, "roots", None) or ():
+                    looks.let_go(root, on=False)
             looks.listing()
         except Exception as e:                       # (the looks closing: the next look lists them)
             print(f"Sources: the folders weren't listed after a stop: {e!r}")
@@ -1786,8 +1790,8 @@ class DragController(QObject):
 
     def _undone(self, change, label):
         _skips_moved(self.win, change, undone=True)
-        _sources_stopped(self.win, change)
-        mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
+        _sources_stopped(self.win, change, undone=True)
+        mark =self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if isinstance(label, Ticket):
             _tell(label, "undone")
             if label not in self._landing and mark is not None and label.anki is None:

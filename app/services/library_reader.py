@@ -47,7 +47,8 @@ library store, on a plain thread of its own — never the window's thread.
   within `COALESCE_S` of the last view built waits for that much to pass — a + Add, a look or an import committing
   batch after batch is a few views a second, the last change always in the last — and the numbers' new version with the
   store unchanged waits `NUMBERS_GRACE_S` for the write it comes just before (a move: one view, never two). The window's
-  own asks build at once: a drop (`release`), the settle's `republish`, an expectation (`expect`), a mode, a full read.
+  own asks build at once: a drop (`release`), the settle's `republish`, an expectation (`expect`), a mode, a full read,
+  and for a second after the window hands its writer a learner's command (`urgent`), that command's views.
 - **A drag holds it** (06 E6, `hold()` / `release()`): while held it still reads and merges the feed (its copy stays
   current) but builds and publishes nothing, so nothing moves under the hand; `release()` builds and publishes once. An
   item gone meanwhile is told at once (`subscribe_gone(cb)`: `cb(item_ids)`) — the drag of a removed item is let go.
@@ -74,6 +75,8 @@ COALESCE_S = 0.25
 # a4 (C2): the numbers' new version with the store unchanged waits this long for the write it comes just before (the
 # window's writer works a move's numbers out, then writes it): the move's one view holds both, never two builds a move
 NUMBERS_GRACE_S = 0.05
+# a4: the window's own command (`urgent`): for this long its numbers and its write build at once, a burst's hold-back aside
+URGENT_S = 1.0
 # --- end a4
 CACHE_VERSION = 5                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
 #                                  4: a status's words and tips (G2.3: ✓ N, a tip's action on a line of its own);
@@ -182,6 +185,7 @@ class LibraryReader:
         self._numbers_at = None            # when a numbers' version with the store unchanged was first seen
         self._numbers_dv = None            # ... and the store's data_version then (the write moves it)
         self.held_back = 0                 # looks whose build waited (tests)
+        self._urgent_until = 0.0           # the window's own command on its way (`urgent`)
         self.coalesce = bool(coalesce)     # off by default (a test's looks each build); the window turns it on
         # --- end a4
         # --- W3.2 Q1: New arrivals' estimates ({item_id: N new}, the window's `arrivals.ArrivalNumbers`), built into
@@ -307,6 +311,13 @@ class LibraryReader:
         self._expected = new
         return True
     # --- end LM11b G5
+
+    def urgent(self):
+        """(a4) The window hands its writer a learner's command (`drag.DragController._give`: a drop, a menu's move, a
+        key's, a Done): for `URGENT_S` the views it makes build at once — never held back behind an import's burst —
+        its numbers still waiting `NUMBERS_GRACE_S` for its write, so the move is one view. Any thread."""
+        self._urgent_until = time.monotonic() + URGENT_S
+        self._wake.set()
 
     def hold(self):
         """A drag starts (E6): the feed is still read, but nothing is built or published until `release()`."""
@@ -520,7 +531,7 @@ class LibraryReader:
         within `COALESCE_S` of the last view built waits for that much to pass (a burst of commits: a few views a
         second, the last change in the last one); the numbers' new version with the store unchanged waits
         `NUMBERS_GRACE_S` for the write it comes before (the bell wakes the reader at the write: one build)."""
-        due = self._built_at + COALESCE_S if self._built_at is not None else now
+        due = self._built_at + COALESCE_S if self._built_at is not None and now >= self._urgent_until else now
         if numbers_only and self._numbers_at is None:
             self._numbers_at, self._numbers_dv = now, dv
         if self._numbers_at is not None and dv == self._numbers_dv:     # the write it comes before: not yet

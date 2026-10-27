@@ -1621,6 +1621,9 @@ class DragController(QObject):
         if anki is not None:
             ticket.anki = anki
             self._anki_begin(ticket)
+        urgent = getattr(self.reader, "urgent", None)
+        if urgent is not None:                       # a4: its views build at once, an import's burst aside
+            urgent()
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
             _tell(ticket, "refused")

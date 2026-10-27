@@ -136,6 +136,36 @@ def test_the_windows_own_asks_build_at_once_inside_a_burst():
         reader.stop()
 
 
+def test_a_learners_command_inside_a_burst_shows_at_once_and_is_still_one_view():
+    """A move the learner makes while an import lands (the window calls `urgent` as it hands the writer the command):
+    its numbers and its write build at once — never held back behind the import's next view — and still as one."""
+    seed = window_seed.build(language="zh")
+    reader = _reader(seed)
+    views = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and not views[-1][1].loading)
+        rows, works = _arrival(seed, 2, "第七扇门 新篇")
+        seed.library.commit(items=rows, works=works, order=True)
+        assert _wait(lambda: any(rows[0]["id"] in a.item_ids for a in views[-1][1].arrivals))
+        n, builds = len(views), reader.builds                         # the burst's view: anything now is held back
+        soon = next(r for r in seed.items if r["tier"] == "soon")
+        top = min(r["ord"] for r in seed.items if r["tier"] == "now")
+        reader.urgent()
+        seed.numbers.set(soon["id"], (4000, 4100, 12))
+        reader.refresh()
+        time.sleep(0.01)
+        t0 = time.monotonic()
+        seed.library.commit(items=[{"id": soon["id"], "tier": "now", "ord": top - 100}], order=True)
+        assert _wait(lambda: len(views) > n, 1.0)
+        assert views[n][0] - t0 < library_reader.COALESCE_S / 2      # not held behind the burst
+        time.sleep(library_reader.COALESCE_S + 0.1)
+        assert reader.builds == builds + 1                            # one view: the numbers and the write
+        assert views[-1][1].rows[0].n_new == 12
+    finally:
+        reader.stop()
+
+
 def test_a_moves_numbers_and_its_write_are_one_view():
     """The window's writer works a move's numbers out, then writes the move a moment later: the reader waits a moment
     for the write the numbers come before, and builds the two as one view (C2: the reader built the view twice a

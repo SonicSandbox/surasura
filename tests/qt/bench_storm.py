@@ -255,6 +255,18 @@ class Meter:
                 return out
             tray.set_groups = set_groups
             self._undo.append(lambda: tray.__dict__.pop("set_groups", None))
+        import gc
+        collected = self.collections = []             # Python's full collections (any thread): (ms, thread)
+
+        def watch_gc(phase, info, _t=[0.0]):
+            if not meter.on or info.get("generation") != 2:
+                return
+            if phase == "start":
+                _t[0] = time.perf_counter()
+            else:
+                collected.append(((time.perf_counter() - _t[0]) * 1000, threading.current_thread().name))
+        gc.callbacks.append(watch_gc)
+        self._undo.append(lambda: gc.callbacks.remove(watch_gc))
         self._lists = lists
         self.on = True
         self.t0 = time.perf_counter()
@@ -292,6 +304,8 @@ class Meter:
         return {"seconds": round(self.seconds, 2), "views": self.views, "shown": self.shown,
                 "show_library_ms": round(self.show_ms, 1),
                 "views_bound": math.ceil(self.seconds * 4) + 1,
+                "full_collections": len(self.collections),
+                "full_collection_max_ms": round(max((ms for ms, _t in self.collections), default=0.0), 1),
                 "longest_step_ms": round(steps[-1], 2) if steps else 0.0,
                 "steps_over_4ms": sum(1 for s in steps if s > 4.0),
                 "worst_steps_ms": [round(x, 1) for x in steps[-8:][::-1]],
@@ -387,6 +401,10 @@ def main(argv=None):
     ap.add_argument("--json")
     ap.add_argument("--no-coalesce", action="store_true", help="the reader builds a view for every change (A/B)")
     ap.add_argument("--no-splice", action="store_true", help="a row added or gone resets the list (A/B: before a4)")
+    ap.add_argument("--no-tray", action="store_true",
+                    help="New arrivals' tray takes no rows (its own rebuild apart: P-arrivals' item 2)")
+    ap.add_argument("--freeze-once", action="store_true",
+                    help="gc.freeze() once the window shows its first live view (the collector's A/B)")
     ap.add_argument("--profile", help="a cProfile of the window's thread during the storm, written here")
     args = ap.parse_args(argv)
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -400,6 +418,12 @@ def main(argv=None):
         rows.RowsModel._splice = lambda _self, _keys, _entries: None
     seed = window_seed.build(files=args.files, language=args.language)
     win, services = open_window(qapp, seed, coalesce=not args.no_coalesce)
+    if args.no_tray and getattr(win, "arrivals_tray", None) is not None:
+        win.arrivals_tray.set_groups = lambda groups: False
+    if args.freeze_once:
+        import gc
+        gc.collect()
+        gc.freeze()
     prof = None
     if args.profile:
         import cProfile

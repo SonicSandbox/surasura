@@ -1215,8 +1215,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                          "asking"),
     "remove": ("Remove", "Send it to the trash (kept 30 days): its words stop counting. Undo puts it back"),
     "remove_episode": ("Remove episode", "Send this episode to the trash (kept 30 days). Undo puts it back"),
-    "remove_all": ("Remove all", "Send every missing file below to the trash (kept 30 days). Never a drive that's "
-                                 "only offline. Undo puts them back"),
+    "remove_all": ("Forget every missing file", "Take every missing file below out of your library: to the trash, "
+                                                "kept 30 days. Never a drive that's only offline. Undo puts them back"),
     "this_one": ("This one", "It's this missing file, moved or renamed: it keeps its place, its ✓ and its cards"),
     "its_new": ("It's new", "None of these: it joins your library as a new file"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
@@ -1250,9 +1250,37 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "keep_waiting": ("Keep waiting", "Hide this until the folder is back. If it goes again later, it asks again"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
+    # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
+    "later": ("Not now", "Hide this until tomorrow. If it still needs you then, it comes back"),
+    "stop_asking": ("Stop asking", "Never ask about this again. The item and its words stay in your library"),
+    "later_all": ("Not now for all", "Hide every card below with this reason until tomorrow"),
+    "stop_all": ("Stop asking for all", "Never ask about any card below with this reason again. Their items and words "
+                                        "stay in your library"),
+    # alpha 4 K3: most of the library's files gone at once
+    "find_library": ("Find the folder…", "Choose where this library's files are now: Surasura reads them there and "
+                                         "they keep their places, words and cards"),
+    "start_fresh": ("Start fresh", "Begin a new library from your folders. The old one goes to the trash, never "
+                                   "deleted"),
 }
 NEEDS_LOOKING = "Looking…"
 NEEDS_MORE_LINES = "and {n} more"
+NEEDS_MORE_NAME = "More for {title}"             # alpha 4 D2: a card's ⋯
+NEEDS_MORE_TIP = "Not now · Stop asking"
+NEEDS_LATER_ONE = "Not now: back tomorrow if it still needs you"
+NEEDS_LATER_N = "Not now: {n:,} cards back tomorrow if they still need you"
+NEEDS_STOPPED_ONE = "It won't ask again · its item and words stay"
+NEEDS_STOPPED_N = "{n:,} cards won't ask again · their items and words stay"
+NEEDS_FORGET_TITLE = "Forget {n:,} missing files?"   # alpha 4 B: the line for every missing file
+NEEDS_FORGET_YES = "Forget {n:,} files"
+NEEDS_FORGOT = "Forgot {n:,} missing files · in the trash 30 days"
+NEEDS_START_FRESH_TITLE = "Start a fresh library?"   # alpha 4 K3
+NEEDS_START_FRESH_BODY = ("The old library goes to the trash, never deleted. Your folders are read again from the "
+                          "start; your known words stay.")
+NEEDS_START_FRESH_YES = "Start fresh"
+NEEDS_START_FRESH_YES_TIP = "Begin a new library; the old one is kept in the trash"
+NEEDS_START_FRESH_DONE = "A fresh library is being read from your folders"
+NEEDS_LIBRARY_FOUND = "Your library is read from {folder} now"
+NEEDS_LIBRARY_TITLE = "Where are this library's files now?"
 NEEDS_LOOK_FAILED = "Couldn't look for its videos: {why}"
 NEEDS_REMOVE_TITLE_ONE = "Remove {name}?"
 NEEDS_REMOVE_TITLE = "Remove {n} files?"

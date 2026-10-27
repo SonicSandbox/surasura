@@ -84,7 +84,9 @@ KNOWN_OFFER = "known-offer"         # #43: Known from Anki's first read, asked o
 ANKI_WAIT = "anki-wait"
 # T6 (Sonic 2026-10-24): a source folder moved or deleted while its drive is there — never one only away
 FOLDER_GONE = "folder-gone"
-KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE)
+LIBRARY_GONE = "library-gone"       # alpha 4 K3: most of the library's files gone (*Find the folder…* / *Start fresh*)
+KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
+         LIBRARY_GONE)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2; IK-2: *Mine the text only*)
 WIRED_LATER = frozenset(("mine_text_only", "make_cards"))
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
@@ -102,7 +104,7 @@ STRINGS = {
     "bulk_title_both": "{m} shows are missing files or videos",
     "bulk_say": "One answer for every show below, or answer each card on its own.",
     "find_all": "Find all missing videos ({n} in {m} shows)", "keep_all": "Keep all their words ({n})",
-    "remove_all": "Remove all ({n})",
+    "remove_all": "Forget every missing file ({n})",
     "gone_title_one": "{title} · {ep}'s file is gone", "gone_title_n": "{title} · {n} {unit}' files are gone",
     "gone_say": "Its words still count until you choose: point it at its file, keep its words, or remove it to the "
                 "trash (30 days).",
@@ -139,7 +141,26 @@ STRINGS = {
     "why_none": "✗ nothing with \"{n}\" in its name", "why_many": "✗ {k} videos have \"{n}\" in their names: choose one",
     "why_cloud": "✗ \"{n}\" is still in the cloud: download it first",
     "why_no_number": "✗ its name has no episode number to look for",
+    # alpha 4 D2: one line over 3+ cards that share a reason (`_reason_lines`)
+    "reason_ask": "{n} new files may be ones you had", "reason_folder": "{n} source folders are gone",
+    "reason_offline": "{n} drives or folders are offline", "reason_failure": "{n} things didn't finish",
+    "reason_not_timed": "{n} episodes' subtitles aren't timed to their video",
+    "reason_no_pairing": "{n} episodes wait for hato's videos", "reason_cards": "{n} cards couldn't be made",
+    "reason_gap": "{n} times Connect lost track of your moves",
+    "reason_say": "One answer for all of them, or answer each card below on its own.",
+    # alpha 4 K3: most of the library's files gone at once (a reinstall over an old library, a folder moved)
+    "library_gone_title": "Most of this library's files are gone ({n} of {m})",
+    "library_gone_say": "Its folder may have moved, or this is an old library from before a reinstall. Find the folder "
+                        "where its files are now, or start fresh: the old library goes to the trash, never deleted.",
 }
+# kinds whose cards share a reason (3+ of one: one line over them, `_reason_lines`), and its words
+REASONS = {ASK: "reason_ask", FOLDER_GONE: "reason_folder", OFFLINE: "reason_offline", FAILURE: "reason_failure",
+           "not-timed": "reason_not_timed", "no-pairing": "reason_no_pairing",
+           "repick": "reason_cards", "mine-failed": "reason_cards", "error": "reason_cards", GAP: "reason_gap"}
+REASON_AT = 3                       # cards of one reason that bring its line (the bulk answer's own: two shows)
+# the cards whose own two answers both end them: no ⋯ (its *Not now* would say the same as their own)
+NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER))
+LIBRARY_GONE_AT = (20, 0.5)         # files gone, and their share of Current's, that bring it
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -201,7 +222,8 @@ def item_key(item_id):
 
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
-            mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=()):
+            mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), hidden=frozenset(),
+            library_gone=False):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -209,8 +231,12 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     switch (`connect_enabled`, setup's page 5) — on, D1's line asks only about these episodes (its `_on` actions);
     `miner_found`: Anki Miner is installed (`anki_miner.find`) — without it D1's line waits, kept offered (row 13: its
     cards could never be made); `gone_folders` (T6): the looks' rows of the source folders that are GONE
-    (`source_looks.gone`, those *Keep waiting* hid left out by the window), one card each."""
-    seen, answered = frozenset(seen or ()), frozenset(answered or ())
+    (`source_looks.gone`, those *Keep waiting* hid left out by the window), one card each — on top, under the answers
+    for many (a gone folder explains its shows' gone files; 届's press opens the page at it); `hidden` (alpha 4 D2:
+    `read_hidden`, *Not now* today and *Stop asking*): the cards left out, and every count for many with them;
+    `library_gone` (K3, given only while Kura's *Start fresh* / *Find the folder…* are there): most of Current's files
+    gone at once is ONE card on top."""
+    seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
     order = list(dict.fromkeys(_group(r) for r in rows))
@@ -243,7 +269,12 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
             shows.append(_gone_entry(group, gone[group], seen))
         if group in novideo:
             shows.append(_video_entry(group, novideo[group], seen, mine_line))
+    shows = [e for e in shows if e.key not in hidden]
     out = []
+    if library_gone:
+        whole = _library_gone_entry(rows, offline, seen)
+        if whole is not None and whole.key not in hidden:
+            out.append(whole)
     if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered and miner_found:
         out.append(_first_cards_entry(rows, seen, mine_line, cards_on))
     offer = (connect or {}).get("known_offer")
@@ -255,13 +286,14 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
+    lines_at = len(out)                                         # the lines for many other reasons go here
+    for row in gone_folders or ():                              # (alpha 4: on top — 届's press opens the page at it)
+        out.append(_folder_entry(row, seen))
     out += shows
     for ask in asks or ():
         entry = _ask_entry(ask, by_id, seen)
         if entry is not None:
             out.append(entry)
-    for row in gone_folders or ():
-        out.append(_folder_entry(row, seen))
     for root in roots:
         entry = _offline_entry(root, by_id, seen)
         if entry.key not in answered:
@@ -280,7 +312,42 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         entry = _gap_entry(gap, seen)
         if entry.key not in answered:
             out.append(entry)
+    out = [e for e in out if e.kind == BULK or e.key not in hidden]
+    out[lines_at:lines_at] = _reason_lines(out)
     return out
+
+
+def _reason_lines(cards):
+    """Alpha 4 D2 (Sonic: "what do they do if they have a hundred of these?"): ONE line for every reason 3+ cards
+    share (`REASONS`; a show's gone files and missing videos have the bulk answer) — *38 source folders are gone ·
+    Not now for all · ⋯* — in the order the reasons' first cards come. Its `data["keys"]`: the cards it answers."""
+    by = {}
+    for e in cards:
+        if e.kind in REASONS:
+            by.setdefault(REASONS[e.kind], []).append(e)
+    out = []
+    for words, group in by.items():
+        if len(group) < REASON_AT:
+            continue
+        keys = tuple(e.key for e in group)
+        out.append(Entry(key=f"bulk:{words}", kind=BULK, title=STRINGS[words].format(n=view_rows.thousands(len(group))),
+                         lines=(), actions=("later_all",), unseen=False, say=STRINGS["reason_say"],
+                         data={"keys": keys, "reason": words}))
+    return out
+
+
+def _library_gone_entry(rows, offline, seen):
+    """K3 (Mattias: a reinstall over the same folder brought back a dead library): most of Current's files gone at
+    once (`LIBRARY_GONE_AT`; a drive only offline is the offline line's, never this) -> ONE card, or None."""
+    files = [e for r in rows for e in r.episodes if not offline(e.rel_path)]
+    missing = sum(1 for e in files if e.missing)
+    at, share = LIBRARY_GONE_AT
+    if missing < at or missing <= share * len(files):
+        return None
+    return Entry(key=LIBRARY_GONE, kind=LIBRARY_GONE, title=STRINGS["library_gone_title"].format(
+        n=view_rows.thousands(missing), m=view_rows.thousands(len(files))), lines=(),
+        actions=("find_library", "start_fresh"), unseen=LIBRARY_GONE not in seen, say=STRINGS["library_gone_say"],
+        data={"missing": missing, "files": len(files)})
 
 
 def _anki_waits(connect):
@@ -396,6 +463,8 @@ def _bulk(shows):
         title = STRINGS["bulk_title_videos"].format(n=n_video, m=len(video))
     data = {"labels": labels, "videos": (n_video, len(video)), "files": (n_gone, len(gone)),
             "video_keys": tuple(e.key for e in video),
+            "keys": tuple(sorted(e.key for e in shows if (e.kind == GONE and len(gone) >= 2) or   # order-free
+                                 (e.kind == NO_VIDEO and len(video) >= 2))),                       # (C1)
             "item_ids": tuple(sorted(i for e in gone for i in e.data["item_ids"])) if len(gone) >= 2 else ()}
     return Entry(key="bulk", kind=BULK, title=title, lines=(), actions=tuple(actions), unseen=False,
                  say=STRINGS["bulk_say"], data=data)
@@ -553,19 +622,29 @@ def answer_keys(thing):
 
 
 # --- seen and answered (the local data folder; never settings.json) ------------------------------------------------- #
-_lock = threading.Lock()
-_FIELDS = ("seen", "answered", "offered")       # `offered`: the lines a step asked for (D1's), until answered
+_lock = threading.Lock()         # the one writer, and every read in this process (alpha 4 E: a read holding the file
+#                                  open made the write's replace fail on Windows — PermissionError, the answer lost)
+_FIELDS = ("seen", "answered", "offered", "stopped")   # `offered`: the lines a step asked for (D1's), until answered;
+#                                                        `stopped`: *Stop asking* (alpha 4 D2), until its trouble goes
+REPLACE_WAITS = (0.01, 0.03, 0.1, 0.25)   # s: another program (a virus scan, a sync, a child process) reading the file
+#                                            as it is replaced — waited out, then the write fails as before
 
 
 def seen_path(language):
     return os.path.join(path_utils.get_local_data_path(), f"needs_seen_{language}.json")
 
 
-def _read(language, strict=False):
-    """The seen file's two lists. `strict` (a write-back's read, W3.2 H W5): only a file that isn't there reads as
-    empty — one that can't be read, isn't JSON or is another version raises, so a write never goes over earlier answers
-    (a held file, a newer Surasura's)."""
-    empty = {k: [] for k in _FIELDS}
+def _read(language):
+    """The seen file's lists (and *Not now*'s days), read under `_lock`: never while it is being replaced (alpha 4 E)."""
+    with _lock:
+        return _load(language)
+
+
+def _load(language, strict=False):
+    """(Under `_lock`.) The seen file's lists, and `later` ({key: the day it was put off}). `strict` (a write-back's
+    read, W3.2 H W5): only a file that isn't there reads as empty — one that can't be read, isn't JSON or is another
+    version raises, so a write never goes over earlier answers (a held file, a newer Surasura's)."""
+    empty = dict({k: [] for k in _FIELDS}, later={})
     try:
         with open(seen_path(language), encoding="utf-8") as f:
             data = json.load(f)
@@ -579,18 +658,30 @@ def _read(language, strict=False):
         if strict:
             raise ValueError(f"the seen file isn't version {SEEN_VERSION}: left as it is")
         return empty
-    return {k: [x for x in data.get(k) or () if isinstance(x, str)] for k in _FIELDS}
+    later = data.get("later")
+    out = {k: [x for x in data.get(k) or () if isinstance(x, str)] for k in _FIELDS}
+    out["later"] = {k: v for k, v in later.items() if isinstance(k, str) and isinstance(v, str)} \
+        if isinstance(later, dict) else {}
+    return out
 
 
 def _write(language, data):
+    """(Under `_lock`: the one writer.) The whole file, atomically — a temporary file, then one replace."""
     path = seen_path(language)
     tmp = path + ".tmp"
-    data = {k: v for k, v in data.items() if k != "offered" or v}     # no offer: the file as it always was
-    with open(tmp, "w", encoding="utf-8") as f:
+    data = {k: v for k, v in data.items() if k in ("seen", "answered") or v}   # none offered, stopped or put off:
+    with open(tmp, "w", encoding="utf-8") as f:                                 # the file as it always was
         json.dump({"version": SEEN_VERSION, **data}, f, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    for wait in REPLACE_WAITS + (None,):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if wait is None:
+                raise
+            time.sleep(wait)
 
 
 def _add(language, field, keys):
@@ -598,7 +689,7 @@ def _add(language, field, keys):
     if not keys:
         return 0
     with _lock:
-        data = _read(language, strict=True)
+        data = _load(language, strict=True)
         have = data[field]
         new = [k for k in keys if k not in set(have)]
         if not new:
@@ -660,7 +751,7 @@ def prune(language, view, offline_roots=None, connect=None, asks=None, lines=Non
         judged.add("line")
     roots = [r if isinstance(r, Root) else Root(*r) for r in offline_roots or ()]
     with _lock:
-        data = _read(language, strict=True)
+        data = _load(language, strict=True)
         present = set(lines or ())
         if store:
             present |= {item_key(e.id) for r in view.rows for e in r.episodes if e.missing}
@@ -670,12 +761,65 @@ def prune(language, view, offline_roots=None, connect=None, asks=None, lines=Non
             present |= {f"gap:{g.get('id')}" for g in (connect or {}).get("gaps") or ()}
             present |= {folder_key(r["path"]) for r in gone_folders or () if r.get("path")}
         kept = {f: [k for k in data[f] if k.split(":", 1)[0] not in judged or k in present]
-                for f in ("seen", "answered")}
+                for f in ("seen", "answered", "stopped")}
         gone = sum(len(data[f]) - len(kept[f]) for f in kept)
+        today = _today()                                         # *Not now*: back the next day, or with its trouble
+        kept["later"] = {k: d for k, d in data["later"].items()
+                         if d >= today and (k.split(":", 1)[0] not in judged or k in present)}
+        gone += len(data["later"]) - len(kept["later"])
         kept["offered"] = data["offered"]
         if gone:
             _write(language, kept)
     return gone
+
+
+# --- alpha 4 D2: *Not now* (hidden until tomorrow) and *Stop asking* (never again, with Undo) --------------------- #
+def _today():
+    return time.strftime("%Y-%m-%d")
+
+
+def read_hidden(language):
+    """The cards left off the page: *Stop asking*'s, and *Not now*'s put off today -> frozenset of keys."""
+    data, today = _read(language), _today()
+    return frozenset(data["stopped"]) | {k for k, d in data["later"].items() if d >= today}
+
+
+def put_off(language, keys):
+    """*Not now*: `keys` hidden for the rest of today (local time) -> how many were new."""
+    keys = [k for k in dict.fromkeys(keys or ()) if isinstance(k, str)]
+    if not keys:
+        return 0
+    today = _today()
+    with _lock:
+        data = _load(language, strict=True)
+        new = [k for k in keys if data["later"].get(k) != today]
+        if not new:
+            return 0                                # nothing new: nothing written (S19)
+        data["later"] = dict({k: d for k, d in data["later"].items() if d >= today}, **dict.fromkeys(new, today))
+        _write(language, data)
+    return len(new)
+
+
+def stop_asking(language, keys):
+    """*Stop asking*: `keys` never asked again (the item and its words kept; a key goes with its trouble, `prune`)
+    -> how many were new."""
+    return _add(language, "stopped", keys)
+
+
+def ask_again(language, keys):
+    """The Undo of *Not now* / *Stop asking*: `keys` asked again -> how many were hidden."""
+    keys = {k for k in keys or () if isinstance(k, str)}
+    if not keys:
+        return 0
+    with _lock:
+        data = _load(language, strict=True)
+        n = sum(1 for k in data["stopped"] if k in keys) + sum(1 for k in data["later"] if k in keys)
+        if not n:
+            return 0
+        data["stopped"] = [k for k in data["stopped"] if k not in keys]
+        data["later"] = {k: d for k, d in data["later"].items() if k not in keys}
+        _write(language, data)
+    return n
 
 
 def mark_all_seen(language, entries_, connect_path=None):

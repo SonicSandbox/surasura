@@ -1491,7 +1491,7 @@ class ShellWindow(QMainWindow):
         for name in screens.PAGES:
             page = self.page_widgets.get(name)
             if hasattr(page, "set_view"):
-                moved = page.set_view(view) != "same" or page.list.looks_changed or moved
+                moved = page.set_view(view) not in ("same", "later") or page.list.looks_changed or moved   # a4
         self.subline.setText(view.subline)
         fin = self.tab_buttons["finished"]
         label = strings.TABS["finished"][0]

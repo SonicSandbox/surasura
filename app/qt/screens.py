@@ -11,7 +11,7 @@ and hands it to the system's player, or says in the bar why it can't.
 import os
 import sys
 
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget   # W3.2 Q4
 
@@ -96,6 +96,7 @@ class Page(QWidget):
     not_found = pyqtSignal(int)                     # an episode whose ▶ press found nothing: looked at again (row 55 A-7)
     state_dismissed = pyqtSignal(str)               # ✕ on the state bar: its key (the window hides it on every page)
     hidden = None                                   # the window's standing lines hidden this session (standing.Hidden)
+    defer_hidden = False                            # a4: while hidden, its list takes the newest view later (`set_view`)
 
     def __init__(self, name, heading, tooltips=None, language="ja", parent=None):
         super().__init__(parent)
@@ -125,6 +126,14 @@ class Page(QWidget):
         self.list = rows.RowsView(strings.LIST_NAMES.get(name, heading), tooltips=tooltips, parent=self)
         self.list.play_requested.connect(self._play)
         box.addWidget(self.list, 1)
+        # --- a4 (A2): the view the list's entries were made from, and a hidden page's view still to list (`set_view`)
+        self.listed = None
+        self.owed = None
+        self._owed_timer = QTimer(self)
+        self._owed_timer.setSingleShot(True)
+        self._owed_timer.setInterval(rows.WARM_IDLE_MS)
+        self._owed_timer.timeout.connect(self.list_owed)
+        # --- end a4
 
     def entries(self, view):
         raise NotImplementedError
@@ -134,13 +143,40 @@ class Page(QWidget):
         return False
 
     def set_view(self, view):
-        old, self.view_model = self.view_model, view
+        """The reader's view: the state bar now; the list's entries now when they changed — or, for a page that defers
+        while hidden (Finished, `defer_hidden`; a4), once it shows or the window rests (`rows.WARM_IDLE_MS` after the
+        first view it owes: a burst's views are never each listed on a page nobody sees) -> the list's answer, "same",
+        or "later"."""
+        self.view_model = view
         self.paint_state()
+        old = self.listed
         if old is not None and view is not None and old.loading == view.loading and self.unchanged(old, view):
+            self.listed, self.owed = view, None
             self.list.model().changed = []
             self.list.looks_changed = False
             return "same"                               # another page's change: this list's diff costs nothing
+        if self.defer_hidden and old is not None and view is not None and not self.isVisible():
+            self.owed = view                            # a4: listed when it shows, or once the window rests
+            self.list.looks_changed = False
+            if not self._owed_timer.isActive():
+                self._owed_timer.start()
+            return "later"
+        self.listed, self.owed = view, None
+        self._owed_timer.stop()
         return self.list.set_entries(self.entries(view))
+
+    def list_owed(self):
+        """(a4) The newest view this hidden page owes its list, listed now (it shows, or the window rested)."""
+        view, self.owed = self.owed, None
+        self._owed_timer.stop()
+        if view is not None and view is self.view_model:
+            self.listed = view
+            self.list.set_entries(self.entries(view))
+
+    def showEvent(self, event):
+        if self.owed is not None:                       # a4: listed before its first paint
+            self.list_owed()
+        super().showEvent(event)
 
     def paint_state(self):
         """The state bar for the view: a read-only line hidden by ✕ stays hidden until its reason changes (or it
@@ -234,6 +270,8 @@ class CurrentPage(Page):
 
 
 class FinishedPage(Page):
+    defer_hidden = True                             # a4 (A2): its list follows the views once it shows (or at rest)
+
     def __init__(self, tooltips=None, language="ja", parent=None):
         super().__init__("finished", strings.FINISHED_HEADING, tooltips, language, parent)
         self.help = QLabel(strings.FINISHED_HELP, self)
@@ -301,7 +339,7 @@ class NeedsPage(Page):
     def set_view(self, view):
         if self.controller is None:
             return super().set_view(view)
-        self.view_model = view
+        self.view_model = self.listed = view
         self.paint_state()                              # round 8 (A-1): the ✕ rule, as every page's
         self.controller.view_in(view)
         self.list.looks_changed = False

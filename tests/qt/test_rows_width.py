@@ -212,11 +212,13 @@ def test_a_reorder_that_changes_a_places_height_or_the_rows_is_no_move(seeded):
         lined = _moved(entries, 9, 3)
         lined[5] = (lined[5][0], lined[5][1], (line,))                # a line now under place 5: a new height there
         assert lst.set_entries(lined) == "reset"
-        gone = entries[:20] + entries[21:]                             # a row left
-        assert lst.set_entries(gone) == "reset"
+        assert lst.set_entries(entries) == "reset"                     # back (a line moving: a reset, as before)
+        gone = entries[:20] + entries[21:]                             # a row left: taken out, no move (a4: no
+        assert lst.set_entries(gone) == "spliced"                      # reset either — the rest stay in place)
         swapped = list(gone)
-        swapped[4] = (rows.ROW, entries[20][1], ())                    # another row in its place: not a move
-        assert lst.set_entries(swapped) == "reset"
+        swapped[4] = (rows.ROW, entries[20][1], ())                    # another row in its place: not a move (one out,
+        assert lst.set_entries(swapped) == "spliced"                   # one in)
+        assert lst.set_entries(list(reversed(swapped))) == "reset"     # the rows in another order and a row changed
         assert model._moved_span(model.keys, model.entries) is None    # the same order: nothing moved
     finally:
         host.close()

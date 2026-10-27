@@ -367,8 +367,15 @@ def test_AD1_a_click_lets_the_keyboards_episode_go_so_enter_closes_the_row_again
     QTest.mouseClick(lst.viewport(), Qt.MouseButton.RightButton, pos=head.center())     # on its own row: no new current
     assert lst.ep_key is None and lst.model().open_key == group.key, "any press of the hand lets it go"
     entries = list(lst.model().entries)
-    for again in (entries + [(rows.ROW, _shows_rows()["one"], ())],     # a row came: a reset, the group still open
-                  [(rows.ROW, _shows_rows()["one"], ())]):             # another language's list
+    # a4: a row that came below is put in (no reset): the group stays open and the keyboard keeps its episode
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    _keys(lst, Qt.Key.Key_Down)
+    held = lst.ep_key
+    assert held is not None
+    assert lst.set_entries(entries + [(rows.ROW, _shows_rows()["one"], ())]) == "spliced"
+    assert lst.ep_key == held and lst.model().open_key == group.key
+    lst.set_entries(entries)
+    for again in ([(rows.ROW, _shows_rows()["one"], ())],):           # another language's list: a reset lets it go
         lst.setCurrentIndex(lst.model().index(i, 0))
         _keys(lst, Qt.Key.Key_Down)
         assert lst.ep_key is not None

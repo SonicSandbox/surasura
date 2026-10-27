@@ -748,6 +748,7 @@ class RowsModel(QAbstractListModel):
         self.open_key = None
         self.changed = []                           # rows a "same" refresh changed
         self.before = []                            # the entries before it (`looks_different`)
+        self.came, self.gone = [], []               # a4: a "spliced" refresh's places put in (new) and taken out (old)
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.entries)
@@ -847,9 +848,11 @@ class RowsModel(QAbstractListModel):
             (self.changed, relaid), self.before = moved, self.entries
             self.entries, self.keys = list(entries), keys
             return "relayout" if relaid else "moved"
-        # S19's written skip: a reset (a row added or gone, even below the screen) repaints the screen's rows — Qt's
-        # QListView relays out and repaints its viewport on any reset or insert — but from their kept pixmaps (no row
-        # drawn afresh: `_same_face`); an insert that repaints nothing on screen waits for W3.1's uniform rows (IK-38)
+        if self._splice(keys, entries):
+            return "spliced"
+        # S19's written skip: a reset (rows in another order and rows added or gone at once, a list emptied or filled, a
+        # language switch) repaints the screen's rows — Qt's QListView relays out and repaints its viewport on any
+        # reset or insert — but from their kept pixmaps (no row drawn afresh: `_same_face`)
         self.beginResetModel()
         self.changed, self.before = [], []
         self.entries = list(entries)
@@ -858,6 +861,50 @@ class RowsModel(QAbstractListModel):
             self.open_key = None
         self.endResetModel()
         return "reset"
+
+    def _splice(self, keys, entries):
+        """a4 (A2): rows added or gone, every other row in the order it had — a show landing at Soon's end, a piece
+        leaving for Goal, Up Next handing its place on (its row comes down, a row goes up: both are the hero's and a
+        row's own keys) — taken out and put in where they are (`beginRemoveRows` / `beginInsertRows`), never a reset:
+        the current row, the hand's row, the open row and the picks stay on their rows. Qt's QListView still lays every
+        row out again after an insert (`QListView::rowsInserted`), each height a look in the delegate's kept list, and
+        repaints the screen from kept pixmaps. `self.changed`: the new rows and the kept ones rebuilt (a "same"
+        refresh's rule); `self.came` / `self.gone`: the places put in (new) and taken out (old). -> True, or None (rows
+        reordered too: a reset)."""
+        old = self.keys
+        if not old or not keys:
+            return None
+        new_set, old_set = set(keys), set(old)
+        if len(new_set) != len(keys) or len(old_set) != len(old):
+            return None                                 # a key twice: no row to keep it on
+        kept = [k for k in old if k in new_set]
+        if not kept or kept != [k for k in keys if k in old_set]:
+            return None                                 # no row kept (another language's list), or in another order
+        gone = [i for i, k in enumerate(old) if k not in new_set]
+        came = [i for i, k in enumerate(keys) if k not in old_set]
+        if not gone and not came:
+            return None
+        root = QModelIndex()
+        for a, b in reversed(_runs(gone)):              # from the bottom: the places above stay as they were
+            self.beginRemoveRows(root, a, b)
+            self.entries = self.entries[:a] + self.entries[b + 1:]      # a new list each step (the delegate's heights
+            self.keys = self.keys[:a] + self.keys[b + 1:]               # are kept by the list's identity)
+            self.endRemoveRows()
+        for a, b in _runs(came):                        # from the top: each run where it stands in the new order
+            self.beginInsertRows(root, a, b)
+            self.entries = self.entries[:a] + list(entries[a:b + 1]) + self.entries[a:]
+            self.keys = self.keys[:a] + keys[a:b + 1] + self.keys[a:]
+            self.endInsertRows()
+        new = set(came)
+        before = self.entries                           # the kept rows' old entries, in their new places
+        self.changed = [i for i, (x, y) in enumerate(zip(before, entries))
+                        if i in new or x[1] is not y[1] or x[2] != y[2]]
+        self.before = before
+        self.came, self.gone = came, gone
+        self.entries, self.keys = list(entries), keys
+        if self.open_key is not None and not any(k[1] == self.open_key for k in keys):
+            self.open_key = None
+        return True
 
     def _moved_span(self, keys, entries):
         """A reorder that keeps every place's height: the same rows (by their own key — Up Next's row coming down is
@@ -886,6 +933,17 @@ class RowsModel(QAbstractListModel):
             return None                             # a line came or went: not lines moving
         return [i for i, (a, b) in enumerate(zip(before, entries))
                 if lo <= i <= hi or a[1] is not b[1] or a[2] != b[2]], relaid
+
+
+def _runs(places):
+    """Sorted places as runs of neighbours: [2, 3, 4, 9] -> [(2, 4), (9, 9)]."""
+    out = []
+    for i in places:
+        if out and out[-1][1] == i - 1:
+            out[-1] = (out[-1][0], i)
+        else:
+            out.append((i, i))
+    return out
 
 
 # --- the delegate: geometry, painting, hit-testing ----------------------------------------------------------------- #
@@ -3369,6 +3427,20 @@ class RowsView(QListView):
             else:
                 for i in looks:                          # only the rows that look different (dirty rows, never all)
                     self.update(model.index(i, 0))
+        elif how == "spliced":
+            # a4 (A2): rows came or went, the rest in place: no reset — the current row, the open row and the picks are
+            # Qt's persistent places (moved with the insert); the hand's row is followed by its key. Qt lays the rows
+            # out again and repaints the screen from kept pixmaps (S19's written skip, as a relayout); the place the
+            # learner reads stays put only when something came or went above it (the top row's offset put back)
+            self.looks_changed = True
+            self._rest()
+            self._follow_rows(*held)
+            if anchor is not None and self.isVisible() and anchor[0] in keys and anchor[0] in model.keys:
+                old_at, new_at = keys.index(anchor[0]), model.keys.index(anchor[0])
+                if any(i < new_at for i in model.came) or any(i < old_at for i in model.gone):
+                    self._restore = anchor
+                    self._apply_restore()
+                    self._restore = None
         elif how == "relayout":
             # S19's written skip: a relayout (a row opened, or C3's lines moving inside a drop's span) repaints the whole
             # viewport — Qt's QListView repaints it on its delayed layout (`doItemsLayout`) whatever is asked here, so a

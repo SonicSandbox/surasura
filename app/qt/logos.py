@@ -44,7 +44,7 @@ TILE_ROUND = 0.19               # the tile's corner radius by its side (the logo
 
 _IMAGES = {}                    # (name, px, dpr) -> QImage or None, decoded on a worker
 _PIXMAPS = {}                   # (name, px, dpr) -> QPixmap, made on the GUI thread from the image, once
-_WAITING = {}                   # (name, px, dpr) -> the callbacks waiting for a decode under way
+_WAITING = {}                   # (name, px, dpr) -> (the decode's relay, the callbacks waiting for it)
 
 
 def folder():
@@ -122,21 +122,27 @@ def logo(name, px, callback, dpr=None):
     if key in _PIXMAPS or key in _IMAGES:
         callback(_pixmap(key))
         return
-    if key in _WAITING:
-        _WAITING[key].append(callback)
+    held = _WAITING.get(key)
+    if held is not None and not held[0].dropped:
+        held[1].append(callback)
         return
-    _WAITING[key] = [callback]
+    # a decode whose answer a closed window dropped (`bridge.drop_answers`) never lands: decoded again for this ask, its
+    # own callbacks let go with that window (a4: the next window's strip waited for it for good)
+    waiting = [callback]
 
     def done(image):
         _IMAGES[key] = image
         pix = _pixmap(key)
-        for fn in _WAITING.pop(key, []):
+        mine = _WAITING.get(key)
+        if mine is not None and mine[1] is waiting:
+            del _WAITING[key]
+        for fn in waiting:
             fn(pix)
 
     def failed(_info):
         done(None)
 
-    bridge.run_in_worker(_decode, *key, then=done, failed=failed)
+    _WAITING[key] = (bridge.run_in_worker(_decode, *key, then=done, failed=failed), waiting)
 
 
 def _pixmap(key):

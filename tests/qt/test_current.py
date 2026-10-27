@@ -26,7 +26,7 @@ from app import theme
 from app.qt import motion, rows, screens, shell, stones, strings, style
 from app.services import library_reader, stone_plan
 from tests.fixtures import window_seed
-from tests.qt.conftest import logos_in, wait_until
+from tests.qt.conftest import logos_in, needs_in, wait_until
 from tests.qt.pixels import count, rgb_array
 from tests.qt.test_wiring import problems
 
@@ -50,6 +50,7 @@ def open_on(qapp, seed, size=(1280, 800)):
     QApplication.processEvents()
     for _ in range(50):                                       # the list's batched layout settles
         QApplication.processEvents()
+    assert needs_in(win)                                      # the window finished opening: Needs you's first answer
     return win, services
 
 

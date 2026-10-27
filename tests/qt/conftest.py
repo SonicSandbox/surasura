@@ -150,6 +150,24 @@ def logos_in(strip, timeout=60.0):
     return ok
 
 
+def needs_in(win, timeout=60.0):
+    """Needs you's entries worked out for the view the window shows (`NeedsYou` gathers them on a worker): every test
+    that watches a window's paint events waits here first. On a busy machine the first answer lands after the window
+    opened, and its one paint — the *Needs you* tab shown with its count, the tab bar laid out again under it — is the
+    window still opening, not the change under test (alpha 3's cut: two S19 tests saw the tab bar repaint, a4's
+    `flake-probe.log`). A window without the controller (no library) has nothing to wait for. -> True once it is in."""
+    from PyQt6.QtWidgets import QApplication
+    ny = getattr(win, "needs_you", None)
+    page = getattr(win, "page_widgets", {}).get("needs")
+    if ny is None or page is None:
+        return True
+    ok = wait_until(lambda: ny.view is not None and ny.view is page.view_model and ny.gathers > 0
+                    and not ny._running and not ny._again, timeout)
+    for _ in range(20):                                  # its repaint, done before the caller watches
+        QApplication.processEvents()
+    return ok
+
+
 def wait_until(predicate, timeout=5.0):
     """Run the event loop until `predicate()` is true (or the time is up). -> its last answer."""
     import time

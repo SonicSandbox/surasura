@@ -75,8 +75,11 @@ def storm_batches(seed, more, batch=BATCH, rng_seed=11):
             if kind < 0.2 and runs:
                 run = runs[rng.randrange(len(runs))]
                 last, ceiling = run
+                if ceiling - last["ord"] < 1e-3:              # no room left between the two (floats run out)
+                    runs.remove(run)
+                    continue
                 for _ in range(take):
-                    at = (last["ord"] + ceiling) / 2.0                    # after the show's last, before the next
+                    at = last["ord"] + (ceiling - last["ord"]) / 64.0     # after the show's last, before the next
                     row = dict(last, id=next_id, ord=at, rel_path=f"{last['rel_path']}.{next_id}.srt",
                                title=f"{words[rng.randrange(len(words))]} - {next_id}.srt", watched=0, mined_at=None,
                                mine_asked=None, added_at="2026-10-27T10:00:00Z", feed_in=None)
@@ -132,12 +135,13 @@ class Meter:
         self.on = False
         self.views = 0
         self.shown = 0
+        self.show_ms = 0.0
         self.pages = {}
         self.steps = []                 # each turn of the window's loop while on (`pump`), ms
         self._undo = []
 
     def _page(self, name):
-        return self.pages.setdefault(name, {"set_view": 0, "changed": 0, "resets": 0, "inserted": 0, "removed": 0,
+        return self.pages.setdefault(name, {"set_view": 0, "ms": 0.0, "changed": 0, "resets": 0, "inserted": 0, "removed": 0,
                                             "laid_out": 0, "paint_events": 0, "row_paints": 0, "row_renders": 0})
 
     def start(self):
@@ -154,9 +158,12 @@ class Meter:
         show = win.show_library
 
         def show_library(view):
+            t = time.perf_counter()
+            out = show(view)
             if meter.on:
                 meter.shown += 1
-            return show(view)
+                meter.show_ms += (time.perf_counter() - t) * 1000
+            return out
         try:                                          # the bridge holds the bound method: the slot swapped in place
             win.library_bridge.library_changed.disconnect(show)
         except (TypeError, RuntimeError):
@@ -176,8 +183,10 @@ class Meter:
             original = page.set_view
 
             def set_view(view, _orig=original, _stats=stats, _page=page):
+                t = time.perf_counter()
                 how = _orig(view)
                 if meter.on:
+                    _stats["ms"] += (time.perf_counter() - t) * 1000
                     _stats["set_view"] += 1
                     model = _page.list.model()
                     _stats["changed"] += len(model.changed) if how != "reset" else model.rowCount()
@@ -224,9 +233,12 @@ class Meter:
             dock_view = dock.set_view
 
             def dock_set_view(view, _orig=dock_view, _stats=stats):
+                t = time.perf_counter()
+                out = _orig(view)
                 if meter.on:
                     _stats["set_view"] += 1
-                return _orig(view)
+                    _stats["ms"] += (time.perf_counter() - t) * 1000
+                return out
             dock.set_view = dock_set_view
             self._undo.append(lambda: dock.__dict__.pop("set_view", None))
         tray = getattr(win, "arrivals_tray", None)
@@ -235,9 +247,12 @@ class Meter:
             groups = tray.set_groups
 
             def set_groups(g, _orig=groups, _stats=stats):
+                t = time.perf_counter()
+                out = _orig(g)
                 if meter.on:
                     _stats["set_view"] += 1
-                return _orig(g)
+                    _stats["ms"] += (time.perf_counter() - t) * 1000
+                return out
             tray.set_groups = set_groups
             self._undo.append(lambda: tray.__dict__.pop("set_groups", None))
         self._lists = lists
@@ -271,9 +286,11 @@ class Meter:
         self._undo = []
 
     def report(self):
-        pages = {k: {n: v for n, v in s.items() if not n.startswith("_")} for k, s in self.pages.items()}
+        pages = {k: {n: (round(v, 1) if isinstance(v, float) else v) for n, v in s.items() if not n.startswith("_")}
+                 for k, s in self.pages.items()}
         steps = sorted(self.steps)
         return {"seconds": round(self.seconds, 2), "views": self.views, "shown": self.shown,
+                "show_library_ms": round(self.show_ms, 1),
                 "views_bound": math.ceil(self.seconds * 4) + 1,
                 "longest_step_ms": round(steps[-1], 2) if steps else 0.0,
                 "steps_over_4ms": sum(1 for s in steps if s > 4.0),
@@ -283,14 +300,19 @@ class Meter:
 
 
 # --- one run ------------------------------------------------------------------------------------------------------ #
-def open_window(qapp, seed, size=(1280, 800), poll=0.02):
-    """The window on the seed, as `tests/qt/test_current.open_on` opens it, once its live rows are in."""
+def open_window(qapp, seed, size=(1280, 800), poll=0.02, coalesce=True):
+    """The window on the seed, as `tests/qt/test_current.open_on` opens it (the reader coalescing as the window's
+    does, `coalesce`), once its live rows are in."""
     from PyQt6.QtWidgets import QApplication
     from app.qt import shell
     from app.services import library_reader
     from tests.qt.conftest import wait_until
+    if seed.language != "ja":                     # the window shows its own language's views only (W3.2 P0): the
+        from app import path_utils                # test root's settings name it (never the developer's own)
+        with open(path_utils.get_user_file("settings.json"), "w", encoding="utf-8") as f:
+            json.dump({"target_language": seed.language}, f)
     reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
-                                          mining=seed.mining, poll=poll)
+                                          mining=seed.mining, poll=poll, coalesce=coalesce)
     services = shell.Services(library=reader)
     win = shell.open_window(qapp, services)
     win.resize(*size)
@@ -317,7 +339,7 @@ def run(win, seed, more, batch=BATCH, gap_s=GAP_S, settle_s=60.0):
     def landed():
         view = reader.view()
         return done.is_set() and view is not None and page.view_model is view and \
-            reader._data_version == seed.library._data_version
+            reader._data_version == seed.library._data_version and not getattr(reader, "_view_owed", False)
     deadline = time.monotonic() + settle_s
     ok = False
     try:
@@ -339,18 +361,19 @@ def run(win, seed, more, batch=BATCH, gap_s=GAP_S, settle_s=60.0):
 
 def table(rows):
     """A markdown table of runs' reports (label, report)."""
-    head = ("| run | s | views | shown | longest step ms | steps > 4 ms | page | set_view | changed | resets | inserted "
-            "| laid out | paint events | rows painted | drawn afresh |")
+    head = ("| run | s | views | shown | show ms | longest step ms | steps > 4 ms | page | set_view | ms | changed | resets "
+            "| inserted | removed | laid out | paint events | rows painted | drawn afresh |")
     lines = [head, "|" + "---|" * (head.count("|") - 1)]
     for label, r in rows:
         first = True
         for name, s in r["pages"].items():
-            lead = (f"| {label} | {r['seconds']} | {r['views']} | {r['shown']} | {r['longest_step_ms']} | "
-                    f"{r['steps_over_4ms']} ") if first else "| | | | | | "
+            lead = (f"| {label} | {r['seconds']} | {r['views']} | {r['shown']} | {r['show_library_ms']} | "
+                    f"{r['longest_step_ms']} | {r['steps_over_4ms']} ") if first else "| | | | | | | "
             first = False
-            lines.append(lead + f"| {name} | {s['set_view']} | {s.get('changed', '')} | {s.get('resets', '')} | "
-                         f"{s.get('inserted', '')} | {s.get('laid_out', '')} | {s.get('paint_events', '')} | "
-                         f"{s.get('row_paints', '')} | {s.get('row_renders', '')} |")
+            lines.append(lead + f"| {name} | {s['set_view']} | {s['ms']} | {s.get('changed', '')} | "
+                         f"{s.get('resets', '')} | {s.get('inserted', '')} | {s.get('removed', '')} | "
+                         f"{s.get('laid_out', '')} | {s.get('paint_events', '')} | {s.get('row_paints', '')} | "
+                         f"{s.get('row_renders', '')} |")
     return "\n".join(lines)
 
 
@@ -362,6 +385,8 @@ def main(argv=None):
     ap.add_argument("--gap", type=float, default=GAP_S)
     ap.add_argument("--language", default="ja")
     ap.add_argument("--json")
+    ap.add_argument("--no-coalesce", action="store_true", help="the reader builds a view for every change (A/B)")
+    ap.add_argument("--no-splice", action="store_true", help="a row added or gone resets the list (A/B: before a4)")
     ap.add_argument("--profile", help="a cProfile of the window's thread during the storm, written here")
     args = ap.parse_args(argv)
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -370,8 +395,11 @@ def main(argv=None):
     from tests.fixtures import window_seed
     qapp = QApplication.instance() or QApplication(sys.argv[:1])
     style.apply(qapp, "night", "M", args.language)
+    if args.no_splice:
+        from app.qt import rows
+        rows.RowsModel._splice = lambda _self, _keys, _entries: None
     seed = window_seed.build(files=args.files, language=args.language)
-    win, services = open_window(qapp, seed)
+    win, services = open_window(qapp, seed, coalesce=not args.no_coalesce)
     prof = None
     if args.profile:
         import cProfile

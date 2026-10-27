@@ -3411,7 +3411,8 @@ def library_for(language, settings, freeze_gc=False):
         cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc,
         watch=library_lookout,                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
         connect=feed.latest,                                # P4.1 L2: the stones from the status line's last look
-        play=play.Looks(language))                          # row 55: ▶ only where its file is found
+        play=play.Looks(language),                          # row 55: ▶ only where its file is found
+        coalesce=True)                                      # a4: a burst of commits is a few views a second
     _wake_on_feed(feed, reader)                             # P4.1 L2
     writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,
                           words=strings.MOVE_WORDS,

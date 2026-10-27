@@ -43,6 +43,11 @@ library store, on a plain thread of its own — never the window's thread.
   its answers back (`set_playable`) — a build then rebuilds only the rows whose answer moved. A folder the watch synced
   is looked at again (its episodes), a full sync and a new Connect feed (its index file changed) the ones not found;
   the first screen's cache seeds the answers.
+- **A burst builds a few views a second** (a4, `coalesce`: off by default, the window's reader turns it on): a change
+  within `COALESCE_S` of the last view built waits for that much to pass — a + Add, a look or an import committing
+  batch after batch is a few views a second, the last change always in the last — and the numbers' new version with the
+  store unchanged waits `NUMBERS_GRACE_S` for the write it comes just before (a move: one view, never two). The window's
+  own asks build at once: a drop (`release`), the settle's `republish`, an expectation (`expect`), a mode, a full read.
 - **A drag holds it** (06 E6, `hold()` / `release()`): while held it still reads and merges the feed (its copy stays
   current) but builds and publishes nothing, so nothing moves under the hand; `release()` builds and publishes once. An
   item gone meanwhile is told at once (`subscribe_gone(cb)`: `cb(item_ids)`) — the drag of a removed item is let go.
@@ -62,6 +67,14 @@ POLL_S = 0.1                     # the store's FEED_POLL
 MODE_RECHECK_S = 2.0             # while the store can't be used, its mode is asked again this often
 CACHE_LATEST_S = 5.0             # the first screen's cache waits for a quiet look at most this long
 CARDS_ALL_S = 2.0                # every item's cards asked again at most this often (between, only what changed)
+# --- a4 (A2, the commit storm): a burst of changes — a + Add, a look or an import committing batch after batch — builds
+# at most one view this often, the last change never lost (the build waits, it is never skipped); the window's own
+# asks (a drop, the settle's republish, an expectation, a mode) build at once
+COALESCE_S = 0.25
+# a4 (C2): the numbers' new version with the store unchanged waits this long for the write it comes just before (the
+# window's writer works a move's numbers out, then writes it): the move's one view holds both, never two builds a move
+NUMBERS_GRACE_S = 0.05
+# --- end a4
 CACHE_VERSION = 5                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
 #                                  4: a status's words and tips (G2.3: ✓ N, a tip's action on a line of its own);
 #                                  5: `can_play` is ▶'s found file (row 55), and the seed of its answers
@@ -100,7 +113,8 @@ def _hand_playable(ref, answers):
 
 class LibraryReader:
     def __init__(self, opener, language="ja", numbers=None, mining=None, poll=POLL_S, cache_file=None,
-                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None, connect=None, play=None):
+                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None, connect=None, play=None,
+                 coalesce=False):
         self.opener = opener
         self.language = language
         self.numbers = numbers or _no_numbers
@@ -161,6 +175,15 @@ class LibraryReader:
         self.reads = 0                     # feed reads (tests)
         self.builds = 0                    # views built (tests)
         self.skipped = 0                   # reads that changed nothing the window shows (tests)
+        # --- a4: a view owed (`COALESCE_S`, `NUMBERS_GRACE_S`): built once it falls due, whatever else comes meanwhile
+        self._built_at = None              # when a look last built and published a view
+        self._view_owed = False
+        self._owed_at = 0.0                # when the owed view falls due
+        self._numbers_at = None            # when a numbers' version with the store unchanged was first seen
+        self._numbers_dv = None            # ... and the store's data_version then (the write moves it)
+        self.held_back = 0                 # looks whose build waited (tests)
+        self.coalesce = bool(coalesce)     # off by default (a test's looks each build); the window turns it on
+        # --- end a4
         # --- W3.2 Q1: New arrivals' estimates ({item_id: N new}, the window's `arrivals.ArrivalNumbers`), built into
         # the next view (`view_rows.build(estimates=)`); new ones rebuild it (only the arrivals' rows change)
         self._estimates = {}
@@ -422,12 +445,15 @@ class LibraryReader:
             estimates_new, self._estimates_new = self._estimates_new, False
             estimates_new, self._playable_new = estimates_new or self._playable_new, False     # row 55: ▶'s answers
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
-        estimates_new = self._take_expected() or estimates_new      # LM11b G5: and the window's expectation
+        expected_moved = self._take_expected()                      # LM11b G5: and the window's expectation
+        estimates_new = expected_moved or estimates_new
         dv = h.data_version()
-        cards_due = self._cards_stale and not held and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
+        now = time.monotonic()
+        cards_due = self._cards_stale and not held and now - self._cards_all_at >= CARDS_ALL_S
+        owed = self._view_owed                          # a4: a build held back (what comes meanwhile is still read)
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
                 and self._view is not None and not self._view.busy and not cards_due and not released \
-                and not estimates_new:                  # W3.2 Q1
+                and not estimates_new and not owed:     # W3.2 Q1
             if again:                                   # M4.1 B1: nothing changed since the last build
                 self._publish(self._view)
             self._flush_cache()
@@ -446,7 +472,10 @@ class LibraryReader:
                    or feed.get("pieces")                # LM11b G1: a group's kind or name
                    or self._options != options_before or version != self._numbers_version
                    or cards != self._cards or self._view is None or self._view.busy or self._view.cached or released
-                   or estimates_new)                    # W3.2 Q1
+                   or estimates_new or owed)            # W3.2 Q1; a4: the build held back
+        urgent = (changed_mode or released or again or expected_moved or feed["full"] or self._view is None
+                  or self._view.busy or self._view.cached)
+        numbers_only = dv == self._data_version and version != self._numbers_version
         self._cards = cards
         self._data_version = dv
         self._numbers_version = version
@@ -464,8 +493,11 @@ class LibraryReader:
                 self._publish(self._view)
             self._flush_cache()                         # a look with nothing new: as quiet as one that read nothing
             return
+        if self.coalesce and not urgent and self._hold_back(now, numbers_only, dv):
+            return                                      # a4: built once it falls due (`_timeout` wakes the reader)
         view = self._build(numbers, mode, reason, rows_known=True)
         self._publish(view)
+        self._built_at, self._view_owed, self._numbers_at = time.monotonic(), False, None     # a4
         if self.freeze_gc:
             gc.freeze()
         if mode == "store" and self.cache_file:
@@ -482,6 +514,24 @@ class LibraryReader:
             if time.monotonic() - self._cache_due_at >= CACHE_LATEST_S:
                 self._flush_cache()                     # a store that never rests: written anyway, now and then
 
+    # --- a4 (A2, C2): one view for a burst, one for a move ------------------------------------------------------ #
+    def _hold_back(self, now, numbers_only, dv):
+        """Whether this look's build waits -> True (owed: `_timeout` wakes the reader when it falls due). A change
+        within `COALESCE_S` of the last view built waits for that much to pass (a burst of commits: a few views a
+        second, the last change in the last one); the numbers' new version with the store unchanged waits
+        `NUMBERS_GRACE_S` for the write it comes before (the bell wakes the reader at the write: one build)."""
+        due = self._built_at + COALESCE_S if self._built_at is not None else now
+        if numbers_only and self._numbers_at is None:
+            self._numbers_at, self._numbers_dv = now, dv
+        if self._numbers_at is not None and dv == self._numbers_dv:     # the write it comes before: not yet
+            due = max(due, self._numbers_at + NUMBERS_GRACE_S)
+        if due <= now:
+            return False
+        self._view_owed, self._owed_at = True, due
+        self.held_back += 1
+        return True
+    # --- end a4
+
     # --- W3.2 B: the window wakes on the bell (IK0-5, L3.1-4, W2.2's *How the window wakes*) -------------------- #
     def _wait(self):
         """Until the next look. No watch, or a deaf one (no bell to hear other programs by): every `poll`, as before.
@@ -496,6 +546,8 @@ class LibraryReader:
         lookout = self._lookout
         if lookout is None or lookout.deaf:
             timeout = self.poll
+            if self._view_owed:                         # a4: the view held back, built when it falls due
+                timeout = min(timeout, max(0.0, self._owed_at - time.monotonic()))
         else:
             timeout = lookout.timeout()
             with self._lock:
@@ -509,6 +561,8 @@ class LibraryReader:
                 timeout = min(timeout, max(0.0, self._cards_all_at + CARDS_ALL_S - time.monotonic()))
             if self._mode is not None and self._mode[0] != "store":
                 timeout = max(self.poll, min(timeout, MODE_RECHECK_S))
+            elif self._view_owed:                       # a4: the view held back, built when it falls due
+                timeout = min(timeout, max(0.0, self._owed_at - time.monotonic()))
         return timeout
 
     def _watching(self, h):

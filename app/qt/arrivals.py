@@ -42,7 +42,7 @@ import time
 
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
-from PyQt6.QtGui import (QAction, QLinearGradient, QPainter, QPainterPath, QPen, QStandardItem,
+from PyQt6.QtGui import (QAction, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QStandardItem,
                          QStandardItemModel)
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QFrame, QHBoxLayout, QLabel, QListView, QMenu,
                              QSizePolicy, QStyledItemDelegate, QToolButton, QToolTip, QVBoxLayout, QWidget)
@@ -885,7 +885,7 @@ class TrayList(QListView):
         self.setItemDelegate(TrayDelegate(self))
 
     def picked(self, key):
-        return False
+        return key in self.tray.picks
 
     # --- where things are ------------------------------------------------------------------------------------------- #
     def at(self, pos):
@@ -928,7 +928,10 @@ class TrayList(QListView):
         self._press = None
         if event.button() == Qt.MouseButton.LeftButton:
             key, part = self.at(event.position().toPoint())
-            if key is not None:
+            plain = not event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+            if plain and part != "more" and key not in self.tray.picks:
+                self.tray.clear_picks()              # A4: a plain press lets the picks go (⋯ keeps them; a picked
+            if key is not None:                      # row's press keeps them for its drag, its release lets them go)
                 self._press = (key, part, event.position())
                 self.setFocus(Qt.FocusReason.MouseFocusReason)
                 event.accept()
@@ -966,6 +969,15 @@ class TrayList(QListView):
             return
         super().mouseDoubleClickEvent(event)
 
+    def contextMenuEvent(self, event):
+        """A4: a right-click on a row is its ⋯ (the picks' menu on a picked row), where the hand is."""
+        key, _part = self.at(event.pos())
+        if key is None:
+            super().contextMenuEvent(event)
+            return
+        event.accept()
+        self.tray.menu(key, at=event.globalPos())
+
     def leaveEvent(self, event):
         super().leaveEvent(event)
         self._set_hot(None)
@@ -985,9 +997,6 @@ class TrayList(QListView):
         return super().viewportEvent(event)
 
     # --- the keys --------------------------------------------------------------------------------------------------- #
-    def _rows(self):
-        return [i for i, k in enumerate(self.model().keys) if not k.startswith(HEAD)]
-
     def _step(self, forward):
         """The next (or previous) arrival's row from the current one, or -1 past the end."""
         keys = self.model().keys
@@ -1004,6 +1013,14 @@ class TrayList(QListView):
         here = keys[cur.row()] if cur.isValid() and cur.row() < len(keys) else None
         if here is not None and here.startswith(HEAD):
             here = None
+        if event.matches(QKeySequence.StandardKey.SelectAll):         # A4: Ctrl+A picks every row
+            self.tray.pick_all()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Space and event.modifiers() & Qt.KeyboardModifier.ControlModifier and here is not None:
+            self.tray.pick(here)                                        # Ctrl+Space: the keyboard's row, as Current's
+            event.accept()
+            return
         if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
             forward = key == Qt.Key.Key_Tab and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier
             i = self._step(forward)
@@ -1118,6 +1135,10 @@ class _Away(QObject):
         self.tray = tray
 
     def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape and self.tray.isVisible() \
+                and self.tray.picks and isinstance(obj, QWidget) and self.tray.isAncestorOf(obj):
+            self.tray.clear_picks()                  # A4: Esc lets the picks go first (as in Current); again, it closes
+            return True
         if event.type() != QEvent.Type.MouseButtonPress or not self.tray.isVisible():
             return False
         if isinstance(obj, QWidget):
@@ -1194,6 +1215,8 @@ class ArrivalsTray(motion.Overlay):
         self._drag_watch.setInterval(30)
         self._drag_watch.timeout.connect(self._drag_ended)
         self.paints = 0
+        self.picks = set()                  # A4: the picked rows' keys (Ctrl / Shift+click, Ctrl+A)
+        self._pick_anchor = None            # the row Ctrl picked last: a Shift range starts there
         self.shadow = shadow.Follower(self, self.shadow_name)
         self._away = _Away(self)
         parent.installEventFilter(self)
@@ -1266,6 +1289,11 @@ class ArrivalsTray(motion.Overlay):
                 self.model.item(row).setSizeHint(self._size_of(HEAD + g.kind))
                 self.model.heads[HEAD + g.kind] = self._size_of(HEAD + g.kind).height()
         self._applied = groups
+        if self.picks:                                         # a pick whose row went lets go
+            shown = set(self.model.keys)
+            gone = {k for k in self.picks if k not in shown}
+            if gone:
+                self.picks -= gone
         if changed:
             self.paints += 1
             if self.isVisible():
@@ -1315,14 +1343,34 @@ class ArrivalsTray(motion.Overlay):
         if held is None or sip.isdeleted(held[0]):
             head = QWidget(self.view.viewport())
             head.setAutoFillBackground(False)
-            row = QHBoxLayout(head)
+            outer = QVBoxLayout(head)
             f = _fz()
-            row.setContentsMargins(round(8 * f), round(6 * f), round(4 * f), round(2 * f))
+            outer.setContentsMargins(round(8 * f), round(6 * f), round(4 * f), round(2 * f))
+            outer.setSpacing(0)
+            row = QHBoxLayout()
+            outer.addLayout(row)
             label = QLabel(group.label.upper(), head)
             label.setObjectName("popeyebrow")
             label.setTextFormat(Qt.TextFormat.PlainText)
             label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)   # never wider than the tray
             row.addWidget(label, 1)
+            if group.kind == "watched":                  # A4: four buttons — they go on a line of their own, under
+                row = QHBoxLayout()                      # its name, never squeezing it out
+                row.addStretch(1)
+                outer.addLayout(row)
+            kind = group.kind
+            for where, text, tip in (("soon", strings.TRAY_ALL_SOON, strings.TRAY_ALL_SOON_TIP),
+                                     ("goal", strings.TRAY_ALL_GOAL, strings.TRAY_ALL_GOAL_TIP)):
+                b = QToolButton(head)                    # A4: every group's All to Soon / All to Goal, as ✓ All to
+                b.setObjectName(f"trayall{where}")       # Finished looks
+                b.setText(text)
+                b.setAccessibleName(text)
+                b.setToolTip(tip)
+                b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                b.clicked.connect(lambda _c=False, w=where, k=kind: self.all_to(k, w))
+                row.addWidget(b)
+                setattr(head, where, b)
             button = None
             if group.kind == "watched":
                 button = QToolButton(head)
@@ -1406,6 +1454,7 @@ class ArrivalsTray(motion.Overlay):
             self.inset.set_lit(False)
 
     def closeEvent(self, event):
+        self.clear_picks()
         self._dragging = False
         self._drag_watch.stop()
         if self.fade is not None:
@@ -1427,14 +1476,139 @@ class ArrivalsTray(motion.Overlay):
         return getattr(self.win, "moves", None)
 
     def released(self, key, part, modifiers):
-        """A press let go where it was pressed: the icon square acts, ⋯ opens its menu."""
+        """A press let go where it was pressed: Ctrl / Shift+click picks (never acts); else the icon square acts, ⋯
+        opens its menu, and a plain click anywhere else lets the picks go."""
         a = self.arrival(key)
         if a is None:
             return
+        ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+        if shift:
+            self.pick_range(key, add=ctrl)
+            return
+        if ctrl:
+            self.pick(key)
+            return
+        if part != "more":
+            self.clear_picks()
         if part == "icon":
             self.act(a, icon_of(a))
         elif part == "more":
             self.menu(key)
+
+    # --- A4: the picks ----------------------------------------------------------------------------------------------- #
+    def _repaint_picks(self, keys):
+        for k in keys:
+            self.repaint_row(k)
+
+    def pick(self, key):
+        """Ctrl+click (Ctrl+Space): the row picked, or let go."""
+        self.picks ^= {key}
+        self._pick_anchor = key
+        self._repaint_picks((key,))
+
+    def pick_range(self, key, add=False):
+        """Shift+click: the picks become every row from the anchor (the row Ctrl picked last; with none, this one) to
+        this one, as Explorer's; Ctrl+Shift+click adds them."""
+        keys = self.keys()
+        if key not in keys:
+            return
+        anchor = self._pick_anchor if self._pick_anchor in keys else key
+        if anchor == key:
+            self._pick_anchor = key
+        a, b = sorted((keys.index(anchor), keys.index(key)))
+        span = set(keys[a:b + 1])
+        before = self.picks
+        self.picks = (before | span) if add else span
+        self._repaint_picks(before ^ self.picks)
+
+    def pick_all(self):
+        """Ctrl+A: every row of the tray picked."""
+        before = self.picks
+        self.picks = set(self.keys())
+        self._repaint_picks(before ^ self.picks)
+
+    def clear_picks(self):
+        if self.picks:
+            before, self.picks = self.picks, set()
+            self._pick_anchor = None
+            self._repaint_picks(before)
+
+    def picked(self):
+        """The picked arrivals in the tray's order."""
+        return [self.model.objs[i] for i, k in enumerate(self.model.keys) if k in self.picks] if self.picks else []
+
+    def _many(self, rows_):
+        """(title, ids) of several arrivals as one command names them, in the tray's order."""
+        ids = [i for a in rows_ for i in a.item_ids]
+        title = rows_[0].title if len(rows_) == 1 else strings.TRAY_TITLES.format(n=len(rows_))
+        return title, ids
+
+    def act_many(self, rows_, name):
+        """*Up next* · *Soon* · *Goal* · *Finished* · *Remove…* on several arrivals: ONE writer command (one ticket, one
+        toast, one Undo), their files in the tray's order; *Finished* with D14's choice, *Remove…* asked first."""
+        moves = self._moves()
+        if not rows_ or moves is None or moves.refused() is not None:
+            return
+        title, ids = self._many(rows_)
+        if name == "finished":
+            self.finish(title, ids)
+        elif name == "remove":
+            self.ask_remove_many(title, ids)
+        else:
+            from app.qt import drag
+            ticket = drag.Ticket(strings.TRAY_PLACED[name].format(title=title), ids=ids)
+            moves._give(ticket, lambda t: moves.writer.place(ids, name, label=t))
+        self.clear_picks()
+
+    def all_to(self, kind, where):
+        """A group head's *All to Soon* / *All to Goal*: every arrival of the group in one command."""
+        rows_ = next((g.rows for g in self.groups if g.kind == kind), ())
+        self.act_many(list(rows_), where)
+
+    def ask_remove_many(self, title, ids):
+        from app.qt import confirm, drag
+        moves = self._moves()
+        n = len(ids)
+
+        def answered(yes):
+            self.question = None
+            if not yes or moves.refused() is not None:
+                return
+            ticket = drag.Ticket(strings.TRAY_REMOVED.format(title=title), ids=ids)
+            moves._give(ticket, lambda t: moves.writer.remove(ids, label=t))
+        self.question = confirm.ask(
+            self.win, strings.TRAY_REMOVE_TITLE.format(title=title),
+            strings.TRAY_REMOVE_BODY_ONE if n == 1 else strings.TRAY_REMOVE_BODY.format(n=n),
+            strings.TRAY_REMOVE_YES_ONE if n == 1 else strings.TRAY_REMOVE_YES.format(n=n), strings.TRAY_REMOVE_YES_TIP,
+            default_no=True, danger=True, on_answer=answered)
+
+    def picks_menu(self, key, at=None):
+        """⋯ / right-click on a picked row while two or more are picked: the tray's moves for all of them."""
+        rows_ = self.picked()
+        n = len(rows_)
+        moves = self._moves()
+        writable, reason = True, None
+        if moves is None or not moves.writer.can_write():
+            writable = False
+            raw = (moves.writer.reason() if moves is not None else None) or ""
+            reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
+        m = QMenu(self.view)
+        m.setObjectName("rowmenu")
+        m.setToolTipsVisible(True)
+        m.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        m.setAccessibleName(strings.TRAY_PICKS_MENU_NAME.format(n=n))
+        for name, (label, tip) in strings.TRAY_PICKS_MENU.items():
+            if name == "remove":
+                m.addSeparator()
+            act = QAction(label, m)
+            act.setToolTip(tip.format(n=n) if writable else reason)
+            act.setEnabled(writable)
+            act.triggered.connect(lambda _c=False, nm=name: self.act_many(self.picked(), nm))
+            m.addAction(act)
+        self.last_menu = m
+        m.popup(at if at is not None else self._menu_at(key))
+        return m
 
     def act(self, arrival, name):
         """An icon's or ⋯'s action on `arrival` (its items): a place through the writer (its toast and Undo), D14's
@@ -1552,6 +1726,8 @@ class ArrivalsTray(motion.Overlay):
         a = self.arrival(key)
         if a is None:
             return None
+        if key in self.picks and len(self.picks) > 1:
+            return self.picks_menu(key, at)                     # A4: the picks' moves, for all of them
         moves = self._moves()
         writable, reason = True, None
         if moves is None or not moves.writer.can_write():
@@ -1600,8 +1776,12 @@ class ArrivalsTray(motion.Overlay):
             return False
         row = self.view.row_of(key)
         size = row_parts(self.view.visualRect(self.model.index(row, 0)))["row"].size() if row >= 0 else None
-        if not moves.begin_by_id(list(a.item_ids), "arrivals", a.title, global_pos, size):
+        title, ids = a.title, list(a.item_ids)
+        if key in self.picks and len(self.picks) > 1:       # A4: a picked row carries every pick, in the tray's order
+            title, ids = self._many(self.picked())
+        if not moves.begin_by_id(ids, "arrivals", title, global_pos, size):
             return False
+        self.clear_picks()
         self._dragging = True
         pix = self.grab()
         if self.fade is None:

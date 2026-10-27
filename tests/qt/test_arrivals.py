@@ -22,7 +22,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
-from PyQt6.QtGui import QKeyEvent, QMouseEvent
+from PyQt6.QtGui import QContextMenuEvent, QKeyEvent, QMouseEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
@@ -1121,6 +1121,132 @@ def test_A4_each_file_is_asked_by_its_place_in_its_piece_and_the_worker_writes_t
     assert service._written(listed) is listed                         # the list form as before
 
 
+# --- A4 Part 2: the tray's picks and its groups' All to Soon / All to Goal --------------------------------------------- #
+CTRL = Qt.KeyboardModifier.ControlModifier
+SHIFT = Qt.KeyboardModifier.ShiftModifier
+
+
+def _picked_keys(win):
+    return [r.key for r in tray_rows(win) if r.key in tray_of(win).picks]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_A4_ctrl_and_shift_click_pick_rows_ctrl_a_picks_all_and_esc_or_a_plain_click_lets_them_go(world, language):
+    seed, win, writer = world(language)
+    tray = open_tray(win)
+    rs = tray_rows(win)
+    rs[0].click("row", CTRL)
+    rs[2].click("icon", CTRL)                                         # a Ctrl+click picks, never acts
+    assert _picked_keys(win) == [rs[0].key, rs[2].key] and calls(writer) == []
+    assert tray.view.picked(rs[0].key) and not tray.view.picked(rs[1].key)     # drawn as Current's picked rows
+    rs[0].click("row", CTRL)                                          # again: let go
+    assert _picked_keys(win) == [rs[2].key]
+    rs[2].click("row", SHIFT)                                         # Shift: from the row Ctrl clicked last to this one
+    assert _picked_keys(win) == [r.key for r in rs]
+    rs[1].click("row")                                                # a plain click lets them go
+    assert tray.picks == set() and calls(writer) == []
+    tray.view.setFocus()
+    QTest.keyClick(tray.view, Qt.Key.Key_A, CTRL)                     # Ctrl+A while the tray has the keys
+    assert _picked_keys(win) == [r.key for r in rs]
+    esc(tray.view)                                                    # Esc: the picks go, the tray stays
+    assert tray.picks == set() and tray.isVisible()
+    esc(tray.view)                                                    # again: it closes
+    assert not tray.isVisible()
+
+
+def test_A4_more_on_a_picked_row_moves_every_pick_in_one_command_one_toast_one_undo(world):
+    seed, win, writer = world()
+    tray = open_tray(win)
+    rs = tray_rows(win)
+    rs[0].click("row", CTRL)
+    rs[1].click("row", CTRL)
+    ids = list(rs[0].arrival.item_ids) + list(rs[1].arrival.item_ids)    # the tray's order
+    rs[1].click("more")                                               # ⋯ keeps the picks: the picks' menu
+    menu = tray.last_menu
+    labels = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert labels == [v[0] for v in strings.TRAY_PICKS_MENU.values()]
+    assert menu.accessibleName() == strings.TRAY_PICKS_MENU_NAME.format(n=2)
+    assert all(a.toolTip() and "2" in a.toolTip() for a in menu.actions() if not a.isSeparator())
+    next(a for a in menu.actions() if a.text() == "Soon").trigger()
+    assert calls(writer, "place") == [("place", ids, {"where": "soon"})]       # ONE command
+    assert win.toasts.card.base == strings.TRAY_PLACED["soon"].format(title=strings.TRAY_TITLES.format(n=2))
+    assert tray.picks == set()
+    assert wait_until(lambda: writer.saved, 3)
+    settle()
+    undo = [b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO]
+    assert len(undo) == 1
+    undo[0].click()
+    assert wait_until(lambda: calls(writer, "undo"), 3)
+
+
+def test_A4_a_right_click_on_a_picked_row_offers_the_picks_and_finished_keeps_D14s_choice(world):
+    seed, win, writer = world()
+    tray = open_tray(win)
+    rs = tray_rows(win)
+    rs[1].click("row", CTRL)
+    rs[2].click("row", CTRL)
+    ids = list(rs[1].arrival.item_ids) + list(rs[2].arrival.item_ids)
+    vp = tray.view.viewport()
+    at = rs[2].rect("row").center()
+    QApplication.sendEvent(vp, QContextMenuEvent(QContextMenuEvent.Reason.Mouse, at, vp.mapToGlobal(at)))
+    menu = tray.last_menu
+    assert menu.accessibleName() == strings.TRAY_PICKS_MENU_NAME.format(n=2)
+    next(a for a in menu.actions() if a.text() == strings.TRAY_PICKS_MENU["finished"][0]).trigger()
+    assert calls(writer, "place") == [("place", ids, {"where": "finished"})]
+    assert strings.DRAG_TAKE_OUT in [b.text() for b in win.toasts.card.buttons if b.isVisible()]
+    rs = tray_rows(win)
+    tray.menu(rs[0].key).close()                                       # an unpicked row's ⋯: its own menu, as before
+    assert tray.last_menu.accessibleName() == strings.TRAY_MENU_NAME.format(title=rs[0].arrival.title)
+
+
+def test_A4_remove_on_the_picks_asks_once_naming_every_file_and_removes_them_in_one_command(world):
+    seed, win, writer = world()
+    tray = open_tray(win)
+    rs = tray_rows(win)
+    rs[0].click("row", CTRL)
+    rs[1].click("row", CTRL)
+    ids = list(rs[0].arrival.item_ids) + list(rs[1].arrival.item_ids)
+    tray.act_many(tray.picked(), "remove")
+    q = tray.question
+    assert q.yes.text() == strings.TRAY_REMOVE_YES.format(n=len(ids)) and q.default is q.no
+    q.yes.click()
+    assert calls(writer, "remove") == [("remove", ids, {})]
+
+
+def test_A4_a_drag_from_a_picked_row_carries_every_pick(world):
+    seed, win, writer = world()
+    tray = open_tray(win)
+    rs = tray_rows(win)
+    rs[0].click("row", CTRL)
+    rs[1].click("row", CTRL)
+    ids = list(rs[0].arrival.item_ids) + list(rs[1].arrival.item_ids)
+    lift_row(win, 1)                                                  # a plain press on a picked row keeps them
+    assert win.moves.running.ids == ids and win.moves.running.title == strings.TRAY_TITLES.format(n=2)
+    at = well_point(win, "goal")
+    move_global(win, at)
+    release_global(win, at)
+    assert [c[1] for c in calls(writer)] == [ids]                     # one command for both
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_A4_each_group_head_offers_all_to_soon_and_all_to_goal_in_one_command(world, language):
+    seed, win, writer = world(language)
+    tray = open_tray(win)
+    for kind in ("new", "watched"):
+        head = tray.heads[kind][0]
+        for where in ("soon", "goal"):
+            b = getattr(head, where)
+            assert b.isVisible() and b.toolTip() and b.accessibleName() == b.text()
+    assert tray.heads["new"][2] is None and tray.heads["watched"][2].text() == strings.TRAY_ALL_FINISHED
+    rows_ = next(g.rows for g in tray.groups if g.kind == "new")
+    ids = [i for a in rows_ for i in a.item_ids]
+    tray.heads["new"][0].goal.click()
+    assert calls(writer, "place") == [("place", ids, {"where": "goal"})]
+    assert win.toasts.card.base == strings.TRAY_PLACED["goal"].format(title=strings.TRAY_TITLES.format(n=len(rows_)))
+    found, _n = problems(win)
+    assert found == []
+
+
 # --- the real store ----------------------------------------------------------------------------------------------- #
 from tests.qt.test_drag import real  # noqa: E402,F401
 
@@ -1209,3 +1335,24 @@ def test_real_store_a_drag_from_the_tray_onto_the_finished_well_lands_in_finishe
     release_global(win, at)
     assert wait_until(lambda: all(store.item(i)["tier"] == "graduated" for i in item_ids), 5)
     assert all(store.item(i)["watched"] == 1 for i in item_ids)       # A2 #28 (IK-L2-3): the well records it watched
+
+
+def test_real_store_A4_two_picked_arrivals_to_goal_in_one_command_and_one_undo_brings_both_back(real):
+    store, win, writer = real()
+    first, second = store.ids("soon")[-2:], store.ids("goal")[-2:]    # two shows' files, as two arrivals
+    store.set_tier(first, "arrivals")
+    store.set_tier(second, "arrivals")
+    assert wait_until(lambda: sum(len(g.rows) for g in win.arrivals_tray.groups) >= 2, 10)
+    tray = open_tray(win)
+    settle()
+    rs = [r for r in tray_rows(win) if set(r.arrival.item_ids) & set(first + second)]
+    assert len(rs) >= 2                                               # (each folder its own run)
+    for r in rs:
+        r.click("row", CTRL)
+    ids = [i for r in rs for i in r.arrival.item_ids]
+    tray.act_many(tray.picked(), "goal")
+    assert wait_until(lambda: all(store.item(i)["tier"] == "goal" for i in ids), 5)
+    assert wait_until(lambda: writer.can_undo() and not win.moves.tickets, 5)
+    settle()
+    next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO).click()
+    assert wait_until(lambda: all(store.item(i)["tier"] == "arrivals" for i in ids), 5)

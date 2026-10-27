@@ -528,7 +528,8 @@ def match_tree(folder, base, lines):
             continue
         if by_name is None:                          # walked once, only when a file isn't at its place
             by_name = {}
-            for where, _dirs, names in os.walk(folder):
+            for where, dirs, names in os.walk(folder):
+                dirs[:] = [d for d in dirs if not d.startswith(".")]   # never the trash (its files go in 30 days)
                 for name in names:
                     by_name.setdefault(name.casefold(), []).append(os.path.join(where, name))
         name = parts[-1].casefold() if parts else ""

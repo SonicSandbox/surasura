@@ -86,3 +86,32 @@ def test_the_2x_tier_rule_reads_only_a_data_folders_own_tier_folders():
     assert ls._tier_2x(sep.join(["D:", "Media", "GoalContent", "A", "1.srt"])) is None
     assert ls._tier_2x(sep.join(["D:", "data", "en", "GoalContent", "1.srt"])) is None
     assert ls._tier_2x(None) is None
+
+
+
+def test_a_tier_folder_is_known_whatever_its_case():
+    sep = os.sep
+    assert ls._tier_2x(sep.join(["D:", "surasura", "Data", "JA", "goalcontent", "A", "1.srt"])) == "goal"
+
+
+
+@pytest.mark.parametrize("order", [("GoalContent", "HighPriority"), ("HighPriority", "GoalContent")])
+def test_a_show_split_between_2x_tiers_keeps_its_split_whichever_folder_is_picked_first(order):
+    """The adversary's #1: a show partly moved up in 2.x (episode 1 in HighPriority, 2–3 in GoalContent) lands the
+    same way in either pick order — its Goal episodes in Goal, never pulled into Current by the order of the picks."""
+    language = "ja"
+    store, _data = _empty(language)
+    top = os.path.join(_drive("old"), "Surasura")
+    with open(os.path.join(_mk(top, "User Files", language), "KnownWord.json"), "w", encoding="utf-8") as f:
+        json.dump({}, f)
+    data = os.path.join(top, "data", language)
+    show = SHOWS[language][0]
+    _write(os.path.join(data, "HighPriority", show, f"{show} - 01.srt"), _text(language, 1, extra="「一」"))
+    for n in (2, 3):
+        _write(os.path.join(data, "GoalContent", show, f"{show} - {n:02d}.srt"), _text(language, n, extra="「二」"))
+    with store:
+        for tier_folder in order:
+            root = store.add_source(os.path.join(data, tier_folder))
+            _look(store, language, root, first=True)
+        tiers = _tiers(store)
+    assert len(tiers["goal"]) == 2 and len(tiers["now"] + tiers["soon"]) == 1

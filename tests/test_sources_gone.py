@@ -1012,3 +1012,55 @@ def test_a_folder_time_cache_from_another_epoch_is_not_reused(language):
         assert sources.volume_of(store, language, root, old) is not None      # the cache holds this epoch
         store.bookkeeping({"epoch": epoch + 1})                               # a rebuilt store: a new epoch
         assert sources.volume_of(store, language, root, old) is None
+
+
+
+def test_find_its_new_folder_that_cant_be_listed_is_left_to_its_look(tmp_path, monkeypatch):
+    """The lenses' finding: `os.walk` swallows a folder it can't list; the check must not read that as "none of its
+    episodes are there" — the look and the join decide."""
+    def unlistable(path, onerror=None, **kw):
+        if onerror is not None:
+            onerror(PermissionError(13, "Access is denied", str(path)))
+        return iter(())
+    monkeypatch.setattr(source_looks.os, "walk", unlistable)
+
+    class Store:
+        def origins(self):
+            return {"k": ls.Origin(1, 7, str(tmp_path / "old" / "ep01.srt"), 10, 0, None, "Library/x/ep01.srt",
+                                   "available", None)}
+    assert source_looks._holds_one(Store(), 7, str(tmp_path)) is True
+
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_find_its_new_folder_never_stops_a_folder_already_read_picked_by_another_spelling(language):
+    """The adversary's #3: the learner picks a folder Surasura already reads, spelled another way (`\\\\?\\…`):
+    `add_source` hands back its own row; nothing joined never stops it (only a folder this press added is)."""
+    store, data_dir = _empty(language)
+    title = names(language)[71]
+    old = os.path.join(_elsewhere("Downloads"), title)
+    paths = _show(language, old)
+    other = os.path.join(_elsewhere("Elsewhere"), title)
+    from tests.test_sources_scan import _text, _write
+    _write(os.path.join(other, os.path.basename(paths[0])), _text(language, 9, " 別の字幕"))
+    _settle(other)
+    with store:
+        root_a = store.add_source(old)
+        _look(store, language, root_a, first=True)
+        root_b = store.add_source(other)
+        _look(store, language, root_b)
+    shutil.rmtree(old)
+    looks, heard = _looks(language), []
+    try:
+        assert looks.find_new_folder(root_a, "\\\\?\\" + other, heard.append)
+        assert looks.idle(60)
+    finally:
+        looks.close()
+        looks.idle(10)
+    got = heard[0]
+    assert got["root"] == root_b and not got.get("dropped")
+    store = ls.open_store(language, *roots(language))
+    try:
+        assert {s["id"]: s["on"] for s in store.sources(all=True)}[root_b] is True
+    finally:
+        store.close()

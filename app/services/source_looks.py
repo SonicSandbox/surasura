@@ -80,6 +80,10 @@ FIND_NONE = "None of its episodes are in {folder}: that folder wasn't read."   #
 FIND_LOOK_MAX = 20000           # files a Find's check looks at before it lets the look decide (a whole drive picked)
 
 
+def _raise(error):
+    raise error
+
+
 def _holds_one(store, root_id, path):
     """T6 option 2 (alpha 4): does `path` hold one of the gone folder's originals — a file of one's name or of one's
     size (a moved file keeps both; a renamed one its size)? -> True at the first, or when FIND_LOOK_MAX files were
@@ -94,7 +98,7 @@ def _holds_one(store, root_id, path):
         return True                                   # nothing known of it: the look and the join decide
     seen = 0
     try:
-        for where, _dirs, files in os.walk(path):
+        for where, _dirs, files in os.walk(path, onerror=_raise):
             for name in files:
                 seen += 1
                 if name.casefold() in names:
@@ -508,8 +512,10 @@ class SourceLooks:
                 else:
                     held = lambda: next((r["items"] for r in store.sources(all=True) if r["id"] == root_id), 0)  # noqa
                     before = held()                   # the episodes it holds: what Find joins is what leaves it
-                    known = {ls.path_key(os.path.abspath(r["path"])) for r in store.sources(counts=False)}
+                    rows = store.sources(all=True, counts=False)
+                    known = {ls.path_key(os.path.abspath(r["path"])) for r in rows if r["on"]}
                     new = ls.path_key(os.path.abspath(path)) not in known
+                    had = {r["id"] for r in rows}             # a junction or another spelling of a read folder is its row
                     try:
                         if new and not _holds_one(store, root_id, path):
                             raise ls.NotASource(FIND_NONE.format(folder=path))   # T6 option 2: never read it
@@ -532,7 +538,7 @@ class SourceLooks:
                             store.join_moved(root_id, row["path"])
                             answer["joined"] = max(0, before - held())   # its own look's joins (D5) counted too
                             answer["stop"] = old["on"] and answer["joined"] > 0     # A7: none there, nothing stops
-                        if (new and root != root_id and not answer["joined"] and not answer.get("later")
+                        if (root not in had and root != root_id and not answer["joined"] and not answer.get("later")
                                 and answer["state"] == sources.GONE):
                             answer["dropped"] = bool(store.stop_source(root))   # T6 option 2: a folder this press
                             #                                                     added that held none of them

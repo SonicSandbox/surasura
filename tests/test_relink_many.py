@@ -76,3 +76,43 @@ def test_the_writer_relinks_the_matches_in_one_command_and_one_undo(lib, make_wr
     w.undo(label="undo")
     assert h.until(lambda: heard.undone)
     assert len(heard.undone) == 1 and all(_rel(lib, i)[1] == "missing" for i in ids)
+
+
+def test_every_pair_it_didnt_take_is_named_and_one_undo_unwinds_a_chain(lib):
+    """The lenses' findings: an item gone or already at its file is named in `left`; and A → Y then B → A's old place
+    undoes newest first, so both go back (forward, A's old place was still B's)."""
+    a, b = lib.current()[:2]
+    rel_a, rel_b = _rel(lib, a)[0], _rel(lib, b)[0]
+    full_a = os.path.join(lib.data_dir, *rel_a.split("/"))
+    full_b = os.path.join(lib.data_dir, *rel_b.split("/"))
+    y = os.path.join(lib.data_dir, "moved", "y.srt")
+    os.makedirs(os.path.dirname(y), exist_ok=True)
+    shutil.move(full_a, y)                                           # A's file moved to Y …
+    shutil.move(full_b, full_a)                                      # … and B's into A's old place
+    with lib.store._writing():
+        lib.store.conn.executemany("UPDATE items SET availability = 'missing' WHERE id = ?", [(a,), (b,)])
+    change = lib.store.relink_many([(a, y), (b, full_a), (b, full_a), (10 ** 6, y)])
+    assert [r["id"] for r in change.relinks] == [a, b]
+    assert sorted(why for _i, why in change.left) == ["gone from the library", "there already"]
+    shutil.move(full_a, full_b)                                      # the files back where the records were
+    shutil.move(y, full_a)
+    lib.store.undo(change)
+    assert _rel(lib, a)[0] == rel_a and _rel(lib, b)[0] == rel_b
+
+
+
+def test_a_file_in_the_trash_is_never_a_gone_files_new_place(lib):
+    """The adversary's #4: the learner chooses his data folder; a removed copy in its `.trash` (purged in 30 days) is
+    never what a gone episode is pointed at."""
+    a = lib.current()[0]
+    rel = _rel(lib, a)[0]
+    trashed = os.path.join(lib.data_dir, ".trash", os.path.basename(rel))
+    os.makedirs(os.path.dirname(trashed), exist_ok=True)
+    shutil.move(os.path.join(lib.data_dir, *rel.split("/")), trashed)
+    with lib.store._writing():
+        lib.store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (a,))
+    assert lib.store.relink_many([(a, trashed)]) is None
+    assert _rel(lib, a) == (rel, "missing")
+    from app.services import needs
+    line = needs.NeedLine(key="item:1", text="", item_id=a, label="x", number=None, rel_path=rel, actions=())
+    assert needs.match_tree(lib.data_dir, "", [line]) == []                  # never found there either

@@ -572,7 +572,7 @@ class Writer:
             late = self._stop and not self._abandoned
             if not self._abandoned and records:
                 self._pending.append(cmd)
-                if (self._held or self._journalled) and _journals(cmd):
+                if (self._held or self._journalled or self._head_waits) and _journals(cmd):
                     self._journal_dirty = True      # stuck already (a drag, a write waiting): journalled now (L1 S4)
                 if not late:
                     self._start()
@@ -1461,13 +1461,13 @@ class Writer:
         with self._cond:
             if self._pending and self._pending[0] is cmd:
                 self._pending.popleft()
+                self._head_waits = False            # P-2-F: the next head hasn't met a busy store yet
             else:
                 try:
                     self._pending.remove(cmd)
                 except ValueError:
                     pass
             replay_done = cmd.get("replay") and not any(c.get("replay") for c in self._pending)
-            self._head_waits = False                # the next head hasn't met a busy store yet
             if self._saving:
                 self._saving = False
                 self._call(self.on_saving, False)

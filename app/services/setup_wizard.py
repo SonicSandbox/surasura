@@ -523,9 +523,11 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
             if root is _STOPPED:
                 out["stopped"] = True
                 break
+            halted = False
             for skip in list(pending):                   # K6: before its look, so nothing of it is ever read
                 try:
                     if _patient(lambda skip=skip: store.skip_folder(skip), stop, waiting) is _STOPPED:
+                        halted = True                    # stopped before its skip: its look never runs (unread)
                         break
                     pending.remove(skip)
                 except library_store.NotASource:
@@ -533,6 +535,9 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
                 except Exception as e:
                     out["failed"].append((skip, str(e)))
                     pending.remove(skip)
+            if halted:
+                out["stopped"] = True
+                break
             before = (out["found"], out["shows"])
 
             def told(found, shows, before=before):

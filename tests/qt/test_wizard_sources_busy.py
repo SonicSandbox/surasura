@@ -83,3 +83,29 @@ def test_a_quiet_library_never_says_it_waits(empty_library):
     told = []
     got = setup_wizard.read_folders("ja", [_folder("anime", SHOWS)], waiting=told.append)
     assert got["added"] == 5 and told == []
+
+
+def test_stop_while_a_skip_waits_reads_nothing_of_its_folder_and_keeps_it_listed(empty_library, short_lock_wait,
+                                                                                monkeypatch):
+    """The lenses' finding: *Stop* while the folder's skip waited on a busy library used to leave only the skip loop —
+    the folder's look still ran and the folder left the list as read, its skip never made. Now nothing of it is read."""
+    monkeypatch.setattr(setup_wizard, "BUSY_WAIT_S", 0.05)
+    folder = _folder("anime", SHOWS)
+    skip = os.path.join(folder, next(iter(SHOWS)))
+    from app import library_store as ls
+    from app import path_utils
+    stop = threading.Event()
+    real_skip = ls.Store.skip_folder
+
+    def busy_skip(self, path, *a, **kw):
+        stop.set()                                                     # he presses Stop as it waits
+        raise ls.StoreBusy("another window's save")
+    monkeypatch.setattr(ls.Store, "skip_folder", busy_skip)
+    got = setup_wizard.read_folders("ja", [folder], stop=stop.is_set, skips=[skip], waiting=lambda on: None)
+    monkeypatch.setattr(ls.Store, "skip_folder", real_skip)
+    assert got["stopped"] and folder not in got["read"] and got["added"] == 0 and got["failed"] == []
+    store = ls.open_store("ja", path_utils.get_data_path("ja"), path_utils.get_user_files_path("ja"))
+    try:
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0     # its look never ran
+    finally:
+        store.close()

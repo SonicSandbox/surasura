@@ -1445,6 +1445,7 @@ class ShowsPage(_Page):
         _tabular(f)
         self.reading_line.setFont(f)
         self.reading_line.setVisible(False)
+        self._counts = None                 # K4: the progress line's last count (the wait's end repaints it)
         pick.addWidget(self.reading_line)
         self.btn_stop = _button(S.STOP, S.STOP_TIP, self.wiz.stop_reading, self.folders_part)
         self.btn_stop.setVisible(False)
@@ -1589,6 +1590,7 @@ class ShowsPage(_Page):
 
     def show_reading(self, found, shows):
         """The first look's progress line, *Found 412 episodes in 37 shows…*, with *Stop*."""
+        self._counts = (found, shows)
         _set_text(self.reading_line, S.READING.format(episodes=_count(S.EPISODES, found), shows=_count(S.SHOWS_N,
                                                                                                          shows)))
         _show(self.reading_line, True)
@@ -1601,6 +1603,8 @@ class ShowsPage(_Page):
         if on:
             _set_text(self.reading_line, S.READ_WAITING)
             _show(self.reading_line, True)
+        elif self._counts is not None:
+            self.show_reading(*self._counts)          # going on: the count as it last stood
 
     def stopping(self):
         _enable(self.btn_stop, False)

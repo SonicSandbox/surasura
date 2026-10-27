@@ -145,6 +145,7 @@ def sets_aside_sql(keep_watched=False, alias=""):
 TIER_OF_PHASE = {v[0]: t for t, v in TIERS.items() if v[0]}
 TIER_OF_FOLDER = {v[1]: t for t, v in TIERS.items() if v[1]}
 FOLDER_OF_TIER = {t: v[1] for t, v in TIERS.items() if v[1]}
+_TIER_OF_FOLDER_FOLDED = {k.casefold(): t for k, t in TIER_OF_FOLDER.items()}   # K8: a folder's name as Windows reads it
 TIER_LABELS = {"now": "NOW", "soon": "Soon", "goal": "6+ Months", "graduated": "Graduated",
                "arrivals": "New arrivals"}
 CURRENT = ("now", "soon")        # Current = NOW then Soon; the Soon line is their boundary
@@ -4690,22 +4691,27 @@ class Store:
         files never make 3,000). A pair that can't be (not in the library, no file there, its place another item's, the
         item gone or already there) is left out and named in `change.left` [(item_id, why)]. Returns the change, or None
         when none was relinked."""
+        looked = []                                  # every file stat'ed before the write lock (A6: never under it)
+        for item_id, path in pairs:
+            rel = library_rel(self.data_dir, path)
+            hidden = rel is not None and any(p.startswith(".") for p in rel.split("/"))   # the trash, a dot folder
+            looked.append((item_id, rel, None if rel is None or hidden else _stat(os.path.join(self.data_dir, rel)),
+                           hidden))
         with self._command("relink") as cmd:
             change = None
             done, left = [], []
             taken = set()
-            for item_id, path in pairs:
-                rel = library_rel(self.data_dir, path)
-                if rel is None:
-                    left.append((item_id, "not in the library"))
+            for item_id, rel, st, hidden in looked:
+                if rel is None or hidden:
+                    left.append((item_id, "not in the library" if rel is None else "in the trash"))
                     continue
-                st = _stat(os.path.join(self.data_dir, rel))
                 if st is None:
                     left.append((item_id, "no file there"))
                     continue
                 row = self.conn.execute("SELECT rel_path, rel_key, size, mtime_ns, availability, tier FROM items "
                                         "WHERE id = ?", (item_id,)).fetchone()
                 if row is None or row[1] == path_key(rel):
+                    left.append((item_id, "gone from the library" if row is None else "there already"))
                     continue
                 if path_key(rel) in taken or self.conn.execute("SELECT id FROM items WHERE rel_key = ?",
                                                                (path_key(rel),)).fetchone() is not None:
@@ -4718,19 +4724,23 @@ class Store:
                 self._repoint(item_id, rel, st.st_size, st.st_mtime_ns)
                 if row[2] == st.st_size and _same_time(row[3], st.st_mtime_ns):
                     _note_moves(self, [(row[0], row[2], row[3], rel, st.st_size, st.st_mtime_ns)])
-                self._drop_ask(rel)
                 cmd.touch({row[5]}, availability=row[4] != "available")
             if change is None:
                 return None
+            asks = _rename_asks(self)                  # their open questions go, in one write (never one per file)
+            kept = [a for a in asks if path_key(a.get("rel", "")) not in taken]
+            if kept != asks:
+                self._set_meta({"rename_asks": _dumps(kept), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
             change.relink, change.relinks, change.left = done[0], done, left
             return change
 
     def _undo_relink(self, cmd, change):
         """Undo a relink (one item, or `relink_many`'s list): each item pointed back where it was, by the value check —
-        one relinked again since, or whose old place is another item's now, is skipped."""
+        one relinked again since, or whose old place is another item's now, is skipped. Newest first: a later pair may
+        hold an earlier one's old place (A → Y, then B → A's old X), which its own undo frees."""
         out = self._change(cmd, "undo")
         skipped = []
-        for info in getattr(change, "relinks", None) or [change.relink]:
+        for info in reversed(getattr(change, "relinks", None) or [change.relink]):
             row = self.conn.execute("SELECT rel_path, tier FROM items WHERE id = ?", (info["id"],)).fetchone()
             if row is None or row[0] != info["new"]:
                 skipped.append(info["id"])
@@ -9337,8 +9347,7 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
         prepared = prepared[:3] + (entry, (None, None, "waiting"))
     work = self._source_work(rel, record, cmd, works)
     runs = runs if first and not waiting else None
-    if first and not waiting and _tier_2x(record.get("origin")) == "goal" and not self.conn.execute(
-            "SELECT 1 FROM items WHERE work_id = ? AND tier IN ('now', 'soon') LIMIT 1", (work,)).fetchone():
+    if first and not waiting and _tier_2x(record.get("origin")) == "goal":
         tier, where = "goal", ("end",)               # K8: a 2.x library's Goal folder read as his library's folder
         runs = None                                  # (no Current run of its show to keep)
     else:
@@ -9367,13 +9376,14 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
 
 def _tier_2x(origin):
     """K8 (alpha 4, Mattias's note 9; A4K-3 PROVISIONAL): the tier a 2.x library's own folders give a file read from
-    inside them on setup's first look — `…/data/<ja|zh>/GoalContent/<show>/…` "goal" (`HighPriority` "now",
+    inside them on setup's first look (and *Start fresh*'s, the same look) — `…/data/<ja|zh>/GoalContent/<show>/…`
+    "goal" (`HighPriority` "now",
     `LowPriority` "soon": Current either way, in the order a look reads them) — or None. No content migration (Sonic
-    2026-10-23): it is still the folder he points setup at; his 2.x Goal stays his Goal. A show in Current keeps its
-    run."""
+    2026-10-23): it is still the folder he points setup at; his 2.x Goal stays his Goal — a show he had partly moved up in
+    2.x (episodes 1–3 in HighPriority, the rest in GoalContent) keeps that split, whichever folder is picked first."""
     parts = os.path.normpath(origin).split(os.sep) if isinstance(origin, str) else []
     for i in range(len(parts) - 2, 1, -1):
-        tier = TIER_OF_FOLDER.get(parts[i])
+        tier = _TIER_OF_FOLDER_FOLDED.get(parts[i].casefold())
         if tier and parts[i - 1].casefold() in ("ja", "zh") and parts[i - 2].casefold() == "data":
             return tier
     return None

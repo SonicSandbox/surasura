@@ -985,28 +985,92 @@ def test_A4_one_piece_split_by_another_title_gives_each_run_its_own_key(language
                                                                    if r["work_id"] == 777000)
 
 
+class DetailLooks:
+    """K7: the looks as the shell asks for the arrivals' folders (`folders(ids, then, detail=True)`), answered on a
+    thread of their own from where each item's ORIGINAL sits under its source folder (`rel`), never its copy's path."""
+
+    def __init__(self, root, rel_of):
+        self.root, self.rel_of, self.calls = root, rel_of, []
+
+    def folders(self, ids, then, detail=False):
+        self.calls.append((list(ids), detail))
+        found = {}
+        for i in ids:
+            rel = self.rel_of(i)
+            found[i] = None if rel is None else (
+                {"root": self.root, "folder": os.path.join(self.root, *rel.split("/")), "rel": rel} if detail
+                else self.root)
+        threading.Thread(target=then, args=(found,), daemon=True).start()
+        return True
+
+    def listing(self):
+        return True
+
+    def asked(self, **_kw):
+        return False
+
+    def close(self):
+        pass
+
+    def set_shown(self, _shown):
+        pass
+
+
+def _with_detail_looks(win, items, root):
+    """The window's looks replaced by `DetailLooks` over `items` (each original under `root`/<its book's folder>), and
+    the tray shown again so they are asked."""
+    rel = {it["id"]: it["parent_folder"] for it in items}
+    looks = DetailLooks(root, rel.get)
+    win.looks = looks
+    win._folders_asked.clear()                                         # (asked of these looks afresh)
+    win._show_arrivals(win._arrivals_view)
+    return looks
+
+
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_A4_one_title_in_several_folders_names_each_rows_folder_and_a_lone_title_is_unchanged(language):
+def test_K7_one_title_in_several_folders_names_each_rows_folder_from_where_its_original_sits(world, language):
+    # Mattias #7 / K7: a box set in several folders showed identical rows. Each row names the folder its ORIGINAL is in
+    # under the source (the store's answer) — never the library copy's path (HighPriority/…), which is Surasura's.
+    seed, win, _w = world(language)
     title, parts, _other = SERIES[language]
-    items, works = _series_items(language, 1)
-    lone = {"id": 99, "tier": "arrivals", "ord": 1.0, "work_id": 5, "rel_path": "HighPriority/星の物語/01.txt",
-            "added_at": "2026-10-01T10:00:00Z", "parent_folder": "星の物語", "piece_id": None, "source_type": "text"}
-    view = view_rows.build({r["id"]: dict(r) for r in items + [lone]},
-                           {**{w["id"]: w for w in works}, 5: {"id": 5, "title": "星の物語", "media_type": "book"}},
-                           {"arrivals_on": 1}, language=language)
-    by_folder = {a.folder: a for a in view.arrivals if a.title == title}
-    assert set(by_folder) == {f"{title} › {p}" for p in parts}        # its folder's last two parts, never HighPriority
+    items, works = _series_items(language, max(r["id"] for r in seed.library.items()) + 1)
+    seed.library.commit(works=works, items=items, order=True)
+    assert wait_until(lambda: sum(1 for a in tray_arrivals(win) if a.title == title) == 3, 5)
+    looks = _with_detail_looks(win, items, os.path.join("D:", os.sep, "本棚"))
+    assert wait_until(lambda: all(a.folder for a in tray_arrivals(win) if a.title == title), 5)
+    assert all(detail for _ids, detail in looks.calls)                  # the store's place, asked with its detail
+    by_folder = {a.folder: a for a in tray_arrivals(win) if a.title == title}
+    assert set(by_folder) == {f"{title} › {p}" for p in parts}        # its folder's last two parts
     for folder, a in by_folder.items():
-        assert a.parts[0] == (folder, "dim") and folder in a.accessible
-    alone = next(a for a in view.arrivals if a.title == "星の物語")
-    assert alone.folder is None and alone.parts[0] != ("星の物語", "dim")
-    assert view_rows.arrival_folder(["GoalContent/一話.txt"]) is None    # the store's own folder: no name at all
+        assert a.parts[0] == (folder, "dim") and folder in a.accessible and a.chip == "本棚"
+    alone = [a for a in tray_arrivals(win) if a.title != title]
+    assert alone and all(a.folder is None for a in alone)              # a lone title: no folder on its line
+
+
+@pytest.mark.parametrize("where, words", [
+    ({"root": r"D:\本棚", "folder": r"D:\本棚\ハリー・ポッター\2 秘密の部屋", "rel": "ハリー・ポッター/2 秘密の部屋"},
+     "ハリー・ポッター › 2 秘密の部屋"),
+    ({"root": r"D:\本棚", "folder": r"D:\本棚\全集\哈利·波特\2 密室", "rel": "全集/哈利·波特/2 密室"}, "哈利·波特 › 2 密室"),
+    ({"root": r"D:\本棚", "folder": r"D:\本棚", "rel": ""}, "本棚"),       # at the source's top: the source's name
+    (None, None),                                                           # no answer (a file from no folder read)
+])
+def test_K7_the_folder_words_come_from_the_originals_place_under_its_source(where, words):
+    assert view_rows.arrival_folder(where) == words
+
+
+def test_K7_the_view_itself_names_no_folder_the_library_copys_path_is_never_read_as_one():
+    items, works = _series_items("ja", 1)
+    view = view_rows.build({r["id"]: dict(r) for r in items}, {w["id"]: w for w in works}, {"arrivals_on": 1},
+                           language="ja")
+    assert all(a.folder is None for a in view.arrivals)
 
 
 def test_A4_a_view_built_again_keeps_each_folder_named_row_the_same_object(world):
     seed, win, _w = world()
     items, works = _series_items("ja", max(r["id"] for r in seed.library.items()) + 1)
     seed.library.commit(works=works, items=items, order=True)
+    assert wait_until(lambda: len(tray_arrivals(win)) > 3, 5)
+    _with_detail_looks(win, items, os.path.join("D:", os.sep, "本棚"))
     assert wait_until(lambda: any(a.folder for a in tray_arrivals(win)), 5)
     tray = open_tray(win)
     settle()
@@ -1019,6 +1083,35 @@ def test_A4_a_view_built_again_keeps_each_folder_named_row_the_same_object(world
     settle(100)
     assert all(tray.arrival(k) is a for k, a in named.items())          # S19: the same rows, nothing repainted
     assert {k: tray.model.paints[k] for k in named} == paints
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_K7_mattias_7_two_same_title_arrivals_place_one_and_the_other_row_is_right_with_no_stale_folder(world,
+                                                                                                         language):
+    # Kura's suspects for the stale row: the shell's caches kept per a row's key and per its first item. Two rows of
+    # one title name their folders; one goes to Goal; the other stays exactly as the view has it — and, its title no
+    # longer shared, without a folder on its line.
+    seed, win, _w = world(language)
+    title = SERIES[language][0]
+    items, works = _series_items(language, max(r["id"] for r in seed.library.items()) + 1)
+    items = [it for it in items if not it["parent_folder"].endswith(SERIES[language][1][2])]     # two books
+    seed.library.commit(works=works, items=items, order=True)
+    assert wait_until(lambda: sum(1 for a in tray_arrivals(win) if a.title == title) == 2, 5)
+    _with_detail_looks(win, items, os.path.join("D:", os.sep, "本棚"))
+    assert wait_until(lambda: all(a.folder for a in tray_arrivals(win) if a.title == title), 5)
+    tray = open_tray(win)
+    settle()
+    first, second = [r for r in tray_rows(win) if r.arrival.title == title]
+    placed, kept = set(first.arrival.item_ids), second.arrival
+    tray.act(first.arrival, "goal")
+    assert wait_until(lambda: not any(placed & set(a.item_ids) for a in tray_arrivals(win)), 5)
+    settle()
+    shown, viewed = _shown_and_viewed(win)
+    assert shown == viewed                                             # never a row the view no longer holds
+    left = [r.arrival for r in tray_rows(win) if r.arrival.title == title]
+    assert [a.item_ids for a in left] == [kept.item_ids]
+    assert left[0].folder is None and left[0].parts[0] != (kept.folder, "dim")     # alone now: no folder
+    assert left[0].chip == "本棚"                                       # its source's name stays on its chip
 
 
 def test_A4_S19_a_closed_tray_does_no_row_work_and_opening_brings_its_rows_up_to_date(world):

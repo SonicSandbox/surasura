@@ -87,7 +87,7 @@ class Looks:
         self.listings += 1
         return True
 
-    def folders(self, ids, then):
+    def folders(self, ids, then, detail=False):
         then(dict.fromkeys(ids))
         return True
 

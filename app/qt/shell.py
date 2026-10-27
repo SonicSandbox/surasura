@@ -20,8 +20,10 @@ the main window** (✅ G1.2-2); Forward does nothing. Tooltips are the bubble (`
 
 Run it: `python app_entry.py` on the 3.0 line (or `main()` here).
 """
+import collections
 import json
 import math
+import operator
 import os
 import sys
 import threading
@@ -3006,40 +3008,57 @@ class ShellWindow(QMainWindow):
 
     def _named_arrivals(self, groups):
         """Each arrival from a source folder names its folder on its chip, its first item's asked once on the looks'
-        worker; the view's own objects back while nothing is named (the tray repaints only what moved, S19)."""
+        worker (K7: with where its original sits, `detail=True`); a row whose title another row shares names that
+        folder first on its line (`view_rows.arrival_folder`). The view's own objects back while nothing is named (the
+        tray repaints only what moved, S19); the same view again is looked at no further (20,000 rows: nothing)."""
         if self.looks is None or not groups:
             return groups
+        held = self._named_groups
+        if held is not None and held[0] is groups and held[1] == self._folders_version:
+            return held[2]                                # (its rows were asked for when it first came)
         want = [a.item_ids[0] for g in groups for a in g.rows if a.item_ids and a.item_ids[0] not in self._folders_asked]
         if want:
             self._folders_asked.update(want)
             language = self.language
-            self.looks.folders(want, lambda found: self._folders_relay.call((language, found)))
-        held = self._named_groups
-        if held is not None and held[0] is groups and held[1] == self._folders_version:
-            return held[2]
+            self.looks.folders(want, lambda found: self._folders_relay.call((language, found)), detail=True)
+        titles = [a.title for g in groups for a in g.rows]
+        counts = collections.Counter(titles)
+        twice = {t for t, k in counts.items() if k > 1} if len(counts) < len(titles) else ()
+        name = self._named_arrival
         out, moved = [], False
         for g in groups:
-            rows = tuple(self._named_arrival(a) for a in g.rows)
-            if any(r is not a for r, a in zip(rows, g.rows)):
+            rows = [name(a, a.title in twice) for a in g.rows] if twice else [name(a) for a in g.rows]
+            if any(map(operator.is_not, rows, g.rows)):
                 moved = True
-                g = g._replace(rows=rows)
+                g = g._replace(rows=tuple(rows))
             out.append(g)
         shown = tuple(out) if moved else groups
         self._named_groups = (groups, self._folders_version, shown)
         return shown
 
-    def _named_arrival(self, a):
-        folder = self._folders_of.get(a.item_ids[0]) if a.item_ids else None
-        if not folder:
+    def _named_arrival(self, a, shared=False):
+        """`a` with its source folder's name on its chip and, when another row shares its title (`shared`), its own
+        folder first on its line (K7) — the same object while neither moved (S19)."""
+        where = self._folders_of.get(a.item_ids[0]) if a.item_ids else None
+        if not where:
             return a
         kept = self._named.get(a.key)
-        if kept is not None and kept[0] is a and kept[1] == folder:
-            return kept[2]
-        name = os.path.basename(os.path.normpath(folder)) or folder
+        if kept is not None and kept[0] is a and kept[1] is where and kept[2] is shared:
+            return kept[3]
+        root = where.get("root") if isinstance(where, dict) else where      # (a looks without `detail`: the root)
+        if not root:
+            return a
+        folder = view_rows.arrival_folder(where) if shared else None
+        name = os.path.basename(os.path.normpath(root)) or root
         chip = name if len(name) <= CHIP_MAX else name[:CHIP_MAX - 1] + "…"
-        ours = a._replace(chip=chip, source="disk",                  # a folder's chip in the disk's ink, never hato's
-                          accessible=f"{a.accessible} · {strings.SOURCES_FROM.format(name=name)}")
-        self._named[a.key] = (a, folder, ours)
+        spoken, parts = a.accessible, a.parts
+        if folder:
+            head = a.title + " · "
+            spoken = f"{head}{folder} · {spoken[len(head):]}" if spoken.startswith(head) else f"{spoken} · {folder}"
+            parts = ((folder, "dim"),) + tuple(parts)
+        ours = a._replace(chip=chip, source="disk", folder=folder, parts=parts,   # a folder's chip in the disk's ink
+                          accessible=f"{spoken} · {strings.SOURCES_FROM.format(name=name)}")
+        self._named[a.key] = (a, where, shared, ours)
         return ours
 
     def _folders_landed(self, said):

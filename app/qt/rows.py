@@ -827,8 +827,12 @@ class RowsModel(QAbstractListModel):
         painted ahead only: a row further off is checked by `_sprite` when it comes into view (review D-1: comparing
         every changed row cost ~6 ms on the window's thread after a numbers version at 2,000 rows)."""
         old, new = self.before[i], self.entries[i]
-        return not (old[2] == new[2] and new[0] in (ROW, FINISHED) and
-                    getattr(new[1], "key", None) != self.open_key and _same_face(old[1], new[1], new[0]))
+        if old[0] != new[0] or old[2] != new[2]:
+            return True
+        if new[0] in (MONTH, EMPTY):                 # a4: a month's label or the empty line, made anew each build
+            return old[1] != new[1]
+        return not (new[0] in (HERO, ROW, FINISHED) and getattr(new[1], "key", None) != self.open_key and
+                    _same_face(old[1], new[1], new[0]))
 
     def set_entries(self, entries):
         """-> "same" (payloads swapped in place: the changed rows repaint, `self.changed`), "moved" (the same rows in
@@ -973,9 +977,11 @@ def _size(pix):
 # the same, so its pixmap is kept (Sonic's S19, 2026-10-08: nothing visible changed, nothing redrawn). A row in another
 # place (`_replace(index=…)`: its number is drawn over the pixmap, `_paint_number`). A Current row's episodes **are**
 # shown since W3.1a — its string, one stone per file (B3): a file watched, in Anki, joining or removed repaints that
-# row; an episode's place in the top dims its stone. Finished's rows show no episodes (today's layout). The hero is
-# compared by identity alone.
+# row; an episode's place in the top dims its stone. Finished's rows show no episodes (today's layout). The hero (a4,
+# S19 on every page: compared by identity alone, a view built afresh with nothing changed drew it again) shows no number
+# and none of its words for screen readers.
 _UNSHOWN = {ROW: frozenset(("index", "accessible", "description")),
+            HERO: frozenset(("index", "accessible", "description")),
             FINISHED: frozenset(("index", "episodes", "accessible", "description")),
             "ep": frozenset(("rel_path", "ask"))}         # row 55: ▶'s ask is never painted (`can_play` is)
 _UNSHOWN[FINISHED] = _UNSHOWN[FINISHED] | {"cards_out"}      # --- W3.2 Q4: ⋯'s state, never painted

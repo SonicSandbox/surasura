@@ -43,6 +43,7 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   Settings' *Skip a folder…* (`Store.skip_refused`, Q7); *Read again* (`read_again`) drops the skip
   (`Store.read_folder_again`) and looks at its source folder at once.
 """
+import os
 import threading
 import time
 
@@ -73,6 +74,19 @@ def gone(rows):
 def _make_watch(path, wake):
     from app import library_watch
     return library_watch.TreeWatch(path, wake=wake)
+
+
+def _where(root, origin):
+    """K7: an original's place -> {"root", "folder", "rel"} (`folders(detail=True)`), or None without its source."""
+    if not root:
+        return None
+    folder = os.path.dirname(origin) if isinstance(origin, str) and origin else root
+    try:
+        rel = os.path.relpath(folder, root)
+    except ValueError:                                  # another drive than its source's (never, but never a crash)
+        rel = ""
+    rel = "" if rel in (".", "") or rel.startswith("..") else rel.replace(os.sep, "/")
+    return {"root": root, "folder": folder, "rel": rel}
 
 
 class SourceLooks:
@@ -193,10 +207,13 @@ class SourceLooks:
         """The sources as they stand, to `on_result` (Settings' row as it opens): one read on the worker."""
         return self._worker.put(self._publish, None, {}) if not self._closing.is_set() else False
 
-    def folders(self, item_ids, then):
-        """`then({item_id: source folder path or None})` on the worker (the arrival rows' folder names)."""
+    def folders(self, item_ids, then, detail=False):
+        """`then({item_id: source folder path or None})` on the worker (the arrival rows' folder names). K7 (alpha 4,
+        Mattias's note 7: parts of one title in several folders looked the same in New arrivals): `detail=True` ->
+        `{item_id: {"root": the source folder, "folder": the folder its original is in, "rel": that folder under the
+        source, '/'-joined ('' at its top)} or None}` — the window tells two arrivals of one title apart by `rel`."""
         ids = list(item_ids)
-        return self._worker.put(self._folders, ids, then) if ids and not self._closing.is_set() else False
+        return self._worker.put(self._folders, ids, then, detail) if ids and not self._closing.is_set() else False
 
     def removed(self, then, language=None):
         """K2, the Removed list (🗑 beside Skipped): `then([{"trash_ids", "title", "removed_at", "days_left", "count",
@@ -597,7 +614,7 @@ class SourceLooks:
         self.on_result(summary)
         return True
 
-    def _folders(self, ids, then):
+    def _folders(self, ids, then, detail=False):
         out = dict.fromkeys(ids)
         try:
             store = self._store()
@@ -614,7 +631,8 @@ class SourceLooks:
                     except ValueError:
                         record = None
                     if isinstance(record, dict):
-                        out[item_id] = paths.get(record.get("root"))
+                        root = paths.get(record.get("root"))
+                        out[item_id] = _where(root, record.get("origin")) if detail else root
         except Exception as e:
             print(f"Sources: the arrivals' folders couldn't be read: {e!r}")
         then(out)

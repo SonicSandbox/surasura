@@ -142,6 +142,9 @@ Arrival = namedtuple("Arrival", Arrival._fields + ("cover", "waiting"), defaults
 # --- P4.1 WF (adversary S5): a tray row's files as Current's rows hold them (`Episode`), so *Mine them too* asks by the
 # rows' rule (never a file in Anki or whose cards were deleted). Never in the first screen's cache (the tray isn't)
 Arrival = namedtuple("Arrival", Arrival._fields + ("episodes",), defaults=((),))
+# --- K7 (alpha 4): `folder`, the folder its files are in under their source (`SourceLooks.folders(detail=True)`'s
+# `rel`), set by the window once the looks' worker answers; None until then (and for a file from no folder read)
+Arrival = namedtuple("Arrival", Arrival._fields + ("folder",), defaults=(None,))
 Goal = namedtuple("Goal", Goal._fields + ("cover_refs",), defaults=tuple(Goal._field_defaults.values()) + ((),))    # beside `covers`, the first nine works'
 # --- W3.2 L3: a Goal tile's cover record (the sheet paints its picture)
 GoalWork = namedtuple("GoalWork", GoalWork._fields + ("cover",), defaults=(None,))

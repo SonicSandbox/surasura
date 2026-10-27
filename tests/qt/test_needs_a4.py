@@ -1,0 +1,232 @@
+"""Alpha 4's *Needs you* in the window (Mattias #4: "Needs you with 3,000+ items opens slowly and looks frozen"; Sonic
+2026-10-27: a card can't be dismissed or deferred, "what do they do if they have a hundred of these?"): the page built
+as it is read, the line for every missing file, the card for a library whose files are mostly gone (K3), every card's ⋯
+(*Not now* · *Stop asking*, with Undo) and the line over many cards that share a reason — on the window's seed through
+the stand-in store, real Japanese and Chinese titles from tests/Test Resources/.
+
+What a wrong answer would cost a learner: a page frozen for seconds at its press (it was ~20 s at 3,000 cards); a card
+built twice, or never, as the page is scrolled; a whole page rebuilt by a look that found the same cards; *Start fresh*
+offered with nothing behind it; a card put away for good when he only said "not now", or one he can't get back.
+"""
+import os
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("PyQt6")
+from PyQt6.QtWidgets import QApplication
+
+from app.qt import needs as needs_ui
+from app.qt import press as qpress
+from app.qt import stones, strings
+from app.services import needs as service
+from tests.qt.conftest import wait_until
+from tests.qt.test_needs_gone_folder import Looks, world  # noqa: F401 — the window with its looks, ja and zh
+from tests.test_library_store_support import LANGUAGES, names
+
+
+@pytest.fixture(autouse=True)
+def _stones_sheet(qapp):
+    key = stones._key(1.0, "M")
+    if key not in stones._SHEETS:
+        stones._landed(key, stones.build(*key))
+
+
+def many(language, n, missing=None):
+    """A view of `n` shows with one episode each, `missing` of them gone (all by default) — real titles."""
+    titles = names(language)
+    rows = []
+    for i in range(n):
+        t = f"{titles[i % len(titles)]} 第{i // len(titles) + 1}期"
+        ep = SimpleNamespace(id=900000 + i, label=f"第{(i % 12) + 1}話", number=(i % 12) + 1,
+                             rel_path=f"Library/{t}/{t} - {(i % 12) + 1:02d}.srt",
+                             missing=i < (n if missing is None else missing))
+        rows.append(SimpleNamespace(key=f"w{i}", work_id=900000 + i, title=t, media="anime", tier="now",
+                                    episodes=(ep,)))
+    return SimpleNamespace(mode="store", rows=tuple(rows), loading=False, needs=())
+
+
+def hand_in(ny, entries):
+    """The page given `entries` as a gather would, and no other gather after (the stand-in's own stay out)."""
+    ny.refresh = lambda: None
+    ny._running = False
+    ny._got((ny._asked, tuple(entries)))
+    for _ in range(5):
+        QApplication.processEvents()
+
+
+def scroll_to_end(ny):
+    bar = ny.page.area.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    for _ in range(3):
+        QApplication.processEvents()
+
+
+# --- B: the page built as it is read ------------------------------------------------------------------------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_3000_cards_open_with_2_built_in_the_press_30_after_and_more_only_as_the_page_is_scrolled(world, language):
+    seed, win, writer, ny = world(language, looks=Looks())
+    entries = service.entries(many(language, 3000))
+    hand_in(ny, entries)
+    assert ny.cards.builds == 0                               # hidden: nothing built under the style sheet (C1)
+    win.show_tab("needs")
+    assert len(ny.cards.order) == needs_ui.FIRST_FRAME        # the page there in the press's frame
+    assert wait_until(ny.cards.settled, 10)
+    assert len(ny.cards.order) == needs_ui.BUILT_AT_ONCE      # the first ones on idle time, and no more by themselves
+    for _ in range(20):
+        QApplication.processEvents()
+    assert len(ny.cards.order) == needs_ui.BUILT_AT_ONCE
+    for _ in range(3):                                        # scrolled to its end: the next ones, each time
+        before = len(ny.cards.order)
+        scroll_to_end(ny)
+        assert wait_until(lambda: len(ny.cards.order) > before and ny.cards.settled(), 10)
+    built = ny.cards.order
+    assert built == [e.key for e in entries[:len(built)]]     # the entries' first ones, in order
+    assert len(set(built)) == len(built) == ny.cards.builds   # each built once, none twice
+    assert len(built) <= 4 * needs_ui.BUILT_AT_ONCE
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_gather_that_found_the_same_3000_cards_builds_and_repaints_nothing(world, language):
+    """S19: a look that found nothing new builds no card and tells the tab nothing."""
+    seed, win, writer, ny = world(language, looks=Looks())
+    entries = service.entries(many(language, 3000))
+    hand_in(ny, entries)
+    win.show_tab("needs")
+    assert wait_until(ny.cards.settled, 10)
+    builds, told = ny.cards.builds, []
+    ny.changed.connect(lambda: told.append(True))
+    ny._got((ny._asked, tuple(service.entries(many(language, 3000)))))      # the same cards, read again
+    for _ in range(10):
+        QApplication.processEvents()
+    assert ny.cards.builds == builds and told == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_card_asked_for_far_down_is_built_with_those_before_it_and_the_rest_wait(world, language):
+    seed, win, writer, ny = world(language, looks=Looks())
+    entries = service.entries(many(language, 300))
+    hand_in(ny, entries)
+    win.show_tab("needs")
+    assert wait_until(ny.cards.settled, 10)
+    far = entries[120]
+    assert ny.cards.card(far.key) is not None
+    assert ny.cards.order == [e.key for e in entries[:121]] and ny.cards.builds == 121
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_gone_folder_card_is_on_top_so_todokes_press_opens_the_page_at_it_whatever_follows(world, language):
+    seed, win, writer, ny = world(language, looks=Looks())
+    folder = {"id": 13, "path": os.path.join("C:\\Users\\Michael\\Downloads", names(language)[71]), "items": 12,
+              "shows": [names(language)[71]], "finished": False, "found_in": []}
+    entries = service.entries(many(language, 3000), gone_folders=[folder])
+    hand_in(ny, entries)
+    win.show_tab("needs")
+    ny.reveal_gone()
+    assert ny.cards.builds <= needs_ui.BUILT_AT_ONCE          # never 3,000 cards built to get there
+
+
+# --- B: the line for every missing file -------------------------------------------------------------------------- #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_forget_every_missing_file_is_one_writer_command_one_toast_one_undo(world, language):
+    seed, win, writer, ny = world(language, looks=Looks())
+    writer.remove = lambda ids, label=None: writer._put("remove", ids, label)     # (the writer's own command)
+    entries = service.entries(many(language, 40))
+    hand_in(ny, entries)
+    win.show_tab("needs")
+    b = next(b for b in ny.cards.buttons("bulk") if b.property("action") == "remove_all")
+    assert b.text() == "Forget every missing file (40)" and b.toolTip()
+    b.click()
+    assert ny.confirming.title.text() == "Forget 40 missing files?"
+    ny.confirming.yes.click()
+    assert wait_until(lambda: writer.saved, 5)
+    removes = [c for c in writer.calls if c[0] == "remove"]
+    assert len(removes) == 1 and sorted(removes[0][1]) == sorted(e.data["item_ids"][0] for e in entries[1:])
+    assert win.toasts.card.base == strings.NEEDS_FORGOT.format(n=40)
+    win.toasts.card.buttons[0].click()                         # one Undo for all of them
+    assert wait_until(lambda: writer.undone and writer.undone[-1].op == "remove", 5)
+
+
+# --- K3: most of the library's files gone ------------------------------------------------------------------------- #
+class FreshLooks(Looks):
+    """The looks with Kura's two K3 calls, answered as asked."""
+
+    def __init__(self, answer=None):
+        super().__init__()
+        self.fresh, self.found, self.k3_answer = [], [], answer or {}
+
+    def start_fresh(self, language, then=None):
+        self.fresh.append(language)
+        threading.Thread(target=then, args=(dict(self.k3_answer),), daemon=True).start()
+        return True
+
+    def find_library(self, language, folder, then=None):
+        self.found.append((language, folder))
+        threading.Thread(target=then, args=(dict(self.k3_answer),), daemon=True).start()
+        return True
+
+
+def _settle_gather(ny, view):
+    ny.view = view
+    ny.find_offline = lambda _lang, _rels, _data: []          # the library folder is there (no drive offline)
+    n = ny.gathers
+    ny.refresh()
+    assert wait_until(lambda: ny.gathers > n and not ny._running, 10)
+    for _ in range(5):
+        QApplication.processEvents()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_no_k3_card_while_the_looks_cant_start_fresh(world, language):
+    seed, win, writer, ny = world(language, looks=Looks())
+    _settle_gather(ny, many(language, 40))
+    assert service.LIBRARY_GONE not in [e.kind for e in ny.entries]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_dead_library_is_one_card_on_top_find_the_folder_reads_it_and_start_fresh_asks_first(world, language):
+    looks = FreshLooks()
+    seed, win, writer, ny = world(language, looks=looks)
+    _settle_gather(ny, many(language, 40))
+    card = ny.entries[0]
+    assert card.kind == service.LIBRARY_GONE and "40 of 40" in card.title
+    win.show_tab("needs")
+    acts = [b.property("action") for b in ny.cards.buttons(card.key)]
+    assert acts == ["find_library", "start_fresh"]
+    picked = os.path.join("D:\\Anime", names(language)[3])
+    ny.pick_folder = lambda title, start: picked
+    find = next(b for b in ny.cards.buttons(card.key) if b.property("action") == "find_library")
+    find.click()
+    assert wait_until(lambda: looks.found == [(language, picked)], 5)
+    assert wait_until(lambda: picked in win.bar_line.full(), 5)
+    fresh = next(b for b in ny.cards.buttons(card.key) if b.property("action") == "start_fresh")
+    fresh.click()
+    assert ny.confirming.isVisible() and ny.confirming.default is ny.confirming.no       # Enter is No
+    assert looks.fresh == []
+    ny.confirming.yes.click()
+    assert wait_until(lambda: looks.fresh == [language], 5)
+    assert writer.calls == []                                  # the window wrote nothing itself: Kura's calls did
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_find_the_folder_turns_its_arc_at_the_press_until_the_looks_answer(world, language):
+    gate = threading.Event()
+
+    class Slow(FreshLooks):
+        def find_library(self, language, folder, then=None):
+            self.found.append((language, folder))
+            threading.Thread(target=lambda: (gate.wait(5), then({})), daemon=True).start()
+            return True
+
+    looks = Slow()
+    seed, win, writer, ny = world(language, looks=looks)
+    _settle_gather(ny, many(language, 40))
+    win.show_tab("needs")
+    card = ny.entries[0]
+    ny.pick_folder = lambda title, start: "D:\\Anime"
+    next(b for b in ny.cards.buttons(card.key) if b.property("action") == "find_library").click()
+    key = ny._press_key("find_library", card)
+    assert qpress.live(win, key)                               # pending at once, in the press's own frame
+    gate.set()
+    assert wait_until(lambda: not qpress.live(win, key), 5)

@@ -84,7 +84,9 @@ KNOWN_OFFER = "known-offer"         # #43: Known from Anki's first read, asked o
 ANKI_WAIT = "anki-wait"
 # T6 (Sonic 2026-10-24): a source folder moved or deleted while its drive is there — never one only away
 FOLDER_GONE = "folder-gone"
-KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE)
+LIBRARY_GONE = "library-gone"       # alpha 4 K3: most of the library's files gone (*Find the folder…* / *Start fresh*)
+KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
+         LIBRARY_GONE)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2; IK-2: *Mine the text only*)
 WIRED_LATER = frozenset(("mine_text_only", "make_cards"))
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
@@ -102,7 +104,7 @@ STRINGS = {
     "bulk_title_both": "{m} shows are missing files or videos",
     "bulk_say": "One answer for every show below, or answer each card on its own.",
     "find_all": "Find all missing videos ({n} in {m} shows)", "keep_all": "Keep all their words ({n})",
-    "remove_all": "Remove all ({n})",
+    "remove_all": "Forget every missing file ({n})",
     "gone_title_one": "{title} · {ep}'s file is gone", "gone_title_n": "{title} · {n} {unit}' files are gone",
     "gone_say": "Its words still count until you choose: point it at its file, keep its words, or remove it to the "
                 "trash (30 days).",
@@ -139,7 +141,12 @@ STRINGS = {
     "why_none": "✗ nothing with \"{n}\" in its name", "why_many": "✗ {k} videos have \"{n}\" in their names: choose one",
     "why_cloud": "✗ \"{n}\" is still in the cloud: download it first",
     "why_no_number": "✗ its name has no episode number to look for",
+    # alpha 4 K3: most of the library's files gone at once (a reinstall over an old library, a folder moved)
+    "library_gone_title": "Most of this library's files are gone ({n} of {m})",
+    "library_gone_say": "Its folder may have moved, or this is an old library from before a reinstall. Find the folder "
+                        "where its files are now, or start fresh: the old library goes to the trash, never deleted.",
 }
+LIBRARY_GONE_AT = (20, 0.5)         # files gone, and their share of Current's, that bring it
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -201,7 +208,7 @@ def item_key(item_id):
 
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
-            mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=()):
+            mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), library_gone=False):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -209,7 +216,10 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     switch (`connect_enabled`, setup's page 5) — on, D1's line asks only about these episodes (its `_on` actions);
     `miner_found`: Anki Miner is installed (`anki_miner.find`) — without it D1's line waits, kept offered (row 13: its
     cards could never be made); `gone_folders` (T6): the looks' rows of the source folders that are GONE
-    (`source_looks.gone`, those *Keep waiting* hid left out by the window), one card each."""
+    (`source_looks.gone`, those *Keep waiting* hid left out by the window), one card each — on top, under the answers
+    for many (a gone folder explains its shows' gone files; 届's press opens the page at it);
+    `library_gone` (K3, given only while Kura's *Start fresh* / *Find the folder…* are there): most of Current's files
+    gone at once is ONE card on top."""
     seen, answered = frozenset(seen or ()), frozenset(answered or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -244,6 +254,10 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         if group in novideo:
             shows.append(_video_entry(group, novideo[group], seen, mine_line))
     out = []
+    if library_gone:
+        whole = _library_gone_entry(rows, offline, seen)
+        if whole is not None:
+            out.append(whole)
     if FIRST_CARDS in frozenset(offers or ()) and FIRST_CARDS not in answered and miner_found:
         out.append(_first_cards_entry(rows, seen, mine_line, cards_on))
     offer = (connect or {}).get("known_offer")
@@ -255,13 +269,13 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
+    for row in gone_folders or ():                              # (alpha 4: on top — 届's press opens the page at it)
+        out.append(_folder_entry(row, seen))
     out += shows
     for ask in asks or ():
         entry = _ask_entry(ask, by_id, seen)
         if entry is not None:
             out.append(entry)
-    for row in gone_folders or ():
-        out.append(_folder_entry(row, seen))
     for root in roots:
         entry = _offline_entry(root, by_id, seen)
         if entry.key not in answered:
@@ -281,6 +295,20 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         if entry.key not in answered:
             out.append(entry)
     return out
+
+
+def _library_gone_entry(rows, offline, seen):
+    """K3 (Mattias: a reinstall over the same folder brought back a dead library): most of Current's files gone at
+    once (`LIBRARY_GONE_AT`; a drive only offline is the offline line's, never this) -> ONE card, or None."""
+    files = [e for r in rows for e in r.episodes if not offline(e.rel_path)]
+    missing = sum(1 for e in files if e.missing)
+    at, share = LIBRARY_GONE_AT
+    if missing < at or missing <= share * len(files):
+        return None
+    return Entry(key=LIBRARY_GONE, kind=LIBRARY_GONE, title=STRINGS["library_gone_title"].format(
+        n=view_rows.thousands(missing), m=view_rows.thousands(len(files))), lines=(),
+        actions=("find_library", "start_fresh"), unseen=LIBRARY_GONE not in seen, say=STRINGS["library_gone_say"],
+        data={"missing": missing, "files": len(files)})
 
 
 def _anki_waits(connect):

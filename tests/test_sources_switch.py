@@ -1085,3 +1085,22 @@ def test_a_book_moved_in_its_folder_keeps_each_parts_place(language):
             if os.path.join("Moved", "") in record.get("origin", "") and "#" in key:
                 new[int(key.rpartition("#")[2])] = record.get("chapter")
         assert new == places
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_chapter_books_new_edition_stays_by_chapters_after_even_parts_were_chosen(language, monkeypatch):
+    """A book cut by its chapters, its new edition arriving after the setting became Even parts: still cut by its
+    chapters, so part n pairs with part n (B17)."""
+    from app import extract
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        monkeypatch.setattr(extract, "_settings_by", lambda: "even")
+        _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        result = _look(store, language, root)
+        assert result["switched"] == len(before) and _items(store) == before
+        assert {rec["by"] for rec in _chapter_records(store).values()} == {"toc"}

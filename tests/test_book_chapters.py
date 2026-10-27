@@ -419,3 +419,54 @@ def test_extract_records_each_parts_place_and_a_folder_read_later_knows_the_book
         again = _look(store, "ja", store.add_source(shelf), first=True)
         assert again["added"] == 0 and store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == items
     assert sources                                      # (imported for the look's module state)
+
+
+# --- the mutant pass's gaps ------------------------------------------------------------------------------------------- #
+def test_matter_the_guide_names_in_the_middle_of_a_book_is_kept(tmp_path):
+    """The guide's (or landmarks') matter is skipped only near either end, as Anki Miner skips it (B3)."""
+    lines = _lines()
+    docs = [{"href": f"c{n}.xhtml", "body": f"<p>{lines[n]}</p>"} for n in range(10)]
+    read, _ = extract.epub_documents(_epub(tmp_path / "案内.epub", docs, guide=[("c5.xhtml", "colophon"),
+                                                                              ("c9.xhtml", "colophon")]))
+    assert lines[5] in [d.text for d in read] and lines[9] not in [d.text for d in read]
+
+
+def test_a_tiny_last_chapter_joins_the_one_before(tmp_path):
+    """著者紹介 of a few words at the end: no part of its own (B9)."""
+    docs = [{"href": "c1.xhtml", "body": _prose(900)}, {"href": "c2.xhtml", "body": _prose(900)},
+            {"href": "c3.xhtml", "body": "<p>著者紹介</p><p>冒険だ。</p>"}]
+    read, _ = extract.epub_documents(_epub(tmp_path / "末.epub", docs, [("c1.xhtml", "第一章"), ("c2.xhtml", "第二章"),
+                                                                       ("c3.xhtml", "著者紹介")]))
+    parts = extract.book_split(read, 1500)
+    assert [p.chapter["title"] for p in parts] == ["第一章", "第二章"] and parts[-1].text.endswith("冒険だ。")
+
+
+def test_a_heading_line_titles_the_numbered_chapter_it_heads(tmp_path):
+    """プロローグ then １ under it (no named chapters): the first chapter keeps プロローグ, never *Chapter 1* (B23)."""
+    body = "<p>プロローグ</p><p>１</p>" + _prose(900) + "<p>２</p>" + _prose(900)
+    read, _ = extract.epub_documents(_epub(tmp_path / "序.epub", [{"href": "c.xhtml", "body": body}]))
+    assert [p.chapter["title"] for p in extract.book_split(read, 1500)] == ["プロローグ", None]
+
+
+def test_a_count_whose_word_goes_on_is_no_heading():
+    for line in ("第3回目の会議", "第二話目"):                                # (B25)
+        assert extract._headings(line, 0, len(line)) == []
+
+
+def test_a_toc_whose_member_cannot_be_inflated_leaves_labels_out_never_the_book(tmp_path):
+    """A nav whose compressed bytes are damaged (a zlib / CRC error, not a parse error): no labels, the book read (B31)."""
+    docs = [{"href": f"c{n}.xhtml", "body": _prose(300)} for n in range(3)]
+    path = _epub(tmp_path / "圧縮.epub", docs, [("c0.xhtml", "第一章"), ("c1.xhtml", "第二章")])
+    out = tmp_path / "damaged.epub"
+    with zipfile.ZipFile(path) as src, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            dst.writestr(info.filename, src.read(info), zipfile.ZIP_DEFLATED)
+    raw = bytearray(out.read_bytes())
+    with zipfile.ZipFile(out) as z:
+        info = z.getinfo("OEBPS/nav.xhtml")
+    at = info.header_offset + 30 + len(info.filename.encode()) + len(info.extra)
+    for k in range(at + 2, at + min(info.compress_size, 40)):
+        raw[k] ^= 0xFF
+    out.write_bytes(bytes(raw))
+    read, error = extract.epub_documents(str(out))
+    assert error is None and [d.label for d in read] == [None, None, None] and all(d.text for d in read)

@@ -502,22 +502,36 @@ def test_A4_goals_picked_tiles_drag_as_one_card(world):
 
 
 # --- the store's own answer ---------------------------------------------------------------------------------------- #
-@pytest.mark.parametrize("language", ("ja", "zh"))
-def test_real_store_A4_picks_sent_to_goal_land_together_and_one_undo_puts_every_one_back(real, language):
+@pytest.mark.parametrize("language,name", (("ja", "goal"), ("zh", "goal"), ("ja", "top"), ("ja", "soon"),
+                                           ("zh", "finished"), ("ja", "remove")))
+def test_real_store_A4_picks_land_together_in_the_store_and_one_undo_puts_every_one_back(real, language, name):
+    """The store's own answer: every picked row's files where the entry says (Up next: the top of Current in the list's
+    order; Soon; Goal; Finished; Remove: gone from the library), from ONE command — and its one Undo puts every file
+    back in its tier."""
     store, win, _writer = real(language)
     lst = lst_of(win)
     rs = rows_of(win)
-    picked = [r for r in rs[1:] if lst.pickable(r)][:3]
+    picked = [r for r in rs[2:] if lst.pickable(r) and not drag.split_first(rs, r)][-3:]
     ids = [i for r in picked for i in drag.ids_of(r)]
     before = {i: store.item(i)["tier"] for i in ids}
     for r in picked:
         assert lst.pick_row(r)
-    win.items.send_picks("goal")
-    assert wait_until(lambda: all(store.item(i)["tier"] == "goal" for i in ids), 10)
-    assert wait_until(lambda: not ({r.key for r in picked} & {r.key for r in rows_of(win)}), 10)
+    if name == "remove":
+        win.items.send_picks("remove")
+        win.items.question.yes.click()
+    else:
+        win.items.send_picks(name)
+    want = {"top": "now", "soon": "soon", "goal": "goal", "finished": "graduated"}.get(name)
+    if want is None:
+        assert wait_until(lambda: all(store.item(i) is None or store.item(i).get("tier") is None for i in ids), 10)
+    else:
+        assert wait_until(lambda: all(store.item(i)["tier"] == want for i in ids), 10)
+    if name == "top":
+        assert wait_until(lambda: [r.key for r in rows_of(win)[:3]] == [r.key for r in picked], 10)
     assert wait_until(lambda: win.moves.toasted is not None and win.moves.toasted.change is not None, 10)
+    assert len([t for t in (win.moves.toasted,) if t.ids == tuple(ids)]) == 1      # one command for them all
     win.toasts.card.buttons[0].click()                                  # one Undo
-    assert wait_until(lambda: all(store.item(i)["tier"] == before[i] for i in ids), 10)
+    assert wait_until(lambda: all(store.item(i) is not None and store.item(i)["tier"] == before[i] for i in ids), 10)
 
 
 def test_A4_picks_holding_a_splits_first_part_offer_no_finished_and_its_drag_leaves_the_well_dark(world):
@@ -544,3 +558,37 @@ def test_A4_picks_holding_a_splits_first_part_offer_no_finished_and_its_drag_lea
     release_global(win, target)
     settle()
     assert writer.calls == []
+
+
+def test_A4_picks_live_in_one_list_the_trays_and_currents_let_each_other_go(world):
+    """New arrivals' tray picks as the lists do (its own Ctrl / Shift+click, Ctrl+A): picking in Current lets the
+    tray's picks go, and picking in the tray lets Current's go — never two blocks picked at once."""
+    from tests.qt.test_arrivals import open_tray, tray_of
+    _seed, win, _w = world()
+    tray = open_tray(win)
+    keys = tray.keys()[:2]
+    for k in keys:
+        tray.pick(k)
+    assert tray.picks == set(keys)
+    lst = lst_of(win)
+    lst.pick_row(lst.model().entries[current_rows(win, "now")[0]][1])
+    assert not tray_of(win).picks
+    tray.pick(keys[0])
+    assert tray.picks == {keys[0]} and not lst.picked_rows
+
+
+def test_A4_S19_a_tiles_pick_repaints_that_tile_alone(world, monkeypatch):
+    _seed, win, _w = world()
+    sheet = open_sheet(win)
+    painted = []
+    for t in sheet.order:
+        monkeypatch.setattr(t, "update", lambda t=t: painted.append(t.work.key))
+    sheet.pick_tile(sheet.order[1])
+    assert painted == [sheet.order[1].work.key]
+    del painted[:]
+    sheet.pick_all()
+    assert sorted(painted) == sorted(t.work.key for t in sheet.order if t is not sheet.order[1] and
+                                     sheet.pickable(t.work))
+    del painted[:]
+    sheet.pick_all()                                                    # nothing changed: nothing repainted
+    assert painted == []

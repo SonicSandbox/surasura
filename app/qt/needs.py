@@ -704,7 +704,7 @@ class NeedsYou(QObject):
                                   miner_found=bool(find_miner(settings)),     # row 13: D1's line waits for it
                                   gone_folders=gone_folders or (),
                                   hidden=service.read_hidden(lang),           # alpha 4 D2: Not now, Stop asking
-                                  settled=bool(self._gone_judged))            # K1: every folder had its look
+                                  settled=gone_judged is not None)            # K1: every folder had its look
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 

@@ -531,3 +531,19 @@ def test_a_hiragana_card_of_a_common_word_never_marks_a_name_spelled_the_same(tm
     _write_backlog(data=_cards("ひかり"))
     assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["光"]
     assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}) == ["ひかり"], "no list: as before"
+
+
+def test_loop_f2_a_card_connect_made_for_a_name_row_marks_that_row_only(tmp_path, monkeypatch):
+    """alpha 4 M3, as Junban places it (`reposition`: Connect's record first): Connect mined the name ヒトリ and its card
+    reads ひとり — the report marks ヒトリ's row (Connect's `made_words` names it), and never also the row the card's
+    letters would reach as an everyday word (一人). With no record, as before: no mark on the name."""
+    from app.connect import library
+    listed = _write_list(tmp_path, [("ヒトリ", "ひとり", "", "ヒトリ"), ("一人", "一人", "", "ヒトリ")])
+    _write_backlog(data=_cards("ひとり"))
+    monkeypatch.setattr(library, "made_notes_of", lambda language: {})
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["一人"]
+    monkeypatch.setattr(library, "made_notes_of", lambda language: {1789711432600: "ヒトリ"})
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["ヒトリ"]
+    monkeypatch.setattr(library, "made_notes_of", lambda language: {1789711432600: "冒険"})
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["一人"], \
+        "a record naming a word off the list: the card's own word, as before"

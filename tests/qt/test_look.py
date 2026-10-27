@@ -206,6 +206,8 @@ def test_relaunch_starts_the_same_program_from_source_and_frozen(monkeypatch, tm
     monkeypatch.setattr(sys, "executable", exe)
     shell.relaunch([exe])
     assert started[-1][0] == [exe]
+    # alpha 4 M6: every new start carries the mark (in its environment, never its logged arguments)
+    assert all(kw["env"][shell.RESTARTED] == "1" and shell.RESTARTED not in " ".join(args) for args, kw in started)
 
 
 def test_a_failed_relaunch_is_logged_never_raised(monkeypatch):

@@ -124,6 +124,19 @@ def _srt(ids, kinds):
     return [i for i in ids if kinds[i] == ".srt"]
 
 
+def test_loop_f2_made_notes_names_the_row_each_connect_card_was_made_for():
+    """alpha 4 M3: Connect's record read back as {note id: the row it was made for}, over every item — the one reader
+    Junban's placement and the report's label share (`made_notes_of`); none recorded yet: empty."""
+    ids, kinds = _library()
+    a, b = _srt(ids, kinds)[-2:]
+    with c.store("ja") as s:
+        assert library.made_notes(s) == {}
+        s.record_made(a, [("ヒトリ", [1789711432600]), ("冒険", [1789711432601, 1789711432602])])
+        s.record_made(b, [("気配", [1789711432603])])
+        assert library.made_notes(s) == {1789711432600: "ヒトリ", 1789711432601: "冒険", 1789711432602: "冒険",
+                                         1789711432603: "気配"}
+
+
 def test_an_ask_below_the_line_is_a_job_never_dropped_and_mined_first(tmp_path):
     ids, kinds = _library()
     episodes = _srt(ids, kinds)

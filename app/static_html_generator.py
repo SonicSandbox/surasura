@@ -657,11 +657,16 @@ def anki_backlog_keys(language, settings, list_path=None):
             answers = _pair_answers(language)
             index = anki_match.build_index(list_path, language="ja") if list_path else None
             listed = index.rank_of if index else {}
+            made = _connect_rows(language, backlog, listed)
+            if made:        # alpha 4 M3: labelled on the row Connect made it for, only there (as Junban places it)
+                backlog = dict(backlog, notes={n: e for n, e in (backlog.get("notes") or {}).items()
+                                               if n not in made})
             names = _name_cards(backlog, index, answers) if listed else {}
             keys = _own_keys(backlog, listed, names, index) if listed else keys
             phrases = bool(((settings or {}).get("logic") or {}).get("phrase_rows", True))
             keys |= _dictionary_keys(backlog, answers, listed, names, index, phrases)
             keys |= _confirmed_keys(backlog, answers, listed, names)
+            keys |= set(made.values())
         return sorted(keys)
     except Exception as e:
         print(f"Warning: could not read the Anki backlog for the report: {e}")
@@ -672,6 +677,25 @@ def anki_backlog_keys(language, settings, list_path=None):
 # read alone only when it ends in one of these, or starts or ends in the word's own grammar or an inflected
 # する / copula (`anki_match.AFFIX_SPELLINGS`: おへや, おれたち, べんきょうした), so a bare kana word never is.
 _ENDING_SPELLINGS = ("する", "な", "に", "と")
+
+
+def _connect_rows(language, backlog, listed):
+    """{backlog note id (as the file keys it): the listed word Connect made its card for} — alpha 4 M3, Junban's
+    first rule (`reposition`, `connect.library.made_notes_of`): ヒトリ's card, mined as ひとり, is labelled on ヒトリ.
+    {} without a list or Connect's record."""
+    if not listed:
+        return {}
+    from app.connect import library
+    made = library.made_notes_of(language)
+    out = {}
+    for note in (backlog.get("notes") or {}):
+        try:
+            row = made.get(int(note))
+        except (TypeError, ValueError):
+            continue
+        if row is not None and row in listed:
+            out[note] = row
+    return out
 
 
 def _name_cards(backlog, index, answers=None):

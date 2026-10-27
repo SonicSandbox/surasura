@@ -498,6 +498,8 @@ MAKE_CARDS_GONE = "Connect has no record of those episodes now: nothing was made
 MINE_BOOKS_WAIT = ("Anki Miner makes cards from videos only for now: Connect makes these cards by itself once it can "
                    "read books and texts")
 # A4M1-3: an audiobook's or a podcast's *Mine*, the same way
+# IK-6: the window's start look at Anki (its line in the bar while it runs; *Opening Anki for you…* says the rest)
+SESSION_JOB_LABEL = "Looking at Anki"
 MINE_AUDIO_WAIT = ("Anki Miner makes cards from videos only for now: Connect makes these cards by itself once it can "
                    "mine audio")
 LINK_TITLE = "Choose the video for {label}"

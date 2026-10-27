@@ -622,9 +622,12 @@ def answer_keys(thing):
 
 
 # --- seen and answered (the local data folder; never settings.json) ------------------------------------------------- #
-_lock = threading.Lock()         # the one writer
+_lock = threading.Lock()         # the one writer, and every read in this process (alpha 4 E: a read holding the file
+#                                  open made the write's replace fail on Windows — PermissionError, the answer lost)
 _FIELDS = ("seen", "answered", "offered", "stopped")   # `offered`: the lines a step asked for (D1's), until answered;
 #                                                        `stopped`: *Stop asking* (alpha 4 D2), until its trouble goes
+REPLACE_WAITS = (0.01, 0.03, 0.1, 0.25)   # s: another program (a virus scan, a sync, a child process) reading the file
+#                                            as it is replaced — waited out, then the write fails as before
 
 
 def seen_path(language):
@@ -632,8 +635,9 @@ def seen_path(language):
 
 
 def _read(language):
-    """The seen file's lists (and *Not now*'s days)."""
-    return _load(language)
+    """The seen file's lists (and *Not now*'s days), read under `_lock`: never while it is being replaced (alpha 4 E)."""
+    with _lock:
+        return _load(language)
 
 
 def _load(language, strict=False):
@@ -670,7 +674,14 @@ def _write(language, data):
         json.dump({"version": SEEN_VERSION, **data}, f, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    for wait in REPLACE_WAITS + (None,):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if wait is None:
+                raise
+            time.sleep(wait)
 
 
 def _add(language, field, keys):

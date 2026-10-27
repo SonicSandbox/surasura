@@ -7,6 +7,7 @@ What a wrong answer would cost a learner: an answer lost because the file was be
 waiting* that keeps nothing, a card that comes back after a restart); a card that can't be put away, or one put away
 for ever when he only said "not now"; a hundred cards with no one answer for them; a dead library offered file by file.
 """
+import threading
 import time
 from types import SimpleNamespace
 
@@ -34,6 +35,37 @@ def view(language, n=4, missing=None, start=0):
 def folder_rows(language, n):
     return [{"id": 10 + i, "path": f"C:\\Users\\Michael\\Downloads\\{names(language)[i]}", "items": 3,
              "shows": [names(language)[i]], "finished": False, "found_in": []} for i in range(n)]
+
+
+# --- E: the seen file written while it is read ------------------------------------------------------------------- #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_seen_file_is_never_lost_when_it_is_read_while_it_is_written(language):
+    """The keep_waiting flake (#180) and Michi's PermissionError on needs_seen_ja.json: on Windows a reader holding the
+    file open makes the writer's replace fail — the answer (*Keep waiting*, a seen key) was lost. A reader on another
+    thread reads while every answer is written: every answer is kept, none raises."""
+    stop, errors = threading.Event(), []
+
+    def reader():
+        while not stop.is_set():
+            try:
+                needs.read_answered(language)
+                needs.read_seen(language)
+            except Exception as e:              # (a read never raises: it reads as empty)
+                errors.append(e)
+
+    threads = [threading.Thread(target=reader, daemon=True) for _ in range(3)]
+    for t in threads:
+        t.start()
+    try:
+        keys = [f"line:offline:c:\\users\\michael\\{names(language)[i % 10]}\\{i}" for i in range(150)]
+        for k in keys:
+            needs.answer(language, [k])          # *Keep waiting*'s write, one at a time as pressed
+    finally:
+        stop.set()
+        for t in threads:
+            t.join(5)
+    assert errors == []
+    assert set(keys) <= needs.read_answered(language)
 
 
 # --- D2: Not now and Stop asking ----------------------------------------------------------------------------------- #

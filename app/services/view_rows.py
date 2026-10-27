@@ -142,6 +142,9 @@ Arrival = namedtuple("Arrival", Arrival._fields + ("cover", "waiting"), defaults
 # --- P4.1 WF (adversary S5): a tray row's files as Current's rows hold them (`Episode`), so *Mine them too* asks by the
 # rows' rule (never a file in Anki or whose cards were deleted). Never in the first screen's cache (the tray isn't)
 Arrival = namedtuple("Arrival", Arrival._fields + ("episodes",), defaults=((),))
+# --- A4 (one title in several folders): `folder`, the folder holding its files as its row names it (`arrival_folder`)
+# when another row of the tray has its title (its line then starts with it), else None
+Arrival = namedtuple("Arrival", Arrival._fields + ("folder",), defaults=(None,))
 Goal = namedtuple("Goal", Goal._fields + ("cover_refs",), defaults=tuple(Goal._field_defaults.values()) + ((),))    # beside `covers`, the first nine works'
 # --- W3.2 L3: a Goal tile's cover record (the sheet paints its picture)
 GoalWork = namedtuple("GoalWork", GoalWork._fields + ("cover",), defaults=(None,))
@@ -267,6 +270,7 @@ STRINGS = {
                   "until analysed",
     "per_ep_tip_none": "{files} {units} · its new words are counted when it first shows: an estimate until analysed",
     "acc_arrival": "{title} · {line} · {number}", "acc_per_ep_none": "not counted yet",
+    "arr_folder_sep": " › ",            # A4: a folder's last two parts, on a row whose title another row shares
     # --- W3.2 Q2: Goal's tiles
     "goal_count": "{n} {units}",
     "goal_tile_tip": "{title} · {line}\nDrag it into Current to bring up {first}, or ⋯ to move it",
@@ -1216,6 +1220,55 @@ def _arrival(piece, works, cards, estimates, guessed):
                                                             number=number).replace(" ·  · ", " · "))
 
 
+_TIER_FOLDERS = frozenset(("HighPriority", "LowPriority", "GoalContent", "Graduated"))   # the store's own folders
+
+
+def arrival_folder(rel_paths):
+    """(A4) The folder holding an arrival's files as its row names it: their common parent, its last one or two parts
+    (`ハリー・ポッター › 2 秘密の部屋`) — never one of the store's tier folders (HighPriority…); None when none is left."""
+    parents = [(r or "").replace("\\", "/").split("/")[:-1] for r in rel_paths if r]
+    if not parents:
+        return None
+    common = parents[0]
+    for parts in parents[1:]:
+        n = 0
+        while n < len(common) and n < len(parts) and common[n] == parts[n]:
+            n += 1
+        common = common[:n]
+    while common and common[0] in _TIER_FOLDERS:
+        common = common[1:]
+    return STRINGS["arr_folder_sep"].join(common[-2:]) or None
+
+
+def _with_folders(made, before, entries):
+    """(A4) A row whose title another row of the tray shares names its folder first on its line (and in what is read
+    aloud); a lone title's row is left as it was. A row shown with its folder at the last build, still sharing its
+    title, is that same object (S19)."""
+    seen, twice = set(), set()
+    for a in made:
+        (twice if a.title in seen else seen).add(a.title)
+    if not twice:
+        return made
+    out = []
+    for a in made:
+        if a.title not in twice:
+            out.append(a)
+            continue
+        held = before.get(("folder", a.key))
+        if held is not None and held[0] is a:
+            shown = held[1]
+        else:
+            folder = arrival_folder(a.rel_paths)
+            head = a.title + " · "
+            spoken = f"{head}{folder} · {a.accessible[len(head):]}" if a.accessible.startswith(head) else \
+                f"{a.accessible} · {folder}"
+            shown = a if folder is None else a._replace(folder=folder, parts=((folder, "dim"),) + a.parts,
+                                                        accessible=spoken)
+        entries[("folder", a.key)] = (a, shown)
+        out.append(shown)
+    return out
+
+
 def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, changed_works):
     """The tray's rows and groups (RUNBOOK §1 *The tray*): one per piece, newest first by `added_at` (a piece by its
     newest file; equal stamps keep the store's order), *New* then *Already watched*. With the reader's cache an
@@ -1239,14 +1292,19 @@ def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, chang
         first = p[0]
         work = works.get(first.get("work_id"))
         key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
+        if key in entries:                  # A4 (Mattias #7): a piece in two runs of the tier (another title came in
+            key = f"{key}.i{first['id']}"   # between its files) is two rows, each its own key — never one for both
         old = before.get(key)
         if old is not None and old[1] is work and old[2] == s and len(old[0]) == len(p) and \
                 all(a is b for a, b in zip(old[0], p)):
             row = old[3]
         else:
             row = _arrival(p, works, cards, estimates, guessed)
+            if row.key != key:
+                row = row._replace(key=key)
         entries[key] = (tuple(p), work, s, row)
         made.append(row)
+    made = _with_folders(made, before, entries)                     # A4: one title in several folders
     made.sort(key=lambda a: a.added_at or "", reverse=True)          # stable: equal stamps keep the store's order
     rows = tuple(a for a in made if a.group == "new") + tuple(a for a in made if a.group == "watched")
     if hit is not None and len(hit[4][0]) == len(rows) and all(a is b for a, b in zip(hit[4][0], rows)):

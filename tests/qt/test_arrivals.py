@@ -77,9 +77,10 @@ class FakeWorker:
         self.asked = []
         self.lock = threading.Lock()
 
-    def estimate(self, path, placed=(), callback=None):
+    def estimate(self, path, placed=(), callback=None, piece=None):
+        placed = list(piece[:placed]) if isinstance(placed, int) else list(placed)   # A4: the index form
         with self.lock:
-            self.asked.append((path, list(placed)))
+            self.asked.append((path, placed))
             rid = len(self.asked)
         if self.error:
             answer = {"id": rid, "op": "estimate", "error": self.error}
@@ -135,15 +136,47 @@ def open_tray(win):
     return tray_of(win)
 
 
+class TrayRowAt:
+    """A row of the tray's list as the tests press it (A4: the rows are painted by a list, not widgets of their own):
+    its key, the arrival it shows, its parts' places on the list's viewport, its repaints asked, its tips."""
+
+    def __init__(self, tray, key):
+        self.tray, self.key = tray, key
+        self.arrival = tray.model.objs[tray.view.row_of(key)]         # what it showed when it was taken
+
+    @property
+    def paints(self):
+        return self.tray.model.paints.get(self.key, 0)
+
+    @property
+    def icon_kind(self):
+        return arrivals.icon_of(self.arrival)
+
+    def rect(self, part="row"):
+        return self.tray.part_rect(self.key, part)
+
+    def point(self, part="row"):
+        return QPointF(self.rect(part).center())
+
+    def tip(self, part):
+        return self.tray.tip(self.key, part)
+
+    def click(self, part="icon", modifiers=Qt.KeyboardModifier.NoModifier):
+        vp = self.tray.view.viewport()
+        at = self.point(part)
+        mouse(vp, QEvent.Type.MouseButtonPress, at, LEFT, LEFT, modifiers)
+        mouse(vp, QEvent.Type.MouseButtonRelease, at, LEFT, NONE, modifiers)
+
+
 def tray_rows(win):
     """The tray's rows as laid out, top to bottom."""
     tray = tray_of(win)
-    out = []
-    for i in range(tray.list.count()):
-        w = tray.list.itemAt(i).widget()
-        if isinstance(w, arrivals.TrayRow):
-            out.append(w)
-    return out
+    return [TrayRowAt(tray, k) for k in tray.keys()]
+
+
+def tray_arrivals(win):
+    """The arrivals the tray holds (shown, or waiting for it to open: a closed tray does no row work)."""
+    return [a for g in tray_of(win).groups for a in g.rows]
 
 
 def arrival_titles(seed):
@@ -219,15 +252,16 @@ def test_A2_95_118_each_row_has_one_icon_square_named_first_and_every_control_is
     seed, win, _w = world()
     open_tray(win)
     rs = tray_rows(win)
-    sizes = {(r.icon.width(), r.icon.height()) for r in rs}
+    sizes = {(r.rect("icon").width(), r.rect("icon").height()) for r in rs}
     assert len(sizes) == 1                                            # one size on every row
-    assert [r.icon.kind for r in rs] == ["top", "top", "finished"]
-    for r in rs:
-        assert r.icon.isVisible() and r.more.isVisible()              # always shown (n10: no hover-to-reveal)
-        assert r.icon.toolTip().startswith(r.icon.accessibleName() + " · ")
-        assert r.more.toolTip().startswith(r.more.accessibleName())
-    assert rs[0].icon.toolTip().startswith("Top · Add to the top of Current")
-    tray_of(win).menu(rs[1])                                          # the ⋯ menu's actions join the walk
+    assert [r.icon_kind for r in rs] == ["top", "top", "finished"]
+    for r in rs:                                                      # always there (n10: no hover-to-reveal)
+        assert r.rect("icon").width() > 0 and r.rect("more").width() > 0
+        name = strings.TRAY_ICON[r.icon_kind][0]
+        assert r.tip("icon").startswith(name + " · ")
+        assert r.tip("more").startswith(strings.TRAY_MORE_NAME)
+    assert rs[0].tip("icon").startswith("Top · Add to the top of Current")
+    tray_of(win).menu(rs[1].key)                                      # the ⋯ menu's actions join the walk
     found, _n = problems(win)
     assert found == []
     tray_of(win).last_menu.close()
@@ -242,16 +276,18 @@ def test_A2_90_to_94_96_97_the_rows_line_number_and_text_column(world):
     assert hato.line == "Ep 1–6" and hato.chip == "hato"               # #94: the line gives only the range
     assert hato.parts[0] == ("Ep 1–6", "dim")
     assert [t for t, tone in watched.parts if tone == "warn"]         # #26: no video, in amber
-    xs = {r.number.mapTo(tray_of(win), QPoint(0, 0)).x() for r in rs}
+    xs = {r.rect("number").x() for r in rs}
     assert len(xs) == 1                                               # #92: one column whatever the row
     fz = theme.text_factor("M")
+    tray = tray_of(win)
     for r in rs:
-        assert r.number.width() == round(56 * fz)
-        assert r.text_right() <= r.number.x() - round(28 * fz)        # #96: the title stops 28 px short
-        assert "≈" not in r.number.toolTip() and "~" not in r.number.toolTip()    # #90
-        assert "estimate until analysed" in r.number.toolTip()
-    assert rs[1].number.text[0] == strings.TRAY_NUMBER_NONE           # a dash until it's counted
-    assert "6 episodes" in rs[1].number.toolTip()
+        assert r.rect("number").width() == round(56 * fz)
+        parts = arrivals.row_parts(tray.view.visualRect(tray.model.index(tray.view.row_of(r.key), 0)))
+        assert parts["text_right"] <= r.rect("number").x() - round(28 * fz)   # #96: the title stops 28 px short
+        assert "≈" not in r.tip("number") and "~" not in r.tip("number")      # #90
+        assert "estimate until analysed" in r.tip("number")
+    assert arrivals.number_text(rs[1].arrival)[0] == strings.TRAY_NUMBER_NONE  # a dash until it's counted
+    assert "6 episodes" in rs[1].tip("number")
 
 
 def test_A2_93_the_estimates_fill_the_number_per_episode_and_only_their_rows_repaint(world):
@@ -265,10 +301,10 @@ def test_A2_93_the_estimates_fill_the_number_per_episode_and_only_their_rows_rep
     win.services.library.set_estimates(est)
     assert wait_until(lambda: tray_rows(win)[1].arrival.per_ep is not None, 5)
     row = tray_rows(win)[1]
-    assert row.number.text == ("9", "new / ep")
-    assert row.number.toolTip().startswith("About 9 new words an episode")
+    assert arrivals.number_text(row.arrival) == ("9", "new / ep")
+    assert row.tip("number").startswith("About 9 new words an episode")
     assert row.paints == paints[row.arrival.key] + 1
-    others = [r for r in tray_rows(win) if r is not row]
+    others = [r for r in tray_rows(win) if r.key != row.key]
     assert all(r.paints == paints[r.arrival.key] for r in others)     # S19: only the row whose number came
 
 
@@ -278,9 +314,10 @@ def test_A2_27_the_top_icon_places_the_arrival_through_the_writer_and_the_tray_s
     open_tray(win)
     row = tray_rows(win)[1]
     ids = list(row.arrival.item_ids)
-    row.icon.click()
+    title = row.arrival.title
+    row.click("icon")
     assert calls(writer, "place") == [("place", ids, {"where": "top"})]
-    assert win.toasts.card.base == strings.TRAY_PLACED["top"].format(title=row.arrival.title)
+    assert win.toasts.card.base == strings.TRAY_PLACED["top"].format(title=title)
     assert wait_until(lambda: len(tray_rows(win)) == 2, 5)
     settle()
     assert tray_of(win).isVisible()                                   # open for the next one
@@ -293,7 +330,7 @@ def test_each_menu_place_calls_the_writer_with_its_place(world, name, monkeypatc
     seed, win, writer = world()
     open_tray(win)
     row = tray_rows(win)[0]
-    menu = tray_of(win).menu(row)
+    menu = tray_of(win).menu(row.key)
     act = next(a for a in menu.actions() if a.text() == strings.TRAY_MENU[name][0])
     assert act.toolTip() and act.isEnabled()
     act.trigger()
@@ -305,18 +342,18 @@ def test_the_menu_lists_its_entries_in_order_and_disables_the_moves_on_a_read_on
     seed, win, writer = world()
     open_tray(win)
     row = tray_rows(win)[0]
-    menu = tray_of(win).menu(row)
+    menu = tray_of(win).menu(row.key)
     labels = [a.text() for a in menu.actions() if not a.isSeparator()]
     # --- W3.2 L3: *Change cover…* (a submenu) after the moves, before *Open its folder*
     want = [strings.TRAY_MENU[n][0] for n in arrivals.MENU]
     assert labels == want[:5] + [strings.ITEM_MENU["cover"][0]] + want[5:]
     menu.close()
     writer.writable = False
-    menu = tray_of(win).menu(row)
+    menu = tray_of(win).menu(row.key)
     enabled = {a.text(): a.isEnabled() for a in menu.actions() if not a.isSeparator()}
     assert enabled[strings.TRAY_MENU["folder"][0]] and not enabled[strings.TRAY_MENU["top"][0]]
     menu.close()
-    row.icon.click()                                                  # E4: refused at the press, said in the bar
+    row.click("icon")                                                 # E4: refused at the press, said in the bar
     assert calls(writer, "place") == []
 
 
@@ -325,11 +362,12 @@ def test_IK_11_finished_on_a_watched_arrival_offers_D14s_choice_and_take_out_fol
     open_tray(win)
     row = tray_rows(win)[2]
     ids = list(row.arrival.item_ids)
-    assert row.icon.kind == "finished"
-    row.icon.click()
+    title = row.arrival.title
+    assert row.icon_kind == "finished"
+    row.click("icon")
     assert calls(writer, "place") == [("place", ids, {"where": "finished"})]
     card = win.toasts.card
-    assert card.base == strings.DRAG_FINISHED.format(title=row.arrival.title)
+    assert card.base == strings.DRAG_FINISHED.format(title=title)
     labels = [b.text() for b in card.buttons if b.isVisible()]
     assert strings.DRAG_KEEP in labels and strings.DRAG_TAKE_OUT in labels
     settle()
@@ -344,7 +382,7 @@ def test_IK_11_the_menus_finished_offers_the_same_choice(world):
     seed, win, writer = world()
     open_tray(win)
     row = tray_rows(win)[0]
-    menu = tray_of(win).menu(row)
+    menu = tray_of(win).menu(row.key)
     next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["finished"][0]).trigger()
     assert calls(writer, "place")[0][2] == {"where": "finished"}
     assert strings.DRAG_TAKE_OUT in [b.text() for b in win.toasts.card.buttons if b.isVisible()]
@@ -391,7 +429,7 @@ def test_open_its_folder_opens_the_arrivals_own_folder(world, monkeypatch):
     assert wait_until(lambda: win.bar_line.full() == strings.TRAY_NO_FOLDER.format(path=want), 5)
     assert opened == []
     os.makedirs(want, exist_ok=True)
-    menu = tray_of(win).menu(row)
+    menu = tray_of(win).menu(row.key)
     next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["folder"][0]).trigger()
     assert wait_until(lambda: opened == [want], 5) and calls(writer) == []
 
@@ -400,7 +438,7 @@ def test_N1_after_its_show_is_greyed_while_none_of_its_show_is_in_current_and_N4
     seed, win, writer = world()
     open_tray(win)
     row = tray_rows(win)[0]                                           # a YouTube video: no part of it in Current
-    menu = tray_of(win).menu(row)
+    menu = tray_of(win).menu(row.key)
     act = next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["after-show"][0])
     assert not act.isEnabled() and act.toolTip() == strings.TRAY_NO_SHOW
     assert menu.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -413,8 +451,9 @@ def test_remove_asks_first_naming_the_count_esc_is_no_and_yes_removes_with_undo(
     open_tray(win)
     row = tray_rows(win)[1]
     ids = list(row.arrival.item_ids)
+    arrival = row.arrival
     tray = tray_of(win)
-    tray.act(row.arrival, "remove")
+    tray.act(arrival, "remove")
     q = tray.question
     assert q is not None and q.yes.text() == strings.TRAY_REMOVE_YES.format(n=6)
     assert q.default is q.no                                          # Enter at first is Cancel
@@ -422,11 +461,11 @@ def test_remove_asks_first_naming_the_count_esc_is_no_and_yes_removes_with_undo(
     assert wait_until(lambda: sip.isdeleted(q) or not q.isVisible(), 3)
     assert calls(writer, "remove") == []
     tray.open() if not tray.isVisible() else None
-    tray.act(row.arrival, "remove")
+    tray.act(arrival, "remove")
     tray.question.yes.click()
     assert calls(writer, "remove") == [("remove", ids, {})]
     card = win.toasts.card
-    assert card.base == strings.TRAY_REMOVED.format(title=row.arrival.title)
+    assert card.base == strings.TRAY_REMOVED.format(title=arrival.title)
     undo = next(b for b in card.buttons if b.text() == strings.TOAST_UNDO)
     assert wait_until(lambda: writer.saved, 3)
     settle()
@@ -438,10 +477,15 @@ def test_enter_on_a_focused_row_is_its_icon_and_tab_walks_the_rows(world):
     seed, win, writer = world()
     open_tray(win)
     rs = tray_rows(win)
-    rs[0].setFocus()
+    view = tray_of(win).view
+    assert view.focusPolicy() & Qt.FocusPolicy.TabFocus
+    view.setFocus(Qt.FocusReason.TabFocusReason)                      # Tab into the list: its first row
     QApplication.processEvents()
-    assert rs[0].focusPolicy() & Qt.FocusPolicy.TabFocus
-    QTest.keyClick(rs[0], Qt.Key.Key_Return)
+    assert view.currentIndex().row() == view.row_of(rs[0].key)
+    QTest.keyClick(view, Qt.Key.Key_Tab)                              # Tab: the next row (a head is passed by)
+    assert view.currentIndex().row() == view.row_of(rs[1].key)
+    QTest.keyClick(view, Qt.Key.Key_Backtab)
+    QTest.keyClick(view, Qt.Key.Key_Return)
     assert calls(writer, "place") == [("place", list(rs[0].arrival.item_ids), {"where": "top"})]
 
 
@@ -460,9 +504,7 @@ def test_esc_back_the_close_button_and_a_click_outside_close_the_tray_a_click_in
     tray.close_button.click()
     assert not tray.isVisible()
     tray = open_tray(win)
-    row = tray_rows(win)[0]
-    mouse(row, QEvent.Type.MouseButtonPress, QPointF(row.width() / 2, row.height() / 2))
-    mouse(row, QEvent.Type.MouseButtonRelease, QPointF(row.width() / 2, row.height() / 2), LEFT, NONE)
+    tray_rows(win)[0].click("row")
     assert tray.isVisible()                                           # inside: stays
     lst = win.page_widgets["current"].list
     mouse(lst.viewport(), QEvent.Type.MouseButtonPress, QPointF(20, 20))
@@ -474,11 +516,12 @@ def test_esc_back_the_close_button_and_a_click_outside_close_the_tray_a_click_in
 
 
 # --- the drag ----------------------------------------------------------------------------------------------------- #
-def lift_row(win, k):
+def lift_row(win, k, modifiers=Qt.KeyboardModifier.NoModifier):
     row = tray_rows(win)[k]
-    at = QPointF(row.width() / 2, row.height() / 2)
-    mouse(row, QEvent.Type.MouseButtonPress, at)
-    mouse(row, QEvent.Type.MouseMove, at + QPointF(0, theme.MOTION["drag-start-px"]), NONE, LEFT)
+    vp = tray_of(win).view.viewport()
+    at = row.point("row")
+    mouse(vp, QEvent.Type.MouseButtonPress, at, LEFT, LEFT, modifiers)
+    mouse(vp, QEvent.Type.MouseMove, at + QPointF(0, theme.MOTION["drag-start-px"]), NONE, LEFT)
     assert win.moves.running is not None
     return row
 
@@ -486,8 +529,8 @@ def lift_row(win, k):
 def test_A2_24_a_drag_from_the_tray_lands_where_the_gap_was_and_the_tray_fades_then_comes_back(world):
     seed, win, writer = world()
     tray = open_tray(win)
-    row = lift_row(win, 1)
-    ids = list(row.arrival.item_ids)
+    ids = list(tray_rows(win)[1].arrival.item_ids)
+    lift_row(win, 1)
     assert win.moves.running.source == "arrivals" and win.moves.running.ids == ids
     assert not tray.isVisible() and tray.fade is not None              # faded (frozen motion: at once)
     rows_ = win.page_widgets["current"].view_model.rows
@@ -503,8 +546,8 @@ def test_A2_24_a_drag_from_the_tray_lands_where_the_gap_was_and_the_tray_fades_t
 def test_A2_28_an_arrival_dragged_onto_the_finished_well_is_recorded_finished(world):
     seed, win, writer = world()
     open_tray(win)
-    row = lift_row(win, 1)
-    ids = list(row.arrival.item_ids)
+    ids = list(tray_rows(win)[1].arrival.item_ids)
+    lift_row(win, 1)
     at = well_point(win, "finished")
     move_global(win, at)
     release_global(win, at)
@@ -539,8 +582,9 @@ def test_G2_IK3_a_tray_file_rested_on_a_group_joins_it_with_one_add_to_group_toa
     i = next(k for k, r in enumerate(rows_) if k > 1 and r.piece_id is not None and r.source != "hato")
     group = _current_group(win, i)
     open_tray(win)
-    row = lift_row(win, 1)
-    ids = list(row.arrival.item_ids)
+    arrival = tray_rows(win)[1].arrival
+    ids = list(arrival.item_ids)
+    lift_row(win, 1)
     to = _middle(win, i)
     move_global(win, to)
     settle()
@@ -550,7 +594,7 @@ def test_G2_IK3_a_tray_file_rested_on_a_group_joins_it_with_one_add_to_group_toa
     assert win.page_widgets["current"].list.join_label == strings.JOIN_GROUP_LABEL
     release_global(win, to)
     assert calls(writer) == [("add_to_group", [], {"piece_id": group.piece_id, "piece_ids": [], "item_ids": ids})]
-    text = strings.ITEM_GROUPED_WITH.format(other=row.arrival.title, title=group.title)
+    text = strings.ITEM_GROUPED_WITH.format(other=arrival.title, title=group.title)
     assert wait_until(lambda: win.toasts.card.base == text, 5)
     assert win.toasts.card.buttons, "its Undo"
 
@@ -560,13 +604,14 @@ def test_G2_IK3_a_tray_file_rested_on_a_run_is_placed_there_as_before(world):
     rows_ = win.page_widgets["current"].view_model.rows
     i = next(k for k, r in enumerate(rows_) if k > 1 and r.piece_id is not None and r.source != "hato")
     open_tray(win)
-    row = lift_row(win, 1)
+    ids = list(tray_rows(win)[1].arrival.item_ids)
+    lift_row(win, 1)
     to = _middle(win, i)
     move_global(win, to)
     _rest()
     assert win.moves.running.target[0] == "list"
     release_global(win, to)
-    assert [c[0] for c in calls(writer)] == ["move"] and calls(writer)[0][1] == list(row.arrival.item_ids)
+    assert [c[0] for c in calls(writer)] == ["move"] and calls(writer)[0][1] == ids
 
 
 def test_G2_IK3_after_its_show_finds_a_show_that_sits_inside_a_group(world, monkeypatch):
@@ -662,13 +707,18 @@ def _sync(fn):
     fn()
 
 
-def _numbers(worker, tmp_path, plan=lambda: 1):
+def _numbers(worker, tmp_path, plan=lambda: 1, every=0.0):
     got = []
     known = tmp_path / "KnownWord.json"
     known.write_text('{"words": ["猫"]}', encoding="utf-8")
     nums = arrivals.ArrivalNumbers(worker, "ja", on_change=got.append, data_path=str(tmp_path / "data"),
-                                   known_file=str(known), plan_token=plan, run=_sync)
+                                   known_file=str(known), plan_token=plan, run=_sync, every=every)
     return nums, got, known
+
+
+def _all_in(got, view):
+    """The numbers last handed on hold every arrival's file."""
+    return bool(got) and set(got[-1]) == {i for a in view.arrivals for i in a.item_ids}
 
 
 def _view(seed):
@@ -683,7 +733,7 @@ def test_IK_5_each_file_is_asked_once_with_the_pieces_earlier_files_placed_befor
     worker = FakeWorker()
     nums, got, _k = _numbers(worker, tmp_path)
     nums.want(view.arrivals)
-    assert wait_until(lambda: len(got) == 10, 3)
+    assert wait_until(lambda: _all_in(got, view), 3)
     assert len(worker.asked) == 10                                    # every file once
     nums.want(view.arrivals)
     nums.want(view.arrivals)
@@ -704,9 +754,10 @@ class HeldWorker(FakeWorker):
         super().__init__(**kw)
         self.held = []
 
-    def estimate(self, path, placed=(), callback=None):
+    def estimate(self, path, placed=(), callback=None, piece=None):
+        placed = list(piece[:placed]) if isinstance(placed, int) else list(placed)
         with self.lock:
-            self.asked.append((path, list(placed)))
+            self.asked.append((path, placed))
             rid = len(self.asked)
         self.held.append(lambda: callback({"id": rid, "op": "estimate", "path": path, "n_new_top": self.n,
                                            "n_new_after_show": None, "plan": self.plan, "exact": True}))
@@ -729,7 +780,7 @@ def test_W32_H_an_answer_asked_before_a_language_switch_never_reaches_the_new_li
     known = tmp_path / "KnownWord.json"
     known.write_text('{"words": ["猫"]}', encoding="utf-8")
     nums = arrivals.ArrivalNumbers(worker, lambda: language[0], on_change=got.append, data_path=str(tmp_path / "d"),
-                                   known_file=str(known), plan_token=lambda: 1, run=_sync)
+                                   known_file=str(known), plan_token=lambda: 1, run=_sync, every=0.0)
     nums.want(view.arrivals)
     assert len(worker.asked) == 10 and got == []
     language[0] = "zh"                                                # the switch, the answers still out
@@ -748,7 +799,7 @@ def test_IK_10_answers_are_kept_by_item_plan_and_known_words_and_a_change_asks_a
     plan = [1]
     nums, got, known = _numbers(worker, tmp_path, plan=lambda: plan[0])
     nums.want(view.arrivals)
-    assert wait_until(lambda: len(got) == 10, 3)
+    assert wait_until(lambda: _all_in(got, view), 3)
     known_sig = nums._token[1]
     first = view.arrivals[0].item_ids[0]
     assert (first, "sig-1", known_sig) in nums.kept
@@ -757,8 +808,8 @@ def test_IK_10_answers_are_kept_by_item_plan_and_known_words_and_a_change_asks_a
     plan[0] = 2                                                       # a Generate: a new plan
     worker.plan = "sig-2"
     nums.recheck()
-    assert wait_until(lambda: len(got) == 20, 3)
-    assert len(worker.asked) == 20 and (first, "sig-2", known_sig) in nums.kept
+    assert wait_until(lambda: len(worker.asked) == 20 and nums.answers == 20, 3)
+    assert (first, "sig-2", known_sig) in nums.kept
     assert set(nums.estimates()) == {i for a in view.arrivals for i in a.item_ids}
     time.sleep(0.02)
     known.write_text('{"words": ["猫", "犬", "鳥"]}', encoding="utf-8")   # the known words moved
@@ -784,11 +835,11 @@ def test_a_failed_estimate_shows_nothing_and_isnt_asked_again(tmp_path):
 def test_the_window_asks_each_new_files_estimate_once_and_shows_it_within_300_ms(world):
     worker = FakeWorker(n=8)
     seed, win, _w = world(worker=worker)
-    assert wait_until(lambda: all(r.arrival.per_ep is not None for r in tray_rows(win)), 5)
+    assert wait_until(lambda: all(a.per_ep is not None for a in tray_arrivals(win)), 5)
     assert len(worker.asked) == 10
     t0 = time.perf_counter()
     item_id = _arrive(seed)
-    shown = lambda: any(item_id in r.arrival.item_ids and r.arrival.per_ep == 8 for r in tray_rows(win))  # noqa: E731
+    shown = lambda: any(item_id in a.item_ids and a.per_ep == 8 for a in tray_arrivals(win))  # noqa: E731
     assert wait_until(shown, 5)
     ms = (time.perf_counter() - t0) * 1000
     print(f"an arrival -> its number in the tray: {ms:.0f} ms")
@@ -803,11 +854,13 @@ def test_S2_the_same_answers_again_hand_nothing_on_so_the_reader_builds_nothing(
     worker = FakeWorker()
     nums, got, _k = _numbers(worker, tmp_path)
     nums.want(view.arrivals)
-    assert wait_until(lambda: len(got) == 10, 3)
+    assert wait_until(lambda: _all_in(got, view) and nums.answers == 10, 3)
+    handed = len(got)
     nums.want(view.arrivals, force=True)                              # every file asked again, every answer the same
-    assert wait_until(lambda: len(worker.asked) == 20, 3)
+    assert wait_until(lambda: len(worker.asked) == 20 and nums.answers == 20, 3)
     time.sleep(0.1)
-    assert len(got) == 10
+    nums.flush()
+    assert len(got) == handed
 
 
 def test_S2_a_drag_then_the_tray_opened_asks_no_number_again_and_a_generate_asks_them_all(world, monkeypatch):
@@ -816,7 +869,7 @@ def test_S2_a_drag_then_the_tray_opened_asks_no_number_again_and_a_generate_asks
     monkeypatch.setattr(window_seed._Numbers, "plan_key", lambda self: key[0], raising=False)
     worker = FakeWorker(n=8)
     seed, win, _w = world(worker=worker)
-    assert wait_until(lambda: all(r.arrival.per_ep is not None for r in tray_rows(win)), 5)
+    assert wait_until(lambda: all(a.per_ep is not None for a in tray_arrivals(win)), 5)
     assert len(worker.asked) == 10
     reader = win.services.library
     item = next(iter(seed.numbers.table))
@@ -857,6 +910,217 @@ def test_without_a_library_the_window_has_neither_the_inset_nor_the_tray(qapp):
         services.shutdown(0.5)
 
 
+# --- A4: New arrivals at 20,000 (speed, the stale row, one title in several folders) ---------------------------------- #
+SERIES = {"ja": ("ハリー・ポッター", ("1 賢者の石", "2 秘密の部屋", "3 アズカバンの囚人"), "別の物語"),
+          "zh": ("哈利·波特", ("1 魔法石", "2 密室", "3 阿兹卡班的囚徒"), "另一个故事")}
+
+
+def _series_items(language, base, split=False, work=777000):
+    """A series in New arrivals, one folder per book (two files each) — `split`: all three one piece, another title's
+    file between its runs (as hato's drops leave a show that came in two evenings with something else between)."""
+    title, parts, other = SERIES[language]
+    items, works = [], [{"id": work, "title": title, "media_type": "book"}]
+    k = 0
+    for p, part in enumerate(parts):
+        for e in (1, 2):
+            items.append({"id": base + k, "tier": "arrivals", "ord": -9000.0 + 10 * k, "work_id": work,
+                          "rel_path": f"HighPriority/{title}/{part}/第{e:02d}章.txt", "source_type": "text",
+                          "added_at": f"2026-10-2{p}T10:00:00Z", "parent_folder": f"{title}/{part}",
+                          "piece_id": 880000 if split else 880000 + p})
+            k += 1
+        if split:
+            items.append({"id": base + k, "tier": "arrivals", "ord": -9000.0 + 10 * k, "work_id": work + 1 + p,
+                          "rel_path": f"HighPriority/{other}{p}/01.txt", "added_at": f"2026-10-2{p}T09:00:00Z",
+                          "parent_folder": f"{other}{p}", "piece_id": None, "source_type": "text"})
+            works.append({"id": work + 1 + p, "title": f"{other}{p}", "media_type": "book"})
+            k += 1
+    return items, works
+
+
+def _shown_and_viewed(win):
+    tray = tray_of(win)
+    shown = [(r.key, r.arrival.title, r.arrival.item_ids) for r in tray_rows(win)]
+    viewed = [(a.key, a.title, a.item_ids) for g in tray.groups for a in g.rows]
+    return shown, viewed
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_A4_mattias_7_a_piece_in_two_runs_is_two_rows_and_placing_one_to_goal_leaves_the_tray_as_the_view_says(
+        world, language):
+    # Mattias #7: "After a move to Goal the next row showed 'Harry Potter' again and again until a restart." A piece
+    # whose files another title split in New arrivals gave two rows one key: one row stood for both, and the next row
+    # after a placement kept showing the series. Each run is a row of its own; the tray shows exactly the view.
+    seed, win, writer = world(language)
+    base = max(r["id"] for r in seed.library.items()) + 1
+    items, works = _series_items(language, base, split=True)
+    seed.library.commit(works=works, items=items, order=True)
+    assert wait_until(lambda: sum(len(g.rows) for g in tray_of(win).groups) == 9, 5)
+    tray = open_tray(win)
+    settle()
+    shown, viewed = _shown_and_viewed(win)
+    assert shown == viewed and len({k for k, _t, _i in shown}) == len(shown)
+    series = SERIES[language][0]
+    for _ in range(3):                                                # the series' rows to Goal, one after another
+        row = next(r for r in tray_rows(win) if r.arrival.title == series)
+        placed = set(row.arrival.item_ids)
+        tray.act(row.arrival, "goal")
+        assert wait_until(lambda: not any(placed & set(a.item_ids) for g in tray.groups for a in g.rows), 5)
+        settle()
+        shown, viewed = _shown_and_viewed(win)
+        assert shown == viewed                                        # never a row the view no longer holds
+        assert not any(placed & set(ids) for _k, _t, ids in shown)
+        assert win.arrivals_inset.count == sum(len(ids) for _k, _t, ids in viewed)
+    assert not any(t == series for _k, t, _i in shown)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_A4_one_piece_split_by_another_title_gives_each_run_its_own_key(language):
+    items, works = _series_items(language, 1, split=True)
+    view = view_rows.build({r["id"]: dict(r) for r in items}, {w["id"]: w for w in works}, {"arrivals_on": 1},
+                           language=language)
+    keys = [a.key for a in view.arrivals]
+    assert len(keys) == 6 and len(set(keys)) == 6
+    series = [a for a in view.arrivals if a.title == SERIES[language][0]]
+    assert sorted(i for a in series for i in a.item_ids) == sorted(r["id"] for r in items
+                                                                   if r["work_id"] == 777000)
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_A4_one_title_in_several_folders_names_each_rows_folder_and_a_lone_title_is_unchanged(language):
+    title, parts, _other = SERIES[language]
+    items, works = _series_items(language, 1)
+    lone = {"id": 99, "tier": "arrivals", "ord": 1.0, "work_id": 5, "rel_path": "HighPriority/星の物語/01.txt",
+            "added_at": "2026-10-01T10:00:00Z", "parent_folder": "星の物語", "piece_id": None, "source_type": "text"}
+    view = view_rows.build({r["id"]: dict(r) for r in items + [lone]},
+                           {**{w["id"]: w for w in works}, 5: {"id": 5, "title": "星の物語", "media_type": "book"}},
+                           {"arrivals_on": 1}, language=language)
+    by_folder = {a.folder: a for a in view.arrivals if a.title == title}
+    assert set(by_folder) == {f"{title} › {p}" for p in parts}        # its folder's last two parts, never HighPriority
+    for folder, a in by_folder.items():
+        assert a.parts[0] == (folder, "dim") and folder in a.accessible
+    alone = next(a for a in view.arrivals if a.title == "星の物語")
+    assert alone.folder is None and alone.parts[0] != ("星の物語", "dim")
+    assert view_rows.arrival_folder(["GoalContent/一話.txt"]) is None    # the store's own folder: no name at all
+
+
+def test_A4_a_view_built_again_keeps_each_folder_named_row_the_same_object(world):
+    seed, win, _w = world()
+    items, works = _series_items("ja", max(r["id"] for r in seed.library.items()) + 1)
+    seed.library.commit(works=works, items=items, order=True)
+    assert wait_until(lambda: any(a.folder for a in tray_arrivals(win)), 5)
+    tray = open_tray(win)
+    settle()
+    named = {r.key: r.arrival for r in tray_rows(win) if r.arrival.folder}
+    paints = {k: tray.model.paints[k] for k in named}
+    builds = win.services.library.builds
+    goal = next(r for r in seed.items if r["tier"] == "goal")
+    seed.library.commit(items=[{"id": goal["id"], "watched": 1}])     # a change elsewhere: a new view
+    assert wait_until(lambda: win.services.library.builds > builds, 5)
+    settle(100)
+    assert all(tray.arrival(k) is a for k, a in named.items())          # S19: the same rows, nothing repainted
+    assert {k: tray.model.paints[k] for k in named} == paints
+
+
+def test_A4_S19_a_closed_tray_does_no_row_work_and_opening_brings_its_rows_up_to_date(world):
+    seed, win, _w = world()
+    tray = tray_of(win)
+    open_tray(win)
+    tray.close()
+    settle()
+    keys, paints, model_paints = tray.keys(), dict(tray.model.paints), tray.paints
+    item_id = _arrive(seed)
+    assert wait_until(lambda: any(item_id in a.item_ids for a in tray_arrivals(win)), 5)
+    settle(100)
+    assert tray.keys() == keys and tray.model.paints == paints and tray.paints == model_paints
+    open_tray(win)
+    assert any(item_id in r.arrival.item_ids for r in tray_rows(win))
+    assert [r.key for r in tray_rows(win)][1:] == keys                  # one row inserted: the others as they were
+    assert all(tray.model.paints[k] == paints[k] for k in keys)
+
+
+def test_A4_the_inset_given_the_same_rows_looks_at_nothing_and_its_covers_are_the_newest_in_order():
+    seed = window_seed.build()
+    view = _view(seed)
+    inset = arrivals.ArrivalsInset()
+    assert inset.set_arrivals(view.arrivals, 10)
+    paints = inset.paints
+    assert not inset.set_arrivals(view.arrivals, 10) and inset.paints == paints
+    same = [a._replace(added_at="2026-10-01T00:00:00Z") for a in view.arrivals]      # every stamp equal: the
+    assert arrivals.inset_titles(same) == tuple(a.cover_title or a.title for a in same[:3])   # tray's order kept
+    many = _many_arrivals(2000)                                       # New then Already watched, each newest first:
+    watched = tuple(a._replace(group="watched", added_at=f"2026-10-{1 + k % 28:02d}T09:00:00Z")
+                    for k, a in enumerate(many[:900]))
+    news = tuple(a._replace(added_at=f"2026-10-{1 + k % 28:02d}T10:00:00Z") for k, a in enumerate(many[900:]))
+    tray_order = tuple(sorted(news, key=lambda a: a.added_at, reverse=True)) +         tuple(sorted(watched, key=lambda a: a.added_at, reverse=True))
+    want = sorted(tray_order, key=lambda a: a.added_at or "", reverse=True)[:3]
+    assert arrivals.newest(tray_order) == want                        # each group's head is enough
+
+
+class _Later:
+    """A test's timer: what waits is held until `run`."""
+
+    def __init__(self):
+        self.waiting = []
+
+    def __call__(self, seconds, fn):
+        self.waiting.append((seconds, fn))
+
+    def run(self):
+        held, self.waiting = self.waiting, []
+        for _s, fn in held:
+            fn()
+
+
+class _AtOnce(FakeWorker):
+    def estimate(self, path, placed=(), callback=None, piece=None):
+        self.asked.append((path, placed, piece))
+        callback({"n_new_top": 7, "n_new_after_show": 3 if placed else None, "plan": "p"})
+
+
+def _many_arrivals(n):
+    items = {k: {"id": k, "tier": "arrivals", "ord": float(k), "work_id": 10_000 + k // 4, "piece_id": None,
+                 "rel_path": f"HighPriority/作品{k // 4}/第{k % 4 + 1:02d}話.srt", "parent_folder": f"作品{k // 4}",
+                 "added_at": "2026-10-20T10:00:00Z"} for k in range(1, n + 1)}
+    works = {10_000 + j: {"id": 10_000 + j, "title": f"作品{j}", "media_type": "anime"} for j in range(n // 4 + 1)}
+    return view_rows.build(items, works, {"arrivals_on": 1}).arrivals
+
+
+def test_A4_a_burst_of_answers_is_handed_on_at_most_four_times_a_second_and_the_last_is_never_lost(tmp_path):
+    arrivals_ = _many_arrivals(400)
+    worker, later, now = _AtOnce(), _Later(), [100.0]
+    known = tmp_path / "KnownWord.json"
+    known.write_text('{"words": ["猫"]}', encoding="utf-8")
+    got = []
+    nums = arrivals.ArrivalNumbers(worker, "ja", on_change=got.append, data_path=str(tmp_path / "d"),
+                                   known_file=str(known), plan_token=lambda: 1, run=_sync, later=later,
+                                   clock=lambda: now[0])
+    nums.want(arrivals_)
+    assert nums.answers == 400
+    assert len(got) == 1 and len(got[0]) == 1                         # the first at once, the rest wait their turn
+    assert [s for s, _fn in later.waiting] == [pytest.approx(0.25)]   # one hand-on waiting, never one per answer
+    now[0] += 0.25
+    later.run()
+    assert len(got) == 2 and len(got[-1]) == 400                      # the last answer never lost
+    nums.flush()
+    assert len(got) == 2                                              # nothing moved: nothing handed (S19)
+
+
+def test_A4_each_file_is_asked_by_its_place_in_its_piece_and_the_worker_writes_the_list_it_always_read(tmp_path):
+    from app.services import arrivals as service
+    a = _many_arrivals(8)[0]
+    worker = _AtOnce()
+    nums, _got, _k = _numbers(worker, tmp_path)
+    nums.want([a])
+    asked = worker.asked
+    assert [placed for _p, placed, _piece in asked] == list(range(len(a.item_ids)))
+    assert len({id(piece) for _p, _placed, piece in asked}) == 1      # one tuple the piece's asks share
+    piece = asked[0][2]
+    request = {"id": 3, "op": "estimate", "path": piece[2], "placed": 2, "piece": piece}
+    assert service._written(request) == {"id": 3, "op": "estimate", "path": piece[2], "placed": list(piece[:2])}
+    listed = {"id": 4, "op": "estimate", "path": piece[1], "placed": [piece[0]]}
+    assert service._written(listed) is listed                         # the list form as before
+
+
 # --- the real store ----------------------------------------------------------------------------------------------- #
 from tests.qt.test_drag import real  # noqa: E402,F401
 
@@ -874,7 +1138,7 @@ def test_real_store_the_icon_places_it_at_the_top_and_undo_puts_it_back(real):
     assert wait_until(lambda: win.arrivals_tray.groups, 10)
     open_tray(win)
     row = next(r for r in tray_rows(win) if ids[0] in r.arrival.item_ids)
-    row.icon.click()
+    row.click("icon")
     assert wait_until(lambda: store.place_of(ids[0])[0] == "now", 5)
     assert store.place_of(ids[0])[1] == 1
     assert wait_until(lambda: writer.can_undo() and not win.moves.tickets, 5)

@@ -85,9 +85,14 @@ class ArrivalsWorker:
         self._closed = False
 
     # --- asking ----------------------------------------------------------------------------------------------------- #
-    def estimate(self, path, placed=(), callback=None):
+    def estimate(self, path, placed=(), callback=None, piece=None):
         """Ask for the estimate of the file at `path` (`placed`: the files placed since the plan, paths or
-        {"path", "tier", "before", "after"}). -> the request's id, at once."""
+        {"path", "tier", "before", "after"}; or, with `piece` — a show's paths, one tuple its files' asks share — an
+        index: the piece's first `placed` files, A4: held as the index and expanded only as it is written, so the
+        worker reads the same request and keeps its answer under the same key). -> the request's id, at once."""
+        if isinstance(placed, int) and not isinstance(placed, bool):
+            return self._ask({"op": "estimate", "path": os.fspath(path), "placed": placed, "piece": piece or ()},
+                             callback)
         placed = [os.fspath(p) if not isinstance(p, dict) else dict(p, path=os.fspath(p["path"])) for p in placed]
         return self._ask({"op": "estimate", "path": os.fspath(path), "placed": placed}, callback)
 
@@ -190,7 +195,7 @@ class ArrivalsWorker:
             sent.add(rid)                           # before writing: a worker that ends now is asked again after
             sent_at[rid] = now
             try:
-                proc.stdin.write((json.dumps(entry[0], ensure_ascii=False) + "\n").encode("utf-8"))
+                proc.stdin.write((json.dumps(_written(entry[0]), ensure_ascii=False) + "\n").encode("utf-8"))
                 proc.stdin.flush()
             except (OSError, ValueError):
                 break                               # it is ending: what it held is settled below
@@ -284,6 +289,17 @@ class ArrivalsWorker:
             callback(answer)
         except Exception as e:                          # a listener's fault never stops the reader
             print(f"Arrivals: a listener failed: {e}")
+
+
+def _written(request):
+    """A request as the worker reads it: an index into its piece (`estimate(..., placed=k, piece=)`) becomes the
+    piece's first k paths — the same request the list form writes."""
+    placed = request.get("placed")
+    if not isinstance(placed, int) or isinstance(placed, bool):
+        return request
+    out = {k: v for k, v in request.items() if k != "piece"}
+    out["placed"] = [os.fspath(p) for p in tuple(request.get("piece") or ())[:placed]]
+    return out
 
 
 def _end_soon(proc):

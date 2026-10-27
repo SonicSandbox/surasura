@@ -532,7 +532,8 @@ class SourceLooks:
                             store.join_moved(root_id, row["path"])
                             answer["joined"] = max(0, before - held())   # its own look's joins (D5) counted too
                             answer["stop"] = old["on"] and answer["joined"] > 0     # A7: none there, nothing stops
-                        if new and root != root_id and not answer["joined"] and not answer.get("later") and                                 answer["state"] == sources.GONE:
+                        if (new and root != root_id and not answer["joined"] and not answer.get("later")
+                                and answer["state"] == sources.GONE):
                             answer["dropped"] = bool(store.stop_source(root))   # T6 option 2: a folder this press
                             #                                                     added that held none of them
                         self._follow_watches(store.sources(counts=False))

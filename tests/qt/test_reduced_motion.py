@@ -20,7 +20,6 @@ What a wrong answer would cost a learner who turned motion down (often for a rea
   * a setting that only applies after a restart, or a motion that runs on to its end after the switch.
 """
 import ast
-import ctypes
 import os
 import sys
 import time
@@ -29,7 +28,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6 import sip
-from PyQt6.QtCore import QByteArray, QEvent, QPoint, QPointF, Qt
+from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
@@ -637,18 +636,14 @@ def window_on_test_time(qapp):
     services.shutdown(0.5)
 
 
-def _windows_says(msg_wparam=motion.SPI_SETCLIENTAREAANIMATION):
-    """Windows' WM_SETTINGCHANGE for its animation switch, handed to the app's own filter (never Windows' setting)."""
-    from ctypes import wintypes
-    state = QApplication.instance()._surasura_motion
-    msg = wintypes.MSG()
-    msg.message = motion.WM_SETTINGCHANGE
-    msg.wParam = msg_wparam
-    state["filter"].nativeEventFilter(QByteArray(b"windows_generic_MSG"), sip.voidptr(ctypes.addressof(msg)))
-    _settle(3)                                             # (the filter tells the mode on the loop's next turn)
+def _back_to_front():
+    """The app comes back to the front — how a change of Windows' animation switch reaches it now (the switch lives in
+    Windows' Settings, so the app is behind while it changes; no native filter hears Windows' message, A4 P-gil)."""
+    QApplication.instance().applicationStateChanged.emit(Qt.ApplicationState.ApplicationInactive)
+    QApplication.instance().applicationStateChanged.emit(Qt.ApplicationState.ApplicationActive)
+    _settle(3)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows' message")
 def test_live_flip_windows_turns_animations_off_mid_move_mid_fade_mid_loop_and_everything_lands(window_on_test_time):
     win, services, c = window_on_test_time
     windows = {"on": True}
@@ -660,11 +655,11 @@ def test_live_flip_windows_turns_animations_off_mid_move_mid_fade_mid_loop_and_e
     c.advance(48)
     flip.check_running()
     windows["on"] = False                                  # Windows' *Show animations* turned off …
-    _windows_says()                                        # … and its message to the app's own filter
+    _back_to_front()                                       # … and the app comes back to the front
     assert c.mode.reduced
     flip.check_landed()
     windows["on"] = True                                   # back on: nothing restarts (only the busy mark's pulse)
-    _windows_says()
+    _back_to_front()
     assert not c.mode.reduced
     assert [a for a in c.active if a is not flip.spinner._anim] == [] and flip.card.isVisible()
     flip.release()
@@ -712,44 +707,29 @@ def test_back_to_full_a_landed_move_stays_landed(qapp):
 
 
 # --- the switch: the filter, the activation, the overrides ---------------------------------------------------------- #
-def test_the_filter_is_installed_only_while_the_setting_follows_windows(qapp, monkeypatch):
+def test_no_native_filter_listens_to_windows_messages_under_any_setting(qapp, monkeypatch):
+    """A4 P-gil: Follow Windows costs nothing per Windows message — no native event filter is installed, whatever the
+    setting (one saw every message, ~8 µs each in Python under Python's lock, only to catch the animation switch); the
+    install is one connection however often it runs: one coming back to the front is one read of Windows."""
     app = QApplication.instance()
-    old = getattr(app, "_surasura_motion", None)
-    if old is not None and old["installed"]:
-        app.removeNativeEventFilter(old["filter"])
-    monkeypatch.delattr(app, "_surasura_motion", raising=False)
+    installed = []
+    monkeypatch.setattr(app, "installNativeEventFilter", lambda f: installed.append(f), raising=False)
     mode = motion.clock().mode
-    was = mode.setting
+    was, reader = mode.setting, mode._reader
+    reads = []
     try:
-        mode.set_setting("follow")
-        motion.install_mode_filter(app)
-        state = app._surasura_motion
-        windows = sys.platform == "win32"
-        assert state["installed"] is windows
-        mode.set_setting("full")
-        assert state["installed"] is False
-        mode.set_setting("reduced")
-        assert state["installed"] is False
-        mode.set_setting("follow")
-        assert state["installed"] is windows
-        assert motion.install_mode_filter(app) is state["filter"]          # idempotent: one filter
-        # a clock made again (a test's teardown deletes the app's children) is followed by the next window's install
-        monkeypatch.setattr(motion, "_clock", None)
-        fresh = motion.clock().mode
-        fresh.set_setting("follow")
-        assert motion.install_mode_filter(app) is state["filter"]
-        fresh.set_setting("full")
-        assert state["installed"] is False
-        fresh.set_setting("follow")
-        assert state["installed"] is windows
+        mode._reader = lambda: reads.append(1) or True
+        for setting in ("follow", "full", "reduced", "follow"):
+            mode.set_setting(setting)
+            motion.install_mode_filter(app)
+        assert installed == []
+        app.applicationStateChanged.emit(Qt.ApplicationState.ApplicationInactive)
+        assert reads == []                                 # going behind reads nothing
+        app.applicationStateChanged.emit(Qt.ApplicationState.ApplicationActive)
+        assert reads == [1]                                # once, though installed four times
     finally:
-        motion.clock().mode.set_setting("follow")
+        mode._reader = reader
         mode.set_setting(was)
-        state = getattr(app, "_surasura_motion", None)
-        if state is not None and state["installed"]:
-            app.removeNativeEventFilter(state["filter"])
-        if old is not None and old["installed"]:
-            app.installNativeEventFilter(old["filter"])
 
 
 def test_coming_back_to_the_front_reads_windows_again(window_on_test_time):

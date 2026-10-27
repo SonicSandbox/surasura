@@ -8365,8 +8365,8 @@ def _origin_record(root_id, origin, f):
     record = {"producer": SOURCE_PRODUCER, "channel_id": root_id, "root": root_id, "origin": origin,
               "size": f.get("size"), "mtime_ns": f.get("mtime_ns"), "sha256": f.get("sha256"),
               "show": {"title": str(f.get("show") or "")}}
-    for key in ("video_path", "video_size", "video_key", "episode"):
-        if f.get(key) is not None:
+    for key in ("video_path", "video_size", "video_key", "episode", "chapter"):   # chapter: a book's part's place
+        if f.get(key) is not None:                                                  # (`extract.book_split`, Hon)
             record[key] = f[key]
     return record
 
@@ -10342,7 +10342,8 @@ def _store_switch_parts(self, root_id, parts, extras=(), surplus=(), by=SOURCE_P
                 part = _trash_name(rel, f"{token}x{n}")
                 _stage(self, part, x["data"])
                 staged.append(part)
-            found = {k: x[k] for k in ("origin", "size", "mtime_ns", "sha256", "show", "episode") if k in x}
+            found = {k: x[k] for k in ("origin", "size", "mtime_ns", "sha256", "show", "episode", "chapter")
+                     if k in x}
             more.append({"rel": rel, "part": part, "sha256": sha, "bytes": len(x["data"]),
                          "found": dict(found, rel=rel)})
     except OSError as e:                                     # an old part unreadable, the trash unwritable: waits

@@ -495,7 +495,7 @@ def _epub(path, chapters, language, age=60):
 def _parts(path, language):
     parts, why = sources.book_parts(path, language)
     assert why is None
-    return parts
+    return [p.data for p in parts]
 
 
 def _book(language, src):
@@ -533,9 +533,9 @@ def test_a_new_edition_beside_the_book_is_switched_whole_in_place(language, monk
         assert len(_trash(data_dir)) == len(before)
         from app import extract
         opened = []
-        real_chunks = extract.chunks_of
+        real_chunks = extract.parts_of
         with monkeypatch.context() as patched:
-            patched.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or real_chunks(*a, **k))
+            patched.setattr(extract, "parts_of", lambda *a, **k: opened.append(a[0]) or real_chunks(*a, **k))
             again = _look(store, language, root, full=True)
         assert (again["added"], again["switched"], opened) == (0, 0, []), "neither edition is split again"
         undone = store.undo(changes[0])
@@ -679,7 +679,7 @@ def test_another_volume_is_never_an_edition_and_one_splitter_reads_every_book(la
     _book(language, src)
     split = []
     real = sources.book_parts
-    monkeypatch.setattr(sources, "book_parts", lambda p, lang: split.append(os.path.basename(p)) or real(p, lang))
+    monkeypatch.setattr(sources, "book_parts", lambda p, lang, **kw: split.append(os.path.basename(p)) or real(p, lang, **kw))
     with store:
         root = store.add_source(src)
         _look(store, language, root, first=True)
@@ -987,3 +987,76 @@ def test_a_switch_onto_another_items_file_name_is_held_and_a_free_name_is_taken(
         assert ls._switch_rel(store, rel, os.path.join(src, show, other_name), first) is None, "the other episode's file holds"
         free = os.path.join(src, show, f"{show} - 03.{t}.ass")
         assert ls._switch_rel(store, rel, free, first) == folder + "/" + os.path.basename(free), "a free name is taken"
+
+
+# --- books split by their chapters (Hon, alpha 4) --------------------------------------------------------------------- #
+def _chapter_records(store):
+    """{part number: its record's "chapter"} of the book's parts' records (its own text's, never a version)."""
+    out = {}
+    for key, text in _records(store).items():
+        record = json.loads(text)
+        if "#" in key and record.get("chapter") is not None and not record.get("version"):
+            out[int(key.rpartition("#")[2])] = record["chapter"]
+    return out
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_book_is_split_by_its_chapters_and_each_part_records_its_place(language):
+    """A book whose TOC names its three chapters: one part each, named by its chapter (a TOC label that is a number
+    alone reads *Chapter N*), each origin record holding where its part sits — its chapter, documents and offsets —
+    for Anki Miner's book and audiobook results to be placed on."""
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    book = _book(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        names = [rel.rsplit("/", 1)[-1] for _i, rel in _items(store)]
+        base = _BOOKS[language]
+        assert names == [f"{base}_01 (1).txt", f"{base}_02 (2).txt", f"{base}_03 (3).txt"]
+        chapters = _chapter_records(store)
+        assert sorted(chapters) == [1, 2, 3]
+        for n, rec in chapters.items():
+            assert (rec["by"], rec["chapter"], rec["title"], rec["part"], rec["parts"]) == ("toc", n, str(n), 1, 1)
+            assert rec["hrefs"] == [f"EPUB/c{n}.xhtml"] and rec["docs"] == [n - 1, n - 1] and rec["start"] == 0
+        parts = sources.book_parts(book, language)[0]
+        assert [_copy(data_dir, rel) for _i, rel in _items(store)] == [p.data for p in parts]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_even_parts_chosen_name_a_new_book_as_before(language, monkeypatch):
+    """*Split books by: Even parts*: today's split and names (`<book>_01.txt` …); the records still say where each part
+    sits (by "even")."""
+    from app import extract
+    monkeypatch.setattr(extract, "_settings_by", lambda: "even")
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    book = _book(language, src)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        names = [rel.rsplit("/", 1)[-1] for _i, rel in _items(store)]
+        text, _ = extract.convert_epub_to_text(book)
+        count = len(extract.split_by_length(text, extract.DEFAULT_LENGTH))
+        assert names == sources.part_names(_BOOKS[language], count) and len(names) >= 2
+        assert {rec["by"] for rec in _chapter_records(store).values()} == {"even"}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_books_new_edition_keeps_the_split_the_book_was_made_with(language, monkeypatch):
+    """An existing book (cut in even parts, as every book before chapters) whose new edition arrives after the setting
+    became Chapters: the edition is cut in even parts too, so part n pairs with part n and every name stays."""
+    from app import extract
+    monkeypatch.setattr(extract, "_settings_by", lambda: "even")
+    store, data_dir = _empty(language)
+    src = _drive("Shelf")
+    _book(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        before = _items(store)
+        monkeypatch.setattr(extract, "_settings_by", lambda: "chapters")
+        new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
+        result = _look(store, language, root)
+        assert result["switched"] == len(before) and _items(store) == before
+        assert [_copy(data_dir, rel) for _i, rel in before] == [p.data for p in
+                                                                 sources.book_parts(new, language, by="even")[0]]
+        assert {rec["by"] for rec in _chapter_records(store).values()} == {"even"}

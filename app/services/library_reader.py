@@ -14,12 +14,18 @@ library store, on a plain thread of its own — never the window's thread.
 - **The store's state** (02 §2.4): `store` → the live rows; `json` → *Getting ready* (rows read-only from the opener's
   fallback, the last copy, when it has one); `read-only` → the rows with the store's reason. A read that fails (the
   store busy, a raw database error) keeps the last view, marked busy, and tries again at the next poll.
-- **Python's collector** (`freeze_gc`, off by default; the window process turns it on — `tests/qt/try_screens.py`, the
-  bench — and the tests leave it off, so a test's own cycles are still collected): after each view is built, everything alive is moved out of the collector's
-  sight (`gc.freeze()`). The library copy and the view are large (hundreds of thousands of objects at 20,000 files),
-  long-lived and free of cycles (refcounting frees an old view the moment the window lets go of it); a full collection
-  walking them holds Python's lock — every thread, the window's too — for as long as the walk takes
-  (`tests/qt/bench_scroll.py` measures it, with and without).
+- **Python's collector** (`freeze_gc`, off by default; the window process turns it on — `shell.main`,
+  `tests/qt/try_screens.py`, the benches — and the tests leave it off, so a test's own cycles are still collected): after
+  each view is built, everything alive is moved out of the collector's sight (`gc.freeze()`). The library copy and the
+  view are large (hundreds of thousands of objects at 20,000 files), long-lived and free of cycles (refcounting frees an
+  old view the moment the window lets go of it); a full collection walking them holds Python's lock — every thread, the
+  window's too — for 40–75 ms at 20,000 files, whichever thread's allocation set it off (A4 P-gil:
+  `tests/qt/bench_gil.py` measures it; every window tick late by more than 16 ms behind a background job was one).
+  A look whose build will be frozen pauses the collector until then (`_pause_gc`: the build's own allocations set off
+  full collections too). A reader's stop gives everything back to the collector (`gc.unfreeze()`), so a library a
+  language switch let go is freed; the next reader then never freezes its first view (the switch still holds the old
+  library while it is built) and collects once before its first freeze (`_freeze`: the old library, let go by then, is
+  freed, never frozen).
 - **The numbers** (*% known*, *N new*) come from a provider (the plan engine from W3.1; the seed's plan here):
   `numbers()` → (version, {item_id: (known_tokens, counted_tokens, n_new)}); a new version rebuilds the rows holding the
   items it changed when the provider says which (`numbers.changed(since)`, W3.1a's `moves.Numbers`: a drop moves *N new*
@@ -59,6 +65,7 @@ import time
 from app.services import view_rows
 
 POLL_S = 0.1                     # the store's FEED_POLL
+_THAWED = [False]                # A4 P-gil: a reader stopped since the last freeze (its library may still be held)
 MODE_RECHECK_S = 2.0             # while the store can't be used, its mode is asked again this often
 CACHE_LATEST_S = 5.0             # the first screen's cache waits for a quiet look at most this long
 CARDS_ALL_S = 2.0                # every item's cards asked again at most this often (between, only what changed)
@@ -346,12 +353,19 @@ class LibraryReader:
         except Exception:
             pass                                    # a cache that can't be read is no cache
         while not self._stop.is_set():
+            paused = self._pause_gc()               # A4 P-gil
             try:
                 self._look()
             except Exception as e:                  # never dies of a read: the last view, marked busy
                 self._busy(e)
+            finally:
+                if paused:
+                    gc.enable()
             self._wait()                            # W3.2 B: the bell, the watch or a retry (no watch: `poll`)
         self._unwatch()                             # W3.2 B
+        if self.freeze_gc:                          # A4 P-gil: what it froze back in the collector's sight (a library
+            gc.unfreeze()                           # a switch lets go is freed, its cycles too)
+            _THAWED[0] = True
         if self.play is not None:
             self.play.close()                       # row 55: its worker ends (a look running finishes first)
         try:
@@ -467,7 +481,7 @@ class LibraryReader:
         view = self._build(numbers, mode, reason, rows_known=True)
         self._publish(view)
         if self.freeze_gc:
-            gc.freeze()
+            self._freeze()                              # A4 P-gil
         if mode == "store" and self.cache_file:
             # written at the next look that finds nothing new, not now: the window is taking this view in at this
             # very moment, and the cache's JSON would hold Python's lock against it (speed round 5)
@@ -852,6 +866,27 @@ class LibraryReader:
             out[t] = rows
         self._overlay_tiers = lists
         return items, out
+
+    def _pause_gc(self):
+        """(A4 P-gil) A look whose build will be frozen pauses the collector until it is: the read and the build make
+        the library's objects anew (a full read: hundreds of thousands), and each full collection they set off walked
+        them all under Python's lock (34-43 ms at 20,000 files, up to 110 ms at 60,000, two to seven in a first view).
+        The freeze then takes them out of the collector's sight uncounted. -> whether it paused it."""
+        if not self.freeze_gc or not gc.isenabled() or (_THAWED[0] and self.builds < 1):
+            return False                            # (after a switch the first view isn't frozen: never paused)
+        gc.disable()
+        return True
+
+    def _freeze(self):
+        """(A4 P-gil) Everything alive moved out of the collector's sight after a build — but after another reader's stop
+        (a language switch), never at this reader's first view (the switch still holds the library it left), and the
+        first freeze after it collects first, so that library, let go by then, is freed rather than frozen."""
+        if _THAWED[0]:
+            if self.builds < 2:
+                return
+            gc.collect()
+            _THAWED[0] = False
+        gc.freeze()
 
     def _owed_cache(self):
         """(H-T2) At the stop, a cache owed while the window's command still waits: the store's own view (built without

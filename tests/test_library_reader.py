@@ -1186,3 +1186,76 @@ def test_LM11b_two_finishes_waiting_on_a_busy_store_take_both_shows_off_current(
     keys = [r.key for r in view.rows]
     assert a.key not in keys and b.key not in keys
     assert _finished_row(view, a.key) is not None and _finished_row(view, b.key) is not None
+
+
+class _Left:
+    """A library object in a reference cycle (as the numbers' are), freed only by a collection."""
+
+
+def test_A4_the_collector_freeze_never_keeps_a_library_a_switch_left_while_it_was_still_held(monkeypatch):
+    """A4 P-gil: the window process freezes Python's collector after each view (a full collection walking the library
+    held the window 40-75 ms at 20,000 files). A reader's stop thaws it; the next reader never freezes its first view
+    (the switch still holds the library it left then) and collects once before its first freeze — so a cycle of the
+    left library, let go after the new reader's first view, is freed without anyone else collecting."""
+    import gc
+    import weakref
+    monkeypatch.setattr(library_reader, "_THAWED", [False], raising=False)     # this process: no reader stopped yet
+    seed, other = window_seed.build(), window_seed.build(language="zh")
+    left = _Left()
+    left.me = left                                        # a cycle: refcounting alone never frees it
+    gone = weakref.ref(left)
+    held = [left]                                         # the switch still holds the left library
+    del left
+    first = _reader(seed, freeze_gc=True)
+    views, _got = _collect(first)
+    first.start()
+    try:
+        assert _wait(lambda: views and views[-1][1].state == "full")
+        assert _wait(lambda: gc.get_freeze_count() > 0), "the first view frozen (no reader stopped before it)"
+        first.stop()
+        assert gc.get_freeze_count() == 0, "the stop gives everything back to the collector"
+        second = _reader(other, freeze_gc=True)
+        views2, _got2 = _collect(second)
+        second.start()
+        assert _wait(lambda: views2 and views2[-1][1].state == "full")
+        assert gc.get_freeze_count() == 0, "never frozen at the first view after a switch"
+        held.clear()                                      # the switch lets go of the old library
+        hero = next(r for r in other.items if r["tier"] == "now")
+        other.library.commit(items=[dict(hero, ord=hero["ord"] - 0.5)], order=True)
+        assert _wait(lambda: second.builds >= 2 and gc.get_freeze_count() > 0)
+        assert gone() is None, "the first freeze after the switch collected the left library first"
+        second.stop()
+    finally:
+        first.stop()
+        gc.unfreeze()
+
+
+def test_A4_a_build_that_will_be_frozen_runs_with_the_collector_paused_and_gives_it_back(monkeypatch):
+    """A4 P-gil: the read and build of a view that will be frozen never set off a full collection (each walked the whole
+    library under Python's lock: 34-43 ms at 20,000 files, two or three in a first view) — the collector is paused for
+    that look and on again after it, the freeze having taken the new objects out of its sight; a reader that doesn't
+    freeze (the tests', any other process's) never touches it."""
+    import gc
+    seen = []
+    real = view_rows.build
+    monkeypatch.setattr(library_reader, "_THAWED", [False], raising=False)
+
+    def build(*a, **k):
+        seen.append(gc.isenabled())
+        return real(*a, **k)
+    monkeypatch.setattr(view_rows, "build", build)
+    for freeze in (False, True):
+        seen.clear()
+        seed = window_seed.build()
+        reader = _reader(seed, freeze_gc=freeze)
+        views, _got = _collect(reader)
+        reader.start()
+        try:
+            assert _wait(lambda: views and views[-1][1].state == "full")
+            assert _wait(lambda: gc.isenabled()), "on again after the look"
+            assert seen and seen[-1] is (not freeze), "paused only for a build that will be frozen"
+        finally:
+            reader.stop()
+            gc.unfreeze()
+            library_reader._THAWED[0] = False             # (the next reader here is a first one again)
+    assert gc.isenabled()

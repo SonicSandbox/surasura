@@ -216,6 +216,17 @@ DOWNLOADING_NAME = "Downloading Anki Miner"
 CANCEL_DOWNLOAD = "Cancel"
 CANCEL_DOWNLOAD_TIP = "Stop the download. Nothing is left behind."
 MINER_CHECK_TIP = "Look for Anki Miner again, once it's installed or set up."
+# A4M1-2 (lean taken, PROVISIONAL): Surasura runs Anki Miner's own setup — never "open Anki Miner"
+FINISH_SETUP = "Finish its setup"
+FINISH_SETUP_TIP = ("Anki Miner downloads its dictionaries by itself, as its own setup does.\n"
+                    "• Nothing to open: it runs in the background, a few minutes")
+SETUP_SAID = {"set-up": "Anki Miner's setup is finished.",
+              "busy": "Anki Miner or Surasura's card making is running: Anki Miner's setup waits until it's done. "
+                      "Try again then.",
+              "failed": "Anki Miner's setup didn't finish: {detail}",
+              "missing": "Anki Miner isn't installed where Surasura looked.",
+              "ready": "Anki Miner's setup is already finished.",
+              "rest": "Anki Miner's dictionaries are in. Still to do in Anki Miner: {detail}"}
 DOTS = ("Anki", "AnkiWeb", "Anki Miner", "Its setup")
 DOT_STATE = {"ok": "ready", "warn": "needs you", "off": "not yet"}
 DOT_NAME = "{name}: {state}"

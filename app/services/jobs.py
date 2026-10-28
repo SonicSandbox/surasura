@@ -70,6 +70,12 @@ RESOURCES = {
     # never two of the kind in the table's sense; the route's own lock is what keeps one at a time (a second is "busy").
     # Beside everything: it touches no file the others write.
     "anki-miner-install": set(),
+    # A4M1-2: Anki Miner's own `setup` run by Surasura (the wizard's *Finish its setup*): its route shares the
+    # install's lock (one at a time, never beside an install); beside everything else.
+    "anki-miner-setup": set(),
+    # IK-6: the window's start look at Anki (Q4-4, *Open Anki for me*): its session's sync is Anki's own, its
+    # known-words sync a job of its own after it — beside everything
+    "anki-session": set(),
 }
 
 Progress = namedtuple("Progress", "step done total")

@@ -445,14 +445,14 @@ ROWS_MOVE_TIP = {"up": "Move up one\n• Click to move it up one place",
 # does), one string with the count as the toasts' (`MAKE_CARDS_QUEUED`): {one file?: words}
 ROWS_WAITING_TIP = "{label}\n{tip}"                  # row 38: *Waiting* is its icon alone; its hover names it first
 ROWS_MINE_NOW_TIP = {True: "{tip}\n• Click to mine it now", False: "{tip}\n• Click to mine its {n} waiting files now"}
-# --- P4.1 L2: the stones' actions (4.1.11): Mine this, No video's Link… · Mine text, and why nothing happens while
+# --- P4.1 L2: the stones' actions (4.1.11): Mine this, No video's Link… (alpha 4 M1: no Mine text), and why nothing happens while
 # Connect is off (IK S7); the window's routing (`app/qt/mine_actions.py`)
 ROWS_MINE_THIS_TIP = {True: "{tip}\n• Click to mine it now", False: "{tip}\n• Click to mine its {n} files now"}
-ROWS_NO_MEDIA_TIP = "{tip}\n• Click to link its video, or to mine its text in Anki Miner"
-ROWS_NO_MEDIA_MOVED_TIP = "{tip}\n• Click to find its folder, link its video, or mine its text in Anki Miner"   # MV-2
+ROWS_NO_MEDIA_TIP = "{tip}\n• Click to link its video"
+ROWS_NO_MEDIA_MOVED_TIP = "{tip}\n• Click to find its folder or link its video"   # MV-2
 ROWS_ACTION_OFF = "{tip}\n{why}"
 ROWS_ACTION_KEY = "→ then Enter: {action}"
-ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link… or Mine text"}
+ROWS_ACTION_NAMES = {"mine-now": "Mine now", "mine-this": "Mine this", "no-media": "Link…"}
 # round 8 row 45 (trial): *Mine now* pressed — its pill turns from the frame of the press until Connect says more; its
 # hover is the one place words show (Sonic: "there are sometimes when text may be useful but be intentional")
 ROWS_ASKED_TIP = "Asked · starting…"
@@ -470,8 +470,6 @@ MINE_STOP_TOO_LATE = "Too late to stop: its cards are already being finished"
 # --- end R47
 ROWS_LINK = "Link…"
 ROWS_LINK_TIP = "Choose its video: its cards get their pictures and audio from it"
-ROWS_MINE_TEXT = "Mine text"
-ROWS_MINE_TEXT_TIP = "Open Anki Miner to mine its text by hand: its file's path is copied for you"
 # MV-2 (Sonic: yes, 2026-10-23): an episode whose video left the folder it was in (Connect's line names it). The
 # folder you pick is added as one Surasura reads (Settings' *Add a folder…*, the one way in); the show then finds its
 # episodes there, never as a second show (MV-1)
@@ -492,15 +490,18 @@ MINE_ASKED_N_VIDEOS = {True: "1 video: its cards come next · Anki Miner mines v
 # left to ask for; a gap's *Make their cards* as Connect's ordinary work (D-1 lean (a)), counted, no title pasted
 MINE_ASKED_ONE = "1 file: its cards come next"
 MINE_NOTHING = "Nothing to ask for: their cards are in Anki already, being made, or were deleted"
-ROWS_MINE_TEXT_THIS_TIP = "{tip}\n• Click to mine its text by hand in Anki Miner"
 MAKE_CARDS_QUEUED = {True: "1 episode's cards come next", False: "{n} episodes' cards come next"}
 MAKE_CARDS_NONE = "Nothing left to make: Connect has each of those episodes already"
 MAKE_CARDS_GONE = "Connect has no record of those episodes now: nothing was made"
 # --- end P4.1 WF
-MINE_TEXT_COPIED = ("Anki Miner is opening · {name}'s path is copied: paste it there to mine its text. Connect waits "
-                    "while Anki Miner's window is open")
-MINE_TEXT_NO_MINER = "Anki Miner isn't installed: set it up in Settings, then Mine text"
-MINE_TEXT_NOT_OPENED = "Couldn't open Anki Miner: {path}"
+# alpha 4 M1: a book's or a text's *Mine* while Anki Miner reads no book — never its window
+MINE_BOOKS_WAIT = ("Anki Miner makes cards from videos only for now: Connect makes these cards by itself once it can "
+                   "read books and texts")
+# IK-6: the window's start look at Anki (its line in the bar while it runs; *Opening Anki for you…* says the rest)
+SESSION_JOB_LABEL = "Looking at Anki"
+# A4M1-3: an audiobook's or a podcast's *Mine*, the same way
+MINE_AUDIO_WAIT = ("Anki Miner makes cards from videos only for now: Connect makes these cards by itself once it can "
+                   "mine audio")
 LINK_TITLE = "Choose the video for {label}"
 LINK_FILTER = "Videos ({patterns})"
 LINKING_ONE = "Linking {label}'s video"
@@ -1239,7 +1240,6 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                       "next Generate"),
     "leave_known": ("Leave them", "Their words stay as they are, and these cards stop asking. Cards you suspend or "
                                   "mark from now on still count"),
-    "mine_text_only": ("Mine the text only", "Make its cards from the subtitles alone, with no picture or audio"),
     "open_logs": ("Open the logs folder", "Open the folder where Surasura keeps its logs, to look at them or send them"),
     "save_logs": ("Save logs to a file…", "Save the last week's logs into one zip file you can send"),
     # T6: a gone source folder's card (Sonic 2026-10-24)

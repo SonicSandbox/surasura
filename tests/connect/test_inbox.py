@@ -255,3 +255,25 @@ def test_a_look_that_finds_nothing_new_writes_nothing_to_the_ledger(monkeypatch)
     assert out["read"] == 0 and out["queued"] == [] and out["dropped"] == []
     with Ledger() as ledger:
         assert ledger.last_read("ja") == stamp, "an idle look leaves the last-read stamp alone"
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_a_gap_never_names_a_book_while_anki_miner_reads_none(lang):
+    """Alpha 4 M1 (review A-5 / IK #3): a gap's card ("N episodes … have no cards yet", *Make their cards*) lists the
+    top-20 items with no cards — never a book or a text, of which Connect makes no job until Anki Miner reads books;
+    a subtitle in the same line still is."""
+    from app.connect import library
+    _library(lang, line=4)
+    _consume(lang)
+    with c.store(lang) as s:
+        last = s.ids("now")[-1]
+        library.place(s, last, "now", before_id=s.ids("now")[0], source="user")    # logged after the watermark …
+        with s._writing():                                  # … then the log pruned past it
+            s.conn.execute("DELETE FROM placement_log")
+        line = library.mine_line(s)
+        texts = [i for i in line if library.text_only(s.item(i))]
+        others = [i for i in line if i not in texts]
+    assert texts and others, "the suite's library puts a .txt and a subtitle in the top 4"
+    out = _consume(lang)
+    assert out["reconciled"] is True
+    assert not set(texts) & set(out["missed"]) and set(others) <= set(out["missed"])

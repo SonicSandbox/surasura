@@ -770,6 +770,58 @@ def test_anki_miner_needing_a_fix_shows_its_amber_dot_its_sentence_and_check_aga
     # the shared rule's *ready* answer (`services.tools_found`), never the *installed* one Settings asks
     assert page.make.isHidden() and not page.offered() and page.answers() == {"make_cards": None, "open_anki": None}
     assert page.open_anki.isHidden()
+    assert page.btn_setup.isHidden(), "a setup Surasura can't finish itself offers no Finish its setup"
+
+
+def test_A4M1_2_finish_its_setup_runs_anki_miners_own_setup_as_a_job_then_says_so_and_looks_again(make):
+    """A4M1-2 (lean taken, PROVISIONAL; Sonic: "I honestly don't want to ever have to open anki miner. Ever."): a
+    setup only Anki Miner's own `setup` lacks (its dictionaries) offers *Finish its setup*, never "open Anki Miner";
+    the press runs it on a worker as a job (the bar lists it), its arc turning, a second press meanwhile starting
+    nothing; then the bar says it's finished and the page looks again."""
+    import threading
+    from app.connect import setup as connect_setup
+    gate = threading.Event()
+    fix = {"say": "Anki Miner still needs its dictionaries (dictionary: No dictionary is installed.).",
+           "do": connect_setup.SETUP_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    runs = []
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None):
+        runs.append(language)
+        gate.wait(5)
+        return ("set-up", None)
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, *_ = make(miner=miner)
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None)
+    assert not page.btn_setup.isHidden() and page.btn_install.isHidden()
+    assert "Open Anki Miner" not in page.sub.text() and page.btn_setup.toolTip() == S.FINISH_SETUP_TIP
+    looks = miner.looks
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: runs == ["ja"]) and qpress.arc(page.btn_setup) is not None
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)          # while it runs: nothing more
+    gate.set()
+    assert wait_until(lambda: not wiz.setting_up and miner.looks >= looks + 1)
+    assert runs == ["ja"] and qpress.arc(page.btn_setup) is None
+
+
+def test_A4M1_2_a_setup_that_didnt_finish_is_said_and_not_offered_again(make):
+    """Review A2-3 / A2-5: a setup that ran but didn't finish says why in the bar, and the page no longer offers it
+    this session (pressed again it would only run and fail again)."""
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner still needs its dictionaries.", "do": connect_setup.SETUP_DO, "update": False,
+           "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    miner.finish_setup_as_job = lambda registry, settings, language, on_progress=None: ("failed", "no space left")
+    wiz, *_ = make(miner=miner)
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    looks = miner.looks
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: wiz.setup_failed and miner.looks >= looks + 1)
+    assert wait_until(lambda: page.btn_setup.isHidden())
 
 
 # --- 6 · your list ----------------------------------------------------------------------------------------------------------- #

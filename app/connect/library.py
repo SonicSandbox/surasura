@@ -53,6 +53,42 @@ def mine_line(store):
         return store._mine_ids(n)
 
 
+def text_only(item):
+    """Is this item (a `store.item` dict) a book or a text — nothing Anki Miner mines yet (alpha 4 M1; P4.1's K67)?
+    Its file's type as the window reads it (`path_utils.infer_source_type`: its stamped type, else its extension)."""
+    from app.path_utils import infer_source_type
+    if not item:
+        return False
+    return infer_source_type(item.get("rel_path") or "", declared=item.get("source_type")) in ("epub", "text")
+
+
+# A4M1-3 (lean taken, PROVISIONAL): a title's types whose items are listened to — audio, no video (the window's
+# `view_rows.MEDIA_WORD` "audio"). Never guessed (`library_store.media_type_guess`): you or hato named it
+AUDIO_TYPES = ("podcast", "audiobook")
+
+
+def waits_for(item, media=None):
+    """What Anki Miner can't mine yet, this item (a `store.item` dict) being one — the one rule for Connect's jobs, the
+    gaps and the rows -> "books" (a book or a text, by its file's own type: `text_only`), "audio" (an item of a title
+    whose type is a podcast's or an audiobook's, `media`: alpha 4 A4M1-3), else None. Whether Anki Miner mines that
+    kind now is `anki_miner.mines`'s. An audio title's episode with a video beside it is still mined: Connect sets one
+    aside only while it finds no video for it (`runner.Steps.waiting_items`, review A2-1)."""
+    if text_only(item):
+        return "books"
+    return "audio" if item and media in AUDIO_TYPES else None
+
+
+def media_of(store, item):
+    """The type you (or hato) gave the title an item (a `store.item` dict) belongs to, or None — the stored column
+    alone: a guess is never a podcast's or an audiobook's (`media_type_guess`), so `waits_for` reads the same at one
+    row's read (review A2-11)."""
+    work = (item or {}).get("work_id")
+    if work is None:
+        return None
+    row = store.conn.execute("SELECT media_type FROM works WHERE id = ?", (work,)).fetchone()
+    return row[0] if row else None
+
+
 def counting(store, tier):
     """[item ids] of `tier` in the store's order, available on disk, that count — W-1's one rule
     (`library_store.counts_sql` with the library's `keep_watched`): a watched one while it's off has nothing left to
@@ -211,6 +247,31 @@ def unanswered(found):
 def asked(store):
     """[(item_id, asked_at)]: the asks with no receipt newer than them, the newest first (RUNBOOK 4.1.3)."""
     return unanswered(asks(store))
+
+
+def made_notes(store):
+    """{note id: the list's word Connect made that note's card for}, over every item — alpha 4 M3: the row a card
+    Connect made belongs on, whatever its front reads as (ヒトリ's card, mined as ひとり). The store's record read
+    once, by the shelf's reader (`shelf.made_notes`); empty while it holds nothing."""
+    from app.connect import shelf
+    with store._reading():
+        return {note: word for note, (_item, word) in shelf.made_notes(store).items() if word}
+
+
+def made_notes_of(language):
+    """`made_notes` of `language`'s library, read-only (Junban's placement and the report's "In Anki" label, one
+    reader) — {} with no store or on any error: both then place every card by its word, as before."""
+    try:
+        from app import library_store
+        from app.path_utils import get_data_path, get_user_files_path
+        store = library_store.open_store(language, get_data_path(language), get_user_files_path(language),
+                                         role="reader")
+        if store is None:
+            return {}
+        with store:
+            return made_notes(store)
+    except Exception:
+        return {}
 
 
 def made_words_for(store, job):

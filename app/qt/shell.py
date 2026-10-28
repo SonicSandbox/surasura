@@ -131,6 +131,9 @@ class Services:
         self.anki_look = None             # Q4-4 / Q4-16: the window's session look (default `anki_session.at_window`;
         #                                   a test's stand-in)
         self.anki_session_thread = None   # the look's thread at the window's start (`_look_at_anki`), once started
+        self.restarted = False            # alpha 4 M6: this start is *Restart now*'s (`RESTARTED`): Anki isn't opened
+        self._look_after_setup = False    # B-10: the start's look held while the setup wizard is up (AD-8)
+        self._sync_owed = False           # the start's forced known-words sync, owed to the start's look (IK-2)
         self._session_lock = threading.Lock()
         self._session_running = False     # a session look under way (one at a time)
         self._session_looked = float("-inf")    # when the last one began (`time.monotonic`; the focus's throttle)
@@ -298,12 +301,24 @@ class Services:
                 self.automation.started(session=True)
             else:
                 self.automation.started()
+            self._sync_owed = session is not None     # the start's one forced known-words sync waits for the look
             self.chores.started()
             if self.replan is not None:
                 self.replan.start()       # the catch-up once; the journey when the store says it is pending
-            if session is not None:
-                self.anki_session_thread = self._look_at_anki(session, opening=True)
+            if self.setup_open.is_set():
+                # B-10 (AD-8): no look at Anki while the setup wizard is up — Anki opened, synced and Connect kicked
+                # once it closes, on the settings it wrote, whatever Connect was at the start (review F-2)
+                self._look_after_setup = True
+            elif session is not None:
+                self._opening_look(session)
         return True
+
+    def _opening_look(self, session):
+        """The window's start look (`_look_at_anki`, opening): once a window. Alpha 4 M6: a start *Restart now* made
+        never opens the Anki you closed (`restarted`: its look only, the setting left as it is)."""
+        if self.restarted:
+            session = dict(session, connect_open_anki=False)
+        self.anki_session_thread = self._look_at_anki(session, opening=True)
 
     # --- Q4-4, Q4-16 (K102): a session's start, and *Open Anki for me* at the window's start only ------------------ #
     def _session_settings(self):
@@ -335,10 +350,25 @@ class Services:
         return thread
 
     def _focus_look(self):
-        """(A worker.) A focus: the session look again, at most once every SESSION_LOOK_EVERY; it never opens Anki."""
+        """(A worker.) A focus: the session look again, at most once every SESSION_LOOK_EVERY; it never opens Anki —
+        nor looks at all while the setup wizard is up (review F-1: the wizard's close makes the window's look)."""
+        if self.setup_open.is_set():
+            return
         settings = self._session_settings()
         if settings is not None:
             self._look_at_anki(settings, opening=False)
+
+    def _session_job(self, opening):
+        """IK-6 (alpha 3 intent keeper): the window's start look listed in the registry while it runs (it may start
+        Anki and wait up to two minutes for it), on the Anki circle — a focus's quick look is none (it would flicker
+        each minute). No Cancel: the quit ends it (`closing`), so the quit never waits for it. -> the job, or None."""
+        if not opening:
+            return None
+        try:
+            return self.registry.record(SESSION_JOB, strings.SESSION_JOB_LABEL, on_quit="detach")
+        except Exception as e:
+            applog.log("shell", f"the session look's job: {e!r}")
+            return None
 
     def _session(self, settings, opening):
         """(Its own thread.) The look (`at_window`), its line to the bar (`anki_session.told`, the 2.x dashboard's
@@ -347,6 +377,7 @@ class Services:
         when the session's sync brought your phone's reviews in — and, synced, Connect kicked to see what waits, on the
         settings as they are now (IK-5; the Tk `_connect_session`'s order). A quit ends the wait for the Anki it
         started at its next look, never starts Anki or a sync after it (`cancel`), and nothing follows it."""
+        job = self._session_job(opening)
         try:
             if self.closing.is_set():
                 return
@@ -361,8 +392,9 @@ class Services:
                 return
             self._say(anki_session.told(done))
             sync = (done or {}).get("sync")
-            if opening:
-                self.automation.session_began(True)
+            if opening:     # the start's one forced sync — at its own pace when the start already made it (F-2)
+                owed, self._sync_owed = self._sync_owed, False
+                self.automation.session_began(owed)
             elif (done or {}).get("anki") == "open":
                 self.automation.session_began(sync == "synced")
             if sync == "synced":
@@ -373,6 +405,8 @@ class Services:
         except Exception as e:
             applog.log("connect", f"after the session's look: {e!r}")
         finally:
+            if job is not None:
+                job.finish(ok=True)
             with self._session_lock:
                 self._session_running = False
 
@@ -393,8 +427,19 @@ class Services:
             self.replan.held = held
 
     def setup_ended(self):
-        """(A worker.) The setup wizard closed: what it held is asked again, as at a focus."""
-        self.setup_open.clear()
+        """(A worker.) The setup wizard closed: what it held is asked again, as at a focus — first the start's look it
+        held (B-10), once, on the settings the wizard wrote: Connect switched off there, no look, and the start's
+        known-words sync it was waiting for goes now."""
+        with self._quit_lock:                         # review F-4: never between `start`'s look and its hold
+            self.setup_open.clear()
+            held, self._look_after_setup = self._look_after_setup, False
+        if held and self.started and not self.closing.is_set():
+            session = self._session_settings()
+            if session is not None:
+                self._opening_look(session)
+            elif self._sync_owed:
+                self._sync_owed = False
+                self.automation.session_began(True)
         self.activated()
 
     def activated(self):
@@ -1314,8 +1359,8 @@ class ShellWindow(QMainWindow):
         self._fetcher = None
         self.cover_fetcher()
         # --- end W3.2 L3
-        # --- P4.1 L2: Connect's actions — the stones' Mine now / Mine this / Link… / Mine text, Finished's Mine and Mine
-        # it too, the arrivals' Mine them too, Needs you's Mine the text only (`mine_actions.py`), given a writer
+        # --- P4.1 L2: Connect's actions — the stones' Mine now / Mine this / Link…, Finished's Mine and Mine
+        # it too, the arrivals' Mine them too (`mine_actions.py`), given a writer
         self.mine = None
         if self.moves is not None:
             from app.qt import mine_actions
@@ -3493,12 +3538,15 @@ def main(argv=None):
     # W3.2 P0: the library and its writer (nothing read yet). A4 P-gil: the reader freezes Python's collector after each
     # view (a full collection walking the library held the window 40-75 ms at 20,000 files); its stop thaws it, so a
     # library a language switch let go is still freed (`library_reader`'s *Python's collector*)
+    restarted = restart_mark()                        # alpha 4 M6: *Restart now*'s start (`relaunch`)
     try:
         services = open_services(freeze_gc=True)
+        services.restarted = restarted
         failed = None
     except Exception as e:                            # (AD0-12) the window opens without its library, and says so
         applog.log("shell", f"the library couldn't be opened: {e!r}\n{traceback.format_exc()}")
         services = Services()
+        services.restarted = restarted
         failed = services.library_failed = strings.LIBRARY_NOT_OPENED
     hud.mark("services")
     window = open_window(app, services)
@@ -3533,10 +3581,24 @@ def main(argv=None):
     return code
 
 
+SESSION_JOB = "anki-session"        # IK-6: the window's start look at Anki, a registry job (`jobs.RESOURCES`)
+
+
+# alpha 4 M6: the mark `relaunch` hands the new start (its environment, never its logged arguments): that window's
+# look at Anki never opens it — *Open Anki for me* is for a start you made, not a restart (you may have closed Anki)
+RESTARTED = "SURASURA_RESTARTED"
+
+
+def restart_mark():
+    """Was this start *Restart now*'s (`relaunch`'s mark)? Read once and taken out of the environment, so nothing this
+    process starts inherits it (review F-5)."""
+    return os.environ.pop(RESTARTED, None) == "1"
+
+
 def relaunch(argv):
     """The same program started again, detached (laptop fixes row 15: *Restart now*): the frozen program with its own
-    arguments, or this Python with the script `argv` names (app_entry.py from source), from the same folder.
-    -> the Popen, or None (logged: the window just doesn't come back)."""
+    arguments, or this Python with the script `argv` names (app_entry.py from source), from the same folder, marked
+    `RESTARTED` (alpha 4 M6). -> the Popen, or None (logged: the window just doesn't come back)."""
     import subprocess
     if getattr(sys, "frozen", False):
         args = [sys.executable] + list(argv[1:])
@@ -3548,7 +3610,7 @@ def relaunch(argv):
     try:
         return subprocess.Popen(args, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                start_new_session=(sys.platform != "win32"))
+                                start_new_session=(sys.platform != "win32"), env=dict(os.environ, **{RESTARTED: "1"}))
     except (OSError, ValueError) as e:
         applog.log("shell", f"restart: the new start failed: {e!r}")
         return None

@@ -1915,6 +1915,9 @@ class CardsPage(_Page):
         acts_box.addLayout(acts)
         self.btn_install = qpress.room(_button(S.INSTALL, S.INSTALL_TIP, self.wiz.install_miner, self.acts))
         acts.addWidget(self.btn_install)
+        self.btn_setup = qpress.room(_button(S.FINISH_SETUP, S.FINISH_SETUP_TIP, self.wiz.finish_miner_setup,
+                                             self.acts))        # A4M1-2: Anki Miner's own setup, run by Surasura
+        acts.addWidget(self.btn_setup)
         self.btn_check = qpress.room(_button(S.CHECK_AGAIN, S.MINER_CHECK_TIP,
                                              lambda: self.wiz.look_miner(self.btn_check), self.acts))
         acts.addWidget(self.btn_check)
@@ -2092,8 +2095,10 @@ class CardsPage(_Page):
             self.btn_install.setText(text)
             self.btn_install.setToolTip(tip)
             self.btn_install.setAccessibleName(text)
+        _show(self.btn_setup, bool((fix or {}).get("setup")) and not ready and not update and not self.wiz.setup_failed)
         _show(self.btn_check, look is not None and not ready and (state != "missing" or self.wiz.install_opened))
-        _show(self.acts, any(not b.isHidden() for b in (self.btn_install, self.btn_check, self.btn_star)))
+        _show(self.acts, any(not b.isHidden() for b in (self.btn_install, self.btn_setup, self.btn_check,
+                                                        self.btn_star)))
         dots = (look or {}).get("dots") or []
         for i, d in enumerate(self.dots):
             _name, st, tip = dots[i] if i < len(dots) else (None, "off", "")
@@ -2273,6 +2278,8 @@ class SetupWizard(QWidget):
         self._rows_seq = 0
         self.install_opened = False         # *Install* opened the releases page: the page offers *Check again*
         self.installing = None              # the install route's cancel (a threading.Event) while it runs
+        self.setting_up = False             # A4M1-2: Anki Miner's own setup running (*Finish its setup*)
+        self.setup_failed = False           # … and it didn't finish once this session: not offered again
         self.index = 0
         self.passed = set()
         self.generating = False
@@ -2996,6 +3003,45 @@ class SetupWizard(QWidget):
         else:
             run = lambda: self.miner.install(lambda d, t: progress.call((d, t)), cancel, lambda _r: None, confirm=ask)
         bridge.run_in_worker(run, then=self.alive(done), failed=self.alive(failed))
+
+    def finish_miner_setup(self):
+        """*Finish its setup* (A4M1-2, lean taken — PROVISIONAL): Anki Miner's own setup run by Surasura on a worker
+        (`anki_miner_setup.finish_setup_as_job`: the bottom bar lists it), the button's arc turning until it ends; then
+        the bar says how it went and the page looks again. No Cancel: it can't be stopped part-way."""
+        if self.setting_up or self.installing is not None or self._stopped:
+            return
+        self.setting_up = True
+        page = self.pages[4]
+        p = qpress.begin(page.btn_setup, "wizard:miner-setup", win=self)
+        settings, language = thaw(self._settings()), self.language
+
+        def done(answer):
+            self.setting_up = False
+            if p is not None:
+                qpress.end(p, self, failed=answer[0] in ("failed", "busy", "missing"))
+            if answer[0] == "failed":
+                self.setup_failed = True    # review A2-3 / A2-5: not offered again here (the service: this session)
+            self.say(S.SETUP_SAID.get(answer[0], "").format(detail=answer[1] or ""))
+            self.look_miner()
+
+        def failed(info):
+            self.setting_up = False
+            if p is not None:
+                qpress.end(p, self, failed=True)
+            self.say(str(info[0]))
+        registry = getattr(self.services, "registry", None)
+        # round 2 R2-3: on a daemon thread of its own, never the window's pool — Anki Miner's setup may outlive the
+        # window (it finishes by itself), and the quit never waits for a pool worker stuck on it
+        ended = bridge.Relay(self)
+        ended.said.connect(lambda result: self.alive(done if result[0] == "answer" else failed)(result[1]))
+        miner = self.miner
+
+        def run():
+            try:
+                ended.call(("answer", miner.finish_setup_as_job(registry, settings, language)))
+            except Exception as e:
+                ended.call(("failed", (e,)))
+        threading.Thread(target=run, name="anki-miner-setup", daemon=True).start()
 
     def cancel_install(self):
         """*Cancel*: the download stops between its pieces; the button's arc turns until the route has ended (round 8

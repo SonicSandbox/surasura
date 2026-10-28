@@ -98,11 +98,12 @@ def test_a_gone_subtitle_and_a_missing_video_are_two_cards_with_their_own_answer
     assert gone.data["folder"] == FRIEREN_DIR
     assert video.title == f"{FRIEREN} · 2 episodes have no video"
     assert [(ln.label, ln.number, ln.item_id) for ln in video.lines] == [("Ep 10", 10, 2), ("Ep 11", 11, 3)]
-    assert video.actions == ("find_videos", "link_these", "mine_text_only")
+    assert video.actions == ("find_videos", "link_these")          # alpha 4 M1: no *Mine the text only*
     # a video card never offers a gone file's answers, nor a gone card a video's
     assert not {"choose_file", "choose_folder", "remove"} & set(video.actions + video.lines[0].actions)
     assert not {"find_videos", "link_these", "choose_video"} & set(gone.actions + gone.lines[0].actions)
-    assert "mine_text_only" in needs.WIRED_LATER        # hidden until P4.1 sets its callable
+    assert all(ln.actions == ("choose_video",) for ln in video.lines)
+    assert "mine_text_only" not in needs.WIRED_LATER
 
 
 def test_a_show_whose_every_file_is_gone_still_gets_its_card_with_every_file():

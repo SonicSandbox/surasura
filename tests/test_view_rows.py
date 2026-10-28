@@ -1624,3 +1624,53 @@ def test_LM11b_H_B4_a_group_holding_one_show_is_that_shows_run_in_goal_and_at_th
     assert (tile.group, tile.title, tile.line) == (False, "雲の上の郵便屋さん", "2 episodes")
     assert "shows" not in tile.line and "1 show" not in tile.line
     assert vr._group_of({10: {"id": 10, "title": None, "kind": "group"}}, [items[1], items[2]]) is None
+
+
+def test_alpha4_M1_a_book_waits_quietly_by_its_files_type_and_a_group_says_so_only_once_its_videos_are_mined():
+    """Alpha 4 M1: one rule for "Anki Miner can't mine this" — the file's own type (`connect.library.text_only`, as
+    Connect's runner reads it), never the show's media word. A light novel's EPUBs read *Waits for Anki Miner* (faint, no
+    action); a group of an anime and an EPUB keeps the anime's *Mine*/*Waiting* while an episode is left, then says
+    *Waits for Anki Miner* once only the EPUB is; a subtitle in a show typed "game" is never a book."""
+    from app.services import view_rows as vr
+    work(1, "星降る街の小さな工房")
+    work(3, "白銀の書庫番", media="lightnovel")
+    work(5, "夜明けの迷宮", media="game")
+    items = items_of([("now", 3, 30, ["白銀の書庫番 01 章.epub", "白銀の書庫番 02 章.epub"],
+                       {0: {"source_type": "epub"}, 1: {"source_type": "epub"}}),
+                      ("now", 5, 50, eps("夜明けの迷宮", 1, 1), {})])
+    rows = {r.title: r for r in vr.build(items, dict(WORKS), {"mine_line": 20}).rows}
+    book = rows["白銀の書庫番"]
+    assert (book.status.kind, book.status.label, book.status.tone) == ("books", vr.STRINGS["books_wait"], "faint")
+    assert all(e.text and e.status.kind == "books" for e in book.episodes)
+    assert rows["夜明けの迷宮"].status.kind != "books" and not rows["夜明けの迷宮"].episodes[0].text
+    WORKS.clear()
+    work(1, "星降る街の小さな工房")
+    work(3, "白銀の書庫番", media="lightnovel")
+    spec = [("now", 1, 10, eps("星降る街の小さな工房", 1, 1), {}),
+            ("now", 3, 10, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})]
+    pieces = {10: {"id": 10, "title": None, "kind": "group"}}
+    group = vr.build(items_of(spec), dict(WORKS), {"mine_line": 20}, pieces=pieces).rows[0]
+    assert group.status.kind in ("waiting", "mine"), "the anime's episode is still there to mine"
+    video = group.episodes[0].id
+    mined = vr.build(items_of(spec), dict(WORKS), {"mine_line": 20}, pieces=pieces, cards={video: 3}).rows[0]
+    assert mined.status.kind == "books", "only the EPUB is left: it waits for Anki Miner, never *Waiting* for ever"
+
+
+@pytest.mark.parametrize("media", ["audiobook", "podcast"])
+def test_A4M1_3_an_audio_titles_parts_wait_quietly_like_a_book_with_audios_words(media):
+    """A4M1-3 (lean taken, PROVISIONAL): the parts of a title you typed an audiobook or a podcast (audio, no video) read
+    the same quiet *Waits for Anki Miner* as a book — never "N parts have no file", nothing to press — its hover naming
+    audio, through the same one rule (`connect.library.waits_for`, the title's type); a subtitle of an anime beside it
+    is untouched."""
+    from app.services import view_rows as vr
+    work(1, "星降る街の小さな工房")
+    work(7, "銀河鉄道の夜 朗読", media=media)
+    items = items_of([("now", 7, 70, eps("銀河鉄道の夜 朗読", 1, 2), {}),
+                      ("now", 1, 10, eps("星降る街の小さな工房", 1, 1), {})])
+    rows = {r.title: r for r in vr.build(items, dict(WORKS), {"mine_line": 20}).rows}
+    audio = rows["銀河鉄道の夜 朗読"]
+    assert (audio.status.kind, audio.status.label, audio.status.tone) == ("books", vr.STRINGS["books_wait"], "faint")
+    assert audio.status.tip == vr.STRINGS["tip_audio_wait"] and "audio" in audio.status.tip
+    assert all(e.text == "audio" for e in audio.episodes)
+    anime = rows["星降る街の小さな工房"]
+    assert anime.status.kind != "books" and not anime.episodes[0].text

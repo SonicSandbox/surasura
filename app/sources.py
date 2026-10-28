@@ -785,7 +785,10 @@ class _Splitter:
         """This EPUB's work, once its worker is done -> `_split`'s answer, or None (none asked, or it failed)."""
         future = self.futures.pop(path, None)
         if path in self.where:
-            self._fill(self.where[path] + 1)
+            at = self.where[path]
+            for early in [p for p in self.futures if self.where[p] < at]:   # books the look passed by: let go of
+                self.futures.pop(early).cancel()                             # their parts (bounded memory)
+            self._fill(at + 1)
         if future is None:
             return None
         try:

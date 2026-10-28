@@ -195,3 +195,21 @@ def test_use_every_core_sizes_the_pools_at_every_core_and_reads_off_when_unset(m
         raise OSError("settings.json held")
     monkeypatch.setattr(settings_manager, "load_settings", broken)
     assert token_index.every_core() is False
+
+
+def test_a_book_the_look_passed_by_is_let_go_and_the_workers_stay_ahead_of_the_look():
+    """Why: a book split ahead that the look then passes by (its path kept out, its file changed) must not hold its
+    parts until the look ends — 25,000 books' worth would be gigabytes; the workers keep SPLIT_AHEAD per worker in
+    hand ahead of the book the look takes."""
+    src = _drive("books")
+    _shelf("ja", src)
+    paths = sorted(os.path.join(w, f) for w, _d, fs in os.walk(src) for f in fs if f.endswith(".epub"))
+    splitter = sources._Splitter(paths, "ja", 1, ())
+    try:
+        assert set(splitter.futures) == set(paths[:sources.SPLIT_AHEAD])
+        got = splitter.take(paths[1])                                # the look passed paths[0] by
+        assert got is not None and got[2] == ls.sha256_of(paths[1]) and got[5] is True
+        assert set(splitter.futures) == set(paths[2:2 + sources.SPLIT_AHEAD])
+        assert splitter.take(paths[0]) is None                       # let go of: the look would read it itself
+    finally:
+        splitter.close()

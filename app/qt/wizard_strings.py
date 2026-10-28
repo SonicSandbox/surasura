@@ -213,7 +213,8 @@ SETUP_SAID = {"set-up": "Anki Miner's setup is finished.",
                       "Try again then.",
               "failed": "Anki Miner's setup didn't finish: {detail}",
               "missing": "Anki Miner isn't installed where Surasura looked.",
-              "ready": "Anki Miner's setup is already finished."}
+              "ready": "Anki Miner's setup is already finished.",
+              "rest": "Anki Miner's dictionaries are in. Still to do in Anki Miner: {detail}"}
 DOTS = ("Anki", "AnkiWeb", "Anki Miner", "Its setup")
 DOT_STATE = {"ok": "ready", "warn": "needs you", "off": "not yet"}
 DOT_NAME = "{name}: {state}"

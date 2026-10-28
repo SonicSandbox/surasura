@@ -96,6 +96,7 @@ BOOKS_WAIT = "Waits for Anki Miner to read books: Connect makes its cards by its
 # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio (Z-16)
 AUDIO_WAIT = "Waits for Anki Miner to mine audio: Connect makes its cards by itself once Anki Miner can."
 WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT}       # `library.waits_for`'s kinds -> the job's line
+UNKNOWN = "unknown"         # `Steps.waiting_items`: an audio item whose video can't be looked for now (never moved)
 NO_LIST = "Waiting for a current list: Generate didn't finish."
 LIBRARY_BUSY = "Surasura's library is busy: tried again shortly."
 STOPPED_FOR_UPDATE = "Surasura is installing an update."
@@ -293,18 +294,19 @@ def _consume(steps, ledger, lang):
     return False
 
 
-def _books_aside(steps, ledger, lang, jobs):
+def _books_aside(steps, ledger, lang, jobs, reopen=True):
     """Alpha 4 M1 / A4M1-3: for each kind Anki Miner can't mine yet (`steps.mines`: books and texts, audio), each of
     `jobs` still before its mining (queued, waiting, or left mid-pick by a kill: `_resume_of` in BEFORE_MINING, no batch
     started) whose item is of that kind (`steps.waiting_items`: `library.waits_for`, the rows' rule too) ends `skipped`
     with its line (`WAIT_REASONS`), before any pick — so it is no open job, no *No video*, nothing on the circles; once
     it can, every job set aside for that kind is queued again (its ask kept; one beyond the line is dropped at its start
-    as any). -> how many set aside. A store busy now: none (looked at again next look)."""
+    as any). -> how many set aside. A store busy now: none set aside, none queued again (looked at again next look);
+    `reopen` False (a job's own start): only the setting aside (round 2 R2-2)."""
     mines, kinds_of = getattr(steps, "mines", None), getattr(steps, "waiting_items", None)
     if mines is None or kinds_of is None:
         return 0
     waiting = {kind for kind in WAIT_REASONS if not mines(lang, kind)}
-    if any(ledger.skipped_for(lang, reason) for reason in WAIT_REASONS.values()):
+    if reopen and any(ledger.skipped_for(lang, reason) for reason in WAIT_REASONS.values()):
         # every job set aside whose item no longer waits for that kind is queued again — its kind mined now, its
         # title's type corrected, its video found (review A2-2): nothing to undo
         aside = {}
@@ -313,15 +315,15 @@ def _books_aside(steps, ledger, lang, jobs):
                 if j.get("reason") == reason:
                     aside.setdefault(kind, set()).add(j["item_id"])
         still = kinds_of(lang, set().union(*aside.values())) if aside else {}
-        for kind, ids in aside.items():
-            back = [i for i in ids if kind not in waiting or still.get(i) != kind]
+        for kind, ids in aside.items() if still is not None else ():      # a busy store: every job stays aside
+            back = [i for i in ids if kind not in waiting or still.get(i) not in (kind, UNKNOWN)]
             if back:
                 with ledger.transaction():
                     ledger.reopen_skipped(lang, back, WAIT_REASONS[kind])
     if not waiting:
         return 0
     jobs = [j for j in jobs if _resume_of(j) in BEFORE_MINING and not _started(ledger, j["id"])]
-    kinds = kinds_of(lang, {j["item_id"] for j in jobs}) if jobs else {}
+    kinds = (kinds_of(lang, {j["item_id"] for j in jobs}) if jobs else None) or {}
     n = 0
     for job in jobs:
         kind = kinds.get(job["item_id"])
@@ -736,7 +738,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
         ledger.set_state(jid, "dropped", reason=WATCHED)
         out["dropped"].append(item_id)
         return
-    if droppable and _books_aside(steps, ledger, lang, [job]):
+    if droppable and _books_aside(steps, ledger, lang, [job], reopen=False):
         # alpha 4 M1: a job queued since this look read its inbox (a press's), set aside as the inbox's are
         out["skipped"].append(item_id)
         return
@@ -1418,12 +1420,13 @@ class Steps:
         """Alpha 4 M1 / A4M1-3 (was P4.1's K67 `text_only`): of `item_ids`, those Anki Miner can't mine yet ->
         {item id: kind} by `library.waits_for` (books and texts by their file's type, in one store read; audio by
         their title's type, and only while no video is found for it — a video podcast is mined as before, review
-        A2-1); a busy store → none (the next look asks again)."""
+        A2-1); an audio item whose video lookup can't answer now is UNKNOWN (neither set aside nor queued again); a
+        busy store → None (nothing moves: the next look asks again, round 2 R2-1)."""
         from app.connect import library
         try:
             store = self._open(lang)
         except (Wait, Needs):
-            return {}
+            return None
         out, audio = {}, []
         with store:
             for i in item_ids:
@@ -1438,7 +1441,7 @@ class Steps:
                 if self.video(lang, {"item_id": i, "language": lang}) is None:
                     out[i] = "audio"
             except (Wait, Needs):
-                pass                        # can't be told now: not set aside (the pick decides, as for a video)
+                out[i] = UNKNOWN            # can't be told now: left as it is (round 2 R2-1)
         return out
 
     def mines(self, lang, kind):

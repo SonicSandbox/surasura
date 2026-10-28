@@ -2966,7 +2966,7 @@ class SetupWizard(QWidget):
             if p is not None:
                 qpress.end(p, self, failed=answer[0] in ("failed", "busy", "missing"))
             if answer[0] == "failed":
-                self.setup_failed = True    # review A2-3 / A2-5: not offered again this session (it would loop)
+                self.setup_failed = True    # review A2-3 / A2-5: not offered again here (the service: this session)
             self.say(S.SETUP_SAID.get(answer[0], "").format(detail=answer[1] or ""))
             self.look_miner()
 
@@ -2976,8 +2976,18 @@ class SetupWizard(QWidget):
                 qpress.end(p, self, failed=True)
             self.say(str(info[0]))
         registry = getattr(self.services, "registry", None)
-        bridge.run_in_worker(self.miner.finish_setup_as_job, registry, settings, language,
-                             then=self.alive(done), failed=self.alive(failed))
+        # round 2 R2-3: on a daemon thread of its own, never the window's pool — Anki Miner's setup may outlive the
+        # window (it finishes by itself), and the quit never waits for a pool worker stuck on it
+        ended = bridge.Relay(self)
+        ended.said.connect(lambda result: self.alive(done if result[0] == "answer" else failed)(result[1]))
+        miner = self.miner
+
+        def run():
+            try:
+                ended.call(("answer", miner.finish_setup_as_job(registry, settings, language)))
+            except Exception as e:
+                ended.call(("failed", (e,)))
+        threading.Thread(target=run, name="anki-miner-setup", daemon=True).start()
 
     def cancel_install(self):
         """*Cancel*: the download stops between its pieces; the button's arc turns until the route has ended (round 8

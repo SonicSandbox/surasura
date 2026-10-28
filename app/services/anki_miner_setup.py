@@ -170,6 +170,8 @@ def look(settings, language):
         first = next((c for c in yours if c.get("blocks")), None) or (yours[0] if yours else None)
         fix = ({"say": first.get("say"), "do": first.get("do"), "update": bool(first.get("update")),
                 "setup": bool(first.get("setup"))} if first else None)
+        if fix and fix["setup"] and language in _FAILED:  # round 2 R2-6: it ran and didn't finish this session
+            fix.update(setup=False, do=SETUP_DO_FAILED)
         return {"state": state, "version": version, "dots": dots, "fix": fix}
     except Exception:
         return _off(settings)
@@ -457,10 +459,12 @@ def install(on_progress, cancel, on_end, confirm=None):
 SETUP_JOB_KIND = "anki-miner-setup"         # its kind in the window's registry (`jobs.RESOURCES`)
 SETUP_JOB_LABEL = "Finishing Anki Miner's setup"
 SETUP_STAGING = "anki-miner-setup"          # under local data: its `--progress` file, emptied after
-SET_UP, SETUP_FAILED = "set-up", "failed"
+SET_UP, SETUP_FAILED, SET_UP_REST = "set-up", "failed", "rest"
+_FAILED = set()             # round 2 R2-6: the languages whose setup didn't finish this session (never offered again)
 SETUP_REFUSED = ("Anki Miner hasn't mined this language yet in the profile Connect uses, so its own setup can't "
                  "start it. A later Surasura sets that up too; for now, choose the language once in Anki Miner")
 SETUP_STILL = "it ran, but Anki Miner still says: {say}"
+SETUP_DO_FAILED = "Its setup didn't finish from Surasura: open Anki Miner once and finish it there"
 
 
 def finish_setup(settings, language, on_progress=None):
@@ -514,6 +518,8 @@ def finish_setup(settings, language, on_progress=None):
                  if isinstance(c, dict)}.get("anki_miner_setup") or {}
         if again.get("setup"):
             return SETUP_FAILED, SETUP_STILL.format(say=again.get("say") or "")
+        if again.get("state") == "needs-you":           # round 2 R2-7: its dictionaries in, a deck still to choose
+            return SET_UP_REST, again.get("say") or ""
         return SET_UP, None
     except Exception as e:          # never raises: the page says it didn't finish
         return SETUP_FAILED, str(e)
@@ -536,6 +542,8 @@ def finish_setup_as_job(registry, settings, language, on_progress=None):
     answer = (SETUP_FAILED, None)
     try:
         answer = finish_setup(settings, language, progress)
+        if answer[0] == SETUP_FAILED:
+            _FAILED.add(language)
     finally:
         job.finish(ok=answer[0] in (SET_UP, "ready"), message=answer[1] if answer[0] == SETUP_FAILED else None)
     return answer

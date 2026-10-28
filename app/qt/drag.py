@@ -831,13 +831,14 @@ def _aside(settings, language):
 class _Drag:
     """One drag in progress."""
     __slots__ = ("src", "key", "row", "ids", "title", "source", "grab", "target", "parting", "at", "external",
-                 "holding", "many", "keys")
+                 "holding", "many", "keys", "every")
 
     def __init__(self):
         self.src = self.key = self.row = self.title = self.source = None
         self.ids = []
         self.many = 0                                # A4: a drag of the picks — how many titles it carries
         self.keys = ()                               # ... and the Current rows they are (none from Goal's sheet)
+        self.every = None                            # ... what the Finished well takes (IK2-6: Goal's, every part)
         self.grab = QPointF()
         self.target = None
         self.parting = None
@@ -1147,16 +1148,18 @@ class DragController(QObject):
             unlit = strings.WELL_UNLIT_SPLIT
         return self._lift_safely(d, pix, slot.size(), height, global_pos, unlit)
 
-    def begin_by_id(self, item_ids, source, title, global_pos, size=None, many=0, keys=(), unlit=None):
+    def begin_by_id(self, item_ids, source, title, global_pos, size=None, many=0, keys=(), unlit=None, every=None):
         """A drag of items the list doesn't show (W3.2's tray, the Goal sheet: `source` its tier, "goal" leaves the
         Goal well out): a card with its title as the ghost, the same drop. A4: `many` titles picked (their card says how
         many; a drop sends them as the picks' ⋯ does, `send_picks`), `keys` the Current rows they are, `unlit` why the
-        Finished well stays dark (a split's first part among them)."""
+        Finished well stays dark (a split's first part among them), `every` the ids a drop on the Finished well finishes
+        (IK2-6: Goal's picks, every part of each — as their ⋯ *Finished*; None: `item_ids`)."""
         if self.running is not None or self.refused() is not None:
             return False
         d = _Drag()
         d.ids, d.title, d.source, d.external = list(item_ids), title, source, True
         d.many, d.keys = many, tuple(keys)
+        d.every = list(every) if every is not None else None
         w = size.width() if size is not None else self.lst.viewport().width()
         h = size.height() if size is not None else rows.RowDelegate._line_h()
         dpr = self.lst.viewport().devicePixelRatioF() or 1.0
@@ -1587,7 +1590,8 @@ class DragController(QObject):
         if d.many:                                   # A4: the picks into a well — as the picks' ⋯ sends them
             self._end(d)
             self._glide_away()
-            self.send_picks(name, d.ids, d.many, d.keys, d.source)
+            ids = d.every if name == "finished" and d.every is not None else d.ids
+            self.send_picks(name, ids, d.many, d.keys, d.source)
             return
         if d.external:
             self._end(d)

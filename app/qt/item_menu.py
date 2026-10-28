@@ -44,8 +44,8 @@ click, a drag and a view without a picked key let the picks go.
 **The picks (A4; Sonic: "a way to interact with those is important"):** Current's and Soon's rows, Finished's rows and
 Goal's tiles are picked the same way (Ctrl / Shift+click, Ctrl+A every row of the list in focus; picks live in one list
 at a time). ⋯ or a right-click on a picked row while 2+ rows are picked offers, for all of them, *Up next* · *Soon* ·
-*Goal* · *Finished* · *Remove…* (`fill_picks_menu`; the entry naming their own list left out, *Finished* when a split's
-first part is among them; *Group…* first where it applies): each ONE store command through
+*Goal* · *Finished* · *Remove…* (`fill_picks_menu`; the entry naming their own list left out, *Finished* greyed when a
+split's first part is among them; *Group…* first where it applies): each ONE store command through
 `drag.DragController.send_picks` — one toast naming the count, one Undo; *Remove…* asks first (`ask_remove_picks`). A
 drag from a picked row carries them all (`DragController.begin`).
 **Drop-to-join (G3):** a part dragged over the middle of another part of the same title (its top and bottom 30 % stay
@@ -233,31 +233,36 @@ def give_skip(moves, path, ids=(), keys=(), told=None):
 
 
 # --- A4: the picks' ⋯, one rule for Current, Soon, Finished and Goal's sheet ------------------------------------------- #
-def picks_entries(n, own, writer, leave=(), goal=False):
+def picks_entries(n, own, writer, grey=None, goal=False):
     """The picks' ⋯: [(name, label, tip, enabled)] — *Up next* · *Soon* · *Goal* · *Finished* · *Remove…* for `n`
-    titles, the one naming their own list (`own`: "soon", "goal", "finished") and `leave` left out; greyed with the
-    store's reason while it can't be written (E4). `goal`: from Goal's sheet (its *Up next* / *Soon* bring each title's
-    first part, as its single ⋯ does)."""
+    titles, the one naming their own list (`own`: "soon", "goal", "finished") left out; greyed with the store's reason
+    while it can't be written (E4), and each of `grey` ({name: why}) greyed with its why (IK2-5: *Finished* while a
+    split's first part is among them, in the Finished well's words). `goal`: from Goal's sheet (its *Up next* / *Soon*
+    bring each title's first part, as its single ⋯ does)."""
     reason = None
     if writer is None or not writer.can_write():
         raw = (writer.reason() if writer is not None else None) or ""
         reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
+    grey = grey or {}
     out = []
     for name, (label, tip) in strings.PICKS_MENU.items():
-        if name == own or name in leave:
+        if name == own:
             continue
         tip = tip.format(n=f"{n:,}")
         if goal and name in ("top", "soon"):
             tip = strings.PICKS_GOAL_FIRST_TIP.format(tip=tip)
-        out.append((name, label, tip if reason is None else reason, reason is None))
+        if reason is not None:
+            out.append((name, label, reason, False))
+        else:
+            out.append((name, label, grey.get(name) or tip, name not in grey))
     return out
 
 
-def fill_picks_menu(m, n, own, writer, act, leave=(), goal=False):
+def fill_picks_menu(m, n, own, writer, act, grey=None, goal=False):
     """`picks_entries` into menu `m` (named for the picks), a separator before *Remove…*; `act(name)` when one is
     picked. -> m."""
     m.setAccessibleName(strings.PICKS_MENU_NAME.format(n=f"{n:,}"))
-    for name, label, tip, ok in picks_entries(n, own, writer, leave, goal):
+    for name, label, tip, ok in picks_entries(n, own, writer, grey, goal):
         if name == "remove":
             m.addSeparator()
         a = QAction(label, m)
@@ -518,8 +523,8 @@ class ItemActions(QObject):
 
     def picks_menu(self, row, at):
         """⋯ / right-click on a picked row while 2+ rows are picked: *Group…* where it applies, then *Up next* · *Soon* ·
-        *Goal* · *Finished* · *Remove…* for all of them (Soon's picks get no *Soon*; *Finished* left out when a split's
-        first part is among them). -> the menu."""
+        *Goal* · *Finished* · *Remove…* for all of them (Soon's picks get no *Soon*; *Finished* greyed in the Finished
+        well's words when a split's first part is among them, IK2-5). -> the menu."""
         rows_ = self.picked_rows()
         view = self._view()
         n = len(rows_)
@@ -529,9 +534,8 @@ class ItemActions(QObject):
             self._action(m, row, group)
             m.addSeparator()
         own = "soon" if all(r.tier == "soon" and getattr(r, "soon_from", None) is None for r in rows_) else None
-        leave = ("finished",) if drag.any_split_first(view.rows if view is not None else (), self.lst.picked_rows) \
-            else ()
-        fill_picks_menu(m, n, own, self.writer, self.send_picks, leave)
+        split = drag.any_split_first(view.rows if view is not None else (), self.lst.picked_rows)
+        fill_picks_menu(m, n, own, self.writer, self.send_picks, {"finished": strings.WELL_UNLIT_SPLIT} if split else None)
         self.last_menu = m
         m.popup(at)
         return m

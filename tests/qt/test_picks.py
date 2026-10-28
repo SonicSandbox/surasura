@@ -534,9 +534,10 @@ def test_real_store_A4_picks_land_together_in_the_store_and_one_undo_puts_every_
     assert wait_until(lambda: all(store.item(i) is not None and store.item(i)["tier"] == before[i] for i in ids), 10)
 
 
-def test_A4_picks_holding_a_splits_first_part_offer_no_finished_and_its_drag_leaves_the_well_dark(world):
-    """A split's first part never finishes alone (A2): with one among the picks, their ⋯ leaves *Finished* out (as the
-    single ⋯ does) and their drag keeps the Finished well dark, its tip saying why — a drop there writes nothing."""
+def test_A4_picks_holding_a_splits_first_part_grey_finished_and_its_drag_leaves_the_well_dark(world):
+    """A split's first part never finishes alone (A2): with one among the picks, their ⋯ greys *Finished* in the
+    Finished well's words (IK2-5: seen and why, never just missing) and their drag keeps the Finished well dark, its
+    tip saying why — a drop there writes nothing."""
     _seed, win, writer = world()
     lst = lst_of(win)
     shown = rows_of(win)
@@ -546,7 +547,8 @@ def test_A4_picks_holding_a_splits_first_part_offer_no_finished_and_its_drag_lea
     for i in (first, other):
         lst.pick_row(lst.model().entries[i][1])
     m = picks_menu_of(win, lst, first)
-    assert strings.PICKS_MENU["finished"][0] not in menu_texts(m)
+    fin = next(a for a in m.actions() if a.text() == strings.PICKS_MENU["finished"][0])
+    assert not fin.isEnabled() and fin.toolTip() == strings.WELL_UNLIT_SPLIT
     m.close()
     at = title_point(lst, other)
     press(lst, at)
@@ -635,3 +637,21 @@ def test_A4B2_a_language_switch_lets_finisheds_picks_go(world):
     assert len(fin.picked_rows) == 2
     win._forget_picks()
     assert not fin.picked_rows
+
+
+def test_IK2_6_goals_picks_dropped_on_the_finished_well_finish_every_part_as_their_menu_does(world):
+    """IK2-6 / A4B-13: the same picks finished different files by the way they were sent — the drag into the Finished
+    well each title's first part, ⋯ *Finished* every part. Both finish every part of each now (one command)."""
+    _seed, win, writer = world()
+    sheet = open_sheet(win)
+    sheet.pick_all()
+    works = sheet.picked()
+    every = [i for w in works for i in w.item_ids]
+    assert len(every) > sum(len(w.pieces[0].item_ids) for w in works)    # (some title of more than one part)
+    tile = sheet.order[0]
+    assert sheet.drag(tile, tile.mapToGlobal(QPoint(10, 10)))
+    target = well_point(win, "finished")
+    move_global(win, target)
+    release_global(win, target)
+    settle()
+    assert writer.calls == [("set_tier", every, {"tier": "graduated"})]

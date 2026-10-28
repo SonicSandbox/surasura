@@ -1039,12 +1039,11 @@ class DetailLooks:
 
 def _with_detail_looks(win, items, root):
     """The window's looks replaced by `DetailLooks` over `items` (each original under `root`/<its book's folder>), and
-    the tray shown again so they are asked."""
+    the reader told to ask them (A4B-8: it asks and names on its own thread)."""
     rel = {it["id"]: it["parent_folder"] for it in items}
     looks = DetailLooks(root, rel.get)
     win.looks = looks
-    win._folders_asked.clear()                                         # (asked of these looks afresh)
-    win._show_arrivals(win._arrivals_view)
+    win._follow_folders(looks)                                         # (asked of these looks afresh)
     return looks
 
 
@@ -1104,6 +1103,41 @@ def test_A4_a_view_built_again_keeps_each_folder_named_row_the_same_object(world
     settle(100)
     assert all(tray.arrival(k) is a for k, a in named.items())          # S19: the same rows, nothing repainted
     assert {k: tray.model.paints[k] for k in named} == paints
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_A4B8_the_reader_names_the_arrivals_on_its_own_thread_asks_each_once_and_same_answers_build_nothing(
+        world, language, monkeypatch):
+    # A4B-8: the naming was the window's (~15 ms a new view at 20,000 arrivals, every arrival more). Now the reader asks
+    # the looks and names the rows as it builds: the window's thread names none; each first file is asked once (a new
+    # view elsewhere asks nothing); the same answers handed again build nothing (S19).
+    seed, win, _w = world(language)
+    title = SERIES[language][0]
+    items, works = _series_items(language, max(r["id"] for r in seed.library.items()) + 1)
+    seed.library.commit(works=works, items=items, order=True)
+    assert wait_until(lambda: sum(1 for a in tray_arrivals(win) if a.title == title) == 3, 5)
+    on_window = []
+    real_name = view_rows._name_arrivals
+    monkeypatch.setattr(view_rows, "_name_arrivals", lambda *a: on_window.append(
+        threading.current_thread() is threading.main_thread()) or real_name(*a))
+    looks = _with_detail_looks(win, items, os.path.join("D:", os.sep, "本棚"))
+    assert wait_until(lambda: all(a.folder for a in tray_arrivals(win) if a.title == title), 5)
+    assert on_window and not any(on_window)                             # every naming on the reader's thread
+    asked = [i for ids, _d in looks.calls for i in ids]
+    assert len(asked) == len(set(asked)) == len(tray_arrivals(win))     # each first file asked once
+    reader = win.services.library
+    goal = next(r for r in seed.items if r["tier"] == "goal")
+    builds = reader.builds
+    seed.library.commit(items=[{"id": goal["id"], "watched": 1}])     # a change elsewhere: a new view
+    assert wait_until(lambda: reader.builds > builds, 5)
+    settle(100)
+    assert [i for ids, _d in looks.calls for i in ids] == asked         # nothing asked again
+    builds = reader.builds
+    with reader._lock:
+        again = dict(reader._folders)
+    reader.set_folders(again)                                           # the same answers: no view built
+    time.sleep(0.2)
+    assert reader.builds == builds
 
 
 @pytest.mark.parametrize("language", ["ja", "zh"])

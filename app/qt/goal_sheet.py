@@ -755,16 +755,19 @@ class GoalSheet(motion.Overlay):
 
     # --- a drag ----------------------------------------------------------------------------------------------- #
     def drag(self, tile, global_pos):
-        """A press and 6 px on a tile: its first piece lifts (from Goal) and the sheet closes."""
+        """A press and 6 px on a tile: its first piece lifts (from Goal) and the sheet closes. A4: a picked tile carries
+        every pick — the wells take each title's first part, the Finished well every part of each (IK2-6: as the
+        picks' ⋯ *Finished*)."""
         moves, _writer = self._writer()
         work = tile.work
         if moves is None or not work.pieces:
             return False
         if work.key in self.picks and len(self.picks) > 1:      # --- A4: a picked tile carries every pick
             works = self.picked()
-            ids = [i for w in works for i in w.pieces[0].item_ids]
+            ids = [i for w in works for i in w.pieces[0].item_ids]     # (Up next / Soon: each title's first part;
+            every = [i for w in works for i in w.item_ids]             # Finished: every part, as their ⋯, IK2-6)
             if not moves.begin_by_id(ids, "goal", strings.PICKS_TITLES.format(n=f"{len(works):,}"), global_pos,
-                                     many=len(works)):
+                                     many=len(works), every=every):
                 return False
         elif not moves.begin_by_id(list(work.pieces[0].item_ids), "goal", work.title, global_pos):
             return False

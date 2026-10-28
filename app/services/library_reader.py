@@ -67,6 +67,7 @@ import json
 import os
 import threading
 import time
+import weakref
 
 from app.services import view_rows
 
@@ -112,6 +113,13 @@ def _no_mining():
 
 def _no_connect():
     return None
+
+
+def _hand_folders(ref, found):
+    """New arrivals' folders to the reader, while it is alive (A4B-8)."""
+    reader = ref()
+    if reader is not None:
+        reader.set_folders(found)
 
 
 def _hand_playable(ref, answers):
@@ -201,6 +209,15 @@ class LibraryReader:
         self._estimates = {}
         self._estimates_new = False
         # --- end W3.2 Q1
+        # --- A4B-8: New arrivals' folders ({first item id: where its original sits}, the looks' answers), named into
+        # the next view on this thread (`view_rows.build(folders=)`) — never on the window's; new ones rebuild it
+        self._folders = {}
+        self._folders_version = 0
+        self._folders_new = False
+        self._folders_ask = None           # (ask, then): the looks' `folders`, handed by the window (`follow_folders`)
+        self._folders_asked = set()
+        self._folders_owed = False         # ... the last view's arrivals to ask at the next look (no build for it)
+        # --- end A4B-8
         # --- LM11b G5: a window command not written yet ({item_id: tier}, `expect`), built in until the feed holds it
         self._expected = {}
         self._expected_new = None          # the window's newest, taken in by the next look
@@ -261,6 +278,49 @@ class LibraryReader:
             self._estimates_new = True
         self._wake.set()
     # --- end W3.2 Q1
+
+    # --- A4B-8
+    def follow_folders(self, ask):
+        """New arrivals' folders asked through `ask(item_ids, then)` (the looks' `folders(..., detail=True)`; None: no
+        looks) — every arrival's first file asked afresh at the next look (no view built for it), its answers (`then`,
+        any thread) named into the views from then on. Any thread."""
+        me = weakref.ref(self)                          # (never a cycle reader -> ask -> reader: AD0-2)
+        with self._lock:
+            self._folders_ask = None if ask is None else (ask, lambda found: _hand_folders(me, found))
+            self._folders_asked = set()
+            self._folders_owed = True
+        self._wake.set()
+
+    def set_folders(self, found):
+        """The looks' answers ({item_id: where its original sits, or None}), from any thread: built into the next view
+        when any moved (a file from no folder read names nothing: no view for it)."""
+        if not isinstance(found, dict):
+            return
+        with self._lock:
+            moved = {k: v for k, v in found.items() if self._folders.get(k) != v}
+            if not moved:
+                return                                  # the same answers build nothing (S19)
+            self._folders = {**self._folders, **moved}
+            self._folders_version += 1
+            self._folders_new = True
+        self._wake.set()
+
+    def _ask_folders(self, view):
+        """(The reader's thread.) The arrivals' first files no answer was asked for yet, asked of the looks."""
+        with self._lock:
+            ask, asked = self._folders_ask, self._folders_asked
+        if ask is None or not view.arrivals:
+            return
+        want = [a.item_ids[0] for a in view.arrivals if a.item_ids and a.item_ids[0] not in asked]
+        if not want:
+            return
+        asked.update(want)
+        try:
+            ask[0](want, ask[1])
+        except Exception as e:                          # (the looks closing: the next view asks again)
+            asked.difference_update(want)
+            print(f"Library reader: the arrivals' folders weren't asked: {e!r}")
+    # --- end A4B-8
 
     # --- row 55
     def set_playable(self, answers):
@@ -423,6 +483,7 @@ class LibraryReader:
         # view stays (`view()`: the window shows it until the next language's first view comes)
         self._items, self._works, self._cards, self._options = {}, {}, {}, {}
         self._pieces = {}
+        self._folders, self._folders_ask = {}, None     # A4B-8
         self._tiers, self._pos, self._dirty, self._moved_in = None, {}, set(), {}
         self._overlaid, self._overlay_tiers = {}, {}
         self.row_cache = view_rows.RowCache()
@@ -447,6 +508,10 @@ class LibraryReader:
 
     def _look(self):
         self.looks += 1                                 # W3.2 B
+        if self._folders_owed:                          # A4B-8: the looks handed: the last view's arrivals asked
+            self._folders_owed = False
+            if self._view is not None:
+                self._ask_folders(self._view)
         mode, reason, h = self._handle()
         changed_mode = (mode, reason) != self._mode
         self._mode = (mode, reason)
@@ -470,6 +535,7 @@ class LibraryReader:
             return
         with self._lock:                                # W3.2 Q1: new estimates from the window
             estimates_new, self._estimates_new = self._estimates_new, False
+            estimates_new, self._folders_new = estimates_new or self._folders_new, False    # A4B-8: their folders
             numbers_new = estimates_new                 # fix round (IK-2): the arrivals' own numbers
             estimates_new, self._playable_new = estimates_new or self._playable_new, False     # row 55: ▶'s answers
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
@@ -889,6 +955,8 @@ class LibraryReader:
                 items, tiers = self._overlay(items, tiers)
         if not self._expected:
             self._overlaid, self._overlay_tiers = {}, {}
+        with self._lock:
+            folders = (self._folders_version, self._folders) if self._folders else None     # A4B-8
         view = view_rows.build(items, self._works, self._options, numbers=(self._numbers_version, numbers),
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
                                reason=reason, loading=not rows_known, cache=self.row_cache,
@@ -897,10 +965,12 @@ class LibraryReader:
                                estimates=self._estimates,     # W3.2 Q1
                                connect=connect,               # P4.1 L2
                                pieces=self._pieces,           # LM11b G1
-                               playable=self._playable)       # row 55
+                               playable=self._playable,       # row 55
+                               folders=folders)               # A4B-8
         view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
         if self.play is not None:
             self._ask_play(view)                        # row 55
+        self._ask_folders(view)                         # A4B-8
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()

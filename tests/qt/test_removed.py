@@ -13,6 +13,7 @@ Real Japanese / Chinese titles: the migrated library's own (`tests/test_library_
 tests/Test Resources/ in a source folder beside the test's data folder.
 """
 import os
+import time
 
 import pytest
 
@@ -126,39 +127,34 @@ def test_nothing_removed_says_so_in_one_line(real):
     assert w.lines == {} and w.none.text() == strings.REMOVED_NONE and not w.none.isHidden()
 
 
-class _Looks:
-    """The looks' Removed list answered as told (`answer`: None = the store couldn't be read), each read counted."""
+class _Store:
+    """The trash as told (`answer`), each read counted — what `removed.read_store` hands its `ask`."""
 
     def __init__(self, answer):
         self.answer, self.reads = answer, 0
 
-    def removed(self, then, language=None):
+    def removed(self):
         self.reads += 1
-        then(self.answer)
-        return True
-
-    def close(self):
-        pass
-
-    def set_shown(self, _shown):
-        pass
-
-    def asked(self, **_kw):
-        return False
+        return self.answer
 
 
-def test_an_unreadable_store_is_said_never_shown_as_an_empty_trash(real):
+def _answer(monkeypatch, answer):
+    """The Removed list's read answered at once from `answer` (None: the store couldn't be read) -> the fake store."""
+    store = _Store(answer)
+    monkeypatch.setattr(removed, "read_store", lambda _shell, _language, ask, then: then(
+        None if store.answer is None else ask(store)) or True)
+    return store
+
+
+def test_an_unreadable_store_is_said_never_shown_as_an_empty_trash(real, monkeypatch):
     _store, win, _writer = real()
-    real_looks, win.looks = win.looks, _Looks(None)
-    try:
-        w = _open_removed(win)
-        assert w.lines == {} and w.none.text() == strings.REMOVED_UNREADABLE
-        w.close()
-        win.looks = None                                               # no library open at all: the same words
-        w = _open_removed(win)
-        assert w.none.text() == strings.REMOVED_UNREADABLE
-    finally:
-        win.looks = real_looks
+    _answer(monkeypatch, None)
+    w = _open_removed(win)
+    assert w.lines == {} and w.none.text() == strings.REMOVED_UNREADABLE
+    w.close()
+    monkeypatch.setattr(removed, "read_store", lambda *_a: False)       # no library open at all: the same words
+    w = _open_removed(win)
+    assert w.none.text() == strings.REMOVED_UNREADABLE
 
 
 def test_S19_the_list_reads_once_as_it_opens_again_only_when_the_trash_moved_and_never_once_closed(real):
@@ -260,12 +256,169 @@ def test_S19_a_looks_summary_with_nothing_new_reads_no_removed_files_and_repaint
     line = folders.lines[got["root"]]
     assert wait_until(lambda: not line.back.isHidden(), 10)
     calls = []
-    real_under = win.looks.removed_under
-    win.looks.removed_under = lambda *a, **kw: calls.append(a) or real_under(*a, **kw)
+    real_read = removed.read_store
+    removed.read_store = lambda *a, **kw: calls.append(a) or real_read(*a, **kw)
     texts = []
     line.back.setText = lambda t, _s=line.back.setText: texts.append(t) or _s(t)
-    win.looks.listing()                                                 # a look's summary, nothing new in it
-    assert win.looks.idle(10)
-    settle(200)
+    try:
+        win.looks.listing()                                             # a look's summary, nothing new in it
+        assert win.looks.idle(10)
+        settle(200)
+    finally:
+        removed.read_store = real_read
     assert calls == [] and texts == []
     assert line.back.text() == strings.REMOVED_BRING_BACK.format(n=1)
+
+
+# --- fix2-b: a mass Remove's list, the new controller after a switch, one read for the folder lines --------------- #
+TITLES = {"ja": "進撃の巨人", "zh": "甄嬛传"}
+
+
+def _entries(language, n):
+    return [{"trash_ids": [i], "title": f"{TITLES[language]} 第{i}話", "removed_at": "2026-10-27T10:00:00",
+             "days_left": 30, "count": 1, "can_return": True, "roots": []} for i in range(1, n + 1)]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_A4B3_a_mass_removes_2500_entries_open_in_one_frame_and_build_on_as_the_list_is_scrolled(real, language):
+    # A4B-3: one Remove of 2,500 picked titles is 2,500 entries; every line built in one slot froze the window 2.4 s
+    # (laptop ~6 s). Now the answer's own turn builds a couple, the first 30 follow in slices, the next ones as the
+    # list nears its end; a re-read with one entry fewer touches only that line (S19).
+    _store, win, _writer = real(language)
+    w = _open_removed(win)
+    entries = _entries(language, 2500)
+    t = time.perf_counter()
+    w._show(entries)
+    took = (time.perf_counter() - t) * 1000
+    assert len(w.lines) <= removed.FIRST_FRAME and took < 16, took
+    assert wait_until(w.settled, 5)
+    assert len(w.lines) == removed.BUILT_AT_ONCE
+    titles = [w.lines[k].title.text() for k in w.order]
+    assert titles == [e["title"] for e in entries[:removed.BUILT_AT_ONCE]]          # newest first, in order
+    built = w.builds
+    kept = {k: w.lines[k] for k in w.order[1:]}
+    t = time.perf_counter()
+    w._show(entries[1:])                                               # a re-read: the newest one put back
+    took = (time.perf_counter() - t) * 1000
+    assert took < 16, took
+    assert w.builds <= built + 1                                       # (at most the one more line at the end)
+    assert all(w.lines[k] is line for k, line in kept.items())          # the same widgets, nothing rebuilt
+    bar = w.scroll.verticalScrollBar()
+    bar.setValue(bar.maximum())                                         # scrolled to the end: the next ones
+    assert wait_until(lambda: len(w.lines) >= 2 * removed.BUILT_AT_ONCE and w.settled(), 5)
+    assert [w.lines[k].title.text() for k in w.order] == [e["title"] for e in entries[1:len(w.order) + 1]]
+
+
+def test_A4B7_the_list_is_read_while_a_long_look_holds_the_looks_worker(real):
+    # A4B-7: the 🗑 list was read on the looks' one worker: behind setup's first look of 15,000 files it said
+    # *Looking in the trash…* until the look ended. It reads on a thread of its own now.
+    import threading
+    store, win, writer = real()
+    title, _ids = _remove_row(win, writer)
+    gate = threading.Event()
+    win.looks._worker.put(gate.wait, 10)                               # a long look holds the looks' worker
+    try:
+        w = _open_removed(win)
+        assert any(line.title.text() == title for line in w.lines.values())
+    finally:
+        gate.set()
+
+
+def test_A4B7_bring_back_on_every_folder_line_is_one_read_and_each_line_counts_its_own(real):
+    # A4B-7: one trash scan per folder line, again on every trash move anywhere. Now one read for every line; each
+    # line still counts only the files whose original is in its own folder.
+    src_a, before_a, got_a = _source_with("ja", n=3)
+    src_b = _drive("映画")
+    for k in (1, 2):
+        _write(os.path.join(src_b, "千と千尋", f"千と千尋 - {k:02d}.srt"), _text("ja", 10 + k, extra=str(k)))
+    got_b = {}
+
+    def before(store):
+        before_a(store)
+        root = store.add_source(src_b)
+        got_b.update(root=root, ids=list(_look(store, "ja", root, first=True)["ids"]))
+    store, win, writer = real(before=before)
+    gone = got_a["ids"][:2] + got_b["ids"][:1]
+    win.moves._give(drag.Ticket("removed", (), gone), lambda t: writer.remove(gone, label=t))
+    _saved(win, writer)
+    reads = []
+    real_read = removed.read_store
+    removed.read_store = lambda *a, **kw: reads.append(a[1]) or real_read(*a, **kw)
+    try:
+        folders = _folders(win)
+        a, b = folders.lines[got_a["root"]], folders.lines[got_b["root"]]
+        assert wait_until(lambda: not a.back.isHidden() and not b.back.isHidden(), 10)
+        assert len(reads) == 1                                          # both lines, one read
+        assert a.back.text() == strings.REMOVED_BRING_BACK.format(n=2)
+        assert b.back.text() == strings.REMOVED_BRING_BACK.format(n=1)
+        del reads[:]
+        _remove_row(win, writer)                                        # a Remove elsewhere: one read again
+        assert wait_until(lambda: len(reads) == 1 and not folders._removed_job, 10)
+        settle(100)
+        assert len(reads) == 1
+    finally:
+        removed.read_store = real_read
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_A4B11_a_put_back_reads_the_list_once_and_A4B10_one_that_fails_reads_it_again(real, language):
+    # A4B-11: the ticket's "saved" and the controller's both read: two reads per Put back. A4B-10: a Put back that
+    # can't be done (its files put back from elsewhere meanwhile) showed its stale line again, every press failing.
+    store, win, writer = real(language)
+    _remove_row(win, writer, 1)
+    _remove_row(win, writer, 1)
+    w = _open_removed(win)
+    first, second = [w.lines[k] for k in w.order[:2]]
+    reads = w.reads
+    first.put.click()
+    assert wait_until(lambda: not w._reading and first.key not in w.lines and w.reads > reads, 10)
+    _saved(win, writer)
+    settle(100)
+    assert w.reads == reads + 1                                         # once
+    store.restore(list(second.key))                                     # another program put it back meanwhile
+    reads = w.reads
+    second.put.click()
+    assert wait_until(lambda: not w._reading and w.reads > reads and second.key not in w.lines, 10)
+    assert w.none.text() == strings.REMOVED_NONE
+
+
+def test_IK2_10_put_back_is_greyed_with_the_stores_reason_while_it_cant_be_written(real, monkeypatch):
+    store, win, writer = real()
+    title, ids = _remove_row(win, writer)
+    monkeypatch.setattr(writer, "can_write", lambda: False)
+    monkeypatch.setattr(writer, "reason", lambda: "newer")
+    w = _open_removed(win)
+    line = next(iter(w.lines.values()))
+    why = settings_sources.why_not(win)
+    assert why and not line.put.isEnabled() and line.put.toolTip() == why
+    line.put.click()
+    settle(100)
+    assert all(store.item(i) is None for i in ids)                     # nothing written
+
+
+def test_A4B6_after_a_language_switch_the_open_list_follows_the_new_librarys_removes(qapp):
+    # A4B-6: the list followed the controller it was opened under; a language switch makes a new one, so a Remove in
+    # the new library was never heard. It is told by the window's current controller now, and reads the new library.
+    from tests.qt.test_shell_library import _ask, _state, _switched_to
+    ja, zh = migrated("ja"), migrated("zh")
+    services = shell.open_services()
+    win = shell.open_window(qapp, services)
+    win.resize(1280, 900)
+    win.show()
+    try:
+        assert wait_until(lambda: _state(win) == "full" and services.writer is not None, 15)
+        w = _open_removed(win)
+        assert w.none.text() == strings.REMOVED_NONE
+        _ask(services, win, "zh")
+        assert _switched_to(win, services, "zh", 30)
+        assert wait_until(lambda: w.language == "zh" and not w._reading, 10)
+        reads = w.reads
+        title, _ids = _remove_row(win, services.writer)                  # a Remove in the new library
+        assert wait_until(lambda: w.reads > reads and not w._reading and
+                          any(line.title.text() == title for line in w.lines.values()), 10)
+    finally:
+        windows.close_all(win)
+        win.close()
+        services.shutdown(2.0)
+        ja.close()
+        zh.close()

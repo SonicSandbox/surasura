@@ -804,6 +804,17 @@ def _skips_moved(win, change, undone=False):
         print(f"Window drag: the skipped folders weren't read again: {e!r}")
 
 
+def _trash_moved(win, change):
+    """A4B-6: a change that put files in the trash or took them out (a Remove, a skip, a Put back, their Undo) saved or
+    undone — the 🗑 list and *Library folders*' *Bring back N removed* read again where they show
+    (`removed.trash_heard`): told by this controller, the one the window has now, never one a language switch let go."""
+    try:
+        from app.qt import removed
+        removed.trash_heard(win, change)
+    except Exception as e:                           # (the lists stay as they were until they are read again)
+        print(f"Window drag: the Removed list wasn't read again: {e!r}")
+
+
 _anki_keys = itertools.count(1)                     # finish-pending: one press per command (two Finishes: two)
 
 
@@ -822,13 +833,14 @@ def _aside(settings, language):
 class _Drag:
     """One drag in progress."""
     __slots__ = ("src", "key", "row", "ids", "title", "source", "grab", "target", "parting", "at", "external",
-                 "holding", "many", "keys")
+                 "holding", "many", "keys", "every")
 
     def __init__(self):
         self.src = self.key = self.row = self.title = self.source = None
         self.ids = []
         self.many = 0                                # A4: a drag of the picks — how many titles it carries
         self.keys = ()                               # ... and the Current rows they are (none from Goal's sheet)
+        self.every = None                            # ... what the Finished well takes (IK2-6: Goal's, every part)
         self.grab = QPointF()
         self.target = None
         self.parting = None
@@ -857,6 +869,7 @@ class DragController(QObject):
         # C5: the pointer resting on a row (`rows.HOVER_WARM_MS`, as the list warms its episodes) bakes its ghost ahead,
         # kept per row key and size while the row's picture is the same: a lift right after only shows it
         self._ghosts = {}                            # (row key, w, h, dpr) -> (row picture's cacheKey, picture, anchor)
+        self._cards = {}                             # IK2-3: (title, w, h, dpr) -> a card drag's picture, kept (few)
         self.ghost_bakes = 0                         # ghost pictures baked (tests)
         self._rest = QTimer(self)
         self._rest.setSingleShot(True)
@@ -1138,22 +1151,35 @@ class DragController(QObject):
             unlit = strings.WELL_UNLIT_SPLIT
         return self._lift_safely(d, pix, slot.size(), height, global_pos, unlit)
 
-    def begin_by_id(self, item_ids, source, title, global_pos, size=None, many=0, keys=(), unlit=None):
+    def begin_by_id(self, item_ids, source, title, global_pos, size=None, many=0, keys=(), unlit=None, every=None):
         """A drag of items the list doesn't show (W3.2's tray, the Goal sheet: `source` its tier, "goal" leaves the
         Goal well out): a card with its title as the ghost, the same drop. A4: `many` titles picked (their card says how
         many; a drop sends them as the picks' ⋯ does, `send_picks`), `keys` the Current rows they are, `unlit` why the
-        Finished well stays dark (a split's first part among them)."""
+        Finished well stays dark (a split's first part among them), `every` the ids a drop on the Finished well finishes
+        (IK2-6: Goal's picks, every part of each — as their ⋯ *Finished*; None: `item_ids`)."""
         if self.running is not None or self.refused() is not None:
             return False
         d = _Drag()
         d.ids, d.title, d.source, d.external = list(item_ids), title, source, True
         d.many, d.keys = many, tuple(keys)
+        d.every = list(every) if every is not None else None
         w = size.width() if size is not None else self.lst.viewport().width()
         h = size.height() if size is not None else rows.RowDelegate._line_h()
         dpr = self.lst.viewport().devicePixelRatioF() or 1.0
         d.grab = QPointF(min(w / 2, 40), h / 2)
-        return self._lift_safely(d, title_card(title, w, h, dpr), QRect(0, 0, w, h).size(),
+        return self._lift_safely(d, self._card(title, w, h, dpr), QRect(0, 0, w, h).size(),
                                  h + theme.ROW_LINE["gap"], global_pos, unlit)
+
+    def _card(self, title, w, h, dpr):
+        """A card drag's picture (`title_card`), the same one while its words and size are (IK2-3: so its ghost, baked
+        as the pointer rested on a picked row, is the lift's — never baked again in the lift's turn)."""
+        k = (title, w, h, round(dpr, 3))
+        pix = self._cards.get(k)
+        if pix is None:
+            pix = self._cards[k] = title_card(title, w, h, dpr)
+            while len(self._cards) > D["ghosts-kept"]:
+                del self._cards[next(iter(self._cards))]
+        return pix
 
     def _begin_picks(self, picked, global_pos, size):
         """A4: a press on a picked row travelled `drag-start-px` — every picked row lifts as one card (*5 titles*), its
@@ -1163,7 +1189,7 @@ class DragController(QObject):
         mine = [r for r in rows_ if r.key in picked]
         if not mine:
             return False
-        ids = [i for r in mine for i in ids_of(r)]
+        ids = [e.id for r in mine for e in r.episodes]     # (`ids_of`'s, in one pass: 10,000 files at 20,000)
         unlit = strings.WELL_UNLIT_SPLIT if any_split_first(rows_, picked) else None
         title = strings.PICKS_TITLES.format(n=f"{len(mine):,}")
         return self.begin_by_id(ids, "current", title, global_pos, size, many=len(mine), keys=[r.key for r in mine],
@@ -1214,7 +1240,15 @@ class DragController(QObject):
         rect = lst.visualRect(model.index(r, 0))
         slot = lst.delegate.slot_rect(kind, rect, lines)
         dpr = lst.viewport().devicePixelRatioF() or 1.0
+        picked = lst.picked_rows
         try:
+            if row.key in picked and len(picked) > 1:     # IK2-3: a picked row lifts the picks' card (`_begin_picks`)
+                view = self.page.view_model
+                n = sum(1 for r_ in (view.rows if view is not None else ()) if r_.key in picked)
+                title = strings.PICKS_TITLES.format(n=f"{n:,}")
+                w, h = slot.width(), slot.height()
+                self._ghost_for(("picks", title), self._card(title, w, h, dpr), QRect(0, 0, w, h).size(), dpr)
+                return
             self._ghost_for(row.key, self._row_picture(kind, row, lines, rect, slot), slot.size(), dpr)
         except Exception as e:                       # (ahead of time only: the lift bakes its own)
             print(f"Window drag: a ghost baked ahead failed: {e!r}")
@@ -1248,7 +1282,7 @@ class DragController(QObject):
         anim, self._ghost_anim = self._ghost_anim, None
         if anim is not None and anim.alive:          # a lift within the last drop's glide / fade: that one ends now
             anim.stop()                              # (never hides this drag's ghost when it would have finished)
-        picture, anchor = self._ghost_for(d.key, pix, size, dpr)
+        picture, anchor = self._ghost_for(d.key if not d.many else ("picks", d.title), pix, size, dpr)
         self.ghost.set_picture(picture, anchor)
         self.ghost.set_alpha(D["ghost-alpha"])
         self.ghost.place(QPointF(global_pos) - d.grab)
@@ -1578,7 +1612,8 @@ class DragController(QObject):
         if d.many:                                   # A4: the picks into a well — as the picks' ⋯ sends them
             self._end(d)
             self._glide_away()
-            self.send_picks(name, d.ids, d.many, d.keys, d.source)
+            ids = d.every if name == "finished" and d.every is not None else d.ids
+            self.send_picks(name, ids, d.many, d.keys, d.source)
             return
         if d.external:
             self._end(d)
@@ -1876,11 +1911,13 @@ class DragController(QObject):
             self.reader.refresh()
         _skips_moved(self.win, change)
         _sources_stopped(self.win, change, language=getattr(self.writer, "language", None))
+        _trash_moved(self.win, change)
 
     def _undone(self, change, label):
         _skips_moved(self.win, change, undone=True)
         _sources_stopped(self.win, change, undone=True, language=getattr(self.writer, "language", None))
-        mark =self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
+        _trash_moved(self.win, change)
+        mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if isinstance(label, Ticket):
             _tell(label, "undone")
             if label not in self._landing and mark is not None and label.anki is None:

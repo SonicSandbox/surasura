@@ -543,10 +543,9 @@ def test_an_arrival_from_a_source_names_its_folder_and_is_repainted_once(window)
     folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", "Anime")
     looks = RecordingLooks({first.item_ids[0]: folder})
     win.services.source_looks = looks
-    win._open_looks(None)
-    win._show_arrivals(win._arrivals_view)
+    win._open_looks(None)                                     # (A4B-8: the reader asks them and names the rows)
+    assert wait_until(lambda: tray.arrival(first.key).chip == "Anime", 10)
     shown = tray.arrival(first.key)                           # (A4: what the tray holds, open or not)
-    assert shown.chip == "Anime"
     assert strings.SOURCES_FROM.format(name="Anime") in shown.accessible
     groups = tray.groups
     win._show_arrivals(win._arrivals_view)                    # the same view again: nothing asked, nothing repainted

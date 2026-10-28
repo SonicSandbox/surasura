@@ -534,9 +534,10 @@ def test_real_store_A4_picks_land_together_in_the_store_and_one_undo_puts_every_
     assert wait_until(lambda: all(store.item(i) is not None and store.item(i)["tier"] == before[i] for i in ids), 10)
 
 
-def test_A4_picks_holding_a_splits_first_part_offer_no_finished_and_its_drag_leaves_the_well_dark(world):
-    """A split's first part never finishes alone (A2): with one among the picks, their ⋯ leaves *Finished* out (as the
-    single ⋯ does) and their drag keeps the Finished well dark, its tip saying why — a drop there writes nothing."""
+def test_A4_picks_holding_a_splits_first_part_grey_finished_and_its_drag_leaves_the_well_dark(world):
+    """A split's first part never finishes alone (A2): with one among the picks, their ⋯ greys *Finished* in the
+    Finished well's words (IK2-5: seen and why, never just missing) and their drag keeps the Finished well dark, its
+    tip saying why — a drop there writes nothing."""
     _seed, win, writer = world()
     lst = lst_of(win)
     shown = rows_of(win)
@@ -546,7 +547,8 @@ def test_A4_picks_holding_a_splits_first_part_offer_no_finished_and_its_drag_lea
     for i in (first, other):
         lst.pick_row(lst.model().entries[i][1])
     m = picks_menu_of(win, lst, first)
-    assert strings.PICKS_MENU["finished"][0] not in menu_texts(m)
+    fin = next(a for a in m.actions() if a.text() == strings.PICKS_MENU["finished"][0])
+    assert not fin.isEnabled() and fin.toolTip() == strings.WELL_UNLIT_SPLIT
     m.close()
     at = title_point(lst, other)
     press(lst, at)
@@ -592,3 +594,85 @@ def test_A4_S19_a_tiles_pick_repaints_that_tile_alone(world, monkeypatch):
     del painted[:]
     sheet.pick_all()                                                    # nothing changed: nothing repainted
     assert painted == []
+
+
+# --- A4B-2: every list's picks go with their library ---------------------------------------------------------------- #
+@pytest.mark.parametrize("language", ("ja", "zh"))
+@pytest.mark.parametrize("where", ("finished", "tray", "goal"))
+def test_A4B2_a_library_rebuilt_lets_the_picks_of_finished_the_tray_and_goal_go(world, language, where):
+    """AD-5 for every list that picks, not Current's alone: Finished's rows (p<piece id>), the tray's and Goal's tiles
+    are keyed by ids each store numbers from 1, so a library rebuilt or reset (a new epoch) must let them go. Wrong,
+    two rows of the new library lit that he never picked — and ⋯ → *Remove…* sends them to the trash."""
+    seed, win, _w = world(language)
+    if where == "finished":
+        fin = show_finished(win)
+        for _i, r in finished_rows(win)[:2]:
+            fin.pick_row(r)
+        picked = lambda: fin.picked_rows                               # noqa: E731
+    elif where == "tray":
+        from tests.qt.test_arrivals import open_tray
+        tray = open_tray(win)
+        for k in tray.keys()[:2]:
+            tray.pick(k)
+        picked = lambda: tray.picks                                    # noqa: E731
+    else:
+        sheet = open_sheet(win)
+        for t in sheet.order[:2]:
+            sheet.pick_tile(t)
+        picked = lambda: sheet.picks                                   # noqa: E731
+    assert len(picked()) == 2
+    epoch = win.page_widgets["current"].view_model.epoch
+    seed.library.commit(new_epoch=True)                                  # the library rebuilt: pieces numbered again
+    assert wait_until(lambda: win.page_widgets["current"].view_model.epoch != epoch, 10)
+    settle()
+    assert not picked()
+
+
+def test_A4B2_a_language_switch_lets_finisheds_picks_go(world):
+    """The language switch's half (`_show_switched` → `_forget_picks`): Finished's picks go with the language left."""
+    _seed, win, _w = world()
+    fin = show_finished(win)
+    for _i, r in finished_rows(win)[:2]:
+        fin.pick_row(r)
+    assert len(fin.picked_rows) == 2
+    win._forget_picks()
+    assert not fin.picked_rows
+
+
+def test_IK2_6_goals_picks_dropped_on_the_finished_well_finish_every_part_as_their_menu_does(world):
+    """IK2-6 / A4B-13: the same picks finished different files by the way they were sent — the drag into the Finished
+    well each title's first part, ⋯ *Finished* every part. Both finish every part of each now (one command)."""
+    _seed, win, writer = world()
+    sheet = open_sheet(win)
+    sheet.pick_all()
+    works = sheet.picked()
+    every = [i for w in works for i in w.item_ids]
+    assert len(every) > sum(len(w.pieces[0].item_ids) for w in works)    # (some title of more than one part)
+    tile = sheet.order[0]
+    assert sheet.drag(tile, tile.mapToGlobal(QPoint(10, 10)))
+    target = well_point(win, "finished")
+    move_global(win, target)
+    release_global(win, target)
+    settle()
+    assert writer.calls == [("set_tier", every, {"tier": "graduated"})]
+
+
+def test_IK2_3_a_lift_of_the_picks_right_after_the_pointer_rested_on_one_bakes_no_ghost(world):
+    """IK2-3: the picks' lift baked its card's ghost in the press's own turn (~6 ms at 1,050 picks, 20,000 files); a
+    single row's is baked as the pointer rests on it (C5). A picked row now bakes the picks' card the same way, and
+    the lift only shows it — its words the picks' count."""
+    _seed, win, _w = world()
+    lst, moves = lst_of(win), win.moves
+    now = current_rows(win, "now")[:3]
+    for i in now:
+        lst.pick_row(lst.model().entries[i][1])
+    at = title_point(lst, now[1])
+    baked = moves.ghost_bakes
+    move(lst, at, buttons=Qt.MouseButton.NoButton)                    # the pointer comes to rest on a picked row
+    assert wait_until(lambda: moves.ghost_bakes == baked + 1, 3)
+    press(lst, at)
+    move(lst, at + QPoint(0, theme.MOTION["drag-start-px"]))
+    d = moves.running
+    assert d is not None and d.many == 3 and d.title == strings.PICKS_TITLES.format(n=3)
+    assert moves.ghost_bakes == baked + 1, "the lift baked the picks' ghost again"
+    moves.cancel()

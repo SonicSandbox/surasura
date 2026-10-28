@@ -127,6 +127,49 @@ def test_a_book_whose_parts_an_item_holds_leaves_the_tables_a_build_from_scratch
             assert kept == fresh
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_refresh_that_reads_its_items_again_keeps_each_origin_in_its_place(language):
+    """Why: the tables list each bucket's origins in the look's order (an episode's first listed is the one kept); an
+    origin read again by a refresh keeps its place — never moved last, which would leave the look's order unlike the
+    store's and a later look's from scratch."""
+    store, data_dir = _empty(language)
+    src = _drive("books")
+    for n, name in enumerate(["星の歌.epub", "月の庭.epub"]):
+        _epub(os.path.join(src, "Shelf", name), _chapters(language, n))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        look = sources._Look(store, language, root, False, None, None, False, None)
+        look._load()                                              # the origins and exclusions, as a look reads them
+        look._books(), look._book_origins(), look._book_keys(), look._by_item(), look._show_origins("")
+        order, places = list(look.origins), dict(look.position)
+        tables = copy.deepcopy({t: getattr(look, t) for t in ("books_in", "book_origins", "by_item", "show_origins")})
+        first = next(iter(look.origins.values())).item_id         # not the last item: its keys can't stay last
+        look._refresh([first])                                    # nothing changed in the store
+        assert list(look.origins) == order == list(store.origins())
+        assert look.position == places
+        assert {t: getattr(look, t) for t in tables} == tables
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_edition_in_a_folder_of_two_books_named_alike_is_the_first_one_s_in_key_order(language):
+    """Why: two books in one folder whose names read the same with the edition marks off are each a head of that
+    name; a new edition is the book's the tables always picked (the first in key order, as `sorted(books)` filed
+    them), so which book it switches never depends on which one the look happened to file first."""
+    store, data_dir = _empty(language)
+    shelf = os.path.join(_drive("books"), "Shelf")
+    paths = [os.path.join(shelf, n) for n in ("星の歌 (第2版).epub", "星の歌.epub")]
+    with store:
+        look = sources._Look(store, language, None, True, None, None, True, None)
+        look.book_origins = {sources._key(p): {1: ls.Origin(i, None, f"{os.path.abspath(p)}#1", 10, 1, f"{i}" * 64,
+                                                                f"Library/星の歌/{i}.txt", "available", 0)}
+                             for i, p in enumerate(reversed(paths), 1)}   # filed last-first
+        target, here = look._edition_of(os.path.join(shelf, "星の歌 (第3版).epub"))
+    first = min(look.book_origins)
+    assert here is False and target == look.book_origins[first]
+    assert first != sources._key(paths[1])                     # the key order, not the order filed
+
+
 def test_items_of_size_reads_its_partial_index_and_an_older_store_gains_it():
     """Why: `items_of_size` runs once a book; without the index it walked every item (2 s a book by the last of
     25,000). An index changes no row: a store an older Surasura made gains it at its first open by a writer, and

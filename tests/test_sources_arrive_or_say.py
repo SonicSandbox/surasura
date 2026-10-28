@@ -18,7 +18,7 @@ from app import library_store as ls
 from app import sources
 from app.services import source_looks
 from tests.test_library_store_support import LANGUAGES, RESOURCES
-from tests.test_sources_scan import _drive, _empty, _fresh_module_state, _look, _settle, _video, _write  # noqa: F401
+from tests.test_sources_scan import _drive, _empty, _epub, _fresh_module_state, _look, _settle, _video, _write  # noqa: F401
 
 _SUB = {"ja": ("placed_episode.srt", "library_episode.ass"), "zh": ("night_market.srt", "chinese_text_1.txt")}
 _TAG = {"ja": "ja", "zh": "zh"}
@@ -334,3 +334,45 @@ def test_a_removed_waiting_video_copied_elsewhere_is_counted_by_its_video(langua
         _look(store, language, root, full=True)
         row = _Summary(language).rows(store)[root]
     assert row["kept_out"] == 1 and row["kept_out_ids"] == sorted(removed.trash_ids)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_of_a_removed_epub_in_another_folder_is_counted_by_its_bytes(language):
+    """Why (b, an EPUB): he removed a book read from an EPUB, then copied the EPUB into another folder; its parts carry
+    the book's bytes, so the copy stays out (S6) — counted on its source's row with the Remove's trash ids, never left
+    out silently."""
+    store, data_dir = _empty(language)
+    src = _drive("Incoming")
+    lines = [line for line in _book(language).splitlines() if line.strip()]
+    chapters = [f"<h1>第{c}章</h1>" + "".join(f"<p>{line}</p>" for line in lines[c::3]) for c in range(3)]
+    _epub(os.path.join(src, "Shelf", "星の歌.epub"), chapters)
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        removed = store.remove(_look(store, language, root, first=True)["ids"])
+        shutil.copytree(os.path.join(src, "Shelf"), os.path.join(src, "Shelf (copy)"))
+        _settle(src)
+        _look(store, language, root, full=True)
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0     # kept out (S6)
+        row = _Summary(language).rows(store)[root]
+    assert row["kept_out"] == 1 and row["kept_out_ids"] == sorted(removed.trash_ids)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_link_to_a_folder_of_its_own_source_is_never_followed_its_show_arrives_where_it_is(language):
+    """Why (a): a link to a folder the same source reads (a learner's shortcut to a show, listed before it) is no
+    second place: the show arrives under its own folder's name, once, and nothing is said about the link."""
+    store, data_dir = _empty(language)
+    src = _drive("Incoming")
+    _write(os.path.join(src, "Show A", f"Show A - 01.{_TAG[language]}.srt"), _text(language, 1))
+    _settle(src)
+    _link(os.path.join(src, "Show A"), os.path.join(src, "Anime link"))   # listed first: "A" before "S"
+    with store:
+        root = store.add_source(src)
+        _scan(store, language, root, first=True)
+        rows = store.conn.execute("SELECT parent_folder FROM items").fetchall()
+        origins = [o.origin for o in store.origins().values()]
+        said = sources.notes(language, store).get(root) or {"not_read": []}
+    assert [r[0] for r in rows] == ["Show A"]
+    assert origins and all("Anime link" not in o for o in origins)
+    assert said["not_read"] == []

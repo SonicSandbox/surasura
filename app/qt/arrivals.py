@@ -77,6 +77,11 @@ def newest(arrivals, n=COVERS):
     return heapq.nlargest(n, arrivals, key=_stamp)
 
 
+def kept_out_words(n):
+    """Alpha 4 (Mattias #8): the tray's foot — *N files you removed earlier were left out*."""
+    return strings.ARRIVALS_KEPT_OUT_ONE if n == 1 else strings.ARRIVALS_KEPT_OUT.format(n=n)
+
+
 def inset_titles(arrivals, n=COVERS):
     """The inset's covers: the newest `n` arrivals' cover titles, newest first (the tray's order puts *New* first;
     the covers follow `added_at` across both groups)."""
@@ -379,6 +384,7 @@ class ArrivalsInset(QToolButton):
         self._had = False                    # it has shown arrivals before (the first fill never moves)
         self.paints = 0                      # repaints asked (S19)
         self.arrivals_played = 0             # arrival motions started (tests)
+        self.kept = 0                        # alpha 4 (Mattias #8): files a look kept out (the tray's foot says so)
         self.setVisible(False)
         qcovers.notifier().ready.connect(self._cover_ready)        # --- W3.2 L3
 
@@ -410,19 +416,44 @@ class ArrivalsInset(QToolButton):
         moved = self._had and count > 0 and grew > 0 and self.window().isVisible()
         fresh = min(grew, sum(1 for k in keys if k not in self.keys))
         self.count, self.titles, self.keys = count, titles, keys
-        one = count == 1
-        self.setToolTip(strings.ARRIVALS_TIP_ONE if one else strings.ARRIVALS_TIP.format(n=count))
-        self.setAccessibleName(strings.ARRIVALS_NAME_ONE if one else strings.ARRIVALS_NAME.format(n=count))
-        shown = count > 0
-        if self.isHidden() == shown:
-            self.setVisible(shown)
-        self._had = self._had or shown
+        self._describe()
+        self._had = self._had or count > 0
         self.updateGeometry()
         if moved:
             self.fresh = fresh
             self._play_arrival()
         self.paints += 1
         self.update()
+        return True
+
+    def _describe(self):
+        """Its tooltip, its name and whether it shows: with an arrival, or with files a look kept out (alpha 4: the
+        tray's foot says so and brings them back — no arrival waiting, the inset is the way to it)."""
+        count = self.count
+        if count == 0 and self.kept:
+            line = kept_out_words(self.kept)
+            self.setToolTip(strings.ARRIVALS_KEPT_OUT_INSET_TIP.format(line=line))
+            self.setAccessibleName(strings.ARRIVALS_KEPT_OUT_NAME.format(arrivals=strings.ARRIVALS, line=line))
+        else:
+            one = count == 1
+            self.setToolTip(strings.ARRIVALS_TIP_ONE if one else strings.ARRIVALS_TIP.format(n=count))
+            self.setAccessibleName(strings.ARRIVALS_NAME_ONE if one else strings.ARRIVALS_NAME.format(n=count))
+        shown = count > 0 or self.kept > 0
+        if self.isHidden() == shown:
+            self.setVisible(shown)
+
+    def set_kept_out(self, n):
+        """Alpha 4 (Mattias #8, A4K-6): how many new files the looks kept out because they match removed ones. -> True
+        when it changed (only then is anything set or repainted, S19)."""
+        n = max(0, int(n or 0))
+        if n == self.kept:
+            return False
+        self.kept = n
+        self._describe()
+        if not self.count:                   # it paints the kept-out files only with no arrival (S19, review)
+            self.paints += 1
+            self.updateGeometry()
+            self.update()
         return True
 
     def set_lit(self, on):
@@ -486,12 +517,16 @@ class ArrivalsInset(QToolButton):
         n = len(self.titles) if n is None else n
         return 0 if not n else m["cw"] + (n - 1) * (m["cw"] - m["over"])
 
+    def _counted(self):
+        """Its count is drawn — never a 0 when it shows only for the files kept out (alpha 4, review)."""
+        return bool(self.count) or not self.kept
+
     def sizeHint(self):
         m = self._metrics()
         words = rows.TEXT.metrics("level", 600).horizontalAdvance(strings.ARRIVALS)
-        count = rows.TEXT.metrics("level", 700).horizontalAdvance(f"{self.count:,}")
+        count = rows.TEXT.metrics("level", 700).horizontalAdvance(f"{self.count:,}") if self._counted() else 0
         covers = self._covers_w(m)
-        w = m["left"] + covers + (m["gap"] if covers else 0) + words + m["gap"] + count + m["right"]
+        w = m["left"] + covers + (m["gap"] if covers else 0) + words + (m["gap"] + count if count else 0) + m["right"]
         return QSize(w, m["h"])
 
     def minimumSizeHint(self):
@@ -561,8 +596,9 @@ class ArrivalsInset(QToolButton):
         w, _cut = rows.TEXT.draw(p, x, mid, strings.ARRIVALS, "level", self.width(), ink, weight=600, elide=False)
         x += w + m["gap"]
         lift = -2.0 * math.sin(math.pi * t) if t < 1.0 else 0.0     # the count lifts once
-        rows.TEXT.draw(p, x, mid + lift, f"{self.count:,}", "level", self.width(), rows.c("accent"), weight=700,
-                       elide=False)
+        if self._counted():
+            rows.TEXT.draw(p, x, mid + lift, f"{self.count:,}", "level", self.width(), rows.c("accent"), weight=700,
+                           elide=False)
         if self.hasFocus():
             p.setPen(QPen(rows.c("accent"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1321,6 +1357,30 @@ class ArrivalsTray(motion.Overlay):
         self.view = TrayList(self)
         self.view.setModel(self.model)
         box.addWidget(self.view, 1)
+        # alpha 4 (Mattias #8, A4K-6): the foot — new files the looks kept out because they match files he removed, and
+        # *Bring back* (the 🗑 list's Put back: the writer's `restore`, one Undo); hidden with none
+        self.kept_box = QWidget(self)
+        foot = QHBoxLayout(self.kept_box)
+        foot.setContentsMargins(round(6 * f), round(4 * f), 0, 0)
+        foot.setSpacing(round(6 * f))
+        self.kept_line = QLabel(self.kept_box)
+        self.kept_line.setObjectName("traykeptout")
+        self.kept_line.setTextFormat(Qt.TextFormat.PlainText)
+        self.kept_line.setToolTip(strings.ARRIVALS_KEPT_OUT_TIP)
+        self.kept_line.setWordWrap(True)
+        foot.addWidget(self.kept_line, 1)
+        self.bring_back = QToolButton(self.kept_box)
+        self.bring_back.setText(strings.ARRIVALS_BRING_BACK)
+        self.bring_back.setAccessibleName(strings.ARRIVALS_BRING_BACK_NAME)
+        self.bring_back.setToolTip(strings.ARRIVALS_BRING_BACK_TIP)
+        self.bring_back.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.bring_back.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.bring_back.clicked.connect(lambda _c=False: self.bring_back_kept())
+        foot.addWidget(self.bring_back, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.kept_box.hide()
+        box.addWidget(self.kept_box)
+        self.kept_out = (0, (), ())         # (how many, the Removes' trash ids, the folders they were kept out of)
+        self.giving = None                  # a Bring back saving: the looks' last word on them, held meanwhile
         self.groups = ()                    # the view's arrival_groups last given (shown, or waiting for `open`)
         self._applied = ()                  # ... and those the rows show (the model is brought up to date open only)
         self._target = ((), [], [], {})     # IK-6: (groups, the rows' keys, their objects, {head kind: its row})
@@ -1647,11 +1707,18 @@ class ArrivalsTray(motion.Overlay):
         self.ensurePolished()
         width = min(round(theme.size("tray", style.current()[1])), p.width() - 16)
         lay = self.layout()
+        empty = not self.model.keys and not self._filling      # alpha 4: no arrival, only the kept-out foot — no
+        if self.view.isHidden() != empty:                     # empty list squeezing it
+            if empty and self.view.hasFocus():
+                self.setFocus(Qt.FocusReason.OtherFocusReason)    # (never handed on to Bring back by itself)
+            self.view.setVisible(not empty)
         self._heights()
         content = self.model.content_height(self._row_h)
         margins = lay.contentsMargins()
         head = lay.itemAt(0).sizeHint().height()
         want = margins.top() + head + lay.spacing() + content + margins.bottom() + 2
+        if not self.kept_box.isHidden():                   # alpha 4: the kept-out foot under the rows
+            want += lay.spacing() + self.kept_box.sizeHint().height()
         b = self.inset
         at = b.mapTo(p, QPoint(b.width(), b.height()))
         y = at.y() + 6
@@ -1665,8 +1732,91 @@ class ArrivalsTray(motion.Overlay):
 
     def open(self):
         self._apply()                    # A4: the rows brought up to date as it opens (closed, they waited)
+        if self.kept_out[0]:
+            self._turn_bring_back()
         self.place()
         return super().open()
+
+    # --- alpha 4 (Mattias #8, A4K-6): files the looks kept out, and *Bring back* -------------------------------- #
+    def set_kept_out(self, n, trash_ids=(), roots=()):
+        """The looks' summary: `n` new files kept out because their bytes or video are a file he removed, the Removes'
+        trash ids, the folders they were in. -> True when it changed (only then is the foot touched, S19)."""
+        n = max(0, int(n or 0))
+        held = (n, tuple(trash_ids) if n else (), tuple(roots) if n else ())
+        if held == self.kept_out:
+            return False
+        self.kept_out = held
+        if n:
+            self.kept_line.setText(kept_out_words(n))
+            self._turn_bring_back()
+        if self.kept_box.isHidden() == bool(n):
+            self.kept_box.setVisible(bool(n))
+            if self.isVisible():
+                self.place()
+        return True
+
+    def kept_said(self, n, trash_ids=(), roots=()):
+        """The looks' summary (the shell's `_show_kept_out`): the foot and the inset. While a Bring back is saving
+        (`giving`) a summary is held, never shown: one taken before the save would offer the ids being put back again,
+        and a second press be refused over the first's toast (review). Saved, the looks say again (its folders looked
+        at); refused or ended unsaved, the last one held shows. -> True when anything changed."""
+        if self.giving is not None:
+            self.giving = (max(0, int(n or 0)), tuple(trash_ids), tuple(roots))
+            return False
+        changed = self.set_kept_out(n, trash_ids, roots)
+        return self.inset.set_kept_out(n) or changed
+
+    def _turn_bring_back(self):
+        """*Bring back* greyed with the store's reason while it can't be written (as the 🗑 list's Put back, IK2-10)."""
+        from app.qt import removed, settings_sources
+        why = removed.why_not(self.win)
+        settings_sources._turn(self.bring_back, why is None, why or strings.ARRIVALS_BRING_BACK_TIP)
+
+    def bring_back_kept(self):
+        """*Bring back*: the Removes the kept-out files match put back (`removed.give_back`: the writer's `restore`, one
+        change, its toast's one Undo); the foot goes at once, and comes back if nothing was saved. Once saved, the
+        folders they were kept out of are looked at, so their copies come in now. -> True when given."""
+        from app.qt import removed, windows
+        held = self.kept_out
+        n, ids, roots = held
+        if not ids or self.giving is not None:
+            return False
+        why = removed.why_not(self.win)
+        if why is not None:                                 # the store went read-only since it was drawn: greyed now,
+            self._turn_bring_back()                         # and the press answered in the bar
+            windows.say_in_bar(self.win, why)
+            return False
+        shell = self.win
+        language = getattr(shell, "language", None)
+
+        def show(h):
+            self.set_kept_out(*h)
+            self.inset.set_kept_out(h[0])
+
+        def told(event):
+            looks = getattr(shell, "looks", None)
+            same = language == getattr(shell, "language", None)
+            if event == "saved":
+                self.giving = None                          # (what was held predates the save: the looks say again)
+                look_at = getattr(looks, "look_at", None)
+                if look_at is not None and same:
+                    for root in roots:
+                        look_at(root, language=language)
+            elif event in ("refused", "ended") and self.giving is not None:
+                h, self.giving = self.giving, None
+                if same:
+                    show(h)                                 # nothing written: the foot as the looks last said
+            elif event == "undone" and looks is not None and same:
+                looks.listing()                             # removed again: the foot as the looks say now
+        self.giving = held
+        show((0, (), ()))                                   # the press's answer, in the frame
+        if removed.give_back(shell, ids, strings.ARRIVALS_BROUGHT_BACK, told=told) is None:
+            self.giving = None
+            show(held)
+            return False
+        if not self.inset.count:
+            self.close()                                    # nothing left in it: the toast says what happened
+        return True
 
     def toggle(self):
         if self.isVisible() or motion.opening_of(self) is not None:

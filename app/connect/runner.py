@@ -303,14 +303,21 @@ def _books_aside(steps, ledger, lang, jobs):
     mines, kinds_of = getattr(steps, "mines", None), getattr(steps, "waiting_items", None)
     if mines is None or kinds_of is None:
         return 0
-    waiting = set()
-    for kind, reason in WAIT_REASONS.items():
-        if not mines(lang, kind):
-            waiting.add(kind)
-        elif ledger.skipped_for(lang, reason):
-            aside = [j["item_id"] for j in ledger.jobs(lang, states=("skipped",)) if j.get("reason") == reason]
-            with ledger.transaction():
-                ledger.reopen_skipped(lang, aside, reason)
+    waiting = {kind for kind in WAIT_REASONS if not mines(lang, kind)}
+    if any(ledger.skipped_for(lang, reason) for reason in WAIT_REASONS.values()):
+        # every job set aside whose item no longer waits for that kind is queued again — its kind mined now, its
+        # title's type corrected, its video found (review A2-2): nothing to undo
+        aside = {}
+        for j in ledger.jobs(lang, states=("skipped",)):
+            for kind, reason in WAIT_REASONS.items():
+                if j.get("reason") == reason:
+                    aside.setdefault(kind, set()).add(j["item_id"])
+        still = kinds_of(lang, set().union(*aside.values())) if aside else {}
+        for kind, ids in aside.items():
+            back = [i for i in ids if kind not in waiting or still.get(i) != kind]
+            if back:
+                with ledger.transaction():
+                    ledger.reopen_skipped(lang, back, WAIT_REASONS[kind])
     if not waiting:
         return 0
     jobs = [j for j in jobs if _resume_of(j) in BEFORE_MINING and not _started(ledger, j["id"])]
@@ -1409,20 +1416,29 @@ class Steps:
 
     def waiting_items(self, lang, item_ids):
         """Alpha 4 M1 / A4M1-3 (was P4.1's K67 `text_only`): of `item_ids`, those Anki Miner can't mine yet ->
-        {item id: kind} by `library.waits_for` (books and texts by their file's type, audio by their title's), in one
-        store read; a busy store → none (the next look asks again)."""
+        {item id: kind} by `library.waits_for` (books and texts by their file's type, in one store read; audio by
+        their title's type, and only while no video is found for it — a video podcast is mined as before, review
+        A2-1); a busy store → none (the next look asks again)."""
         from app.connect import library
         try:
             store = self._open(lang)
         except (Wait, Needs):
             return {}
-        out = {}
+        out, audio = {}, []
         with store:
             for i in item_ids:
                 item = store.item(i) or {}
                 kind = library.waits_for(item, library.media_of(store, item))
-                if kind:
+                if kind == "audio":
+                    audio.append(i)
+                elif kind:
                     out[i] = kind
+        for i in audio:
+            try:
+                if self.video(lang, {"item_id": i, "language": lang}) is None:
+                    out[i] = "audio"
+            except (Wait, Needs):
+                pass                        # can't be told now: not set aside (the pick decides, as for a video)
         return out
 
     def mines(self, lang, kind):

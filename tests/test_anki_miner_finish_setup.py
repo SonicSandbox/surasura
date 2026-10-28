@@ -31,8 +31,8 @@ def api(monkeypatch):
     calls = []
     answer = {}
 
-    def fake(path, args, timeout=anki_miner.QUICK_TIMEOUT, on_poll=None):
-        calls.append({"path": path, "args": list(args), "timeout": timeout})
+    def fake(path, args, timeout=anki_miner.QUICK_TIMEOUT, on_poll=None, bind=True):
+        calls.append({"path": path, "args": list(args), "timeout": timeout, "bind": bind})
         if on_poll is not None:
             on_poll()
         return answer["verdict"]
@@ -56,7 +56,8 @@ def test_run_setup_asks_anki_miner_for_its_own_setup_in_the_language_and_profile
     result = anki_miner.run_setup(MINER, "ja", "p-main", progress)
     assert result["language_pack"]["status"] == "installed"
     assert calls == [{"path": MINER, "args": ["setup", "--language", "ja", "--progress", str(progress),
-                                              "--profile", "p-main"], "timeout": anki_miner.SETUP_TIMEOUT}]
+                                              "--profile", "p-main"], "timeout": anki_miner.SETUP_TIMEOUT,
+                      "bind": False}], "never ended with Surasura (review A2-4): it finishes by itself"
 
 
 def test_run_setup_with_no_profile_uses_anki_miners_current_settings(api, tmp_path):
@@ -89,7 +90,8 @@ def test_an_anki_miner_refusal_keeps_its_kind(api, tmp_path, error, kind):
 @pytest.mark.parametrize("features, items, ours", [
     (["setup"], {"dictionary"}, True),
     (["setup"], {"dictionary", "resources", "language_pack"}, True),
-    (["setup"], {"dictionary", "deck"}, False),           # a deck is Anki's: never Anki Miner's setup
+    (["setup"], {"dictionary", "deck"}, True),            # the dictionaries done, the deck named (IK-A2)
+    (["setup"], {"deck", "note_type"}, False),            # a deck is Anki's: never Anki Miner's setup
     (["setup"], set(), False),                            # nothing missing: nothing to run
     ([], {"dictionary"}, False),                          # an Anki Miner that names no `setup` (before 3.7)
 ])
@@ -101,7 +103,7 @@ def test_can_set_up_only_what_its_setup_installs_and_only_when_it_names_the_verb
 @pytest.fixture
 def world(monkeypatch, tmp_path):
     """The checks Connect's setup makes, the run lock and Anki Miner's `setup` stood in; local data in tmp."""
-    state = {"setup": True, "busy": False, "runs": [], "raise": None, "progress": None}
+    state = {"setup": True, "busy": False, "runs": [], "raise": None, "progress": None, "still": False}
 
     def checks(settings, language, keep=True):
         assert keep is False, "finishing the setup never writes Connect's setup record"
@@ -120,6 +122,7 @@ def world(monkeypatch, tmp_path):
             on_poll()
         if state["raise"] is not None:
             raise state["raise"]
+        state["setup"] = state["still"]      # what its check says after: set up, unless it still lacks something
         return {}
     monkeypatch.setattr(setup, "checks", checks)
     monkeypatch.setattr(anki_miner, "run_setup", run_setup)
@@ -160,6 +163,23 @@ def test_a_setup_that_failed_says_anki_miners_words_and_its_window_open_is_busy(
     assert M.finish_setup({}, "ja") == (M.BUSY, None)
 
 
+def test_a_setup_whose_check_still_asks_after_is_never_called_finished(world):
+    """Review A2-3: Anki Miner's setup ran but its check still lacks something (a resource you imported yourself,
+    which its setup never reinstalls): named, never "finished" — the wizard then stops offering it (it would loop)."""
+    world["still"] = True
+    result, detail = M.finish_setup({}, "ja")
+    assert result == M.SETUP_FAILED and "Anki Miner still needs its dictionaries" in detail
+
+
+def test_a_language_the_profile_never_mined_is_refused_in_plain_words(world):
+    """Review A2-5: Anki Miner refuses a language its profile never used (BAD_ARGUMENTS, kind `refused`): said in
+    plain words — never its command-line hint about settings-import."""
+    world["raise"] = anki_miner.AnkiMinerError("refused", "'zh' has never been used in the active profile. Run setup "
+                                               "on a profile that mines 'zh', e.g. one made with settings-import …")
+    result, detail = M.finish_setup({}, "zh")
+    assert (result, detail) == (M.SETUP_FAILED, M.SETUP_REFUSED) and "settings-import" not in detail
+
+
 def test_one_setup_at_a_time_and_never_beside_an_install(world):
     assert M._ONE_INSTALL.acquire(blocking=False)
     try:
@@ -169,16 +189,17 @@ def test_one_setup_at_a_time_and_never_beside_an_install(world):
     assert world["runs"] == []
 
 
-def test_the_setup_is_a_job_the_quit_waits_for_with_no_cancel(world):
-    """The bottom bar lists it while it runs, with its stage; it can't be stopped part-way (Anki Miner's index), so
-    the quit waits for it rather than cancelling."""
+def test_the_setup_is_a_job_with_no_cancel_that_the_quit_leaves_to_finish(world):
+    """The bottom bar lists it while it runs, with its stage; it can't be stopped part-way (Anki Miner's index), and
+    Anki Miner finishes it by itself whenever Surasura quits (review A2-4): the quit neither waits nor cancels."""
     from app.services.jobs import JobRegistry
     registry = JobRegistry()
     world["progress"] = {"schema": 1, "item": "jmdict", "stage": 1, "stages": 3, "done": 0, "total": 0}
     live = []
     answer = M.finish_setup_as_job(registry, {}, "ja", lambda *a: live.extend(registry.live(M.SETUP_JOB_KIND)))
     assert answer == (M.SET_UP, None)
-    assert [(j.label, j.on_quit) for j in live] == [(M.SETUP_JOB_LABEL, "wait")], "listed while it runs"
+    assert [(j.label, j.on_quit) for j in live] == [(M.SETUP_JOB_LABEL, "detach")], "listed while it runs"
+    assert not live[0].can_cancel
     ended = [j for j in registry.snapshot() if j.kind == M.SETUP_JOB_KIND]
     assert len(ended) == 1 and ended[0].state == "done" and registry.live(M.SETUP_JOB_KIND) == ()
 

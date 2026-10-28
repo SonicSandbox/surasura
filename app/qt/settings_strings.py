@@ -639,6 +639,7 @@ OPEN_MINER = "Open Anki Miner"
 OPEN_MINER_TIP = ("Start Anki Miner's own window, for its own settings.\n"
                   "• Surasura never needs it open: Connect runs Anki Miner by itself")
 FINISH_MINER_SETUP = "Finish its setup…"
+FINISH_MINER_SETUP_NO_WIZARD = "The setup couldn't open here: close Settings and press Finish its setup again."
 FINISH_MINER_SETUP_TIP = ("Anki Miner still needs its dictionaries: Surasura has it download them by itself, on "
                           "the setup's Anki Miner page.\n• Nothing to open in Anki Miner")
 MINER_NOT_OPENED = "Couldn't open Anki Miner: {}"

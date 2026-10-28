@@ -307,9 +307,10 @@ def test_a_surasura_profile_is_used_when_there_is_one(monkeypatch, fake_miner):
     ("zh", [{"name": "language_pack", "ok": False, "message": "The Chinese language pack isn't installed."},
             {"name": "resources", "ok": False, "message": "Its frequency list is out of date."}],
      "The Chinese language pack isn't installed.", True),
-    # a deck is Anki's, never what Anki Miner's own `setup` installs: the old words (A4M1-2's later step)
+    # a deck is Anki's: the dictionaries are still Surasura's to finish, the deck named (intent keeper IK-A2)
     ("ja", [{"name": "dictionary", "ok": False, "message": "No dictionary is installed."},
-            {"name": "deck", "ok": False, "message": "no deck chosen"}], "deck: no deck chosen", False),
+            {"name": "deck", "ok": False, "message": "no deck chosen"}], "deck: no deck chosen", "some"),
+    ("ja", [{"name": "deck", "ok": False, "message": "no deck chosen"}], "deck: no deck chosen", False),
     ("zh", [{"name": "language-pack", "ok": False, "message": "The Chinese language pack isn't installed."}],
      "The Chinese language pack isn't installed.", False),         # an item name Surasura doesn't know: never ours
 ])
@@ -323,7 +324,9 @@ def test_anki_miners_own_setup_unfinished_names_what_it_says(monkeypatch, ready_
                   check={"ready": False, "items": items})
     check = _by_id(setup.checks(_settings(ready_37), language))["anki_miner_setup"]
     assert check["state"] == "needs-you" and named in check["say"]
-    if ours:
+    if ours == "some":
+        assert check["do"] == setup.SETUP_DO_SOME.format(rest="deck") and check["setup"] is True
+    elif ours:
         assert check["do"] == setup.SETUP_DO and check["setup"] is True and "Open Anki Miner" not in check["do"]
     else:
         assert check["do"] == "Open Anki Miner and finish its setup" and not check.get("setup")

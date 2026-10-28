@@ -71,16 +71,22 @@ def waits_for(item, media=None):
     """What Anki Miner can't mine yet, this item (a `store.item` dict) being one — the one rule for Connect's jobs, the
     gaps and the rows -> "books" (a book or a text, by its file's own type: `text_only`), "audio" (an item of a title
     whose type is a podcast's or an audiobook's, `media`: alpha 4 A4M1-3), else None. Whether Anki Miner mines that
-    kind now is `anki_miner.mines`'s."""
+    kind now is `anki_miner.mines`'s. An audio title's episode with a video beside it is still mined: Connect sets one
+    aside only while it finds no video for it (`runner.Steps.waiting_items`, review A2-1)."""
     if text_only(item):
         return "books"
     return "audio" if item and media in AUDIO_TYPES else None
 
 
 def media_of(store, item):
-    """The title's type an item (a `store.item` dict) belongs to (`Store.media_type`: stored, else guessed), or None."""
+    """The type you (or hato) gave the title an item (a `store.item` dict) belongs to, or None — the stored column
+    alone: a guess is never a podcast's or an audiobook's (`media_type_guess`), so `waits_for` reads the same at one
+    row's read (review A2-11)."""
     work = (item or {}).get("work_id")
-    return store.media_type(work)[0] if work is not None else None
+    if work is None:
+        return None
+    row = store.conn.execute("SELECT media_type FROM works WHERE id = ?", (work,)).fetchone()
+    return row[0] if row else None
 
 
 def counting(store, tier):

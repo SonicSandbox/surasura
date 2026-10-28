@@ -455,7 +455,7 @@ class MinerCard(QWidget):
         self.browse = _button(S.BROWSE_MINER, S.BROWSE_MINER_TIP, self._browse, self)
         self.open_miner = qpress.room(_button(S.OPEN_MINER, S.OPEN_MINER_TIP, self._open, self))
         # A4M1-2: what Anki Miner's own setup installs, Surasura runs it (the wizard's Anki Miner page, as Install)
-        self.finish_setup = _button(S.FINISH_MINER_SETUP, S.FINISH_MINER_SETUP_TIP, self._install, self)
+        self.finish_setup = _button(S.FINISH_MINER_SETUP, S.FINISH_MINER_SETUP_TIP, self._finish_setup, self)
         self.check_again = _button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, self.check, self)
         for b in (self.install, self.star_line, self.browse, self.finish_setup, self.open_miner, self.check_again):
             buttons.addWidget(b)
@@ -579,6 +579,13 @@ class MinerCard(QWidget):
     # the clicks
     def _install(self):
         install_anki_miner(self.page.shell)
+
+    def _finish_setup(self):
+        """*Finish its setup…* (A4M1-2): the setup wizard at its Anki Miner page, where the press runs it — never the
+        releases page (review A2-9): no wizard, the bar says where."""
+        from app.qt import first_run
+        if first_run.open_again(self.page.shell, page="cards") is None:
+            self.rows.say(S.FINISH_MINER_SETUP_NO_WIZARD)
 
     def _open_update(self):
         if self.update_url:

@@ -31,8 +31,11 @@ class Paints(QObject):
 
 
 def _at_rest(win):
-    """Everything the window does after a view done: the strip's logos, Needs you's answer, the lists' paint-ahead."""
+    """Everything the window does after a view done: the strip's logos, Needs you's answer, the lists' paint-ahead,
+    the Settings page's build (its rows come in slices: under load the last ones land after the rest has settled)."""
     assert logos_in(win.phase) and needs_in(win)
+    if win.settings_page is not None:
+        assert wait_until(lambda: win.settings_page.built, 10)
     lists = [p.list for p in win.page_widgets.values() if hasattr(p, "list")]
     assert wait_until(lambda: not any(lst._warm.isActive() for lst in lists), 10)
     QTest.qWait(300)

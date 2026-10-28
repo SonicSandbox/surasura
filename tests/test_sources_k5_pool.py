@@ -309,3 +309,19 @@ def test_a_book_whose_text_is_already_in_is_held_by_the_same_items_with_the_pool
     pooled, got = looks(True)
     assert want and {k: v for k, v in alone.items() if k != "ids"} == {k: v for k, v in pooled.items() if k != "ids"}
     assert [(v[0], v[2:]) for _k, v in sorted(got.items())] == [(v[0], v[2:]) for _k, v in sorted(want.items())]
+
+
+def test_a_look_that_ends_leaves_no_splitting_process_running(monkeypatch):
+    """Why (Haiku's mutant H2): a look that ended (not stopped) waits for its workers to exit, so no splitting process
+    outlives it — a learner's next look, or the app closing, never meets one still reading a source."""
+    seen = []
+    real_pools = sources._Look._pools
+
+    def pools(self, epubs):
+        if self.splitter is not None and not epubs:
+            seen.extend((self.splitter.pool._processes or {}).values())     # before the close drops its table
+        real_pools(self, epubs)
+    monkeypatch.setattr(sources._Look, "_pools", pools)
+    result, *_ = _first_look("ja", monkeypatch, pooled=True)
+    assert not result["stopped"] and seen
+    assert [p for p in seen if p.is_alive()] == []

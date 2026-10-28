@@ -40,9 +40,9 @@ class SkipApi(SourcesApi):
         self.skip_threads.append(threading.current_thread())
         return setup_wizard.skip_refused(language, path, chosen)
 
-    def read_folders(self, language, paths, progress=None, stop=None, skips=()):
+    def read_folders(self, language, paths, progress=None, stop=None, skips=(), **kw):
         self.read_threads.append(threading.current_thread())
-        return setup_wizard.read_folders(language, paths, progress, stop, skips=skips)
+        return setup_wizard.read_folders(language, paths, progress, stop, skips=skips, **kw)
 
 
 def _skip(wiz, path):

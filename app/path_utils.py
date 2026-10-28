@@ -664,6 +664,10 @@ def seed_samples(language=None):
                     shutil.copytree(s, d, dirs_exist_ok=True); copied += 1
     return copied
 
+TRASH_DAYS = 30                 # a file in a data folder's .trash is purged this many days after its clock (restarted at
+                                # its move: `restart_trash_clock`); the Removed list counts the days left by it
+
+
 def cleanup_trash_async(trash_path):
     """Prunes files in the given trash directory that are older than 30 days asynchronously."""
     def run_cleanup():
@@ -671,7 +675,7 @@ def cleanup_trash_async(trash_path):
             if not os.path.exists(trash_path):
                 return
             now = time.time()
-            cutoff = now - (30 * 24 * 60 * 60) # 30 days
+            cutoff = now - (TRASH_DAYS * 24 * 60 * 60)
             for root, dirs, files in os.walk(trash_path, topdown=False):
                 for name in files:
                     filepath = os.path.join(root, name)

@@ -1445,6 +1445,7 @@ class ShowsPage(_Page):
         _tabular(f)
         self.reading_line.setFont(f)
         self.reading_line.setVisible(False)
+        self._counts = None                 # K4: the progress line's last count (the wait's end repaints it)
         pick.addWidget(self.reading_line)
         self.btn_stop = _button(S.STOP, S.STOP_TIP, self.wiz.stop_reading, self.folders_part)
         self.btn_stop.setVisible(False)
@@ -1589,11 +1590,28 @@ class ShowsPage(_Page):
 
     def show_reading(self, found, shows):
         """The first look's progress line, *Found 412 episodes in 37 shows…*, with *Stop*."""
-        _set_text(self.reading_line, S.READING.format(episodes=_count(S.EPISODES, found), shows=_count(S.SHOWS_N,
-                                                                                                         shows)))
+        self._counts = (found, shows)
+        line = S.READING.format(episodes=_count(S.EPISODES, found), shows=_count(S.SHOWS_N, shows))
+        from app.services.setup_wizard import BIG_LIBRARY
+        _set_text(self.reading_line, S.READ_BIG.format(line=line) if found >= BIG_LIBRARY else line)   # K5
         _show(self.reading_line, True)
         _show(self.btn_stop, True)
         self._paint_folders()
+
+    def show_waiting(self, on):
+        """K4: the library is busy (another save, another look): the progress line says page 3 waits and goes on by
+        itself, *Stop* still there; the next count repaints it."""
+        if on:
+            _set_text(self.reading_line, S.READ_WAITING)
+            _show(self.reading_line, True)
+        elif self._counts is not None:
+            self.show_reading(*self._counts)          # going on: the count as it last stood
+
+    def show_copying(self, done, total):
+        """K5: the first look's copy, *Copying into your library: 1,204 of 25,000 files…*, with *Stop*."""
+        _set_text(self.reading_line, S.COPYING.format(done=done, total=total))
+        _show(self.reading_line, True)
+        _show(self.btn_stop, True)
 
     def stopping(self):
         _enable(self.btn_stop, False)
@@ -2832,7 +2850,14 @@ class SetupWizard(QWidget):
         seq, language = self._read_seq, self.language
         skips = list(page.skips)                              # K6: skipped before each folder's first look
         progress = bridge.Relay(self)
-        progress.said.connect(lambda counts: self.alive(page.show_reading)(*counts))
+        def heard(said):                                      # (on,) K4's wait · ("copy", done, total) K5 · (found, shows)
+            if len(said) == 1:
+                page.show_waiting(*said)
+            elif said[0] == "copy":
+                page.show_copying(*said[1:])
+            else:
+                page.show_reading(*said)
+        progress.said.connect(lambda said: self.alive(heard)(said))
         page.refuse(None)
         page.show_reading(0, 0)
         self.paint_footer()
@@ -2862,7 +2887,10 @@ class SetupWizard(QWidget):
 
         def failed(info):
             ended({"failed": [(p, str(info[1])) for p in paths], "read": list(paths)})
-        read = (lambda *a: self.api.read_folders(*a, skips=skips)) if skips else self.api.read_folders
+        waiting = lambda on: progress.call((on,))      # noqa: E731 (K4: the library busy, page 3 waits)
+        copying = lambda done, total: progress.call(("copy", done, total))   # noqa: E731 (K5: the copy's count)
+        read = (lambda *a: self.api.read_folders(*a, skips=skips, waiting=waiting, copying=copying)) if skips else \
+            (lambda *a: self.api.read_folders(*a, waiting=waiting, copying=copying))
         bridge.run_in_worker(read, language, paths, lambda found, shows: progress.call((found, shows)),
                              stop.is_set, then=lambda result: (self.alive(ended)(result), needs_look()),
                              failed=lambda info: (self.alive(failed)(info), needs_look()))

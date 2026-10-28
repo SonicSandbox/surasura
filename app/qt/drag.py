@@ -802,6 +802,17 @@ def _skips_moved(win, change, undone=False):
         print(f"Window drag: the skipped folders weren't read again: {e!r}")
 
 
+def _trash_moved(win, change):
+    """A4B-6: a change that put files in the trash or took them out (a Remove, a skip, a Put back, their Undo) saved or
+    undone — the 🗑 list and *Library folders*' *Bring back N removed* read again where they show
+    (`removed.trash_heard`): told by this controller, the one the window has now, never one a language switch let go."""
+    try:
+        from app.qt import removed
+        removed.trash_heard(win, change)
+    except Exception as e:                           # (the lists stay as they were until they are read again)
+        print(f"Window drag: the Removed list wasn't read again: {e!r}")
+
+
 _anki_keys = itertools.count(1)                     # finish-pending: one press per command (two Finishes: two)
 
 
@@ -1874,11 +1885,13 @@ class DragController(QObject):
             self.reader.refresh()
         _skips_moved(self.win, change)
         _sources_stopped(self.win, change)
+        _trash_moved(self.win, change)
 
     def _undone(self, change, label):
         _skips_moved(self.win, change, undone=True)
         _sources_stopped(self.win, change, undone=True)
-        mark =self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
+        _trash_moved(self.win, change)
+        mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if isinstance(label, Ticket):
             _tell(label, "undone")
             if label not in self._landing and mark is not None and label.anki is None:

@@ -402,11 +402,8 @@ class FoldersWindow(windows.SecondaryWindow):
         self.removed = sc.Door(strings.REMOVED_OPEN, tooltip=strings.REMOVED_OPEN_TIP, parent=self.box)
         self.removed.clicked.connect(lambda _c=False: self.open_removed())
         skip_line.addWidget(self.removed)
-        self._removed_reading = {}                        # root id -> a `removed_under` read under way (True: again)
-        from app.qt import bridge, removed
-        self._removed_relay = bridge.Relay(self)
-        self._removed_relay.said.connect(self._removed_landed)
-        removed.follow_trash(shell, self._trash_heard)
+        self._removed_reading = {}                        # root id -> in the read under way (True: again after it)
+        self._removed_job = False                         # A4B-7: one read for every line, one at a time
         # --- end alpha 4 P-removed
         skip_line.addStretch(1)
         column.addLayout(skip_line)
@@ -764,46 +761,51 @@ class FoldersWindow(windows.SecondaryWindow):
         return removed.open_window(self.shell)
 
     def read_removed(self, roots=None):
-        """Each folder's removed files (`SourceLooks.removed_under`, on the looks' worker; `roots`: these folders only,
-        else every line's): its *Bring back N removed* follows. Read as its line shows and when the trash moved, never
-        on a look's summary (S19). One read per folder at a time (asked meanwhile: one more after it). -> how many were
-        asked."""
-        looks = _looks(self.shell)
-        if looks is None or not hasattr(looks, "removed_under") or self.gone:
+        """Each folder's removed files (A4B-7: every line's in ONE read, `removed.read_store` — a pool thread, never
+        queued behind a look; `roots`: these folders only, else every line's): its *Bring back N removed* follows.
+        Read as its line shows and when the trash moved (`trash_heard`), never on a look's summary (S19). One read at a
+        time (asked meanwhile: one more after it). -> how many folders were asked."""
+        if self.gone:
             return 0
-        asked = 0
-        for root in list(self.lines) if roots is None else roots:
-            if root not in self.lines:
-                continue
-            if root in self._removed_reading:
+        want = [r for r in (list(self.lines) if roots is None else roots) if r in self.lines]
+        if not want:
+            return 0
+        if self._removed_job:
+            for root in want:
                 self._removed_reading[root] = True        # one more after the one under way
-                continue
-            language = self.lines_of
+            return 0
+        from app.qt import removed
+        language = self.lines_of
+        for root in want:
             self._removed_reading[root] = False
-            if looks.removed_under(root, lambda found, r=root: self._removed_relay.call((language, r, found)),
-                                   language=language):
-                asked += 1
-            else:
+        self._removed_job = True
+        if not removed.read_store(self.shell, language, lambda store: removed.removed_by_root(store, want),
+                                  lambda found: self._removed_landed((language, found))):
+            self._removed_job = False
+            for root in want:
                 self._removed_reading.pop(root, None)
-        return asked
+            return 0
+        return len(want)
 
     def _removed_landed(self, said):
-        language, root, found = said
-        again = self._removed_reading.pop(root, False)
+        language, found = said
+        self._removed_job = False
+        reading, self._removed_reading = self._removed_reading, {}
         if self.gone:
             return
-        if again:
-            self.read_removed([root])
-            return
-        line = self.lines.get(root)
-        if line is not None and language == self.lines_of and found is not None and line.show_removed(found):
+        again = [r for r, more in reading.items() if more]
+        if language == self.lines_of and isinstance(found, dict):
             why = why_not(self.shell)
-            _turn(line.back, why is None, why or line.back_tip)
+            for root, ids in found.items():
+                line = self.lines.get(root)
+                if line is not None and root not in again and ids is not None and line.show_removed(ids):
+                    _turn(line.back, why is None, why or line.back_tip)
+        if again:
+            self.read_removed(again)
 
-    def _trash_heard(self, change, _label=None):
-        from app.qt import removed
-        if removed.trash_moved(change):
-            self.read_removed()
+    def trash_heard(self):
+        """A4B-6: the window's controller saved or undid a change that moved the trash (`removed.trash_heard`)."""
+        self.read_removed()
 
     def bring_back(self, root_id):
         """*Bring back N removed*: the writer's `restore` of that folder's removed files (one change, its toast's one

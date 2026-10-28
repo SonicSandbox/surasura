@@ -1454,8 +1454,18 @@ REPORT_HINT = "Send this zip to Sonic. Nothing is sent by Surasura: the zip stay
 NEEDS_RELINKED_NONE_TREE = "Nothing in that folder, or the folders in it, has these files' names"
 NEEDS_RELINK_LEFT = "{n:,} of them weren't pointed at: {why}"
 NEEDS_RELINK_WHY = "{why} ({n:,})"
+# fix2 (A4B-4): a folder picked outside the library folder — the store points an item only at a file inside it
+NEEDS_RELINK_OUTSIDE = ("{n:,} of them are in {folder}, outside your library folder, so they can't be pointed at. "
+                        "To read them where they are, add that folder in Settings › Library folders")
+NEEDS_RELINK_WHY_OUTSIDE = "outside your library folder"
+NEEDS_RELINK_NONE_TAKEN = ("None of them were pointed at: each file found is another item's already, in the trash, "
+                           "or not there any more")
 # T6 option 2: *Find its new folder…* read a folder that held none of the show's episodes: it isn't read any more
 NEEDS_FIND_DROPPED = "None of {show}'s episodes were there: {folder} isn't read"
+NEEDS_FIND_DROPPED_ARRIVALS = ("None of {show}'s episodes were there: {folder} isn't read. The {n:,} files it "
+                              "found wait in New arrivals, to place or remove")
+NEEDS_FIND_DROPPED_ARRIVAL = ("None of {show}'s episodes were there: {folder} isn't read. The file it found "
+                             "waits in New arrivals, to place or remove")
 # --- end alpha 4 seams
 
 # --- alpha 4 P-removed (D3, Mattias #6): the 🗑 Removed list and Settings' *Bring back N removed* (app/qt/removed.py)

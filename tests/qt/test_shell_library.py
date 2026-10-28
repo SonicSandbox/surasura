@@ -285,6 +285,20 @@ def test_a_language_switch_shows_the_new_library_and_writes_only_into_it(opened)
     zh.close()
 
 
+def test_after_a_language_switch_needs_you_reads_and_writes_the_new_librarys_folder_and_answers(opened):
+    """Fix2 (found with A4B-5): Needs you kept the language it opened with — after a switch its cards were worked out
+    from the language left's data folder and seen file, and *Choose a folder…* pointed at that library's folder."""
+    ja, zh = migrated("ja"), migrated("zh")
+    services, win = opened()
+    assert wait_until(lambda: _state(win) == "full", 15)
+    assert win.needs_you is not None and win.needs_you.language == "ja"
+    _switch(services, "zh")
+    assert wait_until(lambda: win.language == "zh" and _state(win) == "full", 15)
+    assert win.needs_you.language == "zh"
+    ja.close()
+    zh.close()
+
+
 def test_a_move_queued_on_a_busy_store_lands_in_its_own_language_before_the_switch(opened, short_lock_wait):
     ja, zh = migrated("ja"), migrated("zh")
     services, win = opened()

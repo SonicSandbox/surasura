@@ -15,6 +15,7 @@ writes, a real store in the test's own root: the start-fresh backup, the relinke
 stopped and read again.
 """
 import os
+import pathlib
 import threading
 from types import SimpleNamespace
 
@@ -230,7 +231,7 @@ def test_choose_a_folder_on_a_folders_card_relinks_every_match_in_one_command_an
     entries = service.entries(_in_folder(language, 12))
     card = entries[0]
     assert card.kind == service.FILES_FOLDER and len(card.lines) == 12
-    picked = tmp_path / "移動先"
+    picked = pathlib.Path(ny._data()) / "移動先"                         # moved inside the library folder
     for ln in card.lines[:10]:                                            # 10 of 12 moved there, keeping their places
         there = picked.joinpath(*ln.rel_path.split("/")[1:])
         there.parent.mkdir(parents=True, exist_ok=True)
@@ -268,6 +269,111 @@ def test_choose_a_folder_holding_none_of_the_files_writes_nothing_and_says_so(wo
     _button(ny, entries[0].key, "choose_folder").click()
     assert wait_until(lambda: heard, 5)
     assert heard[-1] == strings.NEEDS_RELINKED_NONE_TREE and writer.calls == []
+
+
+def _moved_to(folder, lines):
+    """Each gone file at its own place under `folder` (as a learner's moved folder holds them)."""
+    for ln in lines:
+        there = pathlib.Path(folder).joinpath(*ln.rel_path.split("/")[1:])
+        there.parent.mkdir(parents=True, exist_ok=True)
+        there.write_text("1\n00:00:01,000 --> 00:00:02,000\n海辺で本を読む\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_A4B4_choose_a_folder_outside_the_library_folder_gives_nothing_and_says_why(world, language, tmp_path):
+    """The reinstall case: the learner picks their own folder (outside the library folder) — every file matched, but
+    the store can only point at a file inside it. Nothing is handed to the writer (no toast saying *12 of 12 found*,
+    then nothing), and the bar says why and what to do instead."""
+    seed, win, writer, ny = world(language, looks=SeamLooks())
+    entries = service.entries(_in_folder(language, 12))
+    card = entries[0]
+    picked = tmp_path / "アニメ"
+    _moved_to(picked, card.lines)
+    _relinks_recorded(writer)
+    hand_in(ny, entries)
+    win.show_tab("needs")
+    ny.pick_folder = lambda title, start: str(picked)
+    _button(ny, card.key, "choose_folder").click()
+    assert wait_until(lambda: win.bar_line.full() == strings.NEEDS_RELINK_OUTSIDE.format(n=12, folder=str(picked)),
+                      5)
+    assert writer.calls == [] and not win.toasts.shown
+    assert wait_until(lambda: not qpress.live(win, ny._press_key("choose_folder", card)), 5)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_A4B4_the_files_outside_are_counted_beside_the_stores_own_reasons(world, language, monkeypatch):
+    """`match_tree` answered pairs inside and outside the library folder: only those inside are given, in ONE
+    command; once saved, the bar counts the ones outside beside the store's own reasons."""
+    seed, win, writer, ny = world(language, looks=SeamLooks())
+    entries = service.entries(_in_folder(language, 12))
+    card = entries[0]
+    inside = os.path.join(ny._data(), "戻した")
+    outside = os.path.join(os.path.dirname(os.path.normpath(ny._data())), "外")
+    pairs = [(ln, os.path.join(inside if i < 9 else outside, f"{i}.srt")) for i, ln in enumerate(card.lines)]
+    monkeypatch.setattr(service, "match_tree", lambda folder, base, lines: pairs)
+    _relinks_recorded(writer, [(card.lines[0].item_id, "another item's file")])
+    hand_in(ny, entries)
+    win.show_tab("needs")
+    ny.pick_folder = lambda title, start: inside
+    _button(ny, card.key, "choose_folder").click()
+    assert wait_until(lambda: writer.saved, 5)
+    assert [len(c[1]) for c in writer.calls if c[0] == "relink_many"] == [9]
+    assert wait_until(lambda: win.toasts.card.base == strings.NEEDS_RELINKED_N.format(k=9, n=12), 5)
+    want = strings.NEEDS_RELINK_LEFT.format(n=4, why=" · ".join((
+        strings.NEEDS_RELINK_WHY.format(why="another item's file", n=1),
+        strings.NEEDS_RELINK_WHY.format(why=strings.NEEDS_RELINK_WHY_OUTSIDE, n=3))))
+    assert wait_until(lambda: win.bar_line.full() == want, 5)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_A4B4_a_relink_the_store_took_none_of_says_so_instead_of_vanishing(world, language):
+    """Every pair inside, but the store took none (each another item's file, gone since…): the command lands as
+    nothing — the toast goes, and the bar says none were pointed at (it said nothing at all)."""
+    seed, win, writer, ny = world(language, looks=SeamLooks())
+    entries = service.entries(_in_folder(language, 12))
+    card = entries[0]
+    picked = pathlib.Path(ny._data()) / "戻した"
+    _moved_to(picked, card.lines)
+    _relinks_recorded(writer)
+    writer.nothing.add("relink_many")
+    hand_in(ny, entries)
+    win.show_tab("needs")
+    ny.pick_folder = lambda title, start: str(picked)
+    _button(ny, card.key, "choose_folder").click()
+    assert wait_until(lambda: win.bar_line.full() == strings.NEEDS_RELINK_NONE_TAKEN, 5)
+    assert len([c for c in writer.calls if c[0] == "relink_many"]) == 1 and not writer.saved
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_A4B5_a_match_that_lands_after_a_language_switch_gives_nothing_to_the_new_librarys_writer(world, language,
+                                                                                               monkeypatch):
+    """The match runs on a worker (seconds, over a large folder); meanwhile the learner switched language — the
+    writer is the other library's and item ids repeat across stores: nothing is given, no toast, no Undo."""
+    seed, win, writer, ny = world(language, looks=SeamLooks())
+    entries = service.entries(_in_folder(language, 12))
+    card = entries[0]
+    picked = pathlib.Path(ny._data()) / "戻した"
+    _moved_to(picked, card.lines)
+    _relinks_recorded(writer)
+    other = "zh" if language == "ja" else "ja"
+    matching, go = threading.Event(), threading.Event()
+    real = service.match_tree
+
+    def slow(folder, base, lines):
+        matching.set()
+        go.wait(5)
+        return real(folder, base, lines)
+    monkeypatch.setattr(service, "match_tree", slow)
+    hand_in(ny, entries)
+    win.show_tab("needs")
+    ny.pick_folder = lambda title, start: str(picked)
+    _button(ny, card.key, "choose_folder").click()
+    assert wait_until(matching.is_set, 5)
+    win.language = other                                                  # the switch, while it matched
+    go.set()
+    assert wait_until(lambda: not qpress.live(win, ny._press_key("choose_folder", card)), 5)
+    _pump(10)
+    assert writer.calls == [] and not win.toasts.shown
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -547,7 +653,16 @@ ELSEWHERE = "D:\\Elsewhere"
 @pytest.mark.parametrize("answer, said", [
     ({"refused": source_looks.FIND_NONE.format(folder=ELSEWHERE), "root": None},
      source_looks.FIND_NONE.format(folder=ELSEWHERE)),
+    # A4B-9 / IK2-9: the looks' own spelling of the folder (normalised, another case) is still FIND_NONE's — never
+    # the doubled *D:\Elsewhere can't be read: None of its episodes are in d:/elsewhere…*
+    ({"refused": source_looks.FIND_NONE.format(folder="d:/elsewhere/"), "root": None},
+     source_looks.FIND_NONE.format(folder="d:/elsewhere/")),
+    # ... and Kura's flag, when the looks give one, whatever its words
+    ({"refused": "どのエピソードもありません", "none": True, "root": None}, "どのエピソードもありません"),
     ({"joined": 0, "stop": False, "dropped": True}, "dropped"),
+    # IK2-9: the files its first look took in wait in New arrivals — the line says so
+    ({"joined": 0, "stop": False, "dropped": True, "result": {"added": 5}}, "dropped-5"),
+    ({"joined": 0, "stop": False, "dropped": True, "result": {"added": 1}}, "dropped-1"),
 ])
 def test_find_its_new_folder_holding_none_of_its_episodes_says_that_folder_isnt_read(world, language, answer, said):
     looks = Looks(answer)
@@ -559,8 +674,13 @@ def test_find_its_new_folder_holding_none_of_its_episodes_says_that_folder_isnt_
     ny.pick_folder = lambda title, start: ELSEWHERE
     _button(ny, card.key, "find_folder").click()
     assert wait_until(lambda: heard, 5)
+    show = names(language)[71]
     if said == "dropped":
-        said = strings.NEEDS_FIND_DROPPED.format(show=names(language)[71], folder=ELSEWHERE)
+        said = strings.NEEDS_FIND_DROPPED.format(show=show, folder=ELSEWHERE)
+    elif said == "dropped-5":
+        said = strings.NEEDS_FIND_DROPPED_ARRIVALS.format(show=show, folder=ELSEWHERE, n=5)
+    elif said == "dropped-1":
+        said = strings.NEEDS_FIND_DROPPED_ARRIVAL.format(show=show, folder=ELSEWHERE)
     assert heard[-1] == said
     assert not [c for c in writer.calls if c[0] == "stop_source"]         # the old folder is still read
     assert _cards(ny)                                                      # ... and its card stays

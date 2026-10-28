@@ -531,15 +531,44 @@ def match_folder(folder, lines):
     return out
 
 
+def _matched_inside(folder, base, lines, tree, data):
+    """(A worker.) *Choose a folder…*'s match — `needs.match_tree` for a folder's or the library's card, `match_folder`
+    for a show's — split by the library folder (`data`): (the pairs inside it, how many matched outside it). The store
+    points an item only at a file in the library folder (`library_store.library_rel`): one outside is never handed to
+    the writer (A4B-4)."""
+    from app import library_store
+    pairs = service.match_tree(folder, base, lines) if tree else match_folder(folder, lines)
+    inside = [(ln, path) for ln, path in pairs if library_store.library_rel(data, path) is not None]
+    return inside, len(pairs) - len(inside)
+
+def _find_none(answer):
+    """Is *Find its new folder…*'s refusal T6 option 2's (a folder holding none of the gone folder's files, never read:
+    `source_looks.FIND_NONE`)? It is said as the looks wrote it, never wrapped in *can't be read*. The looks' flag
+    (`none`) when they give one; until then the refusal's shape — FIND_NONE's words around whatever folder the looks
+    wrote (their spelling of the path may differ from the picker's: A4B-9), never the sentence formatted here."""
+    if answer.get("none") is not None:
+        return bool(answer["none"]) and bool(answer.get("refused"))
+    from app.services import source_looks
+    refused = answer.get("refused")
+    head, _folder, tail = source_looks.FIND_NONE.partition("{folder}")
+    return isinstance(refused, str) and len(refused) > len(head) + len(tail) and refused.startswith(head) and \
+        refused.endswith(tail)
+
 class NeedsYou(QObject):
     """The page's entries and their actions, for one window (`win`: the shell)."""
     changed = pyqtSignal()                       # new entries painted (the tab's count follows)
+
+    @property
+    def language(self):
+        """The library shown: its page's (the shell sets it at a language switch — fix2: the language it opened with
+        was kept, so after a switch its cards were worked out from the language left's folder and seen file)."""
+        return getattr(self.page, "language", None) or self._language
 
     def __init__(self, win, page, language):
         super().__init__(win)
         self.win = win
         self.page = page
-        self.language = language
+        self._language = language
         self.entries = ()
         self.found = {}                          # entry key -> find_videos' results
         self.looking = set()
@@ -967,12 +996,15 @@ class NeedsYou(QObject):
         is looked for (a drive may be offline: its stat can take a while), and again once one is chosen, while its
         files are matched; a second click meanwhile does nothing. A folder's or the library's card (K3 / K1) matches
         each file at its place under the folder picked, then by its name, in the folders inside it too
-        (`needs.match_tree`), and points them all at once (`_relink_many`); a show's card, by name or episode number
-        in that folder (`match_folder`)."""
+        (`needs.match_tree`); a show's card, by name or episode number in that folder (`match_folder`). Either way
+        they are pointed at all at once (`_relink_many`: one change, one Undo — IK2-2). The match lands on the window
+        it was pressed in: closed, or another library shown since (ids repeat across stores), nothing is given
+        (A4B-5)."""
         data = self._data()
         start = os.path.join(data, *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
         lines = tuple(entry.lines)
         tree = entry.kind in (service.FILES_FOLDER, service.LIBRARY_GONE)
+        language = getattr(self.win, "language", None)
         p = qpress.begin(self._control("choose_folder", entry), self._press_key("choose_folder", entry), win=self.win)
         if p is None:
             return
@@ -981,8 +1013,11 @@ class NeedsYou(QObject):
             if p.live():
                 qpress.end(p, self.win, failed=why is not None, why=why)
 
+        def here():
+            return self._alive() and getattr(self.win, "language", None) == language
+
         def pick(there):                            # looked for on a worker: a drive may be offline (IK-L1-5)
-            if not self._alive():
+            if not here():
                 ended()
                 return
             folder = self.pick_folder(strings.NEEDS_CHOOSE_FOLDER_TITLE, start if there else data)
@@ -990,47 +1025,51 @@ class NeedsYou(QObject):
                 ended()
                 return
 
-            def matched(pairs):
+            def matched(found):
+                if not self._alive():
+                    return                          # (the window closed: nothing to say it in)
                 ended()
-                (self._relink_many if tree else self._relink_all)(pairs, len(lines))
+                if here():
+                    self._relink_many(found, len(lines), folder, data, tree)
 
             def broke(info):
                 ended(info[0] if info else None)
                 self._failed(info)
-            if tree:
-                bridge.run_in_worker(service.match_tree, folder, (entry.data or {}).get("folder", ""), lines,
-                                     then=matched, failed=broke)
-            else:
-                bridge.run_in_worker(match_folder, folder, lines, then=matched, failed=broke)
+            bridge.run_in_worker(_matched_inside, folder, (entry.data or {}).get("folder", ""), lines, tree, data,
+                                 then=matched, failed=broke)
         bridge.run_in_worker(os.path.isdir, start, then=pick, failed=lambda _info: pick(False))
 
-    def _relink_all(self, pairs, n):
-        if not pairs:
-            self._say(strings.NEEDS_RELINKED_NONE)
+    def _relink_many(self, found, n, folder, data, tree):
+        """`found` = (the pairs matched inside the library folder, how many more were matched outside it): every one
+        inside pointed at in ONE writer command (`Writer.relink_many`: one ticket, one toast with Undo, one Ctrl+Z —
+        never one per file; K3 / K1, a show's card too: IK2-2). Once saved, what the store couldn't take (`change.left`:
+        another item's file, no file there…) is said in the bar, how many and why, with those outside the library
+        folder; all of them outside, nothing is given and the bar says why (A4B-4: the store can only point at a file
+        in the library folder); none taken, the bar says so."""
+        pairs, outside = found
+        if not pairs and not outside:
+            self._say(strings.NEEDS_RELINKED_NONE_TREE if tree else strings.NEEDS_RELINKED_NONE)
             return
-        writer = self.win.services.writer
-        for ln, path in pairs:
-            self._give(ln.label, (ln.item_id,), lambda t, i=ln.item_id, p=path: writer.relink(i, p, label=t),
-                       toast_it=False)
-        self.win.toasts.show(strings.NEEDS_RELINKED_N.format(k=len(pairs), n=n))
-
-    def _relink_many(self, pairs, n):
-        """K3 / K1: every file `match_tree` matched pointed at in ONE writer command (`Writer.relink_many`: one ticket,
-        one toast, one Undo — never one per file); once saved, what the store couldn't take (`change.left`: another
-        item's file, outside the library, no file there…) is said in the bar, how many and why."""
         if not pairs:
-            self._say(strings.NEEDS_RELINKED_NONE_TREE)
+            self._say(strings.NEEDS_RELINK_OUTSIDE.format(n=outside, folder=folder))
             return
+        from app.qt import settings_sources
         writer = self.win.services.writer
         pairs = [(ln.item_id, path) for ln, path in pairs]
+        language = getattr(self.win, "language", None)
 
         def told(ticket, event):
-            left = getattr(ticket.change, "left", None) if event == "saved" else None
-            if left:
-                whys = {}
-                for _item, why in left:
-                    whys[why] = whys.get(why, 0) + 1
-                self._say(strings.NEEDS_RELINK_LEFT.format(n=len(left), why=" · ".join(
+            if event == "ended" and self._alive() and getattr(self.win, "language", None) == language and                     settings_sources.cant_write(getattr(self.win, "services", None)) is None:
+                self._say(strings.NEEDS_RELINK_NONE_TAKEN)           # (can't be written: the store's note says why)
+            if event != "saved":
+                return
+            whys = {}
+            for _item, why in getattr(ticket.change, "left", None) or ():
+                whys[why] = whys.get(why, 0) + 1
+            if outside:
+                whys[strings.NEEDS_RELINK_WHY_OUTSIDE] = outside
+            if whys:
+                self._say(strings.NEEDS_RELINK_LEFT.format(n=sum(whys.values()), why=" · ".join(
                     strings.NEEDS_RELINK_WHY.format(why=why, n=k) for why, k in whys.items())))
         self._give(strings.NEEDS_RELINKED_N.format(k=len(pairs), n=n), [i for i, _p in pairs],
                    lambda t: writer.relink_many(pairs, label=t), told=told)
@@ -1148,10 +1187,9 @@ class NeedsYou(QObject):
     def _found(self, entry, folder, answer):
         """The looks' answer to *Find its new folder…* (the window's thread) -> True when the old folder is stopped."""
         from app import sources
-        from app.services import source_looks
         name = entry.data["name"]
         left = answer.get("language") not in (None, getattr(self.win, "language", None))   # a library left since
-        if answer.get("refused") == source_looks.FIND_NONE.format(folder=folder):
+        if _find_none(answer):
             self._say(answer["refused"])             # T6 option 2: none of its files there — the folder isn't read
         elif answer.get("refused"):
             self._say(strings.NEEDS_FIND_REFUSED.format(folder=folder, why=answer["refused"]))
@@ -1171,9 +1209,12 @@ class NeedsYou(QObject):
                 self._say(strings.NEEDS_FIND_JOINED_LEFT.format(name=name, folder=folder))
                 return False
             return self._stop(entry, text)
-        elif answer.get("dropped"):                  # T6 option 2: read, none of them there: not read any more
-            show = (entry.data.get("shows") or (name,))[0]
-            self._say(strings.NEEDS_FIND_DROPPED.format(folder=folder, show=show))
+        elif answer.get("dropped"):                  # T6 option 2: read, none of them there: not read any more —
+            show = (entry.data.get("shows") or (name,))[0]     # what its look took in waits in New arrivals (IK2-9)
+            n = int((answer.get("result") or {}).get("added") or 0)
+            self._say(strings.NEEDS_FIND_DROPPED_ARRIVALS.format(folder=folder, show=show, n=n) if n > 1 else
+                      strings.NEEDS_FIND_DROPPED_ARRIVAL.format(folder=folder, show=show) if n == 1 else
+                      strings.NEEDS_FIND_DROPPED.format(folder=folder, show=show))
         else:
             show = (entry.data.get("shows") or (name,))[0]
             self._say(strings.NEEDS_FIND_NONE.format(folder=folder, show=show))

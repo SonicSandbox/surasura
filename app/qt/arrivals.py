@@ -450,8 +450,10 @@ class ArrivalsInset(QToolButton):
             return False
         self.kept = n
         self._describe()
-        self.updateGeometry()
-        self.update()
+        if not self.count:                   # it paints the kept-out files only with no arrival (S19, review)
+            self.paints += 1
+            self.updateGeometry()
+            self.update()
         return True
 
     def set_lit(self, on):
@@ -515,12 +517,16 @@ class ArrivalsInset(QToolButton):
         n = len(self.titles) if n is None else n
         return 0 if not n else m["cw"] + (n - 1) * (m["cw"] - m["over"])
 
+    def _counted(self):
+        """Its count is drawn — never a 0 when it shows only for the files kept out (alpha 4, review)."""
+        return bool(self.count) or not self.kept
+
     def sizeHint(self):
         m = self._metrics()
         words = rows.TEXT.metrics("level", 600).horizontalAdvance(strings.ARRIVALS)
-        count = rows.TEXT.metrics("level", 700).horizontalAdvance(f"{self.count:,}")
+        count = rows.TEXT.metrics("level", 700).horizontalAdvance(f"{self.count:,}") if self._counted() else 0
         covers = self._covers_w(m)
-        w = m["left"] + covers + (m["gap"] if covers else 0) + words + m["gap"] + count + m["right"]
+        w = m["left"] + covers + (m["gap"] if covers else 0) + words + (m["gap"] + count if count else 0) + m["right"]
         return QSize(w, m["h"])
 
     def minimumSizeHint(self):
@@ -590,8 +596,9 @@ class ArrivalsInset(QToolButton):
         w, _cut = rows.TEXT.draw(p, x, mid, strings.ARRIVALS, "level", self.width(), ink, weight=600, elide=False)
         x += w + m["gap"]
         lift = -2.0 * math.sin(math.pi * t) if t < 1.0 else 0.0     # the count lifts once
-        rows.TEXT.draw(p, x, mid + lift, f"{self.count:,}", "level", self.width(), rows.c("accent"), weight=700,
-                       elide=False)
+        if self._counted():
+            rows.TEXT.draw(p, x, mid + lift, f"{self.count:,}", "level", self.width(), rows.c("accent"), weight=700,
+                           elide=False)
         if self.hasFocus():
             p.setPen(QPen(rows.c("accent"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1373,6 +1380,7 @@ class ArrivalsTray(motion.Overlay):
         self.kept_box.hide()
         box.addWidget(self.kept_box)
         self.kept_out = (0, (), ())         # (how many, the Removes' trash ids, the folders they were kept out of)
+        self.giving = None                  # a Bring back saving: the looks' last word on them, held meanwhile
         self.groups = ()                    # the view's arrival_groups last given (shown, or waiting for `open`)
         self._applied = ()                  # ... and those the rows show (the model is brought up to date open only)
         self._target = ((), [], [], {})     # IK-6: (groups, the rows' keys, their objects, {head kind: its row})
@@ -1701,6 +1709,8 @@ class ArrivalsTray(motion.Overlay):
         lay = self.layout()
         empty = not self.model.keys and not self._filling      # alpha 4: no arrival, only the kept-out foot — no
         if self.view.isHidden() != empty:                     # empty list squeezing it
+            if empty and self.view.hasFocus():
+                self.setFocus(Qt.FocusReason.OtherFocusReason)    # (never handed on to Bring back by itself)
             self.view.setVisible(not empty)
         self._heights()
         content = self.model.content_height(self._row_h)
@@ -1745,6 +1755,17 @@ class ArrivalsTray(motion.Overlay):
                 self.place()
         return True
 
+    def kept_said(self, n, trash_ids=(), roots=()):
+        """The looks' summary (the shell's `_show_kept_out`): the foot and the inset. While a Bring back is saving
+        (`giving`) a summary is held, never shown: one taken before the save would offer the ids being put back again,
+        and a second press be refused over the first's toast (review). Saved, the looks say again (its folders looked
+        at); refused or ended unsaved, the last one held shows. -> True when anything changed."""
+        if self.giving is not None:
+            self.giving = (max(0, int(n or 0)), tuple(trash_ids), tuple(roots))
+            return False
+        changed = self.set_kept_out(n, trash_ids, roots)
+        return self.inset.set_kept_out(n) or changed
+
     def _turn_bring_back(self):
         """*Bring back* greyed with the store's reason while it can't be written (as the 🗑 list's Put back, IK2-10)."""
         from app.qt import removed, settings_sources
@@ -1755,28 +1776,42 @@ class ArrivalsTray(motion.Overlay):
         """*Bring back*: the Removes the kept-out files match put back (`removed.give_back`: the writer's `restore`, one
         change, its toast's one Undo); the foot goes at once, and comes back if nothing was saved. Once saved, the
         folders they were kept out of are looked at, so their copies come in now. -> True when given."""
-        from app.qt import removed
+        from app.qt import removed, windows
         held = self.kept_out
         n, ids, roots = held
-        if not ids or removed.why_not(self.win) is not None:
+        if not ids or self.giving is not None:
+            return False
+        why = removed.why_not(self.win)
+        if why is not None:                                 # the store went read-only since it was drawn: greyed now,
+            self._turn_bring_back()                         # and the press answered in the bar
+            windows.say_in_bar(self.win, why)
             return False
         shell = self.win
         language = getattr(shell, "language", None)
 
-        def told(event):
-            if event == "saved":
-                look_at = getattr(getattr(shell, "looks", None), "look_at", None)
-                if look_at is not None and language == getattr(shell, "language", None):
-                    for root in roots:
-                        look_at(root, language=language)
-            elif event in ("refused", "ended") and self.kept_out == (0, (), ()):
-                show(held)                                  # nothing written: the foot as the looks last said
-
         def show(h):
             self.set_kept_out(*h)
             self.inset.set_kept_out(h[0])
+
+        def told(event):
+            looks = getattr(shell, "looks", None)
+            same = language == getattr(shell, "language", None)
+            if event == "saved":
+                self.giving = None                          # (what was held predates the save: the looks say again)
+                look_at = getattr(looks, "look_at", None)
+                if look_at is not None and same:
+                    for root in roots:
+                        look_at(root, language=language)
+            elif event in ("refused", "ended") and self.giving is not None:
+                h, self.giving = self.giving, None
+                if same:
+                    show(h)                                 # nothing written: the foot as the looks last said
+            elif event == "undone" and looks is not None and same:
+                looks.listing()                             # removed again: the foot as the looks say now
+        self.giving = held
         show((0, (), ()))                                   # the press's answer, in the frame
         if removed.give_back(shell, ids, strings.ARRIVALS_BROUGHT_BACK, told=told) is None:
+            self.giving = None
             show(held)
             return False
         if not self.inset.count:

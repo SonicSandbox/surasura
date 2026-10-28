@@ -489,3 +489,52 @@ def test_kept_out_one_file_says_so_greys_bring_back_when_the_store_cant_be_writt
     _kept_summary(win, (), 0)                                           # the looks no longer keep any out
     settle()
     assert inset.isHidden() and tray.kept_box.isHidden() and not tray.isVisible()
+
+
+def test_review_a_summary_landing_while_bring_back_saves_is_held_and_a_put_back_elsewhere_asks_the_looks_again(
+        real, monkeypatch):
+    # review (adversary 1–2): the foot's trash ids were only refreshed by a look — a summary taken before Bring back's
+    # save showed them again (a second press refused over the first's toast), and a Put back in the 🗑 list left the
+    # foot offering a Remove already put back (the store's restore refuses all of it)
+    store, win, writer = real()
+    _remove_row(win, writer, 1)
+    _remove_row(win, writer, 1)
+    entries = store.removed()
+    first, second = entries[0]["trash_ids"], entries[1]["trash_ids"]
+    monkeypatch.setattr(win.looks, "look_at", lambda root, language=None: True)
+    listed = []
+    monkeypatch.setattr(win.looks, "listing", lambda: listed.append(1) or True)
+    inset, tray = win.arrivals_inset, win.arrivals_tray
+    _kept_summary(win, first, 1)
+    assert tray.bring_back_kept()
+    _kept_summary(win, first, 1)                                        # taken before the save: held, never shown
+    assert tray.kept_box.isHidden() and inset.kept == 0
+    assert not tray.bring_back_kept()                                   # no second press meanwhile
+    _saved(win, writer)
+    assert win.toasts.card.base == strings.ARRIVALS_BROUGHT_BACK
+    assert tray.giving is None and tray.kept_box.isHidden()             # what was held predates the save
+    _kept_summary(win, second, 1)                                       # the other Remove's copy, kept out
+    listed.clear()
+    w = _open_removed(win)
+    next(l for l in w.lines.values() if list(l.key) == sorted(second) or set(l.key) == set(second)).put.click()
+    _saved(win, writer)
+    assert listed                                                       # the trash moved: the looks say again
+
+
+def test_review_a_press_refused_after_it_was_drawn_says_why_and_the_inset_never_reads_0(real, monkeypatch):
+    store, win, writer = real()
+    _remove_row(win, writer)
+    trash = [i for e in store.removed() for i in e["trash_ids"]]
+    inset, tray = win.arrivals_inset, win.arrivals_tray
+    _kept_summary(win, trash, 1)
+    assert inset.count == 0 and not inset._counted()                    # no "New arrivals 0": the words alone
+    win.open_arrivals()
+    settle()
+    assert tray.bring_back.isEnabled()
+    monkeypatch.setattr(writer, "can_write", lambda: False)             # read-only since it was drawn
+    monkeypatch.setattr(writer, "reason", lambda: "newer")
+    said = []
+    monkeypatch.setattr(windows, "say_in_bar", lambda _w, text: said.append(text))
+    assert not tray.bring_back_kept()
+    why = settings_sources.why_not(win)
+    assert said == [why] and not tray.bring_back.isEnabled() and store.removed()

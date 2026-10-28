@@ -248,7 +248,10 @@ def _new_id(now, names=()):
     utc = now.astimezone(datetime.timezone.utc)
     newest = max(filter(None, map(_stamp_of, names)), default=None)
     if newest is not None and utc <= newest:
-        utc = newest + datetime.timedelta(microseconds=1)
+        try:
+            utc = newest + datetime.timedelta(microseconds=1)
+        except OverflowError:                       # (a hand-made name at the calendar's end: the clock's own time)
+            pass
     return f"{utc.strftime(_STAMP)}-{uuid.uuid4().hex[:4]}"
 
 
@@ -258,7 +261,7 @@ def _ids_in(root):
     for path in (root, os.path.join(root, REMOVED_DIR)):
         try:
             names += os.listdir(path)
-        except FileNotFoundError:
+        except OSError:                             # none yet, or not a folder: the clock's time alone, as before
             pass
     return names
 

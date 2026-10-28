@@ -677,3 +677,11 @@ def test_zip_name_skips_a_numbered_name_whose_part_file_is_being_written(tmp_pat
     (tmp_path / (base + core.PART)).write_bytes(b"")
     (tmp_path / (second + core.PART)).write_bytes(b"")
     assert core.zip_name(str(tmp_path), now=now) == os.path.join(str(tmp_path), "Surasura-problems-2026-10-25-120000-3.zip")
+
+
+def test_a_stray_file_named_removed_never_stops_a_save(root):
+    # review: choosing an id now lists the folder — a file where `removed/` would be must not fail every save
+    with open(os.path.join(core.folder(), core.REMOVED_DIR), "w", encoding="utf-8") as f:
+        f.write("not a folder")
+    a = core.save(JA_WHAT)
+    assert [x.id for x in core.listed()] == [a.id]

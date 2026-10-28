@@ -1580,8 +1580,8 @@ class ShellWindow(QMainWindow):
         return worker
 
     def _show_arrivals(self, view):
-        """The view's arrivals: the inset (absent with none), the tray's rows (only what changed), each new file's
-        estimate asked (on a worker); the tray closes once nothing is left in it (A2 #32)."""
+        """The view's arrivals: the inset (absent with none, unless files were kept out), the tray's rows (only what
+        changed), each new file's estimate asked (on a worker); the tray closes once nothing is left in it (A2 #32)."""
         arrivals = getattr(view, "arrivals", ()) or ()
         if self.arrivals_inset is None:
             return
@@ -1600,16 +1600,14 @@ class ShellWindow(QMainWindow):
         """Alpha 4 (Mattias #8, A4K-6): the files the looks kept out because they match files he removed (each source
         row's `kept_out` / `kept_out_ids`, `SourceLooks._notes`) — New arrivals' foot with *Bring back*, and the inset
         shown for it while no arrival waits. Nothing changed: nothing touched (S19)."""
-        if self.arrivals_inset is None:
+        tray = getattr(self, "arrivals_tray", None)
+        if self.arrivals_inset is None or tray is None:
             return
         rows = [r for r in self.sources if r.get("kept_out")]
         n = sum(int(r["kept_out"]) for r in rows)
-        self.arrivals_inset.set_kept_out(n)
-        tray = getattr(self, "arrivals_tray", None)
-        if tray is None:
-            return
-        tray.set_kept_out(n, sorted({i for r in rows for i in r.get("kept_out_ids") or ()}), [r["id"] for r in rows])
-        if not n and not self.arrivals_inset.count and (tray.isVisible() or motion.opening_of(tray) is not None):
+        tray.kept_said(n, sorted({i for r in rows for i in r.get("kept_out_ids") or ()}), [r["id"] for r in rows])
+        if not tray.kept_out[0] and not self.arrivals_inset.count and \
+                (tray.isVisible() or motion.opening_of(tray) is not None):
             tray.close()
 
     def open_arrivals(self):

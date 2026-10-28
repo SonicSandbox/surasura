@@ -662,11 +662,11 @@ ARRIVALS_TIP_ONE = "New arrivals: 1 file waiting for a place\n• Open the tray 
 ARRIVALS_KEPT_OUT = "{n:,} files you removed earlier were left out"
 ARRIVALS_KEPT_OUT_ONE = "A file you removed earlier was left out"
 ARRIVALS_KEPT_OUT_TIP = ("New files that are copies of files you removed: Surasura keeps them out of your library\n"
-                         "• Bring back puts what you removed back, and lets them in")
+                         "• Bring back puts what you removed back where it was")
 ARRIVALS_KEPT_OUT_INSET_TIP = "{line}\n• Open the tray to bring them back"     # the inset, while no arrival waits
 ARRIVALS_BRING_BACK = "Bring back"
 ARRIVALS_BRING_BACK_NAME = "Bring back what you removed"
-ARRIVALS_BRING_BACK_TIP = "Put back the files you removed, and let their copies in\n• Undo removes them again"
+ARRIVALS_BRING_BACK_TIP = "Put back the files you removed, where they were\n• Undo removes them again"
 ARRIVALS_BROUGHT_BACK = "The files you removed are back in your library"
 TRAY_NAME = "New arrivals: what came in, newest first"
 TRAY_CLOSE = "✕"

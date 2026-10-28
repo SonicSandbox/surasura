@@ -1672,14 +1672,20 @@ class ArrivalsTray(motion.Overlay):
     def pick_range(self, key, add=False):
         """Shift+click: the picks become every row from the anchor (the row Ctrl picked last; with none, this one) to
         this one, as Explorer's; Ctrl+Shift+click adds them."""
-        keys = self.keys()
-        if key not in keys:
+        if self._filling:                                # (rows still coming in: the rows the fill is making)
+            keys = self._target[1]
+            where = {k: i for i, k in enumerate(keys)}
+            row = lambda k: where.get(k, -1)             # noqa: E731
+        else:
+            keys, row = self.model.keys, self.model.row_of    # each row found at once (A4A-3), never a search
+        at = row(key)
+        if at < 0 or key.startswith(HEAD):
             return
-        anchor = self._pick_anchor if self._pick_anchor in keys else key
-        if anchor == key:
-            self._pick_anchor = key
-        a, b = sorted((keys.index(anchor), keys.index(key)))
-        span = set(keys[a:b + 1])
+        there = row(self._pick_anchor)
+        if there < 0:
+            self._pick_anchor, there = key, at
+        a, b = sorted((there, at))
+        span = {k for k in keys[a:b + 1] if not k.startswith(HEAD)}
         before = self.picks
         self.picks = (before | span) if add else span
         self._repaint_picks(before ^ self.picks)

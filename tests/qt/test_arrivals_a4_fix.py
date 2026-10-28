@@ -95,6 +95,24 @@ def test_ctrl_a_and_letting_the_picks_go_on_20000_arrivals_each_take_one_frame_a
     assert took <= 16 and cleared <= 16 and ranged <= 16
 
 
+def test_a_shift_range_of_40_rows_at_the_bottom_of_20000_finds_each_row_at_once(bare_tray):
+    # (A4A-3: the few-rows path repaints each row by its place — kept with the rows, never a search of 20,000 keys)
+    tray = bare_tray(big_view(20_000))
+    tray.open()
+    _filled(tray, 20_000)
+    keys = tray.keys()
+    tray.pick(keys[-40])
+    times = []
+    for _ in range(5):
+        tray.clear_picks()
+        tray.pick(keys[-40])
+        times.append(_ms(lambda: tray.pick_range(keys[-1])))
+    assert len(tray.picks) == 40
+    times.sort()
+    print(f"40-row Shift range at the bottom of 20k: {times[2]:.2f} ms (median of 5)")
+    assert times[2] <= 4
+
+
 def test_a_few_picks_still_repaint_only_their_own_rows(bare_tray):
     # (the one-repaint path is for many rows only: a Ctrl+click on a big tray repaints that row, never the list)
     tray = bare_tray(big_view(2_000))
@@ -266,6 +284,9 @@ def test_after_a_switch_a_chinese_arrival_whose_id_a_japanese_file_had_is_still_
     assert {i for a in ja for i in a.item_ids} == {i for a in zh for i in a.item_ids}
     nums.want(ja)
     assert wait_until(lambda: nums.answers == 3, 3)
+    nums.want(list(ja))                                               # the same files again: never asked twice
+    time.sleep(0.05)
+    assert len(worker.asked) == 3
     lang[0] = "zh"
     nums.want(zh)
     assert wait_until(lambda: len(worker.asked) == 6 and nums.answers == 6, 3)

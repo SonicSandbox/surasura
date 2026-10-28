@@ -546,6 +546,30 @@ def test_settings_stop_refused_by_the_writer_gives_nothing_and_never_lets_the_lo
     assert not win.presses.any_live() and 1 in folders.lines
 
 
+@pytest.mark.parametrize("how", ["refused", "saved-then-undone"])
+def test_A4B14_settings_stop_answers_its_press_once_whatever_follows(window, how):
+    """A4B-14: the window's *Stop reading* answered its press on every ticket event (saved, then undone) and twice on
+    a refusal (the ticket's and the give's); once is the rule — an Undo later never ends another press of the line."""
+    looks = StoppingLooks([_src(1, ANIME, 412), _src(2, DRAMA, 30)])
+    win, page, row, folders = _open(window, looks)
+    writer = win.services.writer
+    _stops_into(writer, looks)
+    assert wait_until(lambda: len(folders.lines) == 2, 10)
+    answered = []
+    real = folders._answered
+    folders._answered = lambda key, failed=False: answered.append((key[0], failed)) or real(key, failed)
+    if how == "refused":
+        writer.stop_reading = lambda root_id, label=None, language=None: None      # the writer takes nothing
+        assert folders.stop(2) is False
+        assert answered == [("stop", True)]
+        return
+    folders.stop(2)
+    assert wait_until(lambda: writer.saved and 2 not in folders.lines, 10)
+    win.toasts.card.buttons[0].click()                                    # its Undo
+    assert wait_until(lambda: 2 in folders.lines, 10)
+    assert answered == [("stop", False)]
+
+
 def test_settings_stop_on_a_real_store_keeps_every_episode_and_its_undo_reads_the_folder_again(qapp):
     """The real looks and a real store: the stop is one change with Undo — the folder's row off, every episode kept —
     and the Undo turns it back on; the looks read it again (`let_go(on=False)`: nothing left held)."""

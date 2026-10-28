@@ -747,13 +747,18 @@ class FoldersWindow(windows.SecondaryWindow):
         text = S.SOURCES_STOPPED_ONE.format(path=source["path"]) if n == 1 else \
             S.SOURCES_STOPPED.format(path=source["path"], n=n)
 
+        heard = []
+
         def told(_ticket, event):                         # (the window may have closed meanwhile: `_answered` knows)
-            self._answered(key, failed=event in ("refused", "ended"))
+            if event in ("saved", "refused", "ended") and not heard:     # once (A4B-14): never again on its Undo
+                heard.append(event)
+                self._answered(key, failed=event != "saved")
         if not self._press(key, line.stop):               # one stop per click: its arc, painted before the writer
             return False
         _acting(self.shell).add(key)                      # before the ask: an answer may land at once
         if give_stop(self.shell, root_id, text, self.lines_of, told=told) is None:
-            self._answered(key, failed=True)              # refused (the bar says why) or another language's
+            if not heard:                                 # refused before a ticket was given (the bar says why), or
+                self._answered(key, failed=True)          # another language's
             return False
         return True
 

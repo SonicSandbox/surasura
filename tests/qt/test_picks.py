@@ -592,3 +592,46 @@ def test_A4_S19_a_tiles_pick_repaints_that_tile_alone(world, monkeypatch):
     del painted[:]
     sheet.pick_all()                                                    # nothing changed: nothing repainted
     assert painted == []
+
+
+# --- A4B-2: every list's picks go with their library ---------------------------------------------------------------- #
+@pytest.mark.parametrize("language", ("ja", "zh"))
+@pytest.mark.parametrize("where", ("finished", "tray", "goal"))
+def test_A4B2_a_library_rebuilt_lets_the_picks_of_finished_the_tray_and_goal_go(world, language, where):
+    """AD-5 for every list that picks, not Current's alone: Finished's rows (p<piece id>), the tray's and Goal's tiles
+    are keyed by ids each store numbers from 1, so a library rebuilt or reset (a new epoch) must let them go. Wrong,
+    two rows of the new library lit that he never picked — and ⋯ → *Remove…* sends them to the trash."""
+    seed, win, _w = world(language)
+    if where == "finished":
+        fin = show_finished(win)
+        for _i, r in finished_rows(win)[:2]:
+            fin.pick_row(r)
+        picked = lambda: fin.picked_rows                               # noqa: E731
+    elif where == "tray":
+        from tests.qt.test_arrivals import open_tray
+        tray = open_tray(win)
+        for k in tray.keys()[:2]:
+            tray.pick(k)
+        picked = lambda: tray.picks                                    # noqa: E731
+    else:
+        sheet = open_sheet(win)
+        for t in sheet.order[:2]:
+            sheet.pick_tile(t)
+        picked = lambda: sheet.picks                                   # noqa: E731
+    assert len(picked()) == 2
+    epoch = win.page_widgets["current"].view_model.epoch
+    seed.library.commit(new_epoch=True)                                  # the library rebuilt: pieces numbered again
+    assert wait_until(lambda: win.page_widgets["current"].view_model.epoch != epoch, 10)
+    settle()
+    assert not picked()
+
+
+def test_A4B2_a_language_switch_lets_finisheds_picks_go(world):
+    """The language switch's half (`_show_switched` → `_forget_picks`): Finished's picks go with the language left."""
+    _seed, win, _w = world()
+    fin = show_finished(win)
+    for _i, r in finished_rows(win)[:2]:
+        fin.pick_row(r)
+    assert len(fin.picked_rows) == 2
+    win._forget_picks()
+    assert not fin.picked_rows

@@ -1632,11 +1632,14 @@ class ShellWindow(QMainWindow):
 
     def _forget_picks(self):
         """LM11b AD-5: the picks are keyed p<piece id> (an episode's by its item id), and a store numbers its pieces from
-        1 — each language's, and one rebuilt or reset (a new epoch): none carried onto another library's rows."""
+        1 — each language's, and one rebuilt or reset (a new epoch): none carried onto another library's rows. A4B-2:
+        every list of this window that picks (Current, Finished, Goal's sheet, New arrivals' tray — `rows._PICKERS`)."""
+        from PyQt6 import sip
+        from app.qt import rows
         self._epoch_shown = None
-        lst = getattr(self.page_widgets.get("current"), "list", None)
-        if lst is not None:
-            lst.clear_picks()
+        for picker in list(rows._PICKERS):
+            if not sip.isdeleted(picker) and picker.window() is self:
+                picker.clear_picks()
 
     def _show_switched(self, reader, writer):
         self._reader_shown = reader

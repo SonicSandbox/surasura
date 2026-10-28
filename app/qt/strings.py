@@ -706,6 +706,8 @@ TRAY_ALL_SOON = "All to Soon"
 TRAY_ALL_SOON_TIP = "Move every arrival in this group to Soon, in the tray's order\n• Undo puts them back"
 TRAY_ALL_GOAL = "All to Goal"
 TRAY_ALL_GOAL_TIP = "Move every arrival in this group to Goal\n• Undo puts them back"
+TRAY_LOADING = "Loading…"                              # IK-6: a big tray's rows still coming in
+TRAY_LOADING_TIP = "Every arrival is on its way into the list: the first ones are here already"
 TRAY_TITLES = "{n} titles"                            # the picks or a group, named in a toast or a drag
 TRAY_PICKS_MENU_NAME = "What you can do with the {n} picked"
 TRAY_PICKS_MENU = {
@@ -1252,10 +1254,12 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
     # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
     "later": ("Not now", "Hide this until tomorrow. If it still needs you then, it comes back"),
-    "stop_asking": ("Stop asking", "Never ask about this again. The item and its words stay in your library"),
+    "stop_asking": ("Stop asking", "Don't ask about this while it stays so. If it's fixed and happens again later, "
+                                   "it asks again. The item and its words stay in your library"),
     "later_all": ("Not now for all", "Hide every card below with this reason until tomorrow"),
-    "stop_all": ("Stop asking for all", "Never ask about any card below with this reason again. Their items and words "
-                                        "stay in your library"),
+    "stop_all": ("Stop asking for all", "Don't ask about any card below with this reason while it stays so. One "
+                                        "that's fixed and happens again later asks again. Their items and words stay "
+                                        "in your library"),
     # alpha 4 K1: most of the library's files gone at once (*Start fresh*: Settings' *Start a fresh library* sheet)
     "start_fresh": ("Start fresh", "Set this library aside in one backup in the trash, never deleted, and read your "
                                    "folders again from scratch. It asks first"),

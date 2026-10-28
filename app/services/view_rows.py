@@ -1263,9 +1263,11 @@ def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, chang
     for p, s in zip(ps, sigs):
         first = p[0]
         work = works.get(first.get("work_id"))
-        key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
-        if key in entries:                  # A4 (Mattias #7): a piece in two runs of the tier (another title came in
-            key = f"{key}.i{first['id']}"   # between its files) is two rows, each its own key — never one for both
+        # A4 (Mattias #7) / A4A-5: a piece in two runs of the tier (another title came in between its files) is two
+        # rows, each keyed by its own smallest file id — never one key for both, and never a key that moves to the
+        # next run when one is placed (a pick, a row's widgets follow their own run)
+        key = f"p{first['piece_id']}.i{min(it['id'] for it in p)}" if first.get("piece_id") is not None else \
+            f"i{first['id']}"
         old = before.get(key)
         if old is not None and old[1] is work and old[2] == s and len(old[0]) == len(p) and \
                 all(a is b for a, b in zip(old[0], p)):

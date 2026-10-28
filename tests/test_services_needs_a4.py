@@ -7,6 +7,7 @@ What a wrong answer would cost a learner: an answer lost because the file was be
 waiting* that keeps nothing, a card that comes back after a restart); a card that can't be put away, or one put away
 for ever when he only said "not now"; a hundred cards with no one answer for them; a dead library offered file by file.
 """
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -181,3 +182,29 @@ def test_3000_cards_are_worked_out_off_the_window_in_well_under_a_second():
     out = needs.entries(view("ja", 3000), hidden=frozenset(), settled=True)
     assert time.perf_counter() - t < 1.0
     assert out[0].kind == needs.LIBRARY_GONE and len(out[0].lines) == 3000
+
+
+# --- the review round (fix-t) IK-10: the answers are one library's ---------------------------------------------- #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_library_drops_the_old_ones_stop_asking_and_not_now_and_its_file_ids_but_keeps_its_own(language):
+    v = view(language, 2)
+    cards = needs.entries(v)
+    needs.stop_asking(language, [cards[0].key])
+    needs.put_off(language, [cards[1].key])
+    needs.mark_seen(language, ["item:1", "line:offline:N:"])
+    needs.answer(language, ["item:2"])
+    needs.offer(language)
+    assert needs.keep_to_library(language, "store-a") == 0      # the first library named: every answer is its own
+    assert needs.read_hidden(language) == {cards[0].key, cards[1].key}
+    before = os.stat(needs.seen_path(language)).st_mtime_ns
+    assert needs.keep_to_library(language, "store-a") == 0      # the same library: nothing written (S19)
+    assert os.stat(needs.seen_path(language)).st_mtime_ns == before
+    assert needs.keep_to_library(language, None) == 0           # no library known yet: nothing judged
+    assert needs.keep_to_library(language, "store-b") == 4      # a new library: its ids name other files
+    assert needs.read_hidden(language) == frozenset()
+    assert needs.read_seen(language) == {"line:offline:N:"}     # a line's key isn't an id: kept
+    assert needs.read_answered(language) == frozenset()
+    assert needs.read_offers(language) == {needs.FIRST_CARDS}   # a step's offer stays answered once
+    needs.stop_asking(language, [cards[0].key])
+    assert needs.read_hidden(language) == {cards[0].key}        # the new library's own answers count
+    assert needs.keep_to_library(language, "store-b") == 0

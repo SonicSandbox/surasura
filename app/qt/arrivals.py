@@ -614,7 +614,7 @@ def row_parts(rect, m=None):
 
 
 def part_tip(arrival, part):
-    """A part's tooltip: the icon named first (A2 #118), ⋯'s, the number's (its episodes, "an estimate")."""
+    """A part's tooltip: the icon named first (A2 behaviour 118), ⋯'s, the number's (its episodes, "an estimate")."""
     if part == "icon":
         return strings.TRAY_ICON[icon_of(arrival)][1]
     if part == "more":

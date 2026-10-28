@@ -786,7 +786,7 @@ def _load(language, strict=False):
     """(Under `_lock`.) The seen file's lists, and `later` ({key: the day it was put off}). `strict` (a write-back's
     read, W3.2 H W5): only a file that isn't there reads as empty — one that can't be read, isn't JSON or is another
     version raises, so a write never goes over earlier answers (a held file, a newer Surasura's)."""
-    empty = dict({k: [] for k in _FIELDS}, later={})
+    empty = dict({k: [] for k in _FIELDS}, later={}, library=None)
     try:
         with open(seen_path(language), encoding="utf-8") as f:
             data = json.load(f)
@@ -804,6 +804,8 @@ def _load(language, strict=False):
     out = {k: [x for x in data.get(k) or () if isinstance(x, str)] for k in _FIELDS}
     out["later"] = {k: v for k, v in later.items() if isinstance(k, str) and isinstance(v, str)} \
         if isinstance(later, dict) else {}
+    library = data.get("library")
+    out["library"] = library if isinstance(library, str) and library else None    # IK-10: whose answers they are
     return out
 
 
@@ -910,6 +912,7 @@ def prune(language, view, offline_roots=None, connect=None, asks=None, lines=Non
                          if d >= today and (k.split(":", 1)[0] not in judged or k in present)}
         gone += len(data["later"]) - len(kept["later"])
         kept["offered"] = data["offered"]
+        kept["library"] = data["library"]
         if gone:
             _write(language, kept)
     return gone
@@ -962,6 +965,35 @@ def ask_again(language, keys):
         data["later"] = {k: d for k, d in data["later"].items() if k not in keys}
         _write(language, data)
     return n
+
+
+def keep_to_library(language, library):
+    """(IK-10; a worker's call, before the gather's reads.) The seen file's answers are one library's — `library`, its
+    store id (`LibraryReader.store_id`). A file naming none takes it as its own, every answer kept (an older file, the
+    first gather). One naming another library (a reinstall, *Start fresh*: a new store id, its item ids from 1 again)
+    lets go of that library's *Stop asking* and *Not now* and of every answer keyed by a file's id (`item:`, which
+    names another file now); a line's or a step's answer stays. `library` None (not read yet): nothing judged. Nothing
+    moved, nothing written (S19). -> how many answers went."""
+    if not library:
+        return 0
+    with _lock:
+        data = _load(language, strict=True)
+        have = data["library"]
+        if have == library:
+            return 0
+        if have is None and not any(data[f] for f in _FIELDS) and not data["later"]:
+            return 0                                # nothing answered yet: nothing to tie to it
+        gone = 0
+        if have is not None:
+            gone = len(data["stopped"]) + len(data["later"])
+            data["stopped"], data["later"] = [], {}
+            for f in ("seen", "answered"):
+                kept = [k for k in data[f] if not k.startswith("item:")]
+                gone += len(data[f]) - len(kept)
+                data[f] = kept
+        data["library"] = library
+        _write(language, data)
+    return gone
 
 
 def mark_all_seen(language, entries_, connect_path=None):

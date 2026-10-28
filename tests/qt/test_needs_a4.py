@@ -300,3 +300,97 @@ def test_stop_asking_for_all_on_the_missing_files_line_takes_every_show_off(worl
     _settle_gather(ny, many(language, 5))
     assert ny.entries == ()                                   # a later look asks about none of them
     assert writer.calls == []
+
+
+# --- the review round (fix-t): A4A-8, A4A-11, IK-10, IK-11 ------------------------------------------------------- #
+def _slowed(monkeypatch, name, seconds=0.3):
+    """`service.<name>` made to take `seconds` (the pool busy, a slow disk); -> the Event set as it starts."""
+    import threading
+    import time
+    real, started = getattr(service, name), threading.Event()
+
+    def slow(*a, **kw):
+        started.set()
+        time.sleep(seconds)
+        return real(*a, **kw)
+    monkeypatch.setattr(service, name, slow)
+    return started
+
+
+def _wait_workers(ms=600):
+    from PyQt6.QtCore import QThreadPool
+    QThreadPool.globalInstance().waitForDone(ms * 4)
+    for _ in range(10):
+        QApplication.processEvents()
+
+
+@pytest.mark.parametrize("name, write", [("later", "put_off"), ("stop_asking", "stop_asking")])
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_undo_pressed_while_not_now_or_stop_asking_is_still_writing_really_brings_the_card_back(world, language,
+                                                                                                 monkeypatch, name,
+                                                                                                 write):
+    # A4A-8: the write and its Undo were two jobs on the pool with nothing ordering them: an Undo that ran first found
+    # nothing to undo, then the write hid the card — till tomorrow (*Not now*) or for good (*Stop asking*).
+    seed, win, writer, ny = world(language, looks=Looks())
+    _gather(ny, many(language, 1))
+    win.show_tab("needs")
+    [card] = [e for e in ny.entries if e.kind == service.GONE]
+    started = _slowed(monkeypatch, write)
+    _pick(ny, card, name)
+    assert started.wait(3)
+    win.toasts.card.buttons[0].click()                        # Undo, the write still on its way
+    assert card.key in [e.key for e in ny.shown_entries()]    # back on the page at once
+    _wait_workers()
+    assert wait_until(lambda: not ny._running, 5)
+    assert card.key not in service.read_hidden(language)      # and in the file: the Undo came after its write
+    _settle_gather(ny, many(language, 1))
+    assert card.key in [e.key for e in ny.shown_entries()]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_stopped_card_whose_trouble_went_and_came_back_asks_again_without_a_restart(world, language):
+    # A4A-11: *Stop asking* goes with its trouble (N5) in the file, but the window kept the card hidden for the whole
+    # session — gone again, it stayed off until a restart.
+    seed, win, writer, ny = world(language, looks=Looks())
+    _gather(ny, many(language, 1))
+    win.show_tab("needs")
+    [card] = [e for e in ny.entries if e.kind == service.GONE]
+    _pick(ny, card, "stop_asking")
+    assert wait_until(lambda: card.key in service.read_hidden(language), 5)
+    _settle_gather(ny, many(language, 1))
+    assert card.key not in [e.key for e in ny.shown_entries()]  # still gone: still not asked
+    _settle_gather(ny, many(language, 1, missing=0))         # the file is back: its *Stop asking* goes with it
+    assert card.key not in service.read_hidden(language)
+    _settle_gather(ny, many(language, 1))                    # gone again: asked again, this session
+    assert card.key in [e.key for e in ny.shown_entries()]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_stop_asking_in_one_library_never_hides_a_card_of_another_library_whose_ids_repeat(world, language,
+                                                                                         monkeypatch):
+    # IK-10: the seen file is per language, its keys item ids (`item:<id>`) and folders: after a reinstall (a new
+    # library, item ids from 1 again) an old *Stop asking* would hide a card of another file. The answer is the
+    # library's own: a new library (its store id) asks again.
+    seed, win, writer, ny = world(language, looks=Looks())
+    reader = win.services.library
+    library = ["library-one"]
+    monkeypatch.setattr(reader, "store_id", lambda: library[0], raising=False)
+    _gather(ny, many(language, 1))
+    win.show_tab("needs")
+    [card] = [e for e in ny.entries if e.kind == service.GONE]
+    _pick(ny, card, "stop_asking")
+    assert wait_until(lambda: card.key in service.read_hidden(language), 5)
+    _settle_gather(ny, many(language, 1))
+    assert card.key not in [e.key for e in ny.shown_entries()]  # the same library: still not asked
+    library[0] = "library-two"                                 # a new library under the same language
+    _settle_gather(ny, many(language, 1))
+    assert card.key in [e.key for e in ny.shown_entries()]
+    assert card.key not in service.read_hidden(language)
+
+
+def test_stop_askings_tip_says_it_lasts_while_the_trouble_stays():
+    # IK-11: N5 lets a *Stop asking* go with its trouble — the tip said "Never ask about this again".
+    for name in ("stop_asking", "stop_all"):
+        _label, tip = strings.NEEDS_ACTIONS[name]
+        assert "never" not in tip.lower()
+        assert "while" in tip.lower() and "again" in tip.lower()

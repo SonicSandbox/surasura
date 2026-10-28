@@ -42,6 +42,7 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
+import collections
 import os
 import time
 
@@ -555,6 +556,9 @@ class NeedsYou(QObject):
         self._again = False
         self._hidden_now = {}                    # alpha 4 D2: key -> the day *Not now* hid it (None: *Stop asking*) —
         #                                          off the page at the press, before its write lands
+        self._landed = {}                        # A4A-11: key -> the first gather that reads its write (from it on
+        #                                          the seen file alone says whether it is hidden)
+        self._seen_jobs = collections.deque()    # A4A-8: the page's seen-file writes, one after another as pressed
         self.last_menu = None
         reader = getattr(win.services, "library", None)
         opener = getattr(reader, "opener", None)
@@ -719,6 +723,7 @@ class NeedsYou(QObject):
                                                                  self.find_offline, self.read_settings)
         find_miner = self.find_miner
         gone_folders = self.gone_folders
+        library = self._library()
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
 
         def gather():
@@ -727,6 +732,10 @@ class NeedsYou(QObject):
             rels = [e.rel_path for r in view.rows for e in r.episodes if e.rel_path] if view.mode == "store" else []
             roots = find_offline(lang, rels, data_dir) if rels else []
             asks = read_asks()
+            try:                                    # IK-10: the answers are this library's (a new one asks again)
+                service.keep_to_library(lang, library)
+            except Exception as e:
+                print(f"Needs you: the seen file wasn't tied to its library: {e!r}")
             try:                                    # W3.2 H (W5): the keys whose trouble is gone leave the seen file,
                 service.prune(lang, view, offline_roots=roots, connect=connect,   # judged by what was read (no ask
                               asks=asks or None, gone_folders=gone_judged)       # read: a failed read looks the same)
@@ -741,6 +750,15 @@ class NeedsYou(QObject):
                                   settled=gone_judged is not None)            # K1: every folder had its look
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
+
+    def _library(self):
+        """The library's own id (`LibraryReader.store_id`: its store's, new with a reinstall or *Start fresh*), or
+        None while it isn't known (no read yet, a reader without one)."""
+        store_id = getattr(getattr(self.win.services, "library", None), "store_id", None)
+        try:
+            return store_id() if callable(store_id) else None
+        except Exception:
+            return None
 
     def _gather_failed(self, info):
         self._running = False
@@ -760,7 +778,9 @@ class NeedsYou(QObject):
             self.refresh()
         if asked != self._asked:
             return
-        if entries == self.entries:
+        before = self.shown_entries() if self._landed else None
+        moved = self._let_go(asked) and self.shown_entries() != before    # A4A-11: a card only the window still hid
+        if entries == self.entries and not moved:
             return                                   # the same entries: nothing repainted (N9)
         self.entries = entries
         keys = {e.key for e in entries}
@@ -768,6 +788,16 @@ class NeedsYou(QObject):
         self._paint()
         if self.win.current_tab() == "needs" and self.win.isActiveWindow():
             self.opened()                            # looked at as it came
+
+    def _let_go(self, asked):
+        """(A4A-11) The keys whose write this gather read: the seen file says from now on whether they are hidden (a
+        *Stop asking* goes with its trouble, N5, and its card asks again when the trouble comes back, this session
+        too). -> whether any went."""
+        done = [k for k, n in self._landed.items() if asked >= n]
+        for k in done:
+            del self._landed[k]
+            self._hidden_now.pop(k, None)
+        return bool(done)
 
     def _paint(self):
         if not self._alive():
@@ -1239,8 +1269,15 @@ class NeedsYou(QObject):
         day = service._today() if later else None
         for k in keys:
             self._hidden_now[k] = day
+            self._landed.pop(k, None)               # (its write still to land)
         self._paint()
-        lang = self.language
+
+        def landed(_n):
+            for k in keys:
+                if k in self._hidden_now:
+                    self._landed[k] = self._asked + 1     # the next gather reads it (one running now: its again)
+            if self._alive():
+                self.refresh()
 
         def failed(info):
             for k in keys:
@@ -1248,17 +1285,39 @@ class NeedsYou(QObject):
             if self._alive():
                 self._paint()
             self._failed(info)
-        bridge.run_in_worker(write, lang, list(keys), then=lambda _n: self._alive() and self.refresh(),
-                             failed=failed)
+        self._seen_write(write, keys, landed, failed)
         self.win.toasts.show(said, undo=lambda: self._ask_again(keys))
 
     def _ask_again(self, keys):
-        """Undo: the cards asked again — back at once while the page still holds them, and in the seen file."""
+        """Undo: the cards asked again — back at once while the page still holds them, and in the seen file (after
+        the write it undoes: A4A-8)."""
         for k in keys:
             self._hidden_now.pop(k, None)
+            self._landed.pop(k, None)
         self._paint()
-        bridge.run_in_worker(service.ask_again, self.language, list(keys),
-                             then=lambda _n: self._alive() and self.refresh(), failed=self._failed)
+        self._seen_write(service.ask_again, keys, lambda _n: self._alive() and self.refresh(), self._failed)
+
+    def _seen_write(self, write, keys, then, failed):
+        """(A4A-8) `write(language, keys)` on a worker after every seen-file write pressed before it — *Not now*,
+        *Stop asking* and their Undo, one queue in the order pressed (the pool runs jobs side by side: an Undo that
+        ran first found nothing to undo, then its write hid the card); `then(n)` / `failed(info)` on this thread."""
+        self._seen_jobs.append((write, self.language, list(keys), then, failed))
+        if len(self._seen_jobs) == 1:
+            self._seen_next()
+
+    def _seen_next(self):
+        if not self._seen_jobs:
+            return
+        write, lang, keys, then, failed = self._seen_jobs[0]
+
+        def finish(callback, value):
+            self._seen_jobs.popleft()
+            try:
+                callback(value)
+            finally:
+                self._seen_next()
+        bridge.run_in_worker(write, lang, keys, then=lambda n: finish(then, n),
+                             failed=lambda info: finish(failed, info))
 
     # K1: the library mostly gone — *Start fresh* (`SourceLooks.fresh`, with Settings' own sheet)
     def _do_start_fresh(self, entry, _line):

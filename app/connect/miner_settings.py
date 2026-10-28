@@ -6,13 +6,14 @@ Only what Anki Miner's `check` says is wrong is set; a deck or note type that wo
 from Surasura's own settings or from Anki, never guessed from a name alone:
 
 - **the deck** (`deck_for`): the deck Junban keeps in order for this language (`replan_preview.recorded_deck`), else
-  Junban's deck when it is one of this language's known-words decks, else this language's one known-words deck — each
-  only when Anki has it;
+  Junban's deck when it is one of this language's known-words decks — each only when Anki has it; never a deck only
+  because it is the one known-words deck (it may be a premade course: reviews, alpha 5), which is asked, chosen first;
 - **the note type** (`note_type_for`): the one most of that deck's newest notes use, when Backfill's note languages
   name none other for this language; else the one Backfill's note languages name for it;
 - **the fields** (`fields_for`): Anki Miner's own rule, the word in the note type's first field; every other role keeps
-  the field Anki Miner has for it while the note type has that field, else takes the field of its name in the note
-  types Anki Miner fills completely (Lapis, Kiku, Anki Miner Note, Senren: `NAMES`, from Anki Miner 3.10.1's
+  the field Anki Miner has for it while the note type has that field (one left empty stays empty unless the note type
+  changed: Anki Miner reads a mapped field as a switch, word audio for one), else takes the field of its name in the
+  note types Anki Miner fills completely (Lapis, Kiku, Anki Miner Note, Senren: `NAMES`, from Anki Miner 3.10.1's
   `note_presets.py`); a note type with no sentence field isn't one Anki Miner can make Surasura's cards with.
 
 What can't be known — several known-words decks and no Junban deck, an empty deck — is asked in Surasura's own window
@@ -91,9 +92,7 @@ def deck_for(settings, language, decks):
     if recorded and recorded in decks:
         return recorded
     junban = str((settings or {}).get("junban_deck") or "").strip()
-    if junban and junban in known:
-        return junban
-    return known[0] if len(known) == 1 else None
+    return junban if junban and junban in known else None
 
 
 def _backfill_types(settings, language, note_types):
@@ -112,11 +111,12 @@ def note_type_for(settings, language, note_types, deck_type):
     return named[0] if len(named) == 1 else None
 
 
-def fields_for(note_fields, current):
+def fields_for(note_fields, current, fill=True):
     """Anki Miner's role -> field map for a note type whose fields are `note_fields` (in order), from `current` (the
     profile's map for this language: its roles are the ones this Anki Miner knows) — or None when Anki Miner can't make
     Surasura's cards with it (no fields, no sentence field). Every role of `current` is in the map ("" unmapped), the
-    word in the first field (Anki's duplicate check reads it), and no field twice."""
+    word in the first field (Anki's duplicate check reads it), and no field twice. `fill` False (the same note type): a
+    role `current` leaves empty stays empty."""
     note_fields = [str(f) for f in note_fields or ()]
     if not note_fields:
         return None
@@ -126,6 +126,9 @@ def fields_for(note_fields, current):
         if role == "word":
             continue
         have = str((current or {}).get(role) or "")
+        if not have and not fill and role != "sentence":
+            out[role] = ""
+            continue
         named = [by_fold[n.casefold()] for n in NAMES.get(role, ()) if n.casefold() in by_fold]
         field = next((f for f in ([have] if have in note_fields else []) + named if f not in taken), "")
         out[role] = field
@@ -142,10 +145,12 @@ def plan(settings, language, current, failed, anki, chosen=None):
     `current`: the profile's settings for the language (its `settings-export`'s `settings`); `failed`: the `check` items
     that aren't ok (only those are set: `SETTINGS_ITEMS`); `anki`: `AnkiReads`; `chosen`: {"deck", "note_type"} the
     learner picked in Surasura's window. `values`: Anki Miner's settings keys to write ({} when none is wrong).
-    `asked`: {"deck": [choices] | None, "note_type": [choices] | None, "why": None | "fields"} — each list with
-    Surasura's own first (this language's known-words decks; the note types Backfill names), None when it isn't asked;
-    one at a time, the deck first (its notes most often name the note type); "fields": `asked["note"]` has no sentence
-    field. Raises `anki_connect.AnkiError` when Anki doesn't answer."""
+    `asked`: {"deck": [choices] | None, "note_type": [choices] | None, "why": None | "fields", "values": {...}} —
+    each list with Surasura's own first (this language's known-words decks; the note types Backfill names), None when
+    it isn't asked; one at a time, the deck first (its notes most often name the note type); the note types offered are
+    only those Anki Miner can fill (`fields_for`: [] when Anki has none); "fields": `asked["note"]` has no sentence
+    field; `values`: what is already decided (the deck chosen), written meanwhile so it is never asked again (the
+    DevTest drill, run 1). Raises `anki_connect.AnkiError` when Anki doesn't answer."""
     chosen = chosen or {}
     failed = set(failed or ())
     current = current or {}
@@ -156,7 +161,8 @@ def plan(settings, language, current, failed, anki, chosen=None):
         deck = chosen.get("deck") if chosen.get("deck") in decks else deck_for(settings, language, decks)
         if deck is None:            # the note type waits for it: most often the deck's own notes name it
             known = [d for d in _known_decks(settings, language) if d in decks]
-            return "ask", {"deck": known + [d for d in decks if d not in known], "note_type": None, "why": None}
+            return "ask", {"deck": known + [d for d in decks if d not in known], "note_type": None, "why": None,
+                           "values": values}
         values["anki_deck_name"] = deck
     if not failed & {"note_type", "fields"}:
         return "write", values
@@ -168,18 +174,28 @@ def plan(settings, language, current, failed, anki, chosen=None):
         else:
             note = note_type_for(settings, language, note_types, anki.deck_note_type(deck) if deck else None)
         if note is None:
-            return "ask", {"deck": None, "note_type": _note_choices(settings, language, note_types), "why": None}
-    fields = fields_for(anki.fields(note), current.get("anki_fields") or {})
+            return "ask", {"deck": None, "note_type": _note_choices(settings, language, note_types, anki, current),
+                           "why": None, "values": values}
+    note_fields = anki.fields(note)
+    changed = note != str(current.get("anki_note_type") or "")
+    fields = fields_for(note_fields, current.get("anki_fields") or {}, fill=changed)
     if fields is None:
-        return "ask", {"deck": None, "note_type": _note_choices(settings, language, note_types), "why": "fields",
-                       "note": note}
+        return "ask", {"deck": None, "note_type": _note_choices(settings, language, note_types, anki, current),
+                       "why": "fields", "note": note, "values": values}
     values.update(anki_note_type=note, anki_fields=fields)
+    card_type = str(current.get("card_type") or "")
+    marker = str((current.get("card_type_marker_fields") or {}).get(card_type) or "")
+    if card_type and marker and marker not in note_fields:      # a card-type mark this note type has no field for
+        values["card_type"] = ""
     if fields.get("pitch_category") in ROMAJI_PITCH and fields.get("pitch_category") != \
             (current.get("anki_fields") or {}).get("pitch_category"):
         values["pitch_category_format"] = "romaji"
     return "write", values
 
 
-def _note_choices(settings, language, note_types):
+def _note_choices(settings, language, note_types, anki, current):
+    """The note types Anki Miner can fill (`fields_for`), those Backfill names for this language first."""
     named = _backfill_types(settings, language, note_types)
-    return named + [m for m in note_types if m not in named]
+    roles = (current or {}).get("anki_fields") or {}
+    return [m for m in named + [m for m in note_types if m not in named]
+            if fields_for(anki.fields(m), roles) is not None]

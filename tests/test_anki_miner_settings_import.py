@@ -85,8 +85,17 @@ def test_junbans_deck_counts_only_when_it_is_one_of_this_languages_known_decks()
     """One `junban_deck` for both languages: a Chinese deck picked in a Chinese 順 window never takes Japanese cards."""
     settings = {"junban_deck": "中文::句子", "anki_sync_decks": {"ja": ["日本語::Mining"], "zh": ["中文::句子"]}}
     decks = ["日本語::Mining", "中文::句子"]
-    assert MS.deck_for(settings, "ja", decks) == "日本語::Mining", "the one Japanese known-words deck"
     assert MS.deck_for(settings, "zh", decks) == "中文::句子"
+    assert MS.deck_for(settings, "ja", decks) is None, "never the Chinese deck for Japanese"
+
+
+def test_the_one_known_words_deck_is_asked_never_taken_unasked():
+    """Reviews (alpha 5): a beginner's one known-words deck is often a premade course (Kaishi 1.5k); mined cards never go
+    in it unasked. It is asked, chosen first."""
+    settings = {"anki_sync_decks": {"ja": ["日本語::Kaishi 1.5k"]}}
+    assert MS.deck_for(settings, "ja", ["Default", "日本語::Kaishi 1.5k"]) is None
+    what, asked = MS.plan(settings, "ja", FRESH, {"deck"}, Anki(["Default", "日本語::Kaishi 1.5k"]))
+    assert what == "ask" and asked["deck"][0] == "日本語::Kaishi 1.5k"
 
 
 def test_several_known_decks_and_no_junban_deck_is_not_guessed():
@@ -98,7 +107,7 @@ def test_a_deck_anki_doesnt_have_is_never_named():
     """Another Anki profile open, a deck renamed: the settings' deck isn't one Anki can put cards in."""
     settings = {"junban_deck": "日本語::Mining", "junban_replan_deck": "日本語::Mining", "junban_replan_language": "ja",
                 "anki_sync_decks": {"ja": ["日本語::Mining", "日本語::Core"]}}
-    assert MS.deck_for(settings, "ja", ["日本語::Core"]) == "日本語::Core"
+    assert MS.deck_for(settings, "ja", ["日本語::Core"]) is None
     assert MS.deck_for({}, "ja", ["Default"]) is None, "no settings: nothing named"
 
 
@@ -138,6 +147,24 @@ def test_senren_is_filled_by_its_own_names_and_the_word_goes_in_its_first_field(
     fields = MS.fields_for(SENREN, DEFAULT_FIELDS)
     assert (fields["word"], fields["sentence"], fields["definition"], fields["audio"], fields["frequency"]) == \
         ("word", "sentence", "definition", "sentenceAudio", "frequencies")
+
+
+def test_a_role_left_empty_stays_empty_on_the_same_note_type():
+    """Review (alpha 5): Anki Miner reads a mapped field as a switch (word audio for `expression_audio`); a role the
+    learner left empty is filled only when the note type changes."""
+    current = dict(DEFAULT_FIELDS, sentence="Sentence", source="Gone")
+    same = MS.fields_for(LAPIS, current, fill=False)
+    assert same["expression_audio"] == "" and same["glossary"] == "" and same["source"] == "MiscInfo"
+    assert MS.fields_for(LAPIS, current, fill=True)["expression_audio"] == "ExpressionAudio"
+
+
+def test_a_card_type_mark_the_new_note_type_has_no_field_for_is_cleared():
+    anki = Anki(["日本語::Mining"], {"Senren": SENREN}, {"日本語::Mining": "Senren"})
+    current = dict(FRESH, card_type="sentence", card_type_marker_fields={"sentence": "IsSentenceCard"})
+    what, values = MS.plan(JA, "ja", current, {"deck", "note_type", "fields"}, anki)
+    assert what == "write" and values["card_type"] == ""
+    lapis = Anki(["日本語::Mining"], {"Lapis": LAPIS}, {"日本語::Mining": "Lapis"})
+    assert "card_type" not in MS.plan(JA, "ja", current, {"deck", "note_type", "fields"}, lapis)[1]
 
 
 def test_no_field_is_mapped_twice_and_a_taken_field_falls_back_to_its_own_name():
@@ -197,13 +224,30 @@ def test_an_empty_deck_asks_the_note_type_with_backfills_first():
     anki = Anki(["日本語::Mining"], {"Basic": BASIC, "Lapis": LAPIS, "Kiku": LAPIS, "中文句子": LAPIS})
     what, asked = MS.plan(settings, "ja", FRESH, {"deck", "note_type", "fields"}, anki)
     assert what == "ask" and asked["deck"] is None
-    assert asked["note_type"] == ["Kiku", "Lapis", "Basic", "中文句子"]
+    assert asked["note_type"] == ["Kiku", "Lapis", "中文句子"], "Basic has no sentence field: never offered"
 
 
 def test_a_chosen_note_type_without_a_sentence_field_is_asked_again_saying_why():
     anki = Anki(["日本語::Mining"], {"Basic": BASIC, "Lapis": LAPIS})
     what, asked = MS.plan(JA, "ja", FRESH, {"deck", "note_type", "fields"}, anki, {"note_type": "Basic"})
     assert what == "ask" and asked["why"] == "fields" and asked["note"] == "Basic"
+
+
+def test_a_deck_chosen_is_kept_while_the_note_type_is_asked_next():
+    """The DevTest drill, run 1: the learner picked the deck, the deck was empty, so the note type was asked — and the
+    deck, not written, was asked again on the next press. The deck chosen goes with the note type's ask, to be written
+    meanwhile."""
+    settings = {"anki_sync_decks": {"zh": ["中文::句子", "中文::HSK"]}}
+    anki = Anki(["中文::句子", "中文::HSK"], {"Basic": BASIC, "Lapis": LAPIS})
+    what, asked = MS.plan(settings, "zh", FRESH, {"deck", "note_type", "fields"}, anki, {"deck": "中文::句子"})
+    assert what == "ask" and asked["note_type"] == ["Lapis"] and asked["values"] == {"anki_deck_name": "中文::句子"}
+
+
+def test_a_note_type_gone_from_anki_is_replaced_when_only_its_fields_fail():
+    anki = Anki(["日本語::Mining"], {"Lapis": LAPIS}, {"日本語::Mining": "Lapis"})
+    current = {"anki_deck_name": "日本語::Mining", "anki_note_type": "Lapis (old)", "anki_fields": DEFAULT_FIELDS}
+    what, values = MS.plan(JA, "ja", current, {"fields"}, anki)
+    assert what == "write" and values["anki_note_type"] == "Lapis"
 
 
 def test_a_choice_anki_doesnt_have_is_never_written():
@@ -350,21 +394,25 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(anki_miner, "profiles", lambda path: [dict(p) for p in state["profiles"]])
     monkeypatch.setattr(MS, "AnkiReads", lambda url: state["anki"])
     monkeypatch.setattr(M, "_busy", lambda: state["busy"])
-    from app import path_utils
+    from app import path_utils, settings_manager
     monkeypatch.setattr(path_utils, "get_local_data_path", lambda: str(tmp_path / "local"))
+    state["saved"] = []         # never the real settings.json
+    monkeypatch.setattr(settings_manager, "save_keys", lambda changes, **kw: state["saved"].append(changes))
     state["after"] = setup._check("anki_miner_setup", "ok", "Anki Miner's own setup is finished.")
     M._FAILED.clear()
     yield state
     M._FAILED.clear()
 
 
-ZH = {"anki_sync_decks": {"zh": ["中文::句子"], "ja": ["日本語::Mining"]}}
+ZH = {"junban_deck": "中文::句子", "anki_sync_decks": {"zh": ["中文::句子"], "ja": ["日本語::Mining"]}}
 
 
 def test_a_never_mined_language_makes_surasuras_own_profile_then_runs_its_setup_there(world):
     """The learner's Anki Miner mines Japanese in its one profile, the one its window uses: Chinese gets Surasura's
     own profile (a copy of it), its deck, note type and fields from Surasura's settings, then its dictionaries."""
-    assert M.finish_setup(ZH, "zh") == (M.SET_UP, None)
+    result, said = M.finish_setup(ZH, "zh")
+    assert result == M.SET_UP and "“中文::句子”, made with “Lapis”" in said and "its own Anki Miner profile" in said
+    assert world["saved"] == [], "its name is the setting's default: nothing to save"
     [made] = world["imports"]
     assert (made["name"], made["profile"], made["language"]) == (anki_miner.DEFAULT_PROFILE, None, "zh")
     assert (made["values"]["anki_deck_name"], made["values"]["anki_note_type"]) == ("中文::句子", "Lapis")
@@ -377,21 +425,44 @@ def test_surasuras_own_profile_is_updated_never_copied_again(world):
                          {"id": "surasura-1", "name": "Surasura", "active": False}]
     world["configured"] = True
     world["items"] = ["deck"]
-    assert M.finish_setup(ZH, "zh") == (M.SET_UP, None)
+    assert M.finish_setup(ZH, "zh") == (M.SET_UP, "New Chinese cards go in “中文::句子”.")
     assert world["imports"] == [{"language": "zh", "values": {"anki_deck_name": "中文::句子"}, "name": None,
                                  "profile": "surasura-1"}]
     assert world["runs"] == [], "nothing of its setup's was missing"
 
 
-@pytest.mark.parametrize("named, called", [("Surasura", "Surasura"), ("Mining", "Mining")])
-def test_the_profile_anki_miners_window_uses_is_never_written(world, named, called):
-    """The profile Connect mines with is the one Anki Miner's window uses (the learner switched to it there): Anki Miner
-    never lets settings-import change it, and Surasura doesn't try — it says so, in its own window's words."""
+@pytest.mark.parametrize("named, made", [("Surasura", "Surasura (Connect)"), ("Mining", "Surasura")])
+def test_the_profile_anki_miners_window_uses_is_never_written_surasura_makes_its_own(world, named, made):
+    """The profile Connect mines with is the one Anki Miner's window uses (Surasura's older steps had the learner make
+    "Surasura" in Anki Miner's window, which then keeps it): Anki Miner never lets settings-import change it, so
+    Surasura makes its own under a free name and mines with it from then on — never a dead end (reviews, alpha 5)."""
     world["profile"] = "p-1"
-    world["profiles"] = [{"id": "p-1", "name": called, "active": True}]
-    result, detail = M.finish_setup(dict(ZH, connect_anki_miner_profile=named), "zh")
-    assert result == M.SETUP_FAILED and f'"{called}" is the one its window uses' in detail
-    assert world["imports"] == [] and world["runs"] == []
+    world["profiles"] = [{"id": "p-1", "name": named, "active": True}]
+    saved = []
+    result, said = M.finish_setup(dict(ZH, connect_anki_miner_profile=named), "zh", save=saved.append)
+    assert result == M.SET_UP and f"“{made}”" in said
+    assert [(i["name"], i["profile"]) for i in world["imports"]] == [(made, None)]
+    assert world["runs"] == [("zh", "surasura-1")] and saved == [{"connect_anki_miner_profile": made}]
+
+
+def test_surasuras_own_profile_made_before_is_updated_when_the_window_uses_the_named_one(world):
+    world["profile"] = "p-1"
+    world["profiles"] = [{"id": "p-1", "name": "Mining", "active": True},
+                         {"id": "surasura-1", "name": "Surasura", "active": False}]
+    saved = []
+    result, _said = M.finish_setup(dict(ZH, connect_anki_miner_profile="Mining"), "zh", save=saved.append)
+    assert result == M.SET_UP and [(i["name"], i["profile"]) for i in world["imports"]] == [(None, "surasura-1")]
+    assert saved == [{"connect_anki_miner_profile": "Surasura"}]
+
+
+def test_a_name_that_couldnt_be_saved_is_said_and_its_setup_never_runs(world):
+    world["profile"] = "p-1"
+    world["profiles"] = [{"id": "p-1", "name": "Mining", "active": True}]
+
+    def refused(changes):
+        raise OSError("settings.json is read-only")
+    result, detail = M.finish_setup(dict(ZH, connect_anki_miner_profile="Mining"), "zh", save=refused)
+    assert (result, detail) == (M.SETUP_FAILED, M.NOT_SAVED) and world["runs"] == []
 
 
 def test_a_deck_it_cant_tell_is_asked_while_the_language_and_dictionaries_go_on(world):
@@ -404,15 +475,46 @@ def test_a_deck_it_cant_tell_is_asked_while_the_language_and_dictionaries_go_on(
     world["profile"], world["configured"], world["items"] = "surasura-1", True, ["deck", "note_type", "fields"]
     world["profiles"].append({"id": "surasura-1", "name": "Surasura", "active": False})
     world["imports"], world["runs"] = [], []                # the next press, its check still naming the deck
-    assert M.finish_setup(settings, "zh", chosen={"deck": "中文::HSK"}) == (M.SET_UP, None)
+    assert M.finish_setup(settings, "zh", chosen={"deck": "中文::HSK"})[0] == M.SET_UP
     assert world["imports"][-1]["values"]["anki_deck_name"] == "中文::HSK"
     assert world["imports"][-1]["profile"] == "surasura-1"
+
+
+def test_the_deck_chosen_is_written_while_the_note_type_is_asked_and_never_asked_again(world):
+    settings = {"anki_sync_decks": {"zh": ["中文::句子", "中文::HSK"]}}
+    world["anki"] = Anki(["中文::句子", "中文::HSK"], {"Basic": BASIC, "Lapis": LAPIS})
+    result, asked = M.finish_setup(settings, "zh", chosen={"deck": "中文::HSK"})
+    assert result == M.ASK and asked["note_type"] == ["Lapis"] and asked["deck"] is None
+    assert world["imports"][0]["values"] == {"anki_deck_name": "中文::HSK"}
+    assert world["runs"] == [("zh", "surasura-1")], "its dictionaries never wait for the answer"
+
+
+def test_no_note_type_anki_miner_can_fill_is_said_after_the_rest_never_asked_in_a_loop(world):
+    world["anki"] = Anki(["中文::句子"], {"Basic": BASIC, "Cloze": ["Text", "Back Extra"]})
+    assert M.finish_setup(ZH, "zh") == (M.SET_UP_REST, M.NO_NOTE_TYPE)
+    assert world["runs"] == [("zh", "surasura-1")] and "Anki Miner" not in M.NO_NOTE_TYPE.split(":")[1]
+
+
+def test_a_never_mined_language_missing_only_its_dictionaries_gets_its_profile_first(world):
+    """Anki Miner's `setup` refuses a language its profile never mined: the language goes in first, deck or not."""
+    world["items"] = ["dictionary", "language_pack"]
+    assert M.finish_setup(ZH, "zh")[0] == M.SET_UP
+    assert [(i["name"], i["values"]) for i in world["imports"]] == [(anki_miner.DEFAULT_PROFILE, {})]
+    assert world["runs"] == [("zh", "surasura-1")]
+
+
+def test_an_export_that_doesnt_say_configured_is_never_taken_as_a_new_language(world, monkeypatch):
+    """An Anki Miner whose export leaves `configured` out: nothing is written for a language it may well know."""
+    world["items"] = ["dictionary"]
+    monkeypatch.setattr(anki_miner, "settings_export", lambda path, language, out, profile=None: {"settings": FRESH})
+    assert M.finish_setup(ZH, "zh") == (M.SET_UP, None)
+    assert world["imports"] == [] and world["runs"] == [("zh", "default")]
 
 
 def test_anki_closed_meanwhile_still_sets_up_the_language_and_dictionaries(world):
     world["anki"] = Anki(closed=True)
     world["after"] = setup._check("anki_miner_setup", "waiting", "Anki Miner can't reach Anki.")
-    assert M.finish_setup(ZH, "zh") == (M.SET_UP, None)
+    assert M.finish_setup(ZH, "zh") == (M.SET_UP_REST, M.ANKI_CLOSED_REST), "never called finished (intent review)"
     assert [i["values"] for i in world["imports"]] == [{}] and world["runs"] == [("zh", "surasura-1")]
 
 

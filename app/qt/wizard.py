@@ -3086,6 +3086,7 @@ class SetupWizard(QWidget):
         page = self.pages[4]
         p = qpress.begin(page.btn_setup, "wizard:miner-setup", win=self)
         settings, language, chosen = thaw(self._settings()), self.language, page.chosen()
+        save = getattr(getattr(self.services, "settings", None), "set", None)    # Surasura's own profile's name
 
         def done(answer):
             self.setting_up = False
@@ -3093,8 +3094,12 @@ class SetupWizard(QWidget):
                 qpress.end(p, self, failed=answer[0] in ("failed", "busy", "missing"))
             if answer[0] == "failed":
                 self.setup_failed = True    # review A2-3 / A2-5: not offered again here (the service: this session)
-            page.show_ask(answer[1] if answer[0] == "ask" else None)    # A4M1-2b: chosen here, never in Anki Miner
+            # A4M1-2b: chosen here, never in Anki Miner — and only on the language it was asked for (review: a
+            # language switched while the setup ran never gets the other's decks)
+            page.show_ask(answer[1] if answer[0] == "ask" and language == self.language else None)
             detail = answer[1] if isinstance(answer[1], str) else ""
+            if answer[0] == "set-up" and detail:
+                detail = " " + detail
             self.say(S.SETUP_SAID.get(answer[0], "").format(detail=detail))
             self.look_miner()
 
@@ -3112,7 +3117,8 @@ class SetupWizard(QWidget):
 
         def run():
             try:
-                ended.call(("answer", miner.finish_setup_as_job(registry, settings, language, chosen=chosen)))
+                ended.call(("answer", miner.finish_setup_as_job(registry, settings, language, chosen=chosen,
+                                                                save=save)))
             except Exception as e:
                 ended.call(("failed", (e,)))
         threading.Thread(target=run, name="anki-miner-setup", daemon=True).start()

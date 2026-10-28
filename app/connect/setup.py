@@ -50,8 +50,8 @@ FETCH_ONLY = frozenset({"yt_dlp", "speech_model"})
 RELEASES = "https://github.com/0xzerolight/anki_miner/releases"
 # A4M1-2: the `do` of a setup Surasura finishes itself (`check["setup"]`: the wizard's *Finish its setup*)
 SETUP_DO = "Surasura finishes it for you: Anki Miner downloads them by itself, nothing to open"
-SETUP_DO_SOME = ("Surasura has Anki Miner download its dictionaries by itself; the rest ({rest}) is chosen in Anki "
-                 "Miner's own settings")
+SETUP_DO_SOME = ("Surasura finishes what it can for you; the rest ({rest}) comes with Anki Miner's installer: update "
+                 "Anki Miner from Surasura (Settings → Anki & mining)")
 # A4M1-2b: the deck, note type and fields Surasura sets itself (Anki Miner's settings-import, `connect.miner_settings`)
 SETTINGS_SAY = "Anki Miner doesn't know where your {language} cards go yet ({named})."
 SETTINGS_DO = "Surasura sets it for you from your own decks, nothing to open"
@@ -255,8 +255,8 @@ def _miner_error(id_, e):
         return _check(id_, NEEDS_YOU, e.message, f"Update Anki Miner ({RELEASES})")
     if e.kind == "needs-you":
         return _check(id_, NEEDS_YOU, e.message, "Choose a profile Anki Miner has, or make it in Anki Miner")
-    return _check(id_, NEEDS_YOU, f"Anki Miner didn't answer Surasura's question: {e.message}", "Open Anki Miner "
-                  "once to check it starts")
+    return _check(id_, NEEDS_YOU, f"Anki Miner didn't answer Surasura's question: {e.message}", "Check again in a "
+                  "moment; if it still doesn't answer, update Anki Miner from Surasura (Settings → Anki & mining)")
 
 
 def _anki_miner(settings, language, answered):
@@ -332,7 +332,7 @@ def _anki_miner(settings, language, answered):
         where = set(own) & ours & anki_miner.SETTINGS_ITEMS
         language_name = LANGUAGE_NAMES.get(language, language)
         if rest:
-            say, do = f"Anki Miner still needs its dictionaries ({named}).", SETUP_DO_SOME.format(rest=", ".join(rest))
+            say, do = f"Anki Miner's own setup isn't finished ({named}).", SETUP_DO_SOME.format(rest=", ".join(rest))
         elif where and set(own) & ours & anki_miner.SETUP_ITEMS:
             say, do = BOTH_SAY.format(language=language_name, named=named), BOTH_DO
         elif where:

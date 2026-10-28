@@ -786,7 +786,7 @@ def test_A4M1_2_finish_its_setup_runs_anki_miners_own_setup_as_a_job_then_says_s
     miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
     runs = []
 
-    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None):
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
         runs.append(language)
         gate.wait(5)
         return ("set-up", None)
@@ -813,7 +813,7 @@ def test_A4M1_2_a_setup_that_didnt_finish_is_said_and_not_offered_again(make):
     fix = {"say": "Anki Miner still needs its dictionaries.", "do": connect_setup.SETUP_DO, "update": False,
            "setup": True}
     miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
-    miner.finish_setup_as_job = lambda registry, settings, language, on_progress=None, chosen=None: (
+    miner.finish_setup_as_job = lambda registry, settings, language, on_progress=None, chosen=None, save=None: (
         "failed", "no space left")
     wiz, *_ = make(miner=miner)
     go_to(wiz, "cards")
@@ -840,7 +840,7 @@ def test_A4M1_2b_a_deck_surasura_cant_tell_is_asked_on_the_page_and_the_choice_g
                ("set-up", None)]
     done = threading.Event()
 
-    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None):
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
         pressed.append(chosen)
         answer = answers[len(pressed) - 1]
         done.set()
@@ -868,6 +868,35 @@ def test_A4M1_2b_a_deck_surasura_cant_tell_is_asked_on_the_page_and_the_choice_g
     page.show_ask({"deck": ["日本語::Mining"], "note_type": None})
     page.show_look(miner.answer)
     assert page.ask_part.isHidden(), "a ready Anki Miner shows no choice"
+
+
+def test_A4M1_2b_a_choice_asked_for_one_language_never_shows_after_a_switch_to_the_other(make):
+    """A4M1-2b review (alpha 5): the setup runs on its own thread; a language switched while it ran never gets the
+    other language's decks to choose from (the answer was asked for Japanese). The setup is handed the window's own
+    settings writer, so the profile Surasura makes for itself is saved through it."""
+    import threading
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner doesn't know where your Japanese cards go yet (deck: not found).",
+           "do": connect_setup.SETTINGS_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    gate, calls = threading.Event(), []
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
+        calls.append((language, save))
+        gate.wait(5)
+        return ("ask", {"deck": ["日本語::Mining", "Default"], "note_type": None, "why": None})
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, *_ = make(miner=miner)
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(calls) == 1)
+    assert calls[0][0] == "ja" and calls[0][1] == wiz.services.settings.set, "the window's own settings writer"
+    wiz.language = "zh"                 # switched on page 1 while the setup ran
+    gate.set()
+    assert wait_until(lambda: not wiz.setting_up)
+    assert page.ask_part.isHidden(), "Japanese decks are never offered for Chinese"
 
 
 # --- 6 · your list ----------------------------------------------------------------------------------------------------------- #

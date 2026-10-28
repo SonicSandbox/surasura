@@ -40,7 +40,7 @@ KINDS = {
     "finished-import": ARRIVALS, "child": ARRIVALS, "youtube": ARRIVALS,
     "library-look": ARRIVALS, "library-copy": ARRIVALS,       # the folder looks and the drop's copies (asked of Kura)
     "generate": SURASURA, "indexer": SURASURA, "sentence-corpus": SURASURA,
-    "mine": MINER, "mine-wait": MINER, "anki-miner-install": MINER,
+    "mine": MINER, "mine-wait": MINER, "anki-miner-install": MINER, "anki-miner-setup": MINER,
     "junban": JUNBAN, "backfill": JUNBAN, "replan": JUNBAN,
     "anki-sync": ANKI, "anki-backlog": ANKI, "known-import": ANKI, "mine-anki": ANKI,
     "update": None,

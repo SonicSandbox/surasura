@@ -25,8 +25,7 @@ as words: *8 of 12 watched, 3 in Anki*).
 Nothing here writes. ▶ asks the page to open a file (`play_requested`); a click on a stone, or Up Next's ✓ Done, asks
 for a Done (`done_requested`: one path, wherever it's clicked); ↑ ↓, ⋯ and the journey's ↗ ask too (`nudge_requested`,
 `menu_requested`, `journey_requested`); a row opens and closes. P4.1 L2: a status that is a button — *Mine now* (Waiting's
-icon), *Mine this* (Mine), *No video*'s *Link…* · *Mine text* — asks too (`mine_requested`, `link_requested`,
-`mine_text_requested`), by a click or, with the keyboard, → then Enter / Space; while Connect is off (`connect_off`, set
+icon), *Mine this* (Mine), *No video*'s *Link…* — asks too (`mine_requested`, `link_requested`), by a click or, with the keyboard, → then Enter / Space; while Connect is off (`connect_off`, set
 by the window) it asks nothing and its tip says why.
 """
 import bisect
@@ -415,10 +414,11 @@ def icon(p, kind, rect, colour, width=1.6):
 
 STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mine_rest": "check", "mine": "mine",
                "no_media": "no_media", "no_subs": "waiting",           # SRC W1b: a video waiting for its subtitle
-               "asked": "waiting"}                                     # R47: an ask Connect has read
+               "asked": "waiting",                                     # R47: an ask Connect has read
+               "books": "waiting"}                                     # alpha 4 M1: waits for Anki Miner to read books
 
 # --- P4.1 L2: the stones' actions (4.1.11; RUNBOOK C2, C3, C6, IK S7). A status that is a button: Waiting's icon is
-# *Mine now*, Mine is *Mine this*, No video offers *Link…* · *Mine text*. Its part's payload is an `Ask` (`id`: its first
+# *Mine now*, Mine is *Mine this*, No video offers *Link…* (alpha 4 M1: *Mine text* gone). Its part's payload is an `Ask` (`id`: its first
 # file's, so a press and its release match as an episode's do; `ids`: the files it asks for; `episode`: the first).
 ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media"}
 STOP = "stop"                                       # R47: a *Mining* status's Stop (`Status.stop`: its job)
@@ -518,7 +518,7 @@ def asked_files(kind, episodes):
 
 def asks_connect(name, word="video"):
     """Whether a status's button is an ask for Connect (refused while Connect is off): *Mine now* / *Mine this* on a
-    video. *No video*'s *Link…* · *Mine text* and a non-video item's *Mine this* (Anki Miner's own window, K67) need no
+    video. *No video*'s *Link…* and a non-video item's *Mine this* (the bar says it waits: alpha 4 M1) need no
     Connect, so they work while it is off (P4.1 WF, review IK N2)."""
     return name in ("mine-now", "mine-this") and word == "video"
 
@@ -526,7 +526,7 @@ def asks_connect(name, word="video"):
 def action_of(status, episodes, off=None, word="video"):
     """(part name, tip, payload) for a status shown as an icon: a button while Connect may run, its tip naming the
     click; Connect off (`off`: why, `feed.OFF_*`) the same part, its tip saying why nothing happens (an ask only:
-    `asks_connect`). `word`: the row's media word — a non-video item's button opens Anki Miner, and its tip says so.
+    `asks_connect`). `word`: the row's media word — a non-video item's button asks nothing (alpha 4 M1: the bar says it waits).
     Not a button: ("status", its tip, None) — *Not timed* too (its way on is *Mine anyway* in Needs you), so its tip
     names the wait, never a click. A wait on Anki or on the battery is *Mine now* as every *Waiting* is (P4.1's C3
     as amended by Sonic 2026-10-22, M-3 A): its tip, worded by `view_rows`, already says what the click does."""
@@ -544,7 +544,7 @@ def action_of(status, episodes, off=None, word="video"):
     elif view_rows.names_click(status):
         tip = said                      # a wait on Anki or on the battery: `view_rows` names the click (M-3)
     elif word != "video" and name != "no-media":
-        tip = strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=said)
+        tip = said                      # alpha 4 M1: no *Mine text* (Anki Miner's window): the bar says it waits
     else:
         words = getattr(strings, _ACTION_TIPS[name])
         if name == "no-media" and getattr(status, "moved", None):
@@ -2836,11 +2836,10 @@ class RowsView(QListView):
     episode_menu_requested = pyqtSignal(object, object, object)     # row 28: (the Row, the Episode, the global QPoint)
     line_requested = pyqtSignal(str)               # --- P4.1 L2 (row 4.1.14): a line clicked ("top"): its setting
     # --- P4.1 L2 (4.1.11): the statuses' buttons — (the Row, the item ids) *Mine now* / *Mine this*; (the Row, the
-    # Episode) No video's *Link…* and *Mine text*
+    # Episode) No video's *Link…*
     mine_requested = pyqtSignal(object, object)
     link_requested = pyqtSignal(object, object)
     find_folder_requested = pyqtSignal(object, object)      # MV-2: (the Row, the Episode) — *Find its folder…*
-    mine_text_requested = pyqtSignal(object, object)
     # --- end P4.1 L2
     stop_requested = pyqtSignal(object, object)    # --- R47: (the Row, the Ask: its file, its job) a Mining pill's Stop
 
@@ -4013,7 +4012,7 @@ class RowsView(QListView):
     def _act(self, idx, part):
         """A click on a part that isn't ▶ or the row itself: a stone or ✓ Done asks for a Done for its file (one path,
         S12); ↑ ↓ ask for a nudge, ⋯ for its menu, ↗ for the journey; Waiting's icon (*Mine now*), Mine (*Mine this*) and No
-        video (*Link…* · *Mine text*) ask P4.1's routing (`mine_requested` …); the top-20 line opens its setting; any
+        video (*Link…*) ask P4.1's routing (`mine_requested` …); the top-20 line opens its setting; any
         other status, a mark, the Soon line: states, not buttons."""
         name, rect, _tip, payload = part
         row = self.model().entries[idx.row()][1]
@@ -4041,8 +4040,8 @@ class RowsView(QListView):
 
     # --- P4.1 L2: the statuses' buttons (4.1.11) ------------------------------------------------------------------ #
     def _press_action(self, name, rect, row, ask, tip):
-        """*Mine now* / *Mine this* ask for the files; *No video* offers *Link…* · *Mine text* in a small menu. Connect
-        off: an ask does nothing, its tip (saying why) is shown (IK S7); *Link…* · *Mine text* still work. R47: a
+        """*Mine now* / *Mine this* ask for the files; *No video* offers *Link…* in a small menu. Connect
+        off: an ask does nothing, its tip (saying why) is shown (IK S7); *Link…* still works. R47: a
         Mining pill's *Stop* asks the window to stop its job (offered only while Connect may run: `action_of`)."""
         if name == STOP:
             self.stop_requested.emit(row, ask)
@@ -4060,8 +4059,7 @@ class RowsView(QListView):
         m.aboutToHide.connect(m.deleteLater)            # one menu per press, gone once it closes
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
-        offers = ((strings.ROWS_LINK, strings.ROWS_LINK_TIP, self.link_requested),
-                  (strings.ROWS_MINE_TEXT, strings.ROWS_MINE_TEXT_TIP, self.mine_text_requested))
+        offers = ((strings.ROWS_LINK, strings.ROWS_LINK_TIP, self.link_requested),)      # alpha 4 M1: no *Mine text*
         moved = getattr(getattr(ask.episode, "status", None), "moved", None)
         if moved:                                       # MV-2: its video left its folder — find that folder first
             offers = ((strings.ROWS_FIND_FOLDER, strings.ROWS_FIND_FOLDER_TIP.format(folder=moved),

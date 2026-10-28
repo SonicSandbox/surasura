@@ -20,7 +20,7 @@ import sys
 import threading
 import traceback
 
-from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, pyqtSignal, pyqtSlot
 
 
 class Gate:
@@ -126,15 +126,23 @@ class Bridge(QObject):
 class Relay(QObject):
     """(W3.4) One service callback as a signal, for a window that hands a Qt-free runner a callback (a tool's lines and
     its end, `app/services/tools.py`): `relay.call` is the callback (any thread), `said` arrives on the GUI thread, in
-    order. Made on the GUI thread with a parent: once the parent is gone, a call is dropped."""
+    order. Made on the GUI thread with a parent: once the parent is gone, a call is dropped — one queued already too
+    (alpha 4 fix2: a worker's call is queued to the relay's own slot, which says it on the GUI thread; Qt drops an
+    event queued to an object as it is deleted, never a plain function's: a slot ran after its window was gone)."""
     said = pyqtSignal(object)
+    _heard = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._heard.connect(self._say)
         self._gate = Gate(self)
 
     def call(self, value=None):
-        self._gate.emit("said", value)
+        self._gate.emit("_heard", value)
+
+    @pyqtSlot(object)
+    def _say(self, value):
+        self.said.emit(value)
 
 
 class _Relay(QObject):

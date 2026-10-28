@@ -85,6 +85,41 @@ def test_a_callback_after_the_bridge_is_gone_is_dropped(qapp):
     svc.tell("late")                                  # no raise into the service
 
 
+def test_a_relays_answer_on_its_way_when_its_window_goes_never_reaches_the_slot(qapp):
+    """Alpha 4 (fix2): a worker answered (`relay.call` on its thread: the call queued), then the window holding the
+    relay was deleted before the window's loop ran — the slot ran anyway, after its relay and window were gone
+    (*Start fresh*'s counts: `relay.deleteLater()` on a deleted relay, a `RuntimeError` out of the slot). The answer
+    is the relay's own: it goes with it."""
+    from PyQt6.QtCore import QCoreApplication, QEvent, QObject
+    holder = QObject()
+    relay = bridge.Relay(holder)
+    heard = []
+    relay.said.connect(heard.append)
+    t = threading.Thread(target=relay.call, args=("その後",))
+    t.start()
+    t.join()
+    holder.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    for _ in range(5):
+        QApplication.processEvents()
+    assert heard == []
+
+
+def test_a_relay_called_on_the_windows_thread_answers_at_once_and_from_a_worker_in_order(qapp):
+    """The relay as before: on the window's own thread the slot runs in the call; from a worker, queued, in order."""
+    relay = bridge.Relay(QApplication.instance())
+    heard = []
+    relay.said.connect(lambda v: heard.append((v, QThread.currentThread() is qapp.thread())))
+    relay.call("今")
+    assert heard == [("今", True)]
+    t = threading.Thread(target=lambda: [relay.call(i) for i in range(50)])
+    t.start()
+    t.join()
+    assert wait_until(lambda: len(heard) == 51)
+    assert heard[1:] == [(i, True) for i in range(50)]
+    relay.deleteLater()
+
+
 # Round 8's crash, at its root: a service thread calling a signal's emit kept from an object the GUI thread has
 # deleted (or is deleting) is an access violation — no Python error, the whole process ends (the writer's late landing
 # on the drag's relay, deleted with its window; 1 run in 20 of test_finished). Raced in a child process, so a

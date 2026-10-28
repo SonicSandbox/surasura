@@ -65,6 +65,8 @@ ALL_GONE_MIN = 10               # the deleted-card check: this many notes or mor
 # The plain lines a waiting job shows (the status line's, never Needs you)
 ON_BATTERY = "On battery: cards are made once this computer is plugged in."
 ANKI_MINER_OPEN = "Anki Miner is open: close it to make cards."
+# A2-6: told BUSY while Surasura's *Finish its setup* runs Anki Miner's setup (`anki_miner.setting_up`): nothing to close
+SETTING_UP = "Anki Miner is finishing its setup: cards are made once it's done."
 WRITER_BUSY = "Another program is writing to Anki."
 SHELF_NO_JUNBAN = "The shelf is off: it needs Junban (順), which isn't installed. Connect waits at the cap."
 REVIEWING = "Waiting while you review in Anki."
@@ -2198,7 +2200,7 @@ def holds_every(reason):
     the top — a later episode (or the next show) is never mined before the ones that waited."""
     if not isinstance(reason, str) or reason == ANKI_SLOW:
         return False
-    return (reason in (ON_BATTERY, ANKI_MINER_OPEN) or reason.startswith(OTHER_LIST.split("{")[0])
+    return (reason in (ON_BATTERY, ANKI_MINER_OPEN, SETTING_UP) or reason.startswith(OTHER_LIST.split("{")[0])
             or anki_wait(reason))
 
 
@@ -2242,14 +2244,20 @@ def _wait_or_needs(error, resume, url=None):
     if error.code == "anki-closed":
         return _anki_wait(url, resume)
     if error.code in ("anki-busy", "busy", "anki-miner-busy", "settings-unreadable"):
-        say = {"anki-busy": REVIEWING, "anki-miner-busy": ANKI_MINER_OPEN}.get(error.code, error.message)
+        say = {"anki-busy": REVIEWING, "anki-miner-busy": _miner_busy()}.get(error.code, error.message)
         return Wait(say, resume=resume)
     return Needs(error.code, error.message)
 
 
+def _miner_busy():
+    """Anki Miner's BUSY as the wait says it: its setup running from Surasura (A2-6), else its window open."""
+    from app.connect import anki_miner
+    return SETTING_UP if anki_miner.setting_up() else ANKI_MINER_OPEN
+
+
 def _miner_wait_or_needs(error, url=None):
     if error.kind == "busy":
-        return Wait(ANKI_MINER_OPEN, resume="mining")
+        return Wait(_miner_busy(), resume="mining")
     if error.kind == "writer-busy":
         return Wait(WRITER_BUSY, resume="mining")
     if error.kind == "reviewing":

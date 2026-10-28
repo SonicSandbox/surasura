@@ -786,7 +786,7 @@ def test_A4M1_2_finish_its_setup_runs_anki_miners_own_setup_as_a_job_then_says_s
     miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
     runs = []
 
-    def finish_setup_as_job(registry, settings, language, on_progress=None):
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None):
         runs.append(language)
         gate.wait(5)
         return ("set-up", None)
@@ -813,7 +813,8 @@ def test_A4M1_2_a_setup_that_didnt_finish_is_said_and_not_offered_again(make):
     fix = {"say": "Anki Miner still needs its dictionaries.", "do": connect_setup.SETUP_DO, "update": False,
            "setup": True}
     miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
-    miner.finish_setup_as_job = lambda registry, settings, language, on_progress=None: ("failed", "no space left")
+    miner.finish_setup_as_job = lambda registry, settings, language, on_progress=None, chosen=None: (
+        "failed", "no space left")
     wiz, *_ = make(miner=miner)
     go_to(wiz, "cards")
     page = wiz.page
@@ -822,6 +823,51 @@ def test_A4M1_2_a_setup_that_didnt_finish_is_said_and_not_offered_again(make):
     QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: wiz.setup_failed and miner.looks >= looks + 1)
     assert wait_until(lambda: page.btn_setup.isHidden())
+
+
+def test_A4M1_2b_a_deck_surasura_cant_tell_is_asked_on_the_page_and_the_choice_goes_with_the_next_press(make):
+    """A4M1-2b (lean taken, PROVISIONAL; Sonic: "I honestly don't want to ever have to open anki miner. Ever."): when
+    Surasura's own settings can't tell which deck Anki Miner's cards go in, *Finish its setup* answers "ask": the page
+    shows the choice — this language's known decks first, the first chosen — never "open Anki Miner"; the next press
+    hands the choice to the setup; once the look says ready, the choice leaves the page."""
+    import threading
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner doesn't know where your Japanese cards go yet (deck: not found).",
+           "do": connect_setup.SETTINGS_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    pressed = []
+    answers = [("ask", {"deck": ["日本語::Mining", "日本語::Kaishi 1.5k", "Default"], "note_type": None, "why": None}),
+               ("set-up", None)]
+    done = threading.Event()
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None):
+        pressed.append(chosen)
+        answer = answers[len(pressed) - 1]
+        done.set()
+        return answer
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, *_ = make(miner=miner)
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    assert page.ask_part.isHidden() and "Open Anki Miner" not in page.sub.text()
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: not page.ask_part.isHidden() and not wiz.setting_up)
+    assert pressed == [None], "the first press chose nothing"
+    assert not page.deck_row.isHidden() and page.note_row.isHidden()
+    assert [page.ask_deck.itemText(i) for i in range(page.ask_deck.count())][:2] == ["日本語::Mining",
+                                                                                     "日本語::Kaishi 1.5k"]
+    assert page.ask_deck.currentText() == "日本語::Mining" and page.ask_line.text() == S.MINER_ASK_DECK
+    assert page.ask_deck.toolTip() == S.MINER_DECK_TIP
+    page.ask_deck.setCurrentIndex(1)
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 2 and not wiz.setting_up)
+    assert pressed[1] == {"deck": "日本語::Kaishi 1.5k", "note_type": None}
+    assert wait_until(lambda: page.ask_part.isHidden()), "set up: nothing left to choose"
+    miner.answer = miner_look("ready", "3.10.1")
+    page.show_ask({"deck": ["日本語::Mining"], "note_type": None})
+    page.show_look(miner.answer)
+    assert page.ask_part.isHidden(), "a ready Anki Miner shows no choice"
 
 
 # --- 6 · your list ----------------------------------------------------------------------------------------------------------- #

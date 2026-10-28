@@ -52,6 +52,12 @@ RELEASES = "https://github.com/0xzerolight/anki_miner/releases"
 SETUP_DO = "Surasura finishes it for you: Anki Miner downloads them by itself, nothing to open"
 SETUP_DO_SOME = ("Surasura has Anki Miner download its dictionaries by itself; the rest ({rest}) is chosen in Anki "
                  "Miner's own settings")
+# A4M1-2b: the deck, note type and fields Surasura sets itself (Anki Miner's settings-import, `connect.miner_settings`)
+SETTINGS_SAY = "Anki Miner doesn't know where your {language} cards go yet ({named})."
+SETTINGS_DO = "Surasura sets it for you from your own decks, nothing to open"
+BOTH_SAY = "Anki Miner still needs its dictionaries, and where your {language} cards go ({named})."
+BOTH_DO = "Surasura finishes it for you: Anki Miner downloads its dictionaries by itself, nothing to open"
+LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 ANKICONNECT_CODE = "2055492159"     # AnkiConnect's add-on code on AnkiWeb
 
 OK, WAITING, NEEDS_YOU, NOT_CHECKED, SKIPPED = "ok", "waiting", "needs-you", "not-checked", "skipped"
@@ -317,13 +323,25 @@ def _anki_miner(settings, language, answered):
     if ready.get("ready") is True:          # its own verdict; what only its YouTube fetch needs never counts
         out.append(_check("anki_miner_setup", OK, "Anki Miner's own setup is finished."))
     elif own and anki_miner.can_set_up(info, own):
-        # A4M1-2 (lean taken, PROVISIONAL): what Anki Miner's own `setup` installs, Surasura runs it for you
+        # A4M1-2 / A4M1-2b (leans taken, PROVISIONAL): what Anki Miner's own `setup` installs and what its
+        # `settings-import` sets (the deck, note type and fields), Surasura does for you
         # (`services.anki_miner_setup.finish_setup`) — never "open Anki Miner"
         named = "; ".join(f"{name_}: {item.get('message') or 'not ready'}" for name_, item in own.items())
-        rest = [name_ for name_ in own if name_ not in anki_miner.SETUP_ITEMS]
-        check = _check("anki_miner_setup", NEEDS_YOU, f"Anki Miner still needs its dictionaries ({named}).",
-                       SETUP_DO_SOME.format(rest=", ".join(rest)) if rest else SETUP_DO)
+        ours = anki_miner.ours(info)
+        rest = [name_ for name_ in own if name_ not in ours]
+        where = set(own) & ours & anki_miner.SETTINGS_ITEMS
+        language_name = LANGUAGE_NAMES.get(language, language)
+        if rest:
+            say, do = f"Anki Miner still needs its dictionaries ({named}).", SETUP_DO_SOME.format(rest=", ".join(rest))
+        elif where and set(own) & ours & anki_miner.SETUP_ITEMS:
+            say, do = BOTH_SAY.format(language=language_name, named=named), BOTH_DO
+        elif where:
+            say, do = SETTINGS_SAY.format(language=language_name, named=named), SETTINGS_DO
+        else:
+            say, do = f"Anki Miner still needs its dictionaries ({named}).", SETUP_DO
+        check = _check("anki_miner_setup", NEEDS_YOU, say, do)
         check["setup"] = True
+        check["items"] = sorted(own)        # what `finish_setup` sets: its setup's, its settings-import's
         out.append(check)
     elif own:
         named = "; ".join(f"{name_}: {item.get('message') or 'not ready'}" for name_, item in own.items())

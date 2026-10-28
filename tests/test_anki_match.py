@@ -1043,3 +1043,18 @@ def test_the_shipped_dictionary_reads_a_kana_card_by_the_entries_its_reading_nam
     assert all(number >= len(lines) for number in readings["ひょいと"])
     assert "まく" not in readings
     assert kanji.get("２０世紀") == kanji.get("20世紀") != frozenset()
+
+
+# --- alpha 4 M3: a card Connect made, on the row Connect mined it for ------------------------------------------------ #
+@pytest.mark.parametrize("row, key, via, answers, placed", [
+    ("ヒトリ", "", "", None, ("ヒトリ", "connect")),                     # not_the_name refused it: Connect's row
+    ("ヒトリ", "一人", "L6", None, ("ヒトリ", "connect")),               # read as an everyday word: still Connect's row
+    ("ヒトリ", "冒険", "exact", None, ("冒険", "exact")),                 # its own word is on the list: never over it
+    ("ヒトリ", "一人", "yes", None, ("一人", "yes")),                     # your yes stands
+    ("ヒトリ", "", "", {"ひとり": {"target": "ヒトリ", "answer": "no"}}, ("", "")),   # your no stands
+    ("気配", "", "", None, ("", "")),                                    # a row no longer on the list: as before
+    (None, "一人", "L6", None, ("一人", "L6")),                          # no record: as before
+])
+def test_connect_row_places_a_connect_card_only_where_its_own_word_found_no_row(row, key, via, answers, placed):
+    rank_of = {"ヒトリ": 0, "一人": 1, "冒険": 2}
+    assert anki_match.connect_row(row, key, via, "ひとり", rank_of, answers) == placed

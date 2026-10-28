@@ -547,3 +547,7 @@ def test_loop_f2_a_card_connect_made_for_a_name_row_marks_that_row_only(tmp_path
     monkeypatch.setattr(library, "made_notes_of", lambda language: {1789711432600: "冒険"})
     assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["一人"], \
         "a record naming a word off the list: the card's own word, as before"
+    # review F-3: never over your "no" to that row
+    monkeypatch.setattr(library, "made_notes_of", lambda language: {1789711432600: "ヒトリ"})
+    _write_pairs({"ひとり": {"target": "ヒトリ", "answer": "no", "via": "L6", "at": "2026-10-27T10:00:00"}})
+    assert anki_backlog_keys("ja", {"anki_backlog_on_generate": True}, listed) == ["一人"]

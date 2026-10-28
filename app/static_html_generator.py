@@ -657,7 +657,7 @@ def anki_backlog_keys(language, settings, list_path=None):
             answers = _pair_answers(language)
             index = anki_match.build_index(list_path, language="ja") if list_path else None
             listed = index.rank_of if index else {}
-            made = _connect_rows(language, backlog, listed)
+            made = _connect_rows(language, backlog, index, answers)
             if made:        # alpha 4 M3: labelled on the row Connect made it for, only there (as Junban places it)
                 backlog = dict(backlog, notes={n: e for n, e in (backlog.get("notes") or {}).items()
                                                if n not in made})
@@ -679,22 +679,39 @@ def anki_backlog_keys(language, settings, list_path=None):
 _ENDING_SPELLINGS = ("する", "な", "に", "と")
 
 
-def _connect_rows(language, backlog, listed):
-    """{backlog note id (as the file keys it): the listed word Connect made its card for} — alpha 4 M3, Junban's
-    first rule (`reposition`, `connect.library.made_notes_of`): ヒトリ's card, mined as ひとり, is labelled on ヒトリ.
-    {} without a list or Connect's record."""
-    if not listed:
+def _connect_rows(language, backlog, index, answers=None):
+    """{backlog note id (as the file keys it): the listed word Connect made its card for} — alpha 4 M3, as Junban
+    places it (`anki_match.connect_row` after `card_key`, with Connect's record `connect.library.made_notes_of`):
+    ヒトリ's card, mined as ひとり, is labelled on ヒトリ; never over the card's exact row, a "yes" or a "no". The
+    tokenizer is built only for a card the record names. {} without a list or Connect's record."""
+    if index is None or not index.rank_of:
         return {}
+    from app import anki_match
     from app.connect import library
     made = library.made_notes_of(language)
+    if not made:
+        return {}
+    tokenizers = []
+
+    def tokenize(text):
+        if not tokenizers:
+            from app import analyzer
+            analyzer.SANITIZE_JA = True         # as every Japanese run sets it (see _dictionary_keys)
+            tokenizers.append(analyzer.JapaneseTokenizer().tokenize)
+        return tokenizers[0](text)
     out = {}
-    for note in (backlog.get("notes") or {}):
+    for note, entry in (backlog.get("notes") or {}).items():
         try:
             row = made.get(int(note))
         except (TypeError, ValueError):
             continue
-        if row is not None and row in listed:
-            out[note] = row
+        word = entry.get("word") if isinstance(entry, dict) else None
+        if row is None or not isinstance(word, str):
+            continue
+        key, via = anki_match.card_key(word, index.rank_of, "ja", answers, tokenize, index.words, index.orths)
+        key, via = anki_match.connect_row(row, key, via, word, index.rank_of, answers)
+        if via == "connect":
+            out[note] = key
     return out
 
 

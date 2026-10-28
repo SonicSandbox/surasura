@@ -1017,6 +1017,21 @@ def not_the_name(word, key, rank_of, words, tokenize):
     return other if other and rank_of[other] != rank else ""
 
 
+def connect_row(row, key, via, word, rank_of, answers=None):
+    """Alpha 4 M3: where a card Connect made goes — `row`, the list's word Connect's record says it was made for
+    (`connect.library.made_notes_of`), when that row is on the list and the card's own word found no row of its own
+    (`card_key`'s `key`, `via`): never over an exact row ("exact": a card you corrected to a listed word), your "yes"
+    ("yes"), or your "no" to that row (`answers`). ヒトリ's card, mined as ひとり, is ヒトリ's (`not_the_name` would
+    refuse it). -> (key, via), via "connect" when the record placed it. One rule for Junban's placement and the
+    report's "In Anki" label."""
+    if row is None or row not in (rank_of or {}) or via in ("exact", "yes"):
+        return key, via
+    said = (answers or {}).get(word)
+    if isinstance(said, dict) and said.get("answer") == "no" and said.get("target") == row:
+        return key, via
+    return row, "connect"
+
+
 def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None, orths=None, phrases=False,
              verb=None):
     """Where a card's word lands on the list with no question asked: `(key, via)`, or `("", "")`.

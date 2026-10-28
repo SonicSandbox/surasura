@@ -188,6 +188,38 @@ def test_b10_the_starts_look_waits_for_the_setup_wizard_then_runs_once(qapp, ank
     services.shutdown(0.05)
 
 
+def test_b10_a_focus_while_the_wizard_is_up_looks_at_nothing_and_the_close_looks_once(qapp, anki):
+    """Review F-1: with the wizard up, a focus (you alt-tab to Anki and back) neither syncs Anki nor kicks Connect —
+    the wizard's close makes the window's one look, its forced known-words sync once."""
+    anki.state = "open"
+    services, _said, _log = _services(ON)
+    services.setup_open.set()
+    services.start()
+    services.activated()
+    _settled(services)
+    assert anki.begins == [] and anki.kicks == [] and _began(services) == []
+    services.setup_ended()
+    _settled(services)
+    assert anki.begins == [URL] and _began(services) == [(BEGAN, True)]
+    services.shutdown(0.05)
+
+
+def test_b10_a_first_run_that_turns_connect_on_in_the_wizard_gets_its_opening_look(qapp, anki):
+    """Review F-2: Connect off at the start (a first run), the wizard turns *Make cards* and *Open Anki for me* on —
+    its close opens Anki and makes the session's sync once; the start's own known-words sync already went, so the
+    look's is at its own pace (never a second forced one)."""
+    settings = dict(ON, connect_enabled=False)
+    services, _said, _log = _services(settings)
+    services.setup_open.set()
+    services.start()
+    services.settings.get()["connect_enabled"] = True
+    services.setup_ended()
+    _settled(services)
+    assert len(anki.starts) == 1 and anki.begins == [URL]
+    assert _began(services) == [(BEGAN, False)]
+    services.shutdown(0.05)
+
+
 def test_b10_connect_switched_off_in_the_wizard_looks_at_nothing_and_the_start_sync_still_goes(qapp, anki):
     settings = dict(ON)
     services, _said, _log = _services(settings)

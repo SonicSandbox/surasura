@@ -969,7 +969,18 @@ def test_b13_a_line_the_session_look_says_from_its_own_thread_reaches_the_bottom
     test hands `services.say` a list)."""
     import threading
     line = "Anki is open and synced: your phone's reviews are in."
-    said = threading.Thread(target=main.services.say, args=(line,))
-    said.start()
-    said.join(5)
-    assert wait_until(lambda: main.bar_line.full() == line, 3)
+    threads = []
+    real = windows.say_in_bar
+
+    def say_in_bar(win, text):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(win, text)
+    windows.say_in_bar = say_in_bar
+    try:
+        said = threading.Thread(target=main.services.say, args=(line,))
+        said.start()
+        said.join(5)
+        assert wait_until(lambda: main.bar_line.full() == line, 3)
+    finally:
+        windows.say_in_bar = real
+    assert threads == [True], "painted on the window's thread (the Relay), never the look's (review F-11)"

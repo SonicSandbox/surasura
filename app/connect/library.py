@@ -250,21 +250,12 @@ def asked(store):
 
 
 def made_notes(store):
-    """{note id: the list's word Connect made that note's card for}, over every item (`made_words`) — alpha 4 M3: the
-    row a card Connect made belongs on, whatever its front reads as (ヒトリ's card, mined as ひとり). Empty while
-    the table holds nothing."""
-    from app.library_store import _json_list, _note_id
+    """{note id: the list's word Connect made that note's card for}, over every item — alpha 4 M3: the row a card
+    Connect made belongs on, whatever its front reads as (ヒトリ's card, mined as ひとり). The store's record read
+    once, by the shelf's reader (`shelf.made_notes`); empty while it holds nothing."""
+    from app.connect import shelf
     with store._reading():
-        if not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'"
-                                  ).fetchone():
-            return {}
-        out = {}
-        for word, raw in store.conn.execute("SELECT word, note_ids FROM made_words"):
-            for note in _json_list(raw):
-                note = _note_id(note)
-                if note is not None and word:
-                    out[note] = word
-        return out
+        return {note: word for note, (_item, word) in shelf.made_notes(store).items() if word}
 
 
 def made_notes_of(language):

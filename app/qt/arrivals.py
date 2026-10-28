@@ -214,7 +214,8 @@ class ArrivalNumbers:
 
     def _language_locked(self, language):
         """(Under `_lock`.) `language` is the one kept: on a switch, everything of the other one goes — its asks, its
-        answers, a hand-on waiting on its timer — since item ids repeat across libraries (A4A-4)."""
+        answers, a hand-on waiting on its timer — since item ids repeat across libraries (A4A-4); the new language's
+        first answer goes on at once, as any first does (A9)."""
         if language == self._lang:
             return
         self._lang = language
@@ -224,6 +225,7 @@ class ArrivalNumbers:
         self.kept = {}
         self._current = {}
         self._handed = None
+        self._handed_at = None
         self._moved = False
 
     def want(self, arrivals, force=False):

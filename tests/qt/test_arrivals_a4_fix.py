@@ -268,9 +268,7 @@ def test_a_japanese_hand_on_waiting_on_its_timer_is_dropped_when_the_window_swit
     assert handed == [("ja", {101: 7})]                               # nothing of Japanese reaches the zh reader
     assert nums.estimates() == {}
     nums._answer(101, False, "k", {"n_new_top": 3, "plan": "p"}, "zh")   # zh's own answer, same id, same signature
-    now[0] += 1
-    later.run()
-    assert handed[-1] == ("zh", {101: 3})                             # zh's alone, never merged with ja's
+    assert handed[-1] == ("zh", {101: 3})                             # zh's alone, at once (its first), never ja's
 
 
 def test_after_a_switch_a_chinese_arrival_whose_id_a_japanese_file_had_is_still_asked(tmp_path):

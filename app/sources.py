@@ -91,7 +91,8 @@ CHECKPOINT_EVERY = 5            # take-ins between a look's PASSIVE checkpoints 
 IN_MEMORY = 16 << 20            # a new text up to this size is read once: hashed and copied from memory
 FOCUS_S = 5 * 60                # a look on the window's focus: at most this often
 HOURLY_S = 60 * 60              # else, while a window is in front
-CACHE_VERSION = 3               # 2: a folder's subtitle folders are listed with it; 3: a versions folder by its name
+CACHE_VERSION = 4               # 2: a folder's subtitle folders are listed with it; 3: a versions folder by its name;
+                                # 4: a folder link is followed, and each root keeps its folders' notes (`notes`)
                                 # alone (LF-1), never one guessed from what it holds
 EPUB = ".epub"
 MIN_SCRIPT = 20                 # a text holding fewer characters of the language's script is no content (K6)
@@ -122,6 +123,15 @@ _RANK = {".ass": 0, ".ssa": 0, ".srt": 1}           # of one episode's subtitles
 _OVERRIDE = re.compile(r"\{[^}]*\}")          # an .ass line's override tags (`{\\pos(…)}`, `{\\k20}`)
 THIN = 4                        # A6: a pick holding under 1/THIN of its episode's fullest candidate's lines (a signs
                                 # track) is never the episode's text while that one is
+# Alpha 4 (Mattias's report: six show folders never arrived, nothing said): why a folder in a source isn't read — a
+# look says it (`notes`), never drops a folder silently. A folder link (a junction, a symlink) is followed (`_link`).
+NOT_READ_LINK_GONE = "It links to a folder that isn't there."
+NOT_READ_LINK_OWN = ("It links to a folder Surasura doesn't read as a library (its own, a whole drive or your user "
+                     "folder).")
+NOT_READ_LINK_HOLDS = "It links to a folder that holds a folder Surasura reads already."
+NOT_READ_SHORTCUT = "It's a Windows shortcut: Surasura reads folders, not shortcuts. Add the folder it points to."
+NOT_READ_LOCKED = "Windows wouldn't let Surasura open it."
+NOT_READ_CLOUD = "It's in the cloud and not on this computer yet."
 _GUARD = threading.Lock()
 _RUNNING = set()                # stores a look is running on (their path keys): never two at once
 _LOOKED = set()                 # (store, source) looked at in full this run: later looks list only what changed
@@ -722,10 +732,12 @@ def _save_cache(language, data):
         log.warning("The source folders' times couldn't be saved (%s); they're listed again next look", path)
 
 
-def _listing(folder):
+def _listing(folder, links=None):
     """(texts, epubs, videos {name lower: (path, stat)}, subfolders, placeholders, unread) of one folder, from the
     listing alone; `unread`: an entry whose stat failed (held by another program, a share's hiccup) was passed over, so
-    the folder's time is not kept (H1). None when it can't be listed (gone, offline)."""
+    the folder's time is not kept (H1). None when it can't be listed (gone, offline). `links` (alpha 4, a look's own
+    folder): a list given gets [(path, why)] of what isn't a subfolder to read as it is — a folder link (why None:
+    the look decides, `_Look._link`), a cloud folder not on this computer, a Windows shortcut (`.lnk`)."""
     from app.connect import runner
     texts, epubs, vids, subs, ghosts, unread = [], [], {}, [], 0, False
     try:
@@ -739,10 +751,22 @@ def _listing(folder):
                         # a folder the cloud hasn't brought down: listing it could download it (B3)
                         if not (ls.skip_dir(entry.name, entry) or ls.is_placeholder(st)):
                             subs.append(entry.path)
+                        elif links is not None and ls.is_placeholder(st):
+                            links.append((entry.path, NOT_READ_CLOUD))
+                        elif links is not None and ls.is_link(st) and not _junk(entry.name):
+                            links.append((entry.path, None))
                         continue
                     if entry.is_symlink():
+                        if links is not None and not _junk(entry.name):
+                            if entry.is_dir():                   # a folder's symlink
+                                links.append((entry.path, None))
+                            elif not os.path.exists(entry.path):  # a link to nothing: said, never dropped silently
+                                links.append((entry.path, NOT_READ_LINK_GONE))
                         continue
                     low = entry.name.lower()
+                    if links is not None and low.endswith(".lnk"):
+                        links.append((entry.path, NOT_READ_SHORTCUT))
+                        continue
                     kind = "text" if ls.is_content_name(low) else "epub" if low.endswith(EPUB) else \
                         "video" if runner.video_name(entry.name) else None
                     if kind is None:
@@ -762,6 +786,38 @@ def _listing(folder):
     except OSError:
         return None
     return sorted(texts), sorted(epubs), vids, sorted(subs), ghosts, unread
+
+
+def _junk(name):
+    """A folder `skip_dir` skips by its name alone (a recycle bin, a snapshot, a Mac's): never followed nor said."""
+    return unicodedata.normalize("NFKC", name).casefold() in ls.SKIP_DIRS
+
+
+def notes(language, store):
+    """Alpha 4: what the looks found to say about each source, from the look cache (one read, no folder looked at) ->
+    {root id: {"not_read": [{"path", "why"}], "kept_out": {a file's path key: [the removed origins' keys it matches]}}}
+    — `not_read`: a folder in it no look reads (`NOT_READ_*`: a link to nothing, a shortcut, one Windows wouldn't
+    open…); `kept_out`: a new file left out because its bytes or its video are an item's he removed (a copy in another
+    folder: Remove keeps its bytes out, S6). The window's lines: `source_looks._publish`."""
+    meta = store.meta()
+    cache = _load_cache(language, (meta.get("store_id"), meta.get("epoch")))
+    out = {}
+    for root, entry in (cache.get("roots") or {}).items():
+        held = entry.get("notes") if isinstance(entry, dict) else None
+        if not isinstance(held, dict):
+            continue
+        said = {"not_read": [], "kept_out": {}}
+        for folder in sorted(held):
+            for path, (kind, what) in sorted((held[folder] or {}).items()):
+                if kind == "not_read":
+                    said["not_read"].append({"path": path, "why": what})
+                elif kind == "kept_out":
+                    said["kept_out"][path] = list(what)
+        try:
+            out[int(root)] = said
+        except ValueError:
+            continue
+    return out
 
 
 class _Look:
@@ -823,12 +879,16 @@ class _Look:
         self.cache_roots = {}        # T6: the folder-time cache's entries (each source's volume as last read)
         self.root_error = None       # T6: the look's failed stat of its own folder (`reach`'s `error`)
         self.back = []               # D5: known originals whose record says they moved, listed in their place again
+        self.notes = {}              # alpha 4: {a folder's key: {path: [kind, why or patterns]}} found this look
+        self.listed_now = set()      # alpha 4: the folders listed this look (their notes are this look's)
+        self.read_roots = []         # alpha 4: the folders being read (their keys), for a link's target (`_link`)
 
     # --- the look ------------------------------------------------------------------------------------------------- #
 
     def run(self):
         held_sources = self.store.sources(all=True, counts=False)   # one read of the roots, no origin read
         self.roots = {s["id"]: s["path"] for s in held_sources}
+        self.read_roots = [ls.path_key(os.path.abspath(s["path"])).rstrip("/") for s in held_sources if s["on"]]
         path = next((s["path"] for s in held_sources if s["id"] == self.root_id and s["on"]), None)
         if path is None:
             raise ls.NotASource("That folder isn't being read any more.")
@@ -911,6 +971,12 @@ class _Look:
         meta = self.store.meta()
         cache = _load_cache(self.language, (meta.get("store_id"), meta.get("epoch")))
         entry = {"path": ls.path_key(path), "dirs": seen, "books": self.no_text_kept}
+        kept = (held.get("notes") if mine and not self.full else None) or {}    # a folder not listed: as last said
+        said = {k: v for k, v in kept.items() if isinstance(v, dict) and k in seen and k not in self.listed_now}
+        said.update(self.notes)
+        said = {k: v for k, v in said.items() if v}
+        if said:
+            entry["notes"] = said
         if self.skip:
             entry["skipped"] = sorted(self.skip)
         if self.skip_stamp is not None:
@@ -939,6 +1005,12 @@ class _Look:
         self.ex_paths = set(excluded)
         self.ex_shas = {n["sha256"] for n in excluded.values() if n.get("sha256")}
         self.ex_videos = {n["video_key"] for n in excluded.values() if n.get("video_key")}
+        self.ex_by_sha, self.ex_by_video = {}, {}           # alpha 4: the removed origins behind each (`_kept_out`)
+        for p, n in excluded.items():
+            if n.get("sha256"):
+                self.ex_by_sha.setdefault(n["sha256"], []).append(p)
+            if n.get("video_key"):
+                self.ex_by_video.setdefault(n["video_key"], []).append(p)
         self.ex_episodes, self.ex_releases, self.ex_joined = set(), set(), set()
         for p, n in excluded.items():
             if n.get("show") and n.get("episode") is not None:
@@ -999,6 +1071,8 @@ class _Look:
                     self.root_error = e                      # T6: `reach` reads it (the share asked once, G5)
                 if folder == root or _lost(root):            # the source went mid-look: unreachable, as at its
                     return None                              # start; the cache kept as it was
+                if not _not_found(e):                        # alpha 4: there, but not opened: said
+                    self._note(folder, folder, "not_read", NOT_READ_LOCKED)
                 continue
             mtime = st.st_mtime_ns
             if st.st_ino:                                    # a loop no link shows (a share following links): once
@@ -1010,13 +1084,24 @@ class _Look:
                 seen[fkey] = held
                 stack.extend(reversed(held.get("subs") or []))
                 continue
-            listed = _listing(folder)
+            links = []
+            listed = _listing(folder, links)
             if listed is None:
                 if folder == root or _lost(root):
                     return None
+                if os.path.isdir(folder):                    # alpha 4: there, but not listed: said
+                    self._note(folder, folder, "not_read", NOT_READ_LOCKED)
                 continue
             self._load()
+            self.listed_now.add(fkey)
             texts, epubs, vids, subs, ghosts, unread = listed
+            for link, why in links:                          # alpha 4: a folder link followed, else said
+                why = self._link(link) if why is None else why
+                if why is None:
+                    subs.append(link)
+                elif why:
+                    self._note(folder, link, "not_read", why)
+            subs.sort()
             langs = {}
             subs, with_it = self._subtitles(folder, subs, texts, epubs, vids, langs, seen)
             # a folder time in the last seconds may yet take a file in the same tick (FAT32, a coarse share): not kept
@@ -1062,6 +1147,46 @@ class _Look:
                 self.held_videos.append((waits, {e[1] for e in episodes}))
             self._say()
         return seen, new, known, books
+
+    def _note(self, folder, path, kind, what):
+        """Alpha 4: one thing to say about `path`, found while `folder` was listed (`notes`): kept with the folder's
+        others until it is listed again."""
+        self.notes.setdefault(ls.path_key(folder), {})[path] = [kind, what]
+
+    def _link(self, path):
+        """Alpha 4 (Mattias: a show folder linked into his source never arrived, nothing said; ⭐ PROVISIONAL): a folder
+        link (a junction, a symlink) inside a source is read as the folder it names — the walk's own guard
+        (`_walk`'s `visited`, the folder's identity) reads it once a look and never loops — unless its folder is gone,
+        one Surasura never reads as a library (`Store._not_a_source`: its own folders, a whole drive, the user folder:
+        a link into the data folder would bring the library's own copies back) or one holding a folder being read ->
+        None (followed) or why not (`NOT_READ_*`); "" for a folder inside one being read: read there, nothing to say."""
+        try:
+            target = os.path.realpath(path)
+        except (OSError, ValueError):
+            return NOT_READ_LINK_GONE
+        if not os.path.isdir(target):
+            return NOT_READ_LINK_GONE
+        key = ls.path_key(target).rstrip("/")
+        for k in self.read_roots:
+            if key == k or key.startswith(k + "/"):
+                return ""
+            if k.startswith(key + "/"):
+                return NOT_READ_LINK_HOLDS
+        try:
+            refused = self.store._not_a_source(target)
+        except Exception:
+            refused = NOT_READ_LINK_OWN
+        return NOT_READ_LINK_OWN if refused else None
+
+    def _kept_out(self, folder, path, sha=None, video=None):
+        """Alpha 4 (Mattias: a copy of a removed book never arrived, nothing said): a new file left out because its
+        bytes (`sha`) or its video's key (`video`) are an item's he removed — counted, with the removed origins it
+        matches (`notes`), so New arrivals can say so and *Bring back* can put those back. Its own original (kept out
+        by its path) is never counted: the Removed list holds it."""
+        keys = sorted(set(self.ex_by_sha.get(sha, ()) if sha else ()) | set(self.ex_by_video.get(video, ()) if video
+                                                                               else ()))
+        if keys:
+            self._note(folder, ls.path_key(os.path.abspath(path)), "kept_out", keys)
 
     def _shows_of(self, parts, texts, vids):
         """D3 (PROVISIONAL; Sonic's MV-1: a moved show found where Surasura reads joins the show it is, never a
@@ -1238,6 +1363,7 @@ class _Look:
                 continue
             t, e, v, children, ghosts, unread = listing
             listed_with.append(path)
+            self.listed_now.add(ls.path_key(path))
             seen[ls.path_key(path)] = {"path": path, "mtime_ns": None if self._recent(st) or unread else
                                        st.st_mtime_ns, "subs": []}
             self.out["skipped"] += ghosts
@@ -1719,6 +1845,7 @@ class _Look:
                 return None
             if vkey in self.ex_videos:
                 self.out["skipped"] += 1
+                self._kept_out(folder, path, video=vkey)
                 return None
         track = vkey or (ls.path_key(os.path.abspath(video[0])) if video else None)
         if track is not None and track in self.this_videos:  # one subtitle per video per language: the next look's
@@ -1730,6 +1857,7 @@ class _Look:
             return None
         if sha in self.ex_shas:
             self.out["skipped"] += 1
+            self._kept_out(folder, path, sha=sha)
             return None
         if sha in self.this_look:                            # the same bytes twice: the next look attaches it
             self._wait(folder)
@@ -2083,6 +2211,7 @@ class _Look:
                 return None
             if vkey in self.ex_videos:
                 self.out["skipped"] += 1
+                self._kept_out(folder, path, video=vkey)
                 return None
             if self._video_item(vkey) is not None:
                 return None
@@ -2488,6 +2617,7 @@ class _Look:
             return
         if sha in self.ex_shas:
             self.out["skipped"] += 1
+            self._kept_out(folder, path, sha=sha)
             return
         origin = os.path.abspath(path)
         known = self._books().get(sha)

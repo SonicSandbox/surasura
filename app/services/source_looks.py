@@ -38,6 +38,13 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   Current), the window told twice — once the library is fresh (`then`), and the looks' summary after.
 - **Arrival rows name their folder** (`folders(item_ids)`): each item's origin record (`connect.library.pairing_of`)
   read back to its source folder's path.
+- **What a look found to say** (alpha 4, Mattias's reports): each summary's source row carries `not_read`
+  ([{path, why}]: a folder in it no look reads — a link to a folder that isn't there, a Windows shortcut, one Windows
+  wouldn't open, a cloud folder not on this computer; a folder link is otherwise read, `sources._Look._link`),
+  `kept_out` (how many new files a look left out because their bytes or video are an item's he removed: a copy in
+  another folder) and `kept_out_ids` (those Removes' trash ids: *Bring back* is `Writer.restore(kept_out_ids)`) —
+  from the look cache (`sources.notes`), so a quick look that lists nothing again keeps saying them.
+  `look_at(root_id)`: one full look of that folder now (after a *Bring back*).
 - **Skipped folders** (K6): every summary carries `skipped` (`Store.skipped_folders`: Settings' list);
   `skippable(item_ids)` answers ⋯'s *Never read this folder* submenu (`Store.skip_choices`), `skip_refused(path)`
   Settings' *Skip a folder…* (`Store.skip_refused`, Q7); *Read again* (`read_again`) drops the skip
@@ -189,6 +196,16 @@ class SourceLooks:
             self._first = False
             self._dirty.clear()
             return self._queue(full, None)
+
+    def look_at(self, root_id, language=None):
+        """Alpha 4 (Mado's ask, *Bring back*): one full look of that folder now — folded into the one after the running
+        look, as any look asked meanwhile. -> True when it was queued."""
+        if language is not None and language != self.language:
+            return False
+        with self._lock:
+            if self._closing.is_set():
+                return False
+            return self._queue(True, {root_id})
 
     def set_shown(self, shown):
         """The window went behind / was minimized (False) or came back (True): watch reports wait while it is behind."""
@@ -673,12 +690,33 @@ class SourceLooks:
                     r.update(detail.get(r["id"]) or {})
             except Exception as e:
                 print(f"Sources: a gone folder's shows couldn't be read: {e!r}")
+        self._notes(store, summary["sources"])
         try:
             summary["skipped"] = store.skipped_folders()          # K6: Settings' *Skipped folders*
         except Exception as e:
             print(f"Sources: the skipped folders couldn't be read: {e!r}")
         self.on_result(summary)
         return True
+
+    def _notes(self, store, rows):
+        """Alpha 4: each source row's `not_read`, `kept_out` and `kept_out_ids` (see the module's note); a row the
+        notes can't be read for says nothing (empty), never the summary's failure."""
+        for r in rows:
+            r.update(not_read=[], kept_out=0, kept_out_ids=[])
+        try:
+            said = sources.notes(self.language, store)
+            keys = {k for n in said.values() for ks in n["kept_out"].values() for k in ks}
+            out = store.removed_for(keys) if keys else {}
+            for r in rows:
+                n = said.get(r["id"])
+                if not n:
+                    continue
+                r["not_read"] = n["not_read"]
+                files = [ks for ks in n["kept_out"].values() if any(k in out for k in ks)]
+                r["kept_out"] = len(files)
+                r["kept_out_ids"] = sorted({i for ks in files for k in ks for i in out.get(k, ())})
+        except Exception as e:
+            print(f"Sources: what the looks found to say couldn't be read: {e!r}")
 
     def _folders(self, ids, then, detail=False):
         out = dict.fromkeys(ids)

@@ -8849,12 +8849,13 @@ REMOVED_DAYS = TRASH_DAYS        # a removed file's days in the trash (`path_uti
 
 def _store_removed_rows(self):
     """(One read transaction.) The trash rows of his own Removes not put back -> [(trash_id, rel, trashed_path,
-    removed_at, title, work_id, roots)], newest first. His own: `why` None or "remove" (`remove`); a row written before
-    `why` was kept is his when it left a `removed` exclusion for an original (only his Remove does: a book's part given
-    up and an undone add leave none), else — a file from no folder read — by its removal's log entry while one is kept
-    (`placement_log`, written while a reader is registered: removed by "user"), and never a row whose original lies
-    under a folder he skipped (*Read again* brings those back). A row whose
-    place is an item again (added again since) is left out: Put back would refuse it."""
+    removed_at, title, work_id, roots, keys)], newest first (`keys`: its originals' keys, as its exclusions hold
+    them). His own: `why` None or "remove" (`remove`); a row written before `why` was kept is his when it left a
+    `removed` exclusion for an original (only his Remove does: a book's part given up and an undone add leave none),
+    else — a file from no folder read — by its removal's log entry while one is kept (`placement_log`, written while a
+    reader is registered: removed by "user"), and never a row whose original lies under a folder he skipped (*Read
+    again* brings those back). A row whose place is an item again (added again since) is left out: Put back would
+    refuse it."""
     out = []
     with self._reading():
         rows = self.conn.execute("SELECT id, item_id, rel_path, trashed_path, removed_at, item_state FROM trash "
@@ -8889,7 +8890,7 @@ def _store_removed_rows(self):
                     root = (_json_dict(text) or {}).get("root")
                     if root is not None and root not in roots:
                         roots.append(root)
-            out.append((trash_id, rel, trashed, removed_at, title, work, roots))
+            out.append((trash_id, rel, trashed, removed_at, title, work, roots, keys))
     return out
 
 
@@ -8905,7 +8906,7 @@ def _store_removed(self, now=None):
     groups, order = {}, []
     rows = self._removed_rows()
     live = {i for i, _path in self._read_sources()} if rows else set()
-    for trash_id, _rel, trashed, removed_at, title, work, roots in rows:
+    for trash_id, _rel, trashed, removed_at, title, work, roots, _keys in rows:
         key = (removed_at, work if work is not None else ("item", trash_id))
         entry = groups.get(key)
         if entry is None:
@@ -8935,6 +8936,21 @@ def _store_removed_under(self, root_id):
     [trash_id], oldest first — never another folder's file removed with them. Their Put back (`Writer.restore`) lets
     the originals back in. No file is looked at."""
     return sorted(r[0] for r in self._removed_rows() if root_id in r[6])
+
+
+def _store_removed_for(self, keys):
+    """Alpha 4 (Mattias: a copy of a book he removed, in another folder, was kept out and nothing said): of these
+    removed originals' keys (`sources.notes`' `kept_out`: the ones a new file's bytes or video matched), those still
+    out -> {key: [the trash ids of his Removes that keep it out]}. *Bring back* is their Put back (`Writer.restore`):
+    the items come back, and the copies are theirs again. A key put back since is left out (nothing keeps it out)."""
+    want = set(keys)
+    out = {}
+    if not want:
+        return out
+    for row in self._removed_rows():
+        for k in want.intersection(row[7]):
+            out.setdefault(k, []).append(row[0])
+    return {k: sorted(v) for k, v in out.items()}
 
 
 # --- K6: a folder no look reads (*Never read this folder*) ------------------------------------------------------- #
@@ -11224,6 +11240,7 @@ Store._let_origins_back = _store_let_origins_back
 Store._removed_rows = _store_removed_rows
 Store.removed = _store_removed
 Store.removed_under = _store_removed_under
+Store.removed_for = _store_removed_for
 Store._read_sources = _store_read_sources
 Store.skipped_folders = _store_skipped_folders
 Store.skip_refused = _store_skip_refused

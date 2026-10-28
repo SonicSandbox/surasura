@@ -733,7 +733,9 @@ def test_a_look_skips_the_folders_no_show_lives_in(folder):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a junction is Windows' folder link")
-def test_a_look_never_follows_a_folder_link():
+def test_a_look_reads_a_folder_link_as_the_folder_it_names():
+    """Alpha 4 (Mattias: show folders linked into his source never arrived, nothing said; was B3's "never follows"):
+    a junction is read as the folder it names — the loop and data-folder guards: `test_sources_arrive_or_say.py`."""
     language = "ja"
     store, data_dir = _empty(language)
     src, target = _drive("driveA"), _drive("driveB")
@@ -742,7 +744,7 @@ def test_a_look_never_follows_a_folder_link():
     _winapi.CreateJunction(target, os.path.join(src, "link"))
     with store:
         root = store.add_source(src)
-        assert _look(store, language, root, first=True)["added"] == 0 and _items(store) == 0
+        assert _look(store, language, root, first=True)["added"] == 1 and _items(store) == 1
 
 
 def test_a_look_never_follows_a_file_link(monkeypatch):
@@ -2205,11 +2207,11 @@ def test_a_source_that_goes_mid_look_is_unreachable_and_its_folder_times_are_kep
         away = src + "_away"
         listed, real = [], sources._listing
 
-        def unplugged(folder):
+        def unplugged(folder, links=None):
             listed.append(folder)
             if len(listed) == at:
                 os.rename(src, away)                                          # the drive goes mid-look
-            return real(folder)
+            return real(folder, links)
         monkeypatch.setattr(sources, "_listing", unplugged)
         result = sources.scan(store, language, root, full=True)
         monkeypatch.setattr(sources, "_listing", real)
@@ -2458,11 +2460,11 @@ def test_a_show_folder_gone_mid_look_leaves_the_source_reachable_and_the_others_
     _settle(src)
     listed, real = [], sources._listing
 
-    def one_goes(folder):
+    def one_goes(folder, links=None):
         listed.append(folder)
         if len(listed) == 2:
             shutil.rmtree(os.path.join(src, shows[2]))                       # a show's folder deleted mid-look
-        return real(folder)
+        return real(folder, links)
     monkeypatch.setattr(sources, "_listing", one_goes)
     with store:
         root = store.add_source(src)

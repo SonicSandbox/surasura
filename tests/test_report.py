@@ -512,6 +512,17 @@ def test_report_ids_keep_save_order_across_the_autumn_clock_change():
     assert core._new_id(summer) < core._new_id(winter)
 
 
+def test_reports_saved_in_the_same_clock_tick_keep_save_order(root):
+    # a coarse clock (GitHub's Windows runner) gives two quick saves the same microsecond: the order must not then
+    # come from the id's random letters (core 1/4 red once) — each id is after the newest saved, a restart included
+    import datetime
+    tick = datetime.datetime(2026, 10, 27, 23, 0, tzinfo=datetime.timezone.utc)
+    saved = [core.save(f"{JA_WHAT} {n}", now=tick) for n in range(12)]
+    assert [x.id for x in core.listed()] == [r.id for r in saved]
+    earlier = core.save(ZH_WHAT, now=tick - datetime.timedelta(hours=1))     # a clock put back: still saved last
+    assert core.listed()[-1].id == earlier.id
+
+
 def test_scrub_counts_every_content_key_and_blanks_secrets_at_any_depth():
     got = core.scrub({"jobs": [{"state": "done", "sentence": "壁の向こう", "words": ["巨人"]}],
                       "nested": {"api_key": "sk-x", "title": "進撃の巨人", "made_today": 3}})
@@ -666,3 +677,11 @@ def test_zip_name_skips_a_numbered_name_whose_part_file_is_being_written(tmp_pat
     (tmp_path / (base + core.PART)).write_bytes(b"")
     (tmp_path / (second + core.PART)).write_bytes(b"")
     assert core.zip_name(str(tmp_path), now=now) == os.path.join(str(tmp_path), "Surasura-problems-2026-10-25-120000-3.zip")
+
+
+def test_a_stray_file_named_removed_never_stops_a_save(root):
+    # review: choosing an id now lists the folder — a file where `removed/` would be must not fail every save
+    with open(os.path.join(core.folder(), core.REMOVED_DIR), "w", encoding="utf-8") as f:
+        f.write("not a folder")
+    a = core.save(JA_WHAT)
+    assert [x.id for x in core.listed()] == [a.id]

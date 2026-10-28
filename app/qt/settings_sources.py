@@ -398,8 +398,9 @@ class FoldersWindow(windows.SecondaryWindow):
         skip_line.addWidget(self.skip_undo)
         self.skip_ticket = self.skip_language = None      # the skip whose line shows (its Undo's), its library
         # --- alpha 4 P-removed (D3): 🗑 *Removed…* beside the skips — always shown, as *Skip a folder…* is (the list says
-        # *Nothing removed…* when empty: no read only to decide whether it shows)
-        self.removed = sc.Door(strings.REMOVED_OPEN, tooltip=strings.REMOVED_OPEN_TIP, parent=self.box)
+        # *Nothing removed…* when empty: no read only to decide whether it shows); the icon alone, named *Removed…*
+        self.removed = sc.Door(strings.REMOVED_OPEN, tooltip=strings.REMOVED_OPEN_TIP, name=strings.REMOVED_OPEN_NAME,
+                               parent=self.box)
         self.removed.clicked.connect(lambda _c=False: self.open_removed())
         skip_line.addWidget(self.removed)
         self._removed_reading = {}                        # root id -> in the read under way (True: again after it)

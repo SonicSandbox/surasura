@@ -34,6 +34,7 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -50,6 +51,8 @@ RESULTS_CAP = 200 * 1024 * 1024  # results\ larger than this is left out whole, 
 ZIP_NAME = "Surasura-problems-{stamp}.zip"
 MAX_PICTURES = 6
 STALE_PART_S = 3600             # a `.part` folder this old was left by a crash (a save takes well under a second)
+_STAMP = "%Y%m%d-%H%M%S-%f"     # an id's time, UTC to the microsecond
+_SAVING = threading.Lock()      # saves run on workers: two never pick the same time
 
 # --- the collector's rules (one copy: `Collect laptop evidence.ps1`'s $SecretNames is held to this by a test) ----- #
 SECRET_NAMES = (".env", "*.env", "*.key", "*.pem", "*.pfx", "*credential*", "*keystore*", "*secret*", "*api_key*",
@@ -229,11 +232,38 @@ class Report:
                 "notes": self.notes, "pictures": self.pictures, "where": self.where, "build": self.build}
 
 
-def _new_id(now):
+def _stamp_of(name):
+    """The UTC time a report id (or its `.part` folder) names, or None."""
+    try:
+        return datetime.datetime.strptime(name[:22], _STAMP).replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+
+
+def _new_id(now, names=()):
     """When it was saved (UTC, to the microsecond: a clock put back an hour in autumn never reorders them) and a few
-    random letters: ids sort in the order they were saved."""
+    random letters: ids sort in the order they were saved. A save in the same clock tick as the newest of `names` (the
+    folder's ids), or with the clock put back, takes the microsecond after it — never left to the random letters (a4:
+    two quick saves on a coarse clock came back out of order)."""
     utc = now.astimezone(datetime.timezone.utc)
-    return f"{utc.strftime('%Y%m%d-%H%M%S-%f')}-{uuid.uuid4().hex[:4]}"
+    newest = max(filter(None, map(_stamp_of, names)), default=None)
+    if newest is not None and utc <= newest:
+        try:
+            utc = newest + datetime.timedelta(microseconds=1)
+        except OverflowError:                       # (a hand-made name at the calendar's end: the clock's own time)
+            pass
+    return f"{utc.strftime(_STAMP)}-{uuid.uuid4().hex[:4]}"
+
+
+def _ids_in(root):
+    """Every id the folder holds — listed, being saved or removed (an Undo puts one back in its place)."""
+    names = []
+    for path in (root, os.path.join(root, REMOVED_DIR)):
+        try:
+            names += os.listdir(path)
+        except OSError:                             # none yet, or not a folder: the clock's time alone, as before
+            pass
+    return names
 
 
 def save(what, expected="", pictures=(), where="", root=None, now=None):
@@ -244,9 +274,10 @@ def save(what, expected="", pictures=(), where="", root=None, now=None):
         raise ValueError("a report needs its words")
     root = root or folder()
     now = now or _now()
-    rid = _new_id(now)
-    part = os.path.join(root, rid + PART)
-    os.makedirs(part)
+    with _SAVING:
+        rid = _new_id(now, _ids_in(root))
+        part = os.path.join(root, rid + PART)
+        os.makedirs(part)
     try:
         names = []
         for n, png in enumerate(list(pictures)[:MAX_PICTURES], 1):

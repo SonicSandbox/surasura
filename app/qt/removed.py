@@ -61,7 +61,10 @@ def trash_heard(shell, change):
     *Library folders* read again when it moved the trash."""
     if not trash_moved(change):
         return
-    from app.qt import settings_sources
+    tray, looks = getattr(shell, "arrivals_tray", None), getattr(shell, "looks", None)
+    if tray is not None and looks is not None and tray.kept_out[0] and tray.giving is None:
+        looks.listing()                    # alpha 4: New arrivals' kept-out foot as the trash stands now (a Put back or
+    from app.qt import settings_sources    # an Undo here; never left offering a Remove already put back, review)
     for name in (WINDOW, settings_sources.WINDOW):
         heard = getattr(windows.opened(shell, name), "trash_heard", None)
         if heard is not None:

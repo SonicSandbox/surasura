@@ -365,9 +365,10 @@ def test_numbers_for_a_lone_arrival_show_at_once_but_ride_with_a_burst_that_is_u
         assert reader.held_back == held
         # a burst under way: a commit held back, then numbers — they wait for the burst's view and come in it
         owed_id = _owed_view(seed, reader, views, "雲の上の郵便屋さん 続")
-        n, builds = len(views), reader.builds
+        n, builds, burst_view = len(views), reader.builds, views[-1][0]
         reader.set_estimates({rows[0]["id"]: 9, owed_id: 4})
         assert _wait(lambda: len(views) > n and not reader._view_owed, 2.0)
+        assert views[n][0] - burst_view >= library_reader.COALESCE_S - 0.02   # not before the burst's own view is due
         time.sleep(library_reader.COALESCE_S + 0.1)
         assert reader.builds == builds + 1                            # one view: the burst's change and the numbers
         assert any(a.per_ep == 4 for a in views[-1][1].arrivals if owed_id in a.item_ids)
@@ -396,5 +397,41 @@ def test_a_commit_right_after_a_view_of_the_numbers_alone_is_not_held_back():
         assert _wait(lambda: any(rows[0]["id"] in a.item_ids for a in views[-1][1].arrivals), 1.0)
         assert views[-1][0] - t0 < library_reader.COALESCE_S / 2, views[-1][0] - t0
         assert reader.held_back == held
+    finally:
+        reader.stop()
+
+
+def test_a_store_that_goes_away_with_a_view_owed_shows_its_last_rows_once_and_rests():
+    """A4A-2: a view held back, then the store can't be used and nothing can be read in its place (an opener with no
+    last copy): the owed view stayed owed, so the reader looked back to back for as long as the store was away. It
+    shows the last rows under the store's bar once, then looks once a poll."""
+    seed = window_seed.build()
+
+    class NoCopy:                                                   # the store's opener without a last copy to read
+        def __init__(self, opener):
+            self._o = opener
+
+        def check(self):
+            return self._o.check()
+
+        @property
+        def reason(self):
+            return self._o.reason
+
+        def handle(self):
+            return self._o.handle()
+    reader = library_reader.LibraryReader(NoCopy(seed.opener), language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02, coalesce=True)
+    views = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and not views[-1][1].loading)
+        _owed_view(seed, reader, views, "狐火と商店街 外伝")
+        seed.library.set_mode("json", "not ready")                  # the store is away, nothing read in its place
+        assert _wait(lambda: views[-1][1].mode == "json", 1.0)
+        time.sleep(library_reader.COALESCE_S + 0.05)
+        looks = reader.looks
+        time.sleep(0.5)
+        assert reader.looks - looks <= 0.5 / reader.poll + 10, reader.looks - looks
     finally:
         reader.stop()

@@ -1157,9 +1157,10 @@ def test_a_show_subfolder_named_like_one_no_look_reads_can_be_skipped_harmlessly
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="a junction is Windows' folder link")
-def test_an_extras_junction_is_never_followed_and_skipping_it_writes_only_its_row():
-    """`Show/Extras` a junction to a folder on another drive: no look follows it, skipped or not; its skip is accepted
-    (it's inside the source) and removes nothing; the junction's target is never touched."""
+def test_an_extras_junction_is_read_and_skipping_it_takes_its_items_out_and_never_touches_its_folder():
+    """`Show/Extras` a junction to a folder on another drive: a look reads it as the folder it names (alpha 4, A4K-5:
+    was "never followed"); its skip is accepted (it's inside the source) and takes its one item out, a later look reads
+    it no more, and the junction's target is never touched."""
     import _winapi
     language = "ja"
     store, _data = _empty(language)
@@ -1172,10 +1173,10 @@ def test_an_extras_junction_is_never_followed_and_skipping_it_writes_only_its_ro
     _winapi.CreateJunction(target, os.path.join(top, "Extras"))
     with store:
         root = store.add_source(src)
-        assert _look(store, language, root, first=True)["added"] == 2
+        assert _look(store, language, root, first=True)["added"] == 3
         before = _tree(target)
         change = store.skip_folder(os.path.join(top, "Extras"))
-        assert change.trash_ids == []
+        assert len(change.trash_ids) == 1
         assert _look(store, language, root, full=True)["added"] == 0
         assert _tree(target) == before
 

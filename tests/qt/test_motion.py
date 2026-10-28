@@ -468,6 +468,29 @@ def _filters_left(opening):
     return f is not None and f.installed
 
 
+def test_the_openings_filter_lives_as_long_as_its_overlay_so_a_close_mid_opening_ends_cleanly(clock, stage, qt_errors):
+    # the smoothness verifier (a4, fix3): at the window's close, "wrapped C/C++ object of type _InputFinisher has been
+    # deleted" — the opening's app-wide filter was Python's own object, which PyQt deletes as the program ends, in its
+    # own order: before the overlay's teardown asked the filter off. It is the overlay's now (Qt's to delete, with it)
+    card = Card(stage)
+    opening = card.open()
+    clock.advance(16)
+    f = opening._finisher
+    assert f is not None and f.installed
+    assert not sip.ispyowned(f) and f.parent() is card           # never deleted before its overlay
+    sip.delete(card)                                             # the overlay goes, mid-opening, as with its window
+    assert opening.ended and not _filters_left(opening) and qt_errors == []
+    for _ in range(3):
+        QApplication.processEvents()
+    card = Card(stage)                                           # an opening that ends lets its filter go too
+    opening = card.open()
+    f = opening._finisher
+    clock.advance(400)
+    assert card.isVisible() and opening._finisher is None
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    assert sip.isdeleted(f)                                      # (never one left on the overlay per opening)
+
+
 def test_every_end_tears_the_opening_down_a_hidden_page_an_error_a_stop(clock, stage, qt_errors):
     # review A1: an opening cut short leaves no filter, no ghost, and the overlay can open again
     page = QWidget(stage)

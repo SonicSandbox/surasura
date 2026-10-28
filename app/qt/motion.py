@@ -1173,7 +1173,9 @@ class _InputFinisher(QObject):
     Qt routed it, so Esc's router sees the overlay open."""
 
     def __init__(self, opening):
-        super().__init__()
+        # the overlay's (fix3): a filter of Python's own was deleted by PyQt as the program ended, in its own order —
+        # before the overlay's teardown asked it off (the verifier's close error); the overlay's, it goes with it
+        super().__init__(opening.widget)
         self.opening = opening
         self.installed = True
 
@@ -1185,6 +1187,7 @@ class _InputFinisher(QObject):
                 app.removeEventFilter(self)
             if self.opening._finisher is self:
                 self.opening._finisher = None
+            self.deleteLater()                     # (never one left on the overlay per opening)
 
     def eventFilter(self, obj, event):
         et = event.type()

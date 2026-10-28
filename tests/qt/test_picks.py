@@ -655,3 +655,24 @@ def test_IK2_6_goals_picks_dropped_on_the_finished_well_finish_every_part_as_the
     release_global(win, target)
     settle()
     assert writer.calls == [("set_tier", every, {"tier": "graduated"})]
+
+
+def test_IK2_3_a_lift_of_the_picks_right_after_the_pointer_rested_on_one_bakes_no_ghost(world):
+    """IK2-3: the picks' lift baked its card's ghost in the press's own turn (~6 ms at 1,050 picks, 20,000 files); a
+    single row's is baked as the pointer rests on it (C5). A picked row now bakes the picks' card the same way, and
+    the lift only shows it — its words the picks' count."""
+    _seed, win, _w = world()
+    lst, moves = lst_of(win), win.moves
+    now = current_rows(win, "now")[:3]
+    for i in now:
+        lst.pick_row(lst.model().entries[i][1])
+    at = title_point(lst, now[1])
+    baked = moves.ghost_bakes
+    move(lst, at, buttons=Qt.MouseButton.NoButton)                    # the pointer comes to rest on a picked row
+    assert wait_until(lambda: moves.ghost_bakes == baked + 1, 3)
+    press(lst, at)
+    move(lst, at + QPoint(0, theme.MOTION["drag-start-px"]))
+    d = moves.running
+    assert d is not None and d.many == 3 and d.title == strings.PICKS_TITLES.format(n=3)
+    assert moves.ghost_bakes == baked + 1, "the lift baked the picks' ghost again"
+    moves.cancel()

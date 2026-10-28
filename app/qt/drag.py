@@ -867,6 +867,7 @@ class DragController(QObject):
         # C5: the pointer resting on a row (`rows.HOVER_WARM_MS`, as the list warms its episodes) bakes its ghost ahead,
         # kept per row key and size while the row's picture is the same: a lift right after only shows it
         self._ghosts = {}                            # (row key, w, h, dpr) -> (row picture's cacheKey, picture, anchor)
+        self._cards = {}                             # IK2-3: (title, w, h, dpr) -> a card drag's picture, kept (few)
         self.ghost_bakes = 0                         # ghost pictures baked (tests)
         self._rest = QTimer(self)
         self._rest.setSingleShot(True)
@@ -1164,8 +1165,19 @@ class DragController(QObject):
         h = size.height() if size is not None else rows.RowDelegate._line_h()
         dpr = self.lst.viewport().devicePixelRatioF() or 1.0
         d.grab = QPointF(min(w / 2, 40), h / 2)
-        return self._lift_safely(d, title_card(title, w, h, dpr), QRect(0, 0, w, h).size(),
+        return self._lift_safely(d, self._card(title, w, h, dpr), QRect(0, 0, w, h).size(),
                                  h + theme.ROW_LINE["gap"], global_pos, unlit)
+
+    def _card(self, title, w, h, dpr):
+        """A card drag's picture (`title_card`), the same one while its words and size are (IK2-3: so its ghost, baked
+        as the pointer rested on a picked row, is the lift's — never baked again in the lift's turn)."""
+        k = (title, w, h, round(dpr, 3))
+        pix = self._cards.get(k)
+        if pix is None:
+            pix = self._cards[k] = title_card(title, w, h, dpr)
+            while len(self._cards) > D["ghosts-kept"]:
+                del self._cards[next(iter(self._cards))]
+        return pix
 
     def _begin_picks(self, picked, global_pos, size):
         """A4: a press on a picked row travelled `drag-start-px` — every picked row lifts as one card (*5 titles*), its
@@ -1175,7 +1187,7 @@ class DragController(QObject):
         mine = [r for r in rows_ if r.key in picked]
         if not mine:
             return False
-        ids = [i for r in mine for i in ids_of(r)]
+        ids = [e.id for r in mine for e in r.episodes]     # (`ids_of`'s, in one pass: 10,000 files at 20,000)
         unlit = strings.WELL_UNLIT_SPLIT if any_split_first(rows_, picked) else None
         title = strings.PICKS_TITLES.format(n=f"{len(mine):,}")
         return self.begin_by_id(ids, "current", title, global_pos, size, many=len(mine), keys=[r.key for r in mine],
@@ -1226,7 +1238,15 @@ class DragController(QObject):
         rect = lst.visualRect(model.index(r, 0))
         slot = lst.delegate.slot_rect(kind, rect, lines)
         dpr = lst.viewport().devicePixelRatioF() or 1.0
+        picked = lst.picked_rows
         try:
+            if row.key in picked and len(picked) > 1:     # IK2-3: a picked row lifts the picks' card (`_begin_picks`)
+                view = self.page.view_model
+                n = sum(1 for r_ in (view.rows if view is not None else ()) if r_.key in picked)
+                title = strings.PICKS_TITLES.format(n=f"{n:,}")
+                w, h = slot.width(), slot.height()
+                self._ghost_for(("picks", title), self._card(title, w, h, dpr), QRect(0, 0, w, h).size(), dpr)
+                return
             self._ghost_for(row.key, self._row_picture(kind, row, lines, rect, slot), slot.size(), dpr)
         except Exception as e:                       # (ahead of time only: the lift bakes its own)
             print(f"Window drag: a ghost baked ahead failed: {e!r}")
@@ -1260,7 +1280,7 @@ class DragController(QObject):
         anim, self._ghost_anim = self._ghost_anim, None
         if anim is not None and anim.alive:          # a lift within the last drop's glide / fade: that one ends now
             anim.stop()                              # (never hides this drag's ghost when it would have finished)
-        picture, anchor = self._ghost_for(d.key, pix, size, dpr)
+        picture, anchor = self._ghost_for(d.key if not d.many else ("picks", d.title), pix, size, dpr)
         self.ghost.set_picture(picture, anchor)
         self.ghost.set_alpha(D["ghost-alpha"])
         self.ghost.place(QPointF(global_pos) - d.grab)

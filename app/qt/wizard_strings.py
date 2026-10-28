@@ -27,6 +27,15 @@ STEPS = {"language": "Your language", "known": "What you know", "shows": "Your s
 RECOMMENDED = "RECOMMENDED"
 SWITCH_TIP = "{name}\n{tip}"                # a switch has no words of its own: its tip names it first
 ANKI_CLOSED = "Anki isn't open"
+# §C11: Anki open, AnkiConnect not answering (an Anki process seen) — or a look that can't tell the two apart
+ANKI_NO_CONNECT = "Anki is open, but AnkiConnect isn't answering"
+ANKI_NO_CONNECT_HOW = ("In Anki, install the AnkiConnect add-on (Tools › Add-ons › Get Add-ons…, code 2055492159), "
+                       "then restart Anki and press Check again.")
+ANKI_NO_CONNECT_CARD = "AnkiConnect isn't answering"          # the From Anki card's short line
+ANKI_UNSURE = "Anki isn't open, or AnkiConnect isn't answering"
+ANKI_UNSURE_CARD = "Anki closed, or no AnkiConnect"
+ANKI_UNSURE_HOW = ("Open Anki. If it's open already, install the AnkiConnect add-on (Tools › Add-ons › Get Add-ons…, "
+                   "code 2055492159), then restart Anki and press Check again.")
 CHECK_AGAIN = "Check again"
 CHECK_AGAIN_TIP = "Look for Anki again, once it's open."
 CHECKING = "Looking for Anki…"

@@ -702,6 +702,23 @@ TRAY_NO_FOLDER = "Couldn't open its folder: {path}"
 TRAY_NUMBER_NONE = "—"
 TRAY_NUMBER_UNIT = "new / {unit}"
 # --- end W3.2 Q1
+# --- A4: the tray's picks (Ctrl / Shift+click, Ctrl+A) and its groups' All to Soon / All to Goal ------------------ #
+TRAY_ALL_SOON = "All to Soon"
+TRAY_ALL_SOON_TIP = "Move every arrival in this group to Soon, in the tray's order\n• Undo puts them back"
+TRAY_ALL_GOAL = "All to Goal"
+TRAY_ALL_GOAL_TIP = "Move every arrival in this group to Goal\n• Undo puts them back"
+TRAY_LOADING = "Loading…"                              # IK-6: a big tray's rows still coming in
+TRAY_LOADING_TIP = "Every arrival is on its way into the list: the first ones are here already"
+TRAY_TITLES = "{n} titles"                            # the picks or a group, named in a toast or a drag
+TRAY_PICKS_MENU_NAME = "What you can do with the {n} picked"
+TRAY_PICKS_MENU = {
+    "top": ("Up next", "Put all {n} at the top of Current, in the tray's order"),
+    "soon": ("Soon", "Move all {n} to Soon, in the tray's order"),
+    "goal": ("Goal", "Move all {n} to Goal"),
+    "finished": ("Finished", "Record all {n} as finished: you've watched them already"),
+    "remove": ("Remove…", "Send all {n} to the trash (kept 30 days; Undo puts them back). Asks first"),
+}
+# --- end A4
 # --- W3.2 Q2: Goal's sheet (goal_sheet.py) ------------------------------------------------------------------------ #
 GOAL_SHEET_NAME = "Goal: everything you'll get to someday"
 GOAL_SHEET_TIP = "Goal: someday, in no order. Drag a title into Current, or use its ⋯"
@@ -1201,8 +1218,8 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                          "asking"),
     "remove": ("Remove", "Send it to the trash (kept 30 days): its words stop counting. Undo puts it back"),
     "remove_episode": ("Remove episode", "Send this episode to the trash (kept 30 days). Undo puts it back"),
-    "remove_all": ("Remove all", "Send every missing file below to the trash (kept 30 days). Never a drive that's "
-                                 "only offline. Undo puts them back"),
+    "remove_all": ("Forget every missing file", "Take every missing file below out of your library: to the trash, "
+                                                "kept 30 days. Never a drive that's only offline. Undo puts them back"),
     "this_one": ("This one", "It's this missing file, moved or renamed: it keeps its place, its ✓ and its cards"),
     "its_new": ("It's new", "None of these: it joins your library as a new file"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
@@ -1235,9 +1252,29 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "keep_waiting": ("Keep waiting", "Hide this until the folder is back. If it goes again later, it asks again"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
+    # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
+    "later": ("Not now", "Hide this until tomorrow. If it still needs you then, it comes back"),
+    "stop_asking": ("Stop asking", "Don't ask about this while it stays so. If it's fixed and happens again later, "
+                                   "it asks again. The item and its words stay in your library"),
+    "later_all": ("Not now for all", "Hide every card below with this reason until tomorrow"),
+    "stop_all": ("Stop asking for all", "Don't ask about any card below with this reason while it stays so. One "
+                                        "that's fixed and happens again later asks again. Their items and words stay "
+                                        "in your library"),
+    # alpha 4 K1: most of the library's files gone at once (*Start fresh*: Settings' *Start a fresh library* sheet)
+    "start_fresh": ("Start fresh", "Set this library aside in one backup in the trash, never deleted, and read your "
+                                   "folders again from scratch. It asks first"),
 }
 NEEDS_LOOKING = "Looking…"
 NEEDS_MORE_LINES = "and {n} more"
+NEEDS_MORE_NAME = "More for {title}"             # alpha 4 D2: a card's ⋯
+NEEDS_MORE_TIP = "Not now · Stop asking"
+NEEDS_LATER_ONE = "Not now: back tomorrow if it still needs you"
+NEEDS_LATER_N = "Not now: {n:,} cards back tomorrow if they still need you"
+NEEDS_STOPPED_ONE = "It won't ask again · its item and words stay"
+NEEDS_STOPPED_N = "{n:,} cards won't ask again · their items and words stay"
+NEEDS_FORGET_TITLE = "Forget {n:,} missing files?"   # alpha 4 B: the line for every missing file
+NEEDS_FORGET_YES = "Forget {n:,} files"
+NEEDS_FORGOT = "Forgot {n:,} missing files · in the trash 30 days"
 NEEDS_LOOK_FAILED = "Couldn't look for its videos: {why}"
 NEEDS_REMOVE_TITLE_ONE = "Remove {name}?"
 NEEDS_REMOVE_TITLE = "Remove {n} files?"
@@ -1411,3 +1448,76 @@ REPORT_ZIPPED = "Made {name} in {folder}. Send this zip to Sonic"
 REPORT_ZIP_FAILED = "The zip couldn't be made: {why}. Your list is as it was"
 REPORT_HINT = "Send this zip to Sonic. Nothing is sent by Surasura: the zip stays on this PC until you send it"
 # --- end Report a problem
+
+# --- alpha 4 seams (P-seams: K1 / K3 / T6 option 2; app/qt/needs.py) ----------------------------------------------- #
+# K3 / K1: *Choose a folder…* on a folder's or the library's card (`needs.match_tree`, one `Writer.relink_many`)
+NEEDS_RELINKED_NONE_TREE = "Nothing in that folder, or the folders in it, has these files' names"
+NEEDS_RELINK_LEFT = "{n:,} of them weren't pointed at: {why}"
+NEEDS_RELINK_WHY = "{why} ({n:,})"
+# fix2 (A4B-4): a folder picked outside the library folder — the store points an item only at a file inside it
+NEEDS_RELINK_OUTSIDE = ("{n:,} of them are in {folder}, outside your library folder, so they can't be pointed at. "
+                        "To read them where they are, add that folder in Settings › Library folders")
+NEEDS_RELINK_WHY_OUTSIDE = "outside your library folder"
+NEEDS_RELINK_NONE_TAKEN = ("None of them were pointed at: each file found is another item's already, in the trash, "
+                           "or not there any more")
+# T6 option 2: *Find its new folder…* read a folder that held none of the show's episodes: it isn't read any more
+NEEDS_FIND_DROPPED = "None of {show}'s episodes were there: {folder} isn't read"
+NEEDS_FIND_DROPPED_ARRIVALS = ("None of {show}'s episodes were there: {folder} isn't read. The {n:,} files it "
+                              "found wait in New arrivals, to place or remove")
+NEEDS_FIND_DROPPED_ARRIVAL = ("None of {show}'s episodes were there: {folder} isn't read. The file it found "
+                             "waits in New arrivals, to place or remove")
+# --- end alpha 4 seams
+
+# --- alpha 4 P-removed (D3, Mattias #6): the 🗑 Removed list and Settings' *Bring back N removed* (app/qt/removed.py)
+REMOVED_NAME = "Removed"
+REMOVED_OPEN = "🗑 Removed…"
+REMOVED_OPEN_TIP = ("What you removed in the last 30 days, each with Put back\nRemoved files wait in the trash for 30 "
+                    "days, then they're gone for good")
+REMOVED_LINE = "What you removed in the last 30 days. Put back brings a title back where it was."
+REMOVED_LOOKING = "Looking in the trash…"
+REMOVED_NONE = "Nothing removed in the last 30 days"
+REMOVED_UNREADABLE = "The Removed list couldn't be read: your library is busy or can't be opened. Try again in a moment"
+REMOVED_FILES = "{n:,} files"
+REMOVED_FILES_ONE = "1 file"
+REMOVED_DAYS = "{n} days left"
+REMOVED_DAYS_ONE = "1 day left"
+REMOVED_DAYS_LAST = "last day"
+REMOVED_FROM_FOLDER = "from a folder Surasura reads"          # nothing in the trash: its original comes back in its stead
+REMOVED_PUT_BACK = "Put back"
+REMOVED_PUT_BACK_NAME = "Put back {title}"
+REMOVED_PUT_BACK_TIP = "Put {title} back where it was in your library\nUndo sends it back to the trash"
+REMOVED_BACK = "{title} is back in your library"
+REMOVED_BRING_BACK = "Bring back {n:,} removed"
+REMOVED_BRING_BACK_NAME = "Bring back {n:,} removed files of {path}"
+REMOVED_BRING_BACK_TIP = ("You removed {n:,} files of {path}: Surasura keeps them out even when this folder is read "
+                          "again\nBring them back into your library where they were (Undo sends them back to the "
+                          "trash)")
+REMOVED_BROUGHT_BACK = "{n:,} removed files of {name} are back in your library"
+REMOVED_BROUGHT_BACK_ONE = "A removed file of {name} is back in your library"
+# --- end alpha 4 P-removed
+
+# --- A4 picks: Ctrl / Shift+click and Ctrl+A in Current, Soon, Goal and Finished, and what the picks can do -------- #
+PICKS_TITLES = "{n} titles"                           # the picks named in a toast, the drag's card and the question
+PICKS_MENU_NAME = "What you can do with the {n} picked"
+PICKS_MENU = {
+    "top": ("Up next", "Put all {n} at the top of Current, in the list's order"),
+    "soon": ("Soon", "Move all {n} to Soon, in the list's order"),
+    "goal": ("Goal", "Move all {n} to Goal"),
+    "finished": ("Finished", "Move all {n} to Finished: you're done with them\n• Then choose whether their new cards "
+                             "stay"),
+    "remove": ("Remove…", "Send all {n} to the trash (kept 30 days; Undo puts them back). Asks first"),
+}
+PICKS_GOAL_FIRST_TIP = "{tip}\n• A title in parts brings up its first part; the rest stays in Goal"
+PICKS_DONE = {
+    "top": "{title} are up next",
+    "soon": "{title} → Soon",
+    "goal": "{title} moved to Goal",
+}
+PICKS_FINISHED = "{title} finished · their cards stay put"
+PICKS_TAKEN_OUT = "{title}: their new cards are out of your order"
+PICKS_REMOVE_ASK = "Remove {title}?"
+PICKS_REMOVE_BODY = "Their {n} files go to the trash for 30 days. Undo puts them back where they were."
+PICKS_REMOVE_YES = "Remove {n} files"
+PICKS_REMOVE_YES_TIP = "Take them out of your library: their files go to the trash for 30 days"
+PICKS_REMOVED = "Removed {title} · in the trash for 30 days"
+# --- end A4 picks

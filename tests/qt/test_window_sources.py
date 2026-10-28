@@ -319,7 +319,7 @@ class RecordingLooks:
     def set_shown(self, shown):
         self.shown.append(shown)
 
-    def folders(self, ids, then):
+    def folders(self, ids, then, detail=False):
         self.asked_folders.append(list(ids))
         then({i: self._folders.get(i) for i in ids})
         return True
@@ -474,6 +474,16 @@ def test_settings_lists_the_folders_and_stop_reading_keeps_every_episode(window)
     opener, data_dir, user_files_dir = _library()
     looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
     seed, win = window(looks)
+    writer = win.services.writer
+
+    def stop_reading(root_id, label=None, language=None):     # K9: through the writer — written to the real store
+        store = _read_store(data_dir, user_files_dir)          # as `Writer.stop_reading` writes it
+        try:
+            store.stop_source(root_id)
+        finally:
+            store.close()
+        return writer._put("stop_source", [], label, root=root_id, language=language)
+    writer.stop_reading = stop_reading
     folder = _source()
     answer = _added(looks, folder)
     page, row, folders = _folders_window(win)
@@ -485,7 +495,7 @@ def test_settings_lists_the_folders_and_stop_reading_keeps_every_episode(window)
     assert row.add.toolTip() and folders.add.toolTip() and folders.look.toolTip()
     line.stop.click()
     assert wait_until(lambda: not folders.lines, 10)
-    assert win.bar_line.full() == S.SOURCES_STOPPED.format(path=ls.folder_path(folder), n=2)
+    assert win.toasts.card.base == S.SOURCES_STOPPED.format(path=ls.folder_path(folder), n=2)   # its toast, with Undo
     assert not folders.none.isHidden()                        # the empty state, its Add a folder… beside it
     assert row.summary.text() == S.SOURCES_NONE                # the page's summary followed the stop
     store = _read_store(data_dir, user_files_dir)
@@ -533,14 +543,13 @@ def test_an_arrival_from_a_source_names_its_folder_and_is_repainted_once(window)
     folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", "Anime")
     looks = RecordingLooks({first.item_ids[0]: folder})
     win.services.source_looks = looks
-    win._open_looks(None)
-    win._show_arrivals(win._arrivals_view)
-    row = tray.rows[first.key]
-    assert row.arrival.chip == "Anime"
-    assert strings.SOURCES_FROM.format(name="Anime") in row.arrival.accessible
-    shown = row.arrival
+    win._open_looks(None)                                     # (A4B-8: the reader asks them and names the rows)
+    assert wait_until(lambda: tray.arrival(first.key).chip == "Anime", 10)
+    shown = tray.arrival(first.key)                           # (A4: what the tray holds, open or not)
+    assert strings.SOURCES_FROM.format(name="Anime") in shown.accessible
+    groups = tray.groups
     win._show_arrivals(win._arrivals_view)                    # the same view again: nothing asked, nothing repainted
-    assert row.arrival is shown and len(looks.asked_folders) == 1
+    assert tray.groups is groups and tray.arrival(first.key) is shown and len(looks.asked_folders) == 1
 
 
 # --- a video waiting for its subtitle (K5's `waiting`) ------------------------------------------------------------- #

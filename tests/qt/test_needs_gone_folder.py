@@ -46,6 +46,11 @@ class GoneWriter(FakeWriter):
         self.store_of = store_of
         self.real = {}
 
+    @property
+    def language(self):
+        """The real writer's `language` (the library it writes): the test's `lang`."""
+        return getattr(self, "lang", None)
+
     def stop_reading(self, root_id, label=None, language=None):
         if language is not None and language != getattr(self, "lang", language):
             return None
@@ -87,7 +92,7 @@ class Looks:
         self.listings += 1
         return True
 
-    def folders(self, ids, then):
+    def folders(self, ids, then, detail=False):
         then(dict.fromkeys(ids))
         return True
 

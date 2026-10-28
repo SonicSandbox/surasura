@@ -277,7 +277,8 @@ def main_child(a):
     opener = _LazyOpener(a.child)
     reader = library_reader.LibraryReader(opener, numbers=lambda: (1, opener.numbers_table),
                                           mining=lambda: opener.mining_ids,
-                                          freeze_gc=os.environ.get("SURASURA_READER_GC_FREEZE") == "1")
+                                          freeze_gc=os.environ.get("SURASURA_READER_GC_FREEZE") == "1",
+                                          coalesce=os.environ.get("SURASURA_READER_COALESCE", "1") == "1")   # a4
     services = shell.Services(library=reader)
     # the views through the class, before the window opens (as bench_drag): the window's connection is made as it
     # opens, and a small library's first view can be on its way before any connection made after (M4.1 P2: at 2,000

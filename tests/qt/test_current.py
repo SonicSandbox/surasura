@@ -13,6 +13,7 @@ What a wrong answer would cost a learner:
 """
 import json
 import os
+import time
 
 import pytest
 
@@ -26,7 +27,7 @@ from app import theme
 from app.qt import motion, rows, screens, shell, stones, strings, style
 from app.services import library_reader, stone_plan
 from tests.fixtures import window_seed
-from tests.qt.conftest import logos_in, wait_until
+from tests.qt.conftest import logos_in, needs_in, wait_until
 from tests.qt.pixels import count, rgb_array
 from tests.qt.test_wiring import problems
 
@@ -50,6 +51,7 @@ def open_on(qapp, seed, size=(1280, 800)):
     QApplication.processEvents()
     for _ in range(50):                                       # the list's batched layout settles
         QApplication.processEvents()
+    assert needs_in(win)                                      # the window finished opening: Needs you's first answer
     return win, services
 
 
@@ -1204,6 +1206,176 @@ def test_a_file_arriving_below_the_screen_draws_no_row_afresh_and_moves_nothing_
     assert lst.visualRect(lst.model().index(new_row, 0)).top() > lst.viewport().height()   # it did land below the screen
     assert lst.delegate.renders == renders                         # nothing on screen drawn afresh (repainted from pixmaps)
     assert on_screen() == before                                   # same keys, same tops, same numbers
+
+
+def _watch_model(lst):
+    """The model's resets and inserts / removes from now on: {"resets": n, "inserted": [(first, last)], ...}."""
+    seen = {"resets": 0, "inserted": [], "removed": []}
+    model = lst.model()
+    model.modelAboutToBeReset.connect(lambda: seen.__setitem__("resets", seen["resets"] + 1))
+    model.rowsInserted.connect(lambda _p, a, b: seen["inserted"].append((a, b)))
+    model.rowsRemoved.connect(lambda _p, a, b: seen["removed"].append((a, b)))
+    return seen
+
+
+def _new_show(seed, tier, ord_, title, n=3):
+    """`n` episodes of a show never seen before, at `ord_` in `tier` (a look's batch, a hato drop)."""
+    items = seed.library.items()
+    first = max(r["id"] for r in items) + 1
+    piece = max(r.get("piece_id") or 0 for r in items) + 1
+    work = max(r.get("work_id") or 0 for r in items) + 1
+    folder = ("HighPriority/" if tier == "now" else "LowPriority/") + title
+    rows_ = [{"id": first + k, "tier": tier, "ord": ord_ + k * 0.001, "work_id": work, "piece_id": piece,
+              "rel_path": f"{folder}/{title} - {k + 1:02d}.srt", "title": f"{title} - {k + 1:02d}.srt",
+              "parent_folder": title, "source_type": "subtitle", "availability": "available", "watched": 0}
+             for k in range(n)]
+    seed.library.commit(items=rows_, works=[{"id": work, "title": title, "folder_key": folder, "media_type": "anime"}],
+                        order=True)
+    return f"p{piece}"
+
+
+def test_a4_a_show_landing_below_the_screen_is_put_in_and_the_open_row_the_keyboards_row_and_the_hand_stay(seeded):
+    """A2 (Mattias #8): a show a look adds at Soon's end, below where the learner reads, is put into the list where it
+    lands — never a reset: the row he opened stays open, the keyboard stays on its row, the hand on its row, and no row
+    on screen is drawn afresh (Qt still repaints the screen from the kept pictures as it lays the rows out)."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    model = lst.model()
+    i = next(k for k, e in enumerate(model.entries) if e[0] == rows.ROW)
+    lst.toggle(model.index(i, 0))
+    assert wait_until(lambda: model.open_key is not None)
+    opened = model.open_key
+    lst.setCurrentIndex(model.index(i + 1, 0))
+    keyboard = model.entries[i + 1][1].key
+    lst._hover = i + 2
+    hand = model.entries[i + 2][1].key
+    assert wait_until(lambda: not lst._warm.isActive(), 10)
+    lst.viewport().repaint()
+    renders = lst.delegate.renders
+    seen = _watch_model(lst)
+    last = max((r for r in seed.library.items() if r["tier"] == "soon"), key=lambda r: r["ord"])
+    key = _new_show(seed, "soon", last["ord"] + 512, "雲の上の郵便屋さん 第3期")
+    assert wait_until(lambda: any(getattr(e[1], "key", None) == key for e in model.entries))
+    lst.viewport().repaint()
+    assert seen["resets"] == 0 and seen["inserted"] == [(model.rowCount() - 1, model.rowCount() - 1)], seen
+    assert model.open_key == opened
+    assert model.entries[lst.currentIndex().row()][1].key == keyboard
+    assert model.entries[lst._hover][1].key == hand
+    assert lst.delegate.renders == renders                         # nothing on screen drawn afresh
+
+
+def test_a4_a_show_landing_above_the_screen_keeps_the_rows_the_learner_reads_where_they_were(seeded):
+    """A show put in above the screen (a look's batch near the top of Soon) pushes every row below it down a place: the
+    rows on screen stay where the learner sees them (the top row's offset is kept), and nothing is reset."""
+    seed, win = seeded(files=2000)
+    lst = current(win)
+    model = lst.model()
+    lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 2)
+    for _ in range(20):
+        QApplication.processEvents()
+
+    def tops():
+        out = {}
+        for y in range(1, lst.viewport().height(), 8):
+            idx = lst.indexAt(QPoint(4, y))
+            if idx.isValid():
+                out[rows.RowsModel.key_of(model.entries[idx.row()])] = lst.visualRect(idx).top()
+        return out
+    before = tops()
+    first_on_screen = lst.indexAt(QPoint(4, 1)).row()
+    soon_row = next(k for k, e in enumerate(model.entries) if getattr(e[1], "tier", None) == "soon")
+    assert first_on_screen > soon_row + 2                          # scrolled past the first Soon rows
+    soon = sorted((r for r in seed.library.items() if r["tier"] == "soon"), key=lambda r: (r["ord"], r["id"]))
+    at = soon[0]["ord"] - 1.0                                       # before Soon's first row: far above the screen
+    seen = _watch_model(lst)
+    key = _new_show(seed, "soon", at, "茜空の転校生 特別編")
+    assert wait_until(lambda: any(getattr(e[1], "key", None) == key for e in model.entries))
+    for _ in range(20):
+        QApplication.processEvents()
+    assert seen["resets"] == 0 and len(seen["inserted"]) == 1, seen
+    after = tops()
+    same = [k for k in before if k in after]
+    assert len(same) >= 5
+    assert all(after[k] == before[k] for k in same), [(k, before[k], after[k]) for k in same if after[k] != before[k]]
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a4_up_next_handing_its_place_on_is_no_reset(qapp, seeded, language):
+    """C3 (*Move to the top*, another program's or the window's own): a Soon row becomes Up Next and the old Up Next
+    comes down as a row — two rows out, two in, every other row in its place: put in where they land, never a reset (a
+    reset lost the hand, the keyboard's row and the scroll place, and laid out and repainted the whole list)."""
+    if language == "zh":
+        _settings(target_language="zh", zh_script="s")
+    try:
+        seed, win = seeded(language=language)
+        lst = current(win)
+        model = lst.model()
+        seen = _watch_model(lst)
+        hero_before = model.entries[0][1].key
+        soon = next(r for r in seed.items if r["tier"] == "soon")
+        top = min(r["ord"] for r in seed.library.items() if r["tier"] == "now")
+        seed.library.commit(items=[{"id": soon["id"], "tier": "now", "ord": top - 100}], order=True)
+        assert wait_until(lambda: model.entries[0][1].key != hero_before)
+        assert seen["resets"] == 0 and seen["inserted"] and seen["removed"], seen
+        assert model.entries[0][0] == rows.HERO and soon["id"] in (e.id for e in model.entries[0][1].episodes)
+        assert model.entries[1][0] == rows.ROW and model.entries[1][1].key == hero_before
+    finally:
+        style.apply(qapp, "night", "M", "ja")
+
+
+def test_a4_a_change_to_finished_waits_until_finished_shows_or_the_window_rests(seeded):
+    """A2: a page nobody is looking at doesn't relist on every view. A show finished while the learner is on Current
+    changes Finished's list only once the window rests (or Finished shows first) — once, with the newest view."""
+    seed, win = seeded()
+    fin_page = win.page_widgets["finished"]
+    fin = fin_page.list
+    assert not fin.isVisible()
+    entries = fin.model().entries
+    row = next(r for r in seed.items if r["tier"] == "soon")
+    fin_page._owed_timer.setInterval(60000)                         # the rest held off: the show decides
+    seed.library.commit(items=[{"id": row["id"], "tier": "graduated", "ord": 1.0,
+                                "graduated_at": "2026-10-27T09:00:00Z"}], order=True)
+    assert wait_until(lambda: fin_page.view_model is not None and fin_page.owed is not None)
+    for _ in range(10):
+        QApplication.processEvents()
+    assert fin.model().entries is entries                           # not relisted while hidden
+    win.show_tab("finished")
+    assert fin.model().entries is not entries                       # listed as it shows, before its first paint
+    assert any(e[0] == rows.FINISHED and row["id"] in (x.id for x in e[1].episodes) for e in fin.model().entries)
+    win.show_tab("current")
+    row2 = next(r for r in seed.items if r["tier"] == "soon" and r["id"] != row["id"])
+    fin_page._owed_timer.setInterval(rows.WARM_IDLE_MS)
+    seed.library.commit(items=[{"id": row2["id"], "tier": "graduated", "ord": 2.0,
+                                "graduated_at": "2026-10-27T09:05:00Z"}], order=True)
+    assert wait_until(lambda: any(e[0] == rows.FINISHED and row2["id"] in (x.id for x in e[1].episodes)
+                                  for e in fin.model().entries), 5)   # the window rested: listed while hidden
+
+
+def test_finished_hidden_through_a_burst_of_changes_lists_once_after_the_window_rests(seeded):
+    """A4A-10: Finished's "listed once the window rests" timer started at the first view it owed and was never pushed
+    back, so through a burst a hidden Finished still listed about every quarter second — a page nobody looks at diffing
+    as often as the reader builds. Ten shows finished 100 ms apart while the learner is on Current: Finished lists
+    nothing while they land, then once, with the newest view, after the window rests."""
+    seed, win = seeded()
+    fin_page = win.page_widgets["finished"]
+    fin = fin_page.list
+    assert not fin.isVisible()
+    listed = []
+    real = fin.set_entries
+    fin.set_entries = lambda entries: listed.append(time.monotonic()) or real(entries)
+    left = [r for r in seed.items if r["tier"] in ("soon", "goal")][:10]
+    assert len(left) == 10
+    for k, row in enumerate(left):
+        seed.library.commit(items=[{"id": row["id"], "tier": "graduated", "ord": 10.0 + k,
+                                    "graduated_at": f"2026-10-27T09:{k:02d}:00Z"}], order=True)
+        QTest.qWait(100)
+    during = len(listed)
+    last = left[-1]["id"]
+    assert wait_until(lambda: any(e[0] == rows.FINISHED and last in (x.id for x in e[1].episodes)
+                                  for e in fin.model().entries), 5)
+    QTest.qWait(rows.WARM_IDLE_MS + 100)
+    assert during == 0, during                                     # nothing listed while the changes landed
+    assert len(listed) == 1, listed                                # once, after the rest, with the newest
 
 
 def test_the_same_status_snapshot_published_again_paints_no_widget_and_no_row(seeded, qapp):

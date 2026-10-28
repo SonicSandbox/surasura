@@ -188,45 +188,68 @@ def test_the_door_opens_one_library_folders_window_titled_and_esc_closes_it(wind
     assert windows.opened(win, settings_sources.WINDOW) is None and win.isVisible()
 
 
+def _stops_land(writer, looks):
+    """K9: Settings' *Stop reading* goes through the window's writer — its stop taking the folder out of the looks'
+    listing as the store's `stop_source` does, once saved (the listing after the save, `drag._sources_stopped`)."""
+    land = writer._land
+
+    def landed(change, label):
+        if change.op == "stop_source":
+            looks.sources = [s for s in looks.sources if s["id"] != change.kw["root"]]
+        land(change, label)
+    writer._land = landed
+
+
+def _stops(writer):
+    return [c for c in writer.calls if c[0] == "stop_source"]
+
+
 def test_a_stop_in_the_window_takes_only_its_line_and_the_page_counts_one_fewer(window):
     looks = ActingLooks([_src(1, ANIME, 412), _src(2, DRAMA, 30), _src(3, OLD, 1)])
     win, page, row, folders = _open(window, looks)
+    writer = win.services.writer
+    _stops_land(writer, looks)
     assert wait_until(lambda: row.summary.text() == "3 folders" and len(folders.lines) == 3, 10)
     kept = {i: folders.lines[i] for i in (1, 3)}
     reads, paints = folders.reads, row.paints
     folders.lines[2].stop.click()
-    assert looks.stops == [(2, "ja")]                      # its language named: never another store's id
-    assert set(folders.lines) == {1, 3} and all(folders.lines[i] is kept[i] for i in kept)   # the others untouched
+    assert _stops(writer) == [("stop_source", [], {"root": 2, "language": "ja"})]   # its language named: never another
+    assert wait_until(lambda: set(folders.lines) == {1, 3}, 10)                       # store's id
+    assert all(folders.lines[i] is kept[i] for i in kept)                              # the others untouched
     assert folders.reads == reads + 1 and row.paints == paints + 1
     assert row.summary.text() == "2 folders"
-    assert win.bar_line.full() == S.SOURCES_STOPPED.format(path=DRAMA, n=30)
-    assert all(line.stop.isEnabled() for line in folders.lines.values())
+    assert win.toasts.card.base == S.SOURCES_STOPPED.format(path=DRAMA, n=30)          # its toast, with Undo
+    assert wait_until(lambda: all(line.stop.isEnabled() for line in folders.lines.values())
+                      and not win.presses.any_live(), 5)
 
 
-def test_a_stop_answered_after_the_window_closed_is_told_in_the_bar_and_never_pressed_twice(window):
-    looks = ActingLooks([_src(1, ANIME, 412), _src(2, DRAMA, 30)], hold=True)
+def test_a_stop_saved_after_the_window_closed_lands_and_is_never_pressed_twice(window):
+    looks = ActingLooks([_src(1, ANIME, 412), _src(2, DRAMA, 30)])
     win, page, row, folders = _open(window, looks)
+    writer = win.services.writer
+    _stops_land(writer, looks)
     assert wait_until(lambda: len(folders.lines) == 2, 10)
+    writer.stuck = True                                                # a busy store: the stop waits to be saved
     folders.lines[2].stop.click()
-    # round 8 row 45: never greyed — its arc turns until the stop answers, and a press meanwhile stops nothing more
+    # round 8 row 45: never greyed — its arc turns until the stop is saved, and a press meanwhile stops nothing more
     assert folders.lines[2].stop.isEnabled() and qpress.arc(folders.lines[2].stop) is not None
     folders.lines[2].stop.click()
     folders.close()
     QApplication.processEvents()
-    again = settings_sources.open_window(win)                          # opened again before the stop answered
+    again = settings_sources.open_window(win)                          # opened again before the stop was saved
     assert again is not folders and qpress.arc(again.lines[2].stop) is not None     # its arc taken by the new line
     assert qpress.arc(again.lines[1].stop) is None and again.lines[1].stop.isEnabled()
     again.lines[2].stop.click()
-    assert looks.stops == [(2, "ja")]                                  # one stop, never two
+    assert len(_stops(writer)) == 1                                    # one stop, never two
     again.close()
     QApplication.processEvents()
-    looks.held.pop()()                                                 # the stop lands with no window open
-    assert win.bar_line.full() == S.SOURCES_STOPPED.format(path=DRAMA, n=30)
-    assert row.summary.text() == "1 folder"
+    writer.free()                                                      # the stop saved with no window open
+    assert wait_until(lambda: row.summary.text() == "1 folder", 10)
+    assert win.toasts.card.base == S.SOURCES_STOPPED.format(path=DRAMA, n=30)
+    assert wait_until(lambda: not win.presses.any_live(), 5)
     third = settings_sources.open_window(win)
     try:
         assert set(third.lines) == {1} and third.lines[1].stop.isEnabled() and qpress.arc(third.lines[1].stop) is None
-        assert not win.presses.any_live()
     finally:
         third.close()
 
@@ -328,22 +351,23 @@ def test_a_library_that_cant_be_written_greys_stop_read_again_and_add_with_the_r
 
 
 # --- round 8 row 45: every press reacts at once ------------------------------------------------------------------- #
-def test_stop_reading_paints_its_arc_before_the_looks_are_asked(window):
-    # *Stop reading* greyed with no words: its arc now turns, painted before the looks' worker is asked to stop.
+def test_stop_reading_paints_its_arc_before_the_writer_is_asked(window):
+    # *Stop reading* greyed with no words: its arc now turns, painted before the writer is asked to stop it (K9).
     from tests.qt.press_handover import Paints, arc_turning
-    looks = ActingLooks([_src(1, ANIME, 412), _src(2, DRAMA, 30)], hold=True)
+    looks = ActingLooks([_src(1, ANIME, 412), _src(2, DRAMA, 30)])
     win, page, row, folders = _open(window, looks)
+    writer = win.services.writer
+    _stops_land(writer, looks)
     assert wait_until(lambda: len(folders.lines) == 2 and folders.lines[2].stop.isVisible(), 10)
     button = folders.lines[2].stop
-    paints, seen, stop = Paints(button), [], looks.stop
+    paints, seen, stop = Paints(button), [], writer.stop_reading
 
-    def asked(root_id, then=None, language=None):
+    def asked(root_id, label=None, language=None):
         seen.append((arc_turning(button), paints.n))
-        return stop(root_id, then, language)
-    looks.stop = asked
+        return stop(root_id, label, language)
+    writer.stop_reading = asked
     button.click()
     assert seen and seen[0][0] and seen[0][1] >= 1
-    looks.held.pop()()
     assert wait_until(lambda: 2 not in folders.lines and not win.presses.any_live(), 5)
 
 

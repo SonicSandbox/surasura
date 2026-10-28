@@ -413,7 +413,8 @@ def main_child(a):
     numbers = moves.Numbers(opener, "ja", plan_file=a.plan, on_change=lambda: held and held[0].refresh())
     numbers.load()
     numbers.idle(300)
-    reader = library_reader.LibraryReader(opener, numbers=numbers, mining=lambda: opener.mining_ids)
+    reader = library_reader.LibraryReader(opener, numbers=numbers, mining=lambda: opener.mining_ids,
+                                          coalesce=os.environ.get("SURASURA_READER_COALESCE", "1") == "1")   # a4: as the window's
     held.append(reader)
     moments = None                                       # (made with the HUD, below)
 

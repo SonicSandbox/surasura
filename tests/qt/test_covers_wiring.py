@@ -305,14 +305,11 @@ def test_a_tray_row_paints_its_arrivals_poster_and_a_landing_repaints_only_its_r
         tray = open_tray(win)
         row = next(r for r in tray_rows(win) if r.arrival.work_id == work)
         assert row.arrival.cover is not None and row.arrival.cover.source == "file"
-        m = row._m()
-        cover = (m["h"], (row.height() - m["ch"]) // 2, m["cw"], m["ch"])
-        from PyQt6.QtCore import QRect
-        assert wait_until(lambda: (settle() or True) and near(_centre(row, QRect(*cover)), ROSE), 5)
+        cover = row.rect("cover")                                    # A4: the rows are painted by the tray's list
+        assert wait_until(lambda: (settle() or True) and near(_centre(tray.view.viewport(), cover), ROSE), 5)
         assert any(r is not None and r.work_id == work for r in win.arrivals_inset.refs)
         hits = []
-        for r in tray_rows(win):
-            r.update = (lambda key: lambda: hits.append(key))(r.arrival.key)
+        tray.repaint_row = hits.append
         inset_hits = []
         win.arrivals_inset.update = lambda: inset_hits.append(1)
         tray._cover_ready(work)

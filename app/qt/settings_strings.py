@@ -691,10 +691,9 @@ SOURCES_ADD_TIP = "Read another folder where it is\nA show Surasura hasn't shown
 SOURCES_LOOK = "Look again"
 SOURCES_LOOK_TIP = "Look in every folder for new episodes now (the Refresh key does the same)"
 SOURCES_STOP = "Stop reading"
-SOURCES_STOP_TIP = ("Stop looking in {path} for new episodes\nIts {n:,} episodes stay in your library; adding the folder "
-                    "again reads it on from where it was")
+SOURCES_STOP_TIP = ("Stop looking in {path} for new episodes\nIts {n:,} episodes stay in your library; Undo, or adding "
+                    "the folder again, reads it on from where it was")
 SOURCES_STOP_NAME = "Stop reading {path}"
-SOURCES_STOPPING = "Stopping reading {path} after the file it's on…"
 SOURCES_PICK_TITLE = "A folder for Surasura to read where it is"
 SOURCES_COUNT = "{n:,} episodes"
 SOURCES_COUNT_ONE = "1 episode"

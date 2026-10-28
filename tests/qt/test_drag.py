@@ -44,6 +44,8 @@ class Change:
     def __init__(self, op, ids, **kw):
         self.op, self.ids, self.kw = op, list(ids), kw
         self.kind = op
+        if op == "stop_source":                       # (as the store's: the folder it stopped, K9's Undo reads it)
+            self.roots = [(kw["root"], "source", "source-off")]
 
 
 class FakeWriter:
@@ -145,6 +147,9 @@ class FakeWriter:
         return self._put("insert_at", [], label, files=list(paths), tier=tier, before_id=before_id, after_id=after_id,
                          near=list(near))
 
+    def stop_reading(self, root_id, label=None, language=None):
+        return self._put("stop_source", [], label, root=root_id, language=language)
+
     def undo(self, change=None, label=None):
         self.calls.append(("undo", [], {"change": change}))
         self.undone.append(change)
@@ -183,9 +188,9 @@ class FakeWriter:
             lib.commit(items=[{"id": i, "watched": 1 if kw["on"] else 0} for i in change.ids])
 
 
-def open_window(qapp, seed, writer, size=(1280, 900), hint_seen=True):
+def open_window(qapp, seed, writer, size=(1280, 900), hint_seen=True, coalesce=False):
     reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
-                                          mining=seed.mining, poll=0.02)
+                                          mining=seed.mining, poll=0.02, coalesce=coalesce)
     services = shell.Services(library=reader, writer=writer)
     if hint_seen:           # W-1: the first mark's one-time hint already seen here — the Done's own toasts are tested
         services.settings.set({"hints_seen": [hint_of(seed)]})
@@ -213,10 +218,10 @@ def _stones_sheet(qapp):
 def world(qapp):
     made = []
 
-    def make(files=window_seed.SMALL, apply=True, size=(1280, 900), hint_seen=True, **kw):
+    def make(files=window_seed.SMALL, apply=True, size=(1280, 900), hint_seen=True, coalesce=False, writer=None, **kw):
         seed = window_seed.build(files=files, **kw)
-        writer = FakeWriter(seed.library, apply=apply)
-        win, services = open_window(qapp, seed, writer, size, hint_seen)
+        writer = (writer or FakeWriter)(seed.library, apply=apply)
+        win, services = open_window(qapp, seed, writer, size, hint_seen, coalesce)
         made.append((win, services))
         return seed, win, writer
     yield make
@@ -830,6 +835,55 @@ def test_ctrl_z_undoes_the_newest_change(world):
     settle(80)
     QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert writer.undone == [None]                                    # None: the newest, as the writer reaches it
+
+
+class UndoingWriter(FakeWriter):
+    """The recording writer whose Undo is written back into the stand-in library, as the store's undo puts a move's
+    rows back where they were."""
+
+    def _write(self, change):
+        items = {r["id"]: r for r in self.library.items()}
+        change.before = [{"id": i, "tier": items[i]["tier"], "ord": items[i]["ord"]} for i in change.ids]
+        super()._write(change)
+
+    def undo(self, change=None, label=None):
+        done = change if change is not None else (self.saved[-1] if self.saved else None)
+        if done is not None and getattr(done, "before", None):
+            self.library.commit(items=done.before, order=True)
+        return super().undo(change, label)
+
+
+@pytest.mark.parametrize("how", ["toast", "ctrl_z"])
+def test_an_undo_while_an_import_lands_shows_at_once_not_behind_the_imports_next_view(world, how):
+    """A4A-6 / IK-4: with the window's reader (a burst of commits is a few views a second), a learner's Undo pressed
+    just after an import's view waited for the burst's next view — up to a quarter second for their own command, the
+    one thing that must feel instant. The Undo hands its write over as urgent, as every other command does: its view
+    comes at once (the toast's Undo and Ctrl+Z alike)."""
+    from tests.test_library_reader_storm import _arrival
+    seed, win, writer = world(coalesce=True, writer=UndoingWriter)
+    reader = win.services.library
+    before = [r.key for r in reader.view().rows]
+    lift(win, 6)
+    target = row_point(win, 2)
+    move_global(win, target)
+    release_global(win, target)
+    assert wait_until(lambda: writer.saved and win.moves.tickets == [], 3)
+    assert wait_until(lambda: [r.key for r in reader.view().rows] != before, 3)
+    settle(int(library_reader.URGENT_S * 1000) + 100)                   # the move's own urgency long over
+    views = []
+    reader.subscribe(lambda view: views.append((time.monotonic(), view)))
+    rows_, works = _arrival(seed, 2, "星空キャンプ部 外伝")
+    seed.library.commit(items=rows_, works=works, order=True)        # an import's batch: its view built now ...
+    assert wait_until(lambda: any(rows_[0]["id"] in a.item_ids for _t, v in views for a in v.arrivals), 3)
+    t0 = time.monotonic()                                           # ... so anything else now is held back
+    if how == "toast":
+        win.toasts.card.buttons[0].click()
+    else:
+        QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert writer.undone
+    assert wait_until(lambda: any([r.key for r in v.rows] == before for _t, v in views), 3)
+    shown = next(t for t, v in views if [r.key for r in v.rows] == before)
+    assert shown - t0 < library_reader.COALESCE_S / 2, shown - t0
 
 
 # --- Reduced motion -------------------------------------------------------------------------------------------------- #

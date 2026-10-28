@@ -142,7 +142,7 @@ def test_main_opens_settings_language_library_and_loads_the_numbers_only_after_t
     monkeypatch.setattr(QApplication, "exec", fake_exec)
     monkeypatch.setattr(shell, "prepare_process", lambda: None)
     assert shell.main(["surasura"]) == 0
-    assert asked == [{}]                                    # IK0-3: the collector freeze stays off
+    assert asked == [{"freeze_gc": True}]                   # A4 P-gil: the window process's collector freeze on
     assert inside["before"] == ("not read yet", None)
     assert inside["after"] == "no plan: Generate first"     # loaded once the frame was out
     assert inside["language"] == ("zh", "zh", "zh")
@@ -285,6 +285,20 @@ def test_a_language_switch_shows_the_new_library_and_writes_only_into_it(opened)
     zh.close()
 
 
+def test_after_a_language_switch_needs_you_reads_and_writes_the_new_librarys_folder_and_answers(opened):
+    """Fix2 (found with A4B-5): Needs you kept the language it opened with — after a switch its cards were worked out
+    from the language left's data folder and seen file, and *Choose a folder…* pointed at that library's folder."""
+    ja, zh = migrated("ja"), migrated("zh")
+    services, win = opened()
+    assert wait_until(lambda: _state(win) == "full", 15)
+    assert win.needs_you is not None and win.needs_you.language == "ja"
+    _switch(services, "zh")
+    assert wait_until(lambda: win.language == "zh" and _state(win) == "full", 15)
+    assert win.needs_you.language == "zh"
+    ja.close()
+    zh.close()
+
+
 def test_a_move_queued_on_a_busy_store_lands_in_its_own_language_before_the_switch(opened, short_lock_wait):
     ja, zh = migrated("ja"), migrated("zh")
     services, win = opened()
@@ -383,6 +397,11 @@ def test_quit_out_of_time_keeps_the_move_in_the_journal_and_the_next_start_appli
         win._quit = "ready"                                      # (the close's wait skipped: the quit runs out of time)
         win.close()
         services.shutdown(1.0)
+        # A4 E: the window's process ends after its quit; this test's goes on. A writer attempt already on its way to
+        # the lock (a loaded machine runs its thread late) would take the lock let go below and land the move after
+        # the quit — so the lock is held until that thread has ended, as the process's end would end it
+        writer = services.writer._thread
+        assert wait_until(lambda: writer is None or not writer.is_alive(), 15)
     finally:
         holder.release()
     with open(moves_module.journal_path("ja"), encoding="utf-8") as f:
@@ -454,12 +473,24 @@ def test_a_switch_never_probes_the_store_on_the_window_thread_and_clears_the_row
     zh.close()
 
 
-def test_a_reader_a_switch_let_go_is_freed(opened):
+@pytest.fixture
+def thawed(monkeypatch):
+    """(A4 P-gil) A test that freezes Python's collector leaves the process as it found it."""
+    import gc
+    monkeypatch.setattr(library_reader, "_THAWED", [False], raising=False)
+    yield
+    gc.unfreeze()
+
+
+@pytest.mark.parametrize("freeze", [False, True], ids=["unfrozen", "frozen"])
+def test_a_reader_a_switch_let_go_is_freed(opened, thawed, freeze):
     # IK0-3 / AD0-2: the reader <-> numbers cycle, and main's collector freeze, kept every library a switch let go.
+    # A4 P-gil: main freezes the collector after each view again; the stop thaws it and the next reader's first freeze
+    # waits for its second view and collects first, so the left library is still freed (frozen: red before)
     import gc
     import weakref
     ja, zh = migrated("ja"), migrated("zh")
-    services, win = opened()
+    services, win = opened(freeze_gc=freeze)
     assert wait_until(lambda: _state(win) == "full", 15)
     gone = weakref.ref(services.library)
     numbers_gone = weakref.ref(services.writer.numbers)

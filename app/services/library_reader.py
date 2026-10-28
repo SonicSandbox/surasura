@@ -14,12 +14,18 @@ library store, on a plain thread of its own — never the window's thread.
 - **The store's state** (02 §2.4): `store` → the live rows; `json` → *Getting ready* (rows read-only from the opener's
   fallback, the last copy, when it has one); `read-only` → the rows with the store's reason. A read that fails (the
   store busy, a raw database error) keeps the last view, marked busy, and tries again at the next poll.
-- **Python's collector** (`freeze_gc`, off by default; the window process turns it on — `tests/qt/try_screens.py`, the
-  bench — and the tests leave it off, so a test's own cycles are still collected): after each view is built, everything alive is moved out of the collector's
-  sight (`gc.freeze()`). The library copy and the view are large (hundreds of thousands of objects at 20,000 files),
-  long-lived and free of cycles (refcounting frees an old view the moment the window lets go of it); a full collection
-  walking them holds Python's lock — every thread, the window's too — for as long as the walk takes
-  (`tests/qt/bench_scroll.py` measures it, with and without).
+- **Python's collector** (`freeze_gc`, off by default; the window process turns it on — `shell.main`,
+  `tests/qt/try_screens.py`, the benches — and the tests leave it off, so a test's own cycles are still collected): after
+  each view is built, everything alive is moved out of the collector's sight (`gc.freeze()`). The library copy and the
+  view are large (hundreds of thousands of objects at 20,000 files), long-lived and free of cycles (refcounting frees an
+  old view the moment the window lets go of it); a full collection walking them holds Python's lock — every thread, the
+  window's too — for 40–75 ms at 20,000 files, whichever thread's allocation set it off (A4 P-gil:
+  `tests/qt/bench_gil.py` measures it; every window tick late by more than 16 ms behind a background job was one).
+  A look whose build will be frozen pauses the collector until then (`_pause_gc`: the build's own allocations set off
+  full collections too). A reader's stop gives everything back to the collector (`gc.unfreeze()`), so a library a
+  language switch let go is freed; the next reader then never freezes its first view (the switch still holds the old
+  library while it is built) and collects once before its first freeze (`_freeze`: the old library, let go by then, is
+  freed, never frozen).
 - **The numbers** (*% known*, *N new*) come from a provider (the plan engine from W3.1; the seed's plan here):
   `numbers()` → (version, {item_id: (known_tokens, counted_tokens, n_new)}); a new version rebuilds the rows holding the
   items it changed when the provider says which (`numbers.changed(since)`, W3.1a's `moves.Numbers`: a drop moves *N new*
@@ -43,6 +49,12 @@ library store, on a plain thread of its own — never the window's thread.
   its answers back (`set_playable`) — a build then rebuilds only the rows whose answer moved. A folder the watch synced
   is looked at again (its episodes), a full sync and a new Connect feed (its index file changed) the ones not found;
   the first screen's cache seeds the answers.
+- **A burst builds a few views a second** (a4, `coalesce`: off by default, the window's reader turns it on): a change
+  within `COALESCE_S` of the last view built waits for that much to pass — a + Add, a look or an import committing
+  batch after batch is a few views a second, the last change always in the last — and the numbers' new version with the
+  store unchanged waits `NUMBERS_GRACE_S` for the write it comes just before (a move: one view, never two). The window's
+  own asks build at once: a drop (`release`), the settle's `republish`, an expectation (`expect`), a mode, a full read,
+  and for a second after the window hands its writer a learner's command (`urgent`), that command's views.
 - **A drag holds it** (06 E6, `hold()` / `release()`): while held it still reads and merges the feed (its copy stays
   current) but builds and publishes nothing, so nothing moves under the hand; `release()` builds and publishes once. An
   item gone meanwhile is told at once (`subscribe_gone(cb)`: `cb(item_ids)`) — the drag of a removed item is let go.
@@ -55,13 +67,25 @@ import json
 import os
 import threading
 import time
+import weakref
 
 from app.services import view_rows
 
 POLL_S = 0.1                     # the store's FEED_POLL
+_THAWED = [False]                # A4 P-gil: a reader stopped since the last freeze (its library may still be held)
 MODE_RECHECK_S = 2.0             # while the store can't be used, its mode is asked again this often
 CACHE_LATEST_S = 5.0             # the first screen's cache waits for a quiet look at most this long
 CARDS_ALL_S = 2.0                # every item's cards asked again at most this often (between, only what changed)
+# --- a4 (A2, the commit storm): a burst of changes — a + Add, a look or an import committing batch after batch — builds
+# at most one view this often, the last change never lost (the build waits, it is never skipped); the window's own
+# asks (a drop, the settle's republish, an expectation, a mode) build at once
+COALESCE_S = 0.25
+# a4 (C2): the numbers' new version with the store unchanged waits this long for the write it comes just before (the
+# window's writer works a move's numbers out, then writes it): the move's one view holds both, never two builds a move
+NUMBERS_GRACE_S = 0.05
+# a4: the window's own command (`urgent`): for this long its numbers and its write build at once, a burst's hold-back aside
+URGENT_S = 1.0
+# --- end a4
 CACHE_VERSION = 5                # 2: keyed (store id, epoch, state version, plan version); 3: an episode's `deleted`;
 #                                  4: a status's words and tips (G2.3: ✓ N, a tip's action on a line of its own);
 #                                  5: `can_play` is ▶'s found file (row 55), and the seed of its answers
@@ -91,6 +115,13 @@ def _no_connect():
     return None
 
 
+def _hand_folders(ref, found):
+    """New arrivals' folders to the reader, while it is alive (A4B-8)."""
+    reader = ref()
+    if reader is not None:
+        reader.set_folders(found)
+
+
 def _hand_playable(ref, answers):
     """▶'s answers to the reader, while it is alive (row 55)."""
     reader = ref()
@@ -100,7 +131,8 @@ def _hand_playable(ref, answers):
 
 class LibraryReader:
     def __init__(self, opener, language="ja", numbers=None, mining=None, poll=POLL_S, cache_file=None,
-                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None, connect=None, play=None):
+                 cache_rows=view_rows.CACHE_ROWS, freeze_gc=False, watch=None, connect=None, play=None,
+                 coalesce=False):
         self.opener = opener
         self.language = language
         self.numbers = numbers or _no_numbers
@@ -161,11 +193,31 @@ class LibraryReader:
         self.reads = 0                     # feed reads (tests)
         self.builds = 0                    # views built (tests)
         self.skipped = 0                   # reads that changed nothing the window shows (tests)
+        # --- a4: a view owed (`COALESCE_S`, `NUMBERS_GRACE_S`): built once it falls due, whatever else comes meanwhile
+        self._built_at = None              # when a look last built and published a view
+        self._view_owed = False
+        self._owed_at = 0.0                # when the owed view falls due
+        self._numbers_at = None            # when a numbers' version with the store unchanged was first seen
+        self._numbers_dv = None            # ... and the store's data_version then (the write moves it)
+        self.held_back = 0                 # looks whose build waited (tests)
+        self._held_at = None               # fix round (IK-2): when a look's build last waited (a burst under way)
+        self._urgent_until = 0.0           # the window's own command on its way (`urgent`)
+        self.coalesce = bool(coalesce)     # off by default (a test's looks each build); the window turns it on
+        # --- end a4
         # --- W3.2 Q1: New arrivals' estimates ({item_id: N new}, the window's `arrivals.ArrivalNumbers`), built into
         # the next view (`view_rows.build(estimates=)`); new ones rebuild it (only the arrivals' rows change)
         self._estimates = {}
         self._estimates_new = False
         # --- end W3.2 Q1
+        # --- A4B-8: New arrivals' folders ({first item id: where its original sits}, the looks' answers), named into
+        # the next view on this thread (`view_rows.build(folders=)`) — never on the window's; new ones rebuild it
+        self._folders = {}
+        self._folders_version = 0
+        self._folders_new = False
+        self._folders_ask = None           # (ask, then): the looks' `folders`, handed by the window (`follow_folders`)
+        self._folders_asked = set()
+        self._folders_owed = False         # ... the last view's arrivals to ask at the next look (no build for it)
+        # --- end A4B-8
         # --- LM11b G5: a window command not written yet ({item_id: tier}, `expect`), built in until the feed holds it
         self._expected = {}
         self._expected_new = None          # the window's newest, taken in by the next look
@@ -227,6 +279,49 @@ class LibraryReader:
         self._wake.set()
     # --- end W3.2 Q1
 
+    # --- A4B-8
+    def follow_folders(self, ask):
+        """New arrivals' folders asked through `ask(item_ids, then)` (the looks' `folders(..., detail=True)`; None: no
+        looks) — every arrival's first file asked afresh at the next look (no view built for it), its answers (`then`,
+        any thread) named into the views from then on. Any thread."""
+        me = weakref.ref(self)                          # (never a cycle reader -> ask -> reader: AD0-2)
+        with self._lock:
+            self._folders_ask = None if ask is None else (ask, lambda found: _hand_folders(me, found))
+            self._folders_asked = set()
+            self._folders_owed = True
+        self._wake.set()
+
+    def set_folders(self, found):
+        """The looks' answers ({item_id: where its original sits, or None}), from any thread: built into the next view
+        when any moved (a file from no folder read names nothing: no view for it)."""
+        if not isinstance(found, dict):
+            return
+        with self._lock:
+            moved = {k: v for k, v in found.items() if self._folders.get(k) != v}
+            if not moved:
+                return                                  # the same answers build nothing (S19)
+            self._folders = {**self._folders, **moved}
+            self._folders_version += 1
+            self._folders_new = True
+        self._wake.set()
+
+    def _ask_folders(self, view):
+        """(The reader's thread.) The arrivals' first files no answer was asked for yet, asked of the looks."""
+        with self._lock:
+            ask, asked = self._folders_ask, self._folders_asked
+        if ask is None or not view.arrivals:
+            return
+        want = [a.item_ids[0] for a in view.arrivals if a.item_ids and a.item_ids[0] not in asked]
+        if not want:
+            return
+        asked.update(want)
+        try:
+            ask[0](want, ask[1])
+        except Exception as e:                          # (the looks closing: the next view asks again)
+            asked.difference_update(want)
+            print(f"Library reader: the arrivals' folders weren't asked: {e!r}")
+    # --- end A4B-8
+
     # --- row 55
     def set_playable(self, answers):
         """▶'s answers ({item_id: found}, the looker's), from any thread: built into the next view, looked at now."""
@@ -284,6 +379,13 @@ class LibraryReader:
         self._expected = new
         return True
     # --- end LM11b G5
+
+    def urgent(self):
+        """(a4) The window hands its writer a learner's command (`drag.DragController._give`: a drop, a menu's move, a
+        key's, a Done): for `URGENT_S` the views it makes build at once — never held back behind an import's burst —
+        its numbers still waiting `NUMBERS_GRACE_S` for its write, so the move is one view. Any thread."""
+        self._urgent_until = time.monotonic() + URGENT_S
+        self._wake.set()
 
     def hold(self):
         """A drag starts (E6): the feed is still read, but nothing is built or published until `release()`."""
@@ -346,12 +448,19 @@ class LibraryReader:
         except Exception:
             pass                                    # a cache that can't be read is no cache
         while not self._stop.is_set():
+            paused = self._pause_gc()               # A4 P-gil
             try:
                 self._look()
             except Exception as e:                  # never dies of a read: the last view, marked busy
                 self._busy(e)
+            finally:
+                if paused:
+                    gc.enable()
             self._wait()                            # W3.2 B: the bell, the watch or a retry (no watch: `poll`)
         self._unwatch()                             # W3.2 B
+        if self.freeze_gc:                          # A4 P-gil: what it froze back in the collector's sight (a library
+            gc.unfreeze()                           # a switch lets go is freed, its cycles too)
+            _THAWED[0] = True
         if self.play is not None:
             self.play.close()                       # row 55: its worker ends (a look running finishes first)
         try:
@@ -374,6 +483,7 @@ class LibraryReader:
         # view stays (`view()`: the window shows it until the next language's first view comes)
         self._items, self._works, self._cards, self._options = {}, {}, {}, {}
         self._pieces = {}
+        self._folders, self._folders_ask = {}, None     # A4B-8
         self._tiers, self._pos, self._dirty, self._moved_in = None, {}, set(), {}
         self._overlaid, self._overlay_tiers = {}, {}
         self.row_cache = view_rows.RowCache()
@@ -398,6 +508,10 @@ class LibraryReader:
 
     def _look(self):
         self.looks += 1                                 # W3.2 B
+        if self._folders_owed:                          # A4B-8: the looks handed: the last view's arrivals asked
+            self._folders_owed = False
+            if self._view is not None:
+                self._ask_folders(self._view)
         mode, reason, h = self._handle()
         changed_mode = (mode, reason) != self._mode
         self._mode = (mode, reason)
@@ -410,7 +524,8 @@ class LibraryReader:
         if again:
             self._republish = False
         if h is None:                                   # nothing to read: the last rows stay, under the mode's bar
-            if changed_mode or self._view is None or version != self._numbers_version or released or again:
+            owed, self._view_owed = self._view_owed, False  # fix round (A4A-2): a view owed is this build (or the drop's)
+            if changed_mode or self._view is None or version != self._numbers_version or released or again or owed:
                 self._numbers_version = version         # the numbers' own version: a new one empties the row cache
                 if held:
                     self._held_dirty = True
@@ -420,14 +535,19 @@ class LibraryReader:
             return
         with self._lock:                                # W3.2 Q1: new estimates from the window
             estimates_new, self._estimates_new = self._estimates_new, False
+            estimates_new, self._folders_new = estimates_new or self._folders_new, False    # A4B-8: their folders
+            numbers_new = estimates_new                 # fix round (IK-2): the arrivals' own numbers
             estimates_new, self._playable_new = estimates_new or self._playable_new, False     # row 55: ▶'s answers
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
-        estimates_new = self._take_expected() or estimates_new      # LM11b G5: and the window's expectation
+        expected_moved = self._take_expected()                      # LM11b G5: and the window's expectation
+        estimates_new = expected_moved or estimates_new
         dv = h.data_version()
-        cards_due = self._cards_stale and not held and time.monotonic() - self._cards_all_at >= CARDS_ALL_S
+        now = time.monotonic()
+        cards_due = self._cards_stale and not held and now - self._cards_all_at >= CARDS_ALL_S
+        owed = self._view_owed                          # a4: a build held back (what comes meanwhile is still read)
         if not changed_mode and dv == self._data_version and version == self._numbers_version \
                 and self._view is not None and not self._view.busy and not cards_due and not released \
-                and not estimates_new:                  # W3.2 Q1
+                and not estimates_new and not owed:     # W3.2 Q1
             if again:                                   # M4.1 B1: nothing changed since the last build
                 self._publish(self._view)
             self._flush_cache()
@@ -446,7 +566,11 @@ class LibraryReader:
                    or feed.get("pieces")                # LM11b G1: a group's kind or name
                    or self._options != options_before or version != self._numbers_version
                    or cards != self._cards or self._view is None or self._view.busy or self._view.cached or released
-                   or estimates_new)                    # W3.2 Q1
+                   or estimates_new or owed)            # W3.2 Q1; a4: the build held back
+        urgent = (changed_mode or released or again or expected_moved or feed["full"] or self._view is None
+                  or self._view.busy or self._view.cached)
+        numbers_only = dv == self._data_version and version != self._numbers_version
+        estimates_only = numbers_new and dv == self._data_version and version == self._numbers_version    # IK-2
         self._cards = cards
         self._data_version = dv
         self._numbers_version = version
@@ -456,7 +580,8 @@ class LibraryReader:
         if held:                                        # E6: merged, never built or shown under the hand; a quiet
             if changed:                                 # look later in the drag never forgets what came in (AD-1)
                 self._held_dirty = True
-            return
+            self._view_owed = False                     # fix round (A4A-2): a view owed is the drop's build now — owed
+            return                                      # under the hand it fell due and the reader looked back to back
         self._held_dirty = False
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)
             self.skipped += 1
@@ -464,10 +589,15 @@ class LibraryReader:
                 self._publish(self._view)
             self._flush_cache()                         # a look with nothing new: as quiet as one that read nothing
             return
+        if self.coalesce and not urgent and self._hold_back(now, numbers_only, dv, estimates_only):
+            return                                      # a4: built once it falls due (`_timeout` wakes the reader)
         view = self._build(numbers, mode, reason, rows_known=True)
         self._publish(view)
+        self._view_owed, self._numbers_at = False, None     # a4
+        if not estimates_only:                          # fix round (IK-2): a burst is the store's commits — a view of
+            self._built_at = time.monotonic()           # the arrivals' numbers alone never holds the next commit back
         if self.freeze_gc:
-            gc.freeze()
+            self._freeze()                              # A4 P-gil
         if mode == "store" and self.cache_file:
             # written at the next look that finds nothing new, not now: the window is taking this view in at this
             # very moment, and the cache's JSON would hold Python's lock against it (speed round 5)
@@ -482,6 +612,29 @@ class LibraryReader:
             if time.monotonic() - self._cache_due_at >= CACHE_LATEST_S:
                 self._flush_cache()                     # a store that never rests: written anyway, now and then
 
+    # --- a4 (A2, C2): one view for a burst, one for a move ------------------------------------------------------ #
+    def _hold_back(self, now, numbers_only, dv, estimates_only=False):
+        """Whether this look's build waits -> True (owed: `_timeout` wakes the reader when it falls due). A change
+        within `COALESCE_S` of the last view built waits for that much to pass (a burst of commits: a few views a
+        second, the last change in the last one); the numbers' new version with the store unchanged waits
+        `NUMBERS_GRACE_S` for the write it comes before (the bell wakes the reader at the write: one build). New
+        arrivals' numbers alone (`estimates_only`, handed on at most four a second) wait only while a burst is under
+        way — a view owed, or a build held back within `COALESCE_S` — else a lone arrival's *N new* came a burst's wait
+        after its own view (fix round, IK-2)."""
+        if estimates_only and not self._view_owed and (self._held_at is None or now - self._held_at >= COALESCE_S):
+            return False
+        due = self._built_at + COALESCE_S if self._built_at is not None and now >= self._urgent_until else now
+        if numbers_only and self._numbers_at is None:
+            self._numbers_at, self._numbers_dv = now, dv
+        if self._numbers_at is not None and dv == self._numbers_dv:     # the write it comes before: not yet
+            due = max(due, self._numbers_at + NUMBERS_GRACE_S)
+        if due <= now:
+            return False
+        self._view_owed, self._owed_at, self._held_at = True, due, now
+        self.held_back += 1
+        return True
+    # --- end a4
+
     # --- W3.2 B: the window wakes on the bell (IK0-5, L3.1-4, W2.2's *How the window wakes*) -------------------- #
     def _wait(self):
         """Until the next look. No watch, or a deaf one (no bell to hear other programs by): every `poll`, as before.
@@ -494,13 +647,18 @@ class LibraryReader:
         """The wait's seconds. While the store can't be used `_watching` (which takes what the watch says is due) isn't
         reached, so a timer already due would wake the reader at once, every time: floored at `poll` then (L1 B1)."""
         lookout = self._lookout
+        view = self._view
+        # fix round (A4A-2): a view owed wakes the reader when it falls due — never while a drag holds the view (the
+        # drop builds it) or the store is busy (tried again at `poll`): either looked back to back once it fell due
+        owed_due = self._view_owed and not self._hold.is_set() and not (view is not None and view.busy)
         if lookout is None or lookout.deaf:
             timeout = self.poll
+            if owed_due:                                # a4: the view held back, built when it falls due
+                timeout = min(timeout, max(0.0, self._owed_at - time.monotonic()))
         else:
             timeout = lookout.timeout()
             with self._lock:
                 owed = any(self._owed) and not self._syncing
-            view = self._view
             if owed or self._cache_due is not None or self._recheck or self._held_dirty or \
                     (view is not None and view.busy):
                 timeout = min(timeout, self.poll)       # a sync, a read or the cache's quiet look to try again
@@ -509,6 +667,8 @@ class LibraryReader:
                 timeout = min(timeout, max(0.0, self._cards_all_at + CARDS_ALL_S - time.monotonic()))
             if self._mode is not None and self._mode[0] != "store":
                 timeout = max(self.poll, min(timeout, MODE_RECHECK_S))
+            elif owed_due:                              # a4: the view held back, built when it falls due
+                timeout = min(timeout, max(0.0, self._owed_at - time.monotonic()))
         return timeout
 
     def _watching(self, h):
@@ -795,6 +955,8 @@ class LibraryReader:
                 items, tiers = self._overlay(items, tiers)
         if not self._expected:
             self._overlaid, self._overlay_tiers = {}, {}
+        with self._lock:
+            folders = (self._folders_version, self._folders) if self._folders else None     # A4B-8
         view = view_rows.build(items, self._works, self._options, numbers=(self._numbers_version, numbers),
                                cards=self._cards, mining=set(self.mining()), language=self.language, mode=mode,
                                reason=reason, loading=not rows_known, cache=self.row_cache,
@@ -803,10 +965,12 @@ class LibraryReader:
                                estimates=self._estimates,     # W3.2 Q1
                                connect=connect,               # P4.1 L2
                                pieces=self._pieces,           # LM11b G1
-                               playable=self._playable)       # row 55
+                               playable=self._playable,       # row 55
+                               folders=folders)               # A4B-8
         view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
         if self.play is not None:
             self._ask_play(view)                        # row 55
+        self._ask_folders(view)                         # A4B-8
         self._built_numbers = self._numbers_version
         self._build_changed = set()                     # built: from here on, only what the feed changes
         self._build_works = set()
@@ -852,6 +1016,27 @@ class LibraryReader:
             out[t] = rows
         self._overlay_tiers = lists
         return items, out
+
+    def _pause_gc(self):
+        """(A4 P-gil) A look whose build will be frozen pauses the collector until it is: the read and the build make
+        the library's objects anew (a full read: hundreds of thousands), and each full collection they set off walked
+        them all under Python's lock (34-43 ms at 20,000 files, up to 110 ms at 60,000, two to seven in a first view).
+        The freeze then takes them out of the collector's sight uncounted. -> whether it paused it."""
+        if not self.freeze_gc or not gc.isenabled() or (_THAWED[0] and self.builds < 1):
+            return False                            # (after a switch the first view isn't frozen: never paused)
+        gc.disable()
+        return True
+
+    def _freeze(self):
+        """(A4 P-gil) Everything alive moved out of the collector's sight after a build — but after another reader's stop
+        (a language switch), never at this reader's first view (the switch still holds the library it left), and the
+        first freeze after it collects first, so that library, let go by then, is freed rather than frozen."""
+        if _THAWED[0]:
+            if self.builds < 2:
+                return
+            gc.collect()
+            _THAWED[0] = False
+        gc.freeze()
 
     def _owed_cache(self):
         """(H-T2) At the stop, a cache owed while the window's command still waits: the store's own view (built without

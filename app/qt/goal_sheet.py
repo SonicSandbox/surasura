@@ -14,6 +14,11 @@ updates its tiles in place and never animates it again.
   its folder* · *Remove…* (a confirmation naming the count; the writer's `remove`, its toast's Undo).
 - **A drag**: a press and 6 px on a tile lifts its first piece (`DragController.begin_by_id`, from Goal: the Goal well
   left out); the sheet closes as the drag starts.
+- **The picks (A4):** Ctrl+click a tile picks it, Shift+click the tiles from the last one Ctrl picked, Ctrl+A every
+  tile (Ctrl+Space the focused one); a plain click lets them go, and so does closing the sheet. ⋯ or a right-click on a
+  picked tile while 2+ are picked offers *Up next* · *Soon* (each title's first part, as its single ⋯) · *Finished* ·
+  *Remove…* for all of them, each one store command (`item_menu.fill_picks_menu`, `DragController.send_picks`); a drag
+  from a picked tile carries them all.
 - **It closes** on ✕, Esc and Back (the shell's `EscapeRouter`), a click outside it (G1: the sheet itself, Goal's bar —
   whose click toggles it — its ⋯ menu and the Remove question are not outside), and when Current is left.
 
@@ -119,6 +124,7 @@ class Tile(QWidget):
     # --- the hand and the keys ------------------------------------------------------------------------------- #
     def mousePressEvent(self, event):
         self._press = event.position() if event.button() == Qt.MouseButton.LeftButton else None
+        self._mods = event.modifiers()               # A4: Ctrl / Shift pick at the release (never a drag)
         event.accept()
 
     def mouseMoveEvent(self, event):
@@ -129,10 +135,34 @@ class Tile(QWidget):
             self.sheet.drag(self, event.globalPosition().toPoint())
 
     def mouseReleaseEvent(self, event):
-        self._press = None
+        clicked, self._press = self._press is not None and event.button() == Qt.MouseButton.LeftButton, None
+        event.accept()
+        if not clicked:
+            return
+        mods = getattr(self, "_mods", Qt.KeyboardModifier.NoModifier)       # --- A4: the picks
+        ctrl, shift = mods & Qt.KeyboardModifier.ControlModifier, mods & Qt.KeyboardModifier.ShiftModifier
+        if shift:
+            self.sheet.pick_range(self, add=bool(ctrl))
+        elif ctrl:
+            self.sheet.pick_tile(self)
+        else:
+            self.sheet.clear_picks()                 # a plain click lets them go
+
+    def contextMenuEvent(self, event):
+        """A4: a right-click opens the tile's ⋯ at the hand (the picks' on a picked tile)."""
+        self.sheet.menu(self, event.globalPos())
         event.accept()
 
     def keyPressEvent(self, event):
+        ctrl = event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        if event.key() == Qt.Key.Key_A and ctrl:      # --- A4: Ctrl+A picks every tile, Ctrl+Space this one
+            self.sheet.pick_all()
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Space and ctrl:
+            self.sheet.pick_tile(self)
+            event.accept()
+            return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
             self.sheet.menu(self)
             event.accept()
@@ -182,6 +212,10 @@ class Tile(QWidget):
         rows.TEXT.draw(p, pad, y + th / 2, self.work.title, "row-title", room, rows.c("ink"), dpr=dpr)
         sh = rows.TEXT.metrics("row-sub").height()
         rows.TEXT.draw(p, pad, y + th + sh / 2, self.work.line, "row-sub", room, rows.c("overlay-ink-dim"), dpr=dpr)
+        if self.work.key in self.sheet.picks:          # --- A4: picked, as a picked row is (`row-picked`, the accent)
+            p.setPen(QPen(rows.c("accent"), 1.5))
+            p.setBrush(rows.c("row-picked"))
+            p.drawRoundedRect(r.adjusted(0.75, 0.75, -0.75, -0.75), radius + 2, radius + 2)
         if self.hasFocus():
             p.setPen(QPen(rows.c("accent"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
@@ -287,6 +321,10 @@ class GoalSheet(motion.Overlay):
         self.seeking = None                              # (item id, until): a moved piece the list scrolls to
         self.washed = None                               # the last row washed (tests)
         self.last_menu = None
+        self.picks = set()                               # A4: the picked tiles' keys
+        self._pick_anchor = None                         # ... the one Ctrl picked last (a Shift range starts there)
+        self.question = None                             # ... the picks' *Remove…* question while it is open
+        rows.picks_join(self)
         self.close_button = QToolButton(self)
         self.close_button.setObjectName("goalsheetclose")
         self.close_button.setText(strings.GOAL_SHEET_CLOSE)
@@ -346,6 +384,7 @@ class GoalSheet(motion.Overlay):
             tile = self.tiles.pop(key)
             tile.hide()
             tile.deleteLater()
+        self.picks &= self.tiles.keys()                  # A4: a title gone from Goal lets its pick go
         for w in works:
             tile = self.tiles.get(w.key)
             if tile is None:
@@ -439,6 +478,7 @@ class GoalSheet(motion.Overlay):
     def hideEvent(self, event):
         super().hideEvent(event)
         QApplication.instance().removeEventFilter(self._away)
+        self.clear_picks()                               # A4: the picks go with the sheet
         if self._spring is not None:
             self._spring.stop()
             self._spring = None
@@ -492,13 +532,115 @@ class GoalSheet(motion.Overlay):
             rows.TEXT.draw(p, pad + w + 12, mid, self.goal.line, "row-sub", room, rows.c("overlay-ink-dim"), dpr=dpr)
         p.end()
 
+    # --- A4: the picks ------------------------------------------------------------------------------------------ #
+    @staticmethod
+    def pickable(work):
+        """A title the picks can take: one with a part in Goal, never hato's mix (as on Current)."""
+        return bool(work.pieces) and not is_mix(work)
+
+    def _repaint(self, keys):
+        for key in keys:
+            tile = self.tiles.get(key)
+            if tile is not None:
+                tile.update()
+
+    def pick_tile(self, tile):
+        """Ctrl+click, Ctrl+Space: the tile in the picks, or out of them again (that tile alone repainted)."""
+        if not self.pickable(tile.work):
+            return False
+        self.picks ^= {tile.work.key}
+        self._pick_anchor = tile.work.key
+        self._repaint((tile.work.key,))
+        if self.picks:
+            rows.picks_here(self)
+        return True
+
+    def pick_range(self, tile, add=False):
+        """Shift+click: the tiles from the anchor to this one (Ctrl+Shift adds them); only those that changed repainted."""
+        if not self.pickable(tile.work):
+            return False
+        order = [t.work.key for t in self.order]
+        here = order.index(tile.work.key)
+        there = order.index(self._pick_anchor) if self._pick_anchor in self.tiles else here
+        if self._pick_anchor not in self.tiles:
+            self._pick_anchor = tile.work.key
+        span = {k for k in order[min(here, there):max(here, there) + 1] if self.pickable(self.tiles[k].work)}
+        before = self.picks
+        self.picks = before | span if add else span
+        self._repaint(before ^ self.picks)
+        if self.picks:
+            rows.picks_here(self)
+        return True
+
+    def pick_all(self):
+        """Ctrl+A: every tile the picks can take; only those that changed repainted."""
+        before = self.picks
+        self.picks = {k for k, t in self.tiles.items() if self.pickable(t.work)}
+        self._repaint(before ^ self.picks)
+        if self.picks:
+            rows.picks_here(self)
+        return bool(self.picks)
+
+    def clear_picks(self):
+        if self.picks:
+            before, self.picks = self.picks, set()
+            self._pick_anchor = None
+            self._repaint(before)
+
+    def picked(self):
+        """The picked titles in Goal's order."""
+        return [t.work for t in self.order if t.work.key in self.picks] if self.picks else []
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_A and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.pick_all()                              # A4: Ctrl+A with the sheet itself focused
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def picks_menu(self, tile, at=None):
+        """⋯ / right-click on a picked tile while 2+ are picked: *Up next* · *Soon* · *Finished* · *Remove…* for all
+        of them (no *Goal*: they are there; *Finished* left out for hato's mix, which is never picked). -> the menu."""
+        from app.qt import item_menu
+        _moves, writer = self._writer()
+        n = len(self.picked())
+        m = QMenu(self)
+        m.setObjectName("rowmenu")
+        m.setToolTipsVisible(True)
+        m.aboutToHide.connect(m.deleteLater)
+        item_menu.fill_picks_menu(m, n, "goal", writer, self.send_picks, goal=True)
+        self.last_menu = m
+        m.popup(at if at is not None else tile.more.mapToGlobal(tile.more.rect().bottomLeft()))
+        return m
+
+    def send_picks(self, name):
+        """A picks' ⋯ entry: ONE store command (`DragController.send_picks`) — *Up next* / *Soon* each title's first
+        part, *Finished* / *Remove…* all of each (as the single ⋯); the picks let go. The sheet stays open."""
+        from app.qt import item_menu
+        moves, _writer = self._writer()
+        works = self.picked()
+        if moves is None or not works:
+            return None
+        every = [i for w in works for i in w.item_ids]
+        if name == "remove":
+            self.question = item_menu.ask_remove_picks(self.win, moves, len(works), every, then=self.clear_picks)
+            return self.question
+        ids = [i for w in works for i in w.pieces[0].item_ids] if name in ("top", "soon") else every
+        seq = moves.send_picks(name, ids, len(works), (), "goal")
+        if seq is not None:
+            self.clear_picks()
+        return seq
+
     # --- ⋯ and its actions ------------------------------------------------------------------------------------ #
     def _writer(self):
         moves = getattr(self.win, "moves", None)
         return moves, (moves.writer if moves is not None else None)
 
-    def menu(self, tile):
-        """A tile's ⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown."""
+    def menu(self, tile, at=None):
+        """A tile's ⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown. A4: at `at` (a
+        right-click), else under its ⋯; on a picked tile while 2+ are picked, the picks' own (`picks_menu`)."""
+        if tile.work.key in self.picks and len(self.picks) > 1:
+            return self.picks_menu(tile, at)
         moves, writer = self._writer()
         work = tile.work
         writable = writer is not None and writer.can_write()
@@ -521,7 +663,7 @@ class GoalSheet(motion.Overlay):
             act.triggered.connect(lambda _c=False, n=name, w=work, t=tile: self.pick(w, n, t))
             m.addAction(act)
         self.last_menu = m
-        m.popup(tile.more.mapToGlobal(tile.more.rect().bottomLeft()))
+        m.popup(at if at is not None else tile.more.mapToGlobal(tile.more.rect().bottomLeft()))
         return m
 
     def pick(self, work, name, tile=None):
@@ -613,12 +755,21 @@ class GoalSheet(motion.Overlay):
 
     # --- a drag ----------------------------------------------------------------------------------------------- #
     def drag(self, tile, global_pos):
-        """A press and 6 px on a tile: its first piece lifts (from Goal) and the sheet closes."""
+        """A press and 6 px on a tile: its first piece lifts (from Goal) and the sheet closes. A4: a picked tile carries
+        every pick — the wells take each title's first part, the Finished well every part of each (IK2-6: as the
+        picks' ⋯ *Finished*)."""
         moves, _writer = self._writer()
         work = tile.work
         if moves is None or not work.pieces:
             return False
-        if not moves.begin_by_id(list(work.pieces[0].item_ids), "goal", work.title, global_pos):
+        if work.key in self.picks and len(self.picks) > 1:      # --- A4: a picked tile carries every pick
+            works = self.picked()
+            ids = [i for w in works for i in w.pieces[0].item_ids]     # (Up next / Soon: each title's first part;
+            every = [i for w in works for i in w.item_ids]             # Finished: every part, as their ⋯, IK2-6)
+            if not moves.begin_by_id(ids, "goal", strings.PICKS_TITLES.format(n=f"{len(works):,}"), global_pos,
+                                     many=len(works), every=every):
+                return False
+        elif not moves.begin_by_id(list(work.pieces[0].item_ids), "goal", work.title, global_pos):
             return False
         self.close()
         return True

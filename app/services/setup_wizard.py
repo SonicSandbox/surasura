@@ -321,8 +321,9 @@ def _reads_as(notes):
 
 def anki_look(settings, language):
     """(A worker.) Is Anki open, and which decks has it -> {"open", "say" (None, or what Anki said that the user can
-    act on, as written: a permission prompt, an add-on to update), "decks" [(name, studied cards)], "preselected"
-    [names]} — the saved decks, else the Anki window's first-open pick (every deck with studied cards, largest first:
+    act on, as written: a permission prompt, an add-on to update), "running" (Anki didn't answer: an Anki process is
+    running — AnkiConnect missing — True, none False, can't tell None; §C11), "decks" [(name, studied cards)],
+    "preselected" [names]} — the saved decks, else the Anki window's first-open pick (every deck with studied cards, largest first:
     `anki_window.preselect`) of the decks that read as this language (the draft; AD-5: a Japanese deck is never
     preselected for Chinese). One read: every deck counted once, a few notes of the picked ones (AD-10). Never raises."""
     from app import anki_connect, anki_window
@@ -347,7 +348,20 @@ def anki_look(settings, language):
         except anki_connect.AnkiError as e:
             report = {"ok": False, "error": f"Anki stopped answering: {e}"}       # `read_probe`'s report
     state, said = anki_window.connection(report)
-    return {"open": False, "say": said if state == "problem" else None, "decks": [], "preselected": []}
+    look = {"open": False, "say": said if state == "problem" else None, "decks": [], "preselected": []}
+    if state == "closed" and not report.get("timed_out"):
+        look["running"] = _anki_running()           # §C11: open without AnkiConnect, or closed
+    return look
+
+
+def _anki_running():
+    """(A worker.) Is an Anki running though AnkiConnect didn't answer (§C11)? Connect's own look (`open_anki.running`,
+    the process list): True / False, or None when it can't tell."""
+    try:
+        from app.connect import open_anki
+        return open_anki.running()
+    except Exception:
+        return None
 
 
 def library_rows(settings, language):

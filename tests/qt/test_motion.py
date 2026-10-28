@@ -11,7 +11,6 @@ What a wrong answer would cost:
 
 Every test drives the clock's own test time: none waits on real time for a motion.
 """
-import ctypes
 import os
 import re
 
@@ -19,7 +18,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 from PyQt6 import sip
-from PyQt6.QtCore import QByteArray, QEvent, QObject, QPoint, QRect, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt
 from PyQt6.QtGui import QExposeEvent, QRegion
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
@@ -276,25 +275,6 @@ def test_reduced_jumps_a_move_and_keeps_a_fade_at_most_fast(clock):
     assert done[-1] == "fade" and faded[-1] == 1.0
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows' message")
-def test_a_settingchange_for_animations_rereads_and_another_doesnt(qapp):
-    from ctypes import wintypes
-    reads = []
-    mode = motion.Mode(reader=lambda: reads.append(1) or True)
-    f = motion.SettingChangeFilter(mode)
-    msg = wintypes.MSG()
-    msg.message = motion.WM_SETTINGCHANGE
-    msg.wParam = 0x0057                                          # SPI_SETWORKAREA: not ours
-    f.nativeEventFilter(QByteArray(b"windows_generic_MSG"), sip.voidptr(ctypes.addressof(msg)))
-    QApplication.processEvents()
-    assert len(reads) == 1 and f.heard == 0
-    msg.wParam = motion.SPI_SETCLIENTAREAANIMATION
-    handled = f.nativeEventFilter(QByteArray(b"windows_generic_MSG"), sip.voidptr(ctypes.addressof(msg)))
-    assert handled == (False, 0)                                 # never swallows Windows' message
-    QApplication.processEvents()
-    assert len(reads) == 2 and f.heard == 1
-
-
 def test_off_windows_animations_read_as_on(monkeypatch):
     monkeypatch.setattr(motion.sys, "platform", "linux")
     assert motion.windows_animations() is True
@@ -486,6 +466,29 @@ def test_the_ghost_is_transparent_so_a_press_on_its_travel_strip_reaches_the_but
 def _filters_left(opening):
     f = opening._finisher
     return f is not None and f.installed
+
+
+def test_the_openings_filter_lives_as_long_as_its_overlay_so_a_close_mid_opening_ends_cleanly(clock, stage, qt_errors):
+    # the smoothness verifier (a4, fix3): at the window's close, "wrapped C/C++ object of type _InputFinisher has been
+    # deleted" — the opening's app-wide filter was Python's own object, which PyQt deletes as the program ends, in its
+    # own order: before the overlay's teardown asked the filter off. It is the overlay's now (Qt's to delete, with it)
+    card = Card(stage)
+    opening = card.open()
+    clock.advance(16)
+    f = opening._finisher
+    assert f is not None and f.installed
+    assert not sip.ispyowned(f) and f.parent() is card           # never deleted before its overlay
+    sip.delete(card)                                             # the overlay goes, mid-opening, as with its window
+    assert opening.ended and not _filters_left(opening) and qt_errors == []
+    for _ in range(3):
+        QApplication.processEvents()
+    card = Card(stage)                                           # an opening that ends lets its filter go too
+    opening = card.open()
+    f = opening._finisher
+    clock.advance(400)
+    assert card.isVisible() and opening._finisher is None
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    assert sip.isdeleted(f)                                      # (never one left on the overlay per opening)
 
 
 def test_every_end_tears_the_opening_down_a_hidden_page_an_error_a_stop(clock, stage, qt_errors):

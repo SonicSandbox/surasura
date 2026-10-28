@@ -149,7 +149,7 @@ def test_three_shows_get_one_bulk_answer_first_with_their_counts():
     assert out[0].kind == needs.BULK and out[0].unseen is False
     assert out[0].actions == ("find_all", "keep_all", "remove_all")
     assert out[0].data["labels"]["find_all"] == "Find all missing videos (4 in 3 shows)"
-    assert out[0].data["labels"]["remove_all"] == "Remove all (3)"
+    assert out[0].data["labels"]["remove_all"] == "Forget every missing file (3)"
     assert sorted(out[0].data["item_ids"]) == [1, 2, 4]
     # then the shows in Current's order, each its gone card before its video card
     assert [(e.kind, e.data["work_id"]) for e in out[1:]] == [
@@ -179,7 +179,7 @@ def test_a_drive_offline_is_one_entry_without_remove_and_remove_all_never_counts
     assert off[0].data["item_ids"] == (1, 2, 3)
     # the drive's show has no card of its own; the bulk answer counts only the two other shows' files
     assert [e.data["work_id"] for e in out if e.kind == needs.GONE] == [2, 3]
-    assert sorted(out[0].data["item_ids"]) == [4, 7] and out[0].data["labels"]["remove_all"] == "Remove all (2)"
+    assert sorted(out[0].data["item_ids"]) == [4, 7] and out[0].data["labels"]["remove_all"] == "Forget every missing file (2)"
     # its count falls back on Current's files under it when the caller gives none
     one = needs.entries(view, offline_roots=[root._replace(files=None)])
     assert [e.title for e in one if e.kind == needs.OFFLINE] == ["Drive E: is offline — 3 files"]

@@ -55,7 +55,6 @@ STATE_VERSION = 1
 DEFAULT_SIZE = (1280, 800)
 POLL_MS = 500
 LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.due` says when it's an hour: FOCUS_S apart)
-CHIP_MAX = 24                   # SRC W1b: an arrival's folder name on its chip, at most this long
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
@@ -1319,11 +1318,7 @@ class ShellWindow(QMainWindow):
         # the first frame (`_start_looks`: the store's module stays off the first paint)
         self.looks = None
         self.sources = ()                                 # the last look's sources ({id, path, on, items, reachable})
-        self._folders_of = {}                             # an arrival's first item -> its source folder (None: none)
-        self._folders_asked = set()
-        self._folders_version = 0
-        self._named = {}                                  # an arrival's key -> (the view's arrival, folder, ours)
-        self._named_groups = None                         # (the view's groups, version, the groups shown)
+        self.sources_listed = False                       # ... once a listing of this library landed (none is news)
         self._arrivals_view = None
         self._sources_relay = bridge.Relay(self)
         self._sources_relay.said.connect(self._sources_looked)
@@ -1331,8 +1326,6 @@ class ShellWindow(QMainWindow):
         self._ended_relay.said.connect(self._look_ended)
         self._progress_relay = bridge.Relay(self)
         self._progress_relay.said.connect(self._sources_progress)
-        self._folders_relay = bridge.Relay(self)
-        self._folders_relay.said.connect(self._folders_landed)
         self.look_key = QShortcut(QKeySequence(QKeySequence.StandardKey.Refresh), self)
         self.look_key.setContext(Qt.ShortcutContext.WindowShortcut)
         self.look_key.activated.connect(self.refresh_sources)
@@ -1536,7 +1529,7 @@ class ShellWindow(QMainWindow):
         for name in screens.PAGES:
             page = self.page_widgets.get(name)
             if hasattr(page, "set_view"):
-                moved = page.set_view(view) != "same" or page.list.looks_changed or moved
+                moved = page.set_view(view) not in ("same", "later") or page.list.looks_changed or moved   # a4
         self.subline.setText(view.subline)
         fin = self.tab_buttons["finished"]
         label = strings.TABS["finished"][0]
@@ -1596,8 +1589,8 @@ class ShellWindow(QMainWindow):
         tray = getattr(self, "arrivals_tray", None)
         if tray is None:
             return
-        self._arrivals_view = view                        # --- SRC W1b: each arrival names its folder
-        tray.set_groups(self._named_arrivals(getattr(view, "arrival_groups", ()) or ()))
+        self._arrivals_view = view                        # SRC W1b / A4B-8: each arrival names its folder — the
+        tray.set_groups(getattr(view, "arrival_groups", ()) or ())     # reader's thread named it (`follow_folders`)
         if not arrivals and (tray.isVisible() or motion.opening_of(tray) is not None):
             tray.close()
         if self.arrival_numbers is not None and getattr(view, "language", self.language) == self.language:
@@ -1674,11 +1667,14 @@ class ShellWindow(QMainWindow):
 
     def _forget_picks(self):
         """LM11b AD-5: the picks are keyed p<piece id> (an episode's by its item id), and a store numbers its pieces from
-        1 — each language's, and one rebuilt or reset (a new epoch): none carried onto another library's rows."""
+        1 — each language's, and one rebuilt or reset (a new epoch): none carried onto another library's rows. A4B-2:
+        every list of this window that picks (Current, Finished, Goal's sheet, New arrivals' tray — `rows._PICKERS`)."""
+        from PyQt6 import sip
+        from app.qt import rows
         self._epoch_shown = None
-        lst = getattr(self.page_widgets.get("current"), "list", None)
-        if lst is not None:
-            lst.clear_picks()
+        for picker in list(rows._PICKERS):
+            if not sip.isdeleted(picker) and picker.window() is self:
+                picker.clear_picks()
 
     def _show_switched(self, reader, writer):
         self._reader_shown = reader
@@ -2884,7 +2880,19 @@ class ShellWindow(QMainWindow):
             looks.on_result = self._looks_said
             looks.on_ended = lambda told, why: self._ended_relay.call((told, why))
             looks.on_progress = lambda path, found, shows: self._progress_relay.call((path, found, shows))
+        self._follow_folders(looks)
         return looks
+
+    def _follow_folders(self, looks):
+        """SRC W1b / K7 / A4B-8: each arrival from a source folder names its folder (where its original sits, the
+        looks' `folders(..., detail=True)`) — asked and named by the reader on its own thread, never this one's: a new
+        view at 20,000 arrivals cost ~15 ms here. The reader shown asks these looks from now on (None: no looks)."""
+        reader = self._reader_shown
+        follow = getattr(reader, "follow_folders", None)
+        if follow is None:
+            return
+        asks = getattr(looks, "folders", None)
+        follow(None if asks is None else (lambda ids, then: asks(ids, then, detail=True)))
 
     def _looks_said(self, summary):
         """(The looks' worker.) A look's summary, with the offline lines hidden (round 8 row 54: the seen file, pruned
@@ -2895,11 +2903,8 @@ class ShellWindow(QMainWindow):
         """A language switch: that library's folders, looked at once (its own cadence); the last one's line goes."""
         self._open_looks(writer)
         self.sources = ()
+        self.sources_listed = False
         self.offline_hidden = set()
-        self._folders_of.clear()
-        self._folders_asked.clear()
-        self._named.clear()
-        self._named_groups = None
         self._show_offline()
         # Settings' lines: the language open's, its listing asked for (never "No folders yet" while it is on its way)
         self.sources_seen.emit({"language": self.language, "sources": [], "listing": self.looks is not None})
@@ -2955,6 +2960,7 @@ class ShellWindow(QMainWindow):
         if not isinstance(summary, dict) or summary.get("language", self.language) != self.language:
             return                                        # B2: a language left never paints over the one open
         self.sources = tuple(summary.get("sources") or ())
+        self.sources_listed = True
         self._refresh_ended()                             # round 8 row 45: Refresh's press, ended by its look
         self.offline_hidden = (self.offline_hidden | set(summary.get("kept_lines") or ())) & \
             standing_service.not_back(self.sources)       # round 8 row 54: a folder back lets its ✕ go
@@ -3034,9 +3040,9 @@ class ShellWindow(QMainWindow):
                  if len(gone) == 1 else strings.PHASE_FOLDERS_GONE.format(n=len(gone)))
         self.phase.set_extra(phase_service.ARRIVALS, "gone", "needs" if gone else None, words)
         self.phase.set_needs_asks(bool(gone))
-        if getattr(self, "needs_you", None) is not None:      # (judged: every folder being read was looked at)
-            judged = bool(self.sources) and all(r.get("reachable") is not None for r in self.sources
-                                                if r.get("on", True))
+        if getattr(self, "needs_you", None) is not None:      # (judged: every folder being read was looked at —
+            judged = self.sources_listed and all(r.get("reachable") is not None   # none read, once listed: K1's
+                                                 for r in self.sources if r.get("on", True))   # card waits on no look)
             self.needs_you.gone_in(gone, self.language, judged=judged)
 
     def moves_saving(self, on):
@@ -3049,55 +3055,6 @@ class ShellWindow(QMainWindow):
         name = os.path.basename(os.path.normpath(path)) or path
         self.say(strings.SOURCES_READING.format(name=name, found=found, shows=shows))
 
-    def _named_arrivals(self, groups):
-        """Each arrival from a source folder names its folder on its chip, its first item's asked once on the looks'
-        worker; the view's own objects back while nothing is named (the tray repaints only what moved, S19)."""
-        if self.looks is None or not groups:
-            return groups
-        want = [a.item_ids[0] for g in groups for a in g.rows if a.item_ids and a.item_ids[0] not in self._folders_asked]
-        if want:
-            self._folders_asked.update(want)
-            language = self.language
-            self.looks.folders(want, lambda found: self._folders_relay.call((language, found)))
-        held = self._named_groups
-        if held is not None and held[0] is groups and held[1] == self._folders_version:
-            return held[2]
-        out, moved = [], False
-        for g in groups:
-            rows = tuple(self._named_arrival(a) for a in g.rows)
-            if any(r is not a for r, a in zip(rows, g.rows)):
-                moved = True
-                g = g._replace(rows=rows)
-            out.append(g)
-        shown = tuple(out) if moved else groups
-        self._named_groups = (groups, self._folders_version, shown)
-        return shown
-
-    def _named_arrival(self, a):
-        folder = self._folders_of.get(a.item_ids[0]) if a.item_ids else None
-        if not folder:
-            return a
-        kept = self._named.get(a.key)
-        if kept is not None and kept[0] is a and kept[1] == folder:
-            return kept[2]
-        name = os.path.basename(os.path.normpath(folder)) or folder
-        chip = name if len(name) <= CHIP_MAX else name[:CHIP_MAX - 1] + "…"
-        ours = a._replace(chip=chip, source="disk",                  # a folder's chip in the disk's ink, never hato's
-                          accessible=f"{a.accessible} · {strings.SOURCES_FROM.format(name=name)}")
-        self._named[a.key] = (a, folder, ours)
-        return ours
-
-    def _folders_landed(self, said):
-        """The arrivals' folders read: the tray shown again when one was named (another language's answer dropped:
-        item ids repeat across stores)."""
-        language, found = said if isinstance(said, tuple) else (None, said)
-        if not isinstance(found, dict) or language != self.language:
-            return
-        named = {k: v for k, v in found.items() if v}
-        self._folders_of.update(found)
-        if named and self._arrivals_view is not None:
-            self._folders_version += 1
-            self._show_arrivals(self._arrivals_view)
     # --- end SRC W1b
 
     # --- showing, closing, remembering -------------------------------------------------------------------- #
@@ -3456,7 +3413,8 @@ def library_for(language, settings, freeze_gc=False):
         cache_file=library_reader.cache_path(language), freeze_gc=freeze_gc,
         watch=library_lookout,                              # W3.2 B: woken by the bell + the tree watch (IK0-5)
         connect=feed.latest,                                # P4.1 L2: the stones from the status line's last look
-        play=play.Looks(language))                          # row 55: ▶ only where its file is found
+        play=play.Looks(language),                          # row 55: ▶ only where its file is found
+        coalesce=True)                                      # a4: a burst of commits is a few views a second
     _wake_on_feed(feed, reader)                             # P4.1 L2
     writer = moves.Writer(_opener, language, journal_file=moves.journal_path(language), numbers=numbers,
                           words=strings.MOVE_WORDS,
@@ -3577,11 +3535,12 @@ def main(argv=None):
     if not start_gate.gate(app):                      # W3.5: the 2.x import, the refusals, the merge — before the store
         instance.release()
         return 0
-    # W3.2 P0: the library and its writer (nothing read yet). The reader's collector freeze stays off (W2.2's A-18;
-    # M4.1 may measure it again): frozen, a library a language switch let go would never be freed
+    # W3.2 P0: the library and its writer (nothing read yet). A4 P-gil: the reader freezes Python's collector after each
+    # view (a full collection walking the library held the window 40-75 ms at 20,000 files); its stop thaws it, so a
+    # library a language switch let go is still freed (`library_reader`'s *Python's collector*)
     restarted = restart_mark()                        # alpha 4 M6: *Restart now*'s start (`relaunch`)
     try:
-        services = open_services()
+        services = open_services(freeze_gc=True)
         services.restarted = restarted
         failed = None
     except Exception as e:                            # (AD0-12) the window opens without its library, and says so

@@ -203,6 +203,31 @@ def test_asks_while_a_decode_is_under_way_wait_for_that_one(decodes):
     assert len(decodes) == 1
 
 
+def test_a_window_closed_while_a_logo_decodes_never_leaves_the_next_window_without_it(monkeypatch):
+    """A window that closes while its logo still decodes drops that answer (`bridge.drop_answers`: nothing lands in a
+    widget gone). The next window asking for the same logo must still get it: the phase strip's circles otherwise show
+    no logo for the rest of the session (a4: the tests' `logos_in` waited 60 s for logos that never came after a 20,000
+    file window closed quickly)."""
+    import threading as _t
+    from app.qt import bridge
+    gate = _t.Event()
+    real = logos._decode
+
+    def slow(name, px, dpr):
+        gate.wait(10.0)
+        return real(name, px, dpr)
+    monkeypatch.setattr(logos, "_decode", slow)
+    first = []
+    logos.logo("anki_miner", 22, first.append, dpr=1.0)      # the first window's strip asks
+    bridge.drop_answers()                                     # ... and closes before the decode ends
+    gate.set()
+    later = []
+    logos.logo("anki_miner", 22, later.append, dpr=1.0)      # the next window's strip asks
+    assert wait_until(lambda: later, timeout=10.0), "the next window's logo never came"
+    assert later[0] is not None and not later[0].isNull()
+    assert first == []                                        # the closed window's answer stayed dropped
+
+
 # --- a file missing or unreadable ---------------------------------------------------------------------------------- #
 def test_a_missing_or_unreadable_file_answers_none_never_a_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(logos, "folder", lambda: str(tmp_path))

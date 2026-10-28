@@ -32,16 +32,24 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
   (`stop`), the old folder stops being read through the writer (`stop_reading`: the toast's Undo, Ctrl+Z), else the bar
   says why and the card stays. *Stop reading it*: the writer's `stop_reading` (one Undo; nothing on disk moves, every
   episode stays). Either's save, and its Undo, lists the folders again (`drag._sources_stopped`): the card goes, or comes
-  back. *Keep waiting*: the shell's `keep_waiting_for` (the offline line's dismissal, kept in the seen file).
+  back. *Keep waiting*: the shell's `keep_waiting_for` (the offline line's dismissal, kept in the seen file). B14: the
+  looks let the folder go first, and read it again on the stop's Undo (`settings_sources.give_stop`, Settings' rule).
+- **A folder's files, or the library's, mostly gone** (K3 / K1, Kura's cards): *Choose a folder…* matches each file at
+  its place under the folder picked (`needs.match_tree`, a worker) and points them all back in ONE writer command
+  (`relink_many`: one toast, one Undo; what the store couldn't take said in the bar). The library's card waits for
+  every folder's look (`settled`: the shell's judged summary) and offers *Start fresh* — Settings' own sheet, then
+  `SourceLooks.fresh` (the old library backed up in the trash, never deleted).
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
+import collections
 import os
+import time
 
-from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QPainterPath, QPen, QPixmap, QPolygonF
-from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout,
-                             QWidget)
+from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton,
+                             QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
 from app.qt import bridge, strings, style, toast
@@ -57,7 +65,16 @@ _CRACK = ((13, 1.6), (11.6, 4.6), (13.4, 6.6))
 _STONES = {}                                # (size, dpr) -> QPixmap: drawn once each
 LINES_SHOWN = 12                            # a card's per-file lines shown (*and N more*: a 300-file show is no
 #                                             1,000 widgets; the card's own answers still count every line — IK-L1-4)
+FOLDER_LINES_SHOWN = 3                      # ... on a folder's or the library's card (K3 / K1): its own answers
+#                                             stay in sight above them, and *and N more* says the rest
 drawn = [0]                                 # stones drawn (tests)
+BUILT_AT_ONCE = 30                          # alpha 4 B (Mattias: 3,000 cards opened in ~10 s, frozen): the cards built
+#                                             as the page opens, and again each time it is scrolled near its end
+SLICE_S = 0.004                             # ... those built a slice at a time, off idle time (one card a slice
+#                                             at least: ~5 ms each under the style sheet, its layout ~20 ms more)
+FIRST_FRAME = 2                             # the cards built in the press's own frame: the page is there at once, the
+#                                             rest of the first ones follow on idle time
+NEAR_END = 1.5                              # viewports from the end that ask for the next cards
 
 
 def stone_size(factor):
@@ -137,8 +154,56 @@ class _Card(QWidget):
         p.end()
 
 
+class _Words(QLabel):
+    """A card's words. Its height for a width is worked out once per width (alpha 4 B: under the app's style sheet a
+    wrapping label measures its text again at every layout pass, and every pass asks every card — 3,000 cards made each
+    pass ~0.6 ms a card, the page frozen while it grew); its words never change once made."""
+
+    def __init__(self, text, parent):
+        super().__init__(text, parent)
+        self._hfw = {}
+
+    def heightForWidth(self, width):
+        h = self._hfw.get(width)
+        if h is None:
+            if len(self._hfw) > 8:
+                self._hfw.clear()
+            h = self._hfw[width] = super().heightForWidth(width)
+        return h
+
+    def changeEvent(self, event):
+        self._hfw.clear()                       # (a font or style change measures it again)
+        super().changeEvent(event)
+
+
+class _More(QToolButton):
+    """A card's ⋯ (alpha 4 D2): the arrivals tray's ⋯ square, painted by the tray's own rule (`arrivals._paint_square`,
+    one look for a ⋯ beside buttons)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        side = round(theme.size("icon-square", style.current()[1]))
+        self.setFixedSize(side, side)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self.update()
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        self.update()
+
+    def paintEvent(self, _event):
+        from app.qt.arrivals import _paint_square
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        _paint_square(p, self.rect(), "more", self.underMouse() or self.isDown())
+        p.end()
+
+
 def _label(text, name, parent, wrap=True):
-    lab = QLabel(text, parent)
+    lab = _Words(text, parent)
     lab.setObjectName(name)
     lab.setTextFormat(Qt.TextFormat.PlainText)
     lab.setWordWrap(wrap)
@@ -150,16 +215,23 @@ def _label(text, name, parent, wrap=True):
 # take it away, one press per card (A-5: the other answer pressed meanwhile asks nothing), then its presses that leave
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
-           "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting")
-PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "mine_text_only", "open_logs", "save_logs",
+           "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
+           "start_fresh")
+PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs",
                      "open_anki")
 
 
 class NeedsCards(QWidget):
     """The page's cards, in the entries' order; a card is rebuilt only when its own entry (or its find results, or its
     look running) changed (S19), and only while the page shows (C1: entries given while it is hidden are built when it
-    shows, or when a card is asked for). `action(name, entry, line)`: a button pressed (`line` None for the card's own)."""
+    shows, or when a card is asked for). `action(name, entry, line)`: a button pressed (`line` None for the card's own).
+
+    Alpha 4 B: one long page, built as it is read — the first `BUILT_AT_ONCE` cards at once, the next ones each time
+    the page is scrolled near its end (`scrolled`), a slice of `SLICE_S` at a time off idle time (`_grow`), never one
+    long step; a card asked for (`card`, `reveal`) is built with those before it. The cards built are always the
+    entries' first ones, each built once."""
     action = pyqtSignal(str, object, object)
+    more = pyqtSignal(object, object)           # alpha 4 D2: a card's ⋯ pressed (entry, the ⋯)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -167,13 +239,18 @@ class NeedsCards(QWidget):
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(0, 0, 0, 0)
         self.box.setSpacing(theme.SPACING["settings-card-gap"])
-        self.cards = {}                         # key -> (signature, widget)
+        self.cards = {}                         # key -> (signature, widget): the entries' first `len(order)`
         self.order = []
         self.builds = 0                         # cards built (tests: S19)
         self.epoch = 0                          # bumped when the callables change (`NeedsYou.rewire`): every card again
         self.shown = lambda name, entry, line=None: True
         self.adopt = lambda button, name, entry: None   # a button made again while its press is live: it shows it
+        self.has_more = lambda entry: False     # alpha 4 D2: whether a card shows a ⋯ (`NeedsYou.more_entries`)
         self._owed = None                       # C1: the entries given while the page is hidden, built when it shows
+        self._want = ()                         # alpha 4 B: every entry, in order (built or not)
+        self._found, self._looking = {}, ()
+        self.limit = BUILT_AT_ONCE              # ... how many of them are to be built
+        self._growing = False                   # ... a slice is due on idle time
         self.box.addStretch(1)
 
     def show_entries(self, entries, found=None, looking=()):
@@ -185,28 +262,34 @@ class NeedsCards(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.flush()
+        self.flush(now=FIRST_FRAME)             # alpha 4 B: the page in the press's frame, its cards right after
 
-    def flush(self):
-        """The cards the entries given while hidden owe, built now (the page shown, or a card asked for)."""
+    def flush(self, now=BUILT_AT_ONCE):
+        """The cards the entries given while hidden owe, built now (the page shown, or a card asked for) — at most
+        `now` of them at once, the rest on idle time."""
         owed, self._owed = self._owed, None
         if owed is not None:
-            self._build(*owed)
+            self._build(*owed, now=now)
 
-    def _build(self, entries, found, looking):
-        found = found or {}
+    def _sig(self, e):
+        # seen or not is the tab's count only (no card shows it): opening the page builds no card again (S19)
+        return e._replace(unseen=False), self._found.get(e.key), e.key in self._looking, self.epoch
+
+    def _build(self, entries, found, looking, now=BUILT_AT_ONCE):
+        self._want, self._found, self._looking = tuple(entries), found or {}, looking
         keep, order, built = {}, [], self.builds
-        for e in entries:
-            # seen or not is the tab's count only (no card shows it): opening the page builds no card again (S19)
-            sig = (e._replace(unseen=False), found.get(e.key), e.key in looking, self.epoch)
+        for e in self._want[:self.limit]:       # alpha 4 B: the first ones; the rest as the page is scrolled
+            sig = self._sig(e)
             old = self.cards.get(e.key)
             if old is not None and old[0] == sig:
                 keep[e.key] = old
             else:
+                if self.builds - built >= now:
+                    break                       # (many to build: the rest in slices, `_grow` — a rewire, an open)
                 if old is not None:
                     old[1].setParent(None)
                     old[1].deleteLater()
-                keep[e.key] = (sig, self._card(e, found.get(e.key), e.key in looking))
+                keep[e.key] = (sig, self._card(e, self._found.get(e.key), e.key in self._looking))
                 self.builds += 1
             order.append(e.key)
         for key, (_sig, w) in self.cards.items():
@@ -225,21 +308,77 @@ class NeedsCards(QWidget):
             w = self.cards[key][1]
             if w.isHidden():
                 w.show()
+        if len(self.order) < min(self.limit, len(self._want)) and not self._growing:
+            self._growing = True                # cut short above: the rest of what was built, in slices
+            QTimer.singleShot(0, self._grow)
+        elif len(self._want) > len(self.order):
+            QTimer.singleShot(0, self.scrolled)     # (a page shorter than its view asks for the next ones by itself)
+
+    def _area(self):
+        area = self.parentWidget().parentWidget() if self.parentWidget() is not None else None
+        return area if isinstance(area, QScrollArea) else None
+
+    def scrolled(self, *_args):
+        """Alpha 4 B: the page scrolled (or its length changed) — near its end with cards still to build, the next
+        `BUILT_AT_ONCE` are built, a slice at a time on idle time."""
+        if self._growing or len(self.order) >= len(self._want) or not self.isVisible():
+            return
+        area = self._area()
+        if area is not None:
+            bar = area.verticalScrollBar()
+            if bar.maximum() - bar.value() > NEAR_END * area.viewport().height():
+                return
+        self.limit = max(self.limit, len(self.order) + BUILT_AT_ONCE)
+        self._growing = True
+        QTimer.singleShot(0, self._grow)
+
+    def _grow(self, upto=None):
+        """The next cards built in order, until `self.limit` (or `upto`, all at once: a card asked for) — on idle time,
+        `SLICE_S` at a time."""
+        from PyQt6 import sip
+        if sip.isdeleted(self):
+            return
+        self._growing = False
+        start = time.perf_counter()
+        target = min(len(self._want), upto if upto is not None else self.limit)
+        while len(self.order) < target:
+            e = self._want[len(self.order)]
+            w = self._card(e, self._found.get(e.key), e.key in self._looking)
+            self.cards[e.key] = (self._sig(e), w)
+            self.box.insertWidget(len(self.order), w)
+            self.order.append(e.key)
+            self.builds += 1
+            w.show()
+            if upto is None and time.perf_counter() - start > SLICE_S and len(self.order) < target:
+                self._growing = True
+                QTimer.singleShot(0, self._grow)
+                return
+        self.limit = max(self.limit, len(self.order))
+
+    def settled(self):
+        """Whether every card due is built (none waiting on idle time)."""
+        return self._owed is None and not self._growing and len(self.order) >= min(self.limit, len(self._want))
 
     def card(self, key):
         self.flush()
         got = self.cards.get(key)
+        if got is None:                         # alpha 4 B: not built yet — built now, with those before it
+            at = next((i for i, e in enumerate(self._want) if e.key == key), None)
+            if at is None:
+                return None
+            self._grow(upto=at + 1)
+            got = self.cards.get(key)
         return got[1] if got is not None else None
 
     def reveal(self, key):
         """Card `key` scrolled into view in the page's scroll area (built first if it was owed)."""
         card = self.card(key)
-        area = self.parentWidget().parentWidget() if self.parentWidget() is not None else None
-        if card is not None and isinstance(area, QScrollArea):
+        area = self._area()
+        if card is not None and area is not None:
             area.ensureWidgetVisible(card, 0, round(theme.SPACING["settings-card-gap"]))
 
     def buttons(self, key=None):
-        """The shown buttons (of one card, or all) -> [QPushButton]."""
+        """The shown buttons (of one card, or of every card built) -> [QPushButton]."""
         self.flush()
         cards = [self.card(key)] if key is not None else [w for _s, w in self.cards.values()]
         return [b for c in cards if c is not None for b in c.findChildren(QPushButton)]
@@ -275,7 +414,8 @@ class NeedsCards(QWidget):
         if e.say:
             box.addWidget(_label(e.say, "sheetline", card))
         by_line = dict(zip((ln.key for ln in e.lines), results or ())) if results else {}
-        for ln in e.lines[:LINES_SHOWN]:
+        shown = FOLDER_LINES_SHOWN if e.kind in (service.FILES_FOLDER, service.LIBRARY_GONE) else LINES_SHOWN
+        for ln in e.lines[:shown]:
             row = QHBoxLayout()
             row.setSpacing(round(8 * f))
             words = QVBoxLayout()
@@ -296,8 +436,8 @@ class NeedsCards(QWidget):
                 if self.shown(name, e, ln):
                     row.addWidget(self._button(card, name, e, ln))
             box.addLayout(row)
-        if len(e.lines) > LINES_SHOWN:
-            box.addWidget(_label(strings.NEEDS_MORE_LINES.format(n=f"{len(e.lines) - LINES_SHOWN:,}"), "sheetline",
+        if len(e.lines) > shown:
+            box.addWidget(_label(strings.NEEDS_MORE_LINES.format(n=f"{len(e.lines) - shown:,}"), "sheetline",
                                  card))
         acts = QHBoxLayout()
         acts.setSpacing(round(8 * f))
@@ -318,6 +458,15 @@ class NeedsCards(QWidget):
                 b.setEnabled(False)
             acts.addWidget(b)
         acts.addStretch(1)
+        if self.has_more(e):                        # alpha 4 D2: *Not now* · *Stop asking*, tucked in its ⋯
+            more = _More(card)
+            more.setProperty("action", "more")
+            more.setAccessibleName(strings.NEEDS_MORE_NAME.format(title=e.title))
+            more.setToolTip(strings.NEEDS_MORE_TIP)
+            more.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            more.clicked.connect(lambda _c=False, en=e, m=more: self.more.emit(en, m))
+            card.more = more
+            acts.addWidget(more)
         box.addLayout(acts)
         return card
 
@@ -382,6 +531,29 @@ def match_folder(folder, lines):
     return out
 
 
+def _matched_inside(folder, base, lines, tree, data):
+    """(A worker.) *Choose a folder…*'s match — `needs.match_tree` for a folder's or the library's card, `match_folder`
+    for a show's — split by the library folder (`data`): (the pairs inside it, how many matched outside it). The store
+    points an item only at a file in the library folder (`library_store.library_rel`): one outside is never handed to
+    the writer (A4B-4)."""
+    from app import library_store
+    pairs = service.match_tree(folder, base, lines) if tree else match_folder(folder, lines)
+    inside = [(ln, path) for ln, path in pairs if library_store.library_rel(data, path) is not None]
+    return inside, len(pairs) - len(inside)
+
+def _find_none(answer):
+    """Is *Find its new folder…*'s refusal T6 option 2's (a folder holding none of the gone folder's files, never read:
+    `source_looks.FIND_NONE`)? It is said as the looks wrote it, never wrapped in *can't be read*. The looks' flag
+    (`none`) when they give one; until then the refusal's shape — FIND_NONE's words around whatever folder the looks
+    wrote (their spelling of the path may differ from the picker's: A4B-9), never the sentence formatted here."""
+    if answer.get("none") is not None:
+        return bool(answer["none"]) and bool(answer.get("refused"))
+    from app.services import source_looks
+    refused = answer.get("refused")
+    head, _folder, tail = source_looks.FIND_NONE.partition("{folder}")
+    return isinstance(refused, str) and len(refused) > len(head) + len(tail) and refused.startswith(head) and \
+        refused.endswith(tail)
+
 class NeedsYou(QObject):
     """The page's entries and their actions, for one window (`win`: the shell)."""
     changed = pyqtSignal()                       # new entries painted (the tab's count follows)
@@ -391,6 +563,9 @@ class NeedsYou(QObject):
         self.win = win
         self.page = page
         self.language = language
+        switched = getattr(win, "library_switched", None)
+        if switched is not None:                 # fix2: the library shown — it kept the one it opened with, so after a
+            switched.connect(self._switched)     # switch its cards came from the language left's folder and seen file
         self.entries = ()
         self.found = {}                          # entry key -> find_videos' results
         self.looking = set()
@@ -405,6 +580,12 @@ class NeedsYou(QObject):
         self._asked = 0
         self._running = False
         self._again = False
+        self._hidden_now = {}                    # alpha 4 D2: key -> the day *Not now* hid it (None: *Stop asking*) —
+        #                                          off the page at the press, before its write lands
+        self._landed = {}                        # A4A-11: key -> the first gather that reads its write (from it on
+        #                                          the seen file alone says whether it is hidden)
+        self._seen_jobs = collections.deque()    # A4A-8: the page's seen-file writes, one after another as pressed
+        self.last_menu = None
         reader = getattr(win.services, "library", None)
         opener = getattr(reader, "opener", None)
         # what the entries are read from, each on a worker (tests replace them)
@@ -416,7 +597,7 @@ class NeedsYou(QObject):
         self.pick_file = lambda title, folder: QFileDialog.getOpenFileName(self.win, title, folder)[0]
         self.pick_folder = lambda title, folder: QFileDialog.getExistingDirectory(self.win, title, folder)
         self.pick_save = lambda title, name: QFileDialog.getSaveFileName(self.win, title, name, "Zip (*.zip)")[0]
-        # P4.1's hooks (`mine_text_only(entry, line)`, `make_cards(entry)`): hidden until set
+        # P4.1's hook (`make_cards(entry)`): hidden until set
         self.hooks = {}
         # D1's *Make cards* (each on a worker; tests replace them): Settings › Anki's switch, then the store's log
         self.switch_on = _settings_switch_on
@@ -431,18 +612,41 @@ class NeedsYou(QObject):
                               "open_anki": _connect_callable("open_anki", "for_you")}     # A3W-6
         self.cards = page.cards
         self.cards.shown = self.available
+        self.cards.has_more = lambda e: e.kind not in service.NO_LATER
+        self.cards.more.connect(self.more_menu)
         self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry, b.property("line")),
                                                                win=self.win)
         self.cards.action.connect(self.act)
         heard = getattr(win, "bridge", None)
         if heard is not None and hasattr(heard, "settings_written"):
             heard.settings_written.connect(self._settings_written)
+        self._day = QTimer(self)                 # alpha 4 D2: *Not now*'s cards come back the next day
+        self._day.setSingleShot(True)
+        self._day.timeout.connect(self._new_day)
+        self._arm_day()
+
+    def _arm_day(self):
+        now = time.localtime()
+        left = 86400 - (now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec)
+        self._day.start((left + 2) * 1000)
+
+    def _new_day(self):
+        """Midnight: what *Not now* hid yesterday is asked again (the next gather finds it, if it still needs you)."""
+        today = service._today()
+        self._hidden_now = {k: d for k, d in self._hidden_now.items() if d is None or d >= today}
+        self._arm_day()
+        if self._alive():
+            self.refresh()
 
     # --- what comes in ------------------------------------------------------------------------------------------- #
     def _settings_written(self, keys):
         """Connect's switch written (setup's page 5, Settings › Anki): D1's line asks again in its words."""
         if "connect_enabled" in tuple(keys or ()) and self._alive():
             self.refresh()
+
+    def _switched(self):
+        """The shell showed another language's library (`library_switched`): its cards are that library's from here."""
+        self.language = getattr(self.win, "language", None) or self.language
 
     def view_in(self, view):
         old, self.view = self.view, view
@@ -509,14 +713,25 @@ class NeedsYou(QObject):
         if first is not None:
             self.cards.reveal(first.key)
 
+    def shown_entries(self):
+        """The entries on the page: the gather's, less those *Not now* / *Stop asking* hid since (alpha 4 D2: off at
+        once, before the write lands and the next gather leaves them out by itself) — a line for many whose cards are
+        all hidden goes with them."""
+        if not self._hidden_now:
+            return self.entries
+        hid = self._hidden_now
+        return tuple(e for e in self.entries if e.key not in hid and not (
+            e.kind == service.BULK and (e.data or {}).get("keys") and all(k in hid for k in e.data["keys"])))
+
     def counts(self):
         """(listed, unseen) for the tab: the entries but the bulk answer, and the unseen ones (P1.2-1)."""
-        return sum(1 for e in self.entries if e.kind != service.BULK), service.badge(self.entries)
+        shown = self.shown_entries()
+        return sum(1 for e in shown if e.kind != service.BULK), service.badge(shown)
 
     def opened(self):
         """The page was shown: its unseen entries stop counting (still listed): the seen file and Connect's
         `seen_at`, on a worker; read again only when something was marked."""
-        unseen = [e for e in self.entries if e.unseen and e.kind != service.FAILURE]
+        unseen = [e for e in self.shown_entries() if e.unseen and e.kind != service.FAILURE]
         if not unseen:
             return
         lang = self.language
@@ -538,6 +753,7 @@ class NeedsYou(QObject):
                                                                  self.find_offline, self.read_settings)
         find_miner = self.find_miner
         gone_folders = self.gone_folders
+        library = self._library()
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
 
         def gather():
@@ -546,6 +762,10 @@ class NeedsYou(QObject):
             rels = [e.rel_path for r in view.rows for e in r.episodes if e.rel_path] if view.mode == "store" else []
             roots = find_offline(lang, rels, data_dir) if rels else []
             asks = read_asks()
+            try:                                    # IK-10: the answers are this library's (a new one asks again)
+                service.keep_to_library(lang, library)
+            except Exception as e:
+                print(f"Needs you: the seen file wasn't tied to its library: {e!r}")
             try:                                    # W3.2 H (W5): the keys whose trouble is gone leave the seen file,
                 service.prune(lang, view, offline_roots=roots, connect=connect,   # judged by what was read (no ask
                               asks=asks or None, gone_folders=gone_judged)       # read: a failed read looks the same)
@@ -555,9 +775,20 @@ class NeedsYou(QObject):
                                   service.read_answered(lang), offers=service.read_offers(lang),
                                   cards_on=settings_manager.connect_on(settings),    # B2-8: the one rule
                                   miner_found=bool(find_miner(settings)),     # row 13: D1's line waits for it
-                                  gone_folders=gone_folders or ())
+                                  gone_folders=gone_folders or (),
+                                  hidden=service.read_hidden(lang),           # alpha 4 D2: Not now, Stop asking
+                                  settled=gone_judged is not None)            # K1: every folder had its look
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
+
+    def _library(self):
+        """The library's own id (`LibraryReader.store_id`: its store's, new with a reinstall or *Start fresh*), or
+        None while it isn't known (no read yet, a reader without one)."""
+        store_id = getattr(getattr(self.win.services, "library", None), "store_id", None)
+        try:
+            return store_id() if callable(store_id) else None
+        except Exception:
+            return None
 
     def _gather_failed(self, info):
         self._running = False
@@ -577,7 +808,9 @@ class NeedsYou(QObject):
             self.refresh()
         if asked != self._asked:
             return
-        if entries == self.entries:
+        before = self.shown_entries() if self._landed else None
+        moved = self._let_go(asked) and self.shown_entries() != before    # A4A-11: a card only the window still hid
+        if entries == self.entries and not moved:
             return                                   # the same entries: nothing repainted (N9)
         self.entries = entries
         keys = {e.key for e in entries}
@@ -586,10 +819,20 @@ class NeedsYou(QObject):
         if self.win.current_tab() == "needs" and self.win.isActiveWindow():
             self.opened()                            # looked at as it came
 
+    def _let_go(self, asked):
+        """(A4A-11) The keys whose write this gather read: the seen file says from now on whether they are hidden (a
+        *Stop asking* goes with its trouble, N5, and its card asks again when the trouble comes back, this session
+        too). -> whether any went."""
+        done = [k for k, n in self._landed.items() if asked >= n]
+        for k in done:
+            del self._landed[k]
+            self._hidden_now.pop(k, None)
+        return bool(done)
+
     def _paint(self):
         if not self._alive():
             return
-        self.page.show_entries(self.entries, self.found, self.looking)
+        self.page.show_entries(self.shown_entries(), self.found, self.looking)
         self.changed.emit()
 
     def rewire(self):
@@ -617,6 +860,8 @@ class NeedsYou(QObject):
             return getattr(self.win, "moves", None) is not None
         if name == "find_folder":                    # ... and the looks read the folder picked
             return getattr(self.win, "moves", None) is not None and getattr(self.win, "looks", None) is not None
+        if name == "start_fresh":                    # K1: the looks start the fresh library (`SourceLooks.fresh`)
+            return callable(getattr(getattr(self.win, "looks", None), "fresh", None))
         return True
 
     def act(self, name, entry, line=None):
@@ -669,14 +914,15 @@ class NeedsYou(QObject):
         return self.data_dir or path_utils.get_data_path(self.language)
 
     def _give(self, text, ids, command, toast_it=True, told=None):
-        """A write through the drag controller's tickets (its toast's Undo, Ctrl+Z) -> its number, or None. `told`:
-        the ticket's events ("saved", "refused", "undone", "ended": `drag.Ticket`)."""
+        """A write through the drag controller's tickets (its toast's Undo, Ctrl+Z) -> its number, or None.
+        `told(ticket, event)`: the ticket's events ("saved", "refused", "undone", "ended": `drag.Ticket`)."""
         from app.qt import drag
         moves = self.win.moves
         if moves is None or moves.refused() is not None:
             return None
         ticket = drag.Ticket(text, (), ids)
-        ticket.told = told
+        if told is not None:
+            ticket.told = lambda event: told(ticket, event)
         return moves._give(ticket, command, toast=toast_it)
 
     def _offline_ids(self):
@@ -749,10 +995,17 @@ class NeedsYou(QObject):
     def _do_choose_folder(self, entry, _line):
         """*Choose a folder…*: one press from the click to the toast (round 8 row 45) — its arc turns while the folder
         is looked for (a drive may be offline: its stat can take a while), and again once one is chosen, while its
-        files are matched; a second click meanwhile does nothing."""
+        files are matched; a second click meanwhile does nothing. A folder's or the library's card (K3 / K1) matches
+        each file at its place under the folder picked, then by its name, in the folders inside it too
+        (`needs.match_tree`); a show's card, by name or episode number in that folder (`match_folder`). Either way
+        they are pointed at all at once (`_relink_many`: one change, one Undo — IK2-2). The match lands on the window
+        it was pressed in: closed, or another library shown since (ids repeat across stores), nothing is given
+        (A4B-5)."""
         data = self._data()
         start = os.path.join(data, *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
         lines = tuple(entry.lines)
+        tree = entry.kind in (service.FILES_FOLDER, service.LIBRARY_GONE)
+        language = getattr(self.win, "language", None)
         p = qpress.begin(self._control("choose_folder", entry), self._press_key("choose_folder", entry), win=self.win)
         if p is None:
             return
@@ -761,8 +1014,11 @@ class NeedsYou(QObject):
             if p.live():
                 qpress.end(p, self.win, failed=why is not None, why=why)
 
+        def here():
+            return self._alive() and getattr(self.win, "language", None) == language
+
         def pick(there):                            # looked for on a worker: a drive may be offline (IK-L1-5)
-            if not self._alive():
+            if not here():
                 ended()
                 return
             folder = self.pick_folder(strings.NEEDS_CHOOSE_FOLDER_TITLE, start if there else data)
@@ -770,25 +1026,54 @@ class NeedsYou(QObject):
                 ended()
                 return
 
-            def matched(pairs):
+            def matched(found):
+                if not self._alive():
+                    return                          # (the window closed: nothing to say it in)
                 ended()
-                self._relink_all(pairs, len(lines))
+                if here():
+                    self._relink_many(found, len(lines), folder, tree)
 
             def broke(info):
                 ended(info[0] if info else None)
                 self._failed(info)
-            bridge.run_in_worker(match_folder, folder, lines, then=matched, failed=broke)
+            bridge.run_in_worker(_matched_inside, folder, (entry.data or {}).get("folder", ""), lines, tree, data,
+                                 then=matched, failed=broke)
         bridge.run_in_worker(os.path.isdir, start, then=pick, failed=lambda _info: pick(False))
 
-    def _relink_all(self, pairs, n):
-        if not pairs:
-            self._say(strings.NEEDS_RELINKED_NONE)
+    def _relink_many(self, found, n, folder, tree):
+        """`found` = (the pairs matched inside the library folder, how many more were matched outside it): every one
+        inside pointed at in ONE writer command (`Writer.relink_many`: one ticket, one toast with Undo, one Ctrl+Z —
+        never one per file; K3 / K1, a show's card too: IK2-2). Once saved, what the store couldn't take (`change.left`:
+        another item's file, no file there…) is said in the bar, how many and why, with those outside the library
+        folder; all of them outside, nothing is given and the bar says why (A4B-4: the store can only point at a file
+        in the library folder); none taken, the bar says so."""
+        pairs, outside = found
+        if not pairs and not outside:
+            self._say(strings.NEEDS_RELINKED_NONE_TREE if tree else strings.NEEDS_RELINKED_NONE)
             return
+        if not pairs:
+            self._say(strings.NEEDS_RELINK_OUTSIDE.format(n=outside, folder=folder))
+            return
+        from app.qt import settings_sources
         writer = self.win.services.writer
-        for ln, path in pairs:
-            self._give(ln.label, (ln.item_id,), lambda t, i=ln.item_id, p=path: writer.relink(i, p, label=t),
-                       toast_it=False)
-        self.win.toasts.show(strings.NEEDS_RELINKED_N.format(k=len(pairs), n=n))
+        pairs = [(ln.item_id, path) for ln, path in pairs]
+        language = getattr(self.win, "language", None)
+
+        def told(ticket, event):
+            if event == "ended" and self._alive() and getattr(self.win, "language", None) == language and                     settings_sources.cant_write(getattr(self.win, "services", None)) is None:
+                self._say(strings.NEEDS_RELINK_NONE_TAKEN)           # (can't be written: the store's note says why)
+            if event != "saved":
+                return
+            whys = {}
+            for _item, why in getattr(ticket.change, "left", None) or ():
+                whys[why] = whys.get(why, 0) + 1
+            if outside:
+                whys[strings.NEEDS_RELINK_WHY_OUTSIDE] = outside
+            if whys:
+                self._say(strings.NEEDS_RELINK_LEFT.format(n=sum(whys.values()), why=" · ".join(
+                    strings.NEEDS_RELINK_WHY.format(why=why, n=k) for why, k in whys.items())))
+        self._give(strings.NEEDS_RELINKED_N.format(k=len(pairs), n=n), [i for i, _p in pairs],
+                   lambda t: writer.relink_many(pairs, label=t), told=told)
 
     def _do_keep_words(self, entry, line):
         self._answer("keep_words", entry, service.answer_keys(line if line is not None else entry), line=line)
@@ -821,11 +1106,13 @@ class NeedsYou(QObject):
         self._remove([line.item_id], line.label)
 
     def _do_remove_all(self, entry, _line):
-        self._remove(list((entry.data or {}).get("item_ids") or ()), None)
+        """*Forget every missing file* (alpha 4 B): every gone file below in ONE writer command — one ticket, one
+        toast, one Undo."""
+        self._remove(list((entry.data or {}).get("item_ids") or ()), None, forget=True)
 
-    def _remove(self, ids, name):
+    def _remove(self, ids, name, forget=False):
         """*Remove…*: asked first, naming the count (Esc, Back, a click outside: No); never a file under an offline
-        root (IK-8); the trash (30 days) with Undo."""
+        root (IK-8); the trash (30 days) with Undo. `forget`: the line for every missing file, in its words."""
         offline = self._offline_ids()
         ids = [i for i in dict.fromkeys(ids) if i not in offline]
         if not ids:
@@ -833,10 +1120,12 @@ class NeedsYou(QObject):
         from app.qt import confirm
         one = len(ids) == 1 and name
         title = strings.NEEDS_REMOVE_TITLE_ONE.format(name=name) if one else \
-            strings.NEEDS_REMOVE_TITLE.format(n=len(ids))
-        yes = strings.NEEDS_REMOVE_YES_ONE if one else strings.NEEDS_REMOVE_YES.format(n=len(ids))
+            strings.NEEDS_FORGET_TITLE.format(n=len(ids)) if forget else strings.NEEDS_REMOVE_TITLE.format(n=len(ids))
+        yes = strings.NEEDS_REMOVE_YES_ONE if one else strings.NEEDS_FORGET_YES.format(n=len(ids)) if forget else \
+            strings.NEEDS_REMOVE_YES.format(n=len(ids))
         writer = self.win.services.writer
-        done = strings.NEEDS_REMOVED_ONE.format(name=name) if one else strings.NEEDS_REMOVED.format(n=len(ids))
+        done = strings.NEEDS_REMOVED_ONE.format(name=name) if one else strings.NEEDS_FORGOT.format(n=len(ids)) \
+            if forget else strings.NEEDS_REMOVED.format(n=len(ids))
 
         def answered(go):
             if go:
@@ -901,7 +1190,9 @@ class NeedsYou(QObject):
         from app import sources
         name = entry.data["name"]
         left = answer.get("language") not in (None, getattr(self.win, "language", None))   # a library left since
-        if answer.get("refused"):
+        if _find_none(answer):
+            self._say(answer["refused"])             # T6 option 2: none of its files there — the folder isn't read
+        elif answer.get("refused"):
             self._say(strings.NEEDS_FIND_REFUSED.format(folder=folder, why=answer["refused"]))
         elif answer.get("failed"):
             self._say(strings.NEEDS_FIND_FAILED.format(folder=folder, why=answer["failed"]))
@@ -919,6 +1210,12 @@ class NeedsYou(QObject):
                 self._say(strings.NEEDS_FIND_JOINED_LEFT.format(name=name, folder=folder))
                 return False
             return self._stop(entry, text)
+        elif answer.get("dropped"):                  # T6 option 2: read, none of them there: not read any more —
+            show = (entry.data.get("shows") or (name,))[0]     # what its look took in waits in New arrivals (IK2-9)
+            n = int((answer.get("result") or {}).get("added") or 0)
+            self._say(strings.NEEDS_FIND_DROPPED_ARRIVALS.format(folder=folder, show=show, n=n) if n > 1 else
+                      strings.NEEDS_FIND_DROPPED_ARRIVAL.format(folder=folder, show=show) if n == 1 else
+                      strings.NEEDS_FIND_DROPPED.format(folder=folder, show=show))
         else:
             show = (entry.data.get("shows") or (name,))[0]
             self._say(strings.NEEDS_FIND_NONE.format(folder=folder, show=show))
@@ -937,17 +1234,18 @@ class NeedsYou(QObject):
 
     def _stop(self, entry, text):
         """The gone folder `entry` no longer read, through the window's writer (one Undo), once per card -> True when
-        it was given."""
+        it was given. B14 (alpha 4): Settings' one rule (`settings_sources.give_stop`) — the looks let it go first (a
+        look reading it stops between files), and read it again on its Undo, or when it is refused."""
+        from app.qt import settings_sources
         root, language = entry.data["root"], entry.data.get("language") or self.language
         if root in self._stopping:
             return True                              # given already: the card goes with its listing
-        writer = self.win.services.writer
 
-        def told(event):                             # undone, refused or let go unsaved — it can be asked again
+        def told(_ticket, event):                    # undone, refused or let go unsaved — it can be asked again
             if event in ("undone", "refused", "ended"):
                 self._stopping.discard(root)
         self._stopping.add(root)
-        if self._give(text, (), lambda t: writer.stop_reading(root, t, language=language), told=told) is None:
+        if settings_sources.give_stop(self.win, root, text, language, told=told) is None:
             self._stopping.discard(root)
             return False
         return True
@@ -960,6 +1258,178 @@ class NeedsYou(QObject):
         if keep is not None:
             keep([entry.data["path"]])
             self._say(strings.NEEDS_KEEP_WAITING.format(name=entry.data["name"]))
+
+    # alpha 4 D2: every card's ⋯ — *Not now* (until tomorrow) and *Stop asking* (with Undo); a line for many's "for all"
+    def more_entries(self, entry):
+        """The ⋯'s entries for `entry` -> [name]: a card's *Not now* · *Stop asking*; a line for many's *Not now for
+        all* (when it isn't one of its buttons) · *Stop asking for all*."""
+        if entry.kind in service.NO_LATER:
+            return []
+        if entry.kind == service.BULK:
+            return [n for n in ("later_all", "stop_all") if n not in entry.actions]
+        return ["later", "stop_asking"]
+
+    def more_menu(self, entry, control=None):
+        """The ⋯ pressed: a plain menu in the theme's style (Esc closes it), each entry's tip shown -> the menu."""
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QAction
+        from app.qt import drag
+        m = drag.list_menu(self.cards, entry.title)
+        for name in self.more_entries(entry):
+            label, tip = strings.NEEDS_ACTIONS[name]
+            act = QAction(label, m)
+            act.setToolTip(tip)
+            act.setProperty("action", name)
+            act.triggered.connect(lambda _c=False, n=name, e=entry: self.act(n, e))
+            m.addAction(act)
+        self.last_menu = m
+        if control is not None and control.isVisible():      # under the ⋯, its right edge on the ⋯'s
+            m.popup(control.mapToGlobal(QPoint(control.width() - m.sizeHint().width(), control.height())))
+        return m
+
+    def _covered(self, entry):
+        """The cards a line for many answers (its `keys`), and the line itself."""
+        return tuple((entry.data or {}).get("keys") or ()) + (entry.key,)
+
+    def _do_later(self, entry, _line):
+        self._hide((entry.key,), service.put_off, strings.NEEDS_LATER_ONE, later=True)
+
+    def _do_stop_asking(self, entry, _line):
+        self._hide((entry.key,), service.stop_asking, strings.NEEDS_STOPPED_ONE)
+
+    def _do_later_all(self, entry, _line):
+        keys = self._covered(entry)
+        self._hide(keys, service.put_off, strings.NEEDS_LATER_N.format(n=len(keys) - 1), later=True)
+
+    def _do_stop_all(self, entry, _line):
+        keys = self._covered(entry)
+        self._hide(keys, service.stop_asking, strings.NEEDS_STOPPED_N.format(n=len(keys) - 1))
+
+    def _hide(self, keys, write, said, later=False):
+        """*Not now* / *Stop asking*: the cards off the page at the press (one frame — no pending mark), the seen file
+        written on a worker (its one writer), a toast with Undo. A write that fails puts them back and says why."""
+        day = service._today() if later else None
+        for k in keys:
+            self._hidden_now[k] = day
+            self._landed.pop(k, None)               # (its write still to land)
+        self._paint()
+
+        def landed(_n):
+            for k in keys:
+                if k in self._hidden_now:
+                    self._landed[k] = self._asked + 1     # the next gather reads it (one running now: its again)
+            if self._alive():
+                self.refresh()
+
+        def failed(info):
+            for k in keys:
+                self._hidden_now.pop(k, None)
+            if self._alive():
+                self._paint()
+            self._failed(info)
+        self._seen_write(write, keys, landed, failed)
+        self.win.toasts.show(said, undo=lambda: self._ask_again(keys))
+
+    def _ask_again(self, keys):
+        """Undo: the cards asked again — back at once while the page still holds them, and in the seen file (after
+        the write it undoes: A4A-8)."""
+        for k in keys:
+            self._hidden_now.pop(k, None)
+            self._landed.pop(k, None)
+        self._paint()
+        self._seen_write(service.ask_again, keys, lambda _n: self._alive() and self.refresh(), self._failed)
+
+    def _seen_write(self, write, keys, then, failed):
+        """(A4A-8) `write(language, keys)` on a worker after every seen-file write pressed before it — *Not now*,
+        *Stop asking* and their Undo, one queue in the order pressed (the pool runs jobs side by side: an Undo that
+        ran first found nothing to undo, then its write hid the card); `then(n)` / `failed(info)` on this thread."""
+        self._seen_jobs.append((write, self.language, list(keys), then, failed))
+        if len(self._seen_jobs) == 1:
+            self._seen_next()
+
+    def _seen_next(self):
+        if not self._seen_jobs:
+            return
+        write, lang, keys, then, failed = self._seen_jobs[0]
+
+        def finish(callback, value):
+            self._seen_jobs.popleft()
+            try:
+                callback(value)
+            finally:
+                self._seen_next()
+        bridge.run_in_worker(write, lang, keys, then=lambda n: finish(then, n),
+                             failed=lambda info: finish(failed, info))
+
+    # K1: the library mostly gone — *Start fresh* (`SourceLooks.fresh`, with Settings' own sheet)
+    def _do_start_fresh(self, entry, _line):
+        """*Start fresh*: Settings' *Start a fresh library?* sheet (`settings_sources.fresh_sheet`: what goes, what
+        stays, the store's counts read on the looks' worker first; *Also forget my known words* off; Enter, Esc or a
+        click outside is No), then `SourceLooks.fresh` on the looks' worker — the old library in one dated backup in
+        the trash, never deleted — and the bar says how it went (Settings' words). The arc turns from the press while
+        the counts are read, and from Yes until the reset answers."""
+        from app.qt import settings_sources
+        looks = getattr(self.win, "looks", None)
+        if looks is None:
+            self._say(strings.NEEDS_FIND_CLOSED)
+            return
+        p = qpress.begin(self._control("start_fresh", entry), self._press_key("start_fresh", entry), win=self.win)
+        if p is None:
+            return                                   # one press: its counts or its reset under way
+
+        def ask(counts):
+            if p.live():
+                qpress.end(p, self.win)
+                p.release()                          # (the sheet is up: its Yes presses again, or No asks again)
+            if not self._alive():
+                return
+
+            def answered(yes):
+                card, self.confirming = self.confirming, None
+                if yes:
+                    forget = bool(card is not None and card.checked)
+                    self._looks_press("start_fresh", entry, lambda then: looks.fresh(forget, then))
+            self.confirming = settings_sources.fresh_sheet(self.win, counts, answered)
+        counts = getattr(looks, "fresh_counts", None)
+        if counts is None:
+            ask(None)
+            return
+        relay = bridge.Relay(self.win)
+
+        def counted(found):
+            relay.deleteLater()
+            ask(found)
+        relay.said.connect(counted)
+        if not counts(relay.call):
+            relay.deleteLater()
+            ask(None)
+
+    def _looks_press(self, name, entry, call):
+        """`SourceLooks.fresh` on the looks' worker, its button's arc turning until it answers; the bar says how it
+        went (`settings_sources.fresh_said`). Done, the card goes with the fresh library's view; refused or failed,
+        it stays (pressed again, it asks again)."""
+        from app.qt import settings_sources
+        p = qpress.begin(self._control(name, entry), self._press_key(name, entry), win=self.win, goes=True)
+        if p is None:
+            return
+        relay = bridge.Relay(self.win)
+
+        def answered(answer):
+            relay.deleteLater()
+            answer = answer or {}
+            failed = not answer.get("done")
+            if p.live():
+                qpress.end(p, self.win, failed=failed)
+            if failed:
+                self._stays(name, entry)
+            self._say(settings_sources.fresh_said(answer))
+            self.refresh()
+        relay.said.connect(answered)
+        if not call(relay.call):
+            relay.deleteLater()
+            qpress.end(p, self.win, failed=True)
+            self._stays(name, entry)
+            self._say(strings.NEEDS_FIND_CLOSED)
 
     # Connect's entries (each on a worker; the window never makes Connect's ledger)
     def _do_mine_anyway(self, entry, _line):
@@ -1002,9 +1472,6 @@ class NeedsYou(QObject):
         self.refresh()
 
     # P4.1's (hidden until hooked)
-    def _do_mine_text_only(self, entry, line):
-        self.hooks["mine_text_only"](entry, line)
-
     def _do_make_cards(self, entry, _line):
         self.hooks["make_cards"](entry)
 
@@ -1175,6 +1642,9 @@ def make_area(parent):
     area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     cards = NeedsCards(area)
     area.setWidget(cards)
+    bar = area.verticalScrollBar()                  # alpha 4 B: the next cards as the page nears its end
+    bar.valueChanged.connect(cards.scrolled)
+    bar.rangeChanged.connect(cards.scrolled)
     area.viewport().setAutoFillBackground(False)
     cards.setAutoFillBackground(False)
     return area, cards

@@ -11,9 +11,9 @@ rows' packages — never by the page itself.
   words moved (S19), inside the page's hold.
 - **The window** (`FoldersWindow`, on `windows.SecondaryWindow`; one of its kind, `open_window`): **one line per folder
   being read**, in the order added — its path (cut in the middle when narrow, whole on hover), how many episodes came
-  from it (*not reachable now* when the last look couldn't reach it) and *Stop reading* (`Store.stop_source` on the
-  looks' worker: its items and their records stay — the tooltip says so, and the bar after); ***Skipped folders*** (K6)
-  under them, each with ***Read again*** (`SourceLooks.read_again` on the looks' worker: its files come back at once),
+  from it (*not reachable now* when the last look couldn't reach it) and *Stop reading* (K9: `give_stop`, the window's
+  writer — a toast with Undo, as a gone folder's card stops one: its items and their records stay, the tooltip says
+  so); ***Skipped folders*** (K6) under them, each with ***Read again*** (`SourceLooks.read_again` on the looks' worker: its files come back at once),
   hidden while there is none, then ***Skip a folder…*** (Q7, shown with none skipped too: the wizard's picker, the
   store's rule asked on the looks' worker — refused, why in the window's line — then ⋯'s own write,
   `item_menu.give_skip`, its toast with Undo; `skips_moved` reads the lines again as any skip lands or is undone);
@@ -194,9 +194,10 @@ def look_again(shell, control=None):
 
 
 class SourceLine(QWidget):
-    """One folder's line: its path, its count and *Stop reading* (`on_stop(root_id)`; `tip`: its own words)."""
+    """One folder's line: its path, its count and *Stop reading* (`on_stop(root_id)`; `tip`: its own words); alpha 4
+    (Mattias's note 6): *Bring back N removed* (`back`, `on_back(root_id)`) while that folder has removed files."""
 
-    def __init__(self, source, on_stop, parent=None):
+    def __init__(self, source, on_stop, parent=None, on_back=None):
         super().__init__(parent)
         self.setObjectName("settingssource")
         self.root = source["id"]
@@ -211,6 +212,15 @@ class SourceLine(QWidget):
         self.count = QLabel(self)
         self.count.setObjectName("settingsvalue")
         line.addWidget(self.count)
+        # --- alpha 4 P-removed: *Bring back N removed* (hidden while none; `show_removed`)
+        self.removed = ()                                 # the trash ids of its removed files (`removed_under`)
+        self.back_tip = ""                                # its own words (greyed: why, the window's `_enable`)
+        self.back = sc.Door(strings.REMOVED_BRING_BACK.format(n=0), parent=self)
+        self.back.setVisible(False)
+        if on_back is not None:
+            self.back.clicked.connect(lambda _c=False: on_back(self.root))
+        line.addWidget(self.back)
+        # --- end alpha 4 P-removed
         self.stop = qpress.room(sc.Door(S.SOURCES_STOP, name=S.SOURCES_STOP_NAME.format(path=source["path"]),
                                         parent=self))
         self.stop.clicked.connect(lambda _c=False: on_stop(self.root))
@@ -226,6 +236,22 @@ class SourceLine(QWidget):
         if self.count.text() != words:
             self.count.setText(words)
         self.tip = S.SOURCES_STOP_TIP.format(path=source["path"], n=source.get("items") or 0)
+        return True
+
+    def show_removed(self, ids):
+        """alpha 4 P-removed: its removed files' trash ids (`removed_under`): *Bring back N removed*, hidden at 0.
+        -> True when it moved (repainted only then, S19)."""
+        ids = tuple(ids or ())
+        if ids == self.removed:
+            return False
+        self.removed = ids
+        n, path = len(ids), self.source["path"] if self.source else ""
+        if n:
+            self.back.setText(strings.REMOVED_BRING_BACK.format(n=n))
+            self.back_tip = strings.REMOVED_BRING_BACK_TIP.format(n=n, path=path)
+            self.back.setAccessibleName(strings.REMOVED_BRING_BACK_NAME.format(n=n, path=path))
+        if self.back.isHidden() == bool(n):
+            self.back.setVisible(bool(n))
         return True
 
 
@@ -371,6 +397,14 @@ class FoldersWindow(windows.SecondaryWindow):
         self.skip_undo.setVisible(False)
         skip_line.addWidget(self.skip_undo)
         self.skip_ticket = self.skip_language = None      # the skip whose line shows (its Undo's), its library
+        # --- alpha 4 P-removed (D3): 🗑 *Removed…* beside the skips — always shown, as *Skip a folder…* is (the list says
+        # *Nothing removed…* when empty: no read only to decide whether it shows)
+        self.removed = sc.Door(strings.REMOVED_OPEN, tooltip=strings.REMOVED_OPEN_TIP, parent=self.box)
+        self.removed.clicked.connect(lambda _c=False: self.open_removed())
+        skip_line.addWidget(self.removed)
+        self._removed_reading = {}                        # root id -> in the read under way (True: again after it)
+        self._removed_job = False                         # A4B-7: one read for every line, one at a time
+        # --- end alpha 4 P-removed
         skip_line.addStretch(1)
         column.addLayout(skip_line)
         # the folder picker (the system's own dialog, as the wizard's; tests replace it)
@@ -415,6 +449,8 @@ class FoldersWindow(windows.SecondaryWindow):
                 _turn(control, why is None, why or line.tip)
                 if (kind, self.lines_of, key) in acting and qpress.mark(control) is None:
                     qpress.adopt(control, _press_key((kind, self.lines_of, key)), win=self.shell)
+        for line in self.lines.values():                  # alpha 4 P-removed: *Bring back N removed*, greyed with why
+            _turn(line.back, why is None, why or line.back_tip)
 
     def look_again(self):
         """*Look again*: every folder looked at in full — the Refresh key's press, on this button (round 8 row 45, P3's
@@ -427,9 +463,9 @@ class FoldersWindow(windows.SecondaryWindow):
         line's *Undo* (while it shows), *Look again*, *Add a folder…* (lines made later would otherwise join the chain's end)."""
         def shown(layout):
             return [layout.itemAt(i).widget() for i in range(layout.count())]
-        chain = [w.stop for w in shown(self.box.layout()) if isinstance(w, SourceLine)]
+        chain = [b for w in shown(self.box.layout()) if isinstance(w, SourceLine) for b in (w.back, w.stop)]
         chain += [w.read for w in shown(self.skip_box.layout()) if isinstance(w, SkippedLine)]
-        chain += [self.skip, self.skip_undo, self.look, self.add]
+        chain += [self.skip, self.skip_undo, self.removed, self.look, self.add]
         for a, b in zip(chain, chain[1:]):
             QWidget.setTabOrder(a, b)
 
@@ -486,10 +522,12 @@ class FoldersWindow(windows.SecondaryWindow):
         for source in moved:
             self.lines[source["id"]].show_source(source)
         for source in added:
-            line = SourceLine(source, self.stop, parent=self.box)
+            line = SourceLine(source, self.stop, parent=self.box, on_back=self.bring_back)
             column.insertWidget(ids.index(source["id"]), line)
             self.lines[source["id"]] = line
             line.show()
+        if added:
+            self.read_removed([s["id"] for s in added])  # alpha 4 P-removed: its removed files, on the looks' worker
         if self.none.isHidden() == empty:
             self.none.setVisible(empty)
         if added:
@@ -693,37 +731,143 @@ class FoldersWindow(windows.SecondaryWindow):
         self.skip_undo.setVisible(ticket is not None)
 
     def stop(self, root_id):
-        """*Stop reading*: on the looks' worker; the bar says its episodes stay; the line goes once the stop landed."""
-        looks = _looks(self.shell)
+        """*Stop reading* (K9, alpha 4): through the window's writer, as a gone folder's card stops one (`give_stop`):
+        a look reading the folder lets it go between files, then one change — its toast says the episodes stay, with
+        Undo (Ctrl+Z too), which reads it again. The line goes with the folders' listing once the stop is saved
+        (`drag._sources_stopped`), and comes back with its Undo; its arc turns from the press until it is saved."""
         line = self.lines.get(root_id)
-        if looks is None or line is None or why_not(self.shell) is not None:
+        if _looks(self.shell) is None or line is None or why_not(self.shell) is not None:
             return False
         source = dict(line.source)
         key = ("stop", self.lines_of, root_id)
-        from app.qt import bridge
-        relay = bridge.Relay(self.shell)
+        n = source.get("items") or 0
+        text = S.SOURCES_STOPPED_ONE.format(path=source["path"]) if n == 1 else \
+            S.SOURCES_STOPPED.format(path=source["path"], n=n)
 
-        def stopped(answer):
-            relay.deleteLater()
-            n = source.get("items") or 0
-            text = S.SOURCES_STOPPED_ONE.format(path=source["path"]) if n == 1 else \
-                S.SOURCES_STOPPED.format(path=source["path"], n=n)
-            if answer.get("stopped") and self.shell is not None:
-                windows.say_in_bar(self.shell, text)
-            self._answered(key)
-        relay.said.connect(stopped)
-        busy = looks.busy() if hasattr(looks, "busy") else False
-        if not self._press(key, line.stop):               # one stop per click: its arc, painted before the ask
-            relay.deleteLater()
+        heard = []
+
+        def told(_ticket, event):                         # (the window may have closed meanwhile: `_answered` knows)
+            if event in ("saved", "refused", "ended") and not heard:     # once (A4B-14): never again on its Undo
+                heard.append(event)
+                self._answered(key, failed=event != "saved")
+        if not self._press(key, line.stop):               # one stop per click: its arc, painted before the writer
             return False
-        _acting(self.shell).add(key)
-        if not looks.stop(root_id, relay.call, language=self.lines_of):
-            relay.deleteLater()                           # refused (closed, another language): nothing stopped
-            self._answered(key, failed=True)
+        _acting(self.shell).add(key)                      # before the ask: an answer may land at once
+        if give_stop(self.shell, root_id, text, self.lines_of, told=told) is None:
+            if not heard:                                 # refused before a ticket was given (the bar says why), or
+                self._answered(key, failed=True)          # another language's
             return False
-        if busy and self.shell is not None:               # S6: a look under way lets it go after the file it's on
-            windows.say_in_bar(self.shell, S.SOURCES_STOPPING.format(path=source["path"]))
         return True
+
+    # --- alpha 4 P-removed: 🗑 *Removed…* and a folder's *Bring back N removed* ------------------------------------ #
+    def open_removed(self):
+        """🗑 *Removed…*: its window (`app/qt/removed.py`), read as it opens."""
+        from app.qt import removed
+        return removed.open_window(self.shell)
+
+    def read_removed(self, roots=None):
+        """Each folder's removed files (A4B-7: every line's in ONE read, `removed.read_store` — a pool thread, never
+        queued behind a look; `roots`: these folders only, else every line's): its *Bring back N removed* follows.
+        Read as its line shows and when the trash moved (`trash_heard`), never on a look's summary (S19). One read at a
+        time (asked meanwhile: one more after it). -> how many folders were asked."""
+        if self.gone:
+            return 0
+        want = [r for r in (list(self.lines) if roots is None else roots) if r in self.lines]
+        if not want:
+            return 0
+        if self._removed_job:
+            for root in want:
+                self._removed_reading[root] = True        # one more after the one under way
+            return 0
+        from app.qt import removed
+        language = self.lines_of
+        for root in want:
+            self._removed_reading[root] = False
+        self._removed_job = True
+        if not removed.read_store(self.shell, language, lambda store: removed.removed_by_root(store, want),
+                                  lambda found: self._removed_landed((language, found))):
+            self._removed_job = False
+            for root in want:
+                self._removed_reading.pop(root, None)
+            return 0
+        return len(want)
+
+    def _removed_landed(self, said):
+        language, found = said
+        self._removed_job = False
+        reading, self._removed_reading = self._removed_reading, {}
+        if self.gone:
+            return
+        again = [r for r, more in reading.items() if more]
+        if language == self.lines_of and isinstance(found, dict):
+            why = why_not(self.shell)
+            for root, ids in found.items():
+                line = self.lines.get(root)
+                if line is not None and root not in again and ids is not None and line.show_removed(ids):
+                    _turn(line.back, why is None, why or line.back_tip)
+        if again:
+            self.read_removed(again)
+
+    def trash_heard(self):
+        """A4B-6: the window's controller saved or undid a change that moved the trash (`removed.trash_heard`)."""
+        self.read_removed()
+
+    def bring_back(self, root_id):
+        """*Bring back N removed*: the writer's `restore` of that folder's removed files (one change, its toast's one
+        Undo); the button goes at once; once saved, that folder is looked at so its look sees them (the looks'
+        `look_at(root)` when they offer it, else a focus's look, `asked`). -> True when given."""
+        line = self.lines.get(root_id)
+        if line is None or not line.removed or why_not(self.shell) is not None:
+            return False
+        from app.qt import removed
+        ids, path = list(line.removed), line.source["path"]
+        name = os.path.basename(os.path.normpath(path)) or path
+        text = strings.REMOVED_BROUGHT_BACK_ONE.format(name=name) if len(ids) == 1 else \
+            strings.REMOVED_BROUGHT_BACK.format(n=len(ids), name=name)
+        shell, language = self.shell, self.lines_of
+
+        def told(event):
+            if event == "saved":
+                looks = _looks(shell)
+                if looks is not None and language == getattr(shell, "language", language):
+                    look_at = getattr(looks, "look_at", None)     # (Seams: a one-folder look, when the looks offer it)
+                    if look_at is not None:
+                        look_at(root_id, language=language)
+                    elif hasattr(looks, "asked"):
+                        looks.asked(focused=True)
+            elif event in ("refused", "ended") and not self.gone:
+                self.read_removed([root_id])                  # (nothing written: its button as the store has it)
+        line.show_removed(())                                 # the press's answer, in the frame
+        if removed.give_back(shell, ids, text, told=told) is None:
+            self.read_removed([root_id])
+            return False
+        return True
+
+
+def give_stop(shell, root_id, text, language, told=None):
+    """K9 / B14 (alpha 4): a folder no longer read, through the window's writer — one rule for Settings' *Stop
+    reading* and a gone folder's card. The looks let it go first (`SourceLooks.let_go`: a look reading it stops
+    between files, and none reads it while it is stopped), then `Writer.stop_reading`: one change, its toast (`text`)
+    with Undo. Refused, or settled unsaved: the looks read it again (`let_go(on=False)`); saved or undone, the same as
+    it lands, from the toast or Ctrl+Z (`drag._sources_stopped`: saved, the store's row is off — added again, it is
+    read, A4B-1). `told(ticket, event)` as `item_menu.give_skip`'s. ->
+    the writer's number, or None (nothing given: the folder is read as before)."""
+    from app.qt import drag
+    moves, looks = getattr(shell, "moves", None), _looks(shell)
+    if moves is None or moves.refused() is not None:
+        return None
+    let_go = getattr(looks, "let_go", None)
+    if let_go is not None and not let_go(root_id, language=language):
+        return None                                       # the looks closing, or another language's library
+    ticket = drag.Ticket(text, (), ())
+
+    def heard(event):
+        if event in ("refused", "ended") and let_go is not None:
+            let_go(root_id, on=False, language=language)
+        if told is not None:
+            told(ticket, event)
+    ticket.told = heard
+    return moves._give(ticket, lambda t: moves.writer.stop_reading(root_id, t, language=language))
 
 
 class FreshRow(QObject):
@@ -811,10 +955,7 @@ class FreshRow(QObject):
         return None
 
     def _sheet(self, counts):
-        from app.qt import confirm
-        self.card = confirm.ask(self.page, S.FRESH_ASK, fresh_body(counts), S.FRESH_YES, S.FRESH_YES_TIP,
-                                default_no=True, danger=True, check=S.FRESH_KNOWN, check_tip=S.FRESH_KNOWN_TIP,
-                                on_answer=self._answered)
+        self.card = fresh_sheet(self.page, counts, self._answered)
         return self.card
 
     def _answered(self, yes):
@@ -839,24 +980,8 @@ class FreshRow(QObject):
                 qpress.end(p, self.shell, failed=not answer.get("done"))
             self.running = False
             self.enable()
-            if answer.get("done"):
-                known = answer.get("known") or ""
-                text = S.FRESH_DONE_KNOWN_KEPT.format(why=known[len("kept: "):]) if known.startswith("kept: ") \
-                    else S.FRESH_DONE
-            elif answer.get("aside"):
-                text = S.FRESH_NOT_ALL_BACK.format(folder=answer["aside"])
-            elif answer.get("failed"):
-                text = S.FRESH_FAILED.format(reason=answer["failed"])
-            else:
-                reason = answer.get("refused")
-                if reason == "no-library":
-                    reason = S.STORE_NO_LIBRARY_TIP
-                elif reason == "busy" or reason in strings.READ_ONLY_REASONS or str(reason).startswith("io"):
-                    why = strings.STORE_BUSY_NOW if reason == "busy" else strings.store_reason(reason)
-                    reason = why[:1].upper() + why[1:] + "."         # P-1: the store's own words, as a sentence
-                text = S.FRESH_REFUSED.format(reason=reason)
             if self.shell is not None:
-                windows.say_in_bar(self.shell, text)
+                windows.say_in_bar(self.shell, fresh_said(answer))
         relay.said.connect(landed)
         self.running = True                               # before the ask: an answer may land at once
         self.enable()
@@ -868,6 +993,34 @@ class FreshRow(QObject):
             self.enable()
             return False
         return True
+
+
+def fresh_sheet(parent, counts, on_answer):
+    """*Start a fresh library?* — the one sheet (Settings' row, and *Needs you*'s card for a library mostly gone, K1):
+    what goes, what comes back, what stays (`fresh_body`), *Also forget my known words* (off); Esc, Back, Enter or a
+    click outside is No. `on_answer(yes)`; the card's `checked` is the box. -> the card."""
+    from app.qt import confirm
+    return confirm.ask(parent, S.FRESH_ASK, fresh_body(counts), S.FRESH_YES, S.FRESH_YES_TIP, default_no=True,
+                       danger=True, check=S.FRESH_KNOWN, check_tip=S.FRESH_KNOWN_TIP, on_answer=on_answer)
+
+
+def fresh_said(answer):
+    """The bar's words for `SourceLooks.fresh`'s answer: the folders being read, or why nothing was changed."""
+    if answer.get("done"):
+        known = answer.get("known") or ""
+        return S.FRESH_DONE_KNOWN_KEPT.format(why=known[len("kept: "):]) if known.startswith("kept: ") \
+            else S.FRESH_DONE
+    if answer.get("aside"):
+        return S.FRESH_NOT_ALL_BACK.format(folder=answer["aside"])
+    if answer.get("failed"):
+        return S.FRESH_FAILED.format(reason=answer["failed"])
+    reason = answer.get("refused")
+    if reason == "no-library":
+        reason = S.STORE_NO_LIBRARY_TIP
+    elif reason == "busy" or reason in strings.READ_ONLY_REASONS or str(reason).startswith("io"):
+        why = strings.STORE_BUSY_NOW if reason == "busy" else strings.store_reason(reason)
+        reason = why[:1].upper() + why[1:] + "."         # P-1: the store's own words, as a sentence
+    return S.FRESH_REFUSED.format(reason=reason)
 
 
 def fresh_body(counts):

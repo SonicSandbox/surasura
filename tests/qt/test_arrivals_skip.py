@@ -66,7 +66,7 @@ class FakeLooks:
         threading.Thread(target=then, args=(list(self.choices),), daemon=True).start()
         return True
 
-    def folders(self, ids, then):                                     # (the rows' folder names: none here)
+    def folders(self, ids, then, detail=False):                       # (the rows' folder names: none here)
         then(dict.fromkeys(ids))
         return True
 
@@ -177,13 +177,13 @@ def test_a_skip_takes_the_arrivals_rows_out_in_one_change_and_one_undo_brings_th
     m.close()
     assert calls(writer, "skip_folder") == [("skip_folder", ids, {"path": extras})]
     assert wait_until(lambda: win.toasts.card.message == strings.ITEM_SKIPPED.format(name="Extras"), 5)
-    assert wait_until(lambda: key not in tray.rows, 5)
+    assert wait_until(lambda: key not in tray.keys(), 5)
     assert wait_until(lambda: win.looks.listings > listed, 5)
     assert wait_until(lambda: not win.moves.tickets, 5)
     settle()
     listed = win.looks.listings
     tray.open() if not tray.isVisible() else None
     next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO).click()
-    assert wait_until(lambda: key in tray.rows and list(tray.rows[key].arrival.item_ids) == ids, 5)
+    assert wait_until(lambda: key in tray.keys() and list(tray.arrival(key).item_ids) == ids, 5)
     assert wait_until(lambda: win.looks.listings > listed, 5)
     assert [c[0] for c in writer.calls] == ["skip_folder", "undo"]

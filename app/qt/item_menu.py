@@ -41,6 +41,13 @@ row (a right-click opens it at the hand) starts with *Group…*: one
 `Writer.group` — the picked rows' pieces in the list's order (both of a show the Soon line runs through), then the
 picked episodes — its toast *Grouped N into one row* with Undo at the press. Esc / Back (the shell's router), a plain
 click, a drag and a view without a picked key let the picks go.
+**The picks (A4; Sonic: "a way to interact with those is important"):** Current's and Soon's rows, Finished's rows and
+Goal's tiles are picked the same way (Ctrl / Shift+click, Ctrl+A every row of the list in focus; picks live in one list
+at a time). ⋯ or a right-click on a picked row while 2+ rows are picked offers, for all of them, *Up next* · *Soon* ·
+*Goal* · *Finished* · *Remove…* (`fill_picks_menu`; the entry naming their own list left out, *Finished* greyed when a
+split's first part is among them; *Group…* first where it applies): each ONE store command through
+`drag.DragController.send_picks` — one toast naming the count, one Undo; *Remove…* asks first (`ask_remove_picks`). A
+drag from a picked row carries them all (`DragController.begin`).
 **Drop-to-join (G3):** a part dragged over the middle of another part of the same title (its top and bottom 30 % stay
 a move beside it, so a part can still be placed next to its other part): the rows hold still (no gap opens), that part
 shows a green dashed outline and *Drop to join*; the drop joins them in episode order, opens the result and toasts
@@ -223,6 +230,69 @@ def give_skip(moves, path, ids=(), keys=(), told=None):
     if told is not None:
         ticket.told = lambda event: told(ticket, event)
     return moves._give(ticket, lambda t: moves.writer.skip_folder(path, label=t))
+
+
+# --- A4: the picks' ⋯, one rule for Current, Soon, Finished and Goal's sheet ------------------------------------------- #
+def picks_entries(n, own, writer, grey=None, goal=False):
+    """The picks' ⋯: [(name, label, tip, enabled)] — *Up next* · *Soon* · *Goal* · *Finished* · *Remove…* for `n`
+    titles, the one naming their own list (`own`: "soon", "goal", "finished") left out; greyed with the store's reason
+    while it can't be written (E4), and each of `grey` ({name: why}) greyed with its why (IK2-5: *Finished* while a
+    split's first part is among them, in the Finished well's words). `goal`: from Goal's sheet (its *Up next* / *Soon*
+    bring each title's first part, as its single ⋯ does)."""
+    reason = None
+    if writer is None or not writer.can_write():
+        raw = (writer.reason() if writer is not None else None) or ""
+        reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
+    grey = grey or {}
+    out = []
+    for name, (label, tip) in strings.PICKS_MENU.items():
+        if name == own:
+            continue
+        tip = tip.format(n=f"{n:,}")
+        if goal and name in ("top", "soon"):
+            tip = strings.PICKS_GOAL_FIRST_TIP.format(tip=tip)
+        if reason is not None:
+            out.append((name, label, reason, False))
+        else:
+            out.append((name, label, grey.get(name) or tip, name not in grey))
+    return out
+
+
+def fill_picks_menu(m, n, own, writer, act, grey=None, goal=False):
+    """`picks_entries` into menu `m` (named for the picks), a separator before *Remove…*; `act(name)` when one is
+    picked. -> m."""
+    m.setAccessibleName(strings.PICKS_MENU_NAME.format(n=f"{n:,}"))
+    for name, label, tip, ok in picks_entries(n, own, writer, grey, goal):
+        if name == "remove":
+            m.addSeparator()
+        a = QAction(label, m)
+        a.setToolTip(tip)
+        a.setEnabled(ok)
+        a.triggered.connect(lambda _c=False, nm=name: act(nm))
+        m.addAction(a)
+    return m
+
+
+def ask_remove_picks(win, moves, n, ids, keys=(), then=None):
+    """The picks' *Remove…*: asked first (`confirm.ask`, Cancel the default; Esc, Back, a click outside: No), naming
+    the titles and their files; yes → ONE `Writer.remove` (the trash, 30 days), its toast with Undo, then `then()`.
+    -> the question."""
+    if moves is None or moves.refused() is not None:
+        return None
+    title = strings.PICKS_TITLES.format(n=f"{n:,}")
+    files = f"{len(ids):,}"
+    ids = list(ids)
+
+    def answered(said_yes):
+        if not said_yes or moves.refused() is not None:
+            return
+        moves._give(drag.Ticket(strings.PICKS_REMOVED.format(title=title), tuple(keys), ids),
+                    lambda t: moves.writer.remove(ids, label=t))
+        if then is not None:
+            then()
+    return confirm.ask(win, strings.PICKS_REMOVE_ASK.format(title=title), strings.PICKS_REMOVE_BODY.format(n=files),
+                       strings.PICKS_REMOVE_YES.format(n=files), strings.PICKS_REMOVE_YES_TIP, default_no=True,
+                       danger=True, on_answer=answered)
 
 
 class ItemActions(QObject):
@@ -444,9 +514,53 @@ class ItemActions(QObject):
         k = next((i for i, e in enumerate(row.episodes) if e.id == hover[1]), None)
         return k + 1 if k is not None and k + 1 < len(row.episodes) else None
 
+    # --- A4: the picks' ⋯ ----------------------------------------------------------------------------------------- #
+    def picked_rows(self):
+        """Current's picked rows in the list's order (whole rows: an episode's pick is *Group…*'s alone)."""
+        view = self._view()
+        keys = self.lst.picked_rows
+        return [r for r in (view.rows if view is not None else ()) if r.key in keys] if keys else []
+
+    def picks_menu(self, row, at):
+        """⋯ / right-click on a picked row while 2+ rows are picked: *Group…* where it applies, then *Up next* · *Soon* ·
+        *Goal* · *Finished* · *Remove…* for all of them (Soon's picks get no *Soon*; *Finished* greyed in the Finished
+        well's words when a split's first part is among them, IK2-5). -> the menu."""
+        rows_ = self.picked_rows()
+        view = self._view()
+        n = len(rows_)
+        m = drag.list_menu(self.lst, strings.PICKS_TITLES.format(n=f"{n:,}"))
+        group = self.group_entry(row)
+        if group is not None:
+            self._action(m, row, group)
+            m.addSeparator()
+        own = "soon" if all(r.tier == "soon" and getattr(r, "soon_from", None) is None for r in rows_) else None
+        split = drag.any_split_first(view.rows if view is not None else (), self.lst.picked_rows)
+        fill_picks_menu(m, n, own, self.writer, self.send_picks, {"finished": strings.WELL_UNLIT_SPLIT} if split else None)
+        self.last_menu = m
+        m.popup(at)
+        return m
+
+    def send_picks(self, name):
+        """A picks' ⋯ entry: ONE store command for every picked row (`DragController.send_picks`), the picks let go;
+        *Remove…* asks first."""
+        rows_ = self.picked_rows()
+        if not rows_:
+            return None
+        ids = [i for r in rows_ for i in drag.ids_of(r)]
+        keys = [r.key for r in rows_]
+        if name == "remove":
+            self.question = ask_remove_picks(self.win, self.moves, len(rows_), ids, keys, then=self.lst.clear_picks)
+            return self.question
+        seq = self.moves.send_picks(name, ids, len(rows_), keys, "current")
+        if seq is not None:
+            self.lst.clear_picks()
+        return seq
+
     def menu(self, row, at):
         """⋯: the moves, these, a separator and *Remove…* — a plain menu in the theme's style (Esc closes it), every
-        entry's tip shown."""
+        entry's tip shown. A4: on a picked row while 2+ rows are picked, the picks' own (`picks_menu`)."""
+        if row.key in self.lst.picked_rows and len(self.lst.picked_rows) > 1:
+            return self.picks_menu(row, at)
         m = drag.list_menu(self.lst, row.title)          # C4: the list's one menu, emptied as it hides
         group = self.group_entry(row)                    # --- LM11b G4: *Group…* first, on a picked row
         if group is not None:

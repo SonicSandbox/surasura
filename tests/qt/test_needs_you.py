@@ -14,6 +14,7 @@ What a wrong answer would cost a learner:
 """
 import json
 import os
+import pathlib
 import threading
 from types import SimpleNamespace
 
@@ -41,6 +42,10 @@ class NeedsWriter(FakeWriter):
 
     def relink(self, item_id, path, label=None):
         return self._put("relink", [item_id], label, path=path)
+
+    def relink_many(self, pairs, label=None):
+        pairs = [(getattr(a, "item_id", a), os.fspath(p)) for a, p in pairs]
+        return self._put("relink_many", [i for i, _p in pairs], label, pairs=pairs)
 
     def its_new(self, path, label=None):
         self.calls.append(("its_new", [], {"path": path}))
@@ -363,11 +368,13 @@ def test_a_gone_files_choose_file_relinks_it_with_undo(world):
     assert wait_until(lambda: writer.undone and writer.undone[-1].op == "relink", 5)
 
 
-def test_choose_a_folder_matches_each_gone_file_by_its_name_then_its_episode_number(world, tmp_path):
+def test_choose_a_folder_matches_each_gone_file_by_its_name_then_its_episode_number(world):
+    """A show's card: each file matched by its name, else its episode number (never a video), and every match pointed
+    at in ONE command — one toast with Undo, one Ctrl+Z (IK2-2: it was one relink a file, a toast with no Undo)."""
     seed, win, writer, ny = world()
     gone = next(e for e in ny.entries if e.kind == service.GONE and len(e.lines) == 3)
-    folder = tmp_path / "移動先"
-    folder.mkdir()
+    folder = pathlib.Path(ny.data_dir) / "HighPriority" / "移動先"          # moved inside the library folder
+    folder.mkdir(parents=True)
     a, b, c = gone.lines
     (folder / os.path.basename(a.rel_path)).write_text("同じ名前", encoding="utf-8")
     ext = os.path.splitext(b.rel_path)[1]
@@ -375,10 +382,15 @@ def test_choose_a_folder_matches_each_gone_file_by_its_name_then_its_episode_num
     (folder / f"{c.number:02d}.mkv").write_bytes(b"x")         # a video of c's number: never its content file
     ny.pick_folder = lambda title, start: str(folder)
     button(ny, gone.key, "choose_folder").click()
-    assert wait_until(lambda: len([x for x in writer.calls if x[0] == "relink"]) == 2, 5)
-    got = {x[1][0]: os.path.basename(x[2]["path"]) for x in writer.calls if x[0] == "relink"}
+    assert wait_until(lambda: writer.saved, 5)
+    assert not [x for x in writer.calls if x[0] == "relink"]
+    (call,) = [x for x in writer.calls if x[0] == "relink_many"]
+    got = {i: os.path.basename(path) for i, path in call[2]["pairs"]}
     assert got == {a.item_id: os.path.basename(a.rel_path), b.item_id: f"[Group] 別名 - {b.number:02d}{ext}"}
     assert wait_until(lambda: win.toasts.card.base == strings.NEEDS_RELINKED_N.format(k=2, n=3), 5)
+    assert win.toasts.card.buttons                                # its Undo
+    win.toasts.card.buttons[0].click()
+    assert wait_until(lambda: writer.undone and writer.undone[-1].op == "relink_many", 5)
 
 
 def test_bulk_keep_all_their_words_leaves_the_page_and_is_kept_in_the_seen_file(world):
@@ -404,13 +416,16 @@ def test_keep_its_words_on_one_line_keeps_that_file_only(world):
 
 
 def test_bulk_remove_all_asks_naming_the_count_esc_is_no_and_yes_removes_with_undo(world):
+    """Alpha 4 B: *Forget every missing file* — ONE writer command for every missing file below: one ticket, one
+    toast, one Undo."""
     seed, win, writer, ny = world()
     bulk = entry_of(ny, service.BULK)
     ids = list(bulk.data["item_ids"])
+    assert button(ny, "bulk", "remove_all").text() == f"Forget every missing file ({len(ids)})"
     button(ny, "bulk", "remove_all").click()
     card = ny.confirming
-    assert card.isVisible() and card.title.text() == f"Remove {len(ids)} files?"
-    assert card.yes.text() == f"Remove {len(ids)} files" and card.default is card.no    # Enter is No
+    assert card.isVisible() and card.title.text() == f"Forget {len(ids)} missing files?"
+    assert card.yes.text() == f"Forget {len(ids)} files" and card.default is card.no    # Enter is No
     QTest.keyClick(card, Qt.Key.Key_Escape)
     assert wait_until(lambda: closed(card), 5)
     assert not writer.calls                                     # Esc: nothing removed
@@ -419,7 +434,7 @@ def test_bulk_remove_all_asks_naming_the_count_esc_is_no_and_yes_removes_with_un
     assert wait_until(lambda: any(c[0] == "remove" for c in writer.calls), 5)
     assert [c for c in writer.calls if c[0] == "remove"] == [("remove", ids, {})]
     assert wait_until(lambda: win.toasts.card.isVisible() and writer.saved, 5)
-    assert win.toasts.card.base == strings.NEEDS_REMOVED.format(n=len(ids))
+    assert win.toasts.card.base == strings.NEEDS_FORGOT.format(n=len(ids))
     win.toasts.card.buttons[0].click()                         # Undo puts them back
     assert wait_until(lambda: writer.undone and writer.undone[-1].op == "remove", 5)
 
@@ -737,6 +752,7 @@ def test_the_page_shows_readable_cards_when_first_opened_after_its_entries_chang
         seed, win, writer, ny = world()
         assert win.current_tab() == "current" and len(ny.entries) >= 3
         win.show_tab("needs")                                   # the cards the hidden page owed, built as it shows
+        assert wait_until(ny.cards.settled, 5)                  # (alpha 4 B: two in its frame, the rest on idle)
         builds, widgets = ny.cards.builds, {k: w for k, (_s, w) in ny.cards.cards.items()}
         assert wait_until(lambda: ny.counts()[1] == 0 and not ny._running, 10)   # marked seen: new entries
         for _ in range(20):

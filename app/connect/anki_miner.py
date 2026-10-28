@@ -30,6 +30,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 from app.connect import runfile, stopping
 
@@ -40,6 +41,9 @@ SETUP_TIMEOUT = 60 * 60.0       # one `setup` call (Z-11): a language's dictiona
 # What Anki Miner's own `setup` (Z-11) sets right by itself: these of its `check` items (its language pack and its
 # recommended dictionaries, frequency and pitch lists). A deck, a note type, a tool are never its (A4M1-2)
 SETUP_ITEMS = frozenset(("dictionary", "resources", "language_pack"))
+# What Surasura sets itself through Anki Miner's `settings-import` (Z-3, A4M1-2b): these of its `check` items — the
+# deck, note type and fields a language's cards go to (`connect.miner_settings`)
+SETTINGS_ITEMS = frozenset(("deck", "note_type", "fields"))
 LINE_TOLERANCE = 0.05           # seconds: a returned line_start further off is another line (sim.py, IS:311)
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{15B09250-AC39-4792-A15A-B73BD8E218A1}_is1"
 EXE = "AnkiMiner.exe"
@@ -47,6 +51,11 @@ CREATE_NO_WINDOW = 0x08000000
 WINERROR_VIRUS = 225            # "Operation did not complete successfully because the file contains a virus"
 DEFAULT_PROFILE = "Surasura"    # connect_anki_miner_profile's default (settings_manager)
 PROGRESS = "progress.json"      # a run's progress, in its folder (API.md; written at most every 0.25 s)
+# *Finish its setup*'s folder under local data (`services.anki_miner_setup`): the settings file and Anki Miner's
+# `--progress` file while it runs, emptied after. Its folder or progress file moved within SETUP_FRESH_S is a setup
+# running (`setting_up`, A2-6); one a Surasura that quit mid-setup left goes stale once Anki Miner is done.
+SETUP_STAGING = "anki-miner-setup"
+SETUP_FRESH_S = 600
 POLL_S = 1.0                    # how often a mine call's progress is read while it runs (laptop round 5 #23)
 # The read-only verbs (row 56): one still under way at a job's *Stop* is ended (`stopping.wait`), the job stopped
 # before its step. Never `mine`, nor any verb that may write: Anki Miner's run is cancelled through its cancel file.
@@ -358,10 +367,34 @@ def mines(kind, info=None):
 
 
 def can_set_up(info, items):
-    """A4M1-2: can Surasura do some of this Anki Miner's setup itself — it names `setup` (Z-11) and one of the
-    `check` items `items` names is one its `setup` sets right (`SETUP_ITEMS`)? The rest (a deck, a note type) stays
-    named (intent keeper IK-A2: the dictionaries never wait for them)."""
-    return bool(set(items or ()) & SETUP_ITEMS) and "Z-11" in features(info or {})
+    """A4M1-2 / A4M1-2b: can Surasura do some of this Anki Miner's setup itself — one of the `check` items `items`
+    names is one its `setup` (Z-11) sets right (`SETUP_ITEMS`), or one its `settings-import` (Z-3) does
+    (`SETTINGS_ITEMS`: the deck, note type and fields), and it names that verb? The rest (ffmpeg) stays named (intent
+    keeper IK-A2: what Surasura can do never waits for it)."""
+    return bool(set(items or ()) & ours(info))
+
+
+def ours(info):
+    """The `check` items Surasura sets right itself with this Anki Miner (`can_set_up`)."""
+    named = features(info or {})
+    return (SETUP_ITEMS if "Z-11" in named else frozenset()) | (SETTINGS_ITEMS if "Z-3" in named else frozenset())
+
+
+def setting_up():
+    """Is Surasura's *Finish its setup* running Anki Miner's setup now (A2-6: a Connect run told BUSY meanwhile names
+    the setup, never "Anki Miner is open")? Its folder is there, and it or the progress file Anki Miner writes in it
+    moved within SETUP_FRESH_S. Never raises."""
+    try:
+        from app.path_utils import get_local_data_path
+        folder = os.path.join(get_local_data_path(), SETUP_STAGING)
+        times = [os.stat(folder).st_mtime]
+    except Exception:
+        return False
+    try:
+        times.append(os.stat(os.path.join(folder, PROGRESS)).st_mtime)
+    except OSError:
+        pass
+    return time.time() - max(times) < SETUP_FRESH_S
 
 
 def run_setup(path, language, profile, progress_path, on_poll=None):
@@ -384,6 +417,37 @@ def run_setup(path, language, profile, progress_path, on_poll=None):
     failed = [f"{name}: {r.get('message') or 'not installed'}" for name, r in pieces
               if isinstance(r, dict) and r.get("status") == "failed"]
     raise AnkiMinerError("failed", "Anki Miner's setup didn't finish" + (" — " + "; ".join(failed) if failed else "."))
+
+
+def settings_import(path, language, values, folder, name=None, profile=None):
+    """Anki Miner's own `settings-import` (Z-3, A4M1-2b): `values` (its settings keys: the deck, note type and fields,
+    or {} for the language alone) written into the profile `profile` (an id), or into a new profile called `name`, a
+    copy of the one its window uses — never that one (Anki Miner refuses it: `refused`). `language` is the profile's
+    mining language after, as its window's switch sets it; a language that profile never mined is set up for it.
+    The file it reads is written in `folder` (which must exist) and removed after. Under its run lock: its window open
+    or a run of its own -> `busy`. Never ended with Surasura (`bind=False`: a settings write is finished, never cut).
+    -> its `result` ({"profile", "created", "invalid_fields"}); a value it refused -> AnkiMinerError `refused` naming
+    it (the profile keeps its own value for it)."""
+    if bool(name) == bool(profile):
+        raise ValueError("settings_import takes a new profile's name or an existing profile, one of them")
+    os.makedirs(folder, exist_ok=True)
+    file = os.path.join(folder, f"settings-{language}.{os.getpid()}.json")
+    try:
+        with open(file, "w", encoding="utf-8") as f:
+            json.dump(values, f, ensure_ascii=False)
+        args = ["settings-import", file, "--language", language] + (["--name", name] if name else
+                                                                    ["--profile", profile])
+        result = _result(api(path, args, bind=False))
+    finally:
+        try:
+            os.remove(file)
+        except OSError:
+            pass
+    refused = [str(key) for key in result.get("invalid_fields") or ()]
+    if refused:
+        raise AnkiMinerError("refused", "Anki Miner didn't take " + ", ".join(refused) + " from Surasura.",
+                             verdict=result)
+    return result
 
 
 def profiles(path):

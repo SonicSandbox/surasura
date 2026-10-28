@@ -100,6 +100,9 @@ def test_an_anki_miner_refusal_keeps_its_kind(api, tmp_path, error, kind):
     (["setup"], {"dictionary", "resources", "language_pack"}, True),
     (["setup"], {"dictionary", "deck"}, True),            # the dictionaries done, the deck named (IK-A2)
     (["setup"], {"deck", "note_type"}, False),            # a deck is Anki's: never Anki Miner's setup
+    (["setup", "settings-import"], {"deck", "note_type"}, True),   # A4M1-2b: Surasura sets them (Z-3)
+    (["settings-import"], {"fields"}, True),
+    (["settings-import"], {"dictionary", "ffmpeg"}, False),        # its settings-import downloads nothing
     (["setup"], set(), False),                            # nothing missing: nothing to run
     ([], {"dictionary"}, False),                          # an Anki Miner that names no `setup` (before 3.7)
 ])
@@ -136,6 +139,8 @@ def world(monkeypatch, tmp_path):
         return {}
     monkeypatch.setattr(setup, "checks", checks)
     monkeypatch.setattr(anki_miner, "run_setup", run_setup)
+    # the language already mined in that profile, its deck and note type right: nothing for settings-import (A4M1-2b)
+    monkeypatch.setattr(anki_miner, "settings_export", lambda path, language, out, profile=None: {"configured": True})
     monkeypatch.setattr(M, "_busy", lambda: state["busy"])
     from app import path_utils
     monkeypatch.setattr(path_utils, "get_local_data_path", lambda: str(tmp_path / "local"))

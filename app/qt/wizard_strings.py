@@ -222,15 +222,27 @@ CANCEL_DOWNLOAD_TIP = "Stop the download. Nothing is left behind."
 MINER_CHECK_TIP = "Look for Anki Miner again, once it's installed or set up."
 # A4M1-2 (lean taken, PROVISIONAL): Surasura runs Anki Miner's own setup — never "open Anki Miner"
 FINISH_SETUP = "Finish its setup"
-FINISH_SETUP_TIP = ("Anki Miner downloads its dictionaries by itself, as its own setup does.\n"
-                    "• Nothing to open: it runs in the background, a few minutes")
-SETUP_SAID = {"set-up": "Anki Miner's setup is finished.",
+FINISH_SETUP_TIP = ("Anki Miner downloads its dictionaries by itself, as its own setup does, and Surasura sets its "
+                    "deck and note type from yours.\n• Nothing to open: it runs in the background, a few minutes")
+# A4M1-2b: what Surasura can't tell from your settings is chosen here, never in Anki Miner's window
+MINER_DECK = "New cards go in"
+MINER_DECK_TIP = "The Anki deck Anki Miner puts your new cards in. Surasura sets it in Anki Miner for you."
+MINER_NOTE_TYPE = "Note type"
+MINER_NOTE_TYPE_TIP = ("The kind of card Anki Miner makes (Lapis, Kiku…). Surasura sets it in Anki Miner for you, "
+                       "with its fields.")
+MINER_ASK_DECK = "Which deck should Anki Miner put your new cards in? Choose it, then press Finish its setup again."
+MINER_ASK_NOTE = ("Which note type should Anki Miner make your cards with? Choose it, then press Finish its setup "
+                  "again.")
+MINER_ASK_FIELDS = ("“{note}” has no Sentence field, so Anki Miner can't make your cards with it. Choose another "
+                    "note type, then press Finish its setup again.")
+SETUP_SAID = {"set-up": "Anki Miner's setup is finished.{detail}",
               "busy": "Anki Miner or Surasura's card making is running: Anki Miner's setup waits until it's done. "
                       "Try again then.",
               "failed": "Anki Miner's setup didn't finish: {detail}",
               "missing": "Anki Miner isn't installed where Surasura looked.",
               "ready": "Anki Miner's setup is already finished.",
-              "rest": "Anki Miner's dictionaries are in. Still to do in Anki Miner: {detail}"}
+              "rest": "Anki Miner's setup went as far as Surasura can take it. Still missing: {detail}",
+              "ask": "Choose where Anki Miner puts your cards, then press Finish its setup again.{detail}"}
 DOTS = ("Anki", "AnkiWeb", "Anki Miner", "Its setup")
 DOT_STATE = {"ok": "ready", "warn": "needs you", "off": "not yet"}
 DOT_NAME = "{name}: {state}"

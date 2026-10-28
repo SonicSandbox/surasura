@@ -1769,6 +1769,23 @@ class _Combo(QComboBox):
             event.ignore()
 
 
+def _choice_row(label, tip, parent):
+    """A label and a menu on one line (the Anki Miner page's asked deck and note type) -> (row, menu)."""
+    row = QWidget(parent)
+    line = QHBoxLayout(row)
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(_px(14))
+    line.addWidget(_label("wizlabel", label, row))
+    box = _Combo(row)
+    box.setToolTip(tip)
+    box.setAccessibleName(label)
+    box.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    box.setMinimumWidth(_px(150))
+    line.addWidget(box)
+    line.addStretch(1)
+    return row, box
+
+
 class OrderPage(_Page):
     id = "order"
 
@@ -1932,6 +1949,20 @@ class CardsPage(_Page):
                                             lambda: self.wiz.open_star(self.btn_star), self.acts, name="wizstar"),
                                     end=True)
         acts.addWidget(self.btn_star)
+        # A4M1-2b: what Surasura can't tell from your settings — the deck, the note type Anki Miner fills — chosen
+        # here, never in Anki Miner's window; shown after a *Finish its setup* that asked (`show_ask`)
+        self.ask_part = QWidget(self)
+        ask = QVBoxLayout(self.ask_part)
+        ask.setContentsMargins(0, _px(8), 0, 0)
+        ask.setSpacing(_px(6))
+        self.ask_line = _label("wizsub", "", self.ask_part, wrap=True)
+        ask.addWidget(self.ask_line)
+        self.deck_row, self.ask_deck = _choice_row(S.MINER_DECK, S.MINER_DECK_TIP, self.ask_part)
+        ask.addWidget(self.deck_row)
+        self.note_row, self.ask_note = _choice_row(S.MINER_NOTE_TYPE, S.MINER_NOTE_TYPE_TIP, self.ask_part)
+        ask.addWidget(self.note_row)
+        self.ask_part.setVisible(False)
+        words.addWidget(self.ask_part)
         words.addWidget(self.acts)
         self.steps = _label("wizsub", "", self, wrap=True)
         self.steps.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -2103,6 +2134,8 @@ class CardsPage(_Page):
             self.btn_install.setToolTip(tip)
             self.btn_install.setAccessibleName(text)
         _show(self.btn_setup, bool((fix or {}).get("setup")) and not ready and not update and not self.wiz.setup_failed)
+        if ready or not (fix or {}).get("setup"):
+            self.show_ask(None)                           # nothing left to choose
         _show(self.btn_check, look is not None and not ready and (state != "missing" or self.wiz.install_opened))
         _show(self.acts, any(not b.isHidden() for b in (self.btn_install, self.btn_setup, self.btn_check,
                                                         self.btn_star)))
@@ -2111,6 +2144,29 @@ class CardsPage(_Page):
             _name, st, tip = dots[i] if i < len(dots) else (None, "off", "")
             d.set_state(st, tip or S.DOT_NAME.format(name=d.name, state=S.DOT_STATE.get(st, S.DOT_STATE["off"])))
         self.wiz.paint_footer()
+
+    def show_ask(self, asked):
+        """A4M1-2b: the deck or the note type *Finish its setup* asked for (`miner_settings.plan`'s choices, Surasura's
+        own first and chosen), else None: hidden."""
+        asked = asked or {}
+        decks, notes = asked.get("deck"), asked.get("note_type")
+        for row, box, items in ((self.deck_row, self.ask_deck, decks), (self.note_row, self.ask_note, notes)):
+            if items:
+                box.clear()
+                box.addItems([str(i) for i in items])
+                box.setCurrentIndex(0)
+            _show(row, bool(items))
+        line = (S.MINER_ASK_FIELDS.format(note=asked.get("note") or "") if asked.get("why") == "fields"
+                else S.MINER_ASK_DECK if decks else S.MINER_ASK_NOTE if notes else "")
+        _set_text(self.ask_line, line)
+        _show(self.ask_part, bool(decks or notes))
+
+    def chosen(self):
+        """What the learner picked in the asked rows -> {"deck", "note_type"} (None where not asked), or None."""
+        if self.ask_part.isHidden():
+            return None
+        return {"deck": self.ask_deck.currentText() or None if not self.deck_row.isHidden() else None,
+                "note_type": self.ask_note.currentText() or None if not self.note_row.isHidden() else None}
 
     def _copy_path(self):
         QApplication.clipboard().setText(self.path_text)
@@ -2122,6 +2178,7 @@ class CardsPage(_Page):
         f.setFamilies(list(theme.path_font_families(language)))
         self.path.setFont(f)
         self.look = None
+        self.show_ask(None)
         self._paint(None)
 
 
@@ -3028,7 +3085,8 @@ class SetupWizard(QWidget):
         self.setting_up = True
         page = self.pages[4]
         p = qpress.begin(page.btn_setup, "wizard:miner-setup", win=self)
-        settings, language = thaw(self._settings()), self.language
+        settings, language, chosen = thaw(self._settings()), self.language, page.chosen()
+        save = getattr(getattr(self.services, "settings", None), "set", None)    # Surasura's own profile's name
 
         def done(answer):
             self.setting_up = False
@@ -3036,7 +3094,14 @@ class SetupWizard(QWidget):
                 qpress.end(p, self, failed=answer[0] in ("failed", "busy", "missing"))
             if answer[0] == "failed":
                 self.setup_failed = True    # review A2-3 / A2-5: not offered again here (the service: this session)
-            self.say(S.SETUP_SAID.get(answer[0], "").format(detail=answer[1] or ""))
+            # A4M1-2b: chosen here, never in Anki Miner — and only on the language it was asked for (review: a
+            # language switched while the setup ran never gets the other's decks)
+            if answer[0] != "busy":         # busy: the choice stays for the next press (intent keeper)
+                page.show_ask(answer[1] if answer[0] == "ask" and language == self.language else None)
+            detail = answer[1] if isinstance(answer[1], str) else (answer[1] or {}).get("said") or ""
+            if answer[0] in ("set-up", "ask") and detail:
+                detail = " " + detail
+            self.say(S.SETUP_SAID.get(answer[0], "").format(detail=detail))
             self.look_miner()
 
         def failed(info):
@@ -3053,7 +3118,8 @@ class SetupWizard(QWidget):
 
         def run():
             try:
-                ended.call(("answer", miner.finish_setup_as_job(registry, settings, language)))
+                ended.call(("answer", miner.finish_setup_as_job(registry, settings, language, chosen=chosen,
+                                                                save=save)))
             except Exception as e:
                 ended.call(("failed", (e,)))
         threading.Thread(target=run, name="anki-miner-setup", daemon=True).start()

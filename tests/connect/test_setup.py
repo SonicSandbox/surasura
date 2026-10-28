@@ -447,6 +447,7 @@ def test_a_named_profile_an_anki_miner_without_settings_import_lacks_points_at_s
                   profiles=[{"id": "p-main", "name": "メイン", "active": True}])
     check = _by_id(setup.checks(_settings(ready_37, connect_anki_miner_profile="字幕"), "ja"))["anki_miner_profile"]
     assert check["do"] == setup.UPDATE_PROFILE_DO and not check.get("setup") and not check.get("make")
+    assert check["update"] is True, "its Update button is shown (review): never a pointer at a hidden one"
 
 
 def test_the_record_forgets_an_anki_miner_that_was_uninstalled(monkeypatch, ready_37):

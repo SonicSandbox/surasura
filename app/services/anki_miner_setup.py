@@ -633,8 +633,12 @@ def finish_setup(settings, language, on_progress=None, chosen=None, save=None):
                 return SETUP_FAILED, " ".join(filter(None, (still.get("say") or "",
                                                             SAID_MADE_UNSEEN.format(name=wanted).strip())))
         answer = _finish(settings, language, result, on_progress, chosen, save, made)
-        if answer[0] == "ready" and made:   # the profile was all it lacked
-            return SET_UP, made.strip()
+        if answer[0] == "ready" and made:   # the profile was all it lacked — when its setup check says so (DevTest
+            left = {c.get("id"): c for c in result.get("checks") or () if isinstance(c, dict)}.get(   # drill run 2)
+                "anki_miner_setup") or {}
+            if left.get("state") in ("ok", "waiting"):
+                return SET_UP, made.strip()
+            return SET_UP_REST, " ".join(filter(None, (left.get("say") or "", made.strip())))
         return answer
     except Exception as e:          # never raises: the page says it didn't finish
         return SETUP_FAILED, " ".join(filter(None, (str(e), made.strip())))

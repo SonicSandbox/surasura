@@ -811,3 +811,32 @@ def test_a_profile_said_in_the_line_is_not_named_again_with_the_dictionaries(wor
     result, said = M.finish_setup(ZH, "zh")      # Surasura's own profile made: its name is said once
     assert result == M.SET_UP and said.count("“Surasura”") == 1
     assert M.SAID_DICTS_SHORT.format(language="Chinese").strip() in said
+
+
+def test_a_profile_made_whose_setup_check_cant_be_read_is_never_called_set_up(world, monkeypatch):
+    """DevTest drill run 2: the profile was made, then Anki Miner's check of it didn't answer — said, never "set up"."""
+    def checks(settings, language, keep=True):
+        if not world["imports"]:
+            profile = setup._check("anki_miner_profile", "needs-you", "…", setup.PROFILE_DO)
+            profile.update(setup=True, make="字幕")
+            return {"checks": [profile], "anki_miner": {"path": MINER, "features": ["settings-import"]}}
+        broke = setup._check("anki_miner_setup", "needs-you", "Anki Miner didn't answer Surasura's question: …", "…")
+        return {"checks": [setup._check("anki_miner_profile", "ok", "ok"), broke],
+                "anki_miner": {"path": MINER, "profile": "u5b57-u5e55", "profile_name": "字幕"}}
+    monkeypatch.setattr(setup, "checks", checks)
+    result, said = M.finish_setup(ZH, "zh")
+    assert result == M.SET_UP_REST and said.startswith("Anki Miner didn't answer")
+    assert M.SAID_MADE.format(name="字幕").strip() in said
+
+
+def test_the_address_is_written_even_when_the_deck_must_be_asked_in_the_same_press(world):
+    """Mutant F9: a press that must ask for the deck still writes Surasura's address meanwhile (never lost)."""
+    world["configured"], world["items"], world["profile"] = True, ["anki", "deck"], "surasura-1"
+    world["profiles"] = [{"id": "default", "name": "Default", "active": True},
+                         {"id": "surasura-1", "name": "Surasura", "active": False}]
+    two = {"anki_sync_decks": {"zh": ["中文::句子", "中文::HSK"]}, "anki_connect_url": "http://127.0.0.1:8766"}
+    world["anki"] = Anki(["中文::句子", "中文::HSK"], {"Lapis": LAPIS})
+    result, asked = M.finish_setup(two, "zh")
+    assert result == M.ASK and asked["deck"][:2] == ["中文::句子", "中文::HSK"]
+    assert [i["values"] for i in world["imports"]] == [{"ankiconnect_url": "http://127.0.0.1:8766"}]
+    assert M.SAID_ADDRESS.format(url="http://127.0.0.1:8766").strip() in asked["said"]

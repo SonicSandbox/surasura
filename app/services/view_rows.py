@@ -86,6 +86,11 @@ Episode = namedtuple("Episode", Episode._fields + ("moved",),
 #   moved (MV-2): the folder its video left — Connect's line (`feed.Item.moved`), else ▶'s own look's
 #   (`play.MovedAway`): its ⋯ offers *Find its folder…*, Connect on or off, any language, mined or not
 #   answered; False with no looker and in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("text",),
+                     defaults=tuple(Episode._field_defaults.values()) + (False,))
+#   text (alpha 4 M1, A4M1-3): what Anki Miner can't mine yet, this file being one (`connect.library.waits_for`,
+#   Connect's one rule) — "books" (a book or a text, by its file's own type) or "audio" (a podcast's or an
+#   audiobook's), else False; False in a cache from before
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -201,14 +206,14 @@ STRINGS = {
     "tip_mine": "Not in your top {line}: it isn't mined yet",
     # row 13 (laptop fixes): Connect off — no top line, so no "top" in the words either
     "tip_mine_rest_off": "{k}/{n} mined", "tip_mine_off": "It isn't mined yet",
-    "tip_no_media": "No {word} on disk{top}\n• Link one for pictures and audio, or mine the text on its own",
+    "tip_no_media": "No {word} on disk{top}\n• Link one for its pictures and audio",
     "tip_no_media_top": " — it's in your top {line}, so it's waiting for one",
     "tip_removed": "Its {word} was removed after it was mined. The cards keep their pictures and audio",
     # --- P4.1 L2: what Connect's feed says of an item (row 4.1.10; the reason lines are the runner's)
-    "tip_connect_no_media": "{tip}\n• Link one for pictures and audio, or mine the text on its own",
+    "tip_connect_no_media": "{tip}\n• Link one for its pictures and audio",
     # MV-2 (Sonic: yes): its video left the folder it was in — Connect's line names it; *Find its folder* adds the
     # folder you pick as one Surasura reads, and the show finds its episodes there
-    "tip_connect_moved": "{tip}\n• Find its folder, link its video, or mine the text on its own",
+    "tip_connect_moved": "{tip}\n• Find its folder or link its video",
     "play_moved": "{tip}\n• Find its folder: in its ⋯ menu, or on its No {word}",
     "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
                                                 "Mine anyway: in Needs you",
@@ -233,6 +238,13 @@ STRINGS = {
     "play_waiting": "No subtitles yet: its {word} is in your folder, its subtitle file isn't\nIt can be watched and "
                     "mined once one arrives there",
     "no_subs": "No subtitles yet", "no_subs_n": "No subtitles yet · {n}",
+    # alpha 4 M1: a book or a text, while Anki Miner reads none — quiet, nothing to press (never its window)
+    "books_wait": "Waits for Anki Miner",
+    "tip_books_wait": "Anki Miner makes cards from videos only for now. Once a later update lets it read books and "
+                      "texts, Connect makes these cards by itself: nothing to do meanwhile.",
+    # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio
+    "tip_audio_wait": "Anki Miner makes cards from videos only for now. Once a later update lets it mine audio, "
+                      "Connect makes these cards by itself: nothing to do meanwhile.",
     "tip_no_subs": "Its {word} is in your folder, its subtitle file isn't yet: nothing to read or mine until one "
                    "arrives. Surasura fills it in by itself",
     "arr_no_subs": "no subtitles yet",
@@ -551,6 +563,12 @@ def status_of(eps, word, line_n):
         label = STRINGS["in_anki"].format(n=cards)      # mined = its cards are there, so cards > 0 (B-13, IK-27)
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
         st = Status("in_anki", label, tip, "ok")
+    elif ready and all(getattr(e, "text", False) and not _mines(e.text) for e in ready):
+        # alpha 4 M1 / A4M1-3: only books, texts or audio left to mine while Anki Miner mines none of them — nothing to
+        # press: Connect sets their jobs aside, and mines them by itself once it can (no *Mine*, no *Waiting*, never
+        # Anki Miner's window)
+        audio = all(e.text == "audio" for e in ready)
+        st = Status("books", STRINGS["books_wait"], STRINGS["tip_audio_wait" if audio else "tip_books_wait"], "faint")
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
@@ -581,6 +599,21 @@ def status_of(eps, word, line_n):
     elif removed:
         mark = Mark(len(removed), "faint", STRINGS["mark_removed"].format(Word=Word, eps=_eps_list(removed)))
     return st, mark
+
+
+def _waits_for(item, media):
+    """What Anki Miner can't mine yet, this item being one — Connect's one rule (`connect.library.waits_for`):
+    "books", "audio", else False. Alpha 4 M1 / A4M1-3."""
+    from app.connect import library
+    return library.waits_for(item, media) or False
+
+
+def _mines(kind):
+    """Could this Surasura make cards from `kind` at all (`anki_miner.mines`, no Anki Miner asked)? False in this
+    build: the row's quiet line is right whatever Anki Miner is installed. Alpha 4 M1 — the build that teaches Surasura
+    Z-9 / Z-16 asks the installed Anki Miner here too (the setup record's features, as `runner.Steps.mines`)."""
+    from app.connect import anki_miner
+    return anki_miner.mines("audio" if kind == "audio" else "books")
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #
@@ -627,7 +660,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
-                 ask=ask, looking=looking)
+                 ask=ask, looking=looking, text=_waits_for(item, media))
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -739,12 +772,13 @@ def _row_connected(st, eps, connect, word):
 
 class _Shim:
     """An episode as `status_of` reads it (`mined`: its cards are in Anki — never the receipt alone)."""
-    __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted", "waiting")
+    __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted", "waiting", "text")
 
     def __init__(self, ep, mined):
         self.label, self.cards, self.mined, self.deleted = ep.label, ep.cards, mined, ep.deleted
         self.missing, self.removed, self.in_top, self.mining = ep.missing, ep.removed, ep.in_top, ep.mining
         self.waiting = getattr(ep, "waiting", False)
+        self.text = getattr(ep, "text", False)          # alpha 4 M1
 
 
 def _media(work, files, guessed):

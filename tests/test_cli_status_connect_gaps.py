@@ -26,4 +26,5 @@ def test_status_for_chinese_carries_chineses_record_and_the_notice():
     assert code == 0, line
     assert line["language"] == "zh"
     assert line["connect"]["line"] == "Up to date"
-    assert line["connect"]["anki_miner_update"] == {"version": "3.8.0", "url": page}
+    # alpha 4 M5: the notice offers the approved release, whatever newer one a check kept
+    assert line["connect"]["anki_miner_update"] == {"version": am_release.APPROVED, "url": am_release.approved_page()}

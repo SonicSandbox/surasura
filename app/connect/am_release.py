@@ -13,7 +13,8 @@ GitHub update notice — shown when its window opens — is never seen. Connect 
   `latest` and `url` kept: a check cut off (a raise at exit, an update stop, a hang past the exit's wait, the process
   killed) is still the day's one try, and a Connect started meanwhile (`_kick`) finds none due. An attempt that can't
   be saved asks nothing. Written atomically; the answer written again only when it changed.
-- **What shows:** `notice(installed)` → `{version, url}` when the kept `latest` is newer than the Anki Miner installed
+- **What shows:** `notice(installed)` → `{version, url}` when the newest release Surasura has approved (`APPROVED`, alpha
+  4 M5: never past it, however new GitHub's `latest` is) is newer than the Anki Miner installed
   (`installed()`: what Connect already knows — the installer's version, the setup record's `version` answer; never a
   new probe; only a version with digits counts), else None. No fetch: an Anki Miner updated by hand clears it at once
   (the registry's version is in `status.stamp`, so the row reads again at its next look). The status record carries it
@@ -32,6 +33,13 @@ import threading
 import time
 
 REPO = "0xzerolight/anki_miner"
+# Alpha 4 M5 (Sonic 2026-10-27: "we should have approved versions that go out for each time … if we test it at 3.10.1,
+# then we should make that the new default"): the one Anki Miner Surasura installs and offers as an update — the
+# version drill LOOP passed at (2026-10-24, run 3) — and its Windows installer's sha256 as GitHub lists it. A newer
+# release is offered only once the drill passes at it and these two lines are bumped (the planning folder's
+# `tracks/pipeline/work/alpha4/anki-miner-pin.md`). A newer Anki Miner you installed yourself still runs.
+APPROVED = "3.10.1"
+APPROVED_SHA256 = "12ab3adca05a5584a5202cda3d1228150731207a3ba2c5bf46a5d0aa7f114c75"
 STATE = "am_release.json"
 RELEASES = f"https://github.com/{REPO}/releases"
 EVERY_S = 24 * 3600             # at most once a day
@@ -212,6 +220,12 @@ def finish():
     return not thread.is_alive()
 
 
+def approved_page():
+    """The approved release's own page (alpha 4 M5): where every *Install* fallback and the notice send you — never the
+    releases list, whose newest release isn't approved yet."""
+    return f"{RELEASES}/tag/v{APPROVED}"
+
+
 def _key(version):
     """A version to compare: its numbers, trailing zeros dropped (3.8 is 3.8.0)."""
     from app import update_checker
@@ -245,15 +259,16 @@ def installed():
 
 
 def notice(installed_version, state=None):
-    """{"version", "url"} when the kept latest is newer than `installed_version`, else None (nothing kept, Anki Miner
-    not known to be installed, up to date). No fetch. Never raises."""
+    """{"version", "url"} of the approved release (`APPROVED`, alpha 4 M5: a release Surasura hasn't approved is never
+    offered, newer or older) once a check has kept a release and it is newer than `installed_version`, else None (nothing kept, Anki Miner not known to be installed,
+    up to date). No fetch. Never raises."""
     try:
         state = read_state() if state is None else state
         latest = state.get("latest")
         if not known(latest) or not known(installed_version):
             return None
-        if _key(latest) <= _key(installed_version):
-            return None
-        return {"version": latest, "url": _page(state.get("url"))}
+        if _key(APPROVED) <= _key(installed_version):
+            return None                     # up to the approved version, or past it by hand: nothing to offer
+        return {"version": APPROVED, "url": approved_page()}
     except Exception:
         return None

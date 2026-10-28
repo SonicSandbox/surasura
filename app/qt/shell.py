@@ -1321,8 +1321,8 @@ class ShellWindow(QMainWindow):
         self._fetcher = None
         self.cover_fetcher()
         # --- end W3.2 L3
-        # --- P4.1 L2: Connect's actions — the stones' Mine now / Mine this / Link… / Mine text, Finished's Mine and Mine
-        # it too, the arrivals' Mine them too, Needs you's Mine the text only (`mine_actions.py`), given a writer
+        # --- P4.1 L2: Connect's actions — the stones' Mine now / Mine this / Link…, Finished's Mine and Mine
+        # it too, the arrivals' Mine them too (`mine_actions.py`), given a writer
         self.mine = None
         if self.moves is not None:
             from app.qt import mine_actions

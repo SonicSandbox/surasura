@@ -87,7 +87,8 @@ def test_a_hand_edited_state_url_never_reaches_the_notice(url):
     """Mutant B16: `notice` applies the releases-page rule again, so a state edited by hand (or by an older build)
     can't make the link a download or another site."""
     _write_state({"checked_at": "2026-10-13T12:00:00Z", "latest": "3.8.0", "url": url})
-    assert am_release.notice("3.7.0") == {"version": "3.8.0", "url": am_release.RELEASES}
+    # alpha 4 M5: the link is always the approved release's own page — a kept URL never reaches it at all
+    assert am_release.notice("3.7.0") == {"version": am_release.APPROVED, "url": am_release.approved_page()}
 
 
 def test_installed_compares_versions_by_their_numbers(monkeypatch):
@@ -97,22 +98,25 @@ def test_installed_compares_versions_by_their_numbers(monkeypatch):
     setup.write_record({"anki_miner": {"path": "C:/x/AnkiMiner.exe", "app": "3.9.0"}})
     monkeypatch.setattr(anki_miner, "installed_version", lambda: "3.10.0")
     assert am_release.installed() == "3.10.0"
+    monkeypatch.setattr(am_release, "APPROVED", "3.10.0")    # alpha 4 M5: the notice compares the approved version
     _write_state({"checked_at": "2026-10-13T12:00:00Z", "latest": "3.10.0", "url": PAGE})
     assert am_release.notice(am_release.installed()) is None, "3.10.0 installed: no notice for 3.10.0"
 
 
 @pytest.mark.parametrize("latest, installed", [("4.0", "4"), ("4", "4.0.0"), ("3.0", "3")])
-def test_a_release_differing_only_by_trailing_zeros_is_no_notice(latest, installed):
+def test_a_release_differing_only_by_trailing_zeros_is_no_notice(latest, installed, monkeypatch):
     """Mutant B18: trailing zeros are dropped down to one number — 4 is 4.0 is 4.0.0."""
+    monkeypatch.setattr(am_release, "APPROVED", latest)       # alpha 4 M5: the notice compares the approved version
     _write_state({"checked_at": "2026-10-13T12:00:00Z", "latest": latest, "url": PAGE})
     assert am_release.notice(installed) is None
 
 
-def test_a_version_with_a_prefix_counts_as_known():
+def test_a_version_with_a_prefix_counts_as_known(monkeypatch):
     """Mutant B19: a version counts as known when it holds a digit anywhere — "v3.7.0" too."""
     assert am_release.known("v3.7.0") and am_release.known("AnkiMiner 3.7.0")
+    monkeypatch.setattr(am_release, "APPROVED", "3.8.0")      # alpha 4 M5: the notice offers the approved version
     _write_state({"checked_at": "2026-10-13T12:00:00Z", "latest": "3.8.0", "url": PAGE})
-    assert am_release.notice("v3.7.0") == {"version": "3.8.0", "url": PAGE}
+    assert am_release.notice("v3.7.0") == {"version": "3.8.0", "url": am_release.approved_page()}
 
 
 # --------------------------------------------------------------------------- #

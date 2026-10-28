@@ -356,10 +356,10 @@ def test_every_done_wherever_it_is_clicked_goes_through_the_pages_one_path(seede
     assert len(got) == 4
 
 
-def test_the_mine_now_button_asks_for_its_files_and_no_video_names_link_and_mine_text(seeded):
+def test_the_mine_now_button_asks_for_its_files_and_no_video_names_link_alone(seeded):
     """Waiting's icon is the Mine now button: hit-tested, and its click asks the page's routing for its files
     (`mine_requested`, P4.1 row 4.1.11 — moved from "it arrives in a later build"); no toast, the row stays closed. No
-    video shows a warning whose tip names Link and Mine text."""
+    video shows a warning whose tip names Link (alpha 4 M1: never Anki Miner's window)."""
     seed, win = seeded(size=(1280, 1100))
     lst = current(win)
     entries = lst.model().entries
@@ -377,7 +377,7 @@ def test_the_mine_now_button_asks_for_its_files_and_no_video_names_link_and_mine
             "toast" in w.objectName().lower()] == []
     k = next(n for n, e in enumerate(entries) if e[0] == rows.ROW and e[1].status.kind == "no_media")
     warn = part(lst, k, "no-media")[0]
-    assert "link its video" in warn[2] and "mine its text" in warn[2]
+    assert "link its video" in warn[2] and "Anki Miner" not in warn[2]
 
 
 # --- hover ---------------------------------------------------------------------------------------------------------------

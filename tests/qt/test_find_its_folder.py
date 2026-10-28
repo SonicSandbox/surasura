@@ -37,7 +37,7 @@ def _moved(ep, folder=OLD):
 
 
 def test_a_moved_episode_offers_find_its_folder_first_and_a_plain_one_never(act):
-    # why: the learner's way on is the folder; Link… and Mine text stay. A No video that didn't move (never downloaded,
+    # why: the learner's way on is the folder; Link… stays (alpha 4 M1: Mine text is gone). A No video that didn't move (never downloaded,
     # a drive unplugged) offers nothing about a folder
     _seed, win, _writer = act()
     lst = lst_of(win)
@@ -46,12 +46,12 @@ def test_a_moved_episode_offers_find_its_folder_first_and_a_plain_one_never(act)
     rect = QRect(10, 10, 40, 20)
     lst._press_action("no-media", rect, row, rows.Ask(ep.id, (ep.id,), _moved(ep)), "tip")
     menu = lst.action_menu
-    assert [a.text() for a in menu.actions()] == [strings.ROWS_FIND_FOLDER, strings.ROWS_LINK, strings.ROWS_MINE_TEXT]
+    assert [a.text() for a in menu.actions()] == [strings.ROWS_FIND_FOLDER, strings.ROWS_LINK]
     assert OLD in menu.actions()[0].toolTip()
     menu.close()
     lst._press_action("no-media", rect, row, rows.Ask(ep.id, (ep.id,), ep._replace(status=view_rows.Status(
         "no_media", "No video", "tip", "warn"))), "tip")
-    assert [a.text() for a in lst.action_menu.actions()] == [strings.ROWS_LINK, strings.ROWS_MINE_TEXT]
+    assert [a.text() for a in lst.action_menu.actions()] == [strings.ROWS_LINK]
     lst.action_menu.close()
     entries = win.mine.episode_entries(row, _moved(ep))
     assert [(e.name, e.label, e.writes) for e in entries] == [("ep-find-folder", strings.ROWS_FIND_FOLDER, True)]

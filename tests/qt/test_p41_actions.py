@@ -146,37 +146,30 @@ def test_mine_this_below_the_line_asks_for_every_file_that_can_be_mined(act):
     assert asks(writer) == [("ask_mining", [e.id for e in row.episodes if not e.missing], {"on": True})]
 
 
-def test_a_books_mine_this_makes_no_ask_and_opens_anki_miner_with_its_path_copied(act, monkeypatch):
-    """K67 / IK S3: Anki Miner's API mines video only — a book's *Mine this* is *Mine text*: no ask, Anki Miner's own
-    window, the file's path on the clipboard, a toast saying so."""
+def test_a_book_row_waits_quietly_for_anki_miner_its_status_no_button_and_nothing_opened(act, monkeypatch):
+    """Alpha 4 M1 (was K67's *Mine text*; Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner.
+    Ever."): a book's row says *Waits for Anki Miner*, quietly — no *Mine this* to press, no ask, and nothing opens
+    Anki Miner's window."""
     from app.connect import anki_miner
-    from app.qt import windows
+    from app.services import view_rows
     _seed, win, writer = act()
     lst = lst_of(win)
     opened = []
-    monkeypatch.setattr(anki_miner, "find", lambda _s: r"C:\Programs\AnkiMiner\Anki Miner.exe")
-    from app.qt import screens                                 # (a program: opened on a worker, round 8 row 45)
-    monkeypatch.setattr(screens, "open_with_system", lambda path: opened.append(path))
+    monkeypatch.setattr(anki_miner, "find", lambda _s: opened.append("looked"))
     entries = lst.model().entries
-    i = next(n for n, e in enumerate(entries) if e[0] == rows.ROW and e[1].media_word != "video" and
-             any(p[0] == "mine-this" for p in parts_of(lst, n)))
-    row = entries[i][1]
-    lst.scrollTo(lst.model().index(i, 0), lst.ScrollHint.PositionAtTop)
-    QApplication.processEvents()
-    click(lst, action(lst, i))
-    assert wait_until(lambda: opened, 5)
-    assert asks(writer) == [] and opened == [r"C:\Programs\AnkiMiner\Anki Miner.exe"]
-    assert wait_until(lambda: win.toasts.card is not None and bool(win.toasts.card.base), 5)  # (once it opened)
-    ep = row.episodes[0]
-    from app import path_utils
-    assert QApplication.clipboard().text() == os.path.join(path_utils.get_data_path("ja"), *ep.rel_path.split("/"))
-    assert strings.MINE_TEXT_COPIED.format(name=ep.label) == win.toasts.card.base
+    books = [e[1] for e in entries if e[0] == rows.ROW and e[1].episodes and all(ep.text for ep in e[1].episodes)]
+    assert books, "the seed holds a book or a text"
+    for row in books:
+        assert row.status.kind == "books" and row.status.label == view_rows.STRINGS["books_wait"]
+        assert row.status.tone == "faint"
+    i = next(n for n, e in enumerate(entries) if e[0] == rows.ROW and e[1] is books[0])
+    assert not any(p[0] in rows.ACTION_NAMES for p in parts_of(lst, i)), "nothing to press"
+    assert asks(writer) == [] and opened == []
 
 
-def test_no_video_offers_link_and_mine_text_and_link_hands_the_chosen_video_to_the_writer(act, monkeypatch):
-    """4.1.9L / C6: *No video*'s button opens *Link…* · *Mine text*; *Link…* picks a video (the picker's filter: the
-    videos Connect makes cards from) and the writer links it to that episode; with no Anki Miner, *Mine text* says so."""
-    from app.connect import anki_miner
+def test_no_video_offers_link_alone_and_link_hands_the_chosen_video_to_the_writer(act):
+    """4.1.9L: *No video*'s button opens *Link…* (alpha 4 M1: *Mine text*, Anki Miner's own window, is gone); *Link…*
+    picks a video (the picker's filter: the videos Connect makes cards from) and the writer links it to that episode."""
     _seed, win, writer = act()
     lst = lst_of(win)
     i = row_with(lst, "no_media", None)
@@ -184,7 +177,7 @@ def test_no_video_offers_link_and_mine_text_and_link_hands_the_chosen_video_to_t
     p = action(lst, i)
     click(lst, p)
     menu = lst.action_menu
-    assert menu is not None and [a.text() for a in menu.actions()] == [strings.ROWS_LINK, strings.ROWS_MINE_TEXT]
+    assert menu is not None and [a.text() for a in menu.actions()] == [strings.ROWS_LINK]
     assert all(a.toolTip() for a in menu.actions())
     asked = []
     win.mine.pick_file = lambda title, folder, patterns: asked.append((title, patterns)) or r"D:\Videos\第1話.mkv"
@@ -194,10 +187,6 @@ def test_no_video_offers_link_and_mine_text_and_link_hands_the_chosen_video_to_t
                                                                    {"path": r"D:\Videos\第1話.mkv"})]
     assert asked[0][0] == strings.LINK_TITLE.format(label=p[3].episode.label) and "*.mkv" in asked[0][1]
     menu.close()
-    monkeypatch.setattr(anki_miner, "find", lambda _s: None)
-    click(lst, action(lst, i))
-    lst.action_menu.actions()[1].trigger()
-    assert wait_until(lambda: win.bar_line.full() == strings.MINE_TEXT_NO_MINER, 5)
     assert asks(writer) == [] and row.key == lst.model().entries[i][1].key
 
 
@@ -341,26 +330,11 @@ def test_finished_mine_and_mine_it_too_and_the_arrivals_mine_them_too_ask_throug
     assert len(asks(writer)) == n + 1 and asks(writer)[-1][1] == want
 
 
-def test_needs_you_mine_the_text_only_is_set_and_opens_anki_miner_with_the_lines_file(act, monkeypatch):
-    """4.1.12: Needs you's *Mine the text only* is C6."""
-    from app.connect import anki_miner
-    from app.qt import windows
-    from app.services import needs as service
+def test_needs_you_has_no_mine_the_text_only_any_more(act):
+    """Alpha 4 M1: *Needs you*'s *Mine the text only* (Anki Miner's own window) is gone — no hook, nothing offered."""
     _seed, win, _writer = act()
     ny = win.needs_you
-    assert "mine_text_only" in ny.hooks and ny.available("mine_text_only")
-    opened = []
-    monkeypatch.setattr(anki_miner, "find", lambda _s: r"C:\AnkiMiner.exe")
-    from app.qt import screens
-    monkeypatch.setattr(screens, "open_with_system", lambda path: opened.append(path))
-    line = service.NeedLine(key="item:1", text="第3話 · no video", item_id=1, label="第3話", number=3,
-                            rel_path="HighPriority/葬送のフリーレン/葬送のフリーレン 第3話.srt", actions=())
-    entry = service.Entry(key="video:x", kind=service.NO_VIDEO, title="葬送のフリーレン", lines=(line,), actions=(),
-                          unseen=False)
-    ny.act("mine_text_only", entry, None)                      # the card's own button: its first file
-    assert wait_until(lambda: opened, 5)
-    assert wait_until(lambda: "第3話" in QApplication.clipboard().text(), 5)       # (copied once it opened)
-    assert QApplication.clipboard().text().endswith(os.path.join("葬送のフリーレン", "葬送のフリーレン 第3話.srt"))
+    assert "mine_text_only" not in ny.hooks
 
 
 def test_needs_you_make_their_cards_is_connects_ordinary_work_in_the_gaps_language_then_answers_the_entry(
@@ -489,14 +463,14 @@ def test_not_timed_is_no_mine_now_button_and_a_wait_on_anki_or_battery_is():
     assert turn.tone == "dim" and rows.action_of(turn, (_ep(turn),))[0] == "mine-now"
 
 
-def test_a_books_button_says_it_opens_anki_miner_and_works_while_connect_is_off():
-    """WF fixes 6 and 7 (IK S5, N2; K67): a book's *Mine this* opens Anki Miner — its tip says so, never "mine it now"
-    — and, needing no Connect, it is no refused ask while Connect is off; a video's *Mine this* is."""
+def test_a_non_video_mine_this_tip_never_names_anki_miners_window_and_needs_no_connect():
+    """WF fixes 6 and 7 (IK S5, N2), alpha 4 M1: a non-video file's *Mine this* tip is its status's own (never "mine it
+    now", never Anki Miner's window), the same while Connect is off — it asks nothing; a video's *Mine this* is
+    refused while Connect is off."""
     from app.services import view_rows
     st = view_rows.Status("mine", "Mine", "Not in your top 20: it isn't mined yet", "ink")
     name, tip, _ask = rows.action_of(st, (_ep(st),), None, "text")
-    assert name == "mine-this" and tip == strings.ROWS_MINE_TEXT_THIS_TIP.format(tip=st.tip)
-    assert "mine it now" not in tip and "Anki Miner" in tip
+    assert name == "mine-this" and tip == st.tip and "Anki Miner" not in tip
     assert rows.action_of(st, (_ep(st),), feed.OFF_CONNECT, "text")[1] == tip
     assert rows.action_of(st, (_ep(st),), feed.OFF_CONNECT, "video")[1] == strings.ROWS_ACTION_OFF.format(
         tip=st.tip, why=feed.OFF_CONNECT)
@@ -521,11 +495,9 @@ def test_while_connect_is_off_link_still_links_and_a_video_ask_is_still_refused(
     assert asks(writer) == []
 
 
-def test_one_file_is_said_as_one_and_mine_text_says_connect_waits_while_anki_miner_is_open(act):
-    """WF fix 6 (IK S5; the N1 disposition): "1 file", never "1 files"; C6's toast says Connect waits while Anki
-    Miner's window is open."""
+def test_one_file_is_said_as_one(act):
+    """WF fix 6 (IK S5; the N1 disposition): "1 file", never "1 files"."""
     assert strings.MINE_ASKED_ONE == "1 file: its cards come next"
-    assert "Connect waits while Anki Miner's window is open" in strings.MINE_TEXT_COPIED
     _seed, win, writer = act()
     tray = win.arrivals_tray
     assert wait_until(lambda: tray.watched(), 10)
@@ -572,7 +544,8 @@ def test_the_bulk_asks_never_name_a_file_in_anki_being_mined_or_whose_cards_were
 def test_mine_them_too_asks_for_an_arrivals_videos_only_and_leaves_its_epub_out_saying_so(act, monkeypatch):
     """K67 (IK S3) on New arrivals: Anki Miner mines video only, so *Mine them too* over a video show and an EPUB that
     came with it asks for the videos alone (`mine_actions.videos_of`, the rule *Mine now* uses), the toast saying the
-    other files were left out; an EPUB alone asks nothing and opens its *Mine text*. Wrong, the book's file made a job
+    other files were left out; an EPUB alone asks nothing and the bar says it waits
+    for Anki Miner (alpha 4 M1: never its window). Wrong, the book's file made a job
     Anki Miner can never finish."""
     _seed, win, writer = act()
     tray = win.arrivals_tray
@@ -590,11 +563,9 @@ def test_mine_them_too_asks_for_an_arrivals_videos_only_and_leaves_its_epub_out_
     tray.mine_them_too()
     assert asks(writer)[-1][1] == [e.id for e in videos] and epub.id not in asks(writer)[-1][1]
     assert win.toasts.card.base == strings.MINE_ASKED_N_VIDEOS[len(videos) == 1].format(n=len(videos))
-    opened = []
-    monkeypatch.setattr(win.mine, "mine_text", lambda label, rel_path: opened.append((label, rel_path)))
     n = len(asks(writer))
-    win.mine.mine_ids([epub.id])                             # the EPUB alone: no ask, its Mine text
-    assert len(asks(writer)) == n and opened == [(epub.label, epub.rel_path)]
+    win.mine.mine_ids([epub.id])                             # the EPUB alone: no ask, the bar says it waits
+    assert len(asks(writer)) == n and win.bar_line.full() == strings.MINE_BOOKS_WAIT
 
 
 def test_a_double_click_on_mine_now_asks_once(act):
@@ -642,9 +613,10 @@ def test_two_switch_workers_asking_for_one_languages_feed_get_one_feed(monkeypat
     assert len(got) == 2 and got[0] is got[1]
 
 
-def test_LM11b_a_groups_epub_is_mine_text_though_the_group_is_led_by_a_video(act, monkeypatch):
+def test_LM11b_a_groups_epub_asks_nothing_though_the_group_is_led_by_a_video(act):
     """K67 judged by the file, not the row: a group led by an anime holding a light novel's EPUB — *Mine this* on the
-    EPUB is *Mine text* (Anki Miner's own window), never an ask Anki Miner can't do; on the anime's episode, the ask."""
+    EPUB asks nothing (the bar says it waits for Anki Miner; alpha 4 M1: never its window); on the anime's episode,
+    the ask."""
     from app.services import view_rows as vr
     from tests import test_view_rows as tvr
     _seed, win, writer = act()
@@ -657,12 +629,10 @@ def test_LM11b_a_groups_epub_is_mine_text_though_the_group_is_led_by_a_video(act
     row = vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces=pieces).rows[0]
     book = row.episodes[2]
     assert row.media_word == "video" and book.media_word == "EPUB"
-    texts = []
-    monkeypatch.setattr(win.mine, "mine_text", lambda label, rel: texts.append((label, rel)))
     win.mine.mine_row(row, [book.id])
-    assert texts == [(book.label, book.rel_path)] and asks(writer) == []
+    assert asks(writer) == [] and win.bar_line.full() == strings.MINE_BOOKS_WAIT
     win.mine.mine_row(row, [row.episodes[0].id])
-    assert texts == [(book.label, book.rel_path)] and [c[1] for c in asks(writer)] == [[row.episodes[0].id]]
+    assert [c[1] for c in asks(writer)] == [[row.episodes[0].id]]
 
 
 def test_LM11b_a_groups_mine_now_asks_its_videos_alone_and_says_the_rest_are_left_out(act):

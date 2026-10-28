@@ -48,6 +48,10 @@ ANKI_ACTIONS = ("guiReviewActive", "getActiveProfile", "findNotes", "notesInfo",
 ANKI_ITEMS = frozenset({"anki", "deck", "note_type", "fields"})
 FETCH_ONLY = frozenset({"yt_dlp", "speech_model"})
 RELEASES = "https://github.com/0xzerolight/anki_miner/releases"
+# A4M1-2: the `do` of a setup Surasura finishes itself (`check["setup"]`: the wizard's *Finish its setup*)
+SETUP_DO = "Surasura finishes it for you: Anki Miner downloads them by itself, nothing to open"
+SETUP_DO_SOME = ("Surasura has Anki Miner download its dictionaries by itself; the rest ({rest}) is chosen in Anki "
+                 "Miner's own settings")
 ANKICONNECT_CODE = "2055492159"     # AnkiConnect's add-on code on AnkiWeb
 
 OK, WAITING, NEEDS_YOU, NOT_CHECKED, SKIPPED = "ok", "waiting", "needs-you", "not-checked", "skipped"
@@ -312,6 +316,15 @@ def _anki_miner(settings, language, answered):
     own = {name_: item for name_, item in failed.items() if not (anki_down and name_ in ANKI_ITEMS)}
     if ready.get("ready") is True:          # its own verdict; what only its YouTube fetch needs never counts
         out.append(_check("anki_miner_setup", OK, "Anki Miner's own setup is finished."))
+    elif own and anki_miner.can_set_up(info, own):
+        # A4M1-2 (lean taken, PROVISIONAL): what Anki Miner's own `setup` installs, Surasura runs it for you
+        # (`services.anki_miner_setup.finish_setup`) — never "open Anki Miner"
+        named = "; ".join(f"{name_}: {item.get('message') or 'not ready'}" for name_, item in own.items())
+        rest = [name_ for name_ in own if name_ not in anki_miner.SETUP_ITEMS]
+        check = _check("anki_miner_setup", NEEDS_YOU, f"Anki Miner still needs its dictionaries ({named}).",
+                       SETUP_DO_SOME.format(rest=", ".join(rest)) if rest else SETUP_DO)
+        check["setup"] = True
+        out.append(check)
     elif own:
         named = "; ".join(f"{name_}: {item.get('message') or 'not ready'}" for name_, item in own.items())
         out.append(_check("anki_miner_setup", NEEDS_YOU, f"Anki Miner's own setup isn't finished ({named}).",

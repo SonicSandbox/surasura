@@ -50,6 +50,14 @@ def keeps(job, event=None):
     return False
 
 
+def _waits_for_books(store, item_id):
+    """Alpha 4 M1: a book or a text while this Surasura mines none (`library.waits_for`, `anki_miner.mines`): no gap
+    names it, as no job is made of it (`runner._books_aside`). An audio title's episode is named as any: whether it
+    waits is its video's to say, at the job's set-aside step (round 2 of the A4M1-3 review)."""
+    from app.connect import anki_miner
+    return library.waits_for(store.item(item_id) or {}) == "books" and not anki_miner.mines("books")
+
+
 def _gone(store, ledger, language):
     """A gap's reconcile (no events to trust): {item id: "removed" / "finished"} for the jobs `keeps` would keep, as
     the store holds their items now. An item that no longer counts (W-1's rule, `library.counts`: Finished, or a
@@ -93,7 +101,8 @@ def consume(store, language, ledger=None):
                     if job["item_id"] not in in_line and _drop(ledger, language, job["item_id"],
                                                                  gone.get(job["item_id"])):
                         dropped.append(job["item_id"])
-                missed = [i for i in line if library.mined_at(store, i) is None and not ledger.has_work(language, i)]
+                missed = [i for i in line if library.mined_at(store, i) is None and not ledger.has_work(language, i)
+                          and not _waits_for_books(store, i)]       # alpha 4 M1: never in the gap's card
                 waiting = ledger.gaps(language, unnoticed=True)
                 if missed and not (waiting and waiting[-1]["items"] == missed):   # a re-read after a kill: once
                     ledger.add_gap(language, missed)

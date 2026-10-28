@@ -113,7 +113,10 @@ def test_connect_losing_track_is_said_once_with_its_dates_and_count():
         s.bookkeeping({"reader_epoch:connect": -1})         # a Repair's new epoch: a gap
         inbox.consume(s, "ja", ledger)
         since = ledger.gaps("ja")[0]["since"][:10]
+        from app.connect import library
+        n = len([i for i in library.mine_line(s) if not library.text_only(s.item(i))])  # alpha 4 M1: never a book
+    assert n == 1, "the suite's top 2 hold a subtitle and a text"
     line = notice.at_open("ja")
     assert line.startswith(f"Connect lost track of your moves from {since} to ") and \
-        line.endswith(": 2 episodes in the top 20 have no cards"), line
+        line.endswith(": 1 episode in the top 20 has no cards"), line
     assert notice.at_open("ja") is None, "said once"

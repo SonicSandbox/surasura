@@ -10,8 +10,8 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   the store's `availability` = missing — the view's `Episode.missing`; one line per missing file of Current, wherever
   it stands: *Choose file…* · *Choose a folder…* → the writer's `relink`, *Keep its words*, *Remove*) and *no
   video* (`no-video`: the content is there and Connect's job for it waits on its video, `runner.NO_VIDEO`: *Find
-  videos* · *Link these · N* → the writer's `link_video`, never `relink`; *Mine the text only*, hidden until P4.1 wires
-  it). Shows in Current's order; a show with both gets both cards, its gone files first.
+  videos* · *Link these · N* → the writer's `link_video`, never `relink`; alpha 4 M1: never a book's, and no *Mine
+  the text only*). Shows in Current's order; a show with both gets both cards, its gone files first.
 - **9a's questions** (IK-3, `Store.rename_asks()` read on the reader's worker by `asks_of`): *Is this the one from …?*
   with the missing files it may be; *This one* → `relink`, *It's new* → `its_new`.
 - **a source folder that is GONE** (T6, Sonic 2026-10-24: "Yes your lean is exactly what i'd do"): one card per
@@ -100,9 +100,10 @@ FOLDER_MIN = 10                 # gone files (of two shows or more) before a fol
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE)
-# action names the window hides until P4.1 sets their callable (RUNBOOK §2; IK-2: *Mine the text only*)
-WIRED_LATER = frozenset(("mine_text_only", "make_cards", "start_fresh"))   # K1's *Start fresh*: until the window
-#                                                                               maps it (`SourceLooks.fresh`'s sheet)
+# action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
+# (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
+WIRED_LATER = frozenset(("make_cards", "start_fresh"))   # K1's *Start fresh*: until the window maps it
+#                                                         (`SourceLooks.fresh`'s sheet)
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
                    "mine-failed": ("open_logs",), "error": ("open_logs",)}
@@ -261,6 +262,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
         if hit is None:
             unplaced.append(job)
             continue
+        if hit[1].text:
+            continue                        # alpha 4 M1: a book waits for Anki Miner (Connect's next look sets it aside)
         novideo.setdefault(_group(hit[0]), []).append(hit)
     big, folded = ([], set()) if view is None or getattr(view, "cached", False) else \
         _fold_gone(rows, gone, offline, seen, getattr(view, "counts", None), settled and not roots)   # K3 / K1
@@ -391,10 +394,9 @@ def _video_entry(group, hits, seen, mine_line):
         say = s["need_line_n"].format(line=mine_line, word=word)
     lines = tuple(NeedLine(key=item_key(e.id), text=f"{e.label} · " + s["need_ep"].format(word=word), item_id=e.id,
                            label=e.label, number=e.number, rel_path=e.rel_path,
-                           actions=("choose_video", "mine_text_only")) for _r, e in hits)
+                           actions=("choose_video",)) for _r, e in hits)
     key = f"video:{group}:{_digest(ids)}"
-    return Entry(key=key, kind=NO_VIDEO, title=title, lines=lines, actions=("find_videos", "link_these",
-                                                                           "mine_text_only"),
+    return Entry(key=key, kind=NO_VIDEO, title=title, lines=lines, actions=("find_videos", "link_these"),
                  unseen=key not in seen, say=say,
                  data={"work_id": row.work_id, "title": row.title, "media_word": word, "item_ids": tuple(ids),
                        "folder": _folder(hits[0][1].rel_path), "group": group})

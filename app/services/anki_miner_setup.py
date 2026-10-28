@@ -20,12 +20,14 @@
   existing core touchpoint's kind, Sonic's yes 2026-10-15 as relayed by the W3.5 lead; the §1 line is the lead's):
   Anki Miner's official installer from its own GitHub releases, checked by GitHub's sha256, only when the learner
   presses Install and says yes. `DOWNLOAD_ENABLED` (True as shipped) is the one switch: False opens Anki Miner's
-  releases page in the browser (`setup.RELEASES`, as 2.x's *Install*) -> `"opened-releases"`, `_fetch` never called.
+  approved release's page in the browser (`am_release.approved_page`; 2.x opened `setup.RELEASES`) -> `"opened-releases"`, `_fetch` never called.
   On: Windows only · never while Anki Miner runs or a Connect run holds its lock (`"busy"`, nothing opened) ·
   `confirm()` once, **before any byte**: no `confirm` handed in -> the releases page, nothing fetched; False ->
-  `"declined"`, nothing fetched or opened · GitHub's latest release of `0xzerolight/anki_miner` (never a pinned
-  version: his installer refuses a downgrade) · exactly one `*-Windows-x86_64-Setup.exe` asset, its size under
-  `SIZE_CAP`, GitHub's `sha256:` digest present · streamed into a staging folder under local data
+  `"declined"`, nothing fetched or opened · the release of `0xzerolight/anki_miner` Surasura has approved
+  (`am_release.APPROVED`, alpha 4 M5: the version its drill passed at; never GitHub's latest — his installer refuses
+  a downgrade, so a newer one you installed stays) · exactly one
+  `*-Windows-x86_64-Setup.exe` asset, its size under `SIZE_CAP`, GitHub's `sha256:` digest present and the one
+  approved with it (`am_release.APPROVED_SHA256`) · streamed into a staging folder under local data
   (`path_utils.get_local_data_path()`), only from GitHub's hosts (`HOSTS`, https; a redirect elsewhere is refused),
   with `on_progress(done, total)`, `cancel` looked at every chunk and the cap counted as it comes · the digest and
   size must match · his installer opened as he made it (`updater.launch_installer`: visible, his licence page, his
@@ -53,12 +55,11 @@ import urllib.request
 import webbrowser
 
 from app.connect import am_release
-from app.connect.setup import RELEASES
+from app.connect.setup import RELEASES  # noqa: F401  (2.x's page; the fallback opens the approved release's, alpha 4 M5)
 
 DOWNLOAD_ENABLED = True         # the download (Sonic's yes, 2026-10-15); False = the releases page, as 2.x
 
 STAR_URL = f"https://github.com/{am_release.REPO}"      # = connect.settings_panel.STAR_URL (a Tk module: not imported)
-LATEST_API = f"https://api.github.com/repos/{am_release.REPO}/releases/latest"
 ASSET_PATTERN = "*-Windows-x86_64-Setup.exe"
 # GitHub's own hosts: the API, the release's download link and the asset stores it redirects to. Nothing else.
 HOSTS = frozenset({"api.github.com", "github.com", "objects.githubusercontent.com",
@@ -167,8 +168,10 @@ def look(settings, language):
         mine = [by_id[i] for ids in _DOT_CHECKS for i in ids if i in by_id]
         yours = [c for c in mine if c.get("state") == "needs-you"]
         first = next((c for c in yours if c.get("blocks")), None) or (yours[0] if yours else None)
-        fix = ({"say": first.get("say"), "do": first.get("do"), "update": bool(first.get("update"))}
-               if first else None)
+        fix = ({"say": first.get("say"), "do": first.get("do"), "update": bool(first.get("update")),
+                "setup": bool(first.get("setup"))} if first else None)
+        if fix and fix["setup"] and language in _FAILED:  # round 2 R2-6: it ran and didn't finish this session
+            fix.update(setup=False, do=SETUP_DO_FAILED)
         return {"state": state, "version": version, "dots": dots, "fix": fix}
     except Exception:
         return _off(settings)
@@ -343,10 +346,24 @@ def _launch(path):
 
 def _releases():
     try:
-        (open_url or webbrowser.open)(RELEASES)
+        (open_url or webbrowser.open)(am_release.approved_page())     # alpha 4 M5: the approved release's page
     except Exception:
         pass
     return OPENED_RELEASES
+
+
+def release_api():
+    """GitHub's answer for the approved release's tag (alpha 4 M5: never `releases/latest`)."""
+    return f"https://api.github.com/repos/{am_release.REPO}/releases/tags/v{am_release.APPROVED}"
+
+
+def _approved(asset):
+    """The approved release's installer (alpha 4 M5): its version and its sha256 the ones Surasura approved, else
+    _Refused (the releases page opens instead)."""
+    version, _name, _url, _size, sha256 = asset
+    if version != am_release.APPROVED or sha256 != am_release.APPROVED_SHA256.lower():
+        raise _Refused(f"Anki Miner {version} isn't the approved {am_release.APPROVED}, or its installer changed")
+    return asset
 
 
 def _route(on_progress, cancel, confirm):
@@ -359,7 +376,7 @@ def _route(on_progress, cancel, confirm):
     if not confirm():               # the one confirm, before any byte
         return DECLINED
     try:
-        _version, name, url, size, sha256 = _asset(_fetch(LATEST_API, as_json=True))
+        _version, name, url, size, sha256 = _approved(_asset(_fetch(release_api(), as_json=True)))
         _clean()
         folder = staging_folder()
         os.makedirs(folder, exist_ok=True)
@@ -434,3 +451,99 @@ def install(on_progress, cancel, on_end, confirm=None):
         except Exception:
             pass
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Anki Miner's own setup, run by Surasura (A4M1-2, lean taken — PROVISIONAL)
+# --------------------------------------------------------------------------- #
+SETUP_JOB_KIND = "anki-miner-setup"         # its kind in the window's registry (`jobs.RESOURCES`)
+SETUP_JOB_LABEL = "Finishing Anki Miner's setup"
+SETUP_STAGING = "anki-miner-setup"          # under local data: its `--progress` file, emptied after
+SET_UP, SETUP_FAILED, SET_UP_REST = "set-up", "failed", "rest"
+_FAILED = set()             # round 2 R2-6: the languages whose setup didn't finish this session (never offered again)
+SETUP_REFUSED = ("Anki Miner hasn't mined this language yet in the profile Connect uses, so its own setup can't "
+                 "start it. A later Surasura sets that up too; for now, choose the language once in Anki Miner")
+SETUP_STILL = "it ran, but Anki Miner still says: {say}"
+SETUP_DO_FAILED = "Its setup didn't finish from Surasura: open Anki Miner once and finish it there"
+
+
+def finish_setup(settings, language, on_progress=None):
+    """*Finish its setup* (Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever."): Anki
+    Miner's own `setup` (Z-11, `anki_miner.run_setup`) for `language`, under the profile Connect mines with, when its
+    check says only what that installs is missing (`setup.checks`' `anki_miner_setup` marked `setup`). Its downloads
+    are Anki Miner's, from its own catalogue, as its setup wizard's would be — Surasura fetches nothing. Blocking (a
+    worker); never stopped part-way (`run_setup`). `on_progress(stage, stages, item)` as its progress file moves.
+    -> (result, detail): "set-up" · "busy" (Anki Miner running, a Connect run, an install or another setup) ·
+    "failed" with Anki Miner's words · "ready" (nothing to set up: its check found nothing missing) · "missing"."""
+    if not _ONE_INSTALL.acquire(blocking=False):
+        return BUSY, None
+    try:
+        if _busy():
+            return BUSY, None
+        from app.connect import anki_miner, setup
+        result = setup.checks(settings, language, keep=False)
+        found = result.get("anki_miner") or {}
+        by_id = {c.get("id"): c for c in result.get("checks") or () if isinstance(c, dict)}
+        if not found.get("path"):
+            return "missing", None
+        if not (by_id.get("anki_miner_setup") or {}).get("setup"):
+            return "ready", None
+        from app import path_utils
+        folder = os.path.join(path_utils.get_local_data_path(), SETUP_STAGING)
+        os.makedirs(folder, exist_ok=True)
+        progress = os.path.join(folder, "progress.json")
+
+        def poll():
+            if on_progress is None:
+                return
+            try:
+                with open(progress, encoding="utf-8") as f:
+                    state = json.load(f)
+            except (OSError, ValueError):
+                return
+            on_progress(state.get("stage") or 0, state.get("stages") or 0, state.get("item"))
+        try:
+            anki_miner.run_setup(found["path"], language, found.get("profile"), progress, on_poll=poll)
+        except anki_miner.AnkiMinerError as e:
+            if e.kind == "busy":
+                return BUSY, None
+            if e.kind == "refused":         # review A2-5: a language this Anki Miner profile never mined
+                return SETUP_FAILED, SETUP_REFUSED
+            return SETUP_FAILED, e.message
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        # review A2-3: finished is what its check says now — a resource its setup never reinstalls (one you imported
+        # yourself) still missing is named, never "finished"
+        again = {c.get("id"): c for c in setup.checks(settings, language, keep=False).get("checks") or ()
+                 if isinstance(c, dict)}.get("anki_miner_setup") or {}
+        if again.get("setup"):
+            return SETUP_FAILED, SETUP_STILL.format(say=again.get("say") or "")
+        if again.get("state") == "needs-you":           # round 2 R2-7: its dictionaries in, a deck still to choose
+            return SET_UP_REST, again.get("say") or ""
+        return SET_UP, None
+    except Exception as e:          # never raises: the page says it didn't finish
+        return SETUP_FAILED, str(e)
+    finally:
+        _ONE_INSTALL.release()
+
+
+def finish_setup_as_job(registry, settings, language, on_progress=None):
+    """`finish_setup` as an `anki-miner-setup` job in `registry` while it runs: the bottom bar shows it and its stage;
+    no Cancel (it can't be stopped part-way). The quit never waits for it: Anki Miner finishes by itself
+    (`run_setup`, review A2-4). No registry: alone."""
+    if registry is None:
+        return finish_setup(settings, language, on_progress)
+    job = registry.record(SETUP_JOB_KIND, SETUP_JOB_LABEL, on_quit="detach")
+
+    def progress(stage, stages, item):
+        if on_progress is not None:
+            on_progress(stage, stages, item)
+        job.progress(SETUP_JOB_LABEL, stage, stages)
+    answer = (SETUP_FAILED, None)
+    try:
+        answer = finish_setup(settings, language, progress)
+        if answer[0] == SETUP_FAILED:
+            _FAILED.add(language)
+    finally:
+        job.finish(ok=answer[0] in (SET_UP, "ready"), message=answer[1] if answer[0] == SETUP_FAILED else None)
+    return answer

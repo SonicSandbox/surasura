@@ -527,7 +527,9 @@ class LibraryReader:
             return                                      # a4: built once it falls due (`_timeout` wakes the reader)
         view = self._build(numbers, mode, reason, rows_known=True)
         self._publish(view)
-        self._built_at, self._view_owed, self._numbers_at = time.monotonic(), False, None     # a4
+        self._view_owed, self._numbers_at = False, None     # a4
+        if not estimates_only:                          # fix round (IK-2): a burst is the store's commits — a view of
+            self._built_at = time.monotonic()           # the arrivals' numbers alone never holds the next commit back
         if self.freeze_gc:
             self._freeze()                              # A4 P-gil
         if mode == "store" and self.cache_file:

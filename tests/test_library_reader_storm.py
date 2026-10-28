@@ -373,3 +373,28 @@ def test_numbers_for_a_lone_arrival_show_at_once_but_ride_with_a_burst_that_is_u
         assert any(a.per_ep == 4 for a in views[-1][1].arrivals if owed_id in a.item_ids)
     finally:
         reader.stop()
+
+
+def test_a_commit_right_after_a_view_of_the_numbers_alone_is_not_held_back():
+    """IK-2: the burst rule counts the store's commits. A view built for New arrivals' numbers alone (no commit) held
+    the next file back a quarter second as if a burst were under way; it shows at once."""
+    seed = window_seed.build(language="zh")
+    reader = _reader(seed)
+    views = _collect(reader)
+    reader.start()
+    try:
+        assert _wait(lambda: views and not views[-1][1].loading)
+        time.sleep(library_reader.COALESCE_S + 0.05)
+        first = views[-1][1].arrivals[0]
+        n = len(views)
+        reader.set_estimates({i: 5 for i in first.item_ids})          # the numbers for what is already there
+        assert _wait(lambda: len(views) > n, 1.0)
+        n, held = len(views), reader.held_back
+        rows, works = _arrival(seed, 1, "第七扇门 番外")
+        t0 = time.monotonic()
+        seed.library.commit(items=rows, works=works, order=True)
+        assert _wait(lambda: any(rows[0]["id"] in a.item_ids for a in views[-1][1].arrivals), 1.0)
+        assert views[-1][0] - t0 < library_reader.COALESCE_S / 2, views[-1][0] - t0
+        assert reader.held_back == held
+    finally:
+        reader.stop()

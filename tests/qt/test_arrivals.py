@@ -92,9 +92,9 @@ class FakeWorker:
         return rid
 
 
-def open_window(qapp, seed, writer, worker=None, size=(1280, 900)):
+def open_window(qapp, seed, writer, worker=None, size=(1280, 900), coalesce=False):
     reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
-                                          mining=seed.mining, poll=0.02)
+                                          mining=seed.mining, poll=0.02, coalesce=coalesce)
     settings_manager.save_keys({"target_language": seed.language})    # the window's language is its library's (P0)
     services = shell.Services(library=reader, writer=writer)
     services.arrivals = worker
@@ -114,10 +114,10 @@ def open_window(qapp, seed, writer, worker=None, size=(1280, 900)):
 def world(qapp):
     made = []
 
-    def make(language="ja", worker=None, size=(1280, 900)):
+    def make(language="ja", worker=None, size=(1280, 900), coalesce=False):
         seed = window_seed.build(language=language)
         writer = ArrivalsWriter(seed.library)
-        win, services = open_window(qapp, seed, writer, worker, size)
+        win, services = open_window(qapp, seed, writer, worker, size, coalesce)
         made.append((win, services))
         return seed, win, writer
     yield make
@@ -832,13 +832,16 @@ def test_a_failed_estimate_shows_nothing_and_isnt_asked_again(tmp_path):
     assert arrivals.answer_number({"n_new_top": True}, False) is None
 
 
-def test_the_window_asks_each_new_files_estimate_once_and_shows_it_within_300_ms(world):
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_the_window_asks_each_new_files_estimate_once_and_shows_it_within_300_ms(world, language):
+    # fix round (IK-2): with the window's own reader (`coalesce`, as `shell.library_for` makes it) — the number used to
+    # wait out the burst rule behind the arrival's own view (~500 ms), and the reader without it never showed that
     worker = FakeWorker(n=8)
-    seed, win, _w = world(worker=worker)
+    seed, win, _w = world(language=language, worker=worker, coalesce=True)
     assert wait_until(lambda: all(a.per_ep is not None for a in tray_arrivals(win)), 5)
     assert len(worker.asked) == 10
     t0 = time.perf_counter()
-    item_id = _arrive(seed)
+    item_id = _arrive(seed, "山河令" if language == "zh" else "ぼっち・ざ・ろっく！")
     shown = lambda: any(item_id in a.item_ids and a.per_ep == 8 for a in tray_arrivals(win))  # noqa: E731
     assert wait_until(shown, 5)
     ms = (time.perf_counter() - t0) * 1000
@@ -846,6 +849,24 @@ def test_the_window_asks_each_new_files_estimate_once_and_shows_it_within_300_ms
     assert ms <= 300                                                  # functional (a shared machine)
     settle(100)
     assert len(worker.asked) == 11                                    # only the new file
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_a_file_arriving_at_rest_shows_its_number_with_its_next_paint_not_a_bursts_wait_later(world, language):
+    """IK-2: with the window's reader, a lone file arriving while nothing else is going on built its view at once, but
+    its *N new* (handed on a moment later) waited out the burst rule behind that view: a quarter second of a dash for
+    every file hato drops. No burst under way, the number shows at once."""
+    worker = FakeWorker(n=6)
+    seed, win, _w = world(language=language, worker=worker, coalesce=True)
+    assert wait_until(lambda: all(a.per_ep is not None for a in tray_arrivals(win)), 5)
+    settle(int((arrivals.HAND_EVERY + library_reader.COALESCE_S) * 1000) + 50)     # the window at rest
+    t0 = time.perf_counter()
+    item_id = _arrive(seed, "长安十二时辰" if language == "zh" else "葬送のフリーレン")
+    assert wait_until(lambda: any(item_id in a.item_ids for a in tray_arrivals(win)), 5)
+    assert wait_until(lambda: any(item_id in a.item_ids and a.per_ep == 6 for a in tray_arrivals(win)), 5)
+    ms = (time.perf_counter() - t0) * 1000
+    print(f"an arrival at rest -> its number in the tray: {ms:.0f} ms")
+    assert ms < library_reader.COALESCE_S * 1000 / 2, ms             # one look and a paint, never the burst's wait
 
 
 def test_S2_the_same_answers_again_hand_nothing_on_so_the_reader_builds_nothing(tmp_path):

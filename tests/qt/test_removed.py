@@ -18,6 +18,7 @@ import time
 import pytest
 
 pytest.importorskip("PyQt6")
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 
 from app import library_store as ls
@@ -241,6 +242,10 @@ def test_a_folder_with_nothing_removed_shows_no_button_and_the_trash_button_open
     assert line.back.isHidden() and line.removed == ()
     assert not folders.removed.isHidden() and folders.removed.text() == strings.REMOVED_OPEN
     assert folders.removed.toolTip() == strings.REMOVED_OPEN_TIP
+    # the icon alone (Sonic: "Too many words"); its words stay its name and its tip's first line, Tab reaches it
+    assert strings.REMOVED_OPEN == "🗑" and folders.removed.accessibleName() == strings.REMOVED_OPEN_NAME
+    assert folders.removed.toolTip().startswith("Removed in the last 30 days\n")
+    assert folders.removed.focusPolicy() & Qt.FocusPolicy.TabFocus
     folders.removed.click()
     assert wait_until(lambda: windows.opened(win, removed.WINDOW) is not None, 5)
 
@@ -422,3 +427,65 @@ def test_A4B6_after_a_language_switch_the_open_list_follows_the_new_librarys_rem
         services.shutdown(2.0)
         ja.close()
         zh.close()
+
+
+# --- New arrivals' foot: files a look kept out because they match removed ones (alpha 4, Mattias #8, A4K-6) -------- #
+def _kept_summary(win, ids, n, root=7):
+    """The looks' summary as `SourceLooks._notes` writes it: one source row whose look kept `n` files out (`ids`: the
+    Removes they match)."""
+    win._sources_looked({"language": win.language, "sources": [
+        {"id": root, "path": "D:/Incoming", "on": True, "items": 3, "reachable": True, "kept_out": n,
+         "kept_out_ids": sorted(ids)}]})
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_kept_out_files_show_in_new_arrivals_and_bring_back_is_one_put_back_with_one_undo(real, monkeypatch,
+                                                                                           language):
+    # Mattias #8: a copy of a book he removed, in another folder, was kept out and nothing said so — New arrivals says
+    # it (the inset shows for it with no arrival waiting) and Bring back is the 🗑 list's Put back: one change, one Undo
+    store, win, writer = real(language)
+    title, ids = _remove_row(win, writer)
+    trash = [i for e in store.removed() for i in e["trash_ids"]]
+    looked = []
+    monkeypatch.setattr(win.looks, "look_at", lambda root, language=None: looked.append((root, language)) or True)
+    inset, tray = win.arrivals_inset, win.arrivals_tray
+    assert inset.count == 0 and inset.isHidden() and tray.kept_box.isHidden()
+    _kept_summary(win, trash, 2)
+    assert not inset.isHidden() and inset.toolTip().startswith(strings.ARRIVALS_KEPT_OUT.format(n=2))
+    win.open_arrivals()
+    settle()
+    assert tray.isVisible() and not tray.kept_box.isHidden()
+    assert tray.kept_line.text() == "2 files you removed earlier were left out"
+    assert tray.bring_back.isEnabled() and tray.bring_back.accessibleName() == strings.ARRIVALS_BRING_BACK_NAME
+    tray.bring_back.click()
+    assert tray.kept_box.isHidden() and inset.isHidden()                # the press's answer, in the frame
+    assert wait_until(lambda: all(store.item(i) is not None for i in ids), 10)
+    _saved(win, writer)
+    assert win.toasts.card.base == strings.ARRIVALS_BROUGHT_BACK
+    assert looked == [(7, language)]                                    # its folder looked at: the copies come in now
+    _undo(win)                                                          # the toast's one Undo: removed again
+    assert wait_until(lambda: all(store.item(i) is None for i in ids), 10)
+
+
+def test_kept_out_one_file_says_so_greys_bring_back_when_the_store_cant_be_written_and_S19_touches_nothing_unchanged(
+        real, monkeypatch):
+    store, win, writer = real()
+    _remove_row(win, writer)
+    trash = [i for e in store.removed() for i in e["trash_ids"]]
+    inset, tray = win.arrivals_inset, win.arrivals_tray
+    _kept_summary(win, trash, 1)
+    assert tray.kept_line.text() == strings.ARRIVALS_KEPT_OUT_ONE
+    assert not inset.set_kept_out(1) and not tray.set_kept_out(1, sorted(trash), [7])   # the same summary: nothing
+    held = (inset.kept, tray.kept_out, tray.kept_line.text())
+    _kept_summary(win, trash, 1)
+    assert (inset.kept, tray.kept_out, tray.kept_line.text()) == held
+    monkeypatch.setattr(writer, "can_write", lambda: False)
+    monkeypatch.setattr(writer, "reason", lambda: "newer")
+    win.open_arrivals()
+    settle()
+    why = settings_sources.why_not(win)
+    assert why and not tray.bring_back.isEnabled() and tray.bring_back.toolTip() == why
+    assert not tray.bring_back_kept() and store.removed()               # nothing written
+    _kept_summary(win, (), 0)                                           # the looks no longer keep any out
+    settle()
+    assert inset.isHidden() and tray.kept_box.isHidden() and not tray.isVisible()

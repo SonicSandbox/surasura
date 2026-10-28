@@ -346,7 +346,7 @@ QPushButton#settingsmore:focus {{ border: 2px solid {c['accent']}; padding: 0 2p
     rules += f"""
 QScrollArea#trayscroll, QWidget#traybody {{ background: transparent; border: 0; }}
 QLabel#trayheading {{ color: {c['ink']}; {font('tray-heading')} }}
-QLabel#trayloading {{ color: {c['overlay-ink-dim']}; {font('body')} font-weight: 400; }}
+QLabel#trayloading, QLabel#traykeptout {{ color: {c['overlay-ink-dim']}; {font('body')} font-weight: 400; }}
 QWidget#arrivalstray QToolButton {{ color: {c['overlay-ink-dim']}; border: 1px solid transparent; }}
 QWidget#arrivalstray QToolButton:hover {{ background: {c['overlay-hover']}; color: {c['ink']}; }}
 """

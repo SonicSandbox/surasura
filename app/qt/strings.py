@@ -658,6 +658,16 @@ ARRIVALS_NAME = "New arrivals · {n} files"
 ARRIVALS_NAME_ONE = "New arrivals · 1 file"
 ARRIVALS_TIP = "New arrivals: {n} files waiting for a place\n• Open the tray to put them where you want them"
 ARRIVALS_TIP_ONE = "New arrivals: 1 file waiting for a place\n• Open the tray to put it where you want it"
+# alpha 4 (Mattias #8, A4K-6): the tray's foot — new files a look left out because they match files he removed
+ARRIVALS_KEPT_OUT = "{n:,} files you removed earlier were left out"
+ARRIVALS_KEPT_OUT_ONE = "A file you removed earlier was left out"
+ARRIVALS_KEPT_OUT_TIP = ("New files that are copies of files you removed: Surasura keeps them out of your library\n"
+                         "• Bring back puts what you removed back, and lets them in")
+ARRIVALS_KEPT_OUT_INSET_TIP = "{line}\n• Open the tray to bring them back"     # the inset, while no arrival waits
+ARRIVALS_BRING_BACK = "Bring back"
+ARRIVALS_BRING_BACK_NAME = "Bring back what you removed"
+ARRIVALS_BRING_BACK_TIP = "Put back the files you removed, and let their copies in\n• Undo removes them again"
+ARRIVALS_BROUGHT_BACK = "The files you removed are back in your library"
 TRAY_NAME = "New arrivals: what came in, newest first"
 TRAY_CLOSE = "✕"
 TRAY_CLOSE_NAME = "Close"
@@ -1470,9 +1480,10 @@ NEEDS_FIND_DROPPED_ARRIVAL = ("None of {show}'s episodes were there: {folder} is
 
 # --- alpha 4 P-removed (D3, Mattias #6): the 🗑 Removed list and Settings' *Bring back N removed* (app/qt/removed.py)
 REMOVED_NAME = "Removed"
-REMOVED_OPEN = "🗑 Removed…"
-REMOVED_OPEN_TIP = ("What you removed in the last 30 days, each with Put back\nRemoved files wait in the trash for 30 "
-                    "days, then they're gone for good")
+REMOVED_OPEN = "🗑"                # the icon alone (Sonic, 2026-10-27 late: "Too many words"): its words are its name + tip
+REMOVED_OPEN_NAME = "Removed…"
+REMOVED_OPEN_TIP = ("Removed in the last 30 days\nWhat you removed, each with Put back. Removed files wait in the trash "
+                    "for 30 days, then they're gone for good")
 REMOVED_LINE = "What you removed in the last 30 days. Put back brings a title back where it was."
 REMOVED_LOOKING = "Looking in the trash…"
 REMOVED_NONE = "Nothing removed in the last 30 days"

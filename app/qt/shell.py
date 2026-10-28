@@ -1591,10 +1591,26 @@ class ShellWindow(QMainWindow):
             return
         self._arrivals_view = view                        # SRC W1b / A4B-8: each arrival names its folder — the
         tray.set_groups(getattr(view, "arrival_groups", ()) or ())     # reader's thread named it (`follow_folders`)
-        if not arrivals and (tray.isVisible() or motion.opening_of(tray) is not None):
-            tray.close()
+        if not arrivals and not tray.kept_out[0] and (tray.isVisible() or motion.opening_of(tray) is not None):
+            tray.close()                                  # (alpha 4: its kept-out foot keeps it open)
         if self.arrival_numbers is not None and getattr(view, "language", self.language) == self.language:
             self.arrival_numbers.want(arrivals)
+
+    def _show_kept_out(self):
+        """Alpha 4 (Mattias #8, A4K-6): the files the looks kept out because they match files he removed (each source
+        row's `kept_out` / `kept_out_ids`, `SourceLooks._notes`) — New arrivals' foot with *Bring back*, and the inset
+        shown for it while no arrival waits. Nothing changed: nothing touched (S19)."""
+        if self.arrivals_inset is None:
+            return
+        rows = [r for r in self.sources if r.get("kept_out")]
+        n = sum(int(r["kept_out"]) for r in rows)
+        self.arrivals_inset.set_kept_out(n)
+        tray = getattr(self, "arrivals_tray", None)
+        if tray is None:
+            return
+        tray.set_kept_out(n, sorted({i for r in rows for i in r.get("kept_out_ids") or ()}), [r["id"] for r in rows])
+        if not n and not self.arrivals_inset.count and (tray.isVisible() or motion.opening_of(tray) is not None):
+            tray.close()
 
     def open_arrivals(self):
         """The inset's click (A2 #89: from any tab, Current first, then the tray), again to close it."""
@@ -2906,6 +2922,7 @@ class ShellWindow(QMainWindow):
         self.sources_listed = False
         self.offline_hidden = set()
         self._show_offline()
+        self._show_kept_out()
         # Settings' lines: the language open's, its listing asked for (never "No folders yet" while it is on its way)
         self.sources_seen.emit({"language": self.language, "sources": [], "listing": self.looks is not None})
         if self.looks is not None:
@@ -2965,6 +2982,7 @@ class ShellWindow(QMainWindow):
         self.offline_hidden = (self.offline_hidden | set(summary.get("kept_lines") or ())) & \
             standing_service.not_back(self.sources)       # round 8 row 54: a folder back lets its ✕ go
         self._show_offline()
+        self._show_kept_out()                             # alpha 4 (Mattias #8): New arrivals' kept-out foot
         looks = getattr(self.services.library, "play", None)
         if looks is not None and summary.get("moved"):   # row 55: a video come beside an original: ▶ looked again
             looks.again()                                 # (IK-1: a look that changed nothing looks at nothing)

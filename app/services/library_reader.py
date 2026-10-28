@@ -216,6 +216,7 @@ class LibraryReader:
         self._folders_new = False
         self._folders_ask = None           # (ask, then): the looks' `folders`, handed by the window (`follow_folders`)
         self._folders_asked = set()
+        self._folders_owed = False         # ... the last view's arrivals to ask at the next look (no build for it)
         # --- end A4B-8
         # --- LM11b G5: a window command not written yet ({item_id: tier}, `expect`), built in until the feed holds it
         self._expected = {}
@@ -281,22 +282,22 @@ class LibraryReader:
     # --- A4B-8
     def follow_folders(self, ask):
         """New arrivals' folders asked through `ask(item_ids, then)` (the looks' `folders(..., detail=True)`; None: no
-        looks) — every arrival's first file asked afresh at the next build, its answers (`then`, any thread) named
-        into the views from then on. Any thread."""
+        looks) — every arrival's first file asked afresh at the next look (no view built for it), its answers (`then`,
+        any thread) named into the views from then on. Any thread."""
         me = weakref.ref(self)                          # (never a cycle reader -> ask -> reader: AD0-2)
         with self._lock:
             self._folders_ask = None if ask is None else (ask, lambda found: _hand_folders(me, found))
             self._folders_asked = set()
-            self._folders_new = True
+            self._folders_owed = True
         self._wake.set()
 
     def set_folders(self, found):
         """The looks' answers ({item_id: where its original sits, or None}), from any thread: built into the next view
-        when any moved."""
+        when any moved (a file from no folder read names nothing: no view for it)."""
         if not isinstance(found, dict):
             return
         with self._lock:
-            moved = {k: v for k, v in found.items() if self._folders.get(k, ...) != v}
+            moved = {k: v for k, v in found.items() if self._folders.get(k) != v}
             if not moved:
                 return                                  # the same answers build nothing (S19)
             self._folders = {**self._folders, **moved}
@@ -507,6 +508,10 @@ class LibraryReader:
 
     def _look(self):
         self.looks += 1                                 # W3.2 B
+        if self._folders_owed:                          # A4B-8: the looks handed: the last view's arrivals asked
+            self._folders_owed = False
+            if self._view is not None:
+                self._ask_folders(self._view)
         mode, reason, h = self._handle()
         changed_mode = (mode, reason) != self._mode
         self._mode = (mode, reason)

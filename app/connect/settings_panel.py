@@ -491,8 +491,7 @@ class Panel:
                 row, "Browse…", self._browse, "Anki Miner is installed somewhere else: show Surasura where.")
         else:
             self.card_buttons["Open Anki Miner"] = self._button(
-                row, "Open Anki Miner", self._open_miner, "Start Anki Miner's own window, for its own settings. "
-                "Surasura never needs it open: Connect runs Anki Miner by itself.")
+                row, "Open Anki Miner", self._open_miner, "Start Anki Miner, to finish its setup.")
         self.card_buttons["Check again"] = self._button(row, "Check again", self.check,
                                                         "Look at Anki Miner's setup again.")
         for i, button in enumerate(self.card_buttons.values()):

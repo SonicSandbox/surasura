@@ -781,6 +781,24 @@ def test_A4M1_2_finish_its_setup_runs_anki_miners_own_setup_as_a_job_then_says_s
     assert runs == ["ja"] and qpress.arc(page.btn_setup) is None
 
 
+def test_A4M1_2_a_setup_that_didnt_finish_is_said_and_not_offered_again(make):
+    """Review A2-3 / A2-5: a setup that ran but didn't finish says why in the bar, and the page no longer offers it
+    this session (pressed again it would only run and fail again)."""
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner still needs its dictionaries.", "do": connect_setup.SETUP_DO, "update": False,
+           "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    miner.finish_setup_as_job = lambda registry, settings, language, on_progress=None: ("failed", "no space left")
+    wiz, *_ = make(miner=miner)
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    looks = miner.looks
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: wiz.setup_failed and miner.looks >= looks + 1)
+    assert wait_until(lambda: page.btn_setup.isHidden())
+
+
 # --- 6 · your list ----------------------------------------------------------------------------------------------------------- #
 _PER_BAND = {"core": (120, 81.0, 0.5), "common": (380, 90.2, 1.4), "occasional": (812, 96.1, 3.2),
              "uncommon": (1430, 97.4, 5.5), "rare": (2210, 98.2, 8.0), "very_rare": (3300, 98.9, None),

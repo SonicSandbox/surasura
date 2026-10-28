@@ -458,6 +458,9 @@ SETUP_JOB_KIND = "anki-miner-setup"         # its kind in the window's registry 
 SETUP_JOB_LABEL = "Finishing Anki Miner's setup"
 SETUP_STAGING = "anki-miner-setup"          # under local data: its `--progress` file, emptied after
 SET_UP, SETUP_FAILED = "set-up", "failed"
+SETUP_REFUSED = ("Anki Miner hasn't mined this language yet in the profile Connect uses, so its own setup can't "
+                 "start it. A later Surasura sets that up too; for now, choose the language once in Anki Miner")
+SETUP_STILL = "it ran, but Anki Miner still says: {say}"
 
 
 def finish_setup(settings, language, on_progress=None):
@@ -498,9 +501,19 @@ def finish_setup(settings, language, on_progress=None):
         try:
             anki_miner.run_setup(found["path"], language, found.get("profile"), progress, on_poll=poll)
         except anki_miner.AnkiMinerError as e:
-            return (BUSY, None) if e.kind == "busy" else (SETUP_FAILED, e.message)
+            if e.kind == "busy":
+                return BUSY, None
+            if e.kind == "refused":         # review A2-5: a language this Anki Miner profile never mined
+                return SETUP_FAILED, SETUP_REFUSED
+            return SETUP_FAILED, e.message
         finally:
             shutil.rmtree(folder, ignore_errors=True)
+        # review A2-3: finished is what its check says now — a resource its setup never reinstalls (one you imported
+        # yourself) still missing is named, never "finished"
+        again = {c.get("id"): c for c in setup.checks(settings, language, keep=False).get("checks") or ()
+                 if isinstance(c, dict)}.get("anki_miner_setup") or {}
+        if again.get("setup"):
+            return SETUP_FAILED, SETUP_STILL.format(say=again.get("say") or "")
         return SET_UP, None
     except Exception as e:          # never raises: the page says it didn't finish
         return SETUP_FAILED, str(e)
@@ -510,10 +523,11 @@ def finish_setup(settings, language, on_progress=None):
 
 def finish_setup_as_job(registry, settings, language, on_progress=None):
     """`finish_setup` as an `anki-miner-setup` job in `registry` while it runs: the bottom bar shows it and its stage;
-    no Cancel (it can't be stopped part-way), and a quit waits for it (`on_quit="wait"`). No registry: alone."""
+    no Cancel (it can't be stopped part-way). The quit never waits for it: Anki Miner finishes by itself
+    (`run_setup`, review A2-4). No registry: alone."""
     if registry is None:
         return finish_setup(settings, language, on_progress)
-    job = registry.record(SETUP_JOB_KIND, SETUP_JOB_LABEL, on_quit="wait")
+    job = registry.record(SETUP_JOB_KIND, SETUP_JOB_LABEL, on_quit="detach")
 
     def progress(stage, stages, item):
         if on_progress is not None:

@@ -2051,7 +2051,7 @@ class CardsPage(_Page):
             self.btn_install.setText(text)
             self.btn_install.setToolTip(tip)
             self.btn_install.setAccessibleName(text)
-        _show(self.btn_setup, bool((fix or {}).get("setup")) and not ready and not update)
+        _show(self.btn_setup, bool((fix or {}).get("setup")) and not ready and not update and not self.wiz.setup_failed)
         _show(self.btn_check, look is not None and not ready and (state != "missing" or self.wiz.install_opened))
         _show(self.acts, any(not b.isHidden() for b in (self.btn_install, self.btn_setup, self.btn_check,
                                                         self.btn_star)))
@@ -2235,6 +2235,7 @@ class SetupWizard(QWidget):
         self.install_opened = False         # *Install* opened the releases page: the page offers *Check again*
         self.installing = None              # the install route's cancel (a threading.Event) while it runs
         self.setting_up = False             # A4M1-2: Anki Miner's own setup running (*Finish its setup*)
+        self.setup_failed = False           # … and it didn't finish once this session: not offered again
         self.index = 0
         self.passed = set()
         self.generating = False
@@ -2963,7 +2964,9 @@ class SetupWizard(QWidget):
         def done(answer):
             self.setting_up = False
             if p is not None:
-                qpress.end(p, self, failed=answer[0] == "failed")
+                qpress.end(p, self, failed=answer[0] in ("failed", "busy", "missing"))
+            if answer[0] == "failed":
+                self.setup_failed = True    # review A2-3 / A2-5: not offered again this session (it would loop)
             self.say(S.SETUP_SAID.get(answer[0], "").format(detail=answer[1] or ""))
             self.look_miner()
 

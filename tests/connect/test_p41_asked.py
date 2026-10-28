@@ -301,14 +301,15 @@ def test_a_book_entering_the_line_is_no_open_job_and_is_mined_by_itself_once_ank
 
 @pytest.mark.parametrize("kind", ["audiobook", "podcast"])
 def test_an_audio_title_s_episode_waits_like_a_book_until_anki_miner_mines_audio(tmp_path, kind):
-    """A4M1-3 (lean taken, PROVISIONAL): an episode of a title you marked an audiobook or a podcast (audio, no video)
-    is set aside with AUDIO_WAIT the look it enters the line — never a *No video* card, nothing mined; books opening
-    leaves it aside (one kind, one ask: Z-16); once Anki Miner mines audio the same job is queued again and mined."""
+    """A4M1-3 (lean taken, PROVISIONAL): an episode of a title you marked an audiobook or a podcast, with no video
+    found for it, is set aside with AUDIO_WAIT the look it enters the line — never a *No video* card, nothing mined;
+    books opening leaves it aside (one kind, one ask: Z-16); once Anki Miner mines audio the same job is queued again
+    (its mining from the audio file is Z-16's own build: here it goes on to the pick)."""
     ids, kinds = _library()
     episode = _srt(ids, kinds)[-1]
     with c.store("ja") as s:
         s.set_media_type([s.item(episode)["work_id"]], kind)
-    steps = _steps(tmp_path, {episode: WORDS[1]})
+    steps = _steps(tmp_path, {episode: WORDS[1]}, videos={str(episode): None})
     _place_top(episode)
     out = _run(steps)["languages"]["ja"]
     assert (_jobs(episode)[-1]["state"], _jobs(episode)[-1]["reason"]) == ("skipped", runner.AUDIO_WAIT)
@@ -317,6 +318,42 @@ def test_an_audio_title_s_episode_waits_like_a_book_until_anki_miner_mines_audio
     _run(steps)
     assert _jobs(episode)[-1]["reason"] == runner.AUDIO_WAIT, "books opening is no audio"
     steps.can = {"books", "audio"}
+    _run(steps)
+    assert len(_jobs(episode)) == 1 and _jobs(episode)[-1]["reason"] != runner.AUDIO_WAIT, "the same job, again"
+
+
+def test_a_podcast_whose_episode_has_a_video_is_mined_as_before(tmp_path):
+    """Review A2-1: a title typed *Podcast* whose episode has its video beside it (a video podcast) is mined as any
+    video is — the title's type alone never sets an episode aside."""
+    ids, kinds = _library()
+    episode = _srt(ids, kinds)[-1]
+    with c.store("ja") as s:
+        s.set_media_type([s.item(episode)["work_id"]], "podcast")
+    steps = _steps(tmp_path, {episode: WORDS[1]})
+    _place_top(episode)
+    _run(steps)
+    assert _jobs(episode)[-1]["state"] == "done" and _mined(steps) == [episode]
+
+
+@pytest.mark.parametrize("change", ["video found", "type corrected"])
+def test_an_audio_episode_set_aside_is_queued_again_once_it_no_longer_waits(tmp_path, change):
+    """Review A2-2: an episode set aside as audio is queued again at the next look once it no longer waits — its video
+    found, or its title's type corrected — and mined; nothing to undo."""
+    ids, kinds = _library()
+    episode = _srt(ids, kinds)[-1]
+    with c.store("ja") as s:
+        work = s.item(episode)["work_id"]
+        s.set_media_type([work], "audiobook")
+    steps = _steps(tmp_path, {episode: WORDS[1]}, videos={str(episode): None})
+    _place_top(episode)
+    _run(steps)
+    assert _jobs(episode)[-1]["reason"] == runner.AUDIO_WAIT
+    if change == "video found":
+        steps.plan["videos"] = {}
+    else:
+        with c.store("ja") as s:
+            s.set_media_type([work], "anime")
+        steps.plan["videos"] = {}
     _run(steps)
     assert len(_jobs(episode)) == 1 and _jobs(episode)[-1]["state"] == "done" and _mined(steps) == [episode]
 

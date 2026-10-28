@@ -276,17 +276,20 @@ def _communicate(proc, timeout, on_poll=None, look_up=False):
     return stopping.wait(proc, timeout, on_poll, _stop, look_up=look_up, every=POLL_S)[0]
 
 
-def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None):
+def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True):
     """Run `<path> --api <args…>` and return its verdict (a dict). Raises AnkiMinerError for a call with no verdict
     (absent, quarantined, crashed, timeout, unknown-version); a verdict with `ok: false` is returned as it is.
     `on_poll`: called every POLL_S while the call runs. A look-up (LOOK_UPS) still under way at the job's *Stop* is
-    ended and raises `stopping.Stopped` (row 56: never an AnkiMinerError — nothing of it is kept)."""
+    ended and raises `stopping.Stopped` (row 56: never an AnkiMinerError — nothing of it is kept). `bind` False: the
+    call is never ended with this process (`_bind`) — Anki Miner's own `setup`, under its own run lock, finishes
+    whenever Surasura quits (review A2-4)."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     look_up = bool(args) and args[0] in LOOK_UPS    # row 56: read before the program starts, never after
     try:
         proc = subprocess.Popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, creationflags=flags)
-        _bind(proc)
+        if bind:
+            _bind(proc)
     except FileNotFoundError:
         raise AnkiMinerError("absent", "Anki Miner isn't installed where Surasura looked.") from None
     except OSError as e:
@@ -355,22 +358,24 @@ def mines(kind, info=None):
 
 
 def can_set_up(info, items):
-    """A4M1-2: can Surasura finish this Anki Miner's setup itself — it names `setup` (Z-11) and every `check` item
-    `items` names (their names) is one its `setup` sets right (`SETUP_ITEMS`)?"""
-    names = set(items or ())
-    return bool(names) and names <= SETUP_ITEMS and "Z-11" in features(info or {})
+    """A4M1-2: can Surasura do some of this Anki Miner's setup itself — it names `setup` (Z-11) and one of the
+    `check` items `items` names is one its `setup` sets right (`SETUP_ITEMS`)? The rest (a deck, a note type) stays
+    named (intent keeper IK-A2: the dictionaries never wait for them)."""
+    return bool(set(items or ()) & SETUP_ITEMS) and "Z-11" in features(info or {})
 
 
 def run_setup(path, language, profile, progress_path, on_poll=None):
     """Anki Miner's own `setup` (Z-11) for `language` under `profile` (None: its current settings): its language pack
     and recommended dictionaries downloaded and switched on, as its setup wizard does — Anki Miner's downloads, never
     Surasura's. Its `--progress` file is `progress_path` (its folder must exist). Under Anki Miner's run lock: its
-    window open or a run of its own -> AnkiMinerError `busy`. Never stopped part-way (only a signal stops it cleanly,
-    and a hidden program gets none): it runs to its end, at most SETUP_TIMEOUT. -> its `result`; a setup that
+    window open or a run of its own -> AnkiMinerError `busy`; a language that profile never mined -> `refused`. Never
+    stopped part-way by Surasura (only a signal stops it cleanly, and a hidden program gets none): not ended when
+    Surasura quits (`bind=False`: it finishes by itself), ended only past SETUP_TIMEOUT, an hour (a download that
+    stalled; what finished stays installed and the next press resumes the rest). -> its `result`; a setup that
     installed only part -> AnkiMinerError `failed` naming what didn't install."""
     args = ["setup", "--language", language, "--progress", str(progress_path)] + (["--profile", profile]
                                                                                     if profile else [])
-    verdict = api(path, args, timeout=SETUP_TIMEOUT, on_poll=on_poll)
+    verdict = api(path, args, timeout=SETUP_TIMEOUT, on_poll=on_poll, bind=False)
     if verdict.get("ok") or verdict.get("error"):
         return _result(verdict)
     result = verdict.get("result") or {}

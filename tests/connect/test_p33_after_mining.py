@@ -47,6 +47,28 @@ def test_known_words_moved_mine_first_then_generate_then_one_follow_up_order(tmp
     assert owed is None, "the follow-up re-order paid the re-sort"
 
 
+def test_b6_the_follow_up_re_order_is_no_episodes_turn(tmp_path):
+    """B-6: after the last episode, Connect's Generate and its follow-up re-order (an Anki write) run with the look's
+    *working through the episodes* mark cleared — a job the window queues then waits for Connect's next look, never
+    "its turn: Connect is making another episode's cards now"; the level look's next job marks it again."""
+    seen = {}
+
+    class Steps(FakeSteps):
+        def order(self, lang, job):
+            if job is None:
+                seen["follow-up"] = ledger.working(lang)
+            else:
+                seen.setdefault("episode", ledger.working(lang))
+            return super().order(lang, job)
+
+    steps = Steps(str(tmp_path), {"line": {"ja": [1, 2]}, "queue": {"ja": [1, 2]}, "words": WORDS,
+                                  "generate_after": True})
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None)
+    assert seen["episode"] is not None, "an episode's own re-order: the look is working through them"
+    assert seen["follow-up"] is None
+
+
 def test_a_move_alone_runs_no_generate_in_the_loop(tmp_path):
     steps, _summary, _owed, _needs = _run(tmp_path, {})
     assert ("generate", "ja") not in steps.log and ("order", None) not in steps.log

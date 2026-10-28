@@ -19,7 +19,7 @@ import time
 import pytest
 
 from app.connect import anki_session, kick, open_anki
-from app.qt import shell
+from app.qt import shell, strings
 from app.services.jobs import JobRegistry
 from app.services.status import StatusService
 from tests.qt.test_jobs_bar import FakeAutomation, FakeChores, FakeController, FakeUpdates, QuietReader
@@ -122,6 +122,113 @@ def test_open_anki_for_me_opens_a_closed_anki_at_the_windows_start_then_syncs_an
     assert _began(services) == [(BEGAN, True)], "then exactly one known-words sync, forced"
     assert len(anki.kicks) == 1, "Connect kicked to see what waits"
     assert said[0] == OPENING and said[-1] == "Anki is open and synced: your phone's reviews are in."
+    services.shutdown(0.05)
+
+
+def test_a_restart_now_start_never_opens_the_anki_you_closed_but_still_syncs_one_open(qapp, anki):
+    """Alpha 4 M6: the window *Restart now* started (`relaunch`'s mark, `Services.restarted`) looks at Anki as any
+    start does but never opens it — *Open Anki for me* is for a start you made; you may have closed Anki — and its
+    setting is left as it is. An Anki already open still gets the session's sync."""
+    services, said, _log = _services(ON)
+    services.restarted = True
+    services.start()
+    _settled(services)
+    assert anki.starts == [] and anki.begins == [], "Anki closed: left closed"
+    assert services.settings.get()["connect_open_anki"] is True, "the setting untouched"
+    services.shutdown(0.05)
+    anki.state = "open"
+    services, said, _log = _services(ON)
+    services.restarted = True
+    services.start()
+    _settled(services)
+    assert anki.starts == [] and anki.begins == [URL], "Anki open: its session's sync"
+    services.shutdown(0.05)
+
+
+def test_ik6_the_windows_start_look_is_a_job_while_it_runs_and_a_focus_look_is_none(qapp, anki, monkeypatch):
+    """IK-6: the start look (it may open Anki and wait up to two minutes) is listed in the registry while it runs —
+    the Anki circle and the bar show it — and ends with it; no Cancel, the quit never waits for it. A focus's quick
+    look lists nothing (it would flicker each minute)."""
+    monkeypatch.setattr(shell.Services, "SESSION_LOOK_EVERY", 0.0)
+    services, _said, _log = _services(ON)
+    live = []
+    real = anki.state
+
+    def look(settings, opening=False, **kw):
+        live.append([(j.kind, j.label, j.on_quit) for j in services.registry.live(shell.SESSION_JOB)])
+        return {"anki": real, "sync": None}
+    services.anki_look = look
+    services.start()
+    _settled(services)
+    assert live == [[(shell.SESSION_JOB, strings.SESSION_JOB_LABEL, "detach")]]
+    assert services.registry.live(shell.SESSION_JOB) == ()
+    ended = [j for j in services.registry.snapshot() if j.kind == shell.SESSION_JOB]
+    assert len(ended) == 1 and ended[0].state == "done" and not ended[0].can_cancel
+    services.activated()
+    _settled(services)
+    assert live[1:] == [[]], "a focus's look: no job"
+    services.shutdown(0.05)
+
+
+def test_b10_the_starts_look_waits_for_the_setup_wizard_then_runs_once(qapp, anki):
+    """B-10 (AD-8): an upgrader whose 2.x had Connect and *Open Anki for me* on, the setup wizard up at the window's
+    start: Anki is neither opened nor synced, nor Connect kicked, before the wizard closes — then the start's look runs
+    exactly once (Anki opened, its sync, the one forced known-words sync)."""
+    services, _said, _log = _services(ON)
+    services.setup_open.set()
+    assert services.start()
+    _settled(services)
+    assert anki.starts == [] and anki.begins == [] and anki.kicks == [] and _began(services) == []
+    services.setup_ended()
+    _settled(services)
+    assert len(anki.starts) == 1 and anki.begins == [URL] and _began(services) == [(BEGAN, True)]
+    services.setup_ended()                  # a second close (the wizard opened again): no second start look
+    _settled(services)
+    assert len(anki.starts) == 1
+    services.shutdown(0.05)
+
+
+def test_b10_a_focus_while_the_wizard_is_up_looks_at_nothing_and_the_close_looks_once(qapp, anki):
+    """Review F-1: with the wizard up, a focus (you alt-tab to Anki and back) neither syncs Anki nor kicks Connect —
+    the wizard's close makes the window's one look, its forced known-words sync once."""
+    anki.state = "open"
+    services, _said, _log = _services(ON)
+    services.setup_open.set()
+    services.start()
+    services.activated()
+    _settled(services)
+    assert anki.begins == [] and anki.kicks == [] and _began(services) == []
+    services.setup_ended()
+    _settled(services)
+    assert anki.begins == [URL] and _began(services) == [(BEGAN, True)]
+    services.shutdown(0.05)
+
+
+def test_b10_a_first_run_that_turns_connect_on_in_the_wizard_gets_its_opening_look(qapp, anki):
+    """Review F-2: Connect off at the start (a first run), the wizard turns *Make cards* and *Open Anki for me* on —
+    its close opens Anki and makes the session's sync once; the start's own known-words sync already went, so the
+    look's is at its own pace (never a second forced one)."""
+    settings = dict(ON, connect_enabled=False)
+    services, _said, _log = _services(settings)
+    services.setup_open.set()
+    services.start()
+    services.settings.get()["connect_enabled"] = True
+    services.setup_ended()
+    _settled(services)
+    assert len(anki.starts) == 1 and anki.begins == [URL]
+    assert _began(services) == [(BEGAN, False)]
+    services.shutdown(0.05)
+
+
+def test_b10_connect_switched_off_in_the_wizard_looks_at_nothing_and_the_start_sync_still_goes(qapp, anki):
+    settings = dict(ON)
+    services, _said, _log = _services(settings)
+    services.setup_open.set()
+    services.start()
+    services.settings.get()["connect_enabled"] = False
+    services.setup_ended()
+    _settled(services)
+    assert anki.starts == [] and anki.begins == [] and _began(services) == [(BEGAN, True)]
     services.shutdown(0.05)
 
 

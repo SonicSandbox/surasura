@@ -249,6 +249,31 @@ def asked(store):
     return unanswered(asks(store))
 
 
+def made_notes(store):
+    """{note id: the list's word Connect made that note's card for}, over every item — alpha 4 M3: the row a card
+    Connect made belongs on, whatever its front reads as (ヒトリ's card, mined as ひとり). The store's record read
+    once, by the shelf's reader (`shelf.made_notes`); empty while it holds nothing."""
+    from app.connect import shelf
+    with store._reading():
+        return {note: word for note, (_item, word) in shelf.made_notes(store).items() if word}
+
+
+def made_notes_of(language):
+    """`made_notes` of `language`'s library, read-only (Junban's placement and the report's "In Anki" label, one
+    reader) — {} with no store or on any error: both then place every card by its word, as before."""
+    try:
+        from app import library_store
+        from app.path_utils import get_data_path, get_user_files_path
+        store = library_store.open_store(language, get_data_path(language), get_user_files_path(language),
+                                         role="reader")
+        if store is None:
+            return {}
+        with store:
+            return made_notes(store)
+    except Exception:
+        return {}
+
+
 def made_words_for(store, job):
     """The words a job's pick counts as made (never sent): every word Connect ever made (G1.3-4) — but for a job an
     ask made (*Mine this*, *Mine it too*, kind `asked`), only the words whose card the store still holds a note for:

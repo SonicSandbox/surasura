@@ -1017,6 +1017,28 @@ def not_the_name(word, key, rank_of, words, tokenize):
     return other if other and rank_of[other] != rank else ""
 
 
+def connect_row(row, key, via, word, rank_of, answers=None, words=None):
+    """Alpha 4 M3: where a card Connect made goes — `row`, the list's word Connect's record says it was made for
+    (`connect.library.made_notes_of`), when that row is on the list: never over a card whose own word IS another
+    row's word (`words`, each row's own word by rank: one you corrected to a listed word), your "yes" (`via` "yes"),
+    or your "no" to that row (`answers`).
+    Any other reading of the card gives way (round 2 R2-4: ひとり may be one of 一人's spellings — Connect mined it
+    for ヒトリ). ヒトリ's card, mined as ひとり, is ヒトリ's. -> (key, via), via "connect" when the record placed it. One
+    rule for Junban's placement and the report's "In Anki" label."""
+    rank_of = rank_of or {}
+    if row is None or row not in rank_of or via == "yes":
+        return key, via
+    at = rank_of.get(word)
+    if words and at is not None and at != rank_of[row] and 0 <= at < len(words):
+        own = words[at]
+        if (own[0] if isinstance(own, (tuple, list)) else own) == word:
+            return key, via
+    said = (answers or {}).get(word)
+    if isinstance(said, dict) and said.get("answer") == "no" and said.get("target") == row:
+        return key, via
+    return row, "connect"
+
+
 def card_key(word, rank_of, language=None, answers=None, tokenize=None, words=None, orths=None, phrases=False,
              verb=None):
     """Where a card's word lands on the list with no question asked: `(key, via)`, or `("", "")`.

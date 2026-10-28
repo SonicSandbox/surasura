@@ -472,6 +472,10 @@ def _language(steps, ledger, lang, prepared, parked, out):
             outside = True
         jobs = _open_jobs(ledger, lang, parked, tried)
         if not jobs:
+            # B-6: the episodes are through — the Generate after mining and F11's re-order are no episode's turn (a job
+            # the window queues meanwhile never reads "Connect is making another episode's cards"); the next job marks
+            # it again
+            _working(ledger, lang, False)
             if _after_mining(steps, ledger, lang, out, on_battery=only_asked):
                 look = True     # the level look on the new run: the jobs it queued run in this run (no second prepare)
                 continue

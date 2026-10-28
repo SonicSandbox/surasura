@@ -961,3 +961,26 @@ def test_two_scope_reads_keep_the_counts_marked_until_the_newer_answers(main, an
     assert counts_marked() and w._scope_press is not None
     gates[1].set()
     assert wait_until(lambda: not counts_marked() and w._scope_press is None)
+
+
+def test_b13_a_line_the_session_look_says_from_its_own_thread_reaches_the_bottom_bar(main):
+    """B-13 (alpha 3 review): the window's wiring of the session look's lines — `services.say`, a Relay to the
+    window's thread, `windows.say_in_bar` — said from the look's own thread, as at the window's start (every other
+    test hands `services.say` a list)."""
+    import threading
+    line = "Anki is open and synced: your phone's reviews are in."
+    threads = []
+    real = windows.say_in_bar
+
+    def say_in_bar(win, text):
+        threads.append(threading.current_thread() is threading.main_thread())
+        return real(win, text)
+    windows.say_in_bar = say_in_bar
+    try:
+        said = threading.Thread(target=main.services.say, args=(line,))
+        said.start()
+        said.join(5)
+        assert wait_until(lambda: main.bar_line.full() == line, 3)
+    finally:
+        windows.say_in_bar = real
+    assert threads == [True], "painted on the window's thread (the Relay), never the look's (review F-11)"

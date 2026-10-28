@@ -42,7 +42,7 @@ KINDS = {
     "generate": SURASURA, "indexer": SURASURA, "sentence-corpus": SURASURA,
     "mine": MINER, "mine-wait": MINER, "anki-miner-install": MINER, "anki-miner-setup": MINER,
     "junban": JUNBAN, "backfill": JUNBAN, "replan": JUNBAN,
-    "anki-sync": ANKI, "anki-backlog": ANKI, "known-import": ANKI, "mine-anki": ANKI,
+    "anki-sync": ANKI, "anki-backlog": ANKI, "anki-session": ANKI, "known-import": ANKI, "mine-anki": ANKI,
     "update": None,
 }
 # A press's key's first word (`"known:sync"`, `"mine:ja:12"`) -> its circle: lit from the press, before any job

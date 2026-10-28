@@ -206,6 +206,17 @@ def test_relaunch_starts_the_same_program_from_source_and_frozen(monkeypatch, tm
     monkeypatch.setattr(sys, "executable", exe)
     shell.relaunch([exe])
     assert started[-1][0] == [exe]
+    # alpha 4 M6: every new start carries the mark (in its environment, never its logged arguments)
+    assert all(kw["env"][shell.RESTARTED] == "1" and shell.RESTARTED not in " ".join(args) for args, kw in started)
+
+
+def test_the_restart_mark_is_read_once_and_taken_out_of_the_environment(monkeypatch):
+    """Review F-5: the new start reads *Restart now*'s mark (`restart_mark`, on both of main's branches) and takes it
+    out of its environment, so nothing it starts — and no later start of yours — inherits it."""
+    import os
+    monkeypatch.setenv(shell.RESTARTED, "1")
+    assert shell.restart_mark() is True and shell.RESTARTED not in os.environ
+    assert shell.restart_mark() is False, "read once"
 
 
 def test_a_failed_relaunch_is_logged_never_raised(monkeypatch):

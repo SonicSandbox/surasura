@@ -13,6 +13,7 @@ What a wrong answer would cost a learner:
 """
 import json
 import os
+import time
 
 import pytest
 
@@ -1348,6 +1349,33 @@ def test_a4_a_change_to_finished_waits_until_finished_shows_or_the_window_rests(
                                 "graduated_at": "2026-10-27T09:05:00Z"}], order=True)
     assert wait_until(lambda: any(e[0] == rows.FINISHED and row2["id"] in (x.id for x in e[1].episodes)
                                   for e in fin.model().entries), 5)   # the window rested: listed while hidden
+
+
+def test_finished_hidden_through_a_burst_of_changes_lists_once_after_the_window_rests(seeded):
+    """A4A-10: Finished's "listed once the window rests" timer started at the first view it owed and was never pushed
+    back, so through a burst a hidden Finished still listed about every quarter second — a page nobody looks at diffing
+    as often as the reader builds. Ten shows finished 100 ms apart while the learner is on Current: Finished lists
+    nothing while they land, then once, with the newest view, after the window rests."""
+    seed, win = seeded()
+    fin_page = win.page_widgets["finished"]
+    fin = fin_page.list
+    assert not fin.isVisible()
+    listed = []
+    real = fin.set_entries
+    fin.set_entries = lambda entries: listed.append(time.monotonic()) or real(entries)
+    left = [r for r in seed.items if r["tier"] in ("soon", "goal")][:10]
+    assert len(left) == 10
+    for k, row in enumerate(left):
+        seed.library.commit(items=[{"id": row["id"], "tier": "graduated", "ord": 10.0 + k,
+                                    "graduated_at": f"2026-10-27T09:{k:02d}:00Z"}], order=True)
+        QTest.qWait(100)
+    during = len(listed)
+    last = left[-1]["id"]
+    assert wait_until(lambda: any(e[0] == rows.FINISHED and last in (x.id for x in e[1].episodes)
+                                  for e in fin.model().entries), 5)
+    QTest.qWait(rows.WARM_IDLE_MS + 100)
+    assert during == 0, during                                     # nothing listed while the changes landed
+    assert len(listed) == 1, listed                                # once, after the rest, with the newest
 
 
 def test_the_same_status_snapshot_published_again_paints_no_widget_and_no_row(seeded, qapp):

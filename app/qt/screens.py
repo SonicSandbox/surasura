@@ -145,7 +145,7 @@ class Page(QWidget):
     def set_view(self, view):
         """The reader's view: the state bar now; the list's entries now when they changed — or, for a page that defers
         while hidden (Finished, `defer_hidden`; a4), once it shows or the window rests (`rows.WARM_IDLE_MS` after the
-        first view it owes: a burst's views are never each listed on a page nobody sees) -> the list's answer, "same",
+        last view it owes: a burst's views are never listed on a page nobody sees) -> the list's answer, "same",
         or "later"."""
         self.view_model = view
         self.paint_state()
@@ -156,10 +156,9 @@ class Page(QWidget):
             self.list.looks_changed = False
             return "same"                               # another page's change: this list's diff costs nothing
         if self.defer_hidden and old is not None and view is not None and not self.isVisible():
-            self.owed = view                            # a4: listed when it shows, or once the window rests
-            self.list.looks_changed = False
-            if not self._owed_timer.isActive():
-                self._owed_timer.start()
+            self.owed = view                            # a4: listed when it shows, or once the window rests —
+            self.list.looks_changed = False             # `WARM_IDLE_MS` after the last view it owes, each one
+            self._owed_timer.start()                    # restarting the wait (fix round A4A-10: a burst lists nothing)
             return "later"
         self.listed, self.owed = view, None
         self._owed_timer.stop()

@@ -577,7 +577,7 @@ def test_find_on_a_gone_card_reads_into_the_cards_own_language_not_the_windows_c
     seed, win, writer, ny = world("ja", looks=looks)
     _told(win, "ja", _gone_row("ja"))
     card = _card_in(win, ny)
-    win.language = ny.page.language = "zh"                # the window has moved on to Chinese since the card was made
+    ny.language = "zh"                                    # the window has moved on to Chinese since the card was made
     ny.pick_folder = lambda title, start: "S:\\Video\\Anime\\X"
     _button(ny, card.key, "find_folder").click()
     assert wait_until(lambda: looks.finds, 5)

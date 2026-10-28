@@ -558,17 +558,14 @@ class NeedsYou(QObject):
     """The page's entries and their actions, for one window (`win`: the shell)."""
     changed = pyqtSignal()                       # new entries painted (the tab's count follows)
 
-    @property
-    def language(self):
-        """The library shown: its page's (the shell sets it at a language switch — fix2: the language it opened with
-        was kept, so after a switch its cards were worked out from the language left's folder and seen file)."""
-        return getattr(self.page, "language", None) or self._language
-
     def __init__(self, win, page, language):
         super().__init__(win)
         self.win = win
         self.page = page
-        self._language = language
+        self.language = language
+        switched = getattr(win, "library_switched", None)
+        if switched is not None:                 # fix2: the library shown — it kept the one it opened with, so after a
+            switched.connect(self._switched)     # switch its cards came from the language left's folder and seen file
         self.entries = ()
         self.found = {}                          # entry key -> find_videos' results
         self.looking = set()
@@ -646,6 +643,10 @@ class NeedsYou(QObject):
         """Connect's switch written (setup's page 5, Settings › Anki): D1's line asks again in its words."""
         if "connect_enabled" in tuple(keys or ()) and self._alive():
             self.refresh()
+
+    def _switched(self):
+        """The shell showed another language's library (`library_switched`): its cards are that library's from here."""
+        self.language = getattr(self.win, "language", None) or self.language
 
     def view_in(self, view):
         old, self.view = self.view, view
@@ -1030,7 +1031,7 @@ class NeedsYou(QObject):
                     return                          # (the window closed: nothing to say it in)
                 ended()
                 if here():
-                    self._relink_many(found, len(lines), folder, data, tree)
+                    self._relink_many(found, len(lines), folder, tree)
 
             def broke(info):
                 ended(info[0] if info else None)
@@ -1039,7 +1040,7 @@ class NeedsYou(QObject):
                                  then=matched, failed=broke)
         bridge.run_in_worker(os.path.isdir, start, then=pick, failed=lambda _info: pick(False))
 
-    def _relink_many(self, found, n, folder, data, tree):
+    def _relink_many(self, found, n, folder, tree):
         """`found` = (the pairs matched inside the library folder, how many more were matched outside it): every one
         inside pointed at in ONE writer command (`Writer.relink_many`: one ticket, one toast with Undo, one Ctrl+Z —
         never one per file; K3 / K1, a show's card too: IK2-2). Once saved, what the store couldn't take (`change.left`:

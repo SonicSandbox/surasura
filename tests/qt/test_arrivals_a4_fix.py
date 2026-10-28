@@ -173,6 +173,44 @@ def test_a_small_tray_is_whole_in_the_press_and_never_says_loading(bare_tray):
     assert tray.loading.isHidden()
 
 
+def _counting_paints(monkeypatch):
+    """The rows the list draws, counted (the delegate's paints) -> a list holding the count."""
+    drawn = [0]
+    real = arrivals.TrayDelegate.paint
+
+    def counting(self, p, option, index):
+        drawn[0] += 1
+        real(self, p, option, index)
+    monkeypatch.setattr(arrivals.TrayDelegate, "paint", counting)
+    return drawn
+
+
+def test_every_paint_from_the_first_open_to_the_filled_tray_and_after_an_arrival_draws_its_rows(bare_tray,
+                                                                                               monkeypatch):
+    # (found fixing IK-6) the list was laid out in batches, and drew no row until its last batch: after the open,
+    # and again after every arrival, the tray stood blank ~250 ms at 20,000 (~750 ms at 60,000)
+    drawn = _counting_paints(monkeypatch)
+    view = big_view(20_001)
+    g = view.arrival_groups[0]
+    tray = bare_tray(view)
+    tray.set_groups((g._replace(rows=g.rows[1:]),))
+    tray.open()
+    blank = 0
+    end = time.perf_counter() + 20
+    while time.perf_counter() < end:
+        before = drawn[0]
+        tray.view.viewport().grab()
+        blank += drawn[0] == before
+        if not tray.filling():
+            break
+        QApplication.processEvents()
+    assert blank == 0 and not tray.filling()
+    before = drawn[0]
+    tray.set_groups((g,))                                             # one arrival comes in
+    tray.view.viewport().grab()
+    assert drawn[0] > before                                          # drawn in the next paint, never a blank list
+
+
 # --- A4A-4: a hand-on waiting on its timer never crosses a language switch ---------------------------------------- #
 class _Later:
     def __init__(self):

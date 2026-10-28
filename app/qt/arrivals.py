@@ -33,6 +33,7 @@
 Strings from `strings.py`, colours and sizes from `theme.py`; nothing here reads or writes the store.
 """
 import bisect
+import collections
 import heapq
 import itertools
 import math
@@ -139,7 +140,8 @@ def answer_number(answer, chained):
 # --- the numbers ---------------------------------------------------------------------------------------------------- #
 FILL_FROM = 400              # IK-6: more rows than this to make at once and the tray fills in steps (a screen first)
 FIRST_ROWS = 60             # ... the rows the press's own frame makes (a screen and more)
-FILL_STEP_S = 0.003         # ... each later step's budget on the window's thread (the rows per step follow it)
+FILL_STEP_S = 0.003         # ... each later step's budget on the window's thread (the rows' items made, off the list)
+FILL_CHUNK = 250            # ... items made between two looks at the clock
 REPAINT_ROWS = 40            # picks moved on more rows than this: one repaint of the list's face (A4A-3)
 HAND_EVERY = 0.25           # s: the numbers go to the reader at most four times a second (A4), the last never lost
 
@@ -727,7 +729,7 @@ class TrayModel(QStandardItemModel):
         self.objs = []
         self.keyset = set()                     # `keys` as a set, kept as rows come and go
         self._rows = None                       # {key: row}, made when asked after rows came or went (A4A-3)
-        self.paints = {}
+        self.paints = collections.Counter()
         self.heads = {}                         # a head's key -> its row height
         self.size_of = lambda key: QSize(0, row_height())
         self.changed = 0                        # rows inserted, removed or repainted by the last `apply`
@@ -746,37 +748,42 @@ class TrayModel(QStandardItemModel):
     def content_height(self, row_h):
         return (len(self.keys) - len(self.heads)) * row_h + sum(self.heads.values())
 
-    def _items(self, keys, objs):
-        """The rows' items: an arrival's a copy of one made once (its size and flags), named for the screen reader."""
+    def make(self, keys, objs):
+        """The rows' items, not yet on the list -> (items, {head key: its row height}): an arrival's a copy of one
+        made once (its size and flags), named for the screen reader."""
         size = self.size_of("")
         proto = QStandardItem()
         proto.setSizeHint(size)
         proto.setFlags(Qt.ItemFlag.ItemIsEnabled)
-        out = []
+        out, heads = [], {}
         for key, obj in zip(keys, objs):
             if key.startswith(HEAD):
                 it = QStandardItem(obj.label)
                 head = self.size_of(key)
                 it.setSizeHint(head)
                 it.setFlags(Qt.ItemFlag.NoItemFlags)    # the keyboard walks the arrivals only: a head's buttons Tab
-                self.heads[key] = head.height()
+                heads[key] = head.height()
             else:
                 it = proto.clone()
                 it.setText(obj.accessible)
             out.append(it)
-        return out
+        return out, heads
 
-    def _insert(self, at, keys, objs):
+    def _insert(self, at, keys, objs, made=None):
         if not keys:
             return
-        self.invisibleRootItem().insertRows(at, self._items(keys, objs))
+        items, heads, part = made if made is not None else self.make(keys, objs) + (None,)
+        self.invisibleRootItem().insertRows(at, items)
+        self.heads.update(heads)
         self.keys[at:at] = keys
-        self.keyset.update(keys)
+        if part is not None and len(part) >= len(self.keyset):
+            part |= self.keyset                    # (a fill's: its keys' set made with its items, the few joined in)
+            self.keyset = part
+        else:
+            self.keyset.update(keys)
         self._rows = None
         self.objs[at:at] = objs
-        paints = self.paints
-        for k in keys:
-            paints[k] = paints.get(k, 0) + 1
+        self.paints.update(keys)
         self.changed += len(keys)
 
     def _remove(self, at, n):
@@ -817,10 +824,11 @@ class TrayModel(QStandardItemModel):
             self.paints[key] = self.paints.get(key, 0) + 1
             self.changed += 1
 
-    def append(self, keys, objs):
-        """`keys` (with their objects) added under the last row — a fill's next step. -> the rows added."""
+    def append(self, keys, objs, made=None):
+        """`keys` (with their objects; `made`: their items and heads from `make`, and `keys` as a set) added under
+        the last row, in one insert — a fill's last step. -> the rows added."""
         self.changed = 0
-        self._insert(len(self.keys), keys, objs)
+        self._insert(len(self.keys), keys, objs, made)
         return self.changed
 
     def apply(self, new_keys, new_objs):
@@ -938,7 +946,9 @@ class TrayList(QListView):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.setLayoutMode(QListView.LayoutMode.Batched)          # laid out in batches: no long step at 20,000
+        # one pass (IK-6): a batched layout drew no row at all until its last batch — the list stood blank ~250 ms
+        # at 20,000 after every arrival, ~800 ms at 60,000; one pass is ~3 ms at 20,000 (10 at 60,000)
+        self.setLayoutMode(QListView.LayoutMode.SinglePass)
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setTabKeyNavigation(True)                            # Tab walks the rows (then on past the last)
@@ -1274,8 +1284,8 @@ class ArrivalsTray(motion.Overlay):
         self._applied = ()                  # ... and those the rows show (the model is brought up to date open only)
         self._target = ((), [], [], {})     # IK-6: (groups, the rows' keys, their objects, {head kind: its row})
         self._filling = False               # ... the rows coming in in steps (a first open at 20,000)
-        self._filled_of = None              # ... the groups the rows made so far are the first rows of
-        self._step_rows = 500               # ... rows a step makes (follows FILL_STEP_S)
+        self._filled_of = None              # ... the groups the rows on the list are the first rows of
+        self._made = ([], {}, set())        # ... the items made for the rows after them, not yet on the list
         self._fill_timer = QTimer(self)
         self._fill_timer.setSingleShot(True)
         self._fill_timer.timeout.connect(self._fill_step)
@@ -1344,13 +1354,14 @@ class ArrivalsTray(motion.Overlay):
             return False
         groups, keys, objs, _heads = self._target_for(groups)
         if self._filling or len(keys) - len(self.model.keys) > FILL_FROM:
-            changed = 0                        # a fill under way: its next step brings the rows to these groups
-            if not self._filling:
-                self._filling = True
-                self._filled_of = None
-                self.loading.show()
+            changed = 0                        # a fill under way for these groups: its steps go on
+            if self._filled_of is not groups:  # a fill starts (or a view landed mid-fill): a screen's rows now
+                if not self._filling:
+                    self._filling = True
+                    self.loading.show()
                 changed = self._rows_to(keys[:FIRST_ROWS], objs[:FIRST_ROWS])
                 self._filled_of = groups
+                self._made = ([], {}, set())
             self._fill_timer.start(0)
             return bool(changed)
         return bool(self._rows_to(keys, objs, whole=True))
@@ -1373,11 +1384,12 @@ class ArrivalsTray(motion.Overlay):
         return self._target
 
     def _rows_to(self, keys, objs, whole=False, append=False):
-        """The model's rows made `keys` (all the groups' when `whole`; `append`: the next rows under the last), each
-        group's head widget on its row, the tray placed again when rows changed. -> the rows changed."""
+        """The model's rows made `keys` (all the groups' when `whole`; `append`: `keys` are the next rows under the
+        last, their items made — `TrayModel.make`), each group's head widget on its row, the tray placed again when
+        rows changed. -> the rows changed."""
         self._row_h = row_height()
         model = self.model
-        changed = model.append(keys, objs) if append else model.apply(keys, objs)
+        changed = model.append(keys, objs, append) if append else model.apply(keys, objs)
         for key in model.gone_heads:                           # a head's row removed: the list let its widget go
             self.heads.pop(key[len(HEAD):], None)
         model.gone_heads = []
@@ -1403,29 +1415,40 @@ class ArrivalsTray(motion.Overlay):
         return changed
 
     def _fill_step(self):
-        """(IK-6) The next rows of a fill, within `FILL_STEP_S`; the last step lets *Loading…* go. A closed tray
-        waits (no row work): its `open` goes on from where the fill stood."""
+        """(IK-6) The next rows' items made within `FILL_STEP_S`, off the list (each insert lays the list out again);
+        once all are made, a step of its own puts them on in one insert and lets *Loading…* go. A closed tray waits
+        (no row work): its `open` goes on from where the fill stood."""
         if not self._filling or not self.open_now():
             return
         groups, keys, objs, _heads = self._target_for(self.groups)
-        n = len(self.model.keys)
-        m = min(len(keys), n + self._step_rows)
-        t0 = time.perf_counter()
-        if self._filled_of is groups:
-            self._rows_to(keys[n:m], objs[n:m], append=True)   # the rows made are these groups' first: the next ones
-        else:
-            self._rows_to(keys[:m], objs[:m])                  # a view landed mid-fill: the rows made so far to it
-            self._filled_of = groups
-        took = time.perf_counter() - t0
-        self._step_rows = max(100, min(5000, int(self._step_rows * FILL_STEP_S / max(took, 1e-4))))
-        if len(self.model.keys) >= len(keys) and self.model.keys == keys:
-            self._filling = False
-            self._applied = groups
-            self.loading.hide()
-            if self.isVisible():
-                self.place()
-        else:
-            self._fill_timer.start(0)
+        if self._filled_of is not groups:
+            self._apply()                                      # (new groups while it was closed: from a screen's rows)
+            return
+        items, heads, made_keys = made = self._made
+        base = len(self.model.keys)
+        i = base + len(items)
+        if i < len(keys):
+            t0 = time.perf_counter()
+            while i < len(keys) and time.perf_counter() - t0 < FILL_STEP_S:
+                j = min(len(keys), i + FILL_CHUNK)
+                more, hs = self.model.make(keys[i:j], objs[i:j])
+                items += more
+                heads.update(hs)
+                made_keys.update(keys[i:j])
+                i = j
+            self._fill_timer.start(0)                          # more to make, or the insert: on the next tick
+            return
+        self._made = ([], {}, set())
+        if self.model.keys == keys[:base]:
+            self._rows_to(keys[base:], objs[base:], append=made)
+        if self.model.keys != keys:
+            self._rows_to(keys, objs)                          # (never left otherwise: the groups' rows, whole)
+        self._filling = False
+        self._filled_of = None
+        self._applied = groups
+        self.loading.hide()
+        if self.isVisible():
+            self.place()
 
     def filling(self):
         """A big tray's rows are still coming in (IK-6; tests, the bench)."""

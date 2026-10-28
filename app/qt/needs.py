@@ -217,7 +217,7 @@ def _label(text, name, parent, wrap=True):
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
            "start_fresh")
-PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "mine_text_only", "open_logs", "save_logs",
+PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs",
                      "open_anki")
 
 
@@ -597,7 +597,7 @@ class NeedsYou(QObject):
         self.pick_file = lambda title, folder: QFileDialog.getOpenFileName(self.win, title, folder)[0]
         self.pick_folder = lambda title, folder: QFileDialog.getExistingDirectory(self.win, title, folder)
         self.pick_save = lambda title, name: QFileDialog.getSaveFileName(self.win, title, name, "Zip (*.zip)")[0]
-        # P4.1's hooks (`mine_text_only(entry, line)`, `make_cards(entry)`): hidden until set
+        # P4.1's hook (`make_cards(entry)`): hidden until set
         self.hooks = {}
         # D1's *Make cards* (each on a worker; tests replace them): Settings › Anki's switch, then the store's log
         self.switch_on = _settings_switch_on
@@ -1472,9 +1472,6 @@ class NeedsYou(QObject):
         self.refresh()
 
     # P4.1's (hidden until hooked)
-    def _do_mine_text_only(self, entry, line):
-        self.hooks["mine_text_only"](entry, line)
-
     def _do_make_cards(self, entry, _line):
         self.hooks["make_cards"](entry)
 

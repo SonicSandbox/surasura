@@ -433,7 +433,7 @@ class ArrivalsInset(QToolButton):
         if count == 0 and self.kept:
             line = kept_out_words(self.kept)
             self.setToolTip(strings.ARRIVALS_KEPT_OUT_INSET_TIP.format(line=line))
-            self.setAccessibleName(f"{strings.ARRIVALS} · {line}")
+            self.setAccessibleName(strings.ARRIVALS_KEPT_OUT_NAME.format(arrivals=strings.ARRIVALS, line=line))
         else:
             one = count == 1
             self.setToolTip(strings.ARRIVALS_TIP_ONE if one else strings.ARRIVALS_TIP.format(n=count))

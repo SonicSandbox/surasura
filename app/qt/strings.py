@@ -663,6 +663,7 @@ ARRIVALS_KEPT_OUT = "{n:,} files you removed earlier were left out"
 ARRIVALS_KEPT_OUT_ONE = "A file you removed earlier was left out"
 ARRIVALS_KEPT_OUT_TIP = ("New files that are copies of files you removed: Surasura keeps them out of your library\n"
                          "• Bring back puts what you removed back where it was")
+ARRIVALS_KEPT_OUT_NAME = "{arrivals} · {line}"                     # the inset's accessible name, while no arrival waits
 ARRIVALS_KEPT_OUT_INSET_TIP = "{line}\n• Open the tray to bring them back"     # the inset, while no arrival waits
 ARRIVALS_BRING_BACK = "Bring back"
 ARRIVALS_BRING_BACK_NAME = "Bring back what you removed"

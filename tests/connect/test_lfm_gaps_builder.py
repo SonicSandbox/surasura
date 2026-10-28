@@ -256,7 +256,7 @@ def test_a_kept_set_is_read_again_once_fifteen_minutes_and_one_second_old(librar
     assert fake_miner.commands() == LOOK_UPS + ["check", "mine"] + LOOK_UPS + ["check", "mine"]
 
 
-def _note_type_lacks_a_field(loaded, mapping):
+def _note_type_lacks_a_field(loaded, mapping, info=None):
     raise CliError("needs-you", "the note type lacks a field")
 
 

@@ -50,7 +50,17 @@ EXE = "AnkiMiner.exe"
 CREATE_NO_WINDOW = 0x08000000
 WINERROR_VIRUS = 225            # "Operation did not complete successfully because the file contains a virus"
 DEFAULT_PROFILE = "Surasura"    # connect_anki_miner_profile's default (settings_manager)
+# A5F4: the settings keys Surasura writes with `settings_import`, in plain words (a refusal never names a key)
+KEY_WORDS = {"anki_deck_name": "the deck", "anki_note_type": "the note type", "anki_fields": "the fields",
+             "card_type": "the card type", "pitch_category_format": "the pitch format",
+             "ankiconnect_url": "Surasura's AnkiConnect address"}
+# A5F2: a profile Surasura's setting names that Anki Miner lacks (`choose_profile`): what to do, never "make it in
+# Anki Miner"
+PROFILE_MADE = "Surasura makes it for you: Settings → Anki & mining → Finish its setup…"
+PROFILE_UPDATE = ("Choose a profile Anki Miner has in Surasura's settings, or update Anki Miner from Surasura so "
+                  "Surasura can make it.")
 PROGRESS = "progress.json"      # a run's progress, in its folder (API.md; written at most every 0.25 s)
+HEARTBEAT = "heartbeat"         # A5F1: touched by Surasura each poll of its setup, beside Anki Miner's progress file
 # *Finish its setup*'s folder under local data (`services.anki_miner_setup`): the settings file and Anki Miner's
 # `--progress` file while it runs, emptied after. Its folder or progress file moved within SETUP_FRESH_S is a setup
 # running (`setting_up`, A2-6); one a Surasura that quit mid-setup left goes stale once Anki Miner is done.
@@ -383,17 +393,19 @@ def ours(info):
 def setting_up():
     """Is Surasura's *Finish its setup* running Anki Miner's setup now (A2-6: a Connect run told BUSY meanwhile names
     the setup, never "Anki Miner is open")? Its folder is there, and it or the progress file Anki Miner writes in it
-    moved within SETUP_FRESH_S. Never raises."""
+    moved within SETUP_FRESH_S — or Surasura's heartbeat file, touched every poll while `run_setup` waits (A5F1).
+    Never raises."""
     try:
         from app.path_utils import get_local_data_path
         folder = os.path.join(get_local_data_path(), SETUP_STAGING)
         times = [os.stat(folder).st_mtime]
     except Exception:
         return False
-    try:
-        times.append(os.stat(os.path.join(folder, PROGRESS)).st_mtime)
-    except OSError:
-        pass
+    for name in (PROGRESS, HEARTBEAT):
+        try:
+            times.append(os.stat(os.path.join(folder, name)).st_mtime)
+        except OSError:
+            pass
     return time.time() - max(times) < SETUP_FRESH_S
 
 
@@ -408,7 +420,22 @@ def run_setup(path, language, profile, progress_path, on_poll=None):
     installed only part -> AnkiMinerError `failed` naming what didn't install."""
     args = ["setup", "--language", language, "--progress", str(progress_path)] + (["--profile", profile]
                                                                                     if profile else [])
-    verdict = api(path, args, timeout=SETUP_TIMEOUT, on_poll=on_poll, bind=False)
+    beat = os.path.join(os.path.dirname(str(progress_path)), HEARTBEAT)
+
+    def poll():
+        # A5F1: a heartbeat — a file of Surasura's own beside the progress file, written each poll, so a long download
+        # that writes no progress for SETUP_FRESH_S still reads as "finishing its setup" (`setting_up`), never "close
+        # Anki Miner"; never the folder itself (review: a handle on it could meet Anki Miner's renames into it), and
+        # never made when the folder is gone ("a" opens no folder)
+        try:
+            with open(beat, "a"):
+                pass
+            os.utime(beat)
+        except OSError:
+            pass
+        if on_poll is not None:
+            on_poll()
+    verdict = api(path, args, timeout=SETUP_TIMEOUT, on_poll=poll, bind=False)
     if verdict.get("ok") or verdict.get("error"):
         return _result(verdict)
     result = verdict.get("result") or {}
@@ -445,7 +472,8 @@ def settings_import(path, language, values, folder, name=None, profile=None):
             pass
     refused = [str(key) for key in result.get("invalid_fields") or ()]
     if refused:
-        raise AnkiMinerError("refused", "Anki Miner didn't take " + ", ".join(refused) + " from Surasura.",
+        said = list(dict.fromkeys(KEY_WORDS.get(key, "one of its other settings") for key in refused))
+        raise AnkiMinerError("refused", "Anki Miner didn't take " + " or ".join(said) + " from Surasura.",
                              verdict=result)
     return result
 
@@ -505,12 +533,15 @@ def choose_profile(info, listed, name):
     if found is not None:
         return found
     if name and name != DEFAULT_PROFILE:
-        raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{name}" (Surasura\'s Anki Miner profile '
-                             "setting). Choose one Anki Miner has, or make it in Anki Miner.")
+        # A5F2: Surasura makes it (Z-3, *Finish its setup*), never Anki Miner's window; the setup check words it
+        # again (`setup.PROFILE_SAY`)
+        raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{name}", the one Surasura\'s Anki Miner '
+                             "profile setting names. " + (PROFILE_MADE if "Z-3" in features(info) else PROFILE_UPDATE))
     if "Z-1" in features(info):
         return next((entry.get("id") for entry in listed if entry.get("active")), None)
-    raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{DEFAULT_PROFILE}". Make it once in Anki '
-                         "Miner (a copy of your profile, its whitelist on), as Surasura's Connections page shows.")
+    raise AnkiMinerError("needs-you", f'Anki Miner has no profile called "{DEFAULT_PROFILE}", which an Anki Miner '
+                         "older than 3.7 needs to make Surasura's cards. Update Anki Miner from Surasura (Settings → "
+                         "Anki & mining).")
 
 
 # --------------------------------------------------------------------------- #

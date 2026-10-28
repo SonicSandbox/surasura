@@ -68,3 +68,25 @@ def test_a_chinese_export_never_set_up_names_chinese():
     with pytest.raises(fields.NeedsYou) as e:
         fields.from_export({"configured": False, "settings": {}}, "zh")
     assert "Chinese" in e.value.message
+
+
+# --- A5F3: the pointer goes where the learner can act ---------------------------------------------------------------- #
+def test_the_pointer_is_finish_its_setup_only_with_an_anki_miner_that_sets_it():
+    """*Finish its setup* is offered only when Anki Miner names settings-import (Z-3); else Surasura's update — never a
+    pointer at a hidden button."""
+    assert fields.pointer({"features": ["settings-import", "setup"]}) == fields.FINISH
+    assert fields.pointer({"features": ["setup"]}) == fields.UPDATE
+    assert fields.pointer(None) == fields.FINISH, "not known: as before"
+    with pytest.raises(fields.NeedsYou) as e:
+        fields.from_export(_export(anki_deck_name=""), "ja", fields.pointer({"features": []}))
+    assert e.value.message.endswith(fields.UPDATE) and "Finish its setup" not in e.value.message
+    with pytest.raises(fields.NeedsYou) as e:
+        fields.check_note_type(fields.from_export(LAPIS_EXPORT), None, fields.UPDATE)
+    assert e.value.message.endswith(fields.UPDATE)
+
+
+def test_an_export_that_cant_be_read_is_read_again_never_finish_its_setup():
+    """No item of Anki Miner's check: its *Finish its setup* would read the same export."""
+    with pytest.raises(fields.NeedsYou) as e:
+        fields.from_export({"anki_miner_settings": 1})
+    assert e.value.message.endswith(fields.UNREAD) and "Finish its setup" not in e.value.message

@@ -237,7 +237,7 @@ MINER_ASK_FIELDS = ("“{note}” has no Sentence field, so Anki Miner can't mak
                     "note type, then press Finish its setup again.")
 SETUP_SAID = {"set-up": "Anki Miner's setup is finished.{detail}",
               "busy": "Anki Miner or Surasura's card making is running: Anki Miner's setup waits until it's done. "
-                      "Try again then.",
+                      "Try again then.{detail}",
               "failed": "Anki Miner's setup didn't finish: {detail}",
               "missing": "Anki Miner isn't installed where Surasura looked.",
               "ready": "Anki Miner's setup is already finished.",

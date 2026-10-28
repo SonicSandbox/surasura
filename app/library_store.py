@@ -668,6 +668,19 @@ ADDED_INDEXES_SQL = (
     "CREATE INDEX IF NOT EXISTS items_available_size ON items (size) WHERE availability = 'available'",
 )
 ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_available_size")
+# A4K-7 (alpha 4, Sonic 2026-10-28): each copy's content hash, kept for a look's check (b), which read and hashed every
+# copy of a new part's size (~56,000 files when 100 books came onto 60k parts). Made with the added indexes: an added
+# column (no row rewritten: NULL until a look fills it) and a trigger that forgets a hash whenever its row's file
+# changes (its size, time or path), whoever writes the row, an older Surasura too. Never in the copy (ITEM_FIELDS).
+# Dropped as easily: DROP TRIGGER items_hash_stale, then the column (or left: older code never reads it)
+ADDED_HASH_SQL = (
+    "ALTER TABLE items ADD COLUMN content_sha256 TEXT",
+    """CREATE TRIGGER IF NOT EXISTS items_hash_stale AFTER UPDATE OF size, mtime_ns, rel_path ON items
+      WHEN NEW.content_sha256 IS NOT NULL AND (NEW.size IS NOT OLD.size OR NEW.mtime_ns IS NOT OLD.mtime_ns
+                                               OR NEW.rel_path IS NOT OLD.rel_path)
+      BEGIN UPDATE items SET content_sha256 = NULL WHERE id = NEW.id; END""",
+)
+ADDED_HASH = "items_hash_stale"
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then
@@ -1607,20 +1620,31 @@ class Store:
     def _added_indexes(self):
         """ADDED_INDEXES, made at the first open by a writer of a store made before them, under the write lock: one
         read of the schema at every other open. A store not made yet, a newer one, a damaged or busy one (or this
-        process inside a write already) is left as it is: a later open makes them. Never a version or data change."""
-        names = ("pairings",) + ADDED_INDEXES
+        process inside a write already) is left as it is: a later open makes them. Never a version or data change.
+        A4K-7: the copies' hash column and its trigger too (ADDED_HASH_SQL), the column only where it isn't yet."""
+        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH,)
         try:
             have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
                                                     f"({','.join('?' * len(names))})", names)}
-            if "pairings" not in have or have.issuperset(ADDED_INDEXES) or self._wlock.depth:
+            if "pairings" not in have or have.issuperset(names) or self._wlock.depth:
                 return
             if self.conn.execute("PRAGMA user_version").fetchone()[0] > STORE_SCHEMA:
                 return
             with self._writing(wait=BUSY_AT_OPEN):
                 for sql in ADDED_INDEXES_SQL:
                     self.conn.execute(sql)
+                for sql in ADDED_HASH_SQL:
+                    if sql.startswith("ALTER") and self._hash_column():   # another open made it meanwhile
+                        continue
+                    self.conn.execute(sql)
         except (StoreError, sqlite3.Error):
             pass
+
+    def _hash_column(self):
+        """A4K-7: whether this store has `items.content_sha256` yet (a busy first open leaves it to a later one)."""
+        if not getattr(self, "_hashes", False):              # a reader made with `Store.__new__` has none
+            self._hashes = any(r[1] == "content_sha256" for r in self.conn.execute("PRAGMA table_info(items)"))
+        return self._hashes
 
     def close(self):
         """Close the handle, never checkpointing outside the write lock (`_close`, §6.12). Inside `held()`, nothing
@@ -5613,7 +5637,7 @@ def _ensure_schema(store):
                                           "AND name NOT LIKE 'sqlite_%'").fetchone()[0]
             if existing:
                 raise StoreError("a library database without a schema version; left alone")
-            for sql in SCHEMA_SQL + SCHEMA_2_SQL:
+            for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL:      # A4K-7: a new store has the hashes at once
                 store.conn.execute(sql)
             store.conn.execute(f"PRAGMA user_version = {STORE_SCHEMA}")
     return version
@@ -8684,17 +8708,42 @@ def _store_excluded(self, root_ids=None):
 
 
 def _store_items_of_size(self, sizes):
-    """{size: [(item_id, rel_path)]} of the available items of these sizes: K1b's check (b), an item whose copy may
-    hold the same bytes (size first, then the bytes)."""
+    """{size: [(item_id, rel_path, mtime_ns, content_sha256)]} of the available items of these sizes: K1b's check (b),
+    an item whose copy may hold the same bytes (size first, then the bytes). The hash is the one kept for the file as
+    its row records it (A4K-7), None where none is kept yet."""
     sizes = [s for s in dict.fromkeys(sizes) if isinstance(s, int)]
+    sha = "content_sha256" if self._hash_column() else "NULL"
     out = {}
     with self._reading():
         for chunk in _chunks(sizes, 500):
-            for size, item_id, rel in self.conn.execute(
-                    f"SELECT size, id, rel_path FROM items WHERE availability = 'available' AND size IN "
-                    f"({','.join('?' * len(chunk))}) ORDER BY id", chunk):
-                out.setdefault(size, []).append((item_id, rel))
+            for size, item_id, rel, mtime_ns, kept in self.conn.execute(
+                    f"SELECT size, id, rel_path, mtime_ns, {sha} FROM items WHERE availability = 'available' AND "
+                    f"size IN ({','.join('?' * len(chunk))}) ORDER BY id", chunk):
+                out.setdefault(size, []).append((item_id, rel, mtime_ns, kept))
     return out
+
+
+def _store_keep_hashes(self, rows):
+    """A4K-7: copies' content hashes a look worked out for check (b) (`rows`: [(item_id, size, mtime_ns, sha256)],
+    the size and time the file had when it was read), kept on their items in ONE write — each only while its row still
+    records that size and time (else the hash is of a file the row no longer names). A cache: no command, no version,
+    never on Undo or in the copy. -> how many were kept (0 before the store has the column)."""
+    rows = [(sha, item_id, size, mtime_ns) for item_id, size, mtime_ns, sha in rows if sha]
+    if not rows or not self._hash_column():
+        return 0
+    with self._writing():
+        before = self.conn.total_changes
+        self.conn.executemany("UPDATE items SET content_sha256 = ? WHERE id = ? AND size = ? AND mtime_ns = ? AND "
+                              "availability = 'available'", rows)
+        return self.conn.total_changes - before
+
+
+def _store_keep_hash(self, item_id, fp, sha):
+    """A4K-7, inside `take_in`: a new copy's hash (`sha`: the bytes the look wrote) on its item, the row's file as
+    `_prepare` read it (`fp`: size, time, availability)."""
+    if sha and fp[2] == "available" and self._hash_column():
+        self.conn.execute("UPDATE items SET content_sha256 = ? WHERE id = ? AND size = ? AND mtime_ns = ?",
+                          (sha, item_id, fp[0], fp[1]))
 
 
 def _store_origin_videos(self):
@@ -9127,7 +9176,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
     in one). Each copy is already on disk under `Library/` (the caller copied it outside the lock, as moves' drop does).
 
     `found`: [{origin (absolute), size, mtime_ns (the origin's), sha256 (the text's bytes), show (its title), rel (the
-    copy, relative to the data folder, under `Library/`), video_path?, video_size?, video_key?, episode? (K4's number),
+    copy, relative to the data folder, under `Library/`), copy_sha256? (A4K-7: the copy's bytes as the caller wrote
+    them, kept on its new item), video_path?, video_size?, video_key?, episode? (K4's number),
     item_id? (K1b's checks (a) / (b): the item the origin belongs to; no copy, no `rel`), moved_from? (D5: with
     `item_id`, the path keys of that item's origins whose originals the look found gone: marked `moved_to` this one,
     when they are still its live records)}].
@@ -9238,6 +9288,8 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                     gap = f["gap"]                           # LM1b (A5): its episode's waiting item, another video's
                 if held is None and gap is not None:         # a waiting video's (K5): its row takes the copy in place
                     gap = self._fill_gap(cmd, gap, p, gaps)
+                    if gap is not None:
+                        self._keep_hash(gap, p[4], f.get("copy_sha256"))
                     if gap is not None and other and f.get("video_path"):
                         self._as_versions(gap)               # the subtitle's own video is the episode's from now
                     exact = exact and gap is not None        # its row gone (P1): a new item, the videos read again
@@ -9376,6 +9428,8 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
                                         runs)
     item_id = self._add_rows([prepared + (tier,)], cmd.version)[0]
     self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
+    if not waiting:
+        self._keep_hash(item_id, prepared[4], f.get("copy_sha256"))    # A4K-7: its bytes are known — never read back
     self._write_origin(key, item_id, record)
     if episodes is not None:                         # its one record, so its number is the record's (`_episodes_of`)
         number = record.get("episode")
@@ -11225,6 +11279,8 @@ Store.source_detail = _store_source_detail
 Store.origins = _store_origins
 Store.excluded = _store_excluded
 Store.items_of_size = _store_items_of_size
+Store.keep_hashes = _store_keep_hashes
+Store._keep_hash = _store_keep_hash
 Store.origin_videos = _store_origin_videos
 Store.item_of_video_key = _store_item_of_video_key
 Store.items_holding = _store_items_holding

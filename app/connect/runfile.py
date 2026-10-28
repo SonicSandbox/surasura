@@ -51,6 +51,7 @@ SENTENCE_RULES_OFF = "sentence-rules-off"       # Z-4: the two sentence keys are
 BOLD_TARGET = "bold-target"                     # Z-5: `bold_target_in_sentence` in config
 WORD_FROM_LINE = "word-from-line"               # Z-2: a named word made from its line; `surface`, `reading`
 DRY_RUN = "dry-run"                             # Z-7: `dry_run` in the run file
+READING = "reading"                             # Z-9 (round 2): an episode naming `reading_file`; `unit_index`
 
 # IS:271–275: every filter off. `use_whitelist` stays the profile's own: before Z-1 the "Surasura" profile's whitelist
 # is how the named words pass his name lists (N10, P1.5-14); from 3.7 every named word is whitelisted, any profile.
@@ -135,7 +136,7 @@ def entries(word, features=()):
     return list(word["sent"][:1]) if from_line(features) else list(word["sent"])
 
 
-def word_requests(words, features=()):
+def word_requests(words, features=(), book=False):
     """The run file's `words` for picked words (pick.pick's): each name `entries` gives, with the line's start in
     seconds and its expansion, always sent (IS:260). Where Anki Miner makes a word from its line (Z-2), the entry also
     carries the word as this line writes it (`surface`, when it differs: 借り for 借りる, a set phrase's own words), and,
@@ -143,12 +144,21 @@ def word_requests(words, features=()):
     kana-only word, a name, grammar), the reading its card front is said with here (`front_reading`: hiragana, as Anki
     Miner writes readings), so a word made from its line is Surasura's word. 3.7 puts an entry's reading on a word it
     finds itself too, over its own reading and the fixes it makes to UniDic's (仏 ほとけ, not ふつ): so a word it is
-    expected to find goes without one."""
+    expected to find goes without one.
+
+    `book` (Z-9, a book or a text): each entry names its sentence (`line_text`, as `cues.reading` writes it) and,
+    only when the pick knows it, the unit Anki Miner numbers it by (`unit_index`, from Z-19's unit list: never
+    guessed) — no time and no expansion (Zero's smaller version takes `line_text` alone)."""
     out, made = [], from_line(features)
     for word in words:
         for name in entries(word, features):
-            entry = {"word": name, "line_start": float(word["line_start"]),
-                     "line_expansion": [int(n) for n in word["line_expansion"]]}
+            if book:
+                entry = {"word": name, "line_text": word["line_text"]}
+                if isinstance(word.get("unit_index"), int) and not isinstance(word["unit_index"], bool):
+                    entry["unit_index"] = word["unit_index"]
+            else:
+                entry = {"word": name, "line_start": float(word["line_start"]),
+                         "line_expansion": [int(n) for n in word["line_expansion"]]}
             if made:
                 surface, reading = word.get("surface"), word.get("front_reading")
                 if surface and surface.strip() and surface != name:
@@ -164,6 +174,12 @@ def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0):
     offset from the fit check (0 until tsubasa's check is wired, P2.4) — always sent (IS:269)."""
     return {"run_id": run_id, "video_file": os.path.abspath(video), "subtitle_file": os.path.abspath(subtitle),
             "subtitle_offset": float(subtitle_offset), "tags": tags, "words": list(words)}
+
+
+def reading_episode(run_id, reading_file, words, tags=""):
+    """One episode of a book or a text (Z-9): the reading source Surasura names (absolute path), the words (each by
+    its sentence: `word_requests(..., book=True)`) and the job's tags. No video, subtitle or offset."""
+    return {"run_id": run_id, "reading_file": os.path.abspath(reading_file), "tags": tags, "words": list(words)}
 
 
 def build(run_dir, language, episodes, profile=None, run_config=None, dry_run=False):
@@ -213,6 +229,9 @@ def check(data):
                 raise RunFileError(f"line_start must be a finite number of 0 or more: {start!r}")
             if not str(w.get("word", "")).strip():
                 raise RunFileError("a word is empty")
+            unit = w.get("unit_index")
+            if "unit_index" in w and (isinstance(unit, bool) or not isinstance(unit, int) or unit < 0):
+                raise RunFileError(f"unit_index must be a whole number of 0 or more: {unit!r}")
             for key in ("surface", "reading", "line_text"):
                 if key in w and (not isinstance(w[key], str) or not w[key].strip()):
                     raise RunFileError(f"a word's {key} is empty")

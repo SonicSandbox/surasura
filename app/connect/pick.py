@@ -73,7 +73,10 @@ def finished(text):
 
 
 def line_expansion(cues, at):
-    """[before, after]: the lines Anki Miner adds to line `at` so the card holds the whole sentence (§ above)."""
+    """[before, after]: the lines Anki Miner adds to line `at` so the card holds the whole sentence (§ above). A
+    book's or a text's cue is a whole sentence already (`cues.reading`, Z-9): none."""
+    if getattr(cues, "units", False):
+        return [0, 0]
     after, here = 0, at
     while after < SIDE and here + 1 < len(cues) and not finished(cues[here].text) \
             and cues[here + 1].start - cues[here].end <= GAP_MS:

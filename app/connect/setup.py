@@ -91,6 +91,17 @@ def read_record():
         return {}
 
 
+def note_anki_miner(info):
+    """Z-9 review R1-1: the Anki Miner a run just found (its `version` answer) onto the record as it is now, so
+    `anki_miner.mines_now` reads what is installed — a book job refused for `reading` stays aside rather than being
+    queued again at every look. Only a record that already exists is written. -> written or not; never raises."""
+    record = read_record()
+    if not record or not isinstance(info, dict):
+        return False
+    record["anki_miner"] = info
+    return write_record(record)
+
+
 def write_record(record):
     """Atomically (temp + replace) -> written or not. A failure costs only a check asked again. Never raises."""
     path = record_path()

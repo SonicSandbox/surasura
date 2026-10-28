@@ -51,11 +51,11 @@ def keeps(job, event=None):
 
 
 def _waits_for_books(store, item_id):
-    """Alpha 4 M1: a book or a text while this Surasura mines none (`library.waits_for`, `anki_miner.mines`): no gap
+    """Alpha 4 M1: a book or a text while Connect mines none (`library.waits_for`, `anki_miner.mines_now`): no gap
     names it, as no job is made of it (`runner._books_aside`). An audio title's episode is named as any: whether it
     waits is its video's to say, at the job's set-aside step (round 2 of the A4M1-3 review)."""
     from app.connect import anki_miner
-    return library.waits_for(store.item(item_id) or {}) == "books" and not anki_miner.mines("books")
+    return library.waits_for(store.item(item_id) or {}) == "books" and not anki_miner.mines_now("books")
 
 
 def _gone(store, ledger, language):

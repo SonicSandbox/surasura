@@ -23,7 +23,8 @@ timeout and is killed at it; nothing opens a window (CREATE_NO_WINDOW).
 Failures are AnkiMinerError with a `kind` the runner (P2.4) acts on: `busy` (its window is open, or another run works:
 retry later, E8), `writer-busy` (another Surasura program writes Anki), `reviewing` (you're reviewing: E2), `anki-closed` (E1), `quarantined` (Windows Security blocked it: WinError 225, never retried
 silently, W1), `crashed` / `timeout` (the batch is `uncertain`: checked in Anki by the job's tag before any retry,
-E11/E14), `unknown-version` (a schema Surasura wasn't built for, E12), `too-old` (a build before 3.5.0, never run), `refused` (a run file it refused), `setup` (its
+E11/E14), `unknown-version` (a schema Surasura wasn't built for, E12), `too-old` (a build before 3.5.0, never run), `refused` (a run file it refused), `no-reading` (a book's batch for an
+Anki Miner that doesn't name `reading`, Z-9: never sent), `unreadable` (a video, subtitle or book it can't read), `setup` (its
 setup is incomplete: `check`'s items name what), `absent`.
 """
 import json
@@ -70,10 +71,10 @@ STAGE_SHARES = (0.05, 0.01, 0.57, 0.01, 0.36)
 FEATURES = {"named-words-whitelisted": "Z-1", runfile.WORD_FROM_LINE: "Z-2", "settings-import": "Z-3",
             runfile.SENTENCE_RULES_OFF: "Z-4", runfile.BOLD_TARGET: "Z-5", "filter-names": "Z-6",
             runfile.DRY_RUN: "Z-7", "fetch": "Z-8", "render": "Z-10", "media": "Z-10", "setup": "Z-11",
-            "script-fold": "Z-12", "beside-window": "Z-13"}
-# Round 2's Z-9 (books and text in `mine`): the `features` name its draft asks for. Not in FEATURES until Surasura
-# mines books: `mines("books")` is False with every Anki Miner until then (alpha 4 M1)
-READING = "reading"
+            "script-fold": "Z-12", "beside-window": "Z-13", runfile.READING: "Z-9"}
+# Round 2's Z-9 (books and text in `mine`, 2026-10-28: Sonic, a must for 3.0): an episode naming `reading_file`. In
+# FEATURES: `mines("books")` is True with an Anki Miner whose `version` names it, False with any other (alpha 4 M1)
+READING = runfile.READING
 # Round 2's Z-16 (an episode naming `audio_file`): its `features` name. Not in FEATURES until Surasura mines audio:
 # `mines("audio")` is False with every Anki Miner until then (alpha 4 A4M1-3)
 AUDIO = "audio-episodes"
@@ -83,7 +84,7 @@ WAITS = {"books": "Z-9", "audio": "Z-16"}
 # A verdict's error code -> the kind Surasura acts on
 KINDS = {"BUSY": "busy", "ANKI_UNREACHABLE": "anki-closed", "SETUP_ERROR": "setup", "PROFILE_UNREADABLE": "setup",
          "BAD_RUN_FILE": "refused", "BAD_ARGUMENTS": "refused", "SUBTITLE_UNREADABLE": "unreadable",
-         "VIDEO_UNREADABLE": "unreadable", "MINING_FAILED": "failed", "CANCELLED": "cancelled",
+         "VIDEO_UNREADABLE": "unreadable", "SOURCE_UNREADABLE": "unreadable", "MINING_FAILED": "failed", "CANCELLED": "cancelled",
          "INTERNAL": "crashed"}
 
 # The outcome of each status (IS §4.4)
@@ -91,7 +92,7 @@ OUTCOMES = {"created": "made", "duplicate": "duplicate", "not_found": "not_found
             "media_failed": "media_failed", "refused": "refused", "not_attempted": "not_attempted",
             "uncertain": "uncertain", "ready": "ready"}       # ready: a dry run would make it (Z-7)
 # A run that stopped with one of these and wrote no result never reached Anki: refused, never uncertain
-BEFORE_ANKI = frozenset(("VIDEO_UNREADABLE", "SUBTITLE_UNREADABLE", "ANKI_UNREACHABLE", "SETUP_ERROR",
+BEFORE_ANKI = frozenset(("VIDEO_UNREADABLE", "SUBTITLE_UNREADABLE", "SOURCE_UNREADABLE", "ANKI_UNREACHABLE", "SETUP_ERROR",
                          "PROFILE_UNREADABLE", "BAD_RUN_FILE", "CANCELLED"))
 # When a word went as two entries (its card front, and Surasura's Word), the better outcome is the word's
 _BEST = ("made", "ready", "duplicate", "uncertain", "media_failed", "refused", "no_definition", "not_attempted",
@@ -365,6 +366,27 @@ def mines(kind, info=None):
     return info is None or ask in features(info or {})
 
 
+_NOW = {}           # `mines_now`'s last read: {"stamp": the setup record's (mtime_ns, size), "info": its Anki Miner}
+
+
+def mines_now(kind):
+    """Can Connect make cards from `kind` now — this Surasura knows its ask and the Anki Miner Connect's setup record
+    last found (`setup.read_record`'s `anki_miner`, a `version` answer) names it (`mines`)? No record: no. The one
+    answer for Connect's jobs (`runner.Steps.mines`) and the window's rows and *Mine* (`view_rows._mines`); the record
+    is read again only once its file changed (a row a book's part: S19). Never raises."""
+    if not mines(kind):
+        return False                    # this build mines none of it whatever Anki Miner says: no record read
+    from app.connect import setup
+    try:
+        st = os.stat(setup.record_path())
+        stamp = (st.st_mtime_ns, st.st_size)
+    except (OSError, ValueError):
+        stamp = None
+    if stamp is None or _NOW.get("stamp") != stamp:
+        _NOW.update(stamp=stamp, info=(setup.read_record().get("anki_miner") if stamp is not None else None))
+    info = _NOW["info"]
+    return mines(kind, info if isinstance(info, dict) else {"features": []})
+
 
 def can_set_up(info, items):
     """A4M1-2 / A4M1-2b: can Surasura do some of this Anki Miner's setup itself — one of the `check` items `items`
@@ -602,8 +624,9 @@ def read_result(run_dir, run_id, name=None, before=()):
 def outcomes(words, rows, run_failed=False, features=()):
     """Surasura's outcome for each picked word (pick's `words`), from one run's result rows — one row per entry
     (`runfile.entries` under these `features`), in the run file's order: [{word, reading, outcome, note_id, mined_form,
-    line_start, returned_start, other_line, from_line, filter, statuses}]. A word sent as two entries takes the better
-    one. `from_line`: made from its line (Z-2, counted as made); `filter`: why Anki Miner dropped it, where it says
+    line_start, returned_start, other_line, from_line, filter, statuses, unit_index, location}]. A word sent as two
+    entries takes the better one. A book's or a text's row (Z-9) has no time: `unit_index` and `location` say where
+    its sentence is (`connect.reading.place` puts it on its part). `from_line`: made from its line (Z-2, counted as made); `filter`: why Anki Miner dropped it, where it says
     (Z-6, `duplicate-expression`). No rows at all (the run wrote no result) is `uncertain` when the run failed (it may
     have written to Anki), `not_attempted` otherwise."""
     rows, out, at = list(rows or ()), [], 0
@@ -622,7 +645,8 @@ def outcomes(words, rows, run_failed=False, features=()):
                     "note_id": row.get("note_id"), "mined_form": row.get("mined_form"),
                     "line_start": word["line_start"], "returned_start": returned, "other_line": other,
                     "from_line": row.get("from_line") is True, "filter": row.get("filter"),
-                    "statuses": {r.get("word"): r.get("status") for r in mine}})
+                    "statuses": {r.get("word"): r.get("status") for r in mine},
+                    "unit_index": row.get("unit_index"), "location": row.get("location")})
     return out
 
 
@@ -661,7 +685,7 @@ def tag_names(url, words, outcomes):
 
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
-               known=None, should_stop=None, show=None):
+               known=None, should_stop=None, show=None, reading=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -674,7 +698,9 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     poll from then on and removed once the call is over (Anki Miner 3.10 clears an unconsumed one as it starts):
     Anki Miner ends at its own next check (0.2 s), every note it wrote whole. The answer then carries `stopped`
     (an AnkiMinerError `cancelled` too, its `stopped` set). `show` (laptop round 8 #50, LF4-3): the title of the show
-    the episode belongs to: every card it makes also carries `runfile.from_tag(show)`."""
+    the episode belongs to: every card it makes also carries `runfile.from_tag(show)`. `reading` (Z-9): the book's or
+    the text's file Anki Miner reads (an Anki Miner naming `reading` only): `video` and `subtitle` unused, each word
+    named by its sentence."""
     from app import anki_connect, locks
     try:
         held = anki_connect.writer("Connect's mine step", wait=wait)
@@ -685,7 +711,8 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
             raise AnkiMinerError("reviewing", "You're reviewing in Anki. Cards are made once you've finished.")
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
-                              subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show)
+                              subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show,
+                              reading)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -701,17 +728,24 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
-               show=None):
+               show=None, reading=None):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
     asks, named = features(info), info.get("features")
     if "Z-1" not in asks:
         write_whitelist(language, [name for word in words for name in runfile.entries(word, named)])
+    if reading is not None and READING not in (named or ()):
+        # an Anki Miner that no longer names `reading` (another one installed since the pick): nothing sent; the job
+        # waits as a book does (`runner.Steps.mine`)
+        raise AnkiMinerError("no-reading", "This Anki Miner can't read books or texts.", verdict=info)
     run_id = f"{job}-{attempt}"
-    episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named),
-                              tags=" ".join(t for t in (runfile.job_tag(job), runfile.from_tag(show)) if t),
-                              subtitle_offset=subtitle_offset)
+    tags = " ".join(t for t in (runfile.job_tag(job), runfile.from_tag(show)) if t)
+    if reading is not None:
+        episode = runfile.reading_episode(run_id, reading, runfile.word_requests(words, named, book=True), tags)
+    else:
+        episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named), tags=tags,
+                                  subtitle_offset=subtitle_offset)
     data = runfile.build(run_dir, language, [episode], profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)

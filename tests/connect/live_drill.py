@@ -6,6 +6,11 @@ deleted and counted back to zero. Never run by the suites; run by hand, holding 
             [--am-home <a test copy's home> | --own] --subtitle <public subtitle> --video <its test video> \\
             [--words 5] [--url http://127.0.0.1:8765]
 
+Z-9's drill (`tracks/pipeline/work/Z9/drill.md`): `--reading <an .epub or a .txt>` in place of --subtitle / --video —
+the words are the text's (an EPUB read as a Generate reads it), each sent by its sentence; every card's `unit_index`
+and `location` printed, and for an EPUB the part of the book each lands on (`connect.reading.place` over the book's
+chapter records, `extract.book_split`).
+
 It refuses any Anki profile but DevTest (asked of AnkiConnect, `getActiveProfile`, before any write). The cards go to
 deck DevTest whatever the Anki Miner profile's own deck: the run's `config` names it (an overlay for this run only,
 never saved), so the "Surasura" profile itself is only read — its id, its note type and field mapping (its export,
@@ -38,6 +43,7 @@ def _args():
     home.add_argument("--own", action="store_true", help="the user's own Anki Miner and home (his recorded OK only)")
     ap.add_argument("--subtitle")
     ap.add_argument("--video")
+    ap.add_argument("--reading", help="Z-9: a book or a text (.epub / .txt) Anki Miner reads (no subtitle, no video)")
     ap.add_argument("--words", type=int, default=5, help="how many words to make cards for")
     ap.add_argument("--want", default="", help="words (Surasura's Word, comma-separated) taken first, whatever their "
                                                "predicted class: P1.3-AM37's one-card-a-word proof (事 beside 仕事)")
@@ -62,8 +68,9 @@ def main():
         return drill_p22(a)
     if a.steps:
         return drill_p14(a)
-    if a.deck != "DevTest" or not a.anki_miner or not a.subtitle or not a.video or not (a.am_home or a.own):
-        refuse("P1.3's drill needs --deck DevTest, --anki-miner, --am-home or --own, --subtitle and --video")
+    if a.deck != "DevTest" or not a.anki_miner or not (a.reading or (a.subtitle and a.video)) or             not (a.am_home or a.own):
+        refuse("P1.3's drill needs --deck DevTest, --anki-miner, --am-home or --own, and --subtitle and --video "
+               "(or Z-9's --reading)")
     own = os.path.realpath(os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "AnkiMiner"))
     if not a.own:
         home = os.path.realpath(a.am_home)
@@ -88,10 +95,14 @@ def main():
         refuse(f'Anki is open on profile "{active}", not {a.profile}')
 
     analyzer.SANITIZE_JA = True
-    read = cues.read(a.subtitle, "ja")
+    if a.reading:
+        read, tokens = cues.reading(a.reading, "ja")
+    else:
+        read = cues.read(a.subtitle, "ja")
+        tokens = cues.tokens(read, "ja")
     want = [w for w in a.want.split(",") if w]
     known = (lambda key: key[0] not in want) if want else (lambda key: False)
-    chosen = pick.pick(read, cues.tokens(read, "ja"), "ja", known, mode="unknown")
+    chosen = pick.pick(read, tokens, "ja", known, mode="unknown")
     words = [w for w in chosen["words"] if want or w["predicted_class"] is None][:a.words]
     if not words:
         refuse("the subtitle gave no words to make cards from")
@@ -127,13 +138,28 @@ def main():
                if not i.get("ok") and i.get("name") not in ("deck", "note_type", "fields", "yt_dlp", "speech_model")]
     if missing:
         refuse(f"Anki Miner isn't ready: {', '.join(missing)}")
-    anki_miner.preflight = lambda path, language, name: (info, profile)
+    if a.reading and runfile.READING not in (info.get("features") or ()):
+        refuse(f"Anki Miner {info.get('app')} doesn't name `reading` (Z-9)")
+    anki_miner.preflight = lambda path, language, name, known=None: (info, profile)
 
     print(f"Anki Miner {info.get('app')} · Anki {active} · deck {mapping.deck} · note type {mapping.note_type} · {tag}")
-    print("words:", ", ".join(f"{w['word']} @ {w['line_start']}s" for w in words))
+    print("words:", ", ".join(f"{w['word']} @ {w['line_text'] if a.reading else w['line_start']}" for w in words))
     done = anki_miner.mine_batch(miner, "ja", job, a.video, a.subtitle, words, mapping, "Surasura", run_dir, a.url,
-                                 timeout=30 * 60)
+                                 timeout=30 * 60, reading=a.reading and os.path.abspath(a.reading))
+    parts = {}
+    if a.reading and a.reading.lower().endswith(".epub"):
+        from app import extract
+        from app.connect import reading
+        docs, _why = extract.epub_documents(a.reading)
+        parts = {n: p.chapter for n, p in enumerate(extract.book_split(docs or [], 6000), 1)}
+        lines = {(w["word"], w["reading"]): w["line_text"] for w in words}
+        for o in done["outcomes"]:
+            o["part"] = reading.place(o.get("location"), lines.get((o["word"], o["reading"])), parts, lambda: docs)
     for o in done["outcomes"]:
+        if a.reading:
+            print(f"  {o['outcome']:13} {o['word']:10} note {o['note_id']}  unit {o.get('unit_index')}  location "
+                  f"{o.get('location')!r}  start {o['returned_start']}  part {o.get('part')}")
+            continue
         print(f"  {o['outcome']:13} {o['word']:10} note {o['note_id']}  line {o['line_start']} -> "
               f"{o['returned_start']}{'  (another line)' if o['other_line'] else ''}"
               f"{'  (made from its line)' if o.get('from_line') else ''}")
@@ -162,6 +188,12 @@ def main():
           f"Anki Miner's selected profile {'unchanged' if after == selected else f'CHANGED {selected} -> {after}'}")
     if left:
         print(f"FAILED: notes left with {tag}: {left}")
+        return 1
+    # Z-9: every book card says where its sentence is (a location, no time) and, for an EPUB, lands on a part
+    unplaced = [o["word"] for o in made if a.reading and (not o.get("location") or o.get("returned_start") is not None
+                                                          or (parts and o.get("part") is None))]
+    if unplaced:
+        print(f"FAILED: book cards with no location, a time, or no part: {unplaced}")
         return 1
     if not made or after != selected or not one_each:
         print("FAILED: " + ("no card was made" if not made else "the selected profile changed" if after != selected

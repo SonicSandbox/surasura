@@ -770,19 +770,21 @@ def _tell(ticket, event):
         ticket.told(event)
 
 
-def _sources_stopped(win, change, undone=False):
+def _sources_stopped(win, change, undone=False, language=None):
     """T6: a *Stop reading it* (`Writer.stop_reading`, a gone folder's card, Settings' *Stop reading*) saved or undone
     — the folders listed again by the looks (`SourceLooks.listing`, its worker), so the card goes, or comes back with
-    its Undo, and Settings' *Library folders* follows. K9 (alpha 4): `undone` (the toast's Undo, or Ctrl+Z) — the looks
-    read the folder again (`let_go(on=False)`: they let it go as the stop was given)."""
+    its Undo, and Settings' *Library folders* follows. K9 (alpha 4): the looks let the folder go as the stop was given
+    (`settings_sources.give_stop`); either way it lands they hold it no more (`let_go(on=False)`) — undone, it is read
+    again; saved (A4B-1), the store's row is off: no look lists it and the store refuses its take-ins, and added again
+    (its old row turned back on) it is read. `language`: the writer's (root ids repeat across stores, A4B-12)."""
     if getattr(change, "kind", None) != "stop_source":
         return
     looks = getattr(win, "looks", None)
     if looks is not None:
         try:
-            if undone and hasattr(looks, "let_go"):
+            if hasattr(looks, "let_go"):
                 for root, *_kinds in getattr(change, "roots", None) or ():
-                    looks.let_go(root, on=False)
+                    looks.let_go(root, on=False, language=language)
             looks.listing()
         except Exception as e:                       # (the looks closing: the next look lists them)
             print(f"Sources: the folders weren't listed after a stop: {e!r}")
@@ -1873,11 +1875,11 @@ class DragController(QObject):
         if self.reader is not None:
             self.reader.refresh()
         _skips_moved(self.win, change)
-        _sources_stopped(self.win, change)
+        _sources_stopped(self.win, change, language=getattr(self.writer, "language", None))
 
     def _undone(self, change, label):
         _skips_moved(self.win, change, undone=True)
-        _sources_stopped(self.win, change, undone=True)
+        _sources_stopped(self.win, change, undone=True, language=getattr(self.writer, "language", None))
         mark =self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
         if isinstance(label, Ticket):
             _tell(label, "undone")

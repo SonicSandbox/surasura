@@ -37,7 +37,8 @@ from tests.qt.test_needs_a4 import hand_in, many
 from tests.qt.test_needs_gone_folder import (GoneWriter, Looks, _button, _card_in, _cards, _gone_row,  # noqa: F401
                                              _told, world)
 from tests.qt.test_settings_folders import ANIME, DRAMA, ActingLooks, _open, _src
-from tests.qt.test_window_sources import _added, _folders_window, _library, _read_store, _source, window  # noqa: F401
+from tests.qt.test_window_sources import (_added, _folders_window, _library, _read_store, _source, _subtitle,  # noqa: F401
+                                          window)
 from tests.test_library_store_support import LANGUAGES, names
 
 
@@ -467,7 +468,8 @@ def test_settings_stop_on_a_real_store_keeps_every_episode_and_its_undo_reads_th
             assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2     # every episode kept
         finally:
             store.close()
-        assert answer["root"] in looks._stopping                         # no look reads it while it is stopped
+        assert answer["root"] not in looks._stopping                     # A4B-1: saved, the store's row is off — the
+        #   looks hold nothing (no look lists it; the store refuses its take-ins), so added again it is read
         win.toasts.card.buttons[0].click()
         assert wait_until(lambda: answer["root"] in folders.lines, 10)
         store = _read_store(data_dir, user_files_dir)
@@ -479,6 +481,62 @@ def test_settings_stop_on_a_real_store_keeps_every_episode_and_its_undo_reads_th
     finally:
         win.close()
         services.shutdown(0.5)
+
+
+def test_a_folder_stopped_from_settings_then_added_again_is_read_and_its_new_episode_arrives(qapp):
+    """A4B-1: *Stop reading* saved (no Undo), then the learner changes their mind — a new episode, the same folder
+    added again (`Store.add_source` gives it its old row back, turned on): its look reads it and the episode arrives.
+    (The looks held the folder for good once the stop was saved: never read again until the app restarted.)"""
+    opener, data_dir, user_files_dir = _library()
+    looks = source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
+    seed = window_seed.build()
+
+    def store_of():
+        return ls.open_store("ja", data_dir, user_files_dir)
+    writer = GoneWriter(seed.library, store_of=store_of)
+    writer.lang = "ja"
+    win, services = open_window(qapp, seed, writer)
+    try:
+        services.source_looks = looks
+        win._open_looks(None)
+        folder = _source()
+        root = _added(looks, folder)["root"]
+        page, row, folders = _folders_window(win)
+        assert wait_until(lambda: root in folders.lines, 10)
+        folders.lines[root].stop.click()
+        assert wait_until(lambda: not folders.lines and not win.services.writer.pending(), 10)
+        show = os.listdir(folder)[0]
+        _subtitle(os.path.join(folder, show), f"{show} - 03.ja.srt", 3)
+        again = _added(looks, folder)
+        assert again["root"] == root and not again["result"]["stopped"]
+        store = _read_store(data_dir, user_files_dir)
+        try:
+            assert store.sources(all=True)[0]["on"] is True
+            assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 3     # the new episode arrived
+        finally:
+            store.close()
+    finally:
+        win.close()
+        services.shutdown(0.5)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_stop_saved_lets_the_looks_go_in_its_own_librarys_language_and_so_does_its_undo(world, language):
+    """A4B-1 / A4B-12: once the stop is in the store the looks hold the folder no more (`let_go(on=False)`), and each
+    let-go names the library's language — root ids repeat across stores, another library's stop of the same id is
+    never released."""
+    seed, win, writer, ny = world(language)
+    looks = SeamLooks(writer=writer)
+    win.services.source_looks = looks
+    win._open_looks(None)
+    _told(win, language, _gone_row(language))
+    card = _card_in(win, ny)
+    _button(ny, card.key, "stop_reading").click()
+    assert wait_until(lambda: writer.saved and len(looks.let_gos) == 2, 5)
+    assert [g[:3] for g in looks.let_gos] == [(13, True, language), (13, False, language)]
+    win.toasts.card.buttons[0].click()                                    # its Undo: read again, in its language
+    assert wait_until(lambda: writer.undone and len(looks.let_gos) == 3, 5)
+    assert looks.let_gos[-1][:3] == (13, False, language)
 
 
 # --- T6 option 2: *Find its new folder…* on a folder holding none of them ------------------------------------------ #

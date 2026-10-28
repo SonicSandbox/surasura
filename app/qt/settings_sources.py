@@ -841,8 +841,9 @@ def give_stop(shell, root_id, text, language, told=None):
     """K9 / B14 (alpha 4): a folder no longer read, through the window's writer — one rule for Settings' *Stop
     reading* and a gone folder's card. The looks let it go first (`SourceLooks.let_go`: a look reading it stops
     between files, and none reads it while it is stopped), then `Writer.stop_reading`: one change, its toast (`text`)
-    with Undo. Refused, or settled unsaved: the looks read it again (`let_go(on=False)`); an Undo does the same as it
-    lands, from the toast or Ctrl+Z (`drag._sources_stopped`). `told(ticket, event)` as `item_menu.give_skip`'s. ->
+    with Undo. Refused, or settled unsaved: the looks read it again (`let_go(on=False)`); saved or undone, the same as
+    it lands, from the toast or Ctrl+Z (`drag._sources_stopped`: saved, the store's row is off — added again, it is
+    read, A4B-1). `told(ticket, event)` as `item_menu.give_skip`'s. ->
     the writer's number, or None (nothing given: the folder is read as before)."""
     from app.qt import drag
     moves, looks = getattr(shell, "moves", None), _looks(shell)

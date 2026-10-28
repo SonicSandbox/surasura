@@ -869,7 +869,8 @@ class _Look:
         self.listed = set()          # LM3 (a): items whose known version a folder listed holds (checked here first)
         self.by_item = None          # LM3: {item id: [its Origins]} (`_maybe_better`), grouped once a look
         self.book_origins = None     # LM3 (c): {an EPUB's key: {part number: Origin}} of the books' parts' records
-        self.editions = None         # LM3 (W4): {(a folder's key, a book's name, edition marks off): its parts}
+        self.editions = None         # LM3 (W4): {(a folder's key, a book's name, edition marks off): {its EPUBs' keys}}
+        self.members = None          # K5: {table: {bucket: {origin key}}} behind the tables above (`_members`)
         self.pending_books = set()   # LM3: the EPUBs whose new edition waits in the store (never hashed nor split)
         self.evidence = None         # D3: ({size: {sha256: shows}}, {video size: {video key: shows}}) of the origins
         self.content_keys = {}       # D3: {a video's path: its content key}, read once a look (`_content_key`)
@@ -1578,9 +1579,10 @@ class _Look:
                 special)
 
     def _book_keys(self):
-        """The EPUBs already in or kept out (their parts' origins, `<epub>#<n>`): gathered once a look (H20)."""
+        """The EPUBs already in or kept out (their parts' origins, `<epub>#<n>`): gathered once a look (H20), kept by
+        `_refresh`."""
         if self.book_keys is None:
-            self.book_keys = {k.rsplit("#", 1)[0] for k in list(self.origins) + list(self.ex_paths) if "#" in k}
+            self.book_keys = set(self._members()["head"]) | {k.rsplit("#", 1)[0] for k in self.ex_paths if "#" in k}
         return self.book_keys
 
     # --- new files (SRC-7) ----------------------------------------------------------------------------------------- #
@@ -2165,8 +2167,8 @@ class _Look:
         """The origins of the show whose `Library` folder key is `fk` (all of them grouped by it once a look)."""
         if self.by_show is None:
             self.by_show, self.show_origins = {}, {}
-            for o in self.origins.values():
-                self.show_origins.setdefault(ls.folder_key_of(o.rel_path or ""), []).append(o)
+            for b in self._members()["show"]:
+                self._rebuild("show", b)
         return self.show_origins.get(fk, ())
 
     def _video_only(self, folder, path, st, show):
@@ -2628,7 +2630,8 @@ class _Look:
             self.store.update_origins(touched)               # (A3): only its records' stats follow
             return
         if known:                                            # moved or renamed: each part's place kept (Hon)
-            places = {o.item_id: o.chapter for o in self.origins.values() if o.sha256 == sha and o.chapter}
+            same = sorted(self._members()["sha"].get(sha, ()))      # K5: its own bytes' parts, not every origin
+            places = {o.item_id: o.chapter for o in (self.origins[k] for k in same) if o.chapter}
             change = self._commit([dict({"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns,
                                          "sha256": sha, "show": rel.split("/")[1] if rel.count("/") >= 2 else show,
                                          "item_id": item, "episode": i}, **({"version": True} if version else {}),
@@ -2724,10 +2727,8 @@ class _Look:
         editions', versions), gathered once a look."""
         if self.book_origins is None:
             self.book_origins = {}
-            for k, o in self.origins.items():
-                head, _sep, number = k.rpartition("#")
-                if head and number.isdigit() and ls._EPUB_PART.search(str(o.origin or "")):
-                    self.book_origins.setdefault(head, {})[int(number)] = o
+            for b in self._members()["book"]:
+                self._rebuild("book", b)
         return self.book_origins
 
     def _book_moved(self, key, st):
@@ -2752,14 +2753,27 @@ class _Look:
         if not want:
             return None, False
         if self.editions is None:
-            self.editions = {}
-            for key in sorted(books):
-                picks = {n: o for n, o in books[key].items() if not o.version}
-                if picks:
-                    epub = str(next(iter(picks.values())).origin or "").rpartition("#")[0]
-                    self.editions.setdefault((ls.path_key(os.path.dirname(epub)), edition_name(os.path.basename(epub))),
-                                             picks)
-        return self.editions.get((ls.path_key(os.path.dirname(os.path.abspath(path))), want)), False
+            self.editions, self.edition_of = {}, {}
+            for key in books:
+                self._file_edition(key)
+        heads = self.editions.get((ls.path_key(os.path.dirname(os.path.abspath(path))), want))
+        if not heads:
+            return None, False
+        return {n: o for n, o in books[min(heads)].items() if not o.version}, False
+
+    def _file_edition(self, key):
+        """K5: the EPUB `key` filed under its name with the edition marks off (`_edition_of`), as its parts are now."""
+        old = self.edition_of.pop(key, None)
+        if old is not None:
+            self.editions[old].discard(key)
+            if not self.editions[old]:
+                del self.editions[old]
+        picks = [o for _n, o in sorted((self.book_origins.get(key) or {}).items()) if not o.version]
+        if picks:
+            epub = str(picks[0].origin or "").rpartition("#")[0]
+            name = (ls.path_key(os.path.dirname(epub)), edition_name(os.path.basename(epub)))
+            self.editions.setdefault(name, set()).add(key)
+            self.edition_of[key] = name
 
     def _edition(self, folder, path, st, sha, target):
         """LM3 (T2-B6 A, PROVISIONAL): the EPUB at `path` is the book `target`'s new edition — split by the one
@@ -2850,23 +2864,102 @@ class _Look:
         """{item id: [its Origins]}, grouped once a look (anew after a switch, `_refresh`)."""
         if self.by_item is None:
             self.by_item = {}
-            for o in self.origins.values():
-                self.by_item.setdefault(o.item_id, []).append(o)
+            for b in self._members()["item"]:
+                self._rebuild("item", b)
         return self.by_item
+
+    def _members(self):
+        """K5 (alpha 4): {table: {bucket: {origin key}}} — the keys behind each book table (`_buckets`), grouped once a
+        look and kept by `_refresh`, so a table is built bucket by bucket and a book's take-in rebuilds its own buckets
+        only (every table rebuilt after every book made a first look of N books cost N²: 19 h at 25k)."""
+        if self.members is None:
+            self.members = {t: {} for t in ("sha", "book", "item", "head", "show")}
+            for k, o in self.origins.items():
+                for t, b in self._buckets(k, o):
+                    self.members[t].setdefault(b, set()).add(k)
+        return self.members
+
+    @staticmethod
+    def _buckets(k, o):
+        """The (table, bucket)s the origin `o` (at key `k`) is filed under — each table's own rule, as it always read."""
+        head, _sep, number = k.rpartition("#")
+        out = [("item", o.item_id), ("show", ls.folder_key_of(o.rel_path or ""))]
+        if head:
+            out.append(("head", head))                       # `_book_keys`
+        if head and number.isdigit() and ls._EPUB_PART.search(str(o.origin or "")):
+            out.append(("book", head))                       # `_book_origins`
+        own, _sep, n = (o.origin or "").rpartition("#")
+        if own and n.isdigit() and o.sha256:
+            out.append(("sha", o.sha256))                    # `_books`
+        return out
+
+    def _rebuild(self, table, b):
+        """One bucket of one table built again from its keys, in key order (the order the store reads them in)."""
+        keys = sorted(self.members[table].get(b, ()))
+        if table == "sha":
+            got = {}
+            for k in keys:
+                o = self.origins[k]
+                got[int(o.origin.rpartition("#")[2])] = (o.item_id, o.rel_path or "", o.version)
+            target = self.books_in
+        elif table == "book":
+            got = {int(k.rpartition("#")[2]): self.origins[k] for k in keys}
+            target = self.book_origins
+        elif table == "item":
+            got = [self.origins[k] for k in keys]
+            target = self.by_item
+        elif table == "show":
+            got = [self.origins[k] for k in keys]
+            target = self.show_origins
+            self.by_show.pop(b, None)                        # its episodes worked out again when asked (`_held`)
+        else:
+            return
+        if got:
+            target[b] = got
+        else:
+            target.pop(b, None)
 
     def _refresh(self, item_ids, change=None):
         """LM3 (A10): after a book's take-in or switch, those items' origins read again (`Store.origins(items=…)`) —
-        and the items it added — and the look's book tables built anew, so a second edition of the same book in this
-        look reads the book as it is now."""
+        and the items it added — and the look's book tables updated for them, so a second edition of the same book in
+        this look reads the book as it is now. K5: only their keys re-filed and the buckets they touch rebuilt."""
         ids = set(item_ids) | set(getattr(change, "added", None) or ())
         if not ids or self.origins is None:
             return
         fresh = self.store.origins(items=ids)
-        for k in [k for k, o in self.origins.items() if o.item_id in ids and k not in fresh]:
-            del self.origins[k]
-        self.origins.update(fresh)
-        self.book_origins = self.books_in = self.book_keys = self.by_item = self.editions = None
-        self.by_show = None
+        members = self._members()
+        old = {k for i in ids for k in members["item"].get(i, ())}
+        old |= {k for k in fresh if k in self.origins}       # a key another item held
+        touched = set()
+        for k in old:
+            for t, b in self._buckets(k, self.origins.pop(k)):
+                held = members[t].get(b)
+                if held is not None:
+                    held.discard(k)
+                    if not held:
+                        del members[t][b]
+                touched.add((t, b))
+        for k, o in fresh.items():
+            self.origins[k] = o
+            for t, b in self._buckets(k, o):
+                members[t].setdefault(b, set()).add(k)
+                touched.add((t, b))
+        built = {"sha": self.books_in is not None, "book": self.book_origins is not None,
+                 "item": self.by_item is not None, "show": self.by_show is not None}
+        for t, b in sorted(touched, key=repr):
+            if built.get(t):
+                self._rebuild(t, b)
+        if self.book_keys is not None:
+            for t, b in touched:
+                if t == "head":
+                    if b in members["head"]:
+                        self.book_keys.add(b)
+                    elif not any(k.rsplit("#", 1)[0] == b for k in self.ex_paths if "#" in k):
+                        self.book_keys.discard(b)
+        if self.editions is not None:
+            for t, b in touched:
+                if t == "book":
+                    self._file_edition(b)
 
     def _pass_over(self, path, st, why=None):
         """A file that is no content — an EPUB with no text or locked (K5, B6), a text none of the language's (K6), a
@@ -2881,8 +2974,6 @@ class _Look:
         `version`: an old edition's, LM3)."""
         if self.books_in is None:
             self.books_in = {}
-            for o in self.origins.values():
-                head, _sep, number = (o.origin or "").rpartition("#")
-                if head and number.isdigit() and o.sha256:
-                    self.books_in.setdefault(o.sha256, {})[int(number)] = (o.item_id, o.rel_path or "", o.version)
+            for b in self._members()["sha"]:
+                self._rebuild("sha", b)
         return self.books_in

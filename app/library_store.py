@@ -601,6 +601,7 @@ SCHEMA_SQL = (
     "CREATE INDEX items_key ON items (rel_key)",                            # "is this file an item?" (§12)
     "CREATE INDEX items_missing ON items (size) WHERE availability = 'missing'",   # D2: a scoped sync's missing items
     "CREATE INDEX items_watched ON items (tier) WHERE watched != 0",        # the journey's stones (`STONES_EXIST_SQL`)
+    "CREATE INDEX items_available_size ON items (size) WHERE availability = 'available'",   # K5: `items_of_size`
     """CREATE TABLE trash (
       id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL, root_id INTEGER NOT NULL, rel_path TEXT NOT NULL,
       tier TEXT NOT NULL, prev_id INTEGER, next_id INTEGER,
@@ -662,8 +663,11 @@ ADDED_INDEXES_SQL = (
     "CREATE INDEX IF NOT EXISTS pairings_item ON pairings (item_id)",
     "CREATE INDEX IF NOT EXISTS items_missing ON items (size) WHERE availability = 'missing'",   # D2 (`_lost_by_size`)
     "CREATE INDEX IF NOT EXISTS items_watched ON items (tier) WHERE watched != 0",
+    # K5 (alpha 4): a look's check (b) per new file or book part (`items_of_size`) scanned every item without it: a first
+    # look of 25k books spent minutes there. Dropped as easily (DROP INDEX): no row changes
+    "CREATE INDEX IF NOT EXISTS items_available_size ON items (size) WHERE availability = 'available'",
 )
-ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched")
+ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_available_size")
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then

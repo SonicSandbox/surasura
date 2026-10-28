@@ -141,13 +141,32 @@ def test_T2_a_folder_holding_the_show_under_other_names_is_never_refused(languag
 
 
 def test_N4_one_shows_whole_folder_gone_stays_that_shows_card():
-    spec = []
+    """A's 12 episodes gone from Library/X (beside C's 4, present); B's one gone file elsewhere makes two shows gone, so
+    the fold is asked — but X's gone files are one show's: A keeps its own card (its lines' own answers)."""
     from tests.test_services_needs import work
-    work(30, SHOWS[0])
-    spec.append((30, "Library/X/A", [f"{SHOWS[0]} - {k:02d}.ja.srt" for k in range(1, 13)],
-                 {k: MISSING for k in range(12)}))
-    for i in (1, 2):
-        work(30 + i, SHOWS[i])
-        spec.append((30 + i, f"Library/X/{'BC'[i - 1]}", _eps(SHOWS[i]), {}))
+    spec = []
+    rows = (("Library/X/A", 12, True), ("Library/X/C", 4, False), ("Library/Y/B", 4, "one"),
+            ("Library/Z/D", 8, False), ("Library/Z/E", 8, False))
+    for n, (folder, count, gone) in enumerate(rows):
+        work(40 + n, SHOWS[n])
+        missing = {k: MISSING for k in range(count)} if gone is True else {0: MISSING} if gone == "one" else {}
+        spec.append((40 + n, folder, [f"{SHOWS[n]} - {k:02d}.ja.srt" for k in range(1, count + 1)], missing))
     out = needs.entries(view_of(spec))
-    assert _kinds(out) == [needs.GONE]
+    assert needs.FILES_FOLDER not in _kinds(out) and _kinds(out).count(needs.GONE) == 2
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_V3_a_file_removed_put_back_and_removed_again_is_one_entry(language):
+    """The Haiku list's V3: the first Remove's row, put back, never shows beside the second Remove's."""
+    store = migrated(language)
+    with store:
+        first = store.ids("now")[0]
+        change = store.remove([first], trashed_paths={first: _trashed(store, first)})
+        rel = store.trash_rows(change.trash_ids)[0]["trashed_path"]
+        back = os.path.join(store.data_dir, *store.trash_rows(change.trash_ids)[0]["rel_path"].split("/"))
+        os.makedirs(os.path.dirname(back), exist_ok=True)
+        shutil.move(os.path.join(store.data_dir, *rel.split("/")), back)       # the writer's file half, by hand
+        store.restore(change.trash_ids)
+        store.remove([first], trashed_paths={first: _trashed(store, first)})
+        entries = store.removed()
+        assert [e["count"] for e in entries] == [1] and entries[0]["trash_ids"] != change.trash_ids

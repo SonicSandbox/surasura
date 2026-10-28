@@ -23,7 +23,7 @@
   its ⋯. A4 (20,000 arrivals): its rows are a model of keys painted by a list (`TrayModel`, `TrayList`) — an arrival in
   or out is one row inserted or removed, a new number repaints its row alone, and a closed tray does no row work (the
   view waits for `open`). Rows that share a title name their folder first on their line (K7: where the
-  original sits, from the looks' answer — the shell's `_named_arrival`, `view_rows.arrival_folder`).
+  original sits, from the looks' answer — named by the reader on its thread, `view_rows._name_arrivals`, A4B-8).
 - **The numbers** (`ArrivalNumbers`): each arrival's files asked of the warm worker
   (`app/services/arrivals.ArrivalsWorker.estimate`) once each, when the arrival first shows, each with the piece's
   earlier files placed before it (IK-5) — the asks on a worker, never the window's thread; the answers kept by (item,

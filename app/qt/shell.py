@@ -20,10 +20,8 @@ the main window** (✅ G1.2-2); Forward does nothing. Tooltips are the bubble (`
 
 Run it: `python app_entry.py` on the 3.0 line (or `main()` here).
 """
-import collections
 import json
 import math
-import operator
 import os
 import sys
 import threading
@@ -57,7 +55,6 @@ STATE_VERSION = 1
 DEFAULT_SIZE = (1280, 800)
 POLL_MS = 500
 LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.due` says when it's an hour: FOCUS_S apart)
-CHIP_MAX = 24                   # SRC W1b: an arrival's folder name on its chip, at most this long
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
@@ -1277,11 +1274,6 @@ class ShellWindow(QMainWindow):
         self.looks = None
         self.sources = ()                                 # the last look's sources ({id, path, on, items, reachable})
         self.sources_listed = False                       # ... once a listing of this library landed (none is news)
-        self._folders_of = {}                             # an arrival's first item -> its source folder (None: none)
-        self._folders_asked = set()
-        self._folders_version = 0
-        self._named = {}                                  # an arrival's key -> (the view's arrival, folder, ours)
-        self._named_groups = None                         # (the view's groups, version, the groups shown)
         self._arrivals_view = None
         self._sources_relay = bridge.Relay(self)
         self._sources_relay.said.connect(self._sources_looked)
@@ -1289,8 +1281,6 @@ class ShellWindow(QMainWindow):
         self._ended_relay.said.connect(self._look_ended)
         self._progress_relay = bridge.Relay(self)
         self._progress_relay.said.connect(self._sources_progress)
-        self._folders_relay = bridge.Relay(self)
-        self._folders_relay.said.connect(self._folders_landed)
         self.look_key = QShortcut(QKeySequence(QKeySequence.StandardKey.Refresh), self)
         self.look_key.setContext(Qt.ShortcutContext.WindowShortcut)
         self.look_key.activated.connect(self.refresh_sources)
@@ -1554,8 +1544,8 @@ class ShellWindow(QMainWindow):
         tray = getattr(self, "arrivals_tray", None)
         if tray is None:
             return
-        self._arrivals_view = view                        # --- SRC W1b: each arrival names its folder
-        tray.set_groups(self._named_arrivals(getattr(view, "arrival_groups", ()) or ()))
+        self._arrivals_view = view                        # SRC W1b / A4B-8: each arrival names its folder — the
+        tray.set_groups(getattr(view, "arrival_groups", ()) or ())     # reader's thread named it (`follow_folders`)
         if not arrivals and (tray.isVisible() or motion.opening_of(tray) is not None):
             tray.close()
         if self.arrival_numbers is not None and getattr(view, "language", self.language) == self.language:
@@ -2845,7 +2835,19 @@ class ShellWindow(QMainWindow):
             looks.on_result = self._looks_said
             looks.on_ended = lambda told, why: self._ended_relay.call((told, why))
             looks.on_progress = lambda path, found, shows: self._progress_relay.call((path, found, shows))
+        self._follow_folders(looks)
         return looks
+
+    def _follow_folders(self, looks):
+        """SRC W1b / K7 / A4B-8: each arrival from a source folder names its folder (where its original sits, the
+        looks' `folders(..., detail=True)`) — asked and named by the reader on its own thread, never this one's: a new
+        view at 20,000 arrivals cost ~15 ms here. The reader shown asks these looks from now on (None: no looks)."""
+        reader = self._reader_shown
+        follow = getattr(reader, "follow_folders", None)
+        if follow is None:
+            return
+        asks = getattr(looks, "folders", None)
+        follow(None if asks is None else (lambda ids, then: asks(ids, then, detail=True)))
 
     def _looks_said(self, summary):
         """(The looks' worker.) A look's summary, with the offline lines hidden (round 8 row 54: the seen file, pruned
@@ -2858,10 +2860,6 @@ class ShellWindow(QMainWindow):
         self.sources = ()
         self.sources_listed = False
         self.offline_hidden = set()
-        self._folders_of.clear()
-        self._folders_asked.clear()
-        self._named.clear()
-        self._named_groups = None
         self._show_offline()
         # Settings' lines: the language open's, its listing asked for (never "No folders yet" while it is on its way)
         self.sources_seen.emit({"language": self.language, "sources": [], "listing": self.looks is not None})
@@ -3012,72 +3010,6 @@ class ShellWindow(QMainWindow):
         name = os.path.basename(os.path.normpath(path)) or path
         self.say(strings.SOURCES_READING.format(name=name, found=found, shows=shows))
 
-    def _named_arrivals(self, groups):
-        """Each arrival from a source folder names its folder on its chip, its first item's asked once on the looks'
-        worker (K7: with where its original sits, `detail=True`); a row whose title another row shares names that
-        folder first on its line (`view_rows.arrival_folder`). The view's own objects back while nothing is named (the
-        tray repaints only what moved, S19); the same view again is looked at no further (20,000 rows: nothing)."""
-        if self.looks is None or not groups:
-            return groups
-        held = self._named_groups
-        if held is not None and held[0] is groups and held[1] == self._folders_version:
-            return held[2]                                # (its rows were asked for when it first came)
-        want = [a.item_ids[0] for g in groups for a in g.rows if a.item_ids and a.item_ids[0] not in self._folders_asked]
-        if want:
-            self._folders_asked.update(want)
-            language = self.language
-            self.looks.folders(want, lambda found: self._folders_relay.call((language, found)), detail=True)
-        titles = [a.title for g in groups for a in g.rows]
-        counts = collections.Counter(titles)
-        twice = {t for t, k in counts.items() if k > 1} if len(counts) < len(titles) else ()
-        name = self._named_arrival
-        out, moved = [], False
-        for g in groups:
-            rows = [name(a, a.title in twice) for a in g.rows] if twice else [name(a) for a in g.rows]
-            if any(map(operator.is_not, rows, g.rows)):
-                moved = True
-                g = g._replace(rows=tuple(rows))
-            out.append(g)
-        shown = tuple(out) if moved else groups
-        self._named_groups = (groups, self._folders_version, shown)
-        return shown
-
-    def _named_arrival(self, a, shared=False):
-        """`a` with its source folder's name on its chip and, when another row shares its title (`shared`), its own
-        folder first on its line (K7) — the same object while neither moved (S19)."""
-        where = self._folders_of.get(a.item_ids[0]) if a.item_ids else None
-        if not where:
-            return a
-        kept = self._named.get(a.key)
-        if kept is not None and kept[0] is a and kept[1] is where and kept[2] is shared:
-            return kept[3]
-        root = where.get("root") if isinstance(where, dict) else where      # (a looks without `detail`: the root)
-        if not root:
-            return a
-        folder = view_rows.arrival_folder(where) if shared else None
-        name = os.path.basename(os.path.normpath(root)) or root
-        chip = name if len(name) <= CHIP_MAX else name[:CHIP_MAX - 1] + "…"
-        spoken, parts = a.accessible, a.parts
-        if folder:
-            head = a.title + " · "
-            spoken = f"{head}{folder} · {spoken[len(head):]}" if spoken.startswith(head) else f"{spoken} · {folder}"
-            parts = ((folder, "dim"),) + tuple(parts)
-        ours = a._replace(chip=chip, source="disk", folder=folder, parts=parts,   # a folder's chip in the disk's ink
-                          accessible=f"{spoken} · {strings.SOURCES_FROM.format(name=name)}")
-        self._named[a.key] = (a, where, shared, ours)
-        return ours
-
-    def _folders_landed(self, said):
-        """The arrivals' folders read: the tray shown again when one was named (another language's answer dropped:
-        item ids repeat across stores)."""
-        language, found = said if isinstance(said, tuple) else (None, said)
-        if not isinstance(found, dict) or language != self.language:
-            return
-        named = {k: v for k, v in found.items() if v}
-        self._folders_of.update(found)
-        if named and self._arrivals_view is not None:
-            self._folders_version += 1
-            self._show_arrivals(self._arrivals_view)
     # --- end SRC W1b
 
     # --- showing, closing, remembering -------------------------------------------------------------------- #

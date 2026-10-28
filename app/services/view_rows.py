@@ -33,7 +33,7 @@ Every user-facing word is here or in the window's strings; nothing here imports 
 import operator
 import os
 import re
-from collections import namedtuple
+from collections import Counter, namedtuple
 from itertools import chain
 
 from app.connect import feed as connect_feed     # P4.1 L2: Connect's kinds (a light module: no Qt, no Tk)
@@ -277,6 +277,7 @@ STRINGS = {
     "per_ep_tip_none": "{files} {units} · its new words are counted when it first shows: an estimate until analysed",
     "acc_arrival": "{title} · {line} · {number}", "acc_per_ep_none": "not counted yet",
     "arr_folder_sep": " › ",            # A4: a folder's last two parts, on a row whose title another row shares
+    "arr_from": "from {name}",          # A4B-8: an arrival's source folder, said after its line
     # --- W3.2 Q2: Goal's tiles
     "goal_count": "{n} {units}",
     "goal_tile_tip": "{title} · {line}\nDrag it into Current to bring up {first}, or ⋯ to move it",
@@ -1265,20 +1266,72 @@ def arrival_folder(where):
     return STRINGS["arr_folder_sep"].join(parts[-2:]) or None
 
 
-def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, changed_works):
+CHIP_MAX = 24                       # SRC W1b: an arrival's folder name on its chip, at most this long
+
+
+def _named_arrival(a, where, shared, named):
+    """`a` with its source folder's name on its chip and, when another row shares its title (`shared`), its own
+    folder first on its line (K7) — the same object while neither moved (S19; `named`: key -> (a, where, shared,
+    ours), last build's). `where`: the looks' answer for its first item."""
+    if not where:
+        return a
+    kept = named.get(a.key)
+    if kept is not None and kept[0] is a and kept[1] is where and kept[2] is shared:
+        return kept[3]
+    root = where.get("root") if isinstance(where, dict) else where      # (a looks without `detail`: the root)
+    if not root:
+        return a
+    folder = arrival_folder(where) if shared else None
+    name = os.path.basename(os.path.normpath(root)) or root
+    chip = name if len(name) <= CHIP_MAX else name[:CHIP_MAX - 1] + "…"
+    spoken, parts = a.accessible, a.parts
+    if folder:
+        head = a.title + " · "
+        spoken = f"{head}{folder} · {spoken[len(head):]}" if spoken.startswith(head) else f"{spoken} · {folder}"
+        parts = ((folder, "dim"),) + tuple(parts)
+    ours = a._replace(chip=chip, source="disk", folder=folder, parts=parts,   # a folder's chip in the disk's ink
+                      accessible=f"{spoken} · {STRINGS['arr_from'].format(name=name)}")
+    named[a.key] = (a, where, shared, ours)
+    return ours
+
+
+def _name_arrivals(cache, rows, where):
+    """A4B-8 (was the shell's `_named_arrivals`, on the window's thread: ~15 ms per new view at 20,000): each arrival
+    from a source folder names its folder on its chip (`where`: {first item id: the looks' answer}); a row whose title
+    another row shares names its own folder first on its line. Here, on the reader's thread; a row named as last time
+    is the same object (S19)."""
+    if not where:
+        return rows
+    named = cache.sections.setdefault("arrivals_named", {}) if cache is not None else {}
+    titles = [a.title for a in rows]
+    counts = Counter(titles)
+    twice = {t for t, k in counts.items() if k > 1} if len(counts) < len(titles) else ()
+    out = tuple(_named_arrival(a, where.get(a.item_ids[0]) if a.item_ids else None, a.title in twice, named)
+                for a in rows)
+    if len(named) > 2 * len(out) + 64:                  # rows gone long ago let go
+        keys = {a.key for a in out}
+        for k in [k for k in named if k not in keys]:
+            del named[k]
+    return out
+
+
+def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, changed_works, folders=None):
     """The tray's rows and groups (RUNBOOK §1 *The tray*): one per piece, newest first by `added_at` (a piece by its
     newest file; equal stamps keep the store's order), *New* then *Already watched*. With the reader's cache an
     unchanged tier gives back last build's objects (`_kept`), and a piece whose items, work, cards, estimates and guess
-    are the same gives back its row — the window repaints only the rows that moved (S19)."""
+    are the same gives back its row — the window repaints only the rows that moved (S19). `folders`: (version,
+    {first item id: the looks' answer}) — each row named with its folder here (`_name_arrivals`, A4B-8)."""
     ps = pieces(tier_rows)
     estimates = estimates or {}
+    folders_version, where = folders if folders else (0, None)
 
     def sig(p):
         work = works.get(p[0].get("work_id"))
         guess = guessed.of(work) if work and work.get("media_type") is None else None
         return (tuple(cards.get(it["id"], 0) for it in p), tuple(estimates.get(it["id"]) for it in p), guess)
     sigs = tuple(sig(p) for p in ps)
-    kept = _kept(cache, "arrivals", tier_rows, changed, changed_works, sigs)
+    more = (sigs, folders_version)
+    kept = _kept(cache, "arrivals", tier_rows, changed, changed_works, more)
     if kept is not None:
         return kept[0], kept[1]
     hit = cache.sections.get("arrivals") if cache is not None else None
@@ -1304,13 +1357,14 @@ def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, chang
         made.append(row)
     made.sort(key=lambda a: a.added_at or "", reverse=True)          # stable: equal stamps keep the store's order
     rows = tuple(a for a in made if a.group == "new") + tuple(a for a in made if a.group == "watched")
+    rows = _name_arrivals(cache, rows, where)
     if hit is not None and len(hit[4][0]) == len(rows) and all(a is b for a, b in zip(hit[4][0], rows)):
         rows, groups = hit[4][0], hit[4][1]                         # nothing moved: the same objects
     else:
         groups = tuple(ArrivalGroup(kind, STRINGS[label], tuple(a for a in rows if a.group == kind))
                        for kind, label in (("new", "arr_new"), ("watched", "arr_watched"))
                        if any(a.group == kind for a in rows))
-    _keep(cache, "arrivals", tier_rows, {r.get("work_id") for r in tier_rows}, sigs, (rows, groups, entries))
+    _keep(cache, "arrivals", tier_rows, {r.get("work_id") for r in tier_rows}, more, (rows, groups, entries))
     return rows, groups
 
 
@@ -1417,7 +1471,7 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
 
 def build(items, works, options, numbers=None, cards=None, mining=(), language="ja", mode="store", reason=None,
           loading=False, busy=False, cache=None, tiers=None, changed=None, changed_works=None, numbers_changed=None,
-          estimates=None, connect=None, pieces=None, playable=None):
+          estimates=None, connect=None, pieces=None, playable=None, folders=None):
     """The window's view of the library (see the module's doc). `items` / `works`: {id: feed row}; `options`: the
     feed's {soon_line, mine_line, arrivals_on}; `numbers`: (version, {item_id: (known, counted, n_new)}) or the dict;
     `cards`: {item_id: count}; `mining`: item ids being mined now; `changed`: with `cache`, the item ids changed or gone
@@ -1429,7 +1483,9 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     and its mining set beside `mining`; None: as without Connect; a Feed that is off (or not looked yet: `feed.NOT_LOOKED`)
     — no Connect statuses, and no top line or *Waiting* (row 13: nothing mines by itself); `pieces`: the feed's
     {piece_id: {id, title, kind}} (LM11b G1) — a Current piece of kind 'group' is a group's row (`_row`); `playable`:
-    ▶'s answers ({item_id: found}, `play.Looks`, row 55) — Current's ▶ only where found; None: no looker, as before."""
+    ▶'s answers ({item_id: found}, `play.Looks`, row 55) — Current's ▶ only where found; None: no looker, as before;
+    `folders`: (version, {item_id: where its original sits}) for New arrivals' first files, the looks' answers (A4B-8:
+    each row names its folder, built here)."""
     numbers_version = None
     if isinstance(numbers, tuple):
         numbers_version, numbers = numbers
@@ -1614,7 +1670,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                           episodes=tuple((e.label, STRINGS["need_ep"].format(word=word)) for e in waiting),
                           cover_title=row.cover_title, cover=row.cover))                   # W3.2 Q6
     arrivals = tiers["arrivals"]
-    arrival_rows, arrival_groups = _arrivals(cache, arrivals, works, cards, estimates, guessed, changed, changed_works)
+    arrival_rows, arrival_groups = _arrivals(cache, arrivals, works, cards, estimates, guessed, changed, changed_works,
+                                             folders)
     if cache is not None:
         cache.end()
     counts = Counts(current_rows=len(rows), current_files=len(current), goal_titles=n_goal_works,

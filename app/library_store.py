@@ -671,7 +671,8 @@ ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_avail
 # A4K-7 (alpha 4, Sonic 2026-10-28): each copy's content hash, kept for a look's check (b), which read and hashed every
 # copy of a new part's size (~56,000 files when 100 books came onto 60k parts). Made with the added indexes: an added
 # column (no row rewritten: NULL until a look fills it) and a trigger that forgets a hash whenever its row's file
-# changes (its size, time or path), whoever writes the row, an older Surasura too. Never in the copy (ITEM_FIELDS).
+# changes (its size, time or path), whoever writes the row, an older Surasura too. Never in the copy (ITEM_FIELDS, and
+# never in a Remove's trash state).
 # Dropped as easily: DROP TRIGGER items_hash_stale, then the column (or left: older code never reads it)
 ADDED_HASH_SQL = (
     "ALTER TABLE items ADD COLUMN content_sha256 TEXT",
@@ -2780,7 +2781,8 @@ class Store:
             trash_rows = []
             for r in ordered:
                 item = full[r[0]]
-                state = {k: v for k, v in item.items() if k not in ("entry", "rel_path", "tier", "ord")}
+                state = {k: v for k, v in item.items()            # A4K-7: the hash is a cache, never in the copy
+                         if k not in ("entry", "rel_path", "tier", "ord", "content_sha256")}
                 state = {"columns": state, "pairings": pairs.get(r[0], []), "anki_links": links.get(r[0], [])}
                 if why or kind != "remove":
                     state["why"] = why or kind

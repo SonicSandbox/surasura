@@ -2525,28 +2525,30 @@ class _Look:
 
     def _same_bytes(self, size, sha, sizes=None):
         """(b) An item of this size whose file holds these bytes, or None. A4K-7: an item's hash the store keeps is
-        read instead of its file — a match only while the file's size and time are still its row's (else it is read);
-        a file read is hashed once a look, and its hash kept for the next looks (`_keep_hashes`)."""
+        used instead of reading its file while the file's size and time are still its row's (one stat: 1.8 s for 60k
+        copies); else, or with no hash kept, the file is read — hashed once a look, its hash kept for the next looks
+        (`_keep_hashes`)."""
         for item_id, rel, mtime_ns, kept in (self.sizes if sizes is None else sizes).get(size, ()):
             if rel not in self.hashes:
                 full = os.path.join(self.data_dir, *rel.split("/"))
-                if kept is not None and (kept != sha or _stat_of(full) == (size, mtime_ns)):
+                now = _stat_of(full)
+                if kept is not None and now == (size, mtime_ns):
                     self.hashes[rel] = kept
                 else:
-                    self.hashes[rel] = self._read_hash(item_id, full, size, mtime_ns)
+                    self.hashes[rel] = self._read_hash(item_id, full, now, size, mtime_ns)
             if self.hashes[rel] == sha:
                 return item_id
         return None
 
-    def _read_hash(self, item_id, full, size, mtime_ns):
+    def _read_hash(self, item_id, full, before, size, mtime_ns):
         """Check (b)'s read of an item's copy -> its sha256, or None (unreadable). A4K-7: kept for the item when the
-        file is as its row records it."""
+        file was as its row records it (`size`, `mtime_ns`) before the read (`before`: its stat) and still is after it
+        (never a file changed while it was read)."""
         try:
-            st = os.stat(full)
             sha = ls.sha256_of(full)
         except OSError:
             return None
-        if (st.st_size, st.st_mtime_ns) == (size, mtime_ns):
+        if before == (size, mtime_ns) == _stat_of(full):
             self.to_keep.append((item_id, size, mtime_ns, sha))
         return sha
 

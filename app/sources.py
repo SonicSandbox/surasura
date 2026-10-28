@@ -704,16 +704,31 @@ def _write_part(part, data):
 def _write_parts_at_once(pool, jobs):
     """K5 C2: [(a `.part`, its bytes)] each written and flushed (`_write_part`), by `pool`'s threads when there is one
     (a file's write and flush let go of the GIL). Every write has ended before this returns or raises (the first
-    error, in `jobs`' order), so a `.part` dropped after a failure is never written again behind the caller's back."""
+    error, in `jobs`' order), so a `.part` dropped after a failure is never written again behind the caller's back; after
+    a failure the writes not started yet are cancelled (the book waits whole); a pool that shut meanwhile (the app
+    closing) leaves the rest to this thread."""
     if pool is None or len(jobs) < 2:
         for part, data in jobs:
             _write_part(part, data)
         return
     import concurrent.futures
-    futures = [pool.submit(_write_part, part, data) for part, data in jobs]
+    futures = []
+    try:
+        for part, data in jobs:
+            futures.append(pool.submit(_write_part, part, data))
+    except RuntimeError:                                     # shut: the rest written here, after the pool's
+        pass
+    concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_EXCEPTION)
+    for f in futures:
+        f.cancel()                                           # a failure: the rest needn't be written
     concurrent.futures.wait(futures)
     for f in futures:
-        f.result()
+        if not f.cancelled():
+            f.result()
+    if any(f.cancelled() for f in futures):                  # cancelled only after an error raised above
+        raise OSError("a part's write was cancelled")
+    for part, data in jobs[len(futures):]:
+        _write_part(part, data)
 
 
 _SPLIT_KNOWN = frozenset()      # K5 C2, in a splitting worker: the sha256s of the books in or kept out (`_split_start`)
@@ -772,6 +787,7 @@ class _Splitter:
         self._fill(0)
 
     def _fill(self, at):
+        self.next = max(self.next, at)                       # never a book the look has passed (skipped ones)
         try:
             while self.next < len(self.paths) and self.next < at + self.ahead:
                 path = self.paths[self.next]
@@ -797,9 +813,11 @@ class _Splitter:
             log.info("A book split ahead failed (the look reads it itself): %r", e)
             return None
 
-    def close(self):
+    def close(self, wait=True):
+        """The pool shut, the books not started let go of; `wait=False` (a Stop): the splits under way end in their
+        workers by themselves, the look doesn't wait for them (each worker then exits)."""
         self.futures.clear()
-        self.pool.shutdown(wait=True, cancel_futures=True)
+        self.pool.shutdown(wait=wait, cancel_futures=True)
 
 
 def _drop(part):
@@ -1722,21 +1740,29 @@ class _Look:
 
     def _pools(self, epubs):
         """K5 C2: the splitting processes and the writing threads for this look's new EPUBs — as many as the indexer
-        would take for as many files (`token_index.pool_workers`: none under POOL_MIN_FILES, half the cores, every core
-        with *Use every core*); `()`: closed."""
+        would take for as many files (`token_index.pool_workers` with settings.json's `index_pool_workers`: none under
+        POOL_MIN_FILES, half the cores, every core with *Use every core*); `()`: closed."""
         if not epubs:
             for pool in (self.splitter, self.writers):
                 if pool is not None:
                     try:
-                        (pool.close if pool is self.splitter else pool.shutdown)()
+                        if pool is self.splitter:
+                            pool.close(wait=not self.out["stopped"])      # Stop ends now: splits under way not waited
+                        else:
+                            pool.shutdown()
                     except Exception as e:
                         log.info("A look's pool didn't close cleanly: %r", e)
             self.splitter = self.writers = None
             return
         try:
             from concurrent.futures import ThreadPoolExecutor
+            from app import settings_manager
             from app.token_index import every_core, pool_workers
-            size = pool_workers(len(epubs), every=every_core())
+            try:
+                setting = settings_manager.load_settings().get("index_pool_workers")
+            except Exception:
+                setting = None
+            size = pool_workers(len(epubs), setting, every=every_core())
             if size < 2:
                 return
             self.writers = ThreadPoolExecutor(size, thread_name_prefix="book-parts")

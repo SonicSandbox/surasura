@@ -161,6 +161,9 @@ def test_a_stop_ends_the_take_and_closes_the_pools(monkeypatch):
         return real(self, *c)
     monkeypatch.setattr(sources._Look, "_book", book)
     seen = {}
+    waits = []
+    real_close = sources._Splitter.close
+    monkeypatch.setattr(sources._Splitter, "close", lambda self, wait=True: (waits.append(wait), real_close(self, wait)))
     real_pools = sources._Look._pools
 
     def pools(self, epubs):
@@ -176,6 +179,7 @@ def test_a_stop_ends_the_take_and_closes_the_pools(monkeypatch):
     assert splitter is not None and writers is not None
     assert seen["closed"] == (None, None)
     assert splitter.pool._shutdown_thread and writers._shutdown
+    assert waits == [False]                                  # Stop: the splits under way are not waited for
 
 
 def test_use_every_core_sizes_the_pools_at_every_core_and_reads_off_when_unset(monkeypatch):
@@ -213,3 +217,55 @@ def test_a_book_the_look_passed_by_is_let_go_and_the_workers_stay_ahead_of_the_l
         assert splitter.take(paths[0]) is None                       # let go of: the look would read it itself
     finally:
         splitter.close()
+
+
+def test_after_books_the_look_skipped_the_workers_never_split_one_it_has_passed():
+    """Why (review): books the look passes by without asking (a file still being copied, a path kept out) left the
+    window behind; the next book's take then queued every passed book again ahead of the ones it needs — wasted
+    splits the look waited behind."""
+    src = _drive("books")
+    _shelf("ja", src)
+    paths = sorted(os.path.join(w, f) for w, _d, fs in os.walk(src) for f in fs if f.endswith(".epub"))
+    splitter = sources._Splitter(paths, "ja", 1, ())
+    try:
+        splitter.take(paths[2])                                      # paths[0] and [1] passed by unasked
+        assert set(splitter.futures) == set(paths[3:3 + sources.SPLIT_AHEAD])
+    finally:
+        splitter.close()
+
+
+def test_the_look_sizes_its_pools_as_the_indexer_does_with_index_pool_workers(monkeypatch):
+    """Why (review): settings.json's `index_pool_workers` (a learner's own cap, 1 = one process) is how many processes
+    the indexer takes; the look's pools take the same answer, never more."""
+    from app import settings_manager
+    asked = []
+    monkeypatch.setattr(settings_manager, "load_settings",
+                        lambda *a, **k: {"index_pool_workers": 1, "use_every_core": True})
+    monkeypatch.setattr(token_index, "pool_workers", lambda n, setting=None, *a, **k: (asked.append((setting, k)), 1)[1])
+    result, got, *_ = _first_look("ja")
+    assert asked == [(1, {"every": True})]
+    assert result["added"] > 0 and got
+
+
+def test_a_write_that_fails_cancels_the_parts_not_started_and_a_shut_pool_writes_here(tmp_path, monkeypatch):
+    """Why (review): after one part fails the whole book waits, so the parts not started yet are never written (the
+    look alone stopped at the first failure); a pool shut meanwhile (the app closing) never leaves parts unwritten
+    or half the book behind — this thread writes the rest."""
+    from concurrent.futures import ThreadPoolExecutor
+    jobs = [(str(tmp_path / f"{n}.part"), "第{}章".format(n).encode("utf-8")) for n in range(6)]
+    real = sources._write_part
+
+    def write(part, data):
+        if part.endswith("0.part"):
+            raise OSError("the disk said no")
+        return real(part, data)
+    monkeypatch.setattr(sources, "_write_part", write)
+    with ThreadPoolExecutor(1) as pool:
+        with pytest.raises(OSError, match="the disk said no"):
+            sources._write_parts_at_once(pool, jobs)
+    assert sorted(os.listdir(tmp_path)) == []                        # one thread: 0 failed, 1-5 never started
+    monkeypatch.setattr(sources, "_write_part", real)
+    pool = ThreadPoolExecutor(2)
+    pool.shutdown()
+    sources._write_parts_at_once(pool, jobs)
+    assert sorted(os.listdir(tmp_path)) == sorted(os.path.basename(p) for p, _d in jobs)

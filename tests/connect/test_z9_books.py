@@ -21,7 +21,7 @@ from app.connect.ledger import Ledger
 from tests import connect_helpers as c
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
 from tests.connect.fake_anki_miner import LAPIS_EXPORT
-from tests.connect.test_p41_asked import StoreSteps, _library, _place_top, _mined, _jobs, _run
+from tests.connect.test_p41_asked import StoreSteps, _library, _place_top, _mined, _jobs, _run, _srt
 from tests.test_book_chapters import _epub, _lines, _novel
 
 RESOURCES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Test Resources")
@@ -101,6 +101,15 @@ def test_an_empty_text_has_no_sentence_and_no_word(tmp_path):
     empty.write_text("\r\n\r\n", encoding="utf-8")
     read, tokens = cues.reading(str(empty), "ja")
     assert list(read) == [] and tokens == [] and read.units
+
+
+def test_a_sentences_spaces_are_taken_out_as_anki_miner_joins_a_paragraph(tmp_path):
+    """A novel's paragraph indent (a full-width space) and a space inside a Japanese sentence are no part of the
+    sentence Anki Miner compares: the cue (the word's `line_text`) has none."""
+    book = tmp_path / "冒険.txt"
+    book.write_text("　今夜は 冒険。\r\n　彼は毎日　冒険に出かけます。\r\n", encoding="utf-8")
+    read, _tokens = cues.reading(str(book), "ja")
+    assert [c.text for c in read] == ["今夜は冒険。", "彼は毎日冒険に出かけます。"]
 
 
 def test_a_reading_run_file_names_the_file_and_each_word_by_its_sentence(tmp_path):
@@ -261,6 +270,9 @@ def test_a_toc_label_names_every_document_carrying_it_in_order(tmp_path):
     assert reading.place("第一章", lines[1], records, read) == 1
     late = next(ln for ln in lines[5:] if docs[1].text.find(ln) >= 40)
     assert reading.place("第一章", late, records, read) == 3
+    # the part the offsets name whatever order the parts are read in: a part's start counts as much as its end
+    backwards = {3: records[3], 2: records[2], 1: records[1]}
+    assert reading.place("第一章", lines[5], backwards, read) == 2 and reading.place("第一章", late, backwards, read) == 3
     assert reading.place("第一章", "どこにもない文。", records, read) is None
     assert reading.place("第九章", lines[1], records, read) is None
     assert reading.place("ch.0", lines[1], {}, read) is None and reading.place(None, lines[1], records, read) is None
@@ -335,14 +347,20 @@ def _parts_in_store(tmp_path, lang="ja"):
 def test_once_anki_miner_reads_books_a_book_in_the_line_is_mined_from_its_epub_with_no_timing_check(tmp_path):
     """A book's part entering the top 20 is a mining job, never *Waits for Anki Miner*: picked from its own text with
     the EPUB named as the file Anki Miner reads, no video looked for, no timing check, mined and recorded; a text with
-    no EPUB names its own file. The store's read of the book's parts gives Hon's records."""
-    _ids, _kinds = _library()
+    no EPUB names its own file, and an episode beside them is still a video's job. The store's read of the book's
+    parts gives Hon's records."""
+    _ids, _kinds = _library(line=3)
     epub, parts, records = _parts_in_store(tmp_path)
     text = [i for i in _ids if _kinds[i] == ".txt"][-1]
-    steps = BookSteps(str(tmp_path), "ja", {"words": {str(parts[0]): WORDS, str(text): WORDS[1:]}})
+    episode = _srt(_ids, _kinds)[-1]
+    steps = BookSteps(str(tmp_path), "ja", {"words": {str(parts[0]): WORDS, str(text): WORDS[1:],
+                                                      str(episode): [("約束", "ヤクソク")]}})
+    _place_top(episode)
     _place_top(text)
     _place_top(parts[0])
     _run(steps)
+    assert ("reading", episode, os.path.join(str(tmp_path), f"episode-{episode}.mkv"), None) in steps.log
+    assert ("fit", episode) in steps.log, "a video's job is checked for timing as before"
     assert ("reading", parts[0], None, epub) in steps.log
     assert ("reading", text, None, os.path.join(c.dirs("ja")[0], *_rel(text).split("/"))) in steps.log
     assert ("fit", parts[0]) not in steps.log and ("fit", text) not in steps.log
@@ -394,6 +412,7 @@ def test_a_book_anki_miner_cant_read_is_a_plain_needs_you_never_its_window(tmp_p
     for kind, code, raised, said in (("unreadable", "SOURCE_UNREADABLE", runner.Needs, "旅の記録 01"),
                                      ("no-reading", None, runner.Skip, runner.BOOKS_WAIT)):
         def refuse(*a, **k):
+            assert k["reading"] == picked["reading"], "the batch names the book's file"
             raise anki_miner.AnkiMinerError(kind, "The book has no readable text (DRM?)", code=code,
                                             verdict={"app": "3.10.1", "schema": 1, "features": ["word-from-line"]})
         monkeypatch.setattr(anki_miner, "mine_batch", refuse)
@@ -428,6 +447,8 @@ def test_with_the_ledger_a_book_set_aside_before_is_queued_again_and_mined_as_a_
 def test_a_books_cards_keep_anki_miners_media_names(tmp_path):
     """A book's cards have no clip and the book's cover as their picture: Connect's renaming by the line (a video's
     clip and frame) never runs on them — every card's line is 0 s, so it would give every card's picture one name."""
+    from types import SimpleNamespace
     steps = runner.Steps.__new__(runner.Steps)
+    steps._mapping_job, steps._mapping = 1, SimpleNamespace(fields={"audio": "SentenceAudio", "picture": "Picture"})
     steps.pairing = lambda lang, job: pytest.fail("a book's media are never renamed")
     assert steps.name_media("ja", {"id": 1, "item_id": 7}, {"reading": "旅の記録.epub"}, [(1, 0.0, 0.0, "冒険だ。")]) is None

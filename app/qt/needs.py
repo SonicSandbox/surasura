@@ -1046,7 +1046,8 @@ class NeedsYou(QObject):
         never one per file; K3 / K1, a show's card too: IK2-2). Once saved, what the store couldn't take (`change.left`:
         another item's file, no file there…) is said in the bar, how many and why, with those outside the library
         folder; all of them outside, nothing is given and the bar says why (A4B-4: the store can only point at a file
-        in the library folder); none taken, the bar says so."""
+        in the library folder); none taken, the bar says why (the writer's `ticket.left`, alpha 5) — or, with no
+        why, that none was."""
         pairs, outside = found
         if not pairs and not outside:
             self._say(strings.NEEDS_RELINKED_NONE_TREE if tree else strings.NEEDS_RELINKED_NONE)
@@ -1060,12 +1061,13 @@ class NeedsYou(QObject):
         language = getattr(self.win, "language", None)
 
         def told(ticket, event):
-            if event == "ended" and self._alive() and getattr(self.win, "language", None) == language and                     settings_sources.cant_write(getattr(self.win, "services", None)) is None:
+            here = event == "ended" and self._alive() and getattr(self.win, "language", None) == language
+            if here and not ticket.left and settings_sources.cant_write(getattr(self.win, "services", None)) is None:
                 self._say(strings.NEEDS_RELINK_NONE_TAKEN)           # (can't be written: the store's note says why)
-            if event != "saved":
+            if event != "saved" and not (here and ticket.left):     # (none relinked: the writer's why, alpha 5)
                 return
             whys = {}
-            for _item, why in getattr(ticket.change, "left", None) or ():
+            for _item, why in getattr(ticket.change, "left", None) or ticket.left or ():
                 whys[why] = whys.get(why, 0) + 1
             if outside:
                 whys[strings.NEEDS_RELINK_WHY_OUTSIDE] = outside

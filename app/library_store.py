@@ -4715,12 +4715,13 @@ class Store:
         if kept != asks:
             self._set_meta({"rename_asks": _dumps(kept), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
 
-    def relink_many(self, pairs):
+    def relink_many(self, pairs, left_out=None):
         """K3 / K1 (alpha 4): *Choose a folder…* on a folder's or the library's card — many missing items each pointed at
         its file (`pairs`: [(item_id, path)]), as `relink` does one, in ONE command: one change, one Undo (3,000 gone
         files never make 3,000). A pair that can't be (not in the library, no file there, its place another item's, the
         item gone or already there) is left out and named in `change.left` [(item_id, why)]. Returns the change, or None
-        when none was relinked."""
+        when none was relinked — never an empty change (it would be an Undo for nothing); `left_out`, a list, gets the
+        pairs left out either way (alpha 5, Mado: with none relinked, the why was lost)."""
         looked = []                                  # every file stat'ed before the write lock (A6: never under it)
         for item_id, path in pairs:
             rel = library_rel(self.data_dir, path)
@@ -4755,6 +4756,8 @@ class Store:
                 if row[2] == st.st_size and _same_time(row[3], st.st_mtime_ns):
                     _note_moves(self, [(row[0], row[2], row[3], rel, st.st_size, st.st_mtime_ns)])
                 cmd.touch({row[5]}, availability=row[4] != "available")
+            if left_out is not None:
+                left_out.extend(left)
             if change is None:
                 return None
             asks = _rename_asks(self)                  # their open questions go, in one write (never one per file)
@@ -8951,8 +8954,9 @@ def _store_removed_rows(self):
 
 def _store_removed(self, now=None):
     """The Removed list (K2, alpha 4, Mattias's note 6): his own Removes not put back (`_removed_rows`), one entry per
-    Remove and title, newest first -> [{"trash_ids", "title", "removed_at", "days_left", "count", "can_return",
-    "roots"}]. `days_left`: the days before the purge takes the FIRST of its files still in the trash (each file's own
+    Remove and title, newest first -> [{"trash_ids", "title", "titles", "removed_at", "days_left", "count",
+    "can_return", "roots"}]; a Remove of several titles is ONE entry (alpha 5, Mado: a picks Remove of 120 titles was
+    120 lines) — `title` None, `titles` how many, its files', days' and folders' summed. `days_left`: the days before the purge takes the FIRST of its files still in the trash (each file's own
     clock, which the Remove restarted; 0 … REMOVED_DAYS), None when none is there; `can_return`: a file still in the
     trash, or an original in a folder Surasura still reads (`roots`: its originals' folders' ids). An entry that can't
     come back (no file left, no original read) is left out: Put back would bring nothing back. One read transaction; one
@@ -8965,8 +8969,8 @@ def _store_removed(self, now=None):
         key = (removed_at, work if work is not None else ("item", trash_id))
         entry = groups.get(key)
         if entry is None:
-            entry = groups[key] = {"trash_ids": [], "title": title, "removed_at": removed_at, "days_left": None,
-                                   "count": 0, "can_return": False, "roots": []}
+            entry = groups[key] = {"trash_ids": [], "title": title, "titles": 1, "removed_at": removed_at,
+                                   "days_left": None, "count": 0, "can_return": False, "roots": []}
             order.append(key)
         entry["trash_ids"].append(trash_id)
         entry["count"] += 1
@@ -8979,7 +8983,21 @@ def _store_removed(self, now=None):
         if any(r in live for r in roots):
             entry["can_return"] = True                      # its original in a folder still read
         entry["roots"] += [r for r in roots if r not in entry["roots"]]
-    out = [groups[k] for k in order if groups[k]["can_return"]]
+    out, removes = [], {}
+    for k in order:
+        entry = groups[k]
+        if not entry["can_return"]:
+            continue
+        one = removes.get(entry["removed_at"])              # the same Remove's other titles: one entry
+        if one is None:
+            removes[entry["removed_at"]] = entry
+            out.append(entry)
+            continue
+        days = [d for d in (one["days_left"], entry["days_left"]) if d is not None]
+        one.update(title=None, titles=one["titles"] + 1, count=one["count"] + entry["count"],
+                   days_left=min(days) if days else None)
+        one["trash_ids"] += entry["trash_ids"]
+        one["roots"] += [r for r in entry["roots"] if r not in one["roots"]]
     for entry in out:
         entry["trash_ids"].sort()                           # Put back's order: as they were removed
     return out

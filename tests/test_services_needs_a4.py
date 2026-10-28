@@ -208,3 +208,19 @@ def test_a_new_library_drops_the_old_ones_stop_asking_and_not_now_and_its_file_i
     needs.stop_asking(language, [cards[0].key])
     assert needs.read_hidden(language) == {cards[0].key}        # the new library's own answers count
     assert needs.keep_to_library(language, "store-b") == 0
+
+
+# --- alpha 5 (Mado): the Needs-you counts read with a thousands comma -------------------------------------------- #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_alpha5_counts_of_a_thousand_or_more_read_with_a_comma(language):
+    """3,000 shows with a file gone, not settled (no library card): the bulk line and its answers say *3,000*, never
+    *3000*; a folder's show list says *and 1,000 more*; a small count reads as before."""
+    out = needs.entries(view(language, 3000))
+    bulk = out[0]
+    assert bulk.kind == needs.BULK and bulk.title == "3,000 files are gone in 3,000 shows"
+    assert bulk.data["labels"]["remove_all"] == "Forget every missing file (3,000)"
+    assert bulk.data["labels"]["keep_all"] == "Keep all their words (3,000)"
+    titles = [f"{names(language)[i % len(names(language))]} {i}" for i in range(1003)]
+    assert needs._shows(titles).endswith(" and 1,000 more")
+    assert needs._shows(titles[:5]).endswith(" and 2 more")
+    assert needs.STRINGS["anki_n"].format(n=1200) == "1,200 episodes"

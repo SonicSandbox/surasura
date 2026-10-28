@@ -976,7 +976,8 @@ class Writer:
         if op == "relink":
             return store.relink(ids[0], cmd["path"])
         if op == "relink_many":
-            return store.relink_many([tuple(p) for p in cmd["pairs"]])
+            cmd["left"] = []                        # alpha 5: why, even when none was relinked (`_empty` hands it on)
+            return store.relink_many([tuple(p) for p in cmd["pairs"]], left_out=cmd["left"])
         if op == "its_new":
             store.its_new(cmd["path"])              # a sync's summary, no change: nothing to undo
             return None
@@ -1450,7 +1451,10 @@ class Writer:
     def _empty(self, cmd):
         """`cmd` landed as nothing — nothing to change, refused, failed, an Undo refused: its label, if any, told
         through `landed_empty` (W3.2 S5: its ticket settles while others wait; finish-pending FP-A1: only such a
-        command's press ends at a reread). Before the `on_reread` that follows it."""
+        command's press ends at a reread). Before the `on_reread` that follows it. A `relink_many` that relinked none
+        hands its label (a window's ticket) the pairs it left out and why (`left`, alpha 5): its "ended" says why."""
+        if cmd.get("left") and hasattr(cmd.get("label"), "left"):
+            cmd["label"].left = cmd["left"]
         if cmd.get("label") is not None:
             with self._cond:
                 self._let_go.append(cmd["label"])

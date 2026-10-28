@@ -43,7 +43,9 @@ def _excluded(store):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_remove_is_one_entry_per_title_with_its_files_and_comes_back_through_its_folder(language):
+def test_a_remove_of_several_titles_is_one_entry_with_its_files_and_comes_back_through_its_folder(language):
+    """Alpha 5 (Mado): one Remove of two shows (the window's picks) is ONE entry — `title` None, `titles` 2, every
+    file's trash id in it — never a line per title (a picks Remove of 120 Goal titles was 120 lines)."""
     store, _data = _empty(language)
     a, b = _SHOWS[language]
     src = _drive("shows")
@@ -53,10 +55,11 @@ def test_a_remove_is_one_entry_per_title_with_its_files_and_comes_back_through_i
         root, ids = _taken(store, language, src)
         store.remove(ids)                                   # one Remove of both shows (the window's picks)
         entries = store.removed()
-        assert sorted((e["title"], e["count"]) for e in entries) == sorted([(a, 3), (b, 2)])
+        assert [(e["title"], e["titles"], e["count"]) for e in entries] == [(None, 2, 5)]
         assert all(e["can_return"] and e["roots"] == [root] for e in entries)
         assert all(e["days_left"] is None for e in entries)          # no file of theirs in the trash (store level)
         assert sorted(i for e in entries for i in e["trash_ids"]) == store.removed_under(root)
+        assert entries[0]["trash_ids"] == sorted(entries[0]["trash_ids"])     # Put back's order: as removed
         assert store.removed_under(root + 1000) == []
         # read again, the folder brings nothing back (the exclusions) — Mattias's note 6
         assert _look(store, language, root, full=True)["added"] == 0 and _items(store) == 0
@@ -180,3 +183,25 @@ def test_an_original_in_a_folder_no_longer_read_is_no_way_back(language):
         store.stop_source(root)
         assert store.removed() == []
         assert len(store.removed_under(root)) == 2
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_single_title_remove_keeps_its_title_and_two_removes_are_two_entries(language):
+    """Alpha 5: a Remove of one title is as before (its title, `titles` 1); two Removes are two entries, newest first,
+    even of the same show; a Remove of two titles whose one title can't come back is that one title's entry."""
+    store, _data = _empty(language)
+    a, b = _SHOWS[language]
+    src = _drive("shows")
+    _show(language, src, a)
+    _show(language, src, b, n=2)
+    with store:
+        root, ids = _taken(store, language, src)
+        of_a = sorted(i for i in ids if f"/{a}/" in store.item(i)["rel_path"])
+        of_b = sorted(set(ids) - set(of_a))
+        store.remove(of_a[:1])                              # a's episode 1, then a's episodes 2-3 (one title each)
+        store.remove(of_a[1:])
+        entries = store.removed()
+        assert [(e["title"], e["titles"], e["count"]) for e in entries] == [(a, 1, 2), (a, 1, 1)]
+        assert entries[0]["removed_at"] > entries[1]["removed_at"]
+        store.remove(of_b)                                  # b's two: one Remove, one title
+        assert [(e["title"], e["titles"], e["count"]) for e in store.removed()][0] == (b, 1, 2)

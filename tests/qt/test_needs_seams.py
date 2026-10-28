@@ -345,6 +345,35 @@ def test_A4B4_a_relink_the_store_took_none_of_says_so_instead_of_vanishing(world
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_alpha5_a_relink_the_store_took_none_of_says_why_from_the_writers_ticket(world, language):
+    """Alpha 5 (Mado): the store took none and said why (the writer's `ticket.left` on the empty landing): the bar
+    counts each why as a partial relink's does — never the generic "none were pointed at" — and no Undo is made."""
+    seed, win, writer, ny = world(language, looks=SeamLooks())
+    entries = service.entries(_in_folder(language, 12))
+    card = entries[0]
+    picked = pathlib.Path(ny._data()) / "戻した"
+    _moved_to(picked, card.lines)
+    _relinks_recorded(writer)
+    writer.nothing.add("relink_many")
+    put = writer.relink_many
+
+    def relink_many(pairs, label=None):                  # the real Writer's `_empty`: the store's why on the ticket
+        label.left = [(card.lines[0].item_id, "another item's file"), (card.lines[1].item_id, "no file there"),
+                      (card.lines[2].item_id, "another item's file")]
+        return put(pairs, label=label)
+    writer.relink_many = relink_many
+    hand_in(ny, entries)
+    win.show_tab("needs")
+    ny.pick_folder = lambda title, start: str(picked)
+    _button(ny, card.key, "choose_folder").click()
+    want = strings.NEEDS_RELINK_LEFT.format(n=3, why=" · ".join((
+        strings.NEEDS_RELINK_WHY.format(why="another item's file", n=2),
+        strings.NEEDS_RELINK_WHY.format(why="no file there", n=1))))
+    assert wait_until(lambda: win.bar_line.full() == want, 5)
+    assert not writer.saved
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_A4B5_a_match_that_lands_after_a_language_switch_gives_nothing_to_the_new_librarys_writer(world, language,
                                                                                                monkeypatch):
     """The match runs on a worker (seconds, over a large folder); meanwhile the learner switched language — the

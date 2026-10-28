@@ -751,8 +751,9 @@ class Ticket:
     if set: "saved", "refused" (nothing written), "undone" (its Undo asked, or the change undone) or "ended" (settled
     unsaved: it landed as nothing, or was let go) — round 8 row 45: a pressed *Mine now* stops turning when its ask is
     refused, undone or ends unsaved, and asks Connect's feed again once saved; Q7's *Skip a folder…* turns until saved.
-    `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`)."""
-    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki")
+    `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
+    `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
+    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -763,6 +764,7 @@ class Ticket:
         self.then = None                             # a command waiting for this one's change (a Finished choice)
         self.told = None
         self.anki = None
+        self.left = None
 
 
 def _tell(ticket, event):

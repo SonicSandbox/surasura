@@ -192,8 +192,9 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     dictionary spelling read as other words keys no phrase (彼の方 read 彼 + の + 方); 31 reads TV captions through the
     caption cleaner, so a word's small-type reading row is no words (P1.3-1); 32, the 3.0 batch, keeps a repeated
     Japanese frequency-list word's commoner rank and lists a missing item from its cached words; 33 makes Finished
-    content reference, its names the name tables' evidence as a watched episode's are.)"""
-    assert analyzer.ENGINE_REVISION == 33
+    content reference, its names the name tables' evidence as a watched episode's are; 34 reads a short sound said
+    again as the sound word it is alone — ちょ ちょ ちょ each ちょっと's, ﾌﾝ ﾌﾝ ﾌﾝ each ふん.)"""
+    assert analyzer.ENGINE_REVISION == 34
 
 
 # --------------------------------------------------------------------------- #

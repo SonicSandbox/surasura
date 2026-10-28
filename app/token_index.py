@@ -117,7 +117,9 @@ from operator import itemgetter
 #    once with v8–v18.
 # v20 an .ass file is read through the caption cleaner (app/caption_clean.py, ENGINE_REVISION 31): a v19 blob holds a
 #    TV caption's small-type reading rows as words — the release after 2.5, so users rebuild once (P1.3-1 a).
-SCHEMA_VERSION = 20
+# v21 a short sound said again is each time the sound word it reads as alone (analyzer `_said_again`, ENGINE_REVISION
+#    34): a v20 blob holds a stammer's later sayings as ちょ and a hum as フン-外国 — alpha 4, so users rebuild once.
+SCHEMA_VERSION = 21
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

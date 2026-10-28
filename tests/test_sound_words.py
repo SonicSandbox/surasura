@@ -71,6 +71,27 @@ def test_a_sound_whose_double_is_no_sound_word_stays_as_it_was(tokenizer, saniti
     assert _keys(tokenizer, "ヘヘヘ！やったぜ。")[0] == ("ヘヘヘ", "ヘヘヘ")
 
 
+@pytest.mark.parametrize("line, lemma", [
+    ("ちょ ちょ ちょ、待って！", "一寸"),            # a stammer of ちょっと: each saying its sound (UniDic: ちょ alone)
+    ("ちょ、ちょ、ちょっと！", "一寸"),              # a mark between
+    ("フン フン フン…", "ふん"),                    # a hum: the interjection, read in hiragana — never フン-外国 or 糞
+    ("ﾌﾝ ﾌﾝ ﾌﾝ…｡", "ふん"),                         # half-width
+])
+def test_a_short_sound_said_again_is_each_time_the_sound_word_it_reads_as_alone(tokenizer, sanitized, line, lemma):
+    """Alpha 4 M2: read in context, the tagger takes a stammer's later sayings for the particle ちょ (チョ) and a hum
+    for UniDic's foreign name フン-外国 (the Huns) — rows the list offered while the same word on a card was known."""
+    sayings = [t for t in _tokens(tokenizer, line) if t[2] in ("ちょ", "フン", "ﾌﾝ")]
+    assert len(sayings) >= 2 and {t[0] for t in sayings} == {lemma}
+
+
+def test_a_sound_already_read_as_one_and_words_said_twice_stay_as_they_are(tokenizer, sanitized):
+    """A saying the tagger already read as a sound word stays its own reading (ま、ま、ま: まー, then まあ); a word that
+    is no sound said again (の の, a typo) and a sound said once (ﾌﾝ…) are left to the tagger."""
+    assert [k[0] for k in _keys(tokenizer, "ま、ま、ま、それはともかく")[:3]] == ["まー", "まあ", "まあ"]
+    assert [k[0] for k in _keys(tokenizer, "の の 猫")[:2]] == ["の", "の"]
+    assert _keys(tokenizer, "ちょ ちょっと待って")[:2] == [("一寸", "ちょ"), ("一寸", "ちょっと")]
+
+
 def test_the_token_store_counts_the_sound_words(tmp_path):
     # The store reads through the same joins: the words count, the fillers and the unknown sound don't.
     path = tmp_path / "trip.txt"

@@ -145,7 +145,10 @@ ENSURE_AUDIO_EXAMPLE = False
 #     name met in a finished show stays whole in the episodes ahead — a library holding Finished content can list its
 #     words differently with nothing changed in it. Never counted, as before. The token store moves its rows from kept
 #     to set aside in place, nothing tokenized: SCHEMA_VERSION stays 20. 3.0: one re-analysis with 31–32.
-ENGINE_REVISION = 33
+# 34: a short sound said again (ちょ ちょ ちょ, ﾌﾝ ﾌﾝ ﾌﾝ) is each time the sound word it reads as alone (ちょっと's 一寸,
+#     ふん), never ちょ (a particle) or the foreign name フン-外国 (join_affixes' `_said_again`, alpha 4 M2), with
+#     SCHEMA_VERSION 21. 3.0 alpha 4: one re-analysis.
+ENGINE_REVISION = 34
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -868,6 +871,9 @@ def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None
         sounds = _sounds(words, fillers)
         if sounds is not words:
             words, pos1s = sounds, None             # a sound word may be an adverb: _join_sokuon_to looks again
+    again = _said_again(words)
+    if again is not words:
+        words, pos1s = again, None
     words = _join_sokuon_to(words, pos1s)
     if cut_words is None:
         cut_words = cut_word_tables()
@@ -1172,7 +1178,16 @@ def _give_way_to_names(words, joined, at, table):
 # unknown word of its own. Such a word is the sound word the tagger reads that sound said twice as, alone, when it is
 # one — an interjection or an adverb — shown as written: ハァハァハァ is はあはあ's. A sound whose double is no such word
 # stays as it was (ヘヘヘ: ヘヘ reads as two words; ゼロゼロゼロ).
+# A short sound said again and again with only a space or a mark between (ちょ ちょ ちょ, ﾌﾝ ﾌﾝ ﾌﾝ, alpha 4 M2): read in
+# context, the tagger takes a stammer's later sayings for something else (ちょ チョ, a particle) and a hum for UniDic's
+# foreign name フン-外国 (the Huns) or 糞 — words no dictionary lists as that sound, which the list then offered while
+# the same word on a card, read alone, was known. Each saying the tagger read as no sound word is the sound word it
+# reads as alone — in hiragana first (ふん), else as written (ちょ: 一寸 ちょっと) — when that is ONE interjection or
+# adverb; a saying already read as one stays (ま、ま、ま: まあ).
 _UNKNOWN, _POS2 = attrgetter("is_unk"), attrgetter("feature.pos2")
+_SURFACE = attrgetter("surface")
+_SHORT_KANA = re.compile(f"^[{KANA_LETTERS}ー]{{1,3}}$")
+_SAYING_MARKS = frozenset("、，,…‥・。｡！？!?")
 _ONE_KANA = re.compile(f"^[{KANA_LETTERS}][ー〜]*$")      # UniDic spells some fillers with 〜 (え〜)
 _KATAKANA_WORD = re.compile("^[\u30a1-\u30fa\u30fc-\u30ff]+$")
 _SOUND_POS1 = frozenset(("感動詞", "副詞"))
@@ -1184,6 +1199,32 @@ def _sound_word(spelling):
     None (asked once per spelling: app/names.py keeps the answers)."""
     whole = names._read_whole(spelling)
     return whole if whole is not None and whole.pos1 in _SOUND_POS1 else None
+
+
+def _said_again(words):
+    """join_affixes' sound said again (§ above): `words` with each short kana saying of a sound said again (next to
+    the same saying, or one mark between) that the tagger read as no sound word read as the sound word it is alone;
+    the same list when there is none. Looked at only on a line where a token's surface meets itself (C's test)."""
+    surfaces = list(map(_SURFACE, words))
+    if not (any(map(eq, surfaces, surfaces[1:])) or any(map(eq, surfaces, surfaces[2:]))):
+        return words
+    n, out = len(words), None
+    for i, w in enumerate(words):
+        text = surfaces[i]
+        if (isinstance(w, JoinedWord) or w.feature.pos1 in _SOUND_POS1 or not _SHORT_KANA.match(_read(w))
+                or not any(0 <= j < n and surfaces[j] == text and all(surfaces[m] in _SAYING_MARKS
+                                                                      for m in range(min(i, j) + 1, max(i, j)))
+                           for j in (i - 2, i - 1, i + 1, i + 2))):
+            continue
+        spelling = _read(w)
+        hiragana = "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in spelling)
+        whole = _sound_word(hiragana) or _sound_word(spelling)
+        if whole is None:
+            continue
+        if out is None:
+            out = list(words)
+        out[i] = ReadNode(w.surface, whole, False, getattr(w, "white_space", ""))
+    return words if out is None else out
 
 
 def _repeated_unit(text):

@@ -512,6 +512,17 @@ def test_report_ids_keep_save_order_across_the_autumn_clock_change():
     assert core._new_id(summer) < core._new_id(winter)
 
 
+def test_reports_saved_in_the_same_clock_tick_keep_save_order(root):
+    # a coarse clock (GitHub's Windows runner) gives two quick saves the same microsecond: the order must not then
+    # come from the id's random letters (core 1/4 red once) — each id is after the newest saved, a restart included
+    import datetime
+    tick = datetime.datetime(2026, 10, 27, 23, 0, tzinfo=datetime.timezone.utc)
+    saved = [core.save(f"{JA_WHAT} {n}", now=tick) for n in range(12)]
+    assert [x.id for x in core.listed()] == [r.id for r in saved]
+    earlier = core.save(ZH_WHAT, now=tick - datetime.timedelta(hours=1))     # a clock put back: still saved last
+    assert core.listed()[-1].id == earlier.id
+
+
 def test_scrub_counts_every_content_key_and_blanks_secrets_at_any_depth():
     got = core.scrub({"jobs": [{"state": "done", "sentence": "壁の向こう", "words": ["巨人"]}],
                       "nested": {"api_key": "sk-x", "title": "進撃の巨人", "made_today": 3}})

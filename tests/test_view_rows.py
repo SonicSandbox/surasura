@@ -958,7 +958,9 @@ def test_a_show_split_in_two_pieces_arrives_as_two_rows_each_with_its_own_episod
                       ("arrivals", 1, 12, eps(t, 5, 8), {k: _at("2026-10-13T00:00:00Z") for k in range(4)})])
     view = vr.build(items, WORKS, {})
     split = [a for a in view.arrivals if a.work_id == 1]
-    assert [(a.key, a.line) for a in split] == [("p12", "Ep 5–8"), ("p10", "Ep 1–4")]
+    assert [a.line for a in split] == ["Ep 5–8", "Ep 1–4"]
+    # (A4A-5: each run keyed by its piece and its own smallest file id — a key that never moves to another run)
+    assert [a.key for a in split] == [f"p12.i{min(split[0].item_ids)}", f"p10.i{min(split[1].item_ids)}"]
     assert set(split[0].item_ids).isdisjoint(split[1].item_ids)
     assert view.counts.arrivals == 3 and view.badges["arrivals"] == 10    # the badge stays the files (R4b-12)
 

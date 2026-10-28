@@ -188,6 +188,7 @@ class ArrivalNumbers:
         self._later = later or _later
         self._clock = clock or time.monotonic
         self.handed = 0                     # hand-ons (tests, the bench)
+        self._lang = None                   # A4A-4: the language every kept ask, answer and hand-on is of
 
     @property
     def client(self):
@@ -209,10 +210,26 @@ class ArrivalNumbers:
         from app import path_utils
         return os.path.join(path_utils.get_user_files_path(self.language), "KnownWord.json")
 
+    def _language_locked(self, language):
+        """(Under `_lock`.) `language` is the one kept: on a switch, everything of the other one goes — its asks, its
+        answers, a hand-on waiting on its timer — since item ids repeat across libraries (A4A-4)."""
+        if language == self._lang:
+            return
+        self._lang = language
+        self._asked = set()
+        self._token = None
+        self._sig = None
+        self.kept = {}
+        self._current = {}
+        self._handed = None
+        self._moved = False
+
     def want(self, arrivals, force=False):
         """The window's newest arrivals (`View.arrivals`): a task for the files not asked yet (or all, `force`)."""
         arrivals = tuple(arrivals or ())
+        language = self.language
         with self._lock:
+            self._language_locked(language)
             if arrivals is self._arrivals and not force:
                 return                      # A4 (S19): the same view's arrivals, nothing to look at
             self._arrivals = arrivals
@@ -273,10 +290,12 @@ class ArrivalNumbers:
         n = answer_number(answer, chained)
         if n is None:
             return                                  # a failure shows nothing (never an error)
-        if language is not None and language != self.language:
+        now = self.language
+        if language is not None and language != now:
             return                                  # W3.2 H: asked before a switch — another library's item ids
         sig = (answer.get("plan"), known)
         with self._lock:
+            self._language_locked(now)
             self.kept[(item_id, sig[0], sig[1])] = n
             if sig != self._sig:                    # a new plan or known words (rare): its answers gathered once
                 self._sig = sig
@@ -297,9 +316,12 @@ class ArrivalNumbers:
 
     def flush(self):
         """Hand on what the answers moved since the last hand-on (any thread) — nothing when nothing moved (S19), or
-        when it comes to the numbers last handed on (S2: no build)."""
+        when it comes to the numbers last handed on (S2: no build), or when they are another language's: a switch
+        while the hand-on waited on its timer (A4A-4)."""
+        language = self.language
         with self._lock:
             self._due = False
+            self._language_locked(language)
             if not self._moved:
                 return
             self._moved = False

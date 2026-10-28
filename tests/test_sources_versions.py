@@ -731,7 +731,7 @@ def test_two_waiting_items_for_one_episode_the_first_listed_is_kept(language):
     # the key that sorts last, so a rule of "smallest id", "smallest name" or "smallest key" would not pass.
     first_name, second_name = f"[B] {a} - 05 (720p).mkv", f"[A] {a} - 05 (1080p).mkv"
     look = sources._Look.__new__(sources._Look)
-    look.language, look.years, look.origin_years, look.by_show = language, {}, {}, None
+    look.language, look.years, look.origin_years, look.by_show, look.members = language, {}, {}, None, None
     look.origins = {
         "zeta": SimpleNamespace(origin=first_name, rel_path=f"{ls.CONTENT_FOLDER}/{a}/{first_name}",
                                 availability="waiting", version=None, item_id=102),

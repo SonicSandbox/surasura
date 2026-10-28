@@ -1969,8 +1969,16 @@ def test_the_known_books_are_gathered_once_a_look(monkeypatch):
                 return super().__iter__()
         real = store.origins
         monkeypatch.setattr(store, "origins", lambda: Counted(real()))
+        grouped = []
+        real_members = sources._Look._members
+
+        def members(self):                              # K5: the book tables' keys, grouped by one walk a look
+            if self.members is None:
+                grouped.append(1)
+            return real_members(self)
+        monkeypatch.setattr(sources._Look, "_members", members)
         assert _look(store, language, root, full=True)["added"] == 0
-        assert Counted.walked == 1
+        assert Counted.walked <= 1 and len(grouped) == 1
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

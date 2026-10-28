@@ -229,6 +229,36 @@ def test_a_folder_a_look_cannot_read_is_said_and_said_again_until_it_changes(lan
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_followed_link_whose_folder_goes_is_said_on_the_next_quick_look_and_read_again_when_it_is_back(language):
+    """Why (review, KURA-A4C baseline 1): a target taken away (a drive unplugged) changes no time of the folder the
+    link sits in, so a quick look trusting that folder's listing would skip the link in silence. A folder holding a
+    link is listed again every look: the link is said while its folder is gone, and read again once it is back."""
+    store, data_dir = _empty(language)
+    real = _drive("RealAnime")
+    _video(os.path.join(real, "Dungeon Meshi S01", "Dungeon Meshi - 01.mkv"), BIG + b"d")
+    src = _drive("Incoming")
+    _link(os.path.join(real, "Dungeon Meshi S01"), os.path.join(src, "Dungeon Meshi S01"))
+    _video(os.path.join(src, "Show A", "Show A - 01.mkv"), BIG + b"a")
+    _age(os.path.join(src, "Show A"))
+    _age(src)
+    with store:
+        root = store.add_source(src)
+        _scan(store, language, root, first=True)
+        assert sources.notes(language, store).get(root, {"not_read": []})["not_read"] == []
+        away = real + " (unplugged)"
+        os.rename(real, away)
+        _scan(store, language, root)                                      # a quick look: nothing's time moved
+        gone = sources.notes(language, store)[root]["not_read"]
+        os.rename(away, real)
+        _scan(store, language, root)                                      # quick again: back, read, nothing said
+        back = sources.notes(language, store).get(root, {"not_read": []})["not_read"]
+        items = store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    assert [(os.path.basename(n["path"]), n["why"]) for n in gone] == [("Dungeon Meshi S01",
+                                                                         sources.NOT_READ_LINK_GONE)]
+    assert back == [] and items == 2
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_symlink_to_nothing_is_said_never_dropped_silently(language):
     """Why (a): a symlink whose folder was taken away (a drive unplugged, a folder renamed) can't say it is a folder:
     the look says it links to a folder that isn't there instead of passing over it in silence."""

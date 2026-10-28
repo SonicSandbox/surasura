@@ -129,8 +129,9 @@ NOT_READ_LINK_GONE = "It links to a folder that isn't there."
 NOT_READ_LINK_OWN = ("It links to a folder Surasura doesn't read as a library (its own, a whole drive or your user "
                      "folder).")
 NOT_READ_LINK_HOLDS = "It links to a folder that holds a folder Surasura reads already."
-NOT_READ_SHORTCUT = "It's a Windows shortcut: Surasura reads folders, not shortcuts. Add the folder it points to."
-NOT_READ_LOCKED = "Windows wouldn't let Surasura open it."
+NOT_READ_SHORTCUT = ("It's a Windows shortcut: Surasura doesn't follow shortcuts. If it points to a folder of shows or "
+                     "books, add that folder.")
+NOT_READ_LOCKED = "Surasura couldn't open it (locked, busy or offline); the next look tries again."
 NOT_READ_CLOUD = "It's in the cloud and not on this computer yet."
 _GUARD = threading.Lock()
 _RUNNING = set()                # stores a look is running on (their path keys): never two at once
@@ -751,7 +752,7 @@ def _listing(folder, links=None):
                         # a folder the cloud hasn't brought down: listing it could download it (B3)
                         if not (ls.skip_dir(entry.name, entry) or ls.is_placeholder(st)):
                             subs.append(entry.path)
-                        elif links is not None and ls.is_placeholder(st):
+                        elif links is not None and ls.is_placeholder(st) and not _junk(entry.name):
                             links.append((entry.path, NOT_READ_CLOUD))
                         elif links is not None and ls.is_link(st) and not _junk(entry.name):
                             links.append((entry.path, None))
@@ -889,7 +890,8 @@ class _Look:
     def run(self):
         held_sources = self.store.sources(all=True, counts=False)   # one read of the roots, no origin read
         self.roots = {s["id"]: s["path"] for s in held_sources}
-        self.read_roots = [ls.path_key(os.path.abspath(s["path"])).rstrip("/") for s in held_sources if s["on"]]
+        self.read_roots = sorted({ls.path_key(f(s["path"])).rstrip("/") for s in held_sources if s["on"]   # a source
+                                  for f in (os.path.abspath, os.path.realpath)})       # reached through a link too
         path = next((s["path"] for s in held_sources if s["id"] == self.root_id and s["on"]), None)
         if path is None:
             raise ls.NotASource("That folder isn't being read any more.")
@@ -1096,6 +1098,8 @@ class _Look:
             self._load()
             self.listed_now.add(fkey)
             texts, epubs, vids, subs, ghosts, unread = listed
+            if links:                                        # alpha 4: its links are checked again every look
+                self.unsettled.add(fkey)                     # (a target gone or back changes no folder's time)
             for link, why in links:                          # alpha 4: a folder link followed, else said
                 why = self._link(link) if why is None else why
                 if why is None:
@@ -1168,11 +1172,10 @@ class _Look:
         if not os.path.isdir(target):
             return NOT_READ_LINK_GONE
         key = ls.path_key(target).rstrip("/")
-        for k in self.read_roots:
-            if key == k or key.startswith(k + "/"):
-                return ""
-            if k.startswith(key + "/"):
-                return NOT_READ_LINK_HOLDS
+        if any(key == k or key.startswith(k + "/") for k in self.read_roots):
+            return ""                                        # read where it is (nested sources: any of them)
+        if any(k.startswith(key + "/") for k in self.read_roots):
+            return NOT_READ_LINK_HOLDS
         try:
             refused = self.store._not_a_source(target)
         except Exception:
@@ -2630,7 +2633,7 @@ class _Look:
             self.store.update_origins(touched)               # (A3): only its records' stats follow
             return
         if known:                                            # moved or renamed: each part's place kept (Hon)
-            same = sorted(self._members()["sha"].get(sha, ()))      # K5: its own bytes' parts, not every origin
+            same = self._members()["sha"].get(sha, ())               # K5: its own bytes' parts, not every origin
             places = {o.item_id: o.chapter for o in (self.origins[k] for k in same) if o.chapter}
             change = self._commit([dict({"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns,
                                          "sha256": sha, "show": rel.split("/")[1] if rel.count("/") >= 2 else show,
@@ -2874,9 +2877,12 @@ class _Look:
         only (every table rebuilt after every book made a first look of N books cost N²: 19 h at 25k)."""
         if self.members is None:
             self.members = {t: {} for t in ("sha", "book", "item", "head", "show")}
+            self.position = {}
             for k, o in self.origins.items():
+                self.position[k] = len(self.position)
                 for t, b in self._buckets(k, o):
                     self.members[t].setdefault(b, set()).add(k)
+            self.next_position = len(self.position)
         return self.members
 
     @staticmethod
@@ -2894,8 +2900,9 @@ class _Look:
         return out
 
     def _rebuild(self, table, b):
-        """One bucket of one table built again from its keys, in key order (the order the store reads them in)."""
-        keys = sorted(self.members[table].get(b, ()))
+        """One bucket of one table built again from its keys, in the order the look holds its origins (the store's key
+        order, a book read again after it: as the tables were always built)."""
+        keys = sorted(self.members[table].get(b, ()), key=self.position.__getitem__)
         if table == "sha":
             got = {}
             for k in keys:
@@ -2932,7 +2939,10 @@ class _Look:
         old |= {k for k in fresh if k in self.origins}       # a key another item held
         touched = set()
         for k in old:
-            for t, b in self._buckets(k, self.origins.pop(k)):
+            o = self.origins[k] if k in fresh else self.origins.pop(k)   # one read again keeps its place
+            if k not in fresh:
+                del self.position[k]
+            for t, b in self._buckets(k, o):
                 held = members[t].get(b)
                 if held is not None:
                     held.discard(k)
@@ -2940,6 +2950,9 @@ class _Look:
                         del members[t][b]
                 touched.add((t, b))
         for k, o in fresh.items():
+            if k not in self.origins:
+                self.position[k] = self.next_position         # read after every other: last, as `update` put it
+                self.next_position += 1
             self.origins[k] = o
             for t, b in self._buckets(k, o):
                 members[t].setdefault(b, set()).add(k)

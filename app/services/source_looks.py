@@ -199,13 +199,13 @@ class SourceLooks:
 
     def look_at(self, root_id, language=None):
         """Alpha 4 (Mado's ask, *Bring back*): one full look of that folder now — folded into the one after the running
-        look, as any look asked meanwhile. -> True when it was queued."""
+        look, as any look asked meanwhile. -> True when it will run (now, or after the running one)."""
         if language is not None and language != self.language:
             return False
         with self._lock:
             if self._closing.is_set():
                 return False
-            return self._queue(True, {root_id})
+            return self._queue(True, {root_id}) or self._again is not None
 
     def set_shown(self, shown):
         """The window went behind / was minimized (False) or came back (True): watch reports wait while it is behind."""

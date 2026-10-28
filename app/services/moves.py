@@ -113,6 +113,9 @@ GUARDED += ("merge_works",)
 # still goes through `SourceLooks.stop` — no journal, no Undo — a follow-up: one path for both, `_work/leans-after-build7`)
 JOURNALLED += ("stop_source",)
 KEPT += ("root",)
+# --- K3 / K1 (alpha 4): *Choose a folder…* on a folder's or the library's card — many relinks, one command
+JOURNALLED += ("relink_many",)
+KEPT += ("pairs",)
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -217,6 +220,7 @@ class Writer:
         self._undo = deque(maxlen=depth)            # the Changes saved, newest last
         self._journalled = set()                    # seqs the journal file holds now
         self._journal_dirty = False
+        self._head_waits = False                    # P-2-F: the head met a busy store (until it lands)
         self._held = False
         self._retry_at = 0.0
         self._saving = False
@@ -379,6 +383,14 @@ class Writer:
         """`Store.relink`: a missing item pointed at its content file (`path`, in the data folder) — *Link these*,
         the rename ask's *This one*. Never a video (`link_video`)."""
         return self._put({"op": "relink", "ids": [item_id], "path": os.fspath(path), "label": label})
+
+    def relink_many(self, pairs, label=None):
+        """K3 / K1 (alpha 4): `Store.relink_many` — *Choose a folder…* on a folder's or the library's card: every missing
+        item matched (`needs.match_tree`'s [(line or item_id, path)]) pointed at its file in ONE command, one Undo. The
+        pairs it couldn't take are named in the change's `left`."""
+        pairs = [(getattr(a, "item_id", a), os.fspath(p)) for a, p in pairs]
+        return self._put({"op": "relink_many", "ids": [i for i, _p in pairs], "pairs": [list(p) for p in pairs],
+                          "label": label})
 
     def its_new(self, path, label=None):
         """`Store.its_new`: the rename ask's *It's new* — the ask goes, the file joins as any new file. The store keeps
@@ -560,7 +572,7 @@ class Writer:
             late = self._stop and not self._abandoned
             if not self._abandoned and records:
                 self._pending.append(cmd)
-                if (self._held or self._journalled) and _journals(cmd):
+                if (self._held or self._journalled or self._head_waits) and _journals(cmd):
                     self._journal_dirty = True      # stuck already (a drag, a write waiting): journalled now (L1 S4)
                 if not late:
                     self._start()
@@ -723,8 +735,9 @@ class Writer:
                 return None
             cmd["seq"] = next(self._seq)
             self._pending.append(cmd)
-            if (self._held or self._journalled) and _journals(cmd):
-                self._journal_dirty = True          # stuck already: the journal takes it at once
+            if (self._held or self._journalled or self._head_waits) and _journals(cmd):
+                self._journal_dirty = True          # stuck already: the journal takes it at once — P-2-F: also when
+                #                                     the head waiting on a busy store journals nothing (an Undo)
             self._start()
             self._cond.notify_all()
         return cmd["seq"]
@@ -962,6 +975,8 @@ class Writer:
             return store.import_finished(cmd["paths"])
         if op == "relink":
             return store.relink(ids[0], cmd["path"])
+        if op == "relink_many":
+            return store.relink_many([tuple(p) for p in cmd["pairs"]])
         if op == "its_new":
             store.its_new(cmd["path"])              # a sync's summary, no change: nothing to undo
             return None
@@ -1412,6 +1427,7 @@ class Writer:
     def _busy(self, cmd):
         with self._cond:
             self._retry_at = time.monotonic() + self.retry
+            self._head_waits = True                 # P-2-F: stuck whatever the head is (`_put`)
         if time.monotonic() - cmd["first_try"] >= self.saving_after:
             self._stuck(cmd)
         else:
@@ -1445,6 +1461,7 @@ class Writer:
         with self._cond:
             if self._pending and self._pending[0] is cmd:
                 self._pending.popleft()
+                self._head_waits = False            # P-2-F: the next head hasn't met a busy store yet
             else:
                 try:
                     self._pending.remove(cmd)
@@ -1695,7 +1712,9 @@ def _refused(change, out):
         return _skips(out) >= len(change.pieces["items"])
     if change.kind == "rename_piece":               # LM11: renamed again since
         return _skips(out) > 0
-    if change.kind in ("relink", "register"):       # one item each: its undo skipped it (`link_video`'s is a register)
+    if change.kind == "relink":                     # every item it pointed (one, or `relink_many`'s) skipped
+        return _skips(out) >= len(getattr(change, "relinks", None) or [change.relink])
+    if change.kind == "register":                   # one item: its undo skipped it (`link_video`'s is a register)
         return _skips(out) > 0
     return bool(change.status and not out.status)
 

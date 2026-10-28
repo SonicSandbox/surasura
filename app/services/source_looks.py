@@ -43,6 +43,7 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   Settings' *Skip a folder…* (`Store.skip_refused`, Q7); *Read again* (`read_again`) drops the skip
   (`Store.read_folder_again`) and looks at its source folder at once.
 """
+import os
 import threading
 import time
 
@@ -73,6 +74,58 @@ def gone(rows):
 def _make_watch(path, wake):
     from app import library_watch
     return library_watch.TreeWatch(path, wake=wake)
+
+
+FIND_NONE = "None of its episodes are in {folder}: that folder wasn't read."   # T6 option 2
+FIND_LOOK_MAX = 20000           # files a Find's check looks at before it lets the look decide (a whole drive picked)
+
+
+def _raise(error):
+    raise error
+
+
+def _holds_one(store, root_id, path):
+    """T6 option 2 (alpha 4): does `path` hold one of the gone folder's originals — a file of one's name or of one's
+    size (a moved file keeps both; a renamed one its size)? -> True at the first, or when FIND_LOOK_MAX files were
+    looked at with no answer (the look and the join decide then). Names and sizes from the listing: nothing opened."""
+    names, sizes = set(), set()
+    for o in store.origins().values():
+        if o.root == root_id and o.origin:
+            names.add(os.path.basename(o.origin).casefold())
+            if o.size:
+                sizes.add(o.size)
+    if not names:
+        return True                                   # nothing known of it: the look and the join decide
+    seen = 0
+    try:
+        for where, _dirs, files in os.walk(path, onerror=_raise):
+            for name in files:
+                seen += 1
+                if name.casefold() in names:
+                    return True
+                try:
+                    if os.path.getsize(os.path.join(where, name)) in sizes:
+                        return True
+                except OSError:
+                    pass
+                if seen >= FIND_LOOK_MAX:
+                    return True
+    except OSError:
+        return True
+    return False
+
+
+def _where(root, origin):
+    """K7: an original's place -> {"root", "folder", "rel"} (`folders(detail=True)`), or None without its source."""
+    if not root:
+        return None
+    folder = os.path.dirname(origin) if isinstance(origin, str) and origin else root
+    try:
+        rel = os.path.relpath(folder, root)
+    except ValueError:                                  # another drive than its source's (never, but never a crash)
+        rel = ""
+    rel = "" if rel in (".", "", "..") or rel.startswith(".." + os.sep) else rel.replace(os.sep, "/")
+    return {"root": root, "folder": folder, "rel": rel}
 
 
 class SourceLooks:
@@ -154,7 +207,10 @@ class SourceLooks:
         own look's joins too) — and, when one joined, `stop` True: the window gives its writer
         `stop_reading(root_id)` (the toast's Undo); none joined (the wrong folder picked) stops nothing. The old folder back, or only away (`state`), joins and stops
         nothing; so does a look that couldn't run now (`later`: the folder is read from now on, and the next look
-        joins what it attaches — D5 — while the card stays). A refused folder answers its reason (`refused`), nothing
+        joins what it attaches — D5 — while the card stays). T6 option 2 (alpha 4): a folder not read yet that holds no
+        file of the gone folder's names or sizes is refused before anything is read (`refused`: FIND_NONE); one that
+        did but whose look joined none is stopped again (`dropped` True: its first look's arrivals stay in New
+        arrivals, to place or remove). A refused folder answers its reason (`refused`), nothing
         written; a failure after the folder was added answers `failed` (the folder is read; nothing joined or
         stopped). `language`: as `stop`'s. -> False once closed."""
         if self._closing.is_set() or (language is not None and language != self.language):
@@ -169,6 +225,20 @@ class SourceLooks:
         with self._lock:
             self._stopping.add(root_id)               # a look reading it now stops between files (S6)
         return self._worker.put(self._stop, root_id, then or _nothing)
+
+    def let_go(self, root_id, on=True, language=None):
+        """Settings' *Stop reading* through the window's writer (alpha 4: journalled, with Undo — `Writer.stop_reading`
+        does the store's half): `on` — a look reading the folder now stops between files and no look reads it until
+        `let_go(root_id, False)` (its stop undone, or refused: it is read again from the next look). Nothing written
+        here. `language`: as `stop`'s. -> False when refused (closed, another language)."""
+        if self._closing.is_set() or (language is not None and language != self.language):
+            return False
+        with self._lock:
+            if on:
+                self._stopping.add(root_id)
+            else:
+                self._stopping.discard(root_id)
+        return True
 
     def fresh(self, forget_known=False, then=None):
         """*Start a fresh library* (K7): `then({"done", "refused", "failed", "backup", "known", "language"})` on the
@@ -193,10 +263,29 @@ class SourceLooks:
         """The sources as they stand, to `on_result` (Settings' row as it opens): one read on the worker."""
         return self._worker.put(self._publish, None, {}) if not self._closing.is_set() else False
 
-    def folders(self, item_ids, then):
-        """`then({item_id: source folder path or None})` on the worker (the arrival rows' folder names)."""
+    def folders(self, item_ids, then, detail=False):
+        """`then({item_id: source folder path or None})` on the worker (the arrival rows' folder names). K7 (alpha 4,
+        Mattias's note 7: parts of one title in several folders looked the same in New arrivals): `detail=True` ->
+        `{item_id: {"root": the source folder, "folder": the folder its original is in, "rel": that folder under the
+        source, '/'-joined ('' at its top)} or None}` — the window tells two arrivals of one title apart by `rel`."""
         ids = list(item_ids)
-        return self._worker.put(self._folders, ids, then) if ids and not self._closing.is_set() else False
+        return self._worker.put(self._folders, ids, then, detail) if ids and not self._closing.is_set() else False
+
+    def removed(self, then, language=None):
+        """K2, the window's Removed list: `then([{"trash_ids", "title", "removed_at", "days_left", "count",
+        "can_return", "roots"}])` on the worker, newest first (`Store.removed`), or `then(None)` when the store can't be
+        read. Put back is the writer's `restore(trash_ids)` (its Undo sends them back). `language`: as `stop`'s."""
+        if self._closing.is_set() or (language is not None and language != self.language):
+            return False
+        return self._worker.put(self._removed, None, then)
+
+    def removed_under(self, root_id, then, language=None):
+        """Settings' *Bring back N removed* on a folder's line (Mattias's note 6): `then([trash_id])` — the Removed
+        list's files whose original lies in that folder (`Store.removed_under`), or `then(None)`; `len()` is the N, the
+        writer's `restore(ids)` brings them back (one Undo), the folder's next look reads them again."""
+        if self._closing.is_set() or (language is not None and language != self.language):
+            return False
+        return self._worker.put(self._removed, root_id, then)
 
     def skippable(self, item_ids, then):
         """`then([folder path])` on the worker: ⋯'s *Never read this folder* choices for these items, deepest first (K6;
@@ -423,7 +512,13 @@ class SourceLooks:
                 else:
                     held = lambda: next((r["items"] for r in store.sources(all=True) if r["id"] == root_id), 0)  # noqa
                     before = held()                   # the episodes it holds: what Find joins is what leaves it
+                    rows = store.sources(all=True, counts=False)
+                    known = {ls.path_key(os.path.abspath(r["path"])) for r in rows if r["on"]}
+                    new = ls.path_key(os.path.abspath(path)) not in known
+                    had = {r["id"] for r in rows}             # a junction or another spelling of a read folder is its row
                     try:
+                        if new and not _holds_one(store, root_id, path):
+                            raise ls.NotASource(FIND_NONE.format(folder=path))   # T6 option 2: never read it
                         root = store.add_source(path)
                     except ls.NotASource as e:
                         answer["refused"] = e.reason
@@ -443,6 +538,10 @@ class SourceLooks:
                             store.join_moved(root_id, row["path"])
                             answer["joined"] = max(0, before - held())   # its own look's joins (D5) counted too
                             answer["stop"] = old["on"] and answer["joined"] > 0     # A7: none there, nothing stops
+                        if (root not in had and root != root_id and not answer["joined"] and not answer.get("later")
+                                and answer["state"] == sources.GONE):
+                            answer["dropped"] = bool(store.stop_source(root))   # T6 option 2: a folder this press
+                            #                                                     added that held none of them
                         self._follow_watches(store.sources(counts=False))
         except Exception as e:
             if answer["root"] is None:
@@ -581,7 +680,7 @@ class SourceLooks:
         self.on_result(summary)
         return True
 
-    def _folders(self, ids, then):
+    def _folders(self, ids, then, detail=False):
         out = dict.fromkeys(ids)
         try:
             store = self._store()
@@ -598,9 +697,20 @@ class SourceLooks:
                     except ValueError:
                         record = None
                     if isinstance(record, dict):
-                        out[item_id] = paths.get(record.get("root"))
+                        root = paths.get(record.get("root"))
+                        out[item_id] = _where(root, record.get("origin")) if detail else root
         except Exception as e:
             print(f"Sources: the arrivals' folders couldn't be read: {e!r}")
+        then(out)
+
+    def _removed(self, root_id, then):
+        out = None
+        try:
+            store = self._store()
+            if store is not None:
+                out = store.removed() if root_id is None else store.removed_under(root_id)
+        except Exception as e:
+            print(f"Sources: the Removed list couldn't be read: {e!r}")
         then(out)
 
     def _let_go(self, watches=()):

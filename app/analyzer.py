@@ -4234,8 +4234,9 @@ def settings_signature(settings, language):
         "hide_satoru", "enable_youtube_transcripts", "youtube_risk_acknowledged",
         "enable_youtube_preview", "enable_koe", "enable_junban", "enable_reels",
         # The app's own and the importers': telemetry, automatic updates, the welcome guide, the
-        # EPUB importer's part size, the Content Manager's "Add Words on 'Graduate'". No run reads them.
-        "telemetry_enabled", "auto_update_enabled", "onboarding_completed", "split_length",
+        # EPUB importer's part size and how a book is split, the Content Manager's "Add Words on 'Graduate'". No run
+        # reads them.
+        "telemetry_enabled", "auto_update_enabled", "onboarding_completed", "split_length", "split_books_by",
         "add_graduated_words",
         # Rarity or coverage: a run reads neither key, only the --target-coverage the dashboard
         # passes in coverage mode — in the args below.

@@ -976,8 +976,10 @@ class Writer:
         if op == "relink":
             return store.relink(ids[0], cmd["path"])
         if op == "relink_many":
-            cmd["left"] = []                        # alpha 5: why, even when none was relinked (`_empty` hands it on)
-            return store.relink_many([tuple(p) for p in cmd["pairs"]], left_out=cmd["left"])
+            left = []
+            change = store.relink_many([tuple(p) for p in cmd["pairs"]], left_out=left)
+            cmd["left"] = left if change is None else []   # alpha 5: why none was relinked (`_empty` hands it on);
+            return change                                   # never set by a call that raised: a failure says no why
         if op == "its_new":
             store.its_new(cmd["path"])              # a sync's summary, no change: nothing to undo
             return None

@@ -205,3 +205,29 @@ def test_a_single_title_remove_keeps_its_title_and_two_removes_are_two_entries(l
         assert entries[0]["removed_at"] > entries[1]["removed_at"]
         store.remove(of_b)                                  # b's two: one Remove, one title
         assert [(e["title"], e["titles"], e["count"]) for e in store.removed()][0] == (b, 1, 2)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_removes_in_one_clock_tick_stay_two_entries(language, monkeypatch):
+    """Alpha 5 review: the list merges a Remove's titles by its `removed_at`; Windows' clock moves ~15 ms at a time,
+    so two Removes in one tick had one stamp — one entry, and its Put back brought both back. `_now` never gives a
+    stamp twice: two Removes of two titles each, the clock standing still, are two entries."""
+    store, _data = _empty(language)
+    a, b = _SHOWS[language]
+    src = _drive("shows")
+    _show(language, src, a, n=2)
+    _show(language, src, b, n=2)
+    _show(language, src, a + " 2", n=1)
+    _show(language, src, b + " 2", n=1)
+    with store:
+        _root, ids = _taken(store, language, src)
+        shows = {}
+        for i in ids:
+            shows.setdefault(store.item(i)["rel_path"].split("/")[1], []).append(i)
+        still = time.time()
+        monkeypatch.setattr(ls.time, "time", lambda: still)
+        store.remove(shows[a] + shows[b])
+        store.remove(shows[a + " 2"] + shows[b + " 2"])
+        entries = store.removed()
+        assert [(e["title"], e["titles"], e["count"]) for e in entries] == [(None, 2, 2), (None, 2, 4)]
+        assert entries[0]["removed_at"] > entries[1]["removed_at"]

@@ -163,3 +163,26 @@ def test_a_label_with_no_left_and_a_relink_that_took_some_are_as_before(lib, mak
     w.relink_many([(a, moved), (b, full_b)], label=press)
     assert h.until(lambda: heard.saved)
     assert press.left is None and heard.saved[0][0].left == [(b, "there already")]
+
+
+def test_a_relink_that_failed_hands_no_why(lib, make_writer, monkeypatch):
+    """Alpha 5 review: a relink whose write failed (an error after the pairs were looked at) names no why — nothing
+    was relinked because it failed, not because of the pairs; its ticket's `left` stays None (the writer's failed
+    note says what happened)."""
+    a, b = lib.current()[:2]
+    full_b = os.path.join(lib.data_dir, *_rel(lib, b)[0].split("/"))
+    real = ls.Store.relink_many
+
+    def failing(self, pairs, left_out=None):
+        real(self, pairs, left_out=left_out)
+        raise RuntimeError("the disk went away")
+    monkeypatch.setattr(ls.Store, "relink_many", failing)
+
+    class Press:
+        left = None
+    w, heard = make_writer()
+    press = Press()
+    w.relink_many([(a, full_b)], label=press)
+    got = []
+    assert h.until(lambda: got.extend(w.landed_empty()) or press in got)
+    assert press.left is None and heard.saved == []

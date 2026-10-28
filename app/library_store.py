@@ -421,10 +421,17 @@ def manifest_path(user_files_dir):
     return os.path.join(user_files_dir, MANIFEST_NAME)
 
 
+_NOW_LAST = [0]                  # the last stamp `_now` gave, in microseconds
+_NOW_LOCK = threading.Lock()
+
+
 def _now():
-    """A sortable UTC time stamp with microseconds (`added_at`, `removed_at`, the log's `at`)."""
-    t = time.time()
-    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%06dZ" % int((t % 1) * 1e6)
+    """A sortable UTC time stamp with microseconds (`added_at`, `removed_at`, the log's `at`), never one this process
+    gave already (Windows' clock moves ~15 ms at a time: two Removes in one tick were one Removed entry, alpha 5)."""
+    with _NOW_LOCK:
+        us = _NOW_LAST[0] = max(int(time.time() * 1e6), _NOW_LAST[0] + 1)
+    secs, frac = divmod(us, 10 ** 6)
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(secs)) + ".%06dZ" % frac
 
 
 def _stamp():
@@ -4720,8 +4727,8 @@ class Store:
         its file (`pairs`: [(item_id, path)]), as `relink` does one, in ONE command: one change, one Undo (3,000 gone
         files never make 3,000). A pair that can't be (not in the library, no file there, its place another item's, the
         item gone or already there) is left out and named in `change.left` [(item_id, why)]. Returns the change, or None
-        when none was relinked — never an empty change (it would be an Undo for nothing); `left_out`, a list, gets the
-        pairs left out either way (alpha 5, Mado: with none relinked, the why was lost)."""
+        when none was relinked — never an empty change (it would be an Undo for nothing); then `left_out`, a list, gets
+        the pairs left out and why (alpha 5, Mado: with none relinked, the why was lost)."""
         looked = []                                  # every file stat'ed before the write lock (A6: never under it)
         for item_id, path in pairs:
             rel = library_rel(self.data_dir, path)
@@ -4756,9 +4763,9 @@ class Store:
                 if row[2] == st.st_size and _same_time(row[3], st.st_mtime_ns):
                     _note_moves(self, [(row[0], row[2], row[3], rel, st.st_size, st.st_mtime_ns)])
                 cmd.touch({row[5]}, availability=row[4] != "available")
-            if left_out is not None:
-                left_out.extend(left)
             if change is None:
+                if left_out is not None:
+                    left_out.extend(left)
                 return None
             asks = _rename_asks(self)                  # their open questions go, in one write (never one per file)
             kept = [a for a in asks if path_key(a.get("rel", "")) not in taken]
@@ -8954,7 +8961,7 @@ def _store_removed_rows(self):
 
 def _store_removed(self, now=None):
     """The Removed list (K2, alpha 4, Mattias's note 6): his own Removes not put back (`_removed_rows`), one entry per
-    Remove and title, newest first -> [{"trash_ids", "title", "titles", "removed_at", "days_left", "count",
+    Remove, newest first -> [{"trash_ids", "title", "titles", "removed_at", "days_left", "count",
     "can_return", "roots"}]; a Remove of several titles is ONE entry (alpha 5, Mado: a picks Remove of 120 titles was
     120 lines) — `title` None, `titles` how many, its files', days' and folders' summed. `days_left`: the days before the purge takes the FIRST of its files still in the trash (each file's own
     clock, which the Remove restarted; 0 … REMOVED_DAYS), None when none is there; `can_return`: a file still in the

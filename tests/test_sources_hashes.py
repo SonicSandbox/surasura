@@ -16,7 +16,7 @@ import pytest
 from app import library_store as ls
 from tests.test_library_store_support import LANGUAGES
 from tests.test_sources_k5_tables import _chapters
-from tests.test_sources_scan import _drive, _empty, _epub, _fresh_module_state, _look, _text, _write  # noqa: F401
+from tests.test_sources_scan import _drive, _empty, _epub, _fresh_module_state, _look, _text, _video, _write  # noqa: F401
 
 _SHOW = {"ja": "月影の旅人", "zh": "夜市小记"}
 
@@ -216,3 +216,86 @@ def test_the_json_copy_never_carries_the_hashes_a_removed_items_included(languag
         doc, _version, _dirty = store.export_snapshot()
         assert "content_sha256" not in json.dumps(doc, ensure_ascii=False)
         assert "content_sha256" not in doc["surasura_library"]["items"]["fields"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_file_of_a_copys_size_with_other_bytes_is_new_when_it_is_the_first_one_checked(language):
+    """Why: a kept hash stands for its copy's bytes, never for the new file's — a file the size of a kept copy, alone in
+    its look (no earlier match filled the look's own table), is a new item, and the copy's hash stays its own."""
+    store, data_dir = _empty(language)
+    one, other = _same_size(language, 3)
+    src, more = _drive("driveA"), _drive("driveB")
+    _write(os.path.join(src, _SHOW[language], "ep01.srt"), one)
+    with store:
+        item = _look(store, language, store.add_source(src), first=True)["ids"][0]
+        _write(os.path.join(more, "backup", "kopie.srt"), other)
+        result = _look(store, language, store.add_source(more))
+        assert (result["added"], result["attached"]) == (1, 0)
+        assert store.item(item)["content_sha256"] == hashlib.sha256(one.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_copy_changed_while_check_b_reads_it_keeps_no_hash(language, monkeypatch):
+    """Why: a hash is kept only for the file its row describes — a copy rewritten (its time moved) while it was being
+    read gives a hash of bytes the row never recorded, so none is kept, and the next look reads it again."""
+    store, data_dir = _empty(language)
+    one, _other = _same_size(language, 1)
+    src, more = _drive("driveA"), _drive("driveB")
+    _write(os.path.join(src, _SHOW[language], "ep01.srt"), one)
+    with store:
+        item = _look(store, language, store.add_source(src), first=True)["ids"][0]
+        with store._writing():
+            store.conn.execute("UPDATE items SET content_sha256 = NULL")
+        real = ls.sha256_of
+
+        def touched(path):                                 # the file's time moves under the read
+            sha = real(path)
+            if os.path.normcase(os.path.abspath(path)).startswith(os.path.normcase(os.path.abspath(data_dir))):
+                t = time.time() - 5
+                os.utime(path, (t, t))
+            return sha
+        monkeypatch.setattr(ls, "sha256_of", touched)
+        _write(os.path.join(more, "backup", "kopie.srt"), one)
+        assert _look(store, language, store.add_source(more))["attached"] == 1
+        assert store.item(item)["content_sha256"] is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("error", ["sqlite", "busy"])
+def test_a_hash_write_that_fails_never_ends_the_look(language, error, monkeypatch):
+    """Why: the hashes are a cache — a look whose write of them fails (a database error, the library busy) still takes
+    its files in; the copies' hashes are read again by a later look."""
+    store, data_dir = _empty(language)
+    one, other = _same_size(language, 2)
+    src, more = _drive("driveA"), _drive("driveB")
+    _write(os.path.join(src, _SHOW[language], "ep01.srt"), one)
+    with store:
+        _look(store, language, store.add_source(src), first=True)
+        with store._writing():
+            store.conn.execute("UPDATE items SET content_sha256 = NULL")
+
+        def fails(self, rows):
+            raise sqlite3.OperationalError("disk I/O error") if error == "sqlite" else ls.StoreBusy("busy")
+        monkeypatch.setattr(ls.Store, "keep_hashes", fails)
+        _write(os.path.join(more, "backup", "kopie.srt"), one)
+        _write(os.path.join(more, _SHOW[language], "ep02.srt"), other)
+        result = _look(store, language, store.add_source(more))
+        assert (result["added"], result["attached"]) == (1, 1)
+        assert not any(sha for rel, sha in _kept(store).items() if rel.endswith("ep01.srt"))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_waiting_videos_subtitle_keeps_its_hash_as_its_copy_is_taken_in(language):
+    """Why: a subtitle that fills a waiting video's item (K5) is a copy the look wrote — its hash goes in with it, as a
+    new item's does, so no later look reads it back."""
+    store, data_dir = _empty(language)
+    show = _SHOW[language]
+    src = _drive("driveA")
+    _video(os.path.join(src, show, f"[Grp] {show} - 05 (1080p).mkv"))
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        _write(os.path.join(src, show, f"[Grp] {show} - 05 (1080p).{language}.srt"), _text(language, 1))
+        _look(store, language, root, full=True)
+        (rel, sha), = _kept(store).items()
+        assert sha == _sha(os.path.join(data_dir, *rel.split("/")))

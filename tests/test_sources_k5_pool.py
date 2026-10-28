@@ -53,11 +53,11 @@ def _start_over(language):
     sources._LOOKED.clear()
 
 
-def _first_look(language, monkeypatch=None, pooled=False):
+def _first_look(language, monkeypatch=None, pooled=False, shelf=_shelf):
     store, data_dir = _empty(language)
     src = _drive("books")
     if not os.listdir(src):
-        _shelf(language, src)
+        shelf(language, src)
     if pooled:
         _pooled(monkeypatch)
     with store:
@@ -117,7 +117,8 @@ def test_work_done_ahead_that_doesnt_fit_the_file_is_done_again_by_the_look(why,
     assert got_result["added"] == alone["added"]
 
 
-def test_a_part_that_cant_be_written_leaves_no_part_file_and_the_book_waits(monkeypatch):
+@pytest.mark.parametrize("chapter", ["", "第2章"])
+def test_a_part_that_cant_be_written_leaves_no_part_file_and_the_book_waits(chapter, monkeypatch):
     """Why: the writing threads flush a book's parts side by side; one that fails must still leave nothing behind
     (no `.part`, no copy of that book) and the book waits for the next look — as the look alone does — while the other
     books come in; the next look then takes it in."""
@@ -127,7 +128,7 @@ def test_a_part_that_cant_be_written_leaves_no_part_file_and_the_book_waits(monk
     failed = []
 
     def write(part, data):
-        if "月の庭" in part and not failed:
+        if "月の庭" in part and chapter in part and not failed:     # its first part, or one after a part written
             failed.append(part)
             raise OSError("the disk said no")
         return real(part, data)
@@ -269,3 +270,42 @@ def test_a_write_that_fails_cancels_the_parts_not_started_and_a_shut_pool_writes
     pool.shutdown()
     sources._write_parts_at_once(pool, jobs)
     assert sorted(os.listdir(tmp_path)) == sorted(os.path.basename(p) for p, _d in jobs)
+
+
+def test_a_book_whose_text_is_already_in_is_held_by_the_same_items_with_the_pools(monkeypatch):
+    """Why (mutant P6): a worker hands the look each part's sha256 with its bytes; the look holds a part whose bytes are
+    already an item's by that hash (`_same_bytes`, the item's file read for it). A book in the library, then another
+    file of the same text arriving on a later look, must end on the same items with the workers as without — a part's
+    hash paired with another part of the same book would leave the twin's parts as new items beside them."""
+    import shutil
+    import zipfile
+    kept = _drive("twin")
+    if not os.listdir(kept):
+        _epub(os.path.join(kept, "星の歌.epub"), _chapters("ja", 0))
+        _epub(os.path.join(kept, "海の声.epub"), _chapters("ja", 0))
+        twin = os.path.join(kept, "海の声.epub")
+        with zipfile.ZipFile(twin, "a") as z:                # other bytes, the same text
+            z.writestr("EPUB/notes.txt", "第二版")
+        first = os.stat(os.path.join(kept, "星の歌.epub"))
+        os.utime(twin, ns=(first.st_atime_ns, first.st_mtime_ns))    # not one still being copied (`_recent`)
+
+    def looks(pooled):
+        store, data_dir = _empty("ja")
+        src = _drive("books")
+        shutil.rmtree(src)
+        os.makedirs(os.path.join(src, "Shelf"))
+        shutil.copy2(os.path.join(kept, "星の歌.epub"), os.path.join(src, "Shelf"))
+        with store:
+            root = store.add_source(src)
+            _look(store, "ja", root, first=True)            # the book in, its parts' hashes read from their bytes
+            shutil.copy2(os.path.join(kept, "海の声.epub"), os.path.join(src, "Shelf"))
+            sources._LOOKED.clear()
+            if pooled:
+                _pooled(monkeypatch)
+            result = _look(store, "ja", root, full=True)
+            return result, _library(store, data_dir)
+    alone, want = looks(False)
+    _start_over("ja")
+    pooled, got = looks(True)
+    assert want and {k: v for k, v in alone.items() if k != "ids"} == {k: v for k, v in pooled.items() if k != "ids"}
+    assert [(v[0], v[2:]) for _k, v in sorted(got.items())] == [(v[0], v[2:]) for _k, v in sorted(want.items())]

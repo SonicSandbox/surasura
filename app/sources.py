@@ -828,6 +828,15 @@ def _drop(part):
         pass
 
 
+def _stat_of(path):
+    """(size, mtime_ns) of a file, or None (gone, unreadable)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime_ns
+
+
 def _load_cache(language, stamp):
     """The folder times, dropped whole when another store (or a rebuilt one: a new epoch) wrote them."""
     try:
@@ -967,7 +976,8 @@ class _Look:
         self.origins = None          # read when a folder is listed (`_load`)
         self.videos = None           # {video key: item id} of the origins' records, read once a look
         self.batches = 0             # take-ins this look (a checkpoint every CHECKPOINT_EVERY)
-        self.hashes = {}
+        self.hashes = {}             # {a copy's rel: its bytes' sha256 or None}: check (b)'s, once a look
+        self.to_keep = []            # A4K-7: [(item_id, size, mtime_ns, sha256)] check (b) read, kept at the next commit
         self.versions = {}           # {a folder's key: the keys of its versions folders listed with it} (item 11)
         self.skip = set()            # K6: the keys of the folders skipped inside this source (`run`)
         self.skip_stamp = None
@@ -1086,6 +1096,7 @@ class _Look:
             self._take(new, books)
             if self.to_copy:
                 self._copy_done(final=True)
+        self._keep_hashes()
         self._say(final=True)
         self.out["shows"] = len(self.shows)
         if self.out["stopped"]:
@@ -1897,6 +1908,7 @@ class _Look:
         """`take_in` of one batch; a copy no item holds (the source stopped meanwhile — this batch's copies — or the
         store's `unused`: a file known or kept out after all, a second file of the same bytes) goes to the trash, never
         left in Library untracked (N3)."""
+        self._keep_hashes()
         if not found:
             return None
         made = [f["rel"] for f in found if f.get("rel") in self.made]
@@ -2082,7 +2094,7 @@ class _Look:
             if rel is None:
                 self._wait(folder)
                 return None
-            f["rel"] = rel
+            f["rel"], f["copy_sha256"] = rel, sha
         self.this_look.add(sha)
         if track is not None:
             self.this_videos.add(track)
@@ -2512,16 +2524,44 @@ class _Look:
         return self.store.item_of_video_key(vkey, origins=self.videos)
 
     def _same_bytes(self, size, sha, sizes=None):
-        """(b) An item of this size whose file holds these bytes, or None."""
-        for item_id, rel in (self.sizes if sizes is None else sizes).get(size, ()):
+        """(b) An item of this size whose file holds these bytes, or None. A4K-7: an item's hash the store keeps is
+        used instead of reading its file while the file's size and time are still its row's (one stat: 1.8 s for 60k
+        copies); else, or with no hash kept, the file is read — hashed once a look, its hash kept for the next looks
+        (`_keep_hashes`)."""
+        for item_id, rel, mtime_ns, kept in (self.sizes if sizes is None else sizes).get(size, ()):
             if rel not in self.hashes:
-                try:
-                    self.hashes[rel] = ls.sha256_of(os.path.join(self.data_dir, *rel.split("/")))
-                except OSError:
-                    self.hashes[rel] = None
+                full = os.path.join(self.data_dir, *rel.split("/"))
+                now = _stat_of(full)
+                if kept is not None and now == (size, mtime_ns):
+                    self.hashes[rel] = kept
+                else:
+                    self.hashes[rel] = self._read_hash(item_id, full, now, size, mtime_ns)
             if self.hashes[rel] == sha:
                 return item_id
         return None
+
+    def _read_hash(self, item_id, full, before, size, mtime_ns):
+        """Check (b)'s read of an item's copy -> its sha256, or None (unreadable). A4K-7: kept for the item when the
+        file was as its row records it (`size`, `mtime_ns`) before the read (`before`: its stat) and still is after it
+        (never a file changed while it was read)."""
+        try:
+            sha = ls.sha256_of(full)
+        except OSError:
+            return None
+        if before == (size, mtime_ns) == _stat_of(full):
+            self.to_keep.append((item_id, size, mtime_ns, sha))
+        return sha
+
+    def _keep_hashes(self):
+        """A4K-7: the hashes check (b) read, kept in the store (one write; `Store.keep_hashes`). A cache: a busy or
+        failed write loses only work the next look does again."""
+        rows, self.to_keep = self.to_keep, []
+        if not rows:
+            return
+        try:
+            self.store.keep_hashes(rows)
+        except (ls.StoreError, sqlite3.Error) as e:
+            log.info("The copies' hashes weren't kept (the next look reads them again): %r", e)
 
     def _held(self, show):
         """S7, LM1b (A9): the episodes of this show already in — `Library/<show>`, from any folder or source -> {an
@@ -2857,7 +2897,7 @@ class _Look:
             f = {"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
                  "show": book, "episode": i, "chapter": chapters[i - 1]}
             if item is None:
-                f["rel"] = rel
+                f["rel"], f["copy_sha256"] = rel, shas[i - 1]
             else:
                 f["item_id"] = item
             found.append(f)

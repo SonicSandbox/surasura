@@ -25,6 +25,14 @@ from app.services import anki_miner_setup as M
 MINER = "C:\\Users\\learner\\AppData\\Local\\Programs\\AnkiMiner\\AnkiMiner.exe"
 
 
+@pytest.fixture(autouse=True)
+def no_failed_setup_carried_over():
+    """`finish_setup_as_job` remembers a language whose setup didn't finish this session (R2-6): none carried over."""
+    M._FAILED.clear()
+    yield
+    M._FAILED.clear()
+
+
 # --- anki_miner.run_setup: the verb, its arguments, its verdicts ------------------------------------------------- #
 @pytest.fixture
 def api(monkeypatch):
@@ -107,10 +115,12 @@ def world(monkeypatch, tmp_path):
 
     def checks(settings, language, keep=True):
         assert keep is False, "finishing the setup never writes Connect's setup record"
-        check = setup._check("anki_miner_setup", "needs-you", "Anki Miner still needs its dictionaries (dictionary: "
-                             "No dictionary is installed.).", setup.SETUP_DO)
         if state["setup"]:
+            check = setup._check("anki_miner_setup", "needs-you", "Anki Miner still needs its dictionaries "
+                                 "(dictionary: No dictionary is installed.).", setup.SETUP_DO)
             check["setup"] = True
+        else:
+            check = setup._check("anki_miner_setup", "ok", "Anki Miner's own setup is finished.")
         return {"checks": [check], "anki_miner": {"path": MINER, "profile": "p-main", "features": ["setup"]}}
 
     def run_setup(path, language, profile, progress_path, on_poll=None):
@@ -169,6 +179,37 @@ def test_a_setup_whose_check_still_asks_after_is_never_called_finished(world):
     world["still"] = True
     result, detail = M.finish_setup({}, "ja")
     assert result == M.SETUP_FAILED and "Anki Miner still needs its dictionaries" in detail
+
+
+def test_dictionaries_in_with_a_deck_still_to_choose_is_said_as_such_never_finished(world, monkeypatch):
+    """Round 2 R2-7: the mixed case — its setup put the dictionaries in, its check still names a deck: the rest is
+    named ("rest"), never "Anki Miner's setup is finished"."""
+    real = setup.checks
+
+    def checks(settings, language, keep=True):
+        out = real(settings, language, keep)
+        if world["runs"]:
+            out["checks"] = [setup._check("anki_miner_setup", "needs-you", "Anki Miner's own setup isn't finished "
+                                          "(deck: no deck chosen).", "Open Anki Miner and finish its setup")]
+        return out
+    monkeypatch.setattr(setup, "checks", checks)
+    assert M.finish_setup({}, "ja") == (M.SET_UP_REST, "Anki Miner's own setup isn't finished (deck: no deck chosen).")
+
+
+def test_a_setup_that_didnt_finish_is_not_offered_again_this_session(world, monkeypatch):
+    """Round 2 R2-6: once a setup ran and didn't finish, the page's look no longer offers it this session (any wizard,
+    Settings' too) and says where it can be finished instead."""
+    from app.services.jobs import JobRegistry
+    world["raise"] = anki_miner.AnkiMinerError("failed", "Anki Miner's setup didn't finish — JMdict: no space")
+    M.finish_setup_as_job(JobRegistry(), {}, "ja")
+    check = setup._check("anki_miner_setup", "needs-you", "Anki Miner still needs its dictionaries.", setup.SETUP_DO)
+    check["setup"] = True
+    monkeypatch.setattr(setup, "checks", lambda settings, language, keep=True: {
+        "checks": [setup._check("anki_miner", "ok", "Anki Miner is installed."), check],
+        "anki_miner": {"path": MINER, "app": "3.10.1"}})
+    fix = M.look({}, "ja")["fix"]
+    assert fix["setup"] is False and fix["do"] == M.SETUP_DO_FAILED
+    assert M.look({}, "zh")["fix"]["setup"] is True, "another language is offered as before"
 
 
 def test_a_language_the_profile_never_mined_is_refused_in_plain_words(world):

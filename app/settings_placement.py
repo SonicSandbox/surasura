@@ -13,7 +13,7 @@ import importlib.util
 
 PLACED = {
     "exclude_single": "analysis:ja", "open_app_mode": "neither", "theme": "report", "strategy": "analysis",
-    "target_coverage": "analysis", "split_length": "neither", "target_language": "analysis",
+    "target_coverage": "analysis", "split_length": "neither", "split_books_by": "neither", "target_language": "analysis",
     "zh_script": "analysis:zh", "telemetry_enabled": "neither", "words_per_day": "report",
     "show_words_per_day": "report", "zen_limit": "report", "onboarding_completed": "neither", "open_count": "neither",
     "only_i_plus_one": "analysis", "ensure_audio_example": "analysis",

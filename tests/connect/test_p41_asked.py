@@ -335,6 +335,30 @@ def test_a_podcast_whose_episode_has_a_video_is_mined_as_before(tmp_path):
     assert _jobs(episode)[-1]["state"] == "done" and _mined(steps) == [episode]
 
 
+@pytest.mark.parametrize("busy", ["store", "video lookup"])
+def test_an_audio_episode_set_aside_stays_aside_while_it_cant_be_told(tmp_path, busy, monkeypatch):
+    """Round 2 R2-1: a look whose store is busy, or whose video lookup can't answer now, moves nothing — every job set
+    aside stays aside (never queued again only to be set aside once more)."""
+    ids, kinds = _library()
+    episode = _srt(ids, kinds)[-1]
+    with c.store("ja") as s:
+        s.set_media_type([s.item(episode)["work_id"]], "audiobook")
+    steps = _steps(tmp_path, {episode: WORDS[1]}, videos={str(episode): None})
+    _place_top(episode)
+    _run(steps)
+    assert _jobs(episode)[-1]["reason"] == runner.AUDIO_WAIT
+    steps.plan["videos"] = {}                           # its video is there now, but can't be told this look
+    if busy == "store":
+        monkeypatch.setattr(StoreSteps, "waiting_items", lambda self, lang, item_ids: None)
+    else:
+        def video(self, lang, job):
+            raise runner.Wait(runner.LIBRARY_BUSY)
+        monkeypatch.setattr(StoreSteps, "video", video)
+    with Ledger() as ledger:
+        runner._books_aside(steps, ledger, "ja", [])
+    assert (_jobs(episode)[-1]["state"], _jobs(episode)[-1]["reason"]) == ("skipped", runner.AUDIO_WAIT)
+
+
 @pytest.mark.parametrize("change", ["video found", "type corrected"])
 def test_an_audio_episode_set_aside_is_queued_again_once_it_no_longer_waits(tmp_path, change):
     """Review A2-2: an episode set aside as audio is queued again at the next look once it no longer waits — its video

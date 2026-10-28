@@ -8054,7 +8054,7 @@ _LINK_TAGS = (0xA000000C, 0xA0000003)              # IO_REPARSE_TAG_SYMLINK, IO_
 _DIGITS = re.compile(r"(\d+)")
 _EPUB_PART = re.compile(r"\.epub#\d+$", re.I)    # an EPUB's part's origin (`<book>.epub#3`)
 Origin = namedtuple("Origin", "item_id root origin size mtime_ns sha256 rel_path availability paired_at version "
-                              "video_path video_size video_key declined thin moved_to", defaults=(None,) * 7)
+                              "video_path video_size video_key declined thin moved_to chapter", defaults=(None,) * 8)
 
 
 def origin_key(path):
@@ -8365,8 +8365,8 @@ def _origin_record(root_id, origin, f):
     record = {"producer": SOURCE_PRODUCER, "channel_id": root_id, "root": root_id, "origin": origin,
               "size": f.get("size"), "mtime_ns": f.get("mtime_ns"), "sha256": f.get("sha256"),
               "show": {"title": str(f.get("show") or "")}}
-    for key in ("video_path", "video_size", "video_key", "episode"):
-        if f.get(key) is not None:
+    for key in ("video_path", "video_size", "video_key", "episode", "chapter"):   # chapter: a book's part's place
+        if f.get(key) is not None:                                                  # (`extract.book_split`, Hon)
             record[key] = f[key]
     return record
 
@@ -8581,10 +8581,11 @@ def _store_source_detail(self, root_ids):
 
 def _store_origins(self, items=None):
     """{path_key(origin): Origin(item_id, root, origin, size, mtime_ns, sha256, rel_path, availability, paired_at,
-    version, video_path, video_size, video_key, declined, thin, moved_to)} for every origin recorded (`version`:
+    version, video_path, video_size, video_key, declined, thin, moved_to, chapter)} for every origin recorded (`version`:
     another version of its item's episode, LM1b — a look knows its file, no reader takes it; `declined` / `thin`: a
     version the switch passes over while its file is as judged, LM3 `sources.passed_over`; `moved_to`: D5's mark, the
-    path key its original moved to), in any tier (a finished item is never taken in again): one read per look — the item's
+    path key its original moved to; `chapter`: a book's part's place, its JSON text — Hon), in any tier (a finished item
+    is never taken in again): one read per look — the item's
     availability with it, so a look finds the copies gone (item 8a) with no stat of its own. The records' fields are read by SQLite
     (F13: decoding every record in Python held the interpreter 0.25 s at 20k, stretching a window's save meanwhile); a
     record that isn't a JSON object reads as one with no fields. `items` (LM3, A10): those items' origins only — a
@@ -8596,7 +8597,7 @@ def _store_origins(self, items=None):
             f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id, {field('root')}, {field('origin')}, "
             f"{field('size')}, {field('mtime_ns')}, {field('sha256')}, i.rel_path, i.availability, p.paired_at, "
             f"{_VERSION_ROW}, {field('video_path')}, {field('video_size')}, {field('video_key')}, "
-            f"{field('declined')}, {field('thin')}, {field('moved_to')} FROM pairings p "
+            f"{field('declined')}, {field('thin')}, {field('moved_to')}, {field('chapter')} FROM pairings p "
             f"JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW}"
             + ("" if items is None else " AND p.item_id IN (SELECT value FROM json_each(?))")
             + " ORDER BY p.content_key", () if items is None else (_dumps(sorted(set(items))),)).fetchall()
@@ -10342,7 +10343,8 @@ def _store_switch_parts(self, root_id, parts, extras=(), surplus=(), by=SOURCE_P
                 part = _trash_name(rel, f"{token}x{n}")
                 _stage(self, part, x["data"])
                 staged.append(part)
-            found = {k: x[k] for k in ("origin", "size", "mtime_ns", "sha256", "show", "episode") if k in x}
+            found = {k: x[k] for k in ("origin", "size", "mtime_ns", "sha256", "show", "episode", "chapter")
+                     if k in x}
             more.append({"rel": rel, "part": part, "sha256": sha, "bytes": len(x["data"]),
                          "found": dict(found, rel=rel)})
     except OSError as e:                                     # an old part unreadable, the trash unwritable: waits

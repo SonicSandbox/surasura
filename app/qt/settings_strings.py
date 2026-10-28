@@ -381,6 +381,9 @@ ROWS = {
                       "Your library set aside in one backup and your folders read again from scratch",
                       "Empty your library and read your folders again; the old one is kept in a backup",
                       "fresh library reset start over empty clear"),
+    "split_books_by": ("Split books by", "Each book you add: its chapters, each cut into parts; or even parts across "
+                                         "the book. Books already in keep their parts",
+                       "How a book is cut into parts when you add it", "split books chapters even parts epub"),
     "split_length": ("Split books into parts of", "EPUBs and Anki decks, when you extract them",
                      "The character limit for each part when a file is split", "split epub length"),
     "enable_youtube_transcripts": ("YouTube transcripts", "Download a video’s captions straight into your library",
@@ -506,6 +509,7 @@ OPTIONS = {
                         "flag:5": "Flag 5 (Pink)", "flag:6": "Flag 6 (Turquoise)", "flag:7": "Flag 7 (Purple)"},
     "junban_scope": {"deck": "This deck", "all": "All decks"},
     "junban_order": {"content": "As I’ll meet it", "priority": "By leverage"},
+    "split_books_by": {"chapters": "Chapters", "even": "Even parts"},
     "junban_unlisted": {"list_first": "After it", "journey": "Mixed in", "back": "At the back"},
     "junban_only_markers": {"star": "✦", "lopsided": "⚖", "reading": "📖"},
     "backfill_patterns": {"patterns": FILLS["patterns"]}, "backfill_sentence": {"sentence": FILLS["sentence"]},

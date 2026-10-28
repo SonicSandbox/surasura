@@ -856,7 +856,7 @@ def test_a_japanese_special_word_after_the_number_marks_a_special():
     assert en.identity("Hoshizora Kissa - S01E05 - A Very Special Day.srt").special is False
 
 
-# Mattias, 2026-10-27: his `Dungeon Meshi S01` folder, 24 Japanese `.srt` named so and nothing else (no video); the
+# Mattias, 2026-10-27: his anime folder (a made-up title here), 24 Japanese `.srt` named so and nothing else (no video); the
 # `.ab` (AnimeBytes', a release site's tag) was read as ISO 639-1 Abkhazian, every file refused and the folder lost
 _AB = "{show} S01E{n:02d}-[1080p][BDRIP][x265.FLAC].ab.srt"
 _POLISH = ("1\n00:00:01,000 --> 00:00:03,500\nGdzie jest ta herbaciarnia? Szukałam jej całą noc.\n\n"
@@ -864,15 +864,15 @@ _POLISH = ("1\n00:00:01,000 --> 00:00:03,500\nGdzie jest ta herbaciarnia? Szuka�
 
 
 @pytest.mark.parametrize("name, language, stem", [
-    ("Dungeon Meshi S01E01-[1080p][BDRIP][x265.FLAC].ab.srt", None,
-     "Dungeon Meshi S01E01-[1080p][BDRIP][x265.FLAC].ab"),                  # a release's tag: no language, kept
-    ("Dungeon Meshi S01E01-[1080p][BDRIP][x265.FLAC].ja.srt", "ja", "Dungeon Meshi S01E01-[1080p][BDRIP][x265.FLAC]"),
-    ("Dungeon Meshi S01E01.jpn.srt", "ja", "Dungeon Meshi S01E01"),
-    ("Dungeon Meshi S01E01.en.srt", "other", "Dungeon Meshi S01E01"),        # a language the app names: as before
-    ("Dungeon Meshi S01E01.pt-BR.srt", "other", "Dungeon Meshi S01E01"),
+    ("Hoshizora Kissa S01E01-[1080p][BDRIP][x265.FLAC].ab.srt", None,
+     "Hoshizora Kissa S01E01-[1080p][BDRIP][x265.FLAC].ab"),                  # a release's tag: no language, kept
+    ("Hoshizora Kissa S01E01-[1080p][BDRIP][x265.FLAC].ja.srt", "ja", "Hoshizora Kissa S01E01-[1080p][BDRIP][x265.FLAC]"),
+    ("Hoshizora Kissa S01E01.jpn.srt", "ja", "Hoshizora Kissa S01E01"),
+    ("Hoshizora Kissa S01E01.en.srt", "other", "Hoshizora Kissa S01E01"),        # a language the app names: as before
+    ("Hoshizora Kissa S01E01.pt-BR.srt", "other", "Hoshizora Kissa S01E01"),
     ("Lanterns of Qinghe S01E01.zh-Hans.srt", "zh", "Lanterns of Qinghe S01E01"),
-    ("Dungeon Meshi S01E01.abk.srt", "other", "Dungeon Meshi S01E01"),       # ISO 639-2's three letters: as before
-    ("Dungeon Meshi S01E01.pl.srt", None, "Dungeon Meshi S01E01.pl"),       # Polish: no tag here, its text decides
+    ("Hoshizora Kissa S01E01.abk.srt", "other", "Hoshizora Kissa S01E01"),       # ISO 639-2's three letters: as before
+    ("Hoshizora Kissa S01E01.pl.srt", None, "Hoshizora Kissa S01E01.pl"),       # Polish: no tag here, its text decides
 ])
 def test_a_two_letter_dot_tag_is_a_language_only_when_the_app_names_it(name, language, stem):
     """Mattias's `.ab`: of ISO 639-1's two letters a dot tag is a language only when it is one the app names (ours, and
@@ -892,7 +892,7 @@ def test_a_subtitle_only_show_tagged_ab_arrives_with_every_episode(language):
     and counted, no video paired; one episode tagged `.ab` whose text is the other language is the text's, refused;
     a Polish `.pl.srt` (a language the app doesn't name) is read and refused by its text, as an untagged one is."""
     store, _data = _empty(language)
-    show = {"ja": "Dungeon Meshi", "zh": "Lanterns of Qinghe"}[language]
+    show = {"ja": "Hoshizora Kissa", "zh": "Lanterns of Qinghe"}[language]
     src = _drive("driveA")
     folder = os.path.join(src, "Anime", f"{show} S01")
     for n in (1, 2, 3):
@@ -917,7 +917,7 @@ def test_an_ab_tagged_subtitle_pairs_with_its_video_and_ours_beats_an_english_on
     an `.en.srt` of the same episode is still English (a language the app names) and never taken; a `.ja.srt` /
     `.zh-Hans.srt` beside an `.ab.srt` of one episode is one item, never two."""
     store, _data = _empty(language)
-    show = {"ja": "Dungeon Meshi", "zh": "Lanterns of Qinghe"}[language]
+    show = {"ja": "Hoshizora Kissa", "zh": "Lanterns of Qinghe"}[language]
     tag = {"ja": "ja", "zh": "zh-Hans"}[language]
     src = _drive("driveA")
     folder = os.path.join(src, f"{show} S01", "Season 1")

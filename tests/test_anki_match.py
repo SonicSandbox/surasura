@@ -1046,15 +1046,18 @@ def test_the_shipped_dictionary_reads_a_kana_card_by_the_entries_its_reading_nam
 
 
 # --- alpha 4 M3: a card Connect made, on the row Connect mined it for ------------------------------------------------ #
-@pytest.mark.parametrize("row, key, via, answers, placed", [
-    ("ヒトリ", "", "", None, ("ヒトリ", "connect")),                     # not_the_name refused it: Connect's row
-    ("ヒトリ", "一人", "L6", None, ("ヒトリ", "connect")),               # read as an everyday word: still Connect's row
-    ("ヒトリ", "冒険", "exact", None, ("冒険", "exact")),                 # its own word is on the list: never over it
-    ("ヒトリ", "一人", "yes", None, ("一人", "yes")),                     # your yes stands
-    ("ヒトリ", "", "", {"ひとり": {"target": "ヒトリ", "answer": "no"}}, ("", "")),   # your no stands
-    ("気配", "", "", None, ("", "")),                                    # a row no longer on the list: as before
-    (None, "一人", "L6", None, ("一人", "L6")),                          # no record: as before
+@pytest.mark.parametrize("word, row, key, via, answers, placed", [
+    ("ひとり", "ヒトリ", "", "", None, ("ヒトリ", "connect")),            # not_the_name refused it: Connect's row
+    ("ひとり", "ヒトリ", "一人", "L6", None, ("ヒトリ", "connect")),      # read as an everyday word: still Connect's
+    ("ひとり", "ヒトリ", "一人", "exact", None, ("ヒトリ", "connect")),   # R2-4: one of 一人's spellings — Connect's
+    ("冒険", "ヒトリ", "冒険", "exact", None, ("冒険", "exact")),          # its own word is a row: never over it
+    ("ひとり", "ヒトリ", "一人", "yes", None, ("一人", "yes")),           # your yes stands
+    ("ひとり", "ヒトリ", "", "", {"ひとり": {"target": "ヒトリ", "answer": "no"}}, ("", "")),   # your no stands
+    ("ひとり", "気配", "", "", None, ("", "")),                           # a row no longer on the list: as before
+    ("ひとり", None, "一人", "L6", None, ("一人", "L6")),                 # no record: as before
 ])
-def test_connect_row_places_a_connect_card_only_where_its_own_word_found_no_row(row, key, via, answers, placed):
-    rank_of = {"ヒトリ": 0, "一人": 1, "冒険": 2}
-    assert anki_match.connect_row(row, key, via, "ひとり", rank_of, answers) == placed
+def test_connect_row_places_a_connect_card_unless_its_own_word_is_a_row_or_you_answered(word, row, key, via, answers,
+                                                                                       placed):
+    rank_of = {"ヒトリ": 0, "一人": 1, "冒険": 2, "ひとり": 1}      # ひとり: one of 一人's spellings (its Forms)
+    words = [("ヒトリ", "ヒトリ"), ("一人", "ヒトリ"), ("冒険", "ボウケン")]
+    assert anki_match.connect_row(row, key, via, word, rank_of, answers, words) == placed

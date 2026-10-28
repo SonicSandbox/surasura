@@ -709,7 +709,7 @@ def _connect_rows(language, backlog, index, answers=None):
         if row is None or not isinstance(word, str):
             continue
         key, via = anki_match.card_key(word, index.rank_of, "ja", answers, tokenize, index.words, index.orths)
-        key, via = anki_match.connect_row(row, key, via, word, index.rank_of, answers)
+        key, via = anki_match.connect_row(row, key, via, word, index.rank_of, answers, index.words)
         if via == "connect":
             out[note] = key
     return out

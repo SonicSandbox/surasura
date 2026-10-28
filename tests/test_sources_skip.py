@@ -712,8 +712,8 @@ def test_an_english_epub_is_passed_over_before_any_part_is_written_and_remembere
     src = _drive("Media")
     book = _epub(os.path.join(src, "Books", "Moonshadow 1.epub"), [_ENGLISH * 8] * 3)
     opened = []
-    real = extract.chunks_of
-    monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or real(*a, **k))
+    real = extract.parts_of
+    monkeypatch.setattr(extract, "parts_of", lambda *a, **k: opened.append(a[0]) or real(*a, **k))
     with store:
         root = store.add_source(src)
         got = _look(store, language, root, first=True)
@@ -753,8 +753,8 @@ def test_a_locked_epub_is_never_split_and_a_books_obfuscated_fonts_are_no_lock(m
     fonts = _lock(_epub(os.path.join(src, "Fonts", "月影 2.epub"), _chapters()),
                   "http://www.idpf.org/2008/embedding", "EPUB/fonts/mincho.otf")
     opened = []
-    real = extract.chunks_of
-    monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or real(*a, **k))
+    real = extract.parts_of
+    monkeypatch.setattr(extract, "parts_of", lambda *a, **k: opened.append(a[0]) or real(*a, **k))
     with store:
         root = store.add_source(src)
         got = _look(store, language, root, first=True)

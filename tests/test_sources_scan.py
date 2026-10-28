@@ -839,8 +839,8 @@ def test_an_epub_is_split_into_a_free_folder_once_all_parts_in_one_take_in(monke
         assert open(taken, "rb").read() == _text(language, 9).encode("utf-8")
         from app import extract
         opened = []
-        real_chunks = extract.chunks_of
-        monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or real_chunks(*a, **k))
+        real_chunks = extract.parts_of
+        monkeypatch.setattr(extract, "parts_of", lambda *a, **k: opened.append(a[0]) or real_chunks(*a, **k))
         again = _look(store, language, root, full=True)                         # a known EPUB is never split again
         assert opened == []                                                      # nor even read
         assert again["added"] == 0 and _items(store) == len(parts)
@@ -1116,8 +1116,8 @@ def test_a_renamed_or_moved_epub_is_the_same_book_and_is_never_read_or_copied_ag
         files = _library_files(data_dir)
         from app import extract
         opened = []
-        real_chunks = extract.chunks_of
-        monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or real_chunks(*a, **k))
+        real_chunks = extract.parts_of
+        monkeypatch.setattr(extract, "parts_of", lambda *a, **k: opened.append(a[0]) or real_chunks(*a, **k))
         renamed = os.path.join(src, "Books", "星の歌 第一巻.epub")
         os.rename(book, renamed)
         result = _look(store, language, root, full=True)
@@ -1143,7 +1143,7 @@ def test_a_removed_book_moved_or_renamed_is_never_written_again(monkeypatch):
         files = _library_files(data_dir)
         from app import extract
         opened = []
-        monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or ([], None))
+        monkeypatch.setattr(extract, "parts_of", lambda *a, **k: opened.append(a[0]) or ([], None))
         os.makedirs(os.path.join(src, "Moved"))
         os.rename(book, os.path.join(src, "Moved", "星の歌.epub"))
         result = _look(store, language, root, full=True)
@@ -1180,7 +1180,7 @@ def test_an_epub_with_no_text_is_read_once_until_it_changes(monkeypatch):
     book = _epub(os.path.join(src, "Books", "鍵のかかった本.epub"), _chapters())
     from app import extract
     opened = []
-    monkeypatch.setattr(extract, "chunks_of", lambda *a, **k: opened.append(a[0]) or ([], None))
+    monkeypatch.setattr(extract, "parts_of", lambda *a, **k: opened.append(a[0]) or ([], None))
     with store:
         root = store.add_source(src)
         assert _look(store, language, root, first=True)["added"] == 0

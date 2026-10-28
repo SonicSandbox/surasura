@@ -1484,6 +1484,10 @@ class ShowsPage(_Page):
         pick.addWidget(self.btn_stop)
         pick.addStretch(1)
         fbox.addLayout(pick)
+        self.every_core = SwitchRow(S.EVERY_CORE, S.EVERY_CORE_LINE, S.EVERY_CORE_TIP, self.folders_part)   # K5 C4
+        self.every_core.switch.toggled.connect(self.wiz.use_every_core)
+        self.every_core.setVisible(False)                 # with the big library's warning (`show_reading`)
+        fbox.addWidget(self.every_core)
         self.refused_line = _label("wizclosed", "", self.folders_part, wrap=True)
         self.refused_line.setVisible(False)
         fbox.addWidget(self.refused_line)
@@ -1626,6 +1630,9 @@ class ShowsPage(_Page):
         line = S.READING.format(episodes=_count(S.EPISODES, found), shows=_count(S.SHOWS_N, shows))
         from app.services.setup_wizard import BIG_LIBRARY
         _set_text(self.reading_line, S.READ_BIG.format(line=line) if found >= BIG_LIBRARY else line)   # K5
+        if found >= BIG_LIBRARY and self.every_core.isHidden():          # K5 C4: offered with the warning, kept shown
+            self.every_core.switch.set_quiet(bool(self.wiz._settings().get("use_every_core", False)))
+            _show(self.every_core, True)
         _show(self.reading_line, True)
         _show(self.btn_stop, True)
         self._paint_folders()
@@ -2920,6 +2927,14 @@ class SetupWizard(QWidget):
         bridge.run_in_worker(read, language, paths, lambda found, shows: progress.call((found, shows)),
                              stop.is_set, then=lambda result: (self.alive(ended)(result), needs_look()),
                              failed=lambda info: (self.alive(failed)(info), needs_look()))
+
+    def use_every_core(self, on):
+        """K5 C4: page 3's *Use every core* (beside the big library's warning), saved at once — the copy's pools read it
+        as they open, so a look still listing takes it (Settings › Content's row is the same key)."""
+        try:
+            self.services.settings.set({"use_every_core": bool(on)})
+        except Exception as e:
+            applog.log("wizard", f"use every core: {e}")
 
     def stop_reading(self):
         """*Stop*: the look stops between files; what it took in is kept."""

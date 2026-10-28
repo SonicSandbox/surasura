@@ -135,6 +135,9 @@ ROWS = {
                      "Import your known words from Migaku, Jiten or an Anki deck file", "import migaku jiten apkg"),
     "words_to_leave_out": ("Words to leave out", "Never suggested: your Ignore list and Blacklist",
                            "Opens your Ignore list and Blacklist", "ignore blacklist leave out never suggested"),
+    "use_every_core": ("Use every core", "Reads a big library faster; the computer is busier meanwhile",
+                       "Off: reading and copying a library uses half your computer's cores, so it stays quick to use. "
+                       "On: every core — a first read of thousands of books ends sooner", "cores speed faster cpu"),
     "anki_sync_include_suspended": ("Count suspended cards as known", "",
                                     "Count cards you've suspended as known. Off by default — suspended cards are often "
                                     "ones you struggled with", "suspended known"),

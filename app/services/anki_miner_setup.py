@@ -480,6 +480,22 @@ SAID_PROFILE = " Surasura made its own Anki Miner profile, “{name}”, a copy 
 SAID_SWITCHED = " Surasura makes cards with Anki Miner's profile “{name}” from now on."
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 SETUP_STILL = "it ran, but Anki Miner still says: {say}"
+# A5F2: what Surasura set itself instead of sending you to Anki Miner's window: its AnkiConnect address, the profile
+# your setting names
+SAID_ADDRESS = " Anki Miner now uses Surasura's AnkiConnect address ({url})."
+SAID_MADE = " Surasura made the Anki Miner profile “{name}”, a copy of yours, and makes cards with it."
+SAID_MADE_UNSEEN = " Surasura made the Anki Miner profile “{name}”, but can't find it there yet."
+# A5F4: what a write changed besides the deck and note type, said (intent keeper #7–#8): the fields of a note type
+# Anki Miner has no preset for, a card-type mark it has no field for, pitch written in romaji, the dictionaries
+SAID_FIELDS = (" “{note}” isn't a card Anki Miner knows, so Surasura matched its fields by name: the word goes in "
+               "“{word}”, the sentence in “{sentence}”.")
+SAID_CARD_TYPE = " Anki Miner won't mark which kind of card each one is: “{note}” has no field for that."
+SAID_PITCH = " Pitch categories are written in romaji, as “{note}” reads them."
+SAID_DICTS = " Anki Miner's {language} dictionaries are in (its profile “{name}”)."
+SAID_DICTS_CURRENT = " Anki Miner's {language} dictionaries are in (the profile its window uses)."
+SAID_DICTS_SHORT = " Anki Miner's {language} dictionaries are in."     # the profile already said in the same line
+# The note types Anki Miner fills completely (3.10.1 `services/note_presets.py`): their fields need no saying
+PRESETS = frozenset(("lapis", "kiku", "senren", "anki miner note"))
 SETUP_DO_FAILED = "Its setup didn't finish here: Surasura offers it again the next time you open Surasura"
 
 
@@ -496,13 +512,15 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
     from app import anki_connect
     from app.connect import anki_miner, miner_settings
     path, profile = found["path"], found.get("profile")
-    out = {"profile": profile, "settings": settings, "answer": None, "said": ""}
+    out = {"profile": profile, "profile_name": found.get("profile_name"), "settings": settings, "answer": None,
+           "said": ""}
     wrong = set(items) & anki_miner.SETTINGS_ITEMS
+    address = "anki" in items           # A5F2: Anki Miner can't reach the Anki Surasura reaches: Surasura's address
     export = anki_miner.settings_export(path, language, os.path.join(folder, "export.json"), profile)
     unused = export.get("configured") is False
-    if not wrong and not unused:
+    if not wrong and not unused and not address:
         return out
-    values = {}
+    values = {"ankiconnect_url": anki_connect.address(settings)} if address else {}
     if wrong:
         try:
             what, planned = miner_settings.plan(settings, language, export.get("settings") or {}, wrong,
@@ -511,12 +529,12 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
             what, planned = SET_UP_REST, {}     # is said to be still to set (intent review #4: never "finished")
         if what == ASK:
             asked = dict(planned)
-            values = asked.pop("values", None) or {}    # the deck already chosen: written, never asked again
+            values.update(asked.pop("values", None) or {})  # the deck already chosen: written, never asked again
             out["answer"] = (ASK, asked)
         elif what == SET_UP_REST:
             out["answer"] = (SET_UP_REST, ANKI_CLOSED_REST)
         else:
-            values = planned
+            values.update(planned)
     if not values and not unused:
         return out
     listed = anki_miner.profiles(path)
@@ -532,6 +550,7 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
                 out["answer"] = (SETUP_FAILED, NO_OWN_PROFILE)
                 return out
             name, there = own
+            out["profile_name"] = name
             if there is None:
                 profile = anki_miner.settings_import(path, language, values, folder, name=name).get("profile")
                 out["said"] += SAID_PROFILE.format(name=name)
@@ -555,12 +574,25 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
         return out
     deck, note = values.get("anki_deck_name"), values.get("anki_note_type")
     language_name = LANGUAGE_NAMES.get(language, language)
+    said = ""
     if deck and note:
-        out["said"] = SAID_WHERE.format(language=language_name, deck=deck, note=note) + out["said"]
+        said = SAID_WHERE.format(language=language_name, deck=deck, note=note)
     elif deck:
-        out["said"] = SAID_DECK.format(language=language_name, deck=deck) + out["said"]
+        said = SAID_DECK.format(language=language_name, deck=deck)
     elif note:
-        out["said"] = SAID_NOTE.format(language=language_name, note=note) + out["said"]
+        said = SAID_NOTE.format(language=language_name, note=note)
+    mapped = values.get("anki_fields") or {}
+    before = str((export.get("settings") or {}).get("anki_note_type") or "")
+    if note and note != before and note.strip().casefold() not in PRESETS and mapped.get("word") and \
+            mapped.get("sentence"):
+        said += SAID_FIELDS.format(note=note, word=mapped["word"], sentence=mapped["sentence"])
+    if values.get("card_type") == "":
+        said += SAID_CARD_TYPE.format(note=note)
+    if values.get("pitch_category_format") == "romaji":
+        said += SAID_PITCH.format(note=note)
+    if address:
+        said += SAID_ADDRESS.format(url=values["ankiconnect_url"])
+    out["said"] = said + out["said"]
     return out
 
 
@@ -576,75 +608,132 @@ def finish_setup(settings, language, on_progress=None, chosen=None, save=None):
     its progress file moves. -> (result, detail): "set-up" (detail: what it set, or None) · "busy" (Anki Miner running,
     a Connect run, an install or another setup) · "failed" with Anki Miner's words · "rest" (still missing what Surasura can't set, named) · "ask"
     with `miner_settings.plan`'s choices (the rest done meanwhile) · "ready" (nothing to set up: its check found nothing
-    missing) · "missing"."""
+    missing) · "missing". A5F2: the profile Connect's setting names, made first when Anki Miner lacks it (`setup`'s
+    `anki_miner_profile` marked `make`); its AnkiConnect address set when it can't reach the Anki Surasura reaches —
+    then, what that hid (the deck, note type, fields) set in a second pass of the same press."""
     if not _ONE_INSTALL.acquire(blocking=False):
         return BUSY, None
+    made = ""                       # the profile made this press: said on every way out (review)
     try:
         if _busy():
             return BUSY, None
-        from app.connect import anki_miner, setup
+        from app.connect import setup
         result = setup.checks(settings, language, keep=False)
-        found = result.get("anki_miner") or {}
-        by_id = {c.get("id"): c for c in result.get("checks") or () if isinstance(c, dict)}
-        if not found.get("path"):
-            return "missing", None
-        check = by_id.get("anki_miner_setup") or {}
-        if not check.get("setup"):
-            return "ready", None
-        items = set(check.get("items") or anki_miner.SETUP_ITEMS)
-        from app import path_utils
-        folder = os.path.join(path_utils.get_local_data_path(), SETUP_STAGING)
-        os.makedirs(folder, exist_ok=True)
-        progress = os.path.join(folder, "progress.json")
-
-        def poll():
-            if on_progress is None:
-                return
-            try:
-                with open(progress, encoding="utf-8") as f:
-                    state = json.load(f)
-            except (OSError, ValueError):
-                return
-            on_progress(state.get("stage") or 0, state.get("stages") or 0, state.get("item"))
-        if save is None:
-            from app import settings_manager
-            save = lambda changes: settings_manager.save_keys(changes, strict=True)   # noqa: E731
-        try:
-            wrote = _write_settings(found, settings, language, items, folder, chosen, save)
-            answer, settings = wrote["answer"], wrote["settings"]
-            if answer is not None and answer[0] == SETUP_FAILED:
+        wanted = ({c.get("id"): c for c in result.get("checks") or () if isinstance(c, dict)}
+                  .get("anki_miner_profile") or {}).get("make")
+        if wanted and (result.get("anki_miner") or {}).get("path"):
+            answer = _make_profile(result["anki_miner"]["path"], language, wanted)
+            if answer is not None:
                 return answer
-            if items & anki_miner.SETUP_ITEMS:
-                anki_miner.run_setup(found["path"], language, wrote["profile"], progress, on_poll=poll)
-            if answer is not None:          # the deck or note type to choose: asked once the rest is done
-                said = wrote["said"].strip()                # what this press set is said with it (review round 2)
-                if answer[0] == ASK and not answer[1].get("deck") and not answer[1].get("note_type"):
-                    answer = (SET_UP_REST, NO_NOTE_TYPE)    # nothing Anki Miner can fill to offer: said, never a loop
-                if answer[0] == ASK:
-                    return ASK, dict(answer[1], said=said)
-                return answer[0], " ".join(filter(None, (answer[1], said)))
-        except anki_miner.AnkiMinerError as e:
-            if e.kind == "busy":
-                return BUSY, None
-            if e.kind == "refused":         # review A2-5: a language this Anki Miner profile never mined
-                return SETUP_FAILED, SETUP_REFUSED
-            return SETUP_FAILED, e.message
-        finally:
-            shutil.rmtree(folder, ignore_errors=True)
-        # review A2-3: finished is what its check says now — a resource its setup never reinstalls (one you imported
-        # yourself) still missing is named, never "finished"
-        again = {c.get("id"): c for c in setup.checks(settings, language, keep=False).get("checks") or ()
-                 if isinstance(c, dict)}.get("anki_miner_setup") or {}
-        said = wrote["said"].strip()        # what it set, said on every way out (intent keeper, alpha 5)
-        if again.get("setup"):
-            return SETUP_FAILED, " ".join(filter(None, (SETUP_STILL.format(say=again.get("say") or ""), said)))
-        if again.get("state") == "needs-you":           # round 2 R2-7: its dictionaries in, a deck still to choose
-            return SET_UP_REST, " ".join(filter(None, (again.get("say") or "", said)))
-        return SET_UP, said or None
+            made = SAID_MADE.format(name=wanted)
+            result = setup.checks(settings, language, keep=False)
+            still = {c.get("id"): c for c in result.get("checks") or () if isinstance(c, dict)}.get(
+                "anki_miner_profile") or {}
+            if still.get("state") != "ok":      # review: made, yet Connect still can't find it — never "set up"
+                return SETUP_FAILED, " ".join(filter(None, (still.get("say") or "",
+                                                            SAID_MADE_UNSEEN.format(name=wanted).strip())))
+        answer = _finish(settings, language, result, on_progress, chosen, save, made)
+        if answer[0] == "ready" and made:   # the profile was all it lacked
+            return SET_UP, made.strip()
+        return answer
     except Exception as e:          # never raises: the page says it didn't finish
-        return SETUP_FAILED, str(e)
+        return SETUP_FAILED, " ".join(filter(None, (str(e), made.strip())))
     finally:
         _ONE_INSTALL.release()
+
+
+def _make_profile(path, language, name):
+    """A5F2: the Anki Miner profile Surasura's setting names (`connect_anki_miner_profile`), made with Anki Miner's
+    own `settings-import` as a copy of the profile its window uses, mining `language` -> None when made, else the
+    press's answer ("busy", or "failed" with its words)."""
+    from app import path_utils
+    from app.connect import anki_miner
+    folder = os.path.join(path_utils.get_local_data_path(), SETUP_STAGING)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        anki_miner.settings_import(path, language, {}, folder, name=name)
+        return None
+    except anki_miner.AnkiMinerError as e:
+        return (BUSY, None) if e.kind == "busy" else (SETUP_FAILED, e.message)
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _finish(settings, language, result, on_progress, chosen, save, said_before="", again_ok=True):
+    """One pass of `finish_setup` from `setup.checks`' `result` (the lock held) -> (result, detail). `said_before`:
+    what this press set already (a profile made, the first pass's address), said with the end."""
+    from app.connect import anki_miner, setup
+    found = result.get("anki_miner") or {}
+    by_id = {c.get("id"): c for c in result.get("checks") or () if isinstance(c, dict)}
+    if not found.get("path"):
+        return "missing", said_before.strip() or None
+    check = by_id.get("anki_miner_setup") or {}
+    if not check.get("setup"):
+        return "ready", None
+    items = set(check.get("items") or anki_miner.SETUP_ITEMS)
+    from app import path_utils
+    folder = os.path.join(path_utils.get_local_data_path(), SETUP_STAGING)
+    os.makedirs(folder, exist_ok=True)
+    progress = os.path.join(folder, "progress.json")
+
+    def poll():
+        if on_progress is None:
+            return
+        try:
+            with open(progress, encoding="utf-8") as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            return
+        on_progress(state.get("stage") or 0, state.get("stages") or 0, state.get("item"))
+    if save is None:
+        from app import settings_manager
+        save = lambda changes: settings_manager.save_keys(changes, strict=True)   # noqa: E731
+    wrote = {"said": said_before}       # what this press set so far: said on every way out (review)
+    try:
+        wrote = _write_settings(found, settings, language, items, folder, chosen, save)
+        answer, settings = wrote["answer"], wrote["settings"]
+        wrote["said"] = said_before + wrote["said"]
+        if answer is not None and answer[0] == SETUP_FAILED:
+            return answer[0], " ".join(filter(None, (answer[1], wrote["said"].strip())))
+        if items & anki_miner.SETUP_ITEMS:
+            anki_miner.run_setup(found["path"], language, wrote["profile"], progress, on_poll=poll)
+            language_name = LANGUAGE_NAMES.get(language, language)     # A5F4: where its setup switched them on
+            if any(w in wrote["said"] for w in ("Anki Miner profile", "profile “")):   # said already in this line
+                wrote["said"] += SAID_DICTS_SHORT.format(language=language_name)
+            elif wrote.get("profile_name"):
+                wrote["said"] += SAID_DICTS.format(language=language_name, name=wrote["profile_name"])
+            else:
+                wrote["said"] += SAID_DICTS_CURRENT.format(language=language_name)
+        if answer is not None:          # the deck or note type to choose: asked once the rest is done
+            said = wrote["said"].strip()                # what this press set is said with it (review round 2)
+            if answer[0] == ASK and not answer[1].get("deck") and not answer[1].get("note_type"):
+                answer = (SET_UP_REST, NO_NOTE_TYPE)    # nothing Anki Miner can fill to offer: said, never a loop
+            if answer[0] == ASK:
+                return ASK, dict(answer[1], said=said)
+            return answer[0], " ".join(filter(None, (answer[1], said)))
+    except anki_miner.AnkiMinerError as e:
+        set_ = wrote["said"].strip()    # review: what this press set already is said on every way out
+        if e.kind == "busy":
+            return BUSY, set_ or None
+        if e.kind == "refused":         # review A2-5: a language this Anki Miner profile never mined
+            return SETUP_FAILED, " ".join(filter(None, (SETUP_REFUSED, set_)))
+        return SETUP_FAILED, " ".join(filter(None, (e.message, set_)))
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+    # review A2-3: finished is what its check says now — a resource its setup never reinstalls (one you imported
+    # yourself) still missing is named, never "finished"
+    again = setup.checks(settings, language, keep=False)
+    left = {c.get("id"): c for c in again.get("checks") or () if isinstance(c, dict)}.get("anki_miner_setup") or {}
+    said = wrote["said"].strip()        # what it set, said on every way out (intent keeper, alpha 5)
+    if left.get("setup") and again_ok and "anki" in items and set(left.get("items") or ()) - items:
+        # A5F2: Anki Miner reaches Anki now, and its check names what Anki's being out of reach hid (the deck…):
+        # set in the same press
+        return _finish(settings, language, again, on_progress, chosen, save, wrote["said"], again_ok=False)
+    if left.get("setup"):
+        return SETUP_FAILED, " ".join(filter(None, (SETUP_STILL.format(say=left.get("say") or ""), said)))
+    if left.get("state") == "needs-you":           # round 2 R2-7: its dictionaries in, a deck still to choose
+        return SET_UP_REST, " ".join(filter(None, (left.get("say") or "", said)))
+    return SET_UP, said or None
 
 
 def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):

@@ -152,7 +152,8 @@ def miner_result(state="missing"):
     checks = [{"id": "anki_miner", "state": "ok", "say": "Anki Miner is installed."},
               {"id": "anki_miner_version", "state": "ok", "say": "Anki Miner 3.7.0."}]
     if state == "setup":
-        checks.append({"id": "anki_miner_profile", "state": "needs-you",
+        # before 3.7 (setup.py marks it `update`: the steps by hand follow the update, A5F2)
+        checks.append({"id": "anki_miner_profile", "state": "needs-you", "update": True,
                        "say": "Anki Miner has no profile named Surasura yet."})
     else:
         checks.append({"id": "anki_miner_profile", "state": "ok", "say": "Mining with the Surasura profile."})
@@ -491,8 +492,29 @@ def test_needs_setup_names_the_missing_piece_and_the_two_steps_with_copy_path(wo
     QTest.mouseClick(card.copy, Qt.MouseButton.LeftButton)
     assert QApplication.clipboard().text() == anki_miner.whitelist_path("ja")
     assert world.bar.lines[-1] == S.PATH_COPIED
-    assert card.open_miner.isVisibleTo(page) and not card.install.isVisibleTo(page)
+    # A5F2: the update first — Install, worded as the update (the same route), beside the steps by hand
+    assert card.open_miner.isVisibleTo(page) and card.install.isVisibleTo(page)
+    assert card.install.text() == S.UPDATE_MINER_BUTTON and card.install.toolTip() == S.UPDATE_MINER_BUTTON_TIP
     assert not card.star_line.isVisibleTo(page)
+
+
+def test_what_only_an_update_brings_offers_the_update_never_the_steps_by_hand(world):
+    """A5F2: an Anki Miner whose setup needs what only its installer brings (an older one, its ffmpeg): the update,
+    worded so, and no steps in Anki Miner's window; a profile check Surasura sets itself shows no steps either."""
+    from app.connect import setup as connect_setup
+    result = miner_result("ready")
+    result["checks"][-1] = {"id": "anki_miner_setup", "state": "needs-you", "update": True,
+                            "say": "Anki Miner's own setup isn't finished (ffmpeg: not found).",
+                            "do": connect_setup.UPDATE_DO}
+    result["checks"][2] = {"id": "anki_miner_profile", "state": "needs-you", "setup": True, "make": "字幕",
+                           "say": connect_setup.PROFILE_SAY.format(name="字幕"), "do": connect_setup.PROFILE_DO}
+    world.miner = result
+    page, store, rows, _fake = make(world)
+    card = rows.miner
+    assert card.words.text() == "Installed 3.7.0 — needs setup"
+    assert not card.steps.isVisibleTo(page), "never the steps in Anki Miner's window"
+    assert card.install.isVisibleTo(page) and card.install.text() == S.UPDATE_MINER_BUTTON
+    assert card.finish_setup.isVisibleTo(page), "the profile Surasura makes: Finish its setup"
 
 
 def test_ready_offers_the_star_until_not_now_which_is_kept_in_local_data_never_settings(world):

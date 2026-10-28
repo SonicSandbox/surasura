@@ -22,6 +22,9 @@ def _checks(*states, version="3.6.0"):
             "anki_miner_profile": "Anki Miner has no profile named Surasura yet.",
             "anki_miner_setup": "Anki Miner's own setup isn't finished (deck: not chosen)."}
     checks = [{"id": i, "state": s, "say": says[i] if s != "ok" else "fine"} for i, s in zip(ids, states)]
+    for c in checks:            # an Anki Miner before 3.7 lacking its "Surasura" profile: the update first (setup.py)
+        if c["id"] == "anki_miner_profile" and c["state"] == "needs-you":
+            c["update"] = True
     found = {"path": "C:\\Programs\\AnkiMiner\\AnkiMiner.exe", "app": version} if states[0] == "ok" else None
     return {"checks": checks, "anki_miner": found}
 

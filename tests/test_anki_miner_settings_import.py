@@ -335,7 +335,8 @@ def test_a_value_anki_miner_refused_is_named_never_taken_as_set(api, tmp_path):
     answer["result"] = {"profile": "surasura-1", "created": False, "invalid_fields": ["anki_fields"]}
     with pytest.raises(anki_miner.AnkiMinerError) as e:
         anki_miner.settings_import(MINER, "ja", {"anki_fields": {}}, str(tmp_path), profile="surasura-1")
-    assert e.value.kind == "refused" and "anki_fields" in e.value.message
+    # A5F4: said in plain words, never the internal key
+    assert e.value.kind == "refused" and "the fields" in e.value.message and "anki_fields" not in e.value.message
 
 
 @pytest.mark.parametrize("error, kind", [("BUSY", "busy"), ("BAD_ARGUMENTS", "refused"),
@@ -378,10 +379,12 @@ def test_a_never_mined_language_needs_both_and_is_said_as_one_step(monkeypatch):
     assert "dictionary" in check["items"] and "deck" in check["items"]
 
 
-def test_an_anki_miner_without_settings_import_still_names_its_own_window(monkeypatch):
-    """Before Z-3 Surasura can't set a deck: the old words, and no Finish its setup that would do nothing."""
+def test_an_anki_miner_without_settings_import_is_updated_from_surasura_never_opened(monkeypatch):
+    """Before Z-3 Surasura can't set a deck: no Finish its setup that would do nothing, and never Anki Miner's window
+    (A5F2, Sonic: "I never want to open Anki Miner. Ever."): Surasura's own update, marked for its button."""
     check = _checked(monkeypatch, ["setup"], ["deck", "note_type"])
-    assert not check.get("setup") and "Open Anki Miner" in check["do"]
+    assert not check.get("setup") and check["do"] == setup.UPDATE_DO and check["update"] is True
+    assert "Open Anki Miner" not in check["do"]
 
 
 # --- services.anki_miner_setup.finish_setup with settings-import ------------------------------------------------- #
@@ -401,7 +404,8 @@ def world(monkeypatch, tmp_path):
         else:
             check = setup._check("anki_miner_setup", "needs-you", "Anki Miner doesn't know …", setup.BOTH_DO)
             check.update(setup=True, items=list(state["items"]))
-        return {"checks": [check], "anki_miner": {"path": MINER, "profile": state["profile"],
+        called = next((p["name"] for p in state["profiles"] if p["id"] == state["profile"]), None)
+        return {"checks": [check], "anki_miner": {"path": MINER, "profile": state["profile"], "profile_name": called,
                                                   "features": ["setup", "settings-import"]}}
 
     def settings_export(path, language, out, profile=None):
@@ -554,7 +558,7 @@ def test_an_export_that_doesnt_say_configured_is_never_taken_as_a_new_language(w
     """An Anki Miner whose export leaves `configured` out: nothing is written for a language it may well know."""
     world["items"] = ["dictionary"]
     monkeypatch.setattr(anki_miner, "settings_export", lambda path, language, out, profile=None: {"settings": FRESH})
-    assert M.finish_setup(ZH, "zh") == (M.SET_UP, None)
+    assert M.finish_setup(ZH, "zh") == (M.SET_UP, M.SAID_DICTS.format(language="Chinese", name="Default").strip())
     assert world["imports"] == [] and world["runs"] == [("zh", "default")]
 
 
@@ -589,7 +593,7 @@ def test_written_but_still_wrong_is_never_called_finished(world):
 
 def test_a_language_already_mined_with_its_deck_right_writes_nothing(world):
     world["configured"], world["items"] = True, ["dictionary"]
-    assert M.finish_setup(ZH, "zh") == (M.SET_UP, None)
+    assert M.finish_setup(ZH, "zh") == (M.SET_UP, M.SAID_DICTS.format(language="Chinese", name="Default").strip())
     assert world["imports"] == [] and world["runs"] == [("zh", "default")]
 
 
@@ -627,3 +631,183 @@ def test_the_verbs_busy_code_names_the_setup_too(local):
     local.mkdir()
     assert runner._wait_or_needs(CliError("anki-miner-busy", "Anki Miner is busy"), "mining").reason == \
         runner.SETTING_UP
+
+
+# --- alpha 5 follow-ups: nothing left that sends you to Anki Miner's window (A5F2), what a write changed said (A5F4) #
+def test_a_profile_surasuras_setting_names_that_anki_miner_lacks_is_made_by_finish_its_setup(world, monkeypatch):
+    """A5F2: Surasura's setting names a profile Anki Miner doesn't have: *Finish its setup* makes it (settings-import
+    --name, a copy of the window's profile, mining this language) — never "make it in Anki Miner"."""
+    def checks(settings, language, keep=True):
+        if not world["imports"]:
+            profile = setup._check("anki_miner_profile", "needs-you", setup.PROFILE_SAY.format(name="字幕"),
+                                   setup.PROFILE_DO)
+            profile.update(setup=True, make="字幕")
+            rest = setup._check("anki_miner_setup", "not-checked", "Checked once Connect has an Anki Miner profile.")
+            return {"checks": [profile, rest], "anki_miner": {"path": MINER, "features": ["settings-import"]}}
+        return {"checks": [setup._check("anki_miner_profile", "ok", 'Connect makes cards with "字幕".'),
+                           setup._check("anki_miner_setup", "ok", "Anki Miner's own setup is finished.")],
+                "anki_miner": {"path": MINER, "profile": "surasura-1", "profile_name": "字幕"}}
+    monkeypatch.setattr(setup, "checks", checks)
+    assert M.finish_setup(ZH, "zh") == (M.SET_UP, M.SAID_MADE.format(name="字幕").strip())
+    assert world["imports"] == [{"language": "zh", "values": {}, "name": "字幕", "profile": None}]
+    assert world["runs"] == [] and world["saved"] == [], "its name is already the setting's"
+
+
+def test_a_profile_anki_miner_is_too_busy_to_make_is_busy_and_nothing_else_runs(world, monkeypatch):
+    profile = setup._check("anki_miner_profile", "needs-you", "…", setup.PROFILE_DO)
+    profile.update(setup=True, make="字幕")
+    monkeypatch.setattr(setup, "checks", lambda settings, language, keep=True: {
+        "checks": [profile], "anki_miner": {"path": MINER}})
+    world["import_raises"] = anki_miner.AnkiMinerError("busy", "Anki Miner's window is open.")
+    assert M.finish_setup(ZH, "zh") == (M.BUSY, None)
+    assert world["runs"] == []
+
+
+def test_an_address_anki_miner_cant_reach_anki_at_is_set_then_what_it_hid_in_the_same_press(world, monkeypatch):
+    """A5F2: Anki Miner can't reach the Anki Surasura reaches: Surasura's own address is written (never "check Anki
+    Miner's AnkiConnect address"); its check then names the deck that Anki's being out of reach hid, set in a second
+    pass of the same press — one press, never "it ran, but Anki Miner still says"."""
+    world["configured"], world["profile"] = True, "surasura-1"
+    world["profiles"] = [{"id": "default", "name": "Default", "active": True},
+                         {"id": "surasura-1", "name": "Surasura", "active": False}]
+
+    def checks(settings, language, keep=True):
+        if not world["imports"]:
+            check = setup._check("anki_miner_setup", "needs-you", setup.ADDRESS_SAY, setup.ADDRESS_DO)
+            check.update(setup=True, items=["anki"])
+        elif len(world["imports"]) == 1:
+            check = setup._check("anki_miner_setup", "needs-you", "Anki Miner doesn't know …", setup.SETTINGS_DO)
+            check.update(setup=True, items=["deck"])
+        else:
+            check = setup._check("anki_miner_setup", "ok", "Anki Miner's own setup is finished.")
+        return {"checks": [check], "anki_miner": {"path": MINER, "profile": "surasura-1", "profile_name": "Surasura",
+                                                  "features": ["setup", "settings-import"]}}
+    monkeypatch.setattr(setup, "checks", checks)
+    result, said = M.finish_setup(dict(ZH, anki_connect_url="http://127.0.0.1:8766"), "zh")
+    assert result == M.SET_UP
+    assert [i["values"] for i in world["imports"]] == [{"ankiconnect_url": "http://127.0.0.1:8766"},
+                                                       {"anki_deck_name": "中文::句子"}]
+    assert said == (M.SAID_ADDRESS.format(url="http://127.0.0.1:8766")
+                    + M.SAID_DECK.format(language="Chinese", deck="中文::句子")).strip()
+    assert "Check Anki Miner" not in said and world["runs"] == []
+
+
+def test_a_second_pass_happens_once_never_a_loop(world, monkeypatch):
+    # each pass's check still names Anki's address and something new: a third pass would follow but for `again_ok`
+    def checks(settings, language, keep=True):
+        check = setup._check("anki_miner_setup", "needs-you", "Anki Miner doesn't know …", setup.SETTINGS_DO)
+        check.update(setup=True, items=[["anki"], ["anki", "deck"], ["anki", "deck", "note_type"]][
+            min(len(world["imports"]), 2)])
+        return {"checks": [check], "anki_miner": {"path": MINER, "profile": "surasura-1", "profile_name": "Surasura",
+                                                  "features": ["settings-import"]}}
+    world["configured"] = True
+    world["profiles"] = [{"id": "default", "name": "Default", "active": True},
+                         {"id": "surasura-1", "name": "Surasura", "active": False}]
+    monkeypatch.setattr(setup, "checks", checks)
+    result, _said = M.finish_setup(ZH, "zh")
+    assert result == M.SETUP_FAILED and len(world["imports"]) == 2, "still wrong after the second pass: said, no third"
+
+
+def test_a_note_type_set_alone_is_said_as_the_note_type(world):
+    """A5F5 (mutant M45: `elif note:`): only the note type was wrong — the done line names it."""
+    world["configured"], world["items"], world["profile"] = True, ["note_type"], "surasura-1"
+    world["profiles"] = [{"id": "default", "name": "Default", "active": True},
+                         {"id": "surasura-1", "name": "Surasura", "active": False}]
+    world["anki"] = Anki(["Anki Miner", "中文::句子"], {"Basic": BASIC, "Lapis": LAPIS}, {"Anki Miner": "Lapis"})
+    result, said = M.finish_setup(ZH, "zh")
+    assert result == M.SET_UP and said.startswith(M.SAID_NOTE.format(language="Chinese", note="Lapis").strip())
+    assert "go in" not in said, "the deck wasn't set, so it isn't said"
+
+
+def test_a_note_type_anki_miner_has_no_preset_for_says_its_fields_and_what_else_changed(world, monkeypatch):
+    """A5F4: a custom note type — the word and sentence fields Surasura matched by name are said; a card-type mark
+    the note type has no field for, cleared, is said; never silently."""
+    world["configured"], world["items"], world["profile"] = True, ["note_type", "fields"], "surasura-1"
+    world["profiles"] = [{"id": "default", "name": "Default", "active": True},
+                         {"id": "surasura-1", "name": "Surasura", "active": False}]
+    mine = ["単語", "Sentence", "Picture", "Notes"]
+    world["anki"] = Anki(["Anki Miner"], {"Basic": BASIC, "マイ単語": mine}, {"Anki Miner": "マイ単語"})
+    exported = dict(FRESH, anki_note_type="Lapis", card_type="sentence",
+                    card_type_marker_fields={"sentence": "IsSentenceCard"})
+    monkeypatch.setattr(anki_miner, "settings_export",
+                        lambda path, language, out, profile=None: {"configured": True, "settings": exported})
+    result, said = M.finish_setup(ZH, "zh")
+    assert result == M.SET_UP
+    assert M.SAID_FIELDS.format(note="マイ単語", word="単語", sentence="Sentence").strip() in said
+    assert M.SAID_CARD_TYPE.format(note="マイ単語").strip() in said
+    assert world["imports"][0]["values"]["card_type"] == ""
+
+
+def test_a_preset_note_type_needs_no_field_saying_but_its_romaji_pitch_is_said(world):
+    result, said = M.finish_setup(ZH, "zh")
+    assert result == M.SET_UP and "matched its fields" not in said
+    assert M.SAID_PITCH.format(note="Lapis").strip() in said
+
+
+def test_a_refusal_names_what_it_refused_in_plain_words_even_several(monkeypatch, tmp_path):
+    """A5F4: never an internal key name; a key Surasura never writes still said in words."""
+    monkeypatch.setattr(anki_miner, "api", lambda path, args, **kw: {
+        "schema": 1, "ok": True, "result": {"profile": "p", "created": False,
+                                            "invalid_fields": ["anki_deck_name", "subtitle_regex_filter"]}})
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        anki_miner.settings_import(MINER, "ja", {"anki_deck_name": "x"}, str(tmp_path), profile="p")
+    assert e.value.message == "Anki Miner didn't take the deck or one of its other settings from Surasura."
+
+
+def test_a_profile_made_that_connect_still_cant_find_is_never_called_set_up(world, monkeypatch):
+    """Review: the profile check read again after the make must find it; else said, with what was done."""
+    profile = setup._check("anki_miner_profile", "needs-you", setup.PROFILE_SAY.format(name="字幕 "), setup.PROFILE_DO)
+    profile.update(setup=True, make="字幕 ")
+    monkeypatch.setattr(setup, "checks", lambda settings, language, keep=True: {
+        "checks": [profile], "anki_miner": {"path": MINER, "features": ["settings-import"]}})
+    result, said = M.finish_setup(ZH, "zh")
+    assert result == M.SETUP_FAILED and said.startswith(setup.PROFILE_SAY.format(name="字幕 "))
+    assert M.SAID_MADE_UNSEEN.format(name="字幕 ").strip() in said and len(world["imports"]) == 1
+    assert "makes cards with it" not in said, "never a success line on a failure"
+
+
+def test_what_a_press_set_is_said_when_anki_miner_turns_busy_after(world, monkeypatch):
+    """Review: a profile made, then Anki Miner busy — the answer still names the profile."""
+    calls = []
+
+    def checks(settings, language, keep=True):
+        calls.append(1)
+        if len(calls) == 1:
+            profile = setup._check("anki_miner_profile", "needs-you", "…", setup.PROFILE_DO)
+            profile.update(setup=True, make="字幕")
+            return {"checks": [profile], "anki_miner": {"path": MINER, "features": ["settings-import"]}}
+        check = setup._check("anki_miner_setup", "needs-you", "…", setup.SETTINGS_DO)
+        check.update(setup=True, items=["deck"])
+        return {"checks": [setup._check("anki_miner_profile", "ok", "ok"), check],
+                "anki_miner": {"path": MINER, "profile": "surasura-1", "profile_name": "字幕"}}
+
+    def busy(*a, **k):
+        raise anki_miner.AnkiMinerError("busy", "Anki Miner's window is open.")
+    monkeypatch.setattr(setup, "checks", checks)
+    monkeypatch.setattr(anki_miner, "settings_export", busy)
+    assert M.finish_setup(ZH, "zh") == (M.BUSY, M.SAID_MADE.format(name="字幕").strip())
+
+
+def test_a_deck_written_then_a_download_that_fails_still_says_the_deck(world):
+    """Review (Haiku): the deck was written, then Anki Miner's own setup failed part-way — the deck is said too."""
+    world["configured"], world["items"], world["profile"] = True, ["deck", "dictionary"], "surasura-1"
+    world["profiles"] = [{"id": "default", "name": "Default", "active": True},
+                         {"id": "surasura-1", "name": "Surasura", "active": False}]
+
+    def failed(path, language, profile, progress_path, on_poll=None):
+        raise anki_miner.AnkiMinerError("failed", "Anki Miner's setup didn't finish — JMdict: no space")
+    import app.connect.anki_miner as am
+    am_run = am.run_setup
+    am.run_setup = failed
+    try:
+        result, said = M.finish_setup(ZH, "zh")
+    finally:
+        am.run_setup = am_run
+    assert result == M.SETUP_FAILED and said.startswith("Anki Miner's setup didn't finish")
+    assert M.SAID_DECK.format(language="Chinese", deck="中文::句子").strip() in said
+
+
+def test_a_profile_said_in_the_line_is_not_named_again_with_the_dictionaries(world):
+    result, said = M.finish_setup(ZH, "zh")      # Surasura's own profile made: its name is said once
+    assert result == M.SET_UP and said.count("“Surasura”") == 1
+    assert M.SAID_DICTS_SHORT.format(language="Chinese").strip() in said

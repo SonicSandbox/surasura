@@ -568,7 +568,15 @@ class MinerCard(QWidget):
         """Not installed (or not checked): Install with the star line beside it, Browse…; installed: Open Anki Miner,
         and the ⭐ suggestion until answered, then the small link. Check again always."""
         missing = state in (None, "missing")
-        self.install.setVisible(missing)
+        # A5F2: what only Anki Miner's installer brings → Install, worded as the update: Surasura's own route, shown
+        # beside the "Anki Miner X is out" notice too (that one opens its page in the browser; review)
+        update = not missing and bool((self.state or {}).get("update"))
+        text, tip = (S.UPDATE_MINER_BUTTON, S.UPDATE_MINER_BUTTON_TIP) if update else (S.INSTALL_MINER,
+                                                                                         S.INSTALL_MINER_TIP)
+        if self.install.text() != text:
+            self.install.setText(text)
+            self.install.setToolTip(tip)
+        self.install.setVisible(missing or update)
         self.star_line.setVisible(missing)
         self.browse.setVisible(missing)
         self.open_miner.setVisible(not missing)

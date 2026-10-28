@@ -17,6 +17,8 @@ DEFAULT_SETTINGS = {
     "strategy": "freq",
     "target_coverage": 90,
     "split_length": 3000,
+    # how an EPUB is cut into parts when it is added: "chapters" (its TOC's, else its heading lines') or "even"
+    "split_books_by": "chapters",
     "target_language": "ja",
     # Chinese only: read the whole library as "s" (Simplified) or "t" (Traditional); "asis" leaves
     # every file's script as written. Files are never converted on disk (app/zh_script.py).

@@ -899,6 +899,38 @@ def test_A4M1_2b_a_choice_asked_for_one_language_never_shows_after_a_switch_to_t
     assert page.ask_part.isHidden(), "Japanese decks are never offered for Chinese"
 
 
+def test_A4M1_2b_a_busy_answer_keeps_the_choice_and_an_ask_says_what_was_set(make):
+    """Intent keeper (alpha 5): a press answered "busy" (Connect was running) keeps the deck the learner chose on the
+    page for the next press; an "ask" says, in the bar, what that press already set."""
+    import threading
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner doesn't know where your Japanese cards go yet (deck: not found).",
+           "do": connect_setup.SETTINGS_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    made = " Surasura made its own Anki Miner profile, “Surasura”, a copy of yours, and makes cards with it."
+    answers = [("ask", {"deck": ["日本語::Mining", "Default"], "note_type": None, "why": None, "said": made.strip()}),
+               ("busy", None)]
+    calls = []
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
+        calls.append(chosen)
+        return answers[len(calls) - 1]
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, *_ = make(miner=miner)
+    said = []
+    wiz.say = said.append
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: not page.ask_part.isHidden() and not wiz.setting_up)
+    assert said[-1] == S.SETUP_SAID["ask"].format(detail=made)
+    page.ask_deck.setCurrentIndex(1)
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(calls) == 2 and not wiz.setting_up)
+    assert not page.ask_part.isHidden() and page.ask_deck.currentText() == "Default", "busy: the choice stays"
+
+
 # --- 6 · your list ----------------------------------------------------------------------------------------------------------- #
 _PER_BAND = {"core": (120, 81.0, 0.5), "common": (380, 90.2, 1.4), "occasional": (812, 96.1, 3.2),
              "uncommon": (1430, 97.4, 5.5), "rare": (2210, 98.2, 8.0), "very_rare": (3300, 98.9, None),

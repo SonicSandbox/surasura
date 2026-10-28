@@ -243,6 +243,37 @@ def test_a_deck_chosen_is_kept_while_the_note_type_is_asked_next():
     assert what == "ask" and asked["note_type"] == ["Lapis"] and asked["values"] == {"anki_deck_name": "中文::句子"}
 
 
+def test_a_note_type_picked_after_no_sentence_field_is_taken_when_only_the_fields_fail():
+    """Review round 2: the profile's note type is in Anki but has no Sentence field, so only `fields` fails; the
+    learner's pick on the page is taken on the next press — never the same question again and again."""
+    anki = Anki(["日本語::Mining"], {"Basic": BASIC, "Lapis": LAPIS}, {"日本語::Mining": "Basic"})
+    current = {"anki_deck_name": "日本語::Mining", "anki_note_type": "Basic", "anki_fields": DEFAULT_FIELDS}
+    what, asked = MS.plan(JA, "ja", current, {"fields"}, anki)
+    assert what == "ask" and asked["why"] == "fields" and asked["note_type"] == ["Lapis"]
+    what, values = MS.plan(JA, "ja", current, {"fields"}, anki, {"note_type": "Lapis"})
+    assert what == "write" and values["anki_note_type"] == "Lapis" and values["anki_fields"]["sentence"] == "Sentence"
+
+
+def test_the_same_note_type_keeps_a_role_left_empty_when_its_fields_are_set_again():
+    """Through `plan` (mutant M31): a field gone from the same note type is mapped again, while a role the learner left
+    empty (word audio) stays off; a new note type fills it."""
+    current = {"anki_deck_name": "日本語::Mining", "anki_note_type": "Lapis",
+               "anki_fields": dict(DEFAULT_FIELDS, source="Gone")}
+    anki = Anki(["日本語::Mining"], {"Lapis": LAPIS, "Lapis 2": LAPIS}, {"日本語::Mining": "Lapis"})
+    what, values = MS.plan(JA, "ja", current, {"fields"}, anki)
+    assert what == "write" and values["anki_fields"]["source"] == "MiscInfo"
+    assert values["anki_fields"]["expression_audio"] == ""
+    _what, moved = MS.plan(JA, "ja", current, {"fields"}, anki, {"note_type": "Lapis 2"})
+    assert moved["anki_fields"]["expression_audio"] == "ExpressionAudio"
+
+
+def test_a_profile_map_with_no_sentence_role_still_finds_the_sentence_field():
+    """Review round 2: an Anki Miner map that names no sentence role is never read as "no Sentence field"."""
+    fields = MS.fields_for(LAPIS, {"word": "Expression", "definition": "MainDefinition"})
+    assert fields is not None and fields["sentence"] == "Sentence"
+    assert MS.fields_for(LAPIS, {}, fill=False)["sentence"] == "Sentence"
+
+
 def test_a_note_type_gone_from_anki_is_replaced_when_only_its_fields_fail():
     anki = Anki(["日本語::Mining"], {"Lapis": LAPIS}, {"日本語::Mining": "Lapis"})
     current = {"anki_deck_name": "日本語::Mining", "anki_note_type": "Lapis (old)", "anki_fields": DEFAULT_FIELDS}
@@ -450,19 +481,33 @@ def test_surasuras_own_profile_made_before_is_updated_when_the_window_uses_the_n
     world["profiles"] = [{"id": "p-1", "name": "Mining", "active": True},
                          {"id": "surasura-1", "name": "Surasura", "active": False}]
     saved = []
-    result, _said = M.finish_setup(dict(ZH, connect_anki_miner_profile="Mining"), "zh", save=saved.append)
+    result, said = M.finish_setup(dict(ZH, connect_anki_miner_profile="Mining"), "zh", save=saved.append)
     assert result == M.SET_UP and [(i["name"], i["profile"]) for i in world["imports"]] == [(None, "surasura-1")]
     assert saved == [{"connect_anki_miner_profile": "Surasura"}]
+    assert "profile “Surasura” from now on" in said, "Connect moved to it: said, never silent (intent keeper)"
 
 
-def test_a_name_that_couldnt_be_saved_is_said_and_its_setup_never_runs(world):
+def test_a_name_that_couldnt_be_saved_is_said_and_finish_its_setup_stays_offered(world):
+    """Review round 2: "press Finish its setup again" is never said with the button hidden ("failed" hides it for the
+    session) — the setup goes on in Surasura's own profile and the answer is "rest"; the next press saves the name."""
     world["profile"] = "p-1"
     world["profiles"] = [{"id": "p-1", "name": "Mining", "active": True}]
 
     def refused(changes):
         raise OSError("settings.json is read-only")
     result, detail = M.finish_setup(dict(ZH, connect_anki_miner_profile="Mining"), "zh", save=refused)
-    assert (result, detail) == (M.SETUP_FAILED, M.NOT_SAVED) and world["runs"] == []
+    assert result == M.SET_UP_REST and detail.startswith(M.NOT_SAVED) and "zh" not in M._FAILED
+    assert world["runs"] == [("zh", "surasura-1")]
+
+
+def test_the_profile_made_on_a_press_that_ends_in_a_question_is_said_with_the_question(world):
+    """Intent keeper (alpha 5) MUST: what Surasura set is said on every way out — a press that makes Surasura's own
+    profile and then asks the deck carries that line with its question; the press that finishes doesn't repeat it."""
+    settings = {"anki_sync_decks": {"zh": ["中文::句子", "中文::HSK"]}}
+    world["anki"] = Anki(["中文::句子", "中文::HSK"], {"Lapis": LAPIS}, {"中文::HSK": "Lapis"})
+    result, asked = M.finish_setup(settings, "zh")
+    assert result == M.ASK and "its own Anki Miner profile" in asked["said"] and asked["deck"][:2] == ["中文::句子",
+                                                                                                   "中文::HSK"]
 
 
 def test_a_deck_it_cant_tell_is_asked_while_the_language_and_dictionaries_go_on(world):
@@ -491,7 +536,9 @@ def test_the_deck_chosen_is_written_while_the_note_type_is_asked_and_never_asked
 
 def test_no_note_type_anki_miner_can_fill_is_said_after_the_rest_never_asked_in_a_loop(world):
     world["anki"] = Anki(["中文::句子"], {"Basic": BASIC, "Cloze": ["Text", "Back Extra"]})
-    assert M.finish_setup(ZH, "zh") == (M.SET_UP_REST, M.NO_NOTE_TYPE)
+    result, detail = M.finish_setup(ZH, "zh")
+    assert result == M.SET_UP_REST and detail.startswith(M.NO_NOTE_TYPE)
+    assert "go in “中文::句子”" in detail and "its own Anki Miner profile" in detail, "what it did set is said"
     assert world["runs"] == [("zh", "surasura-1")] and "Anki Miner" not in M.NO_NOTE_TYPE.split(":")[1]
 
 
@@ -514,7 +561,9 @@ def test_an_export_that_doesnt_say_configured_is_never_taken_as_a_new_language(w
 def test_anki_closed_meanwhile_still_sets_up_the_language_and_dictionaries(world):
     world["anki"] = Anki(closed=True)
     world["after"] = setup._check("anki_miner_setup", "waiting", "Anki Miner can't reach Anki.")
-    assert M.finish_setup(ZH, "zh") == (M.SET_UP_REST, M.ANKI_CLOSED_REST), "never called finished (intent review)"
+    result, detail = M.finish_setup(ZH, "zh")
+    assert result == M.SET_UP_REST and detail.startswith(M.ANKI_CLOSED_REST), "never called finished (intent review)"
+    assert "its own Anki Miner profile" in detail, "the profile it made is said (review round 2)"
     assert [i["values"] for i in world["imports"]] == [{}] and world["runs"] == [("zh", "surasura-1")]
 
 

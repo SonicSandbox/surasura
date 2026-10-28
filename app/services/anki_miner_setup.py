@@ -465,17 +465,19 @@ SETUP_REFUSED = ("Anki Miner hasn't mined this language yet in the profile Conne
                  "start it")
 # A4M1-2b: Anki has no note type Anki Miner can make Surasura's cards with (none has a Sentence field)
 NO_NOTE_TYPE = ("Anki has no note type Anki Miner can make your cards with: one with a Sentence field, like Lapis. "
-                "Add one to Anki, then press Finish its setup again")
+                "Add one to Anki, then press Finish its setup again.")
 # A4M1-2b: Surasura's own Anki Miner profile when the one Connect mines with is the one Anki Miner's window uses (its
 # settings-import never changes that one): the first of these names free, or not the window's
 OWN_PROFILES = ("Surasura", "Surasura (Connect)")
 NO_OWN_PROFILE = "Anki Miner's window uses every profile Surasura could set up for itself"
-NOT_SAVED = "Surasura couldn't save which Anki Miner profile it mines with; press Finish its setup again"
-ANKI_CLOSED_REST = "Anki closed before Surasura could set where your cards go: open Anki, then press Finish its setup again"
+NOT_SAVED = "Surasura couldn't save which Anki Miner profile it mines with: press Finish its setup again."
+ANKI_CLOSED_REST = "Anki closed before Surasura could set where your cards go: open Anki, then press Finish its setup again."
 # What the done line adds (the wizard's "set-up" line): what Surasura set, said once (intent review: never out of sight)
 SAID_WHERE = " New {language} cards go in “{deck}”, made with “{note}”."
 SAID_DECK = " New {language} cards go in “{deck}”."
+SAID_NOTE = " New {language} cards are made with “{note}”."
 SAID_PROFILE = " Surasura made its own Anki Miner profile, “{name}”, a copy of yours, and makes cards with it."
+SAID_SWITCHED = " Surasura makes cards with Anki Miner's profile “{name}” from now on."
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 SETUP_STILL = "it ran, but Anki Miner still says: {say}"
 SETUP_DO_FAILED = "Its setup didn't finish here: Surasura offers it again the next time you open Surasura"
@@ -541,10 +543,11 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
                         or anki_miner.DEFAULT_PROFILE):
                 try:
                     save({"connect_anki_miner_profile": name})
-                except Exception:
-                    out["answer"] = (SETUP_FAILED, NOT_SAVED)
-                    return out
-                out["settings"] = dict(settings or {}, connect_anki_miner_profile=name)
+                    out["settings"] = dict(settings or {}, connect_anki_miner_profile=name)
+                    if there is not None:   # one made before, now the one Connect mines with: said (intent keeper)
+                        out["said"] += SAID_SWITCHED.format(name=name)
+                except Exception:       # review round 2: its setup still runs there; the next press saves it again
+                    out["answer"] = (SET_UP_REST, NOT_SAVED)
     except anki_miner.AnkiMinerError as e:
         if e.kind != "refused":             # busy, a crash: the caller's words
             raise
@@ -556,6 +559,8 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
         out["said"] = SAID_WHERE.format(language=language_name, deck=deck, note=note) + out["said"]
     elif deck:
         out["said"] = SAID_DECK.format(language=language_name, deck=deck) + out["said"]
+    elif note:
+        out["said"] = SAID_NOTE.format(language=language_name, note=note) + out["said"]
     return out
 
 
@@ -612,9 +617,12 @@ def finish_setup(settings, language, on_progress=None, chosen=None, save=None):
             if items & anki_miner.SETUP_ITEMS:
                 anki_miner.run_setup(found["path"], language, wrote["profile"], progress, on_poll=poll)
             if answer is not None:          # the deck or note type to choose: asked once the rest is done
+                said = wrote["said"].strip()                # what this press set is said with it (review round 2)
                 if answer[0] == ASK and not answer[1].get("deck") and not answer[1].get("note_type"):
-                    return SET_UP_REST, NO_NOTE_TYPE        # nothing Anki Miner can fill to offer: said, never a loop
-                return answer
+                    answer = (SET_UP_REST, NO_NOTE_TYPE)    # nothing Anki Miner can fill to offer: said, never a loop
+                if answer[0] == ASK:
+                    return ASK, dict(answer[1], said=said)
+                return answer[0], " ".join(filter(None, (answer[1], said)))
         except anki_miner.AnkiMinerError as e:
             if e.kind == "busy":
                 return BUSY, None
@@ -627,11 +635,12 @@ def finish_setup(settings, language, on_progress=None, chosen=None, save=None):
         # yourself) still missing is named, never "finished"
         again = {c.get("id"): c for c in setup.checks(settings, language, keep=False).get("checks") or ()
                  if isinstance(c, dict)}.get("anki_miner_setup") or {}
+        said = wrote["said"].strip()        # what it set, said on every way out (intent keeper, alpha 5)
         if again.get("setup"):
-            return SETUP_FAILED, SETUP_STILL.format(say=again.get("say") or "")
+            return SETUP_FAILED, " ".join(filter(None, (SETUP_STILL.format(say=again.get("say") or ""), said)))
         if again.get("state") == "needs-you":           # round 2 R2-7: its dictionaries in, a deck still to choose
-            return SET_UP_REST, again.get("say") or ""
-        return SET_UP, wrote["said"].strip() or None
+            return SET_UP_REST, " ".join(filter(None, (again.get("say") or "", said)))
+        return SET_UP, said or None
     except Exception as e:          # never raises: the page says it didn't finish
         return SETUP_FAILED, str(e)
     finally:

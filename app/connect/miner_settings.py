@@ -116,13 +116,14 @@ def fields_for(note_fields, current, fill=True):
     profile's map for this language: its roles are the ones this Anki Miner knows) — or None when Anki Miner can't make
     Surasura's cards with it (no fields, no sentence field). Every role of `current` is in the map ("" unmapped), the
     word in the first field (Anki's duplicate check reads it), and no field twice. `fill` False (the same note type): a
-    role `current` leaves empty stays empty."""
+    role `current` leaves empty stays empty — but the sentence, which Surasura's cards need (review round 2: it is
+    filled, and a map with no sentence role at all still looks for one)."""
     note_fields = [str(f) for f in note_fields or ()]
     if not note_fields:
         return None
     by_fold = {f.casefold(): f for f in note_fields}
     out, taken = {}, {note_fields[0]}
-    for role in current or {}:
+    for role in list(current or {}) + ([] if "sentence" in (current or {}) else ["sentence"]):
         if role == "word":
             continue
         have = str((current or {}).get(role) or "")
@@ -168,11 +169,10 @@ def plan(settings, language, current, failed, anki, chosen=None):
         return "write", values
     note_types = anki.note_types()
     note = str(current.get("anki_note_type") or "")
-    if "note_type" in failed or note not in note_types:
-        if chosen.get("note_type") in note_types:
-            note = chosen["note_type"]
-        else:
-            note = note_type_for(settings, language, note_types, anki.deck_note_type(deck) if deck else None)
+    if chosen.get("note_type") in note_types:      # the learner's pick, also after "no Sentence field" (review round 2)
+        note = chosen["note_type"]
+    elif "note_type" in failed or note not in note_types:
+        note = note_type_for(settings, language, note_types, anki.deck_note_type(deck) if deck else None)
         if note is None:
             return "ask", {"deck": None, "note_type": _note_choices(settings, language, note_types, anki, current),
                            "why": None, "values": values}

@@ -2029,11 +2029,22 @@ def _free_memory_mb():
         return None
 
 
-def pool_workers(n_files, setting=None, cpus=None, free_mb=None):
+def every_core():
+    """K5 C4 (alpha 4): Settings' *Use every core* (`use_every_core`, off): the indexer's and a look's pools take every
+    logical CPU instead of half. Unreadable settings: off."""
+    try:
+        from app import settings_manager
+        return bool(settings_manager.load_settings().get("use_every_core", False))
+    except Exception:
+        return False
+
+
+def pool_workers(n_files, setting=None, cpus=None, free_mb=None, every=False):
     """How many processes tokenize `n_files` changed files: 1 is this process alone. `setting`: settings.json's
     `index_pool_workers` (None = automatic: half the logical CPUs — no fixed ceiling since 2026-10-25, the laptop's 8
     threads still give 4 — at most what a quarter of the free memory holds, and only from POOL_MIN_FILES files; N asks
-    for N, never more than the CPUs, the files or what half the free memory holds)."""
+    for N, never more than the CPUs, the files or what half the free memory holds). `every` (*Use every core*,
+    `every_core`): automatic takes every logical CPU, at most what half the free memory holds."""
     if n_files < 2:
         return 1
     if setting is not None:
@@ -2050,9 +2061,9 @@ def pool_workers(n_files, setting=None, cpus=None, free_mb=None):
         return max(1, size)
     if n_files < POOL_MIN_FILES:
         return 1
-    size = max(1, cpus // 2)
+    size = cpus if every else max(1, cpus // 2)
     if free_mb is not None:
-        size = min(size, max(1, int(free_mb * 0.25) // POOL_WORKER_MB))
+        size = min(size, max(1, int(free_mb * (0.5 if every else 0.25)) // POOL_WORKER_MB))
     return size if size >= 2 else 1
 
 
@@ -2104,7 +2115,7 @@ def _tokenized(paths, tokenize_file, workers):
                     setting = settings_manager.load_settings().get("index_pool_workers")
                 except Exception:
                     setting = None
-                size = pool_workers(len(paths), setting)
+                size = pool_workers(len(paths), setting, every=every_core())
         else:
             size = pool_workers(len(paths), workers)
     if size <= 1:

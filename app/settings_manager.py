@@ -49,6 +49,9 @@ DEFAULT_SETTINGS = {
     # process, N = N worker processes. Speed only: every file's tokens are the same either way (W1.3). Never in the run
     # signature (analyzer._NON_ANALYSIS_SETTINGS).
     "index_pool_workers": None,
+    # K5 C4 (alpha 4), Settings' *Use every core*: the indexer's and a library look's pools take every logical CPU instead
+    # of half (`token_index.every_core`). Speed only; never in the run signature (analyzer._NON_ANALYSIS_SETTINGS).
+    "use_every_core": False,
     # The 3.0 window's look (Settings > App; W2.1, the window's spec 02 §2.1): its theme (app/theme.py THEMES: one in 3.0,
     # "night", the redesign's palette — RS-1, 2026-10-14; Blue, Lighter blue and Sapphire retired, any other name paints
     # the night; themes return in 3.1) and text size ("S" / "M" / "L"). Set on the window before its first paint. Never

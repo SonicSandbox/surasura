@@ -4206,6 +4206,7 @@ def settings_signature(settings, language):
         "word_search_enabled", "word_search_category",   # lookup button — same, re-render only
         "sentence_dictionary_source",   # the sentence dictionary export's own choice — no run
         "index_pool_workers",           # how many processes tokenize: speed only, the same tokens (W1.3)
+        "use_every_core",               # K5 C4: how many cores the pools take — speed only
         "app_theme", "text_size",       # the 3.0 window's look (W2.1): no run or report reads them
         "app_motion",                   # the 3.0 window's motion (M2.1): no run or report reads it
         "journey_settle_s", "journey_settle_battery_s",   # when the background Generate starts (E3.2)

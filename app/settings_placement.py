@@ -20,6 +20,7 @@ PLACED = {
     "add_graduated_words": "neither", "auto_update_enabled": "neither", "skipped_version": "neither",
 "source_display": "report", "word_search_enabled": "report",
     "word_search_category": "report", "sentence_dictionary_source": "neither", "index_pool_workers": "neither",
+    "use_every_core": "neither",
     "app_theme": "neither", "text_size": "neither", "app_motion": "neither",
     "journey_settle_s": "neither", "journey_settle_battery_s": "neither",
     "anki_connect_url": "neither",

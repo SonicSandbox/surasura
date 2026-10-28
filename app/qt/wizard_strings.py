@@ -136,6 +136,10 @@ READ_FAILED = "{folder} couldn't be read: {why}"
 READ_BUSY = "Surasura is already reading your folders: try again in a moment."
 COPYING = "Copying into your library: {done:,} of {total:,} files…"                       # K5
 READ_BIG = "{line} · That's a big library: over 15,000 items. You can Stop and pick fewer folders."   # K5 (A4K-4)
+EVERY_CORE = "Use every core"                                                              # K5 C4
+EVERY_CORE_LINE = "Reads a big library sooner; the computer is busier meanwhile. Settings › Content has it too."
+EVERY_CORE_TIP = ("On: reading and copying your library use every core of your computer, so it ends sooner.\n"
+                  "Off: half of them, so the computer stays quick to use")
 READ_WAITING = "Waiting for your library: another part of Surasura is saving. Reading goes on by itself…"   # K4
 READ_NOT_READY = "Your library isn't ready yet: try again in a moment."
 EPISODES = ("1 episode", "{n:,} episodes")

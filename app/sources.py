@@ -98,6 +98,7 @@ EPUB = ".epub"
 MIN_SCRIPT = 20                 # a text holding fewer characters of the language's script is no content (K6)
 BOOK_MIN_CHARS = 1000           # a loose .txt / .md holding fewer of the script's characters is no content (T2-B4)
 HEAD = 1 << 20                  # a text over IN_MEMORY is judged by this much of its start, read with its hash (B4)
+SPLIT_AHEAD = 2                 # K5 C2: books split ahead of the look, per worker (their parts held: bounded memory)
 _KANA = re.compile(f"[{KANA_LETTERS}]")      # kana letters: never ・ or ー (a Chinese name's separator, a dash)
 _HAN = re.compile(f"[{HAN}]")
 _BOOK_SCRIPT = {"ja": re.compile(f"[{KANA_LETTERS}{HAN}]"), "zh": _HAN}
@@ -700,6 +701,104 @@ def _write_part(part, data):
         os.fsync(dst.fileno())
 
 
+def _write_parts_at_once(pool, jobs):
+    """K5 C2: [(a `.part`, its bytes)] each written and flushed (`_write_part`), by `pool`'s threads when there is one
+    (a file's write and flush let go of the GIL). Every write has ended before this returns or raises (the first
+    error, in `jobs`' order), so a `.part` dropped after a failure is never written again behind the caller's back."""
+    if pool is None or len(jobs) < 2:
+        for part, data in jobs:
+            _write_part(part, data)
+        return
+    import concurrent.futures
+    futures = [pool.submit(_write_part, part, data) for part, data in jobs]
+    concurrent.futures.wait(futures)
+    for f in futures:
+        f.result()
+
+
+_SPLIT_KNOWN = frozenset()      # K5 C2, in a splitting worker: the sha256s of the books in or kept out (`_split_start`)
+
+
+def _split_start(known):
+    """A splitting worker's start (K5 C2): the books' sha256s it needn't split, given once; it never outlives the
+    look's process — on Windows a killed parent leaves the pool's pipe open (as the indexer's workers,
+    `token_index._pool_start`)."""
+    global _SPLIT_KNOWN
+    _SPLIT_KNOWN = frozenset(known)
+    import multiprocessing
+    parent = multiprocessing.parent_process()
+    if parent is not None:
+        def watch():
+            parent.join()
+            os._exit(1)
+        threading.Thread(target=watch, name="split-parent-watch", daemon=True).start()
+
+
+def _split(path, language, by):
+    """K5 C2, in a worker process: an EPUB as it stood -> (size, mtime_ns, sha256, its parts (`book_parts`, the one
+    splitter) or None, the parts' sha256s, split?) — not split when its bytes are a book in or kept out already
+    (`_SPLIT_KNOWN`: the look needs only its hash then); None when it changed while read or couldn't be read (the look reads
+    it itself)."""
+    try:
+        st = os.stat(path)
+        sha = ls.sha256_of(path)
+        data = shas = None
+        split = sha not in _SPLIT_KNOWN
+        if split:
+            data, _why = book_parts(path, language, by=by)
+            shas = [hashlib.sha256(p.data).hexdigest() for p in data] if data else None
+        now = os.stat(path)
+    except Exception:
+        return None
+    if (now.st_size, now.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
+        return None
+    return st.st_size, st.st_mtime_ns, sha, data, shas, split
+
+
+class _Splitter:
+    """K5 C2 (the large-library copy): the new books' EPUBs, in the look's own order, hashed and split by worker
+    processes a few ahead of it (SPLIT_AHEAD per worker); the look — ONE writer — still checks, writes and takes
+    each book in, asking `take` for the work done. Anything a worker couldn't do, the look does itself."""
+
+    def __init__(self, paths, language, size, known):
+        import concurrent.futures
+        import multiprocessing
+        from app import extract
+        self.paths, self.language, self.by = list(paths), language, extract._settings_by()
+        self.where = {p: i for i, p in enumerate(self.paths)}
+        self.ahead, self.next, self.futures = size * SPLIT_AHEAD, 0, {}
+        self.pool = concurrent.futures.ProcessPoolExecutor(size, mp_context=multiprocessing.get_context("spawn"),
+                                                           initializer=_split_start, initargs=(sorted(known),))
+        self._fill(0)
+
+    def _fill(self, at):
+        try:
+            while self.next < len(self.paths) and self.next < at + self.ahead:
+                path = self.paths[self.next]
+                self.futures[path] = self.pool.submit(_split, path, self.language, self.by)
+                self.next += 1
+        except Exception as e:                               # a pool that broke: the look reads the rest itself
+            log.info("Splitting books ahead stopped (the look reads them itself): %r", e)
+            self.next = len(self.paths)
+
+    def take(self, path):
+        """This EPUB's work, once its worker is done -> `_split`'s answer, or None (none asked, or it failed)."""
+        future = self.futures.pop(path, None)
+        if path in self.where:
+            self._fill(self.where[path] + 1)
+        if future is None:
+            return None
+        try:
+            return future.result()
+        except Exception as e:
+            log.info("A book split ahead failed (the look reads it itself): %r", e)
+            return None
+
+    def close(self):
+        self.futures.clear()
+        self.pool.shutdown(wait=True, cancel_futures=True)
+
+
 def _drop(part):
     """Our own unfinished `.part`, or the trash copy of a copy never replaced (never anything else): removed."""
     try:
@@ -872,6 +971,8 @@ class _Look:
         self.book_origins = None     # LM3 (c): {an EPUB's key: {part number: Origin}} of the books' parts' records
         self.editions = None         # LM3 (W4): {(a folder's key, a book's name, edition marks off): {its EPUBs' keys}}
         self.members = None          # K5: {table: {bucket: {origin key}}} behind the tables above (`_members`)
+        self.splitter = None         # K5 C2: the new books split ahead by worker processes (`_take`, `_prepared`)
+        self.writers = None          # K5 C2: the threads a book's parts are written and flushed by (`_write_parts`)
         self.pending_books = set()   # LM3: the EPUBs whose new edition waits in the store (never hashed nor split)
         self.evidence = None         # D3: ({size: {sha256: shows}}, {video size: {video key: shows}}) of the origins
         self.content_keys = {}       # D3: {a video's path: its content key}, read once a look (`_content_key`)
@@ -1605,7 +1706,46 @@ class _Look:
             group.sort(key=lambda b: -b[3].st_mtime_ns)
             by_show.setdefault(clean_name(os.path.splitext(group[0][1])[0]) or "Book", []).extend(group)
         self.to_copy = sum(len(v) for v in by_show.values())
-        for show in sorted(by_show, key=lambda s: (ls.search_fold(s, self.language), s)):
+        order = sorted(by_show, key=lambda s: (ls.search_fold(s, self.language), s))
+        self._pools([c[2] for show in order for c in by_show[show] if len(c) == 5 and c[1].lower().endswith(EPUB)])
+        try:
+            self._take_in(by_show, order)
+        finally:
+            self._pools(())
+        if self.out["stopped"]:
+            return
+        self._refused_only()
+        self._switch_better()
+
+    def _pools(self, epubs):
+        """K5 C2: the splitting processes and the writing threads for this look's new EPUBs — as many as the indexer
+        would take for as many files (`token_index.pool_workers`: none under POOL_MIN_FILES, half the cores, every core
+        with *Use every core*); `()`: closed."""
+        if not epubs:
+            for pool in (self.splitter, self.writers):
+                if pool is not None:
+                    try:
+                        (pool.close if pool is self.splitter else pool.shutdown)()
+                    except Exception as e:
+                        log.info("A look's pool didn't close cleanly: %r", e)
+            self.splitter = self.writers = None
+            return
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            from app.token_index import every_core, pool_workers
+            size = pool_workers(len(epubs), every=every_core())
+            if size < 2:
+                return
+            self.writers = ThreadPoolExecutor(size, thread_name_prefix="book-parts")
+            self._load()
+            known = set(self._books()) | set(self.ex_shas)
+            self.splitter = _Splitter(epubs, self.language, size, known)
+        except Exception as e:                               # no pool: the look reads and writes them itself
+            log.info("No pool for this look's books (read here): %r", e)
+            self._pools(())
+
+    def _take_in(self, by_show, order):
+        for show in order:
             batch = []
             for c in by_show[show]:
                 if self.stopped():
@@ -1643,8 +1783,6 @@ class _Look:
             self._commit(batch)
             if self.out["stopped"]:
                 return
-        self._refused_only()
-        self._switch_better()
 
     def _refused_only(self):
         """LF-19: a folder's videos whose every subtitle pick the one language rule refused (`_refusal` at `_new`: an
@@ -2616,7 +2754,8 @@ class _Look:
         if _key(path) in self.ex_paths:
             self.out["skipped"] += 1
             return
-        sha = ls.sha256_of(path)
+        pre = self._prepared(path, st)                       # K5 C2: hashed (and split) ahead by a worker
+        sha = pre[0] if pre else ls.sha256_of(path)
         if not self._same(path, st):
             self._wait(folder)
             return
@@ -2649,7 +2788,11 @@ class _Look:
         if target:                                           # LM3 (T2-B6 A): this book's new edition
             self._edition(folder, path, st, sha, target)
             return
-        data, _why = book_parts(path, self.language)        # a shop's DRM (B6), no text, or none of the language:
+        if pre and pre[3]:
+            data, shas = pre[1], pre[2]
+        else:
+            data, _why = book_parts(path, self.language)    # a shop's DRM (B6), no text, or none of the language:
+            shas = None
         if data is None:                                     # passed over until it changes (K5, K6)
             self._pass_over(path, st)
             return
@@ -2661,7 +2804,7 @@ class _Look:
         names = part_names(base, len(data), [p.label for p in data])
         chapters = [p.chapter for p in data]
         data = [p.data for p in data]
-        shas = [hashlib.sha256(d).hexdigest() for d in data]
+        shas = shas or [hashlib.sha256(d).hexdigest() for d in data]
         sizes = self.store.items_of_size([len(d) for d in data])
         held = [self._same_bytes(len(d), s, sizes) for d, s in zip(data, shas)]
         todo = [i for i, item in enumerate(held) if item is None]
@@ -2691,27 +2834,40 @@ class _Look:
             found.append(f)
         self._refresh([f["item_id"] for f in found if "item_id" in f], self._commit(found))
 
+    def _prepared(self, path, st):
+        """K5 C2: this EPUB's work done ahead by a worker (`_Splitter`), when it read the file as listed (its size and
+        time) -> (sha256, its parts or None, their sha256s, split?), or None: the look reads it itself."""
+        if self.splitter is None:
+            return None
+        got = self.splitter.take(path)
+        if got is None or got[:2] != (st.st_size, st.st_mtime_ns):
+            return None
+        return got[2:]
+
     def _write_parts(self, folder, rels, data, todo):
         """A book's parts `todo` (their indexes) written at `rels` (each via a `.part`, then renamed; a file there
         already is taken only when it holds the part's bytes — a crash's) -> True; else every part written goes to the
-        trash and the book waits (False)."""
-        written, parts = [], []
+        trash and the book waits (False), the folders this made for it removed when they are empty (a left one made the
+        book's next look name its folder `<book> (2)`)."""
+        written, parts, jobs, made = [], [], [], []
         try:
             for i in todo:
                 full = self._inside(rels[i])
                 if full is None:
                     raise OSError(f"outside the content folder: {rels[i]}")
+                where = os.path.dirname(full)
+                while where and not os.path.isdir(where) and where not in made:
+                    made.append(where)
+                    where = os.path.dirname(where)
                 os.makedirs(os.path.dirname(full), exist_ok=True)
                 if os.path.isfile(full):                     # the same bytes, left by a crash; never another file's
                     if ls.content_target(self.data_dir, rels[i], len(data[i]),       # (B1, S5)
                                          hashlib.sha256(data[i]).hexdigest()) == (rels[i], True):
                         continue
                     raise OSError(f"another file is at {rels[i]}")
-                with open(full + ".part", "wb") as f:
-                    parts.append(full + ".part")
-                    f.write(data[i])
-                    f.flush()
-                    os.fsync(f.fileno())
+                parts.append(full + ".part")
+                jobs.append((full + ".part", data[i]))
+            _write_parts_at_once(self.writers, jobs)       # K5 C2: by the look's writing threads when it has them
             for p in parts:
                 ls.rename_no_overwrite(p, p[:-len(".part")])
                 written.append(p[:-len(".part")])
@@ -2720,6 +2876,11 @@ class _Look:
                 _drop(p)
             for w in written:
                 self._trash(ls.library_rel(self.data_dir, w))
+            for d in sorted(made, key=len, reverse=True):
+                try:
+                    os.rmdir(d)                              # only when empty: never anything in it
+                except OSError:
+                    pass
             self._wait(folder)
             return False
         self.made.update(rels[i] for i in todo)

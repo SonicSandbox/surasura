@@ -68,3 +68,32 @@ def test_the_page_says_the_copy_and_warns_once_the_library_is_big(make, empty_li
     assert page.reading_line.text() == S.READ_WAITING
     page.show_waiting(False)                                          # the wait over: the count as it last stood
     assert "big library" in page.reading_line.text()
+
+
+def test_a_big_library_offers_use_every_core_on_page_three_and_saves_it_at_once(make, empty_library):
+    """K5 C4: the warning comes with *Use every core* — a learner reading 20,000 books can let it take every core
+    while the look still lists them (the copy's pools read the key as they open), so the switch is saved the moment it
+    is flipped, never on *Next*; under the warning's size it isn't offered, and it shows the key as saved."""
+    wiz, _shell, _api, settings, _m = make(api=SourcesApi())
+    go_to(wiz, "shows")
+    page = wiz.page
+    settings.calls.clear()
+    page.show_reading(setup_wizard.BIG_LIBRARY - 1, 300)
+    assert page.every_core.isHidden()
+    page.show_reading(setup_wizard.BIG_LIBRARY, 300)
+    assert not page.every_core.isHidden() and not page.every_core.switch.isChecked()
+    assert settings.calls == []                                       # shown as saved: nothing written by showing it
+    page.every_core.switch.click()
+    assert settings.calls == [{"use_every_core": True}]
+    page.show_reading(setup_wizard.BIG_LIBRARY + 50, 301)             # the next count keeps the learner's choice
+    assert page.every_core.switch.isChecked() and settings.calls == [{"use_every_core": True}]
+    page.every_core.switch.click()
+    assert settings.calls[-1] == {"use_every_core": False}
+
+
+def test_use_every_core_is_shown_as_saved_when_the_warning_comes(make, empty_library):
+    """The switch reads the saved key (Settings › Content's row is the same key): on there, on here."""
+    wiz, _shell, _api, settings, _m = make(api=SourcesApi(), data={"use_every_core": True})
+    go_to(wiz, "shows")
+    wiz.page.show_reading(setup_wizard.BIG_LIBRARY, 300)
+    assert wiz.page.every_core.switch.isChecked()

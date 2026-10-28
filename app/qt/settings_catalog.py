@@ -300,6 +300,7 @@ ROWS = (
     _row("fresh_library", "content", "custom"),                       # K7: the library set aside, the folders read again
     _row("split_books_by", "content", "choice", ("split_books_by",), options=("chapters", "even")),
     _row("split_length", "content", "number", ("split_length",), bounds=(1, None)),
+    _row("use_every_core", "content", "toggle", ("use_every_core",), adv=True),      # K5 C4: big first reads
     _row("enable_youtube_transcripts", "content", "toggle", ("enable_youtube_transcripts",), when=_YOUTUBE),
     _row("enable_youtube_preview", "content", "toggle", ("enable_youtube_preview",), when=_YOUTUBE),
     _row("content_doors", "content", "door", door=("extract", "youtube-downloader", "youtube-preview")),

@@ -234,6 +234,8 @@ STRINGS = {
     "arr_no_subs": "no subtitles yet",
     "eps_more": " and {n} more",
     "player": {"video": "video player", "audio": "audio player", "EPUB": "e-book reader", "file": "default app"},
+    # a book split by its chapters (Hon, alpha 4): its part's name after its number, `extract.part_label`'s
+    "chapter": "Chapter {c}", "chapter_part": "Chapter {c} · Part {x}", "titled_part": "{title} · Part {x}",
     "ep": "Ep {n}", "part": "Part {n}", "num": "#{n}", "eps": "Ep {a}–{b}", "parts": "Parts {a}–{b}",
     "nums": "#{a}–{b}", "videos": "{n} videos", "video": "1 video", "watched": "{k} of {n} watched",
     # a watched file set aside (Keep studying watched episodes off): the stone's tooltip and the report's panel (JS-1)
@@ -280,6 +282,8 @@ STRINGS = {
 
 _EXT = re.compile(r"\.[A-Za-z0-9]{1,5}$")
 _YT_ID = re.compile(r"\s*\[[0-9A-Za-z_-]{6,11}\]$")
+_CHAPTER = re.compile(r".+?_([0-9]{2,}) \(([0-9]+)(?:-([0-9]+))?\)(?: (.+))?")  # `extract.part_name`'s chapter part
+_PLAIN_PART = re.compile(r".*_[0-9]{2,}")                                              # `<base>_NN`: a part, no chapter
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -297,10 +301,27 @@ def stem(name):
     return _YT_ID.sub("", _EXT.sub("", name or "")).strip()
 
 
+def chapter_part(name):
+    """A book's part named by its chapter (`<book>_07 (3-2) 第一章 出会い.txt`) -> (its number, its label: *第一章 出会い ·
+    Part 2*, *Chapter 3 · Part 2*, *プロローグ*, *Chapter 3*), else None."""
+    if not str(name or "").lower().endswith(".txt") or _PLAIN_PART.fullmatch(stem(name)):
+        return None                              # a video's or a subtitle's name is never a book's part
+    m = _CHAPTER.fullmatch(stem(name))
+    if m is None:
+        return None
+    number, c, x, title = int(m.group(1)), m.group(2), m.group(3), m.group(4)
+    if title:
+        return number, STRINGS["titled_part"].format(title=title, x=x) if x else title
+    return number, STRINGS["chapter_part"].format(c=c, x=x) if x else STRINGS["chapter"].format(c=c)
+
+
 def episode_number(name):
     """The episode (or part) number a file's name gives, or None: `S01E05`, `第5話`, `ep05`, `Show - 05`, `Show 05 …` —
     LM1a's one rule (`episode_names.identity`), a bare number read too (the window has no folder to ask); a special
     (`OVA 01`, `- 01 (OVA)`) has none here (A4: never *Ep 1*, nor episode 1's video offered for it)."""
+    chapter = chapter_part(name)                 # a book's part named by its chapter: its number, never its title's
+    if chapter is not None:
+        return chapter[0]
     n = identity(name, bare_numbers=True)
     return None if n.special else n.episode
 
@@ -562,8 +583,11 @@ def status_of(eps, word, line_n):
 def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None, show_key=None,
              playable=None):
     name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
+    chapter = None if media == "youtube" or media in EPISODIC or media == "podcast" else chapter_part(name)
     number = None if media == "youtube" else episode_number(name)
-    if media == "youtube":
+    if chapter:
+        label = chapter[1]
+    elif media == "youtube":
         label = stem(name)
     elif number is None:
         label = stem(name)

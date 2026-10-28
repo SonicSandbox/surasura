@@ -74,6 +74,7 @@ import sys
 import threading
 import time
 import unicodedata
+from collections import namedtuple
 
 from app import episode_names as en
 from app import library_store as ls
@@ -353,24 +354,43 @@ def dialogue_lines(text):
 edition_name = en.edition_name
 
 
-def book_parts(path, language):
-    """K8 / T2-B6 (LM3; LM7 calls it too), the ONE EPUB → parts splitter: the parts' bytes as a book's copies hold them
-    (Extract's reader and its default split, UTF-8) -> (parts, None), or (None, why): "locked" (its encryption.xml
+def book_parts(path, language, by=None):
+    """K8 / T2-B6 (LM3; LM7 calls it too), the ONE EPUB → parts splitter: the parts as a book's copies hold them
+    (Extract's reader and its default split, UTF-8; by its chapters unless `by` — else the `split_books_by` setting —
+    says "even") -> ([BookPart], None), or (None, why): "locked" (its encryption.xml
     locks more than its fonts: a shop's DRM, B6) or "text" (no text, or none of the library's language: K6, an English
     translation). A new book (`_Look._book`), a book's new edition and a book whose parts' copies are lost (split again
     from its EPUB when the EPUB's sha256 is the record's, LM7) all read their parts here."""
     from app import extract
     if _locked(path):
         return None, "locked"
-    chunks, error = extract.chunks_of(path, language)
-    if error or not chunks or _refusal("".join(chunks), language):
+    parts, error = extract.parts_of(path, language, by=by)
+    if error or not parts or _refusal("".join(p.text for p in parts), language):
         return None, "text"
-    return [c.encode("utf-8") for c in chunks], None
+    return [BookPart(p.text.encode("utf-8"), extract.part_label(p.chapter), p.chapter) for p in parts], None
 
 
-def part_names(base, count):
-    """A book's parts' file names (`book_parts`' order): `<base>.txt` for one part, else `<base>_01.txt` …"""
-    return [f"{base}_{i:02d}.txt" if count > 1 else f"{base}.txt" for i in range(1, count + 1)]
+# A book's part (`book_parts`): its bytes, its name's label after its number (`extract.part_label`: None for an even
+# part) and its place in the book (`extract.book_split`'s record, kept on its origin record as "chapter")
+BookPart = namedtuple("BookPart", "data label chapter")
+_CHAPTER_TAIL = re.compile(r" \(\d+(?:-\d+)?\)(?: .*)?")       # a chapter's label after a part's `_NN`
+
+
+def _part_stem(stem, number):
+    """A book's part's file stem whose part number is `number` -> (its book's base, named by a chapter?), or None:
+    the last `_NN` that is that number with nothing, or a chapter's label (`extract.part_label`), after it."""
+    for m in reversed(list(re.finditer(r"_([0-9]{2,})", stem))):
+        rest = stem[m.end():]
+        if int(m.group(1)) == number and (not rest or _CHAPTER_TAIL.fullmatch(rest)):
+            return stem[:m.start()], bool(rest)
+    return None
+
+
+def part_names(base, count, labels=None):
+    """A book's parts' file names (`book_parts`' order, `extract.part_name`): `<base>.txt` for one part, else
+    `<base>_01.txt` …, a chapter's part `<base>_01 (1) プロローグ.txt`."""
+    from app import extract
+    return [extract.part_name(base, i, count, labels[i - 1] if labels else None) for i in range(1, count + 1)]
 
 
 def group_label(name):
@@ -2460,10 +2480,12 @@ class _Look:
         if touched:                                          # touched (LM3), or a declined edition's bytes still
             self.store.update_origins(touched)               # (A3): only its records' stats follow
             return
-        if known:
+        if known:                                            # moved or renamed: each part's place kept (Hon)
+            places = {o.item_id: o.chapter for o in self.origins.values() if o.sha256 == sha and o.chapter}
             change = self._commit([dict({"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns,
                                          "sha256": sha, "show": rel.split("/")[1] if rel.count("/") >= 2 else show,
-                                         "item_id": item, "episode": i}, **({"version": True} if version else {}))
+                                         "item_id": item, "episode": i}, **({"version": True} if version else {}),
+                                        **({"chapter": json.loads(places[item])} if item in places else {}))
                                    for i, (item, rel, version) in sorted(known.items())])
             self._refresh([item for item, _rel, _v in known.values()], change)
             return
@@ -2483,7 +2505,9 @@ class _Look:
             return
         from app import extract
         base = extract.clean_name(os.path.splitext(name)[0]) or "Book"
-        names = part_names(base, len(data))
+        names = part_names(base, len(data), [p.label for p in data])
+        chapters = [p.chapter for p in data]
+        data = [p.data for p in data]
         shas = [hashlib.sha256(d).hexdigest() for d in data]
         sizes = self.store.items_of_size([len(d) for d in data])
         held = [self._same_bytes(len(d), s, sizes) for d, s in zip(data, shas)]
@@ -2504,7 +2528,7 @@ class _Look:
         found = []
         for i, (rel, item) in enumerate(zip(rels, held), 1):
             f = {"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha,
-                 "show": book, "episode": i}
+                 "show": book, "episode": i, "chapter": chapters[i - 1]}
             if item is None:
                 f["rel"] = rel
             else:
@@ -2603,7 +2627,14 @@ class _Look:
                                              [[o.item_id, o.availability] for _n, o in sorted(target.items())]]
             self.out["waiting"] += 1
             return
-        data, _why = book_parts(path, self.language)
+        numbers = sorted(target)
+        first = target[numbers[0]].rel_path or ""
+        stem = os.path.splitext(first.rsplit("/", 1)[-1])[0]
+        named = _part_stem(stem, numbers[0])                 # `<base>_0n` (`part_names`), else one part's `<base>`
+        # a book keeps the split it was made with (never the setting as it is now), so part n pairs with part n: a
+        # book cut by its chapters names its parts by them; every other (each book from before chapters) is even
+        by = "chapters" if named and named[1] else "even"
+        data, _why = book_parts(path, self.language, by=by)
         if data is None:
             self._pass_over(path, st)
             return
@@ -2611,17 +2642,16 @@ class _Look:
             self._wait(folder)
             return
         origin = os.path.abspath(path)
-        numbers = sorted(target)
-        first = target[numbers[0]].rel_path or ""
         book = first.split("/")[1] if first.count("/") >= 2 else os.path.splitext(os.path.basename(path))[0]
-        stem = os.path.splitext(first.rsplit("/", 1)[-1])[0]
-        named = re.fullmatch(r"(.+)_([0-9]{2,})", stem)       # `<base>_0n` (`part_names`), else one part's `<base>`
-        base = named.group(1) if named and int(named.group(2)) == numbers[0] else stem
-        names = part_names(base, len(data))
+        base = named[0] if named else stem
+        names = part_names(base, len(data), [p.label for p in data])
+        chapters = [p.chapter for p in data]
+        data = [p.data for p in data]
         old = str(target[numbers[0]].origin or "").rpartition("#")[0]
         out = lambda n: _key(f"{old}#{n}") in self.ex_paths or _key(f"{origin}#{n}") in self.ex_paths   # noqa: E731
         entry = lambda n: {"data": data[n - 1], "origin": f"{origin}#{n}", "size": st.st_size,   # noqa: E731
-                           "mtime_ns": st.st_mtime_ns, "sha256": sha, "show": book, "episode": n}
+                           "mtime_ns": st.st_mtime_ns, "sha256": sha, "show": book, "episode": n,
+                           "chapter": chapters[n - 1]}
         parts = [dict(entry(n), item=target[n].item_id) for n in numbers if n <= len(data)]
         extras = [dict(entry(n), rel=f"{ls.CONTENT_FOLDER}/{book}/{names[n - 1]}")
                   for n in range(1, len(data) + 1) if n not in target and not out(n)]

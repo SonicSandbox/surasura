@@ -211,7 +211,7 @@ def test_a_new_edition_whose_part_isnt_available_waits_and_isnt_split_again_unti
         split, hashed = [], []
         real_parts, real_sha = sources.book_parts, ls.sha256_of
         with monkeypatch.context() as patched:
-            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            patched.setattr(sources, "book_parts", lambda p, lang, **kw: split.append(p) or real_parts(p, lang, **kw))
             patched.setattr(ls, "sha256_of", lambda p: (hashed.append(p) if os.path.abspath(p) == new else None)
                             or real_sha(p))
             again = _look(store, language, root, full=True)
@@ -695,7 +695,7 @@ def test_a_waiting_edition_is_never_split_again_when_its_settling_fails(language
             raise RuntimeError("the store's disk is busy")
         with monkeypatch.context() as patched:
             patched.setattr(store, "settle_editions", fails)
-            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            patched.setattr(sources, "book_parts", lambda p, lang, **kw: split.append(p) or real_parts(p, lang, **kw))
             patched.setattr(ls, "sha256_of", lambda p: (hashed.append(p) if os.path.abspath(p) == new else None)
                             or real_sha(p))
             _look(store, language, root, full=True)
@@ -1301,7 +1301,7 @@ def test_a_waiting_editions_undo_keeps_its_epub_from_being_read_again_even_chang
         split, hashed = [], []
         real_parts, real_sha = sources.book_parts, ls.sha256_of
         with monkeypatch.context() as patched:
-            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            patched.setattr(sources, "book_parts", lambda p, lang, **kw: split.append(p) or real_parts(p, lang, **kw))
             patched.setattr(ls, "sha256_of", lambda p: (hashed.append(p) if os.path.abspath(p) == new else None)
                             or real_sha(p))
             _look(store, language, root, full=True)
@@ -1323,7 +1323,7 @@ def test_a_second_undo_of_a_changed_declined_edition_is_not_read_again(language,
         split, hashed = [], []
         real_parts, real_sha = sources.book_parts, ls.sha256_of
         with monkeypatch.context() as patched:
-            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            patched.setattr(sources, "book_parts", lambda p, lang, **kw: split.append(p) or real_parts(p, lang, **kw))
             patched.setattr(ls, "sha256_of", lambda p: (hashed.append(p) if os.path.abspath(p) == new else None)
                             or real_sha(p))
             assert _look(store, language, root, full=True)["switched"] == 0
@@ -1349,7 +1349,7 @@ def test_a_same_path_editions_undo_is_not_read_again_by_the_next_look(language, 
         split, hashed = [], []
         real_parts, real_sha = sources.book_parts, ls.sha256_of
         with monkeypatch.context() as patched:
-            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            patched.setattr(sources, "book_parts", lambda p, lang, **kw: split.append(p) or real_parts(p, lang, **kw))
             patched.setattr(ls, "sha256_of", lambda p: (hashed.append(p) if os.path.abspath(p) == book else None)
                             or real_sha(p))
             assert _look(store, language, root, full=True)["switched"] == 0
@@ -1788,7 +1788,7 @@ def test_a_new_edition_that_must_wait_for_another_leaves_no_staged_file_behind(l
         split = []
         real_parts = sources.book_parts
         with monkeypatch.context() as patched:
-            patched.setattr(sources, "book_parts", lambda p, lang: split.append(p) or real_parts(p, lang))
+            patched.setattr(sources, "book_parts", lambda p, lang, **kw: split.append(p) or real_parts(p, lang, **kw))
             assert _look(store, language, root, full=True)["switched"] == 0
         assert split, "the third edition was read"
         assert sorted(os.listdir(trash)) == kept

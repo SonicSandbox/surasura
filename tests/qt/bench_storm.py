@@ -314,9 +314,10 @@ class Meter:
 
 
 # --- one run ------------------------------------------------------------------------------------------------------ #
-def open_window(qapp, seed, size=(1280, 800), poll=0.02, coalesce=True):
+def open_window(qapp, seed, size=(1280, 800), poll=0.02, coalesce=True, freeze_gc=False):
     """The window on the seed, as `tests/qt/test_current.open_on` opens it (the reader coalescing as the window's
-    does, `coalesce`), once its live rows are in."""
+    does, `coalesce`; `freeze_gc`: the collector frozen as the window process's reader does — the bench's own run, never
+    a test's process), once its live rows are in."""
     from PyQt6.QtWidgets import QApplication
     from app.qt import shell
     from app.services import library_reader
@@ -326,7 +327,7 @@ def open_window(qapp, seed, size=(1280, 800), poll=0.02, coalesce=True):
         with open(path_utils.get_user_file("settings.json"), "w", encoding="utf-8") as f:
             json.dump({"target_language": seed.language}, f)
     reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
-                                          mining=seed.mining, poll=poll, coalesce=coalesce)
+                                          mining=seed.mining, poll=poll, freeze_gc=freeze_gc, coalesce=coalesce)
     services = shell.Services(library=reader)
     win = shell.open_window(qapp, services)
     win.resize(*size)
@@ -412,12 +413,14 @@ def main(argv=None):
     from app.qt import style
     from tests.fixtures import window_seed
     qapp = QApplication.instance() or QApplication(sys.argv[:1])
-    style.apply(qapp, "night", "M", args.language)
+    from app.qt import shell
+    shell.prepare_process()                       # fix3 (the verifier's D2): the window process's own settings — its
+    style.apply(qapp, "night", "M", args.language)  # 1 ms switch interval; the reader below freezes the collector
     if args.no_splice:
         from app.qt import rows
         rows.RowsModel._splice = lambda _self, _keys, _entries: None
     seed = window_seed.build(files=args.files, language=args.language)
-    win, services = open_window(qapp, seed, coalesce=not args.no_coalesce)
+    win, services = open_window(qapp, seed, coalesce=not args.no_coalesce, freeze_gc=True)   # (as the window's)
     if args.no_tray and getattr(win, "arrivals_tray", None) is not None:
         win.arrivals_tray.set_groups = lambda groups: False
     if args.freeze_once:

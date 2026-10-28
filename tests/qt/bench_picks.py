@@ -61,7 +61,9 @@ def main(argv=None):
     from tests.qt.conftest import wait_until
     from tests.qt.test_picks import PicksWriter
     qapp = QApplication.instance() or QApplication(sys.argv[:1])
-    style.apply(qapp, "night", "M", args.language)
+    from app.qt import shell
+    shell.prepare_process()                       # fix3 (the verifier's D2): the window process's own settings — its
+    style.apply(qapp, "night", "M", args.language)  # 1 ms switch interval; the reader below freezes the collector
     if args.language != "ja":
         from app import path_utils
         with open(path_utils.get_user_file("settings.json"), "w", encoding="utf-8") as f:
@@ -69,7 +71,7 @@ def main(argv=None):
     seed = window_seed.build(files=args.files, language=args.language, current_share=args.share)
     writer = PicksWriter(seed.library, apply=False)
     reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
-                                          mining=seed.mining, poll=0.02, coalesce=True)
+                                          mining=seed.mining, poll=0.02, freeze_gc=True, coalesce=True)
     services = shell.Services(library=reader, writer=writer)
     win = shell.open_window(qapp, services)
     win.resize(1280, 800)

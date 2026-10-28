@@ -344,8 +344,9 @@ def test_A4B4_a_relink_the_store_took_none_of_says_so_instead_of_vanishing(world
     assert len([c for c in writer.calls if c[0] == "relink_many"]) == 1 and not writer.saved
 
 
+@pytest.mark.parametrize("switched", [False, True])
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_alpha5_a_relink_the_store_took_none_of_says_why_from_the_writers_ticket(world, language):
+def test_alpha5_a_relink_the_store_took_none_of_says_why_from_the_writers_ticket(world, language, switched):
     """Alpha 5 (Mado): the store took none and said why (the writer's `ticket.left` on the empty landing): the bar
     counts each why as a partial relink's does — never the generic "none were pointed at" — and no Undo is made."""
     seed, win, writer, ny = world(language, looks=SeamLooks())
@@ -362,6 +363,16 @@ def test_alpha5_a_relink_the_store_took_none_of_says_why_from_the_writers_ticket
                       (card.lines[2].item_id, "another item's file")]
         return put(pairs, label=label)
     writer.relink_many = relink_many
+    said = []
+    say = win.say
+    win.say = lambda text, *a, **k: said.append(text) or say(text, *a, **k)
+    if switched:
+        flip = writer.relink_many
+
+        def relink_and_switch(pairs, label=None):        # the learner switched library before it landed
+            win.language = "zh" if language == "ja" else "ja"
+            return flip(pairs, label=label)
+        writer.relink_many = relink_and_switch
     hand_in(ny, entries)
     win.show_tab("needs")
     ny.pick_folder = lambda title, start: str(picked)
@@ -369,7 +380,12 @@ def test_alpha5_a_relink_the_store_took_none_of_says_why_from_the_writers_ticket
     want = strings.NEEDS_RELINK_LEFT.format(n=3, why=" · ".join((
         strings.NEEDS_RELINK_WHY.format(why="another item's file", n=2),
         strings.NEEDS_RELINK_WHY.format(why="no file there", n=1))))
-    assert wait_until(lambda: win.bar_line.full() == want, 5)
+    if switched:                                         # another library's bar: nothing said of this one
+        wait_until(lambda: False, 1.0)
+        assert want not in said and strings.NEEDS_RELINK_NONE_TAKEN not in said
+    else:
+        assert wait_until(lambda: win.bar_line.full() == want, 5)
+        assert strings.NEEDS_RELINK_NONE_TAKEN not in said          # never the generic line before the why
     assert not writer.saved
 
 

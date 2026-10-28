@@ -231,3 +231,27 @@ def test_two_removes_in_one_clock_tick_stay_two_entries(language, monkeypatch):
         entries = store.removed()
         assert [(e["title"], e["titles"], e["count"]) for e in entries] == [(None, 2, 2), (None, 2, 4)]
         assert entries[0]["removed_at"] > entries[1]["removed_at"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_one_remove_of_two_titles_from_two_folders_counts_the_first_to_go_and_both_folders(language):
+    """Alpha 5: a merged entry's days are the FIRST of its files to go (one title's copy 25 days in the trash, the
+    other's new: 5 days left, never 30), and its folders are both titles' (Settings' *Bring back* reads them)."""
+    store, data_dir = _empty(language)
+    a, b = _SHOWS[language]
+    src_a, src_b = _drive("shows"), _drive("more shows")
+    _show(language, src_a, a, n=1)
+    _show(language, src_b, b, n=1)
+    with store:
+        root_a, (ia,) = _taken(store, language, src_a)
+        root_b, (ib,) = _taken(store, language, src_b)
+        trashed = {}
+        for i, age_days in ((ia, 25), (ib, 0)):
+            rel = store.conn.execute("SELECT rel_path FROM items WHERE id = ?", (i,)).fetchone()[0]
+            trashed[i] = to = ls.trash_file(data_dir, rel)
+            t = time.time() - age_days * 86400
+            os.utime(os.path.join(data_dir, *to.split("/")), (t, t))
+        store.remove([ia, ib], trashed_paths=trashed)
+        (entry,) = store.removed()
+        assert (entry["titles"], entry["count"], entry["days_left"]) == (2, 2, 5)
+        assert sorted(entry["roots"]) == sorted([root_a, root_b]) and entry["trash_ids"] == sorted(entry["trash_ids"])

@@ -118,7 +118,9 @@ Arrival = namedtuple("Arrival", "key work_id piece_id item_ids rel_paths title m
 #   anilist · disk), `chip` its word; `line` *Ep x–y* or a video's channel; `parts` the one line as (text, tone):
 #   the line, *N in Anki* (ok), *N files gone* (warn); `group` "new" or "watched" (every file watched); `per_ep` the
 #   estimate's *N new* (at the top of Current) over its files, rounded — None until every file has one
-ArrivalGroup = namedtuple("ArrivalGroup", "kind label rows")
+ArrivalGroup = namedtuple("ArrivalGroup", "kind label rows keys", defaults=((),))
+#   keys: each row's key, in order (made here, on the reader's thread: the tray's rows are keys, and reading 20,000 rows'
+#   keys on the window's thread is ~2 ms of memory alone — fix3, the verifier's finding 6)
 Counts = namedtuple("Counts", "current_rows current_files goal_titles goal_files finished arrivals arrival_files")
 View = namedtuple("View", "language mode reason state busy loading cached rows lines goal finished needs counts "
                           "subline badges worst arrivals arrival_groups", defaults=(None, (), ()))
@@ -1315,6 +1317,10 @@ def _name_arrivals(cache, rows, where):
     return out
 
 
+def _arrival_group(kind, label, rows):
+    return ArrivalGroup(kind, label, rows, tuple(a.key for a in rows))
+
+
 def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, changed_works, folders=None):
     """The tray's rows and groups (RUNBOOK §1 *The tray*): one per piece, newest first by `added_at` (a piece by its
     newest file; equal stamps keep the store's order), *New* then *Already watched*. With the reader's cache an
@@ -1361,7 +1367,7 @@ def _arrivals(cache, tier_rows, works, cards, estimates, guessed, changed, chang
     if hit is not None and len(hit[4][0]) == len(rows) and all(a is b for a, b in zip(hit[4][0], rows)):
         rows, groups = hit[4][0], hit[4][1]                         # nothing moved: the same objects
     else:
-        groups = tuple(ArrivalGroup(kind, STRINGS[label], tuple(a for a in rows if a.group == kind))
+        groups = tuple(_arrival_group(kind, STRINGS[label], tuple(a for a in rows if a.group == kind))
                        for kind, label in (("new", "arr_new"), ("watched", "arr_watched"))
                        if any(a.group == kind for a in rows))
     _keep(cache, "arrivals", tier_rows, {r.get("work_id") for r in tier_rows}, more, (rows, groups, entries))

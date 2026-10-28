@@ -46,8 +46,9 @@ from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
 from PyQt6.QtGui import (QAction, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QStandardItem,
                          QStandardItemModel)
-from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QFrame, QHBoxLayout, QLabel, QListView, QMenu,
-                             QSizePolicy, QStyledItemDelegate, QToolButton, QToolTip, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractButton, QAbstractItemView, QApplication, QFrame, QHBoxLayout, QHeaderView,
+                             QLabel, QMenu, QSizePolicy, QStyledItemDelegate, QTableView, QToolButton, QToolTip,
+                             QVBoxLayout, QWidget)
 
 from app import theme
 from app.qt import motion, rows, shadow, strings, style
@@ -140,7 +141,9 @@ def answer_number(answer, chained):
 # --- the numbers ---------------------------------------------------------------------------------------------------- #
 FILL_FROM = 400              # IK-6: more rows than this to make at once and the tray fills in steps (a screen first)
 FIRST_ROWS = 60             # ... the rows the press's own frame makes (a screen and more)
-FILL_STEP_S = 0.003         # ... each later step's budget on the window's thread (the rows' items made, off the list)
+FILL_STEP_S = 0.0025        # ... each later step's budget on the window's thread (the rows made, then put on)
+FIRST_STEP_MS = 16          # ... the first step a frame after the list's first paint (never in the paint's turn)
+FIRST_WAIT_MS = 100         # ... or this long after the press, when no paint came (a tray that never painted)
 FILL_CHUNK = 250            # ... items made between two looks at the clock
 REPAINT_ROWS = 40            # picks moved on more rows than this: one repaint of the list's face (A4A-3)
 HAND_EVERY = 0.25           # s: the numbers go to the reader at most four times a second (A4), the last never lost
@@ -736,6 +739,7 @@ class TrayModel(QStandardItemModel):
         self.size_of = lambda key: QSize(0, row_height())
         self.changed = 0                        # rows inserted, removed or repainted by the last `apply`
         self.gone_heads = []                    # heads' keys removed (their widgets go with their rows)
+        self.gone_keys = []                     # every key removed since the tray last looked (its picks let go)
 
     def obj(self, row):
         return self.objs[row] if 0 <= row < len(self.objs) else None
@@ -796,6 +800,7 @@ class TrayModel(QStandardItemModel):
             self.keyset.discard(k)
             if self.heads.pop(k, None) is not None:
                 self.gone_heads.append(k)
+        self.gone_keys += self.keys[at:at + n]
         del self.keys[at:at + n]
         del self.objs[at:at + n]
         self._rows = None
@@ -842,10 +847,8 @@ class TrayModel(QStandardItemModel):
             self._take(new_objs)
             return self.changed
         n_old, n_new = len(keys), len(new_keys)
-        p = 0
         top = min(n_old, n_new)
-        while p < top and keys[p] == new_keys[p]:
-            p += 1
+        p = next(itertools.compress(itertools.count(), map(operator.ne, keys, new_keys)), top)   # the first that differs
         d = n_new - n_old
         came = new_keys[p:p + d] if d > 0 else ()
         if d > 0 and keys[p:] == new_keys[p + d:] and len(set(came)) == d and self.keyset.isdisjoint(came):
@@ -936,10 +939,13 @@ class TrayDelegate(QStyledItemDelegate):
                   dpr=view.viewport().devicePixelRatioF() or 1.0)
 
 
-class TrayList(QListView):
+class TrayList(QTableView):
     """The tray's list: hover, tooltips and presses by a row's parts — the icon square acts, ⋯ opens its menu, a press
     on the row that travels `drag-start-px` drags it; Tab and ↑ ↓ walk the arrivals, Enter is the row's icon, the
-    menu key its ⋯."""
+    menu key its ⋯. One column, no headers, no grid: a table only for its rows' heights (fix3, the verifier's finding
+    6) — a list lays every row out again on each insert (~3 ms at 20,000, 10 at 60,000, and an arrival or a fill's
+    insert is one), a table's rows are its row header's sections (each an arrival's height, a head's set alone), so an
+    insert costs the rows inserted, never the tray's size."""
 
     def __init__(self, tray):
         super().__init__(tray)
@@ -948,9 +954,20 @@ class TrayList(QListView):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        # one pass (IK-6): a batched layout drew no row at all until its last batch — the list stood blank ~250 ms
-        # at 20,000 after every arrival, ~800 ms at 60,000; one pass is ~3 ms at 20,000 (10 at 60,000)
-        self.setLayoutMode(QListView.LayoutMode.SinglePass)
+        self.setShowGrid(False)
+        self.setCornerButtonEnabled(False)
+        corner = self.findChild(QAbstractButton)                 # the table's own corner button, never shown (no
+        if corner is not None:                                   # headers): named as the list, as every control is
+            corner.setAccessibleName(strings.TRAY_NAME)
+            corner.setToolTip(strings.TRAY_NAME)
+        self.setWordWrap(False)
+        self.horizontalHeader().hide()
+        self.horizontalHeader().setStretchLastSection(True)      # the one column as wide as the list
+        sections = self.verticalHeader()
+        sections.hide()
+        sections.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        sections.setMinimumSectionSize(1)
+        sections.setDefaultSectionSize(row_height())             # an arrival's row; a head's is set on its row
         self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setTabKeyNavigation(True)                            # Tab walks the rows (then on past the last)
@@ -965,6 +982,28 @@ class TrayList(QListView):
 
     def picked(self, key):
         return key in self.tray.picks
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        self.tray.painted()
+
+    # --- S19: rows put on under what shows repaint nothing ------------------------------------------------------ #
+    def quietly_under(self, at, insert):
+        """`insert()` (rows put on from row `at`), laid out at once; when `at` is under the last row that shows, the
+        layout's repaint of the whole list is dropped (fix3: nothing on screen moved — the scroll bar, its own widget,
+        shows the new length). -> True when it was quiet."""
+        vp = self.viewport()
+        last = self.rowAt(vp.height() - 1) if self.isVisible() else -1
+        if not 0 <= last < at:
+            insert()
+            return False
+        vp.setAttribute(Qt.WidgetAttribute.WA_UpdatesDisabled, True)     # (the attribute alone: setUpdatesEnabled
+        try:                                                               # would repaint it all when turned back)
+            insert()
+            self.executeDelayedItemsLayout()
+        finally:
+            vp.setAttribute(Qt.WidgetAttribute.WA_UpdatesDisabled, False)
+        return True
 
     # --- where things are ------------------------------------------------------------------------------------------- #
     def at(self, pos):
@@ -1287,10 +1326,10 @@ class ArrivalsTray(motion.Overlay):
         self._target = ((), [], [], {})     # IK-6: (groups, the rows' keys, their objects, {head kind: its row})
         self._filling = False               # ... the rows coming in in steps (a first open at 20,000)
         self._filled_of = None              # ... the groups the rows on the list are the first rows of
-        self._made = ([], {}, set())        # ... the items made for the rows after them, not yet on the list
         self._fill_timer = QTimer(self)
         self._fill_timer.setSingleShot(True)
         self._fill_timer.timeout.connect(self._fill_step)
+        self._fill_after_paint = False      # ... the first step waits for the list's first paint (fix3)
         self._by_key = None                 # (groups, {key: arrival}) — `arrival(key)`, made when asked
         self.heads = {}                     # group kind -> (its head widget, its label, its button or None)
         self._head_objs = {}                # group kind -> its head's (kind, label) object (the same while unchanged)
@@ -1363,8 +1402,10 @@ class ArrivalsTray(motion.Overlay):
                     self.loading.show()
                 changed = self._rows_to(keys[:FIRST_ROWS], objs[:FIRST_ROWS])
                 self._filled_of = groups
-                self._made = ([], {}, set())
-            self._fill_timer.start(0)
+                self._fill_after_paint = True          # (fix3) the screen's rows painted first, in a turn of their
+                self._fill_timer.start(FIRST_WAIT_MS)  # own: the steps start a frame after the list's paint (`painted`)
+            elif not self._fill_timer.isActive():
+                self._fill_timer.start(0)
             return bool(changed)
         return bool(self._rows_to(keys, objs, whole=True))
 
@@ -1376,26 +1417,41 @@ class ArrivalsTray(motion.Overlay):
                 heads[g.kind] = len(keys)
                 keys.append(HEAD + g.kind)
                 objs.append(self._head_obj(g))
-                keys += map(_KEY, g.rows)
+                made = g.keys                                  # the reader's (fix3): no row read here, only copied
+                keys += made if len(made) == len(g.rows) else map(_KEY, g.rows)
                 objs += g.rows
             self._target = (groups, keys, objs, heads)
-            if self.picks:                                     # a pick whose row went lets go
-                gone = self.picks - set(keys)
-                if gone:
-                    self.picks -= gone
         return self._target
+
+    def _let_go_gone(self):
+        """A pick whose row went lets go — by the rows removed (`TrayModel.gone_keys`), never a set of every row: a
+        row removed and put back elsewhere (a reorder) keeps its pick. Mid-fill the rows wait for the fill's end (the
+        rows past a screen are off the list until then)."""
+        model = self.model
+        if self._filling or not model.gone_keys:
+            return
+        gone, model.gone_keys = model.gone_keys, []
+        if self.picks:
+            self.picks.difference_update([k for k in gone if k not in model.keyset])
 
     def _rows_to(self, keys, objs, whole=False, append=False):
         """The model's rows made `keys` (all the groups' when `whole`; `append`: `keys` are the next rows under the
         last, their items made — `TrayModel.make`), each group's head widget on its row, the tray placed again when
         rows changed. -> the rows changed."""
-        self._row_h = row_height()
+        self._heights()
         model = self.model
-        changed = model.append(keys, objs, append) if append else model.apply(keys, objs)
+        if append:                                             # a fill's next rows: under what shows, nothing repainted
+            out = []
+            self.view.quietly_under(len(model.keys), lambda: out.append(model.append(keys, objs, append)))
+            changed = out[0]
+        else:
+            changed = model.apply(keys, objs)
         for key in model.gone_heads:                           # a head's row removed: the list let its widget go
             self.heads.pop(key[len(HEAD):], None)
         model.gone_heads = []
+        self._let_go_gone()
         groups, _keys, _objs, at = self._target
+        sections = self.view.verticalHeader()
         for g in groups:                                       # each head's widget on its row; its words, *Mine…*
             row = at[g.kind]
             if row >= len(model.keys) or model.keys[row] != HEAD + g.kind:
@@ -1408,6 +1464,8 @@ class ArrivalsTray(motion.Overlay):
                 self.view.setIndexWidget(idx, head)
                 model.item(row).setSizeHint(self._size_of(HEAD + g.kind))
                 model.heads[HEAD + g.kind] = self._size_of(HEAD + g.kind).height()
+            if sections.sectionSize(row) != model.heads[HEAD + g.kind]:
+                sections.resizeSection(row, model.heads[HEAD + g.kind])     # the head's row its own height
         if whole:
             self._applied = groups
         if changed:
@@ -1417,20 +1475,21 @@ class ArrivalsTray(motion.Overlay):
         return changed
 
     def _fill_step(self):
-        """(IK-6) The next rows' items made within `FILL_STEP_S`, off the list (each insert lays the list out again);
-        once all are made, a step of its own puts them on in one insert and lets *Loading…* go. A closed tray waits
-        (no row work): its `open` goes on from where the fill stood."""
+        """(IK-6) The next rows made within `FILL_STEP_S` and put on under the last (fix3: a table's insert costs the
+        rows inserted, and rows put on under what shows repaint nothing — `TrayList.doItemsLayout`), step after step
+        until every row is on; then *Loading…* goes. A closed tray waits (no row work): its `open` goes on from where
+        the fill stood."""
+        self._fill_after_paint = False
         if not self._filling or not self.open_now():
             return
         groups, keys, objs, _heads = self._target_for(self.groups)
         if self._filled_of is not groups:
             self._apply()                                      # (new groups while it was closed: from a screen's rows)
             return
-        items, heads, made_keys = made = self._made
-        base = len(self.model.keys)
-        i = base + len(items)
+        base = i = len(self.model.keys)                        # (mid-fill the rows on are the groups' first rows)
         if i < len(keys):
             t0 = time.perf_counter()
+            items, heads, made_keys = [], {}, set()
             while i < len(keys) and time.perf_counter() - t0 < FILL_STEP_S:
                 j = min(len(keys), i + FILL_CHUNK)
                 more, hs = self.model.make(keys[i:j], objs[i:j])
@@ -1438,19 +1497,41 @@ class ArrivalsTray(motion.Overlay):
                 heads.update(hs)
                 made_keys.update(keys[i:j])
                 i = j
-            self._fill_timer.start(0)                          # more to make, or the insert: on the next tick
-            return
-        self._made = ([], {}, set())
-        if self.model.keys == keys[:base]:
-            self._rows_to(keys[base:], objs[base:], append=made)
+            self._rows_to(keys[base:i], objs[base:i], append=(items, heads, made_keys))
+            if i < len(keys):
+                self._fill_timer.start(0)                      # more to come: on the next tick
+                return
         if self.model.keys != keys:
             self._rows_to(keys, objs)                          # (never left otherwise: the groups' rows, whole)
         self._filling = False
         self._filled_of = None
         self._applied = groups
+        self._let_go_gone()
         self.loading.hide()
         if self.isVisible():
             self.place()
+
+    def _heights(self):
+        """The text size moved: an arrival's row height (the row header's default: every arrival's row with it, in
+        one call) and each head's row."""
+        if row_height() == self._row_h:
+            return
+        self._row_h = row_height()
+        sections = self.view.verticalHeader()
+        sections.setDefaultSectionSize(self._row_h)
+        for key in list(self.model.heads):
+            row = self.model.row_of(key)
+            if row >= 0:
+                size = self._size_of(key)
+                self.model.heads[key] = size.height()
+                self.model.item(row).setSizeHint(size)
+                sections.resizeSection(row, size.height())
+
+    def painted(self):
+        """The list painted (`TrayList.paintEvent`): a fill's first step, waiting for it, comes a frame later."""
+        if self._fill_after_paint:
+            self._fill_after_paint = False
+            self._fill_timer.start(FIRST_STEP_MS)
 
     def filling(self):
         """A big tray's rows are still coming in (IK-6; tests, the bench)."""
@@ -1566,12 +1647,7 @@ class ArrivalsTray(motion.Overlay):
         self.ensurePolished()
         width = min(round(theme.size("tray", style.current()[1])), p.width() - 16)
         lay = self.layout()
-        if row_height() != self._row_h:                  # the text size moved: every row's height with it
-            self._row_h = row_height()
-            for i, key in enumerate(self.model.keys):
-                it = self.model.item(i)
-                if it is not None:
-                    it.setSizeHint(self._size_of(key))
+        self._heights()
         content = self.model.content_height(self._row_h)
         margins = lay.contentsMargins()
         head = lay.itemAt(0).sizeHint().height()
@@ -1655,9 +1731,9 @@ class ArrivalsTray(motion.Overlay):
 
     # --- A4: the picks ----------------------------------------------------------------------------------------------- #
     def _repaint_picks(self, keys):
-        """The rows whose pick moved repainted: a few by their rows, many (Ctrl+A, letting them go) as one repaint of
-        what the list shows — never a row looked up per key at 20,000 (A4A-3)."""
-        if len(keys) > REPAINT_ROWS:
+        """The rows whose pick moved repainted: a few by their rows, many (Ctrl+A, letting them go; None: many, not
+        counted) as one repaint of what the list shows — never a row looked up per key at 20,000 (A4A-3)."""
+        if keys is None or len(keys) > REPAINT_ROWS:
             self.view.viewport().update()
         else:
             for k in keys:
@@ -1693,10 +1769,16 @@ class ArrivalsTray(motion.Overlay):
         self._repaint_picks(before ^ self.picks)
 
     def pick_all(self):
-        """Ctrl+A: every row of the tray picked."""
+        """Ctrl+A: every row of the tray picked — the model's own set of keys copied, its heads taken out (fix3: never
+        a walk of every row; mid-fill, the rows the fill is making)."""
         before = self.picks
-        self.picks = set(self.keys())
-        self._repaint_picks(before ^ self.picks)
+        if self._filling:
+            self.picks = set(self.keys())
+        else:
+            self.picks = self.model.keyset.copy()
+            self.picks.difference_update(self.model.heads)
+        many = len(self.picks) - len(before) > REPAINT_ROWS    # (the picks only grow: more than a few came)
+        self._repaint_picks(None if many else before ^ self.picks)
 
     def clear_picks(self):
         if self.picks:

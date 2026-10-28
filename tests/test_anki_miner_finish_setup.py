@@ -325,12 +325,16 @@ def test_run_setup_touches_its_folder_every_poll_so_a_quiet_download_is_never_re
     folder = tmp_path / anki_miner.SETUP_STAGING
     folder.mkdir()
     stale = time.time() - anki_miner.SETUP_FRESH_S - 60       # an hour-long download's quiet stretch
+    beat = folder / anki_miner.HEARTBEAT
+    beat.write_text("")                     # an earlier poll's, as quiet as the folder (mutants F19 / F20)
+    os.utime(beat, (stale, stale))
     os.utime(folder, (stale, stale))
     assert anki_miner.setting_up() is False, "before the heartbeat: read as not running"
     polled = []
     anki_miner.run_setup(MINER, "ja", None, folder / "progress.json", on_poll=lambda: polled.append(1))
     assert polled == [1], "the caller's own poll still runs"
-    assert anki_miner.setting_up() is True and os.stat(folder).st_mtime > stale
+    assert anki_miner.setting_up() is True and os.stat(beat).st_mtime > stale
+    assert os.stat(folder).st_mtime == pytest.approx(stale), "the folder itself is never touched (review)"
 
 
 def test_a_heartbeat_into_a_folder_already_removed_never_raises(api, tmp_path):

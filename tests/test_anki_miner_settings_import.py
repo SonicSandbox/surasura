@@ -840,3 +840,18 @@ def test_the_address_is_written_even_when_the_deck_must_be_asked_in_the_same_pre
     assert result == M.ASK and asked["deck"][:2] == ["中文::句子", "中文::HSK"]
     assert [i["values"] for i in world["imports"]] == [{"ankiconnect_url": "http://127.0.0.1:8766"}]
     assert M.SAID_ADDRESS.format(url="http://127.0.0.1:8766").strip() in asked["said"]
+
+
+def test_a_note_type_kept_is_never_said_as_matched_again(world, monkeypatch):
+    """Mutant F25: only the fields fixed on the note type already set — its field match isn't said as news."""
+    world["configured"], world["items"], world["profile"] = True, ["fields"], "surasura-1"
+    world["profiles"] = [{"id": "default", "name": "Default", "active": True},
+                         {"id": "surasura-1", "name": "Surasura", "active": False}]
+    mine = ["単語", "Sentence", "Picture"]
+    world["anki"] = Anki(["Anki Miner"], {"マイ単語": mine}, {"Anki Miner": "マイ単語"})
+    exported = dict(FRESH, anki_note_type="マイ単語", anki_fields={"word": "単語", "sentence": "Gone"})
+    monkeypatch.setattr(anki_miner, "settings_export",
+                        lambda path, language, out, profile=None: {"configured": True, "settings": exported})
+    result, said = M.finish_setup(ZH, "zh")
+    assert result == M.SET_UP and world["imports"][0]["values"]["anki_fields"]["sentence"] == "Sentence"
+    assert "matched its fields" not in (said or "")

@@ -2000,7 +2000,7 @@ def test_the_last_files_done_on_a_splits_first_part_joins_it_forward_and_hatos_m
     assert [c[0] for c in calls(writer)] == ["set_watched", "join"]
     join = calls(writer, "join")[0][2]
     assert join["piece_ids"] == [target.piece_id] + drag.pieces_of(row) and join["ahead"] is True
-    assert win.toasts.card.base.startswith(strings.DONE_JOINED.split("{line}")[0].format(n=len(row.episodes)))
+    assert win.toasts.card.base.startswith(strings.DONE_JOINED.split("{line}")[0])
     writer.calls.clear()
     row = _all_but_one(seed, win, 0)
     win.moves.done(row, row.episodes[-1])

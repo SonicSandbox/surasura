@@ -386,14 +386,16 @@ def still_arriving(episodes, now=None):
     came in on its own — over `ARRIVING_ALONE_S` after the one before it — within the last `ARRIVING_RECENT_S`. Files
     that came in together (a setup's first look, a season downloaded at once) never are; nor one file alone. A file
     with no arrival time (a cache from before) can't tell: True (the offer asks)."""
-    times = [_seconds(e.added) for e in episodes]
-    if None in times:
+    stamps = [e.added for e in episodes]
+    if None in stamps:
         return True
-    if len(times) < 2:
+    if len(stamps) < 2:
         return False
-    times.sort()
+    before, newest = (_seconds(t) for t in sorted(stamps)[-2:])     # the store's stamps sort as text: two parsed
+    if before is None or newest is None:
+        return True
     now = time.time() if now is None else now
-    return times[-1] - times[-2] > ARRIVING_ALONE_S and now - times[-1] < ARRIVING_RECENT_S
+    return newest - before > ARRIVING_ALONE_S and now - newest < ARRIVING_RECENT_S
 
 
 def numbers_gap(episodes):

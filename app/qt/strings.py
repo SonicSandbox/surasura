@@ -638,8 +638,9 @@ DONE_ALL = "✓ All {n} watched — finished with it?"
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
 # L6.3: what the last file's Done does by itself (its toast's Undo takes it back; the ✓ stays)
-DONE_FINISHED = "✓ All {n} watched · {title} finished · its cards stay put"
-DONE_JOINED = "✓ All {n} watched · joined to {line}"
+DONE_FINISHED = "✓ {title} finished · its cards stay put"
+DONE_JOINED = "✓ Joined to {line}"                 # a split's part, onto its next part in Current
+DONE_CAME_UP = "✓ {line} came up from Goal"        # its next part, up from Goal after it
 # --- LM11b G5: one show of a group all watched, the group's other shows not yet (GW-2 ⭐ A)
 DONE_SHOW_IN_GROUP = "✓ {show}: all {n} watched — finished with it?"
 DONE_MOVE_SHOW_FINISHED = "Move {show} to Finished"

@@ -764,7 +764,8 @@ COPY_TABLES = ("roots", "pieces", "trash", "exclusions", "anki_links", "anki_cha
 WORK_NOT_COPIED = ("search_key", "feed_in")
 # Meta keys the copy carries when the store holds them (beside epoch, log_seq, mine_line, arrivals_on and the readers)
 COPY_META_KEYS = ("soon_line", "auto_band", "rename_asks", "kept_apart", "show_groups",   # LM2
-                  "keep_watched")                                                          # W-1
+                  "keep_watched",                                                          # W-1
+                  "audiobook_answers")                                                     # Hon, H-8
 ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mtime_ns", "added_at",
                "graduated_at", "piece_id", "watched", "mined_at", "pinned", "in_learning_order", "work_id",
                "mine_asked")
@@ -3349,15 +3350,31 @@ class Store:
         n = self._soon_line()
         if n is None:
             return
-        now = self.conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'now'").fetchone()[0]
+        # Hon (H-6): a row waiting for its text (an audiobook beside its book) is no row the line counts — it stays
+        # with the row before it, on the same side of the line
+        now = self.conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'now' AND availability != 'waiting'").fetchone()[0]
         if now > n:
-            down = [r[0] for r in self.conn.execute("SELECT id FROM items WHERE tier = 'now' ORDER BY ord DESC, id DESC "
-                                                    "LIMIT ?", (now - n,))][::-1]
+            rows = self.conn.execute("SELECT id, availability FROM items WHERE tier = 'now' ORDER BY ord, id").fetchall()
+            at, seen = 0, 0
+            if n > 0:
+                for at, r in enumerate(rows):                       # the n-th row with text ...
+                    seen += r[1] != "waiting"
+                    if seen == n:
+                        break
+                at += 1
+                while at < len(rows) and rows[at][1] == "waiting":  # ... and the waiting rows right after it stay
+                    at += 1
+            down = [r[0] for r in rows[at:]]
             self._put("soon", down, ("top",), cmd.version)
             cmd.touch(CURRENT)
         elif now < n:
-            up = [r[0] for r in self.conn.execute("SELECT id FROM items WHERE tier = 'soon' ORDER BY ord, id LIMIT ?",
-                                                  (n - now,))]
+            up, need = [], n - now
+            for item_id, availability in self.conn.execute("SELECT id, availability FROM items WHERE tier = 'soon' "
+                                                           "ORDER BY ord, id"):
+                if need == 0 and availability != "waiting":
+                    break
+                up.append(item_id)
+                need -= availability != "waiting"
             if up:
                 self._put("now", up, ("end",), cmd.version)
                 cmd.touch(CURRENT)
@@ -5801,6 +5818,8 @@ def media_type_guess(counts, anilist_id=None, tmdb_id=None):
         return "book"
     if kind == "text":
         return "text"
+    if kind == "audio":                                  # an audiobook alone (Hon, H-7): `view_rows`' rule too
+        return "audiobook"
     if kind == "subtitle":
         if tmdb_id and str(tmdb_id).startswith("movie:"):
             return "movie"
@@ -8466,8 +8485,9 @@ def _origin_record(root_id, origin, f):
     record = {"producer": SOURCE_PRODUCER, "channel_id": root_id, "root": root_id, "origin": origin,
               "size": f.get("size"), "mtime_ns": f.get("mtime_ns"), "sha256": f.get("sha256"),
               "show": {"title": str(f.get("show") or "")}}
-    for key in ("video_path", "video_size", "video_key", "episode", "chapter"):   # chapter: a book's part's place
-        if f.get(key) is not None:                                                  # (`extract.book_split`, Hon)
+    for key in ("video_path", "video_size", "video_key", "episode", "chapter",    # chapter: a book's part's place
+                "audiobook"):                                   # (`extract.book_split`, Hon); an audiobook's (H-7)
+        if f.get(key) is not None:                              # files, length and pairing: `audiobooks.record`
             record[key] = f[key]
     return record
 
@@ -9491,13 +9511,28 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
     no text copy (K5: its `rel` the video's name, no file made) is 'waiting': in New arrivals even on setup's scan,
     never placed by a rule, never counted."""
     rel = prepared[1]
-    waiting = record.get("video_path") is not None and not is_content_name(rel)
+    audio = record.get("audiobook") if isinstance(record.get("audiobook"), dict) else None
+    waiting = (record.get("video_path") is not None or audio is not None) and not is_content_name(rel)
     if waiting:                                      # fincov (LM1b): typed from its video — a subtitle episode waiting
-        entry = dict(prepared[3], source_type="subtitle")    # for its text — never the fallback 'text' (a book's)
+        entry = dict(prepared[3], source_type="audio" if audio else "subtitle")   # for its text — never the fallback
+        if audio and audio.get("title"):             # 'text' (a book's); an audiobook (Hon, H-7) its own type and title
+            entry["title"] = str(audio["title"])
         prepared = prepared[:3] + (entry, (None, None, "waiting"))
-    work = self._source_work(rel, record, cmd, works)
+    # H-6: an audiobook paired with a book is one more row of the book's title, after its last part, wherever that is;
+    # alone or asked about, a title of its own by its own folder (`<title> (audio)`), never a book's of the same name
+    joined = self._audiobook_place(audio["book"]) if audio and isinstance(audio.get("book"), dict) else None
+    if audio and not joined and audio.get("book") is not None:
+        record = dict(record, audiobook=dict(audio, book=None))      # its book gone meanwhile: alone, never half-paired
+    if joined:
+        work = joined[0]
+    elif audio:
+        work = self._folder_work(rel, str(audio.get("title") or "") or None, cmd, works)
+    else:
+        work = self._source_work(rel, record, cmd, works)
     runs = runs if first and not waiting else None
-    if first and not waiting and _tier_2x(record.get("origin")) == "goal":
+    if joined:
+        tier, where = joined[1], ("after", joined[2])
+    elif first and not waiting and _tier_2x(record.get("origin")) == "goal":
         tier, where = "goal", ("end",)               # K8: a 2.x library's Goal folder read as his library's folder
         runs = None                                  # (no Current run of its show to keep)
     else:
@@ -9514,7 +9549,7 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
     self._put(tier, [item_id], where, cmd.version)
     if runs is not None:                             # the batch's copy of its show's run, as it now stands
         _run_insert(runs[work], (item_id, tier, None, rel), where)
-    cmd.touch({tier}, availability=prepared[4][2] == "missing")
+    cmd.touch(() if joined else {tier}, availability=prepared[4][2] == "missing")   # (a waiting row moves no count)
     change.added.append(item_id)
     if first:
         cmd.quiet.add(item_id)                       # S1: setup's scan logs nothing (a back-fill's rule)
@@ -11402,6 +11437,158 @@ Store._source_work = _store_source_work
 Store._source_spot = _store_source_spot
 Store._in_run = _store_in_run
 Store._episodes_of = _store_episodes_of
+
+
+# --- audiobooks (Hon, 3.0 E2; H-6…H-8 PROVISIONAL): `app/audiobooks.py` finds and pairs, `sources` takes them in ---- #
+# An audiobook is ONE item waiting for Anki Miner (`source_type` 'audio', availability 'waiting': no file made, never
+# counted, never Generate's or the mine line's), its origin record keyed by its first file and holding `"audiobook"`
+# (`audiobooks.record`: its files in order, length, chapters; `book` once paired, `ask` while H-8's question is open).
+# Paired, it is a row of the book's title after the book's last part (H-6). The answers live in meta (one JSON value,
+# the copy carries it): {answer key: true / false}; a *No* sets AUDIOBOOKS_STALE so the next look weighs the lone
+# audiobooks again (the next book, or none). No table, no schema: taking the key out of the records undoes it all.
+AUDIOBOOK_ANSWERS = "audiobook_answers"
+AUDIOBOOKS_STALE = "audiobooks_stale"
+
+
+def _store_audiobook_rows(self, item_id=None):
+    """[(content_key, item_id, record)] of the live origins holding an audiobook (`item_id`: that item's only)."""
+    sql = (f"SELECT p.content_key, p.item_id, p.pairing FROM pairings p WHERE {_LIVE_ORIGIN} AND "
+           f"json_valid(p.pairing) AND json_type(p.pairing, '$.audiobook') = 'object'")
+    rows = self.conn.execute(sql + " AND p.item_id = ?", (item_id,)) if item_id is not None else self.conn.execute(sql)
+    return [(k, i, _json_dict(t) or {}) for k, i, t in rows]
+
+
+def _store_audiobooks(self):
+    """[{item_id, key, audiobook}] of every audiobook item, one each (its first live record: an item holding the same
+    audiobook from two sources keeps them alike, `pair_audiobook`) — what a look weighs again (one read)."""
+    with self._reading():
+        out = {}
+        for k, i, r in self._audiobook_rows():
+            out.setdefault(i, {"item_id": i, "key": k, "audiobook": r["audiobook"]})
+        return list(out.values())
+
+
+def _store_audiobook_answers(self):
+    """H-8's answers: {answer key (`audiobooks.answer_key`): True (the same book) / False}."""
+    with self._reading():
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (AUDIOBOOK_ANSWERS,)).fetchone()
+    said = _json_dict(row[0]) if row else None
+    return {k: v for k, v in (said or {}).items() if isinstance(v, bool)}
+
+
+def _store_audiobook_asks(self):
+    """H-8's open questions, for *Needs you*: [{item_id, key, title, files, seconds, book: {title, epub, item}}] — an
+    audiobook item whose record asks, still in the library."""
+    out, asked = [], set()
+    with self._reading():
+        for _k, item_id, rec in self._audiobook_rows():
+            ab = rec.get("audiobook") or {}
+            ask = ab.get("ask")
+            if item_id in asked:                         # one question an item (its copy in another source: the same)
+                continue
+            asked.add(item_id)
+            if isinstance(ask, dict) and ask.get("key") and \
+                    self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
+                out.append({"item_id": item_id, "key": ask["key"], "title": ab.get("title") or "",
+                            "files": list(ab.get("files") or ()), "seconds": ab.get("seconds"),
+                            "book": {"title": ask.get("title") or "", "epub": ask.get("epub"),
+                                     "item": ask.get("item")}})
+    return out
+
+
+def _store_audiobook_place(self, book):
+    """(work, tier, its last part's id) of the book an audiobook reads — its EPUB's live parts (`<epub>#<n>`), else the
+    part the pairing named — or None (the book is gone, or waits)."""
+    ids = set()
+    epub = book.get("epub")
+    if isinstance(epub, str) and epub:
+        lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
+        ids = {r[0] for r in self.conn.execute(f"SELECT p.item_id FROM pairings p WHERE p.content_key >= ? AND "
+                                               f"p.content_key < ? AND {_LIVE_ORIGIN}", (lo, lo[:-1] + "$"))}
+    if not ids and isinstance(book.get("item"), int) and not isinstance(book.get("item"), bool):
+        ids = {book["item"]}
+    rows = []
+    for chunk in _chunks(sorted(ids), 500):
+        rows += self.conn.execute(f"SELECT id, tier, ord, work_id FROM items WHERE id IN ({','.join('?' * len(chunk))}) "
+                                  f"AND availability != 'waiting' AND work_id IS NOT NULL", chunk).fetchall()
+    if not rows:
+        return None
+    rows = [r for r in rows if r[1] != "graduated"] or rows     # beside the parts still read, never into Finished
+    last = max(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
+    return last[3], last[1], last[0]
+
+
+def _store_pair_audiobook(self, item_id, book=None, ask=None, answer=None, stale=False, by=SOURCE_PRODUCER,
+                          fields=None):
+    """An audiobook item's pairing written in ONE command: its records' `book` / `ask` (`audiobooks.set_pair`'s) —
+    every live record of the item alike (the same audiobook in two sources) — and with a `book` the item joins the
+    book's title after its last part (H-6; the title it leaves, emptied, is tidied as any). `answer` (key, True /
+    False): H-8's answer kept; `stale`: the next look weighs the lone audiobooks again; `fields`: the audiobook as
+    found now (its files, sizes, length: `audiobooks.record`'s), its pairing kept unless `book` / `ask` say otherwise.
+    -> True when written; False: no such audiobook item, or its book is gone (nothing written but the answer)."""
+    with self._command("audiobook", by) as cmd:
+        if answer is not None or stale:
+            row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (AUDIOBOOK_ANSWERS,)).fetchone()
+            said = (_json_dict(row[0]) if row else None) or {}
+            if answer is not None:
+                said[str(answer[0])] = bool(answer[1])
+            self._set_meta({AUDIOBOOK_ANSWERS: _dumps(said), "copy_dirty": self._meta().get("copy_dirty", 0) + 1,
+                            **({AUDIOBOOKS_STALE: "1"} if stale else {})})
+            cmd.touch()
+        rows = self._audiobook_rows(item_id)
+        if not rows:
+            return False
+        placed = self._audiobook_place(book) if isinstance(book, dict) else None
+        if isinstance(book, dict) and placed is None:
+            return False
+        for key, _i, rec in rows:
+            ab = dict(rec["audiobook"], **(fields or {}))
+            if fields is None or book is not None or ask is not None:
+                ab.update(book=book if placed else None, ask=None if placed else ask)
+            self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                              (json.dumps(dict(rec, audiobook=ab), sort_keys=True, ensure_ascii=False), key))
+        if placed is not None:
+            work, tier, last = placed
+            old = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()[0]
+            if old != work:
+                self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
+                cmd.reworked.add(item_id)
+                cmd.fed_works.update(w for w in (old, work) if w is not None)
+            self._put(tier, [item_id], ("after", last), cmd.version)
+            cmd.feed([item_id])
+        cmd.touch()
+        return True
+
+
+def _store_answer_audiobook(self, item_id, yes, key=None):
+    """H-8's answer to *Is this audiobook 「…」 the book 「…」?* — kept, never asked twice: *Yes, the same book* joins
+    the book's title (`pair_audiobook`); *No* takes the question away and the next look asks about the next book, or
+    none. `key`: the question the card showed (its answer key) — another one asked since is never answered by it.
+    -> True when that question was still open."""
+    with self._reading():
+        rows = self._audiobook_rows(item_id)
+    ask = (rows[0][2].get("audiobook") or {}).get("ask") if rows else None
+    if not isinstance(ask, dict) or not ask.get("key") or (key is not None and ask["key"] != key):
+        return False
+    if yes and self.pair_audiobook(item_id, book=dict(ask, how="answered"), answer=(ask["key"], True), by="user"):
+        return True
+    self.pair_audiobook(item_id, answer=(ask["key"], bool(yes)), stale=True, by="user")
+    return True
+
+
+def _store_audiobooks_weighed(self):
+    """The look weighed the lone audiobooks again: AUDIOBOOKS_STALE off (bookkeeping)."""
+    self.bookkeeping({AUDIOBOOKS_STALE: "0"})
+
+
+Store._audiobook_rows = _store_audiobook_rows
+Store.audiobooks = _store_audiobooks
+Store.audiobook_answers = _store_audiobook_answers
+Store.audiobook_asks = _store_audiobook_asks
+Store._audiobook_place = _store_audiobook_place
+Store.pair_audiobook = _store_pair_audiobook
+Store.answer_audiobook = _store_answer_audiobook
+Store.audiobooks_weighed = _store_audiobooks_weighed
 
 
 # ------------------------------------------------------------------------------------------------ #

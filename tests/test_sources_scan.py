@@ -2217,11 +2217,11 @@ def test_a_source_that_goes_mid_look_is_unreachable_and_its_folder_times_are_kep
         away = src + "_away"
         listed, real = [], sources._listing
 
-        def unplugged(folder, links=None):
+        def unplugged(folder, links=None, audio=None):
             listed.append(folder)
             if len(listed) == at:
                 os.rename(src, away)                                          # the drive goes mid-look
-            return real(folder, links)
+            return real(folder, links, audio)
         monkeypatch.setattr(sources, "_listing", unplugged)
         result = sources.scan(store, language, root, full=True)
         monkeypatch.setattr(sources, "_listing", real)
@@ -2470,11 +2470,11 @@ def test_a_show_folder_gone_mid_look_leaves_the_source_reachable_and_the_others_
     _settle(src)
     listed, real = [], sources._listing
 
-    def one_goes(folder, links=None):
+    def one_goes(folder, links=None, audio=None):
         listed.append(folder)
         if len(listed) == 2:
             shutil.rmtree(os.path.join(src, shows[2]))                       # a show's folder deleted mid-look
-        return real(folder, links)
+        return real(folder, links, audio)
     monkeypatch.setattr(sources, "_listing", one_goes)
     with store:
         root = store.add_source(src)

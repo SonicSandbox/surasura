@@ -70,10 +70,13 @@ AUDIO_TYPES = ("podcast", "audiobook")
 
 def waits_for(item, media=None):
     """What Anki Miner can't mine yet, this item (a `store.item` dict) being one — the one rule for Connect's jobs, the
-    gaps and the rows -> "books" (a book or a text, by its file's own type: `text_only`), "audio" (an item of a title
-    whose type is a podcast's or an audiobook's, `media`: alpha 4 A4M1-3), else None. Whether Anki Miner mines that
+    gaps and the rows -> "books" (a book or a text, by its file's own type: `text_only`), "audio" (an audiobook's own
+    item, `source_type` 'audio': Hon's H-7; an item of a title whose type is a podcast's or an audiobook's, `media`:
+    alpha 4 A4M1-3), else None. Whether Anki Miner mines that
     kind now is `anki_miner.mines`'s. An audio title's episode with a video beside it is still mined: Connect sets one
     aside only while it finds no video for it (`runner.Steps.waiting_items`, review A2-1)."""
+    if item and item.get("source_type") == "audio":     # an audiobook's own item (Hon, H-7), whatever its title's type
+        return "audio"
     if text_only(item):
         return "books"
     return "audio" if item and media in AUDIO_TYPES else None

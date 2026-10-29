@@ -1233,6 +1233,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                                 "kept 30 days. Never a drive that's only offline. Undo puts them back"),
     "this_one": ("This one", "It's this missing file, moved or renamed: it keeps its place, its ✓ and its cards"),
     "its_new": ("It's new", "None of these: it joins your library as a new file"),
+    # Hon (H-8 PROVISIONAL): an audiobook Surasura isn't sure reads that book
+    "same_book": ("Yes, the same book", "The audiobook joins the book's title: one entry, the book's chapters and its "
+                                        "audio. Kept: never asked again"),
+    "not_book": ("No", "Not this book: never asked about these two again. Another book like it may be asked about"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1331,6 +1335,8 @@ NEEDS_KNOWN_MARKED_NONE = "Their words were known already"
 NEEDS_KNOWN_LEFT = "Left as they are · cards you suspend or mark from now on still count"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"
+NEEDS_SAME_BOOK = "The audiobook joins its book"
+NEEDS_NOT_BOOK = "Kept: never asked about these two again"
 NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"

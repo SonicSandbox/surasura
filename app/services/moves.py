@@ -67,7 +67,8 @@ MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this of
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
-              "place", "put_back", "import_finished", "relink", "its_new", "link_video", "remove", "skip_folder",
+              "place", "put_back", "import_finished", "relink", "its_new", "audiobook_answer", "link_video", "remove",
+              "skip_folder",
               "restore", "pin", "keep_cards", "ask_mining", "split", "join", "set_media_type", "set_cover",
               "set_options")
 #   an undo needs its Change: never journalled; nor an Explorer drop (`insert_at`: no ids yet). Its files are copied into
@@ -90,7 +91,7 @@ WORDS = ("saving", "cant_undo", "nearest", "top", "crash_one", "crash_many", "re
 PLACES = ("top", "after-show", "soon", "goal", "finished")  # `place`'s targets (`Store.place`)
 KEPT = ("tier", "before_id", "after_id", "near", "direction", "on", "keep_cards", "end", "seen",
         "where", "paths", "copied", "path", "trash_ids", "piece_id", "piece_ids", "work_ids", "media_type",
-        "work_id", "source", "ref", "locked", "before", "ahead")
+        "work_id", "source", "ref", "locked", "before", "ahead", "yes", "key")
 #   a journal entry's values beside its op and ids (`_entry`): each command's own; `before`: a GUARDED one's as queued
 # --- W3.2 B: `register` (a producer's files into New arrivals): journalled, its records and rules kept
 JOURNALLED += ("register",)
@@ -396,6 +397,12 @@ class Writer:
         """`Store.its_new`: the rename ask's *It's new* — the ask goes, the file joins as any new file. The store keeps
         no change for it: never on the Undo stack (`on_reread`)."""
         return self._put({"op": "its_new", "ids": [], "path": os.fspath(path), "label": label})
+
+    def answer_audiobook(self, item_id, yes, key=None, label=None):
+        """`Store.answer_audiobook` (Hon, H-8): *Yes, the same book* / *No* to the question the card showed (`key`, its
+        answer key: one asked since is never answered by it) — an answer kept, never on the Undo stack (`on_reread`),
+        as `its_new`; journalled with both (a replay answers the same question)."""
+        return self._put({"op": "audiobook_answer", "ids": [item_id], "yes": bool(yes), "key": key, "label": label})
 
     def link_video(self, item_id, video_path, label=None):
         """Connect's *Link…* (`app/connect/link.link`): the episode's video, as a pairing on the existing item —
@@ -982,6 +989,9 @@ class Writer:
             return change                                   # never set by a call that raised: a failure says no why
         if op == "its_new":
             store.its_new(cmd["path"])              # a sync's summary, no change: nothing to undo
+            return None
+        if op == "audiobook_answer":                # Hon (H-8): an answer kept, nothing to undo
+            store.answer_audiobook(ids[0], cmd["yes"], key=cmd.get("key"))
             return None
         if op == "stop_source":                     # T6: None when it wasn't being read (a replay that landed)
             return store.stop_source(cmd["root"])

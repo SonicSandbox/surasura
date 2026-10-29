@@ -469,8 +469,8 @@ def is_content_file(path):
 # --- Where a sentence came from (the report's per-sentence source badge) ------------------------ #
 # Kinds the learner can act on differently: a subtitle line belongs to a video, a YouTube line to a
 # timestamped video, a bilibili.tv line to an episode page, an EPUB chapter to a book, everything
-# else is plain text.
-SOURCE_TYPES = ("subtitle", "youtube", "bilibili", "epub", "text")
+# else is plain text. An audiobook's item (Hon, H-7) is "audio": it waits for Anki Miner, never in a report.
+SOURCE_TYPES = ("subtitle", "youtube", "bilibili", "epub", "text", "audio")
 
 # The transcript downloader names its output "<Title> [<11-char video id>].txt", so the id ends the
 # stem — but Graduate/Demote append a `_<timestamp>` when resolving a name collision, sometimes more

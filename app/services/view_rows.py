@@ -56,6 +56,7 @@ MEDIA_WORD = {"anime": "video", "drama": "video", "movie": "video", "youtube": "
               "text": "file", None: "video"}
 VERB = {"video": "Watch", "audio": "Listen", "EPUB": "Read", "file": "Open"}
 EPISODIC = ("anime", "drama", "movie", None)
+AUDIO_MEDIA = ("audiobook", "podcast")          # a title listened to (`MEDIA_WORD` "audio"): an audiobook alone is one
 
 Status = namedtuple("Status", "kind label tip tone")          # tone: ok · accent · dim · ink · faint · warn
 # --- R47 (laptop rows 47 + 56): `stop`, the Connect job a *Mining* status's *Stop* stops (`feed.Item.job`, while
@@ -253,6 +254,13 @@ STRINGS = {
     "tip_no_subs": "Its {word} is in your folder, its subtitle file isn't yet: nothing to read or mine until one "
                    "arrives. Surasura fills it in by itself",
     "arr_no_subs": "no subtitles yet",
+    # Hon (H-6, H-7 PROVISIONAL): an audiobook — paired, one row of its book's title; alone, its own waiting item
+    "with_audiobook": "🎧 With its audiobook",
+    "tip_with_audiobook": "🎧 With its audiobook 「{title}」 — the book's cards get its audio once Anki Miner mines "
+                          "audio: nothing to do meanwhile.",
+    "audiobook": "Audiobook",
+    "play_audio_wait": "Its audio is in your folder; it holds no words until Anki Miner gives its text",
+    "arr_audio_wait": "waits for Anki Miner",
     "eps_more": " and {n} more",
     "player": {"video": "video player", "audio": "audio player", "EPUB": "e-book reader", "file": "default app"},
     # a book split by its chapters (Hon, alpha 4): its part's name after its number, `extract.part_label`'s
@@ -438,6 +446,8 @@ def media_type_guess(counts, anilist_id=None, tmdb_id=None):
         return "book"
     if kind == "text":
         return "text"
+    if kind == "audio":                                  # an audiobook alone (Hon, H-7): its title is one
+        return "audiobook"
     if kind == "subtitle":
         if tmdb_id and str(tmdb_id).startswith("movie:"):
             return "movie"
@@ -554,7 +564,9 @@ def status_of(eps, word, line_n):
     deleted = [e for e in eps if getattr(e, "deleted", False) and not (e.cards or e.mined)]
     unmined = [e for e in eps if not (e.cards or e.mined or getattr(e, "deleted", False))]
     ready = [e for e in unmined if not e.missing and not getattr(e, "waiting", False)]
-    no_subs = [e for e in unmined if getattr(e, "waiting", False)]     # SRC W1b: nothing to mine until one arrives
+    # an audiobook's own item (Hon, H-7) waits for Anki Miner as audio does (A4M1-3), never *No subtitles yet*
+    heard = [e for e in unmined if _heard(e)]
+    no_subs = [e for e in unmined if getattr(e, "waiting", False) and e not in heard]   # SRC W1b: until one arrives
     missing = [e for e in eps if e.missing and not e.removed and not getattr(e, "deleted", False)]   # waits on nothing
     removed = [e for e in eps if e.removed]
     top_missing = [e for e in missing if e.in_top]
@@ -572,11 +584,11 @@ def status_of(eps, word, line_n):
         label = STRINGS["in_anki"].format(n=cards)      # mined = its cards are there, so cards > 0 (B-13, IK-27)
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
         st = Status("in_anki", label, tip, "ok")
-    elif ready and all(getattr(e, "text", False) and not _mines(e.text) for e in ready):
+    elif (ready or heard) and all(getattr(e, "text", False) and not _mines(e.text) for e in ready + heard):
         # alpha 4 M1 / A4M1-3: only books, texts or audio left to mine while Anki Miner mines none of them — nothing to
         # press: Connect sets their jobs aside, and mines them by itself once it can (no *Mine*, no *Waiting*, never
         # Anki Miner's window)
-        audio = all(e.text == "audio" for e in ready)
+        audio = all(e.text == "audio" for e in ready + heard)
         st = Status("books", STRINGS["books_wait"], STRINGS["tip_audio_wait" if audio else "tip_books_wait"], "faint")
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
@@ -610,6 +622,13 @@ def status_of(eps, word, line_n):
     return st, mark
 
 
+def _heard(e):
+    """An audiobook's own waiting item (Hon, H-7) — its file an audio file, never a waiting video of an audio title."""
+    from app.audiobooks import is_audio
+    return bool(getattr(e, "waiting", False) and getattr(e, "text", False) == "audio" and
+                is_audio(getattr(e, "rel_path", None) or ""))
+
+
 def _waits_for(item, media):
     """What Anki Miner can't mine yet, this item being one — Connect's one rule (`connect.library.waits_for`):
     "books", "audio", else False. Alpha 4 M1 / A4M1-3."""
@@ -629,9 +648,12 @@ def _mines(kind):
 def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=None, show=None, show_key=None,
              playable=None):
     name = item.get("title") or (item.get("rel_path") or "").rsplit("/", 1)[-1]
-    chapter = None if media == "youtube" or media in EPISODIC or media == "podcast" else chapter_part(name)
-    number = None if media == "youtube" else episode_number(name)
-    if chapter:
+    audio = item.get("source_type") == "audio"               # Hon (H-6, H-7): an audiobook's one item
+    chapter = None if audio or media == "youtube" or media in EPISODIC or media == "podcast" else chapter_part(name)
+    number = None if audio or media == "youtube" else episode_number(name)
+    if audio:                                                # paired: a row of its book's title; alone: its own title
+        label = name if media in AUDIO_MEDIA else STRINGS["with_audiobook"]
+    elif chapter:
         label = chapter[1]
     elif media == "youtube":
         label = stem(name)
@@ -664,7 +686,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     can_play = ask is not None and (playable is None or bool(playable.get(item["id"])))
     # mining: Connect is making its cards now — an episode already in Anki that a level raise mines again too (alpha 2's
     # try, T3: its row showed only ✓, so no row said where the strip's arc was); a level job that waits keeps ✓
-    ep = Episode(id=item["id"], label=label, number=number, title=stem(name), watched=bool(item.get("watched")),
+    ep = Episode(id=item["id"], label=label, number=number, title=name if audio else stem(name),
+                 watched=bool(item.get("watched")),
                  cards=c, mining=item["id"] in mining, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
@@ -685,6 +708,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
         st = st._replace(moved=left, tip=STRINGS["tip_connect_moved"].format(tip=MOVED.format(folder=left)))
     if online:
         tip = STRINGS["play_online"]
+    elif waiting and audio:
+        tip = STRINGS["play_audio_wait"]
     elif waiting:
         tip = STRINGS["play_waiting"].format(word=word)
     elif missing:
@@ -781,13 +806,15 @@ def _row_connected(st, eps, connect, word):
 
 class _Shim:
     """An episode as `status_of` reads it (`mined`: its cards are in Anki — never the receipt alone)."""
-    __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted", "waiting", "text")
+    __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted", "waiting", "text",
+                 "rel_path")
 
     def __init__(self, ep, mined):
         self.label, self.cards, self.mined, self.deleted = ep.label, ep.cards, mined, ep.deleted
         self.missing, self.removed, self.in_top, self.mining = ep.missing, ep.removed, ep.in_top, ep.mining
         self.waiting = getattr(ep, "waiting", False)
         self.text = getattr(ep, "text", False)          # alpha 4 M1
+        self.rel_path = getattr(ep, "rel_path", None)   # Hon: an audiobook's own item (`_heard`)
 
 
 def _media(work, files, guessed):
@@ -885,7 +912,10 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     else:
         title = work.get("title") or first.get("parent_folder") or eps[0].title
         nums = [e.number for e in eps if e.number is not None]
-        line = range_text(media, nums, n)
+        heard = [it for it in piece if it.get("source_type") == "audio"]   # Hon (H-6, H-7): an audiobook's item
+        line = STRINGS["audiobook"] if len(heard) == n else range_text(media, nums, n - len(heard))
+        if heard and len(heard) < n:
+            line = f"{line} · " + STRINGS["with_audiobook"]
     if not finished and 0 < n_watched < n and not single_video:
         line = f"{line} · " + STRINGS["watched"].format(k=n_watched, n=n)
     next_index = next((i for i, e in enumerate(eps) if not e.watched), n - 1)
@@ -897,9 +927,11 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     chips = ()
     more = 0
     if n > 1:
-        chips = tuple(Chip(text=str(e.number) if e.number is not None else "•", watched=e.watched,
-                           next=(i == next_index), mined=bool(e.cards),
-                           tip=e.label + (f" · {e.cards} cards in Anki" if e.cards else ""))
+        chips = tuple(Chip(text=str(e.number) if e.number is not None else "🎧" if _heard(e)
+                           else "•", watched=e.watched, next=(i == next_index), mined=bool(e.cards),
+                           tip=STRINGS["tip_with_audiobook"].format(title=e.title) if _heard(e)
+                           and e.label == STRINGS["with_audiobook"] else
+                           e.label + (f" · {e.cards} cards in Anki" if e.cards else ""))
                       for i, e in enumerate(eps[:CHIPS_SHOWN]))
         more = max(0, n - CHIPS_SHOWN)
     studying = bool(first.get("pinned")) and any(it.get("pinned") for it in piece)
@@ -1252,7 +1284,8 @@ def _arrival(piece, works, cards, estimates, guessed):
     if media == "youtube" and n == 1:
         line = channel or ""
     else:
-        line = range_text(media, [e.number for e in eps if e.number is not None], n)
+        line = row.line if any(_heard(e) for e in eps) else \
+            range_text(media, [e.number for e in eps if e.number is not None], n)     # Hon: an audiobook's, `_row`'s
     ids = tuple(it["id"] for it in piece)
     n_cards = sum(cards.get(i, 0) for i in ids)
     no_media = sum(1 for e in eps if e.missing)
@@ -1262,8 +1295,11 @@ def _arrival(piece, works, cards, estimates, guessed):
     if no_media:
         parts += ((STRINGS["arr_no_media_one" if no_media == 1 else "arr_no_media"].format(n=no_media), "warn"),)
     waiting = sum(1 for e in eps if e.waiting)                      # SRC W1b: K5's videos with no subtitle yet
-    if waiting:
+    heard = sum(1 for e in eps if _heard(e))                        # Hon (H-7): an audiobook waits for Anki Miner
+    if waiting > heard:
         parts += ((STRINGS["arr_no_subs"], "dim"),)
+    if heard:
+        parts += ((STRINGS["arr_audio_wait"], "dim"),)
     watched = all(e.watched for e in eps)
     unit = _arrival_unit(media)
     one, many = STRINGS["arr_units"][unit]

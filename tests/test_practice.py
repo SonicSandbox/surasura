@@ -399,3 +399,15 @@ def test_one_word_on_a_young_card_and_among_the_newest_known_in_two_spellings_is
     _learner("ja", TALK_WORDS + ("分かる",), dated=[("分かる", "2026-10-28T09:00:00")], young=[("わかる", 1)])
     checker = practice.Checker("ja", settings={}, library=(None, 0))
     assert checker.recent_words() == ["わかる"]
+
+
+def test_a_learner_with_more_young_cards_than_a_round_can_use_gets_the_first_hundred(ja_resources_dir):
+    """120 young cards, every one a known word: the least settled 100, never more (the brief carries them)."""
+    with open(os.path.join(ja_resources_dir, "KnownWord.json"), encoding="utf-8") as f:
+        real = [w["dictForm"] for w in json.load(f)["words"] if w.get("dictForm")]
+    tokenizer = _tokenizer("ja")
+    words = [w for w in dict.fromkeys(real) if len(tokenizer.tokenize(w)) == 1][:120]
+    assert len(words) == 120
+    _learner("ja", words, young=[(w, n % 21) for n, w in enumerate(words)])
+    checker = practice.Checker("ja", settings={}, library=(None, 0))
+    assert len(checker.recent_words()) == practice.RECENT == 100

@@ -102,8 +102,10 @@ def test_the_first_read_records_each_young_word_with_its_shortest_interval_and_n
     # per card)
     multi, info = fake.requests_of("multi"), fake.requests_of("notesInfo")
     assert len(multi) == 1 and len(multi[0]["params"]["actions"]) == anki_sync.MATURE_DAYS + 1 == 22
-    assert [a["params"]["query"] for a in multi[0]["params"]["actions"]][:2] == [
+    queries = [a["params"]["query"] for a in multi[0]["params"]["actions"]]
+    assert queries[:2] == [
         '(deck:"TheBank") -is:new -is:suspended prop:ivl=0', '(deck:"TheBank") -is:new -is:suspended prop:ivl=1']
+    assert queries[-1] == '(deck:"TheBank") -is:new -is:suspended', "the decks' studied notes, mature ones too"
     assert sorted(i for r in info for i in r["params"]["notes"]) == sorted([ids["冒険"], ids["準備"], ids["危険"]])
     assert set(fake.actions) == {"multi", "notesInfo"}
 

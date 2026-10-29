@@ -864,25 +864,30 @@ def count_young(language):
 
 
 def _young_notes(url, decks, since):
-    """({note id: the shortest interval of its young cards}, the young notes edited since `since`) in ONE request: a
-    findNotes per interval, 0 to MATURE_DAYS - 1 days, shortest first, and with `since` Anki's `edited:n` over them all
-    (`_edited_days`; an Anki too old for it fails that slot, and no edits is the answer). Raises AnkiError when an
-    interval's search fails: a record missing some intervals would rank words wrongly."""
+    """({note id: the shortest interval of its young cards}, the young notes edited since `since`, whether the decks
+    hold any studied note) in ONE request: a findNotes per interval, 0 to MATURE_DAYS - 1 days, shortest first; the
+    decks' studied notes (`scope_query`: an empty answer there is Anki open on another profile, or the decks renamed —
+    not every card grown mature); and with `since` Anki's `edited:n` over the young ones (`_edited_days`; an Anki too
+    old for it fails that slot, and no edits is the answer). Raises AnkiError when an interval's or the decks' search
+    fails: a record missing some intervals would rank words wrongly."""
     actions = [{"action": "findNotes", "params": {"query": young_query(decks, days)}} for days in range(MATURE_DAYS)]
+    actions.append({"action": "findNotes", "params": {"query": scope_query(decks)}})
     days = _edited_days(since)
     if days is not None:
         actions.append({"action": "findNotes", "params": {"query": f"({young_query(decks)}) edited:{days}"}})
     replies = list(anki_connect.multi(actions, url)) + [None] * len(actions)
     intervals = {}
-    for interval, reply in zip(range(MATURE_DAYS), replies):
+    for interval, reply in zip(range(MATURE_DAYS + 1), replies):
         if not isinstance(reply, dict) or reply.get("error") is not None or not isinstance(reply.get("result"), list):
             error = reply.get("error") if isinstance(reply, dict) else None
             raise AnkiError(f"Anki could not search your decks: {error or 'no answer'}", kind="action")
-        for note_id in anki_connect._int_ids(reply["result"]):
-            intervals.setdefault(note_id, interval)
-    edits = replies[MATURE_DAYS] if days is not None else None
+        if interval < MATURE_DAYS:
+            for note_id in anki_connect._int_ids(reply["result"]):
+                intervals.setdefault(note_id, interval)
+    studied = bool(replies[MATURE_DAYS]["result"])
+    edits = replies[MATURE_DAYS + 1] if days is not None else None
     edited = edits.get("result") if isinstance(edits, dict) and edits.get("error") is None else None
-    return intervals, set(anki_connect._int_ids(edited if isinstance(edited, list) else []))
+    return intervals, set(anki_connect._int_ids(edited if isinstance(edited, list) else [])), studied
 
 
 def sync_young(language, url, decks, fields, read=None):
@@ -891,7 +896,7 @@ def sync_young(language, url, decks, fields, read=None):
     it) and the shortest interval of those cards — what Piyo's practice rounds rank first (`app/practice.py`), read
     from this file with Anki closed.
 
-    Read-only on Anki, and two requests at most beside the sync's own: notesInfo carries no interval and the known
+    Read-only on Anki, and two requests at most beside the sync's own (notesInfo in chunks of 250): notesInfo carries no interval and the known
     sync reads only new or edited notes, while every review moves an interval with no edit — so one request asks the
     notes of each interval (Anki's `prop:ivl=n` searches, 0 to 20 days, in one `multi`: no card is rendered, unlike
     cardsInfo, and no search per card, unlike getIntervals) with the young notes edited since the last read. A note
@@ -900,7 +905,8 @@ def sync_young(language, url, decks, fields, read=None):
     mature card forgotten back to young, other decks or fields).
     Written under its lock (`anki-young-<lang>`: two programs' syncs never interleave a read and a write) with a temp
     file and os.replace, and only when what it holds changed. A failed read keeps the previous file; no young card at
-    all writes an empty record (every card grew mature). Never raises: returns `(count, error)`."""
+    all, in decks that still hold studied notes, writes an empty record (every card grew mature); none studied at all
+    keeps the last one (another profile open, the decks renamed). Never raises: returns `(count, error)`."""
     decks = _clean_decks(decks)
     fields = [str(f) for f in (fields or [])]
     if not decks:
@@ -923,13 +929,16 @@ def _sync_young(language, url, decks, fields, read=None):
                   and old.get("fields") == fields)
     cached = old.get("notes") if same_scope and isinstance(old.get("notes"), dict) else {}
     try:
-        intervals, edited = _young_notes(url, decks, old.get("synced_at") if cached else None)
+        intervals, edited, studied = _young_notes(url, decks, old.get("synced_at") if cached else None)
         todo = [n for n in intervals if str(n) not in cached or n in edited]
         fresh = {n.get("noteId"): n for n in read or () if isinstance(n, dict)}
         ask = [n for n in todo if n not in fresh]
         notes = [fresh[n] for n in todo if n in fresh] + (anki_connect.notes_info(url, ask) if ask else [])
     except AnkiError as e:
         return count_young(language), str(e)
+    if not studied and cached:
+        return count_young(language), ("Anki found no studied card in your decks (another profile open, or the decks "
+                                       "renamed?), so the last young cards were kept.")
     entries = {}
     for note_id, interval in intervals.items():
         entry = cached.get(str(note_id))
@@ -940,8 +949,10 @@ def _sync_young(language, url, decks, fields, read=None):
         if note_id in intervals:
             # a note with no usable word is kept with "" so it isn't read again at every sync
             entries[str(note_id)] = {"word": _note_word(note, fields, language) or "", "interval": intervals[note_id]}
-    if same_scope and old.get("notes") == entries:
-        return count_young(language), None  # nothing it holds changed: the file stays as it is
+    # Nothing it holds changed: the file stays as it is — unless edits were read and its time (the edits' cursor) is a
+    # day old, so a note edited without a new word (a Hint, a Meaning) isn't read again at every sync for days.
+    if same_scope and old.get("notes") == entries and not (edited and _edited_days(old.get("synced_at")) > 2):
+        return count_young(language), None
     record = {"version": YOUNG_VERSION, "synced_at": _now_iso(), "decks": sorted(decks), "fields": fields,
               "notes": entries}
     try:

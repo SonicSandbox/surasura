@@ -85,7 +85,7 @@ def practise_terms(path, language, limit=RECENT):
     """The words a round practises first (A6P-3, PROVISIONAL; Anki's young cards since 2026-10-29), at most `limit`,
     each once: the young cards the last Anki sync recorded beside KnownWord.json at `path` (`anki_sync.young_words`:
     the studied cards not yet mature, the shortest interval first — the words still being learned), then
-    KnownWord.json's newest known words (`recent_terms`). Files only, never Anki: a round starts at once, Anki open or
+    KnownWord.json's newest known words (`recent_terms`); `limit` None: every one. Files only, never Anki: a round starts at once, Anki open or
     closed; with no sync (no Anki, no young cards) it is the newest known words alone."""
     from app import anki_sync
     young = [word for word, _interval in anki_sync.young_words(language, os.path.join(os.path.dirname(path),
@@ -93,7 +93,7 @@ def practise_terms(path, language, limit=RECENT):
     out, seen = [], set()
     for term in young + recent_terms(path, language, limit):
         key = unicodedata.normalize("NFKC", term).strip()
-        if key and key not in seen and len(out) < limit:
+        if key and key not in seen and (limit is None or len(out) < limit):
             seen.add(key)
             out.append(term)
     return out
@@ -162,15 +162,7 @@ class Checker:
         else:
             known_tuples, known_lemmas, ignore = self._known_sets
         self.known_tuples, self.known_lemmas, self.ignore = set(known_tuples), set(known_lemmas), set(ignore)
-        terms = practise_terms(self.known_path, self.language) if self._recent_given is None else self._recent_given
-        # One word each: an Anki "Also read" sentence is known, but its particles are no newly learned words. And a
-        # known one: the brief tells the AI these are words the learner knows, so the checker must agree.
-        self.recent_terms, self.recent = [], {}             # (lemma, reading) -> its place, 0 the first to practise
-        for term in terms:
-            tokens = self.tokenizer.tokenize(term)
-            if len(tokens) == 1 and self._is_listed_known(tuple(tokens[0][:2])):
-                self.recent.setdefault(tuple(tokens[0][:2]), len(self.recent_terms))
-                self.recent_terms.append(term)
+        self._load_practise()
         library = self._library
         if library is None and self.japanese:
             from app import sentence_corpus
@@ -185,6 +177,23 @@ class Checker:
         self._memo = {}
         self._signature = self._stat()
 
+    def _load_practise(self):
+        """The words to practise first (`practise_terms`), RECENT at most, each one word the list counts as known:
+        an Anki "Also read" sentence is known, but its particles are no newly learned words; and the brief tells
+        the AI these are words the learner knows, so the checker must agree. A word met twice (わかる on a young card,
+        分かる among the newest known) is listed once, in its first place."""
+        terms = (practise_terms(self.known_path, self.language, limit=None) if self._recent_given is None
+                 else self._recent_given)
+        self.recent_terms, self.recent = [], {}             # (lemma, reading) -> its place, 0 the first to practise
+        for term in terms:
+            if len(self.recent_terms) >= RECENT:
+                break
+            tokens = self.tokenizer.tokenize(term)
+            key = tuple(tokens[0][:2]) if len(tokens) == 1 else None
+            if key is not None and key not in self.recent and self._is_listed_known(key):
+                self.recent[key] = len(self.recent_terms)
+                self.recent_terms.append(term)
+
     def _stat(self):
         folder, out = os.path.dirname(self.known_path), []
         for name in WATCHED:
@@ -196,11 +205,19 @@ class Checker:
         return tuple(out)
 
     def refresh(self):
-        """Read the known words and the word lists again when one changed (a sync mid-session, an Ignore); four stats
-        when none did."""
-        if self._known_sets is None and self._stat() != self._signature:
+        """Read the known words and the word lists again when one changed (a sync mid-session, an Ignore); five stats
+        when none did. When only the young cards' record changed (a sync after reviews alone), only the words to
+        practise are read again: the known words, the view and the memo stand."""
+        if self._known_sets is None:
+            now = self._stat()
+            if now == self._signature:
+                return
             with _reading(self.japanese):
-                self._load()
+                if now[:-1] == self._signature[:-1]:            # WATCHED's last: the young cards
+                    self._load_practise()
+                    self._signature = now
+                else:
+                    self._load()
 
     def recent_words(self, limit=RECENT):
         """The words to practise first as the learner wrote them (`practise_terms`): Anki's young cards, then the

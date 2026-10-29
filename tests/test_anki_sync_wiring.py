@@ -670,7 +670,8 @@ class TestAutoGenerate(_DashboardHarness):
         thread = self._call_sync(self._settings())                    # a Japanese sync starts
         with patch.object(anki_connect, "probe", return_value={"ok": True}), \
              patch.object(anki_sync, "sync", return_value=self._RESULT), \
-             patch.object(anki_sync, "sync_backlog", return_value=(0, None)),              patch.object(anki_sync, "sync_young", return_value=(0, None)):
+             patch.object(anki_sync, "sync_backlog", return_value=(0, None)), \
+             patch.object(anki_sync, "sync_young", return_value=(0, None)):
             thread.call_args.kwargs["target"]()
         self.app.var_language.get.return_value = "zh"                 # a switch before it lands
         for task in queued:

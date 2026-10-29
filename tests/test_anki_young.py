@@ -80,7 +80,7 @@ def _deck(words=JA):
         "準備": fake.young("準備", [0]),                   # still in its first learning steps
         "危険": fake.young("危険", [40, 5]),               # recognition mature, production young: young at 5
         "価値": fake.young("価値", [30]),                  # mature
-        "冒険家": fake.young("冒険家", [], new=True),       # never studied
+        "冒険家": fake.young("冒険家", [0], new=True),      # never studied: a new card is at 0 days in Anki too
         "有名": fake.young("有名", [2], suspended=True),    # put away, not being learned
     }
     return fake, ids
@@ -97,10 +97,11 @@ def test_the_first_read_records_each_young_word_with_its_shortest_interval_and_n
                      str(ids["冒険"]): {"word": "冒険", "interval": 3},
                      str(ids["危険"]): {"word": "危険", "interval": 5}}
     assert anki_sync.young_words("ja") == [("準備", 0), ("冒険", 3), ("危険", 5)]
-    # light on Anki: one multi of the 21 interval searches (no edits asked on a first read), then the words of the
-    # young notes only — no cardsInfo (it renders every card), no getIntervals (a search per card)
+    # light on Anki: one multi of the 21 interval searches and the decks' studied notes (no edits asked on a first
+    # read), then the words of the young notes only — no cardsInfo (it renders every card), no getIntervals (a search
+    # per card)
     multi, info = fake.requests_of("multi"), fake.requests_of("notesInfo")
-    assert len(multi) == 1 and len(multi[0]["params"]["actions"]) == anki_sync.MATURE_DAYS == 21
+    assert len(multi) == 1 and len(multi[0]["params"]["actions"]) == anki_sync.MATURE_DAYS + 1 == 22
     assert [a["params"]["query"] for a in multi[0]["params"]["actions"]][:2] == [
         '(deck:"TheBank") -is:new -is:suspended prop:ivl=0', '(deck:"TheBank") -is:new -is:suspended prop:ivl=1']
     assert sorted(i for r in info for i in r["params"]["notes"]) == sorted([ids["冒険"], ids["準備"], ids["危険"]])
@@ -148,7 +149,7 @@ def test_a_second_read_with_nothing_changed_asks_one_request_and_leaves_the_file
     fake.requests.clear()
     assert _young(fake) == (3, None)
     assert fake.actions == ["multi"], "the intervals and the edits in one request; no word read again"
-    assert len(fake.requests[0]["params"]["actions"]) == 22 and "edited:" in \
+    assert len(fake.requests[0]["params"]["actions"]) == 23 and "edited:" in \
         fake.requests[0]["params"]["actions"][-1]["params"]["query"]
     assert _bytes() == before and os.stat(_path()).st_mtime_ns == mtime
 
@@ -198,6 +199,25 @@ def test_an_edited_note_deleted_before_its_word_is_read_never_keeps_its_old_word
     fake._answer = deleted
     _young(fake)
     assert [w for w, _i in anki_sync.young_words("ja")] == ["準備", "危険"]
+
+
+def test_an_edit_that_keeps_the_word_moves_the_edits_cursor_once_a_day_so_it_isnt_read_again_for_ever():
+    """A Hint or a Meaning edited (/anki-clean, Backfill): the word is the same, so nothing it holds changed — but the
+    record's time is the `edited:n` cursor, and a cursor that never moves reads that note again at every sync."""
+    fake, ids = _deck()
+    _young(fake)
+    record = _record()
+    record["synced_at"] = "2026-10-20T09:00:00"            # last written days ago
+    with open(_path(), "w", encoding="utf-8") as f:
+        json.dump(record, f, ensure_ascii=False)
+    fields = list(fake.note(ids["冒険"])["fields"])
+    fields[2] = ("Meaning", "a journey into the unknown")
+    fake.edit(ids["冒険"], fields)
+    _young(fake)
+    assert _record()["synced_at"] != "2026-10-20T09:00:00", "rewritten once: the cursor moved to now"
+    before = _bytes()
+    _young(fake)
+    assert _bytes() == before, "under a day old: nothing it holds changed, the file stays as it is"
 
 
 def test_an_anki_too_old_for_edited_still_records_the_intervals():
@@ -277,6 +297,18 @@ def test_no_sync_yet_gives_no_young_words_and_no_decks_asks_nothing():
     fake = YoungCollection()
     assert _young(fake, decks=()) == (0, "Choose at least one deck first.")
     assert fake.requests == [] and not os.path.exists(_path())
+
+
+def test_decks_with_no_studied_note_at_all_keep_the_last_record():
+    """Anki open on another profile, or the decks renamed: no young card is no answer, and the last record stands."""
+    fake, _ids = _deck()
+    _young(fake)
+    before = _bytes()
+    for note in fake.notes:
+        note["deck"] = "Default"                            # what another profile's search finds for "TheBank": none
+    count, error = _young(fake)
+    assert count == 3 and "another profile" in error
+    assert _bytes() == before
 
 
 def test_anki_closed_keeps_the_last_record_byte_for_byte():

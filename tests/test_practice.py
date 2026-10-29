@@ -371,3 +371,31 @@ def test_practise_terms_read_the_young_cards_beside_the_known_words_file_they_ar
                                                             ensure_ascii=False), encoding="utf-8")
     _young_record("ja", [("映画", 1)])                  # another folder's record: not this learner's
     assert practice.practise_terms(str(known), "ja") == ["天気", "駅"]
+
+
+def test_a_sync_that_changes_only_the_young_cards_never_reads_the_known_words_again(monkeypatch):
+    """A sync after reviews alone moves intervals: the next round reads its practise words again, not every known word
+    (KnownWord.json tokenized whole) — no wait at a round's start."""
+    _learner("ja", TALK_WORDS, young=[("天気", 2)])
+    checker = practice.Checker("ja", settings={}, library=(None, 0))
+    monkeypatch.setattr(analyzer, "load_known_words", lambda *a, **k: pytest.fail("the known words read again"))
+    _young_record("ja", [("天気", 9), ("駅", 1)])
+    checker.refresh()
+    assert checker.recent_words() == ["駅", "天気"]
+
+
+def test_the_practise_words_are_capped_after_the_words_that_cant_be_practised_are_left_out(ja_resources_dir):
+    """120 young cards the list doesn't count as known must not crowd out the newest known words."""
+    with open(os.path.join(ja_resources_dir, "KnownWord.json"), encoding="utf-8") as f:
+        real = [w["dictForm"] for w in json.load(f)["words"] if w.get("dictForm")]
+    young = [(w, 1) for w in dict.fromkeys(w for w in real if w not in TALK_WORDS)][:120]
+    assert len(young) == 120
+    _learner("ja", TALK_WORDS, dated=[("駅", "2026-10-28T09:00:00")], young=young)
+    checker = practice.Checker("ja", settings={}, library=(None, 0))
+    assert checker.recent_words()[-1] == "駅" and len(checker.recent_words()) < 5   # いく is 行く, known
+
+
+def test_one_word_on_a_young_card_and_among_the_newest_known_in_two_spellings_is_practised_once():
+    _learner("ja", TALK_WORDS + ("分かる",), dated=[("分かる", "2026-10-28T09:00:00")], young=[("わかる", 1)])
+    checker = practice.Checker("ja", settings={}, library=(None, 0))
+    assert checker.recent_words() == ["わかる"]

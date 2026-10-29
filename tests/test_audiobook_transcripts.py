@@ -319,6 +319,8 @@ def test_a_file_added_to_an_audiobook_or_its_audio_renamed_keeps_its_transcript(
         [item] = _audio_items(store)
         _settle(_mp3(os.path.join(folder, "00.mp3"), seconds=600, frames={"TALB": ISEKAI, "TRCK": "0"}))
         _look(store, language, root, full=True)
+        recs = [r[2]["audiobook"] for r in store._audiobook_rows(item["id"])]    # the new first file's record too
+        assert len(recs) == 2 and all(r.get("transcript") == recs[0]["transcript"] for r in recs)
         os.rename(os.path.join(folder, "02.mp3"), os.path.join(folder, "02b.mp3"))
         _look(store, language, root, full=True)
         [now] = _audio_items(store)

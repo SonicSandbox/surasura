@@ -1,0 +1,22 @@
+{
+    "target_language": "zh",
+    "zh_script": "t",
+    "strategy": "freq",
+    "words_per_day": 8,
+    "telemetry_enabled": true,
+    "text_size": "M",
+    "source_display": "filename",
+    "connect_enabled": false,
+    "anki_sync_auto": true,
+    "anki_sync_decks": {"zh": ["中文::挖词", "中文::台剧"]},
+    "anki_sync_fields": {"zh": {"Word": "简体", "Also read": "例句"}},
+    "connect_backlog_cap": {"ja": 300, "zh": 120},
+    "connect_video_folders": {"ja": [], "zh": ["Z:\\影片\\台剧 字幕"]},
+    "known_from_anki": ["marked"],
+    "setup_seen": "2.9.0.5",
+    "logic": {
+        "sentence_boundaries": {"zh": "。｡！？!?\n；"},
+        "context": {"max_contexts": 2, "max_chars": 120},
+        "selection": {"band": "common", "auto": true, "auto_max_words": 600}
+    }
+}

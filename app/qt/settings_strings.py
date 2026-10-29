@@ -500,6 +500,9 @@ ROWS = {
     "version": ("Version {version}", "", "Opens the data folder", "version data folder"),
     "set_up_again": ("Set up again", "Walks through the first steps again", "Opens the setup again",
                      "set up again wizard setup"),
+    "settings_file": ("Your settings", "Save them to a file, or bring them in from one: for the next version or a new "
+                      "computer", "Export or import every setting",
+                      "settings export import save backup move new computer pc file"),
     # --- W3.2 L3: Connections' covers (the window's spec 01 §1.3: the switch says in one line what is sent)
     "covers_download": ("Download covers", "Sends each show's AniList id or name to AniList, and a video's id to "
                         "YouTube. Nothing else.", "Fetch your shows' covers from AniList (YouTube videos: their own thumbnail)",
@@ -708,6 +711,22 @@ STORE_FILES = "files"
 STORE_NO_LIBRARY_TIP = "Opens with your library"
 STORE_NOT_SAVED = "Not saved: {reason}"
 SET_UP_AGAIN_OPEN = "Start ›"
+
+# --- a6: *Your settings* — export and import (settings_io.py; SI-1…SI-5, PROVISIONAL) ------------------------------- #
+SETTINGS_EXPORT = "Export settings…"
+SETTINGS_EXPORT_TIP = ("Save every setting to one file, for the next version or a new computer\nYour known words, "
+                       "word lists and library aren't in it, and no key or password ever is")
+SETTINGS_EXPORT_TITLE = "Save your settings"
+SETTINGS_IMPORT = "Import settings…"
+SETTINGS_IMPORT_TIP = ("Replace every setting with the ones in a file you exported\nYour settings now are kept in a "
+                       "dated copy first. Surasura asks before it replaces anything")
+SETTINGS_IMPORT_TITLE = "Import settings"
+SETTINGS_FILES = "Surasura settings (*.json)"
+SETTINGS_IMPORT_YES_TIP = "Replace your settings with these, keep a dated copy of yours, then restart"
+SETTINGS_IMPORT_NO = "Cancel"
+SETTINGS_IMPORT_NO_TIP = "Keep your settings as they are"
+SETTINGS_IMPORT_AFTER_GENERATE = "Import your settings once Generate finishes: Surasura restarts to use them"
+SETTINGS_FAILED = "Couldn't do that: {why}"
 
 # --- SRC W1b: *Library folders* (settings_sources.py) ------------------------------------------------------------ #
 SOURCES_ADD = "Add a folder…"

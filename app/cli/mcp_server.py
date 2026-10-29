@@ -215,7 +215,7 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
                         f"what you watch or read next), mix.")
     try:
         words = max(1, min(20, int(words)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ToolError("`words` is how many words to practise: a number from 1 to 20.")
     checker = state.checker(lang)
     if saved is not None:
@@ -293,7 +293,11 @@ def save_round(state, round_id, lines=None, notes=None, language=None):
     if not state.keep_rounds():
         raise ToolError(OFF)
     verbs.require_set_up(lang)
-    data = practice_rounds.save(lang, round_id, start=start, lines=lines, notes=notes)
+    try:
+        data = practice_rounds.save(lang, round_id, start=start, lines=lines, notes=notes)
+    except OSError as e:                    # the file held open by another program, the disk full: nothing was changed
+        raise ToolError(f"Surasura couldn't write the round just now ({e.strerror or e}); nothing was changed. Try "
+                        "again in a moment.")
     state.started.pop(round_id, None)       # its file holds it now
     return {"saved": True, "round_id": round_id, "lines_kept": len(data["lines"]), "notes_kept": len(data["notes"])}
 
@@ -418,7 +422,8 @@ def build(state=None, warm=True, serving=False):
                             language: str = "") -> dict:
         """Keep a practice round so the learner can do it again (once at its start, as its brief says), and the lines
         or notes the learner asks to keep for later rounds: lines are your checked replies or their answers, notes
-        what to remember (each under 300 characters, 20 at most a call). Writes only Surasura's own round file."""
+        what to remember (each 300 characters at most; 20 lines and 20 notes at most a call). Writes only Surasura's
+        own round file."""
         return _answered(save_round, state, round_id, lines, notes, language or None)
 
     @server.prompt(title=f"Practise with {NAME}")

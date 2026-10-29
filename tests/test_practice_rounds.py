@@ -176,7 +176,7 @@ def test_the_switch_is_on_unless_it_is_set_to_false():
     assert not pr.keeps({"practice_keep_rounds": False})
 
 
-@pytest.mark.parametrize("hand_edited", [{"round": "senpai", "lines": []}, {"round": {}, "lines": 5},
+@pytest.mark.parametrize("hand_edited", [{}, {"lines": []}, {"round": "senpai", "lines": []}, {"round": {}, "lines": 5},
                                          {"round": {}, "words": 3}, {"round": {}, "notes": "メモ"}, ["not", "a", "round"]])
 def test_a_hand_edited_round_of_the_wrong_shape_is_passed_over_and_never_written_over(hand_edited):
     """Valid JSON of the wrong shape (round not an object, lines not a list...) is "not a round": the listing and the
@@ -227,3 +227,36 @@ def test_only_surasuras_own_round_files_are_listed():
             json.dump({"round": {"role": "friend"}, "notes": [{"text": "ほかのファイル"}]}, f, ensure_ascii=False)
     assert [r["round_id"] for r in pr.rounds("ja")] == [good]
     assert [c["round_id"] for c in pr.context("ja")] == [good]
+
+
+def test_a_hand_edited_choice_never_floods_the_ai_and_a_round_is_known_by_its_file_name():
+    """A role a hand edit made huge is left out of the listing and the read-back; a body naming another id (or none) is
+    still the round its file name says."""
+    good = _saved("ja", JA_START, notes=["冒険が好き"])
+    path = _round_file("ja", good)
+    data = json.loads(open(path, encoding="utf-8").read())
+    data["round"]["role"] = "先輩" * 5000
+    data["round_id"] = "20200101-000000-00000000"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    (listed,) = pr.rounds("ja")
+    assert "role" not in listed and listed["kind"] == "chat"
+    (back,) = pr.context("ja")
+    assert back["round_id"] == good and back["role"] is None and back["notes"] == ["冒険が好き"]
+
+
+def test_a_text_too_long_for_what_is_left_is_passed_and_an_older_short_one_still_comes():
+    """The read-back's 1,500 characters: the newest round takes nearly all; in the next, its newest text no longer fits
+    and is passed, and its older, short one still comes."""
+    older = _saved("zh", ZH_START, notes=["早市", "夜" * (pr.TEXT_CHARS - 1)], when=100)
+    full = pr.CONTEXT_CHARS // (pr.TEXT_CHARS - 1)
+    newest = _saved("zh", ZH_START, notes=["市" * (pr.TEXT_CHARS - 1)] * full, when=0)
+    got = pr.context("zh")
+    assert [c["round_id"] for c in got] == [newest, older] and got[1]["notes"] == ["早市"]
+    assert sum(len(t) for c in got for t in c["notes"] + c["lines"]) <= pr.CONTEXT_CHARS
+
+
+def test_a_null_among_the_lines_is_not_kept_as_text():
+    round_id = _saved("ja", JA_START)
+    pr.save("ja", round_id, lines=[None, "【senpai】冒険だ。"])
+    assert [x["text"] for x in pr.load("ja", round_id)["lines"]] == ["【senpai】冒険だ。"]

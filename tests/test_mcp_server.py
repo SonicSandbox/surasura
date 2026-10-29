@@ -432,3 +432,49 @@ def test_a_hand_edited_round_done_again_still_starts():
     assert brief["round_words"] == [{"word": "冒険", "reading": "", "lines": [{"line": "冒険に出る。", "from": ""}]}]
     assert brief["quiz_lines"] == [{"line": "冒険に出る。", "from": "", "word": "冒険"}]
     assert "kept with no words" in _data(none)["note"]
+
+
+def test_a_write_that_fails_answers_with_what_to_do_and_nothing_is_changed(monkeypatch):
+    """The round file held open by another program (Windows refuses the replace) or a full disk: the AI is told to try
+    again, never a bare error."""
+    from app import practice_rounds
+    _set_up("ja")
+    state = _state()
+    state.keep_rounds = lambda: True
+
+    def held(*_args, **_kwargs):
+        raise PermissionError(13, "The process cannot access the file")
+    monkeypatch.setattr(practice_rounds, "save", held)
+
+    async def calls(client):
+        brief = _data(await client.call_tool("surasura_practice_start", {"words": 1}))
+        return await client.call_tool("surasura_save_round", {"round_id": brief["round_id"]})
+    result = _run(state, calls)
+    assert result.is_error and "Try again in a moment" in result.content[0].text and "nothing was changed" in result.content[0].text
+
+
+def test_a_round_done_again_reads_its_own_kept_lines_back_before_newer_rounds():
+    """Done again, a round's own lines come first in `context`, before the newer rounds' — and a hand-edited word count
+    no number holds (Infinity) is said, never a bare error."""
+    from app import practice_rounds
+    _set_up("ja")
+    _write_list()
+    old = practice_rounds.new_id()
+    practice_rounds.save("ja", old, start={"round": {"role": "teacher", "kind": "chat", "source": "soon"},
+                                           "words": [{"word": "冒険", "orth": "冒険", "reading": "ボウケン", "lines": []}]},
+                         lines=["【teacher】冒険の話をしましょう。"])
+    os.utime(os.path.join(practice_rounds.folder("ja"), old + ".json"), (1, 1))     # long ago
+    newer = practice_rounds.new_id()
+    practice_rounds.save("ja", newer, start={"round": {"role": "friend"}, "words": []}, notes=["駅で待ち合わせ"])
+    odd = practice_rounds.new_id()
+    with open(os.path.join(practice_rounds.folder("ja"), odd + ".json"), "w", encoding="utf-8") as f:
+        f.write('{"round": {"role": "friend", "kind": "chat", "words": Infinity}, "words": []}')
+    state = _state()
+    state.keep_rounds = lambda: True
+
+    async def calls(client):
+        return (await client.call_tool("surasura_practice_start", {"again": old}),
+                await client.call_tool("surasura_practice_start", {"again": odd}))
+    redo, broken = _run(state, calls)
+    assert [c["round_id"] for c in _data(redo)["context"]][:2] == [old, newer]
+    assert broken.is_error and "a number from 1 to 20" in broken.content[0].text

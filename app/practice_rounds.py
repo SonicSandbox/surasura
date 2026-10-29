@@ -31,7 +31,7 @@ CONTEXT_ITEMS = 6               # of each, its newest lines and notes
 CONTEXT_CHARS = 1500            # everything a brief carries back, at most
 CONTEXT_SCAN = 30               # the newest round files looked in for it (a round kept with nothing added is passed)
 LIST_LIMIT = 50                 # past rounds one listing may give
-# A round file's shape: a key that is there holds this type, else the file "isn't a round" and is left alone (a save
+# A round file's shape: `round` is there and every key that is there holds this type, else the file "isn't a round" and is left alone (a save
 # never writes over it, a listing and a read-back pass it over).
 _SHAPE = (("round", dict), ("words", list), ("lines", list), ("notes", list))
 _ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}\Z")
@@ -68,7 +68,8 @@ def _read(path, language):
         data = json.loads(read_text(path, language, errors="strict"))
     except (OSError, ValueError, UnicodeDecodeError) as e:
         raise ValueError(f"The saved round {os.path.basename(path)} can't be read, so it was left as it is ({e}).")
-    if not isinstance(data, dict) or any(key in data and not isinstance(data[key], kind) for key, kind in _SHAPE):
+    if (not isinstance(data, dict) or not isinstance(data.get("round"), dict)
+            or any(key in data and not isinstance(data[key], kind) for key, kind in _SHAPE)):
         raise ValueError(f"The saved round {os.path.basename(path)} isn't a round, so it was left as it is.")
     return data
 
@@ -93,12 +94,12 @@ def _texts(values, what):
         return []
     if isinstance(values, str):
         values = [values]
-    out = [str(v).strip() for v in values if str(v).strip()]
+    out = [str(v).strip() for v in values if v is not None and str(v).strip()]
     if len(out) > PER_SAVE:
         raise ValueError(f"At most {PER_SAVE} {what} in one save: save the rest in another call.")
     for text in out:
         if len(text) > TEXT_CHARS:
-            raise ValueError(f"Each of the {what} is kept short, under {TEXT_CHARS} characters: shorten "
+            raise ValueError(f"Each of the {what} is kept short, {TEXT_CHARS} characters at most: shorten "
                              f"\"{text[:30]}…\" and save again. Nothing was saved.")
     return out
 
@@ -160,10 +161,17 @@ def rounds(language, limit=10):
             contract.log.warning("practice: %s can't be read; left as it is", path)
             continue
         out.append({"round_id": os.path.basename(path)[:-5], "started": data.get("started"), "saved": data.get("saved"),
-                    **{k: v for k, v in (data.get("round") or {}).items() if k in ("role", "kind", "source", "words")},
+                    **_choices(data),
                     "round_words": [w["orth"] for w in words(data)],
                     "lines_kept": len(_texts_of(data, "lines")), "notes_kept": len(_texts_of(data, "notes"))})
     return out
+
+
+def _choices(data):
+    """A round's role, kind, source and number of words as listed and read back: a value a hand edit made long or odd
+    is left out (it would otherwise flood the AI's context)."""
+    return {k: v for k, v in data["round"].items()
+            if k in ("role", "kind", "source", "words") and isinstance(v, (str, int)) and len(str(v)) <= 20}
 
 
 def _texts_of(data, key):
@@ -189,16 +197,16 @@ def context(language, first=None):
         if notes or lines:
             picked.append((path, data, notes[:CONTEXT_ITEMS], lines[:CONTEXT_ITEMS]))
     out, left = [], CONTEXT_CHARS
-    for _where, data, notes, lines in picked:
+    for path, data, notes, lines in picked:
         kept = {"notes": [], "lines": []}
         for key, texts in (("notes", notes), ("lines", lines)):
             for text in texts:
                 if len(text) > left:
-                    break
+                    continue                # too long for what is left: an older, shorter one may still fit
                 kept[key].append(text)
                 left -= len(text)
         if kept["notes"] or kept["lines"]:
-            choices = data.get("round") or {}
-            out.append({"round_id": data.get("round_id"), "role": choices.get("role"), "kind": choices.get("kind"),
-                        **kept})
+            choices = _choices(data)
+            out.append({"round_id": os.path.basename(path)[:-5], "role": choices.get("role"),
+                        "kind": choices.get("kind"), **kept})
     return out

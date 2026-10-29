@@ -11795,7 +11795,8 @@ def _store_audio_state(self, cmd, item_id):
     rows = self._audiobook_rows(item_id)
     ab = (rows[0][2].get("audiobook") or {}) if rows else {}
     said = ab.get("transcript") if isinstance(ab.get("transcript"), dict) else None
-    row = self.conn.execute("SELECT rel_path, availability, tier, entry FROM items WHERE id = ?", (item_id,)).fetchone()
+    row = self.conn.execute("SELECT rel_path, availability, tier, entry, size, mtime_ns FROM items WHERE id = ?",
+                            (item_id,)).fetchone()
     if row is None or not said or not said.get("rel") or not said.get("heard"):
         return False
     if audiobooks.transcript_use(ab) == audiobooks.TEXT:
@@ -11804,8 +11805,8 @@ def _store_audio_state(self, cmd, item_id):
     else:
         rel, size, mtime_ns, availability = said["heard"], None, None, "waiting"
     entry = _json_dict(row[3]) or {}
-    if (row[0], row[1], entry.get("source_type")) == (rel, availability, "audio"):
-        return False
+    if (row[0], row[1], entry.get("source_type"), row[4], row[5]) == (rel, availability, "audio", size, mtime_ns):
+        return False                                     # (a copy written over in place: its new size and time)
     entry.update(physical_path=rel, source_type="audio")
     if ab.get("title"):
         entry["title"] = str(ab["title"])
@@ -11850,8 +11851,8 @@ def _store_transcript_found(self, said, book):
             return None
     if not text:
         return None
-    share = audiobooks.found_in_order(lines, audiobooks.clean_text("".join(text)))
-    return {"book": audiobooks._book_mark(book), "share": round(share, 4) if share is not None else None}
+    return {"book": audiobooks._book_mark(book),
+            "share": audiobooks.found_in_order(lines, audiobooks.clean_text("".join(text)))}
 
 
 def _store_transcript_checked(self, cmd, item_id):
@@ -11895,9 +11896,12 @@ def _store_set_transcript(self, item_id, transcript=None, from_item=None, by=SOU
             rows = self._audiobook_rows(target)
         ab = rows[0][2].get("audiobook") or {}
         old = ab.get("transcript") if isinstance(ab.get("transcript"), dict) else {}
-        if transcript is None and not old:
-            return None
-        said = dict(old, **(transcript or {}))
+        if transcript is None:                           # checked again only: nothing written unless it changes
+            if not old:
+                return None
+            self._transcript_checked(cmd, target)
+            return target
+        said = dict(old, **transcript)
         if not said.get("heard"):
             said["heard"] = self._heard_rel(target, ab, said)
         if old.get("sha256") != said.get("sha256") or old.get("rel") != said.get("rel"):
@@ -11908,8 +11912,7 @@ def _store_set_transcript(self, item_id, transcript=None, from_item=None, by=SOU
                               (json.dumps(dict(rec, audiobook=one), sort_keys=True, ensure_ascii=False), key))
         cmd.feed([target])
         cmd.touch()
-        if audiobooks.transcript_use(dict(ab, transcript=said)) is not None:
-            self._transcript_checked(cmd, target)
+        self._transcript_checked(cmd, target)
         return target
 
 
@@ -11930,8 +11933,8 @@ def _store_adopt_transcript_item(self, cmd, audio_item, text_item, origin=None):
     """H-12, a transcript already in as a subtitle of its own (taken in before its audiobook was known): THAT item
     becomes the audiobook's — it keeps its id, its marks, its cards and its copy; the audiobook's records move onto it
     (the transcript's own record, `origin`, dropped: it is the audiobook's `transcript` now, never a text a look
-    follows); it takes the waiting audio item's title and place, and the audio item (waiting, no file: nothing of the
-    learner's on it) goes, its title tidied as a Remove's. -> True when done; False (nothing written) when either is
+    follows); it takes the waiting audio item's title and place (in Finished, it stays there), and the audio item
+    (waiting, no file: nothing of the learner's on it) goes, its title tidied as a Remove's. -> True when done; False (nothing written) when either is
     gone, the audio item isn't a waiting one, or the subtitle item is an audiobook's already."""
     a = self.conn.execute("SELECT work_id, tier, availability FROM items WHERE id = ?", (audio_item,)).fetchone()
     s = self.conn.execute("SELECT work_id, source_type, tier FROM items WHERE id = ?", (text_item,)).fetchone()
@@ -11945,8 +11948,9 @@ def _store_adopt_transcript_item(self, cmd, audio_item, text_item, origin=None):
         self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (a[0], text_item))
         cmd.reworked.add(text_item)
         cmd.fed_works.update(w for w in (s[0], a[0]) if w is not None)
-    self._put(a[1], [text_item], ("after", audio_item), cmd.version)
-    cmd.touch({s[2], a[1]})                              # the tier it left counts one file fewer
+    if s[2] != "graduated":                              # finished as a title of its own: it stays in Finished
+        self._put(a[1], [text_item], ("after", audio_item), cmd.version)
+        cmd.touch({s[2], a[1]})                          # the tier it left counts one file fewer
     self._take_out(cmd, audio_item)
     cmd.feed([text_item])
     return True
@@ -11961,8 +11965,9 @@ def _store_transcript_mismatches(self):
     with self._reading():
         for _k, item_id, rec in self._audiobook_rows():
             ab = rec.get("audiobook") or {}
-            if item_id in seen or audiobooks.transcript_use(ab) != audiobooks.OTHER:
-                continue
+            if item_id in seen or audiobooks.transcript_use(ab) != audiobooks.OTHER or \
+                    not isinstance((ab["transcript"].get("found") or {}).get("share"), (int, float)):
+                continue                                 # (no cue long enough to look for: nothing to say)
             seen.add(item_id)
             said, book = ab["transcript"], ab["book"]
             out.append({"item_id": item_id, "title": ab.get("title") or "", "book": book.get("title") or "",

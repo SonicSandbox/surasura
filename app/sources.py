@@ -1377,6 +1377,11 @@ class _Look:
         wanted = fresh + [audiobooks.from_record(rec) for _i, rec in lone]
         books = self._library_books(wanted) if wanted else []
         answers = self.store.audiobook_answers() if books else {}
+        heard_at = {}                                        # a6: an item counted by its transcript is still found by
+        for r in held_in:                                    # its audio's name (the same files in another source: one)
+            said = r["audiobook"].get("transcript")
+            if isinstance(said, dict) and said.get("heard"):
+                heard_at[ls.path_key(said["heard"])] = r["item_id"]
         by_sizes = {}                                        # D5: a moved audiobook is its item's, by its files' sizes
         for r in held_in:
             sizes = tuple(r["audiobook"].get("sizes") or ())
@@ -1392,6 +1397,11 @@ class _Look:
             f = self._audio_found(ab, clean_name, pair=audiobooks.decide(ab, books, answers) if books else None)
             if f is None:
                 continue
+            if f.get("rel") and ls.path_key(f["rel"]) in heard_at:
+                f["item_id"] = heard_at[ls.path_key(f.pop("rel"))]
+                old = records.get(f["item_id"]) or {}        # its records kept alike (`pair_audiobook`'s rule)
+                f["audiobook"].update(book=old.get("book"), ask=old.get("ask"),
+                                      **{m: old[m] for m in ("said_no", "no_book", "transcript") if old.get(m)})
             gone = [(i, k) for i, k in by_sizes.get(tuple(ab.sizes), ())
                     if not self._origin_away(k) and not os.path.exists(self._origin_path(k))]
             if len({i for i, _k in gone}) == 1:              # moved or renamed: the same item (its answer kept too)
@@ -1475,7 +1485,7 @@ class _Look:
         if not cands:
             return left
         here = []                                            # [(Audiobook, its item or None, its record or {})]
-        if audio and self._known_audio(folder, audio, {k: (v[0], v[1]) for k, v in files.items()}):
+        if audio and self._known_audio(folder, audio, files):
             seen = set()                                     # every audio file recorded as it is: no tag read (S19)
             for n in audio:
                 item, _n, ab = files[ls.path_key(os.path.abspath(os.path.join(folder, n)))]
@@ -1497,10 +1507,13 @@ class _Look:
         gone = set()
         for i, name in sorted(claimed.items()):
             said = here[i][2].get("transcript") if isinstance(here[i][2].get("transcript"), dict) else {}
-            if said.get("origin") and os.path.exists(said["origin"]):
-                continue                                     # its own transcript is there still: never a second
             t = by_name[name]
             o = self.origins.get(_key(t[1]))
+            if said.get("origin") and os.path.exists(said["origin"]) and \
+                    ls.path_key(os.path.abspath(said["origin"])) != ls.path_key(os.path.abspath(t[1])):
+                if o is None:                                # its transcript is there still: a second (an `.ass`
+                    gone.add(t[1])                           # beside its `.srt`, a copy of the folder elsewhere) is
+                continue                                     # never recorded, nor a title of its own
             if o is not None and (o.version or o.moved_to):
                 continue                                     # another item's version, or a moved one's: as any
             self.claimed.append((here[i][0], here[i][1], t, o))
@@ -1533,25 +1546,56 @@ class _Look:
                 continue
             try:
                 self._transcript(r, text, origin)
-            except ls.StoreError:
+            except (ls.StoreError, OSError) as e:            # held open, gone meanwhile, busy: that one, next look
+                log.info("A transcript waits for the next look (%s): %r", text[1], e)
                 self._wait(os.path.dirname(text[1]))
         for item, (name, path, st), said in listed:
             if self.stopped():
                 return
-            if (st.st_size, st.st_mtime_ns) == (said.get("size"), said.get("mtime_ns")) or not said.get("rel"):
+            if not said.get("rel"):
                 continue
-            if self._recent(st):
+            try:
+                self._transcript_followed(item, path, st, said)
+            except (ls.StoreError, OSError) as e:
+                log.info("A transcript waits for the next look (%s): %r", path, e)
                 self._wait(os.path.dirname(path))
-                continue
-            outcome, sha = self._recopy(said["rel"], said.get("sha256"), path, st)
             if outcome == "wait":
                 self._wait(os.path.dirname(path))
-            elif outcome in ("done", "same"):
-                self.store.set_transcript(item, {"sha256": sha, "size": st.st_size, "mtime_ns": st.st_mtime_ns})
-                self.out["recopied"] += outcome == "done"
         for r in held:                                       # a check that waited (a book's copy unreadable then)
             if audiobooks.transcript_use(r["audiobook"]) == audiobooks.UNCHECKED and not self.stopped():
                 self.store.set_transcript(r["item_id"])
+
+    def _transcript_followed(self, item, path, st, said):
+        """A recorded transcript listed this look: its copy written again when it is gone from `Library` (Item 8a's
+        `_restore`, as a subtitle's is) or its original changed (S5: `_recopy`'s rules), then its record follows."""
+        full = self._inside(said["rel"])
+        if full is not None and not os.path.isfile(full):    # the copy gone: back from the original, in its place
+            if self._recent(st) or st.st_size == 0:
+                self._wait(os.path.dirname(path))
+                return
+            data, sha, _head = _read_text(path, st)
+            if sha is None or not self._same(path, st):
+                self._wait(os.path.dirname(path))
+                return
+            rel = self._copy(path, st, said["rel"].split("/")[1], said["rel"].rsplit("/", 1)[-1], sha, data)
+            if rel is None:
+                self._wait(os.path.dirname(path))
+                return
+            done = self.store.set_transcript(item, {"rel": rel, "sha256": sha, "size": st.st_size,
+                                                    "mtime_ns": st.st_mtime_ns})
+            self.out["restored"] += done is not None
+            return
+        if (st.st_size, st.st_mtime_ns) == (said.get("size"), said.get("mtime_ns")):
+            return
+        if self._recent(st):
+            self._wait(os.path.dirname(path))
+            return
+        outcome, sha = self._recopy(said["rel"], said.get("sha256"), path, st)
+        if outcome == "wait":
+            self._wait(os.path.dirname(path))
+        elif outcome in ("done", "same"):
+            self.store.set_transcript(item, {"sha256": sha, "size": st.st_size, "mtime_ns": st.st_mtime_ns})
+            self.out["recopied"] += outcome == "done"
 
     def _transcript(self, r, text, origin):
         """One transcript `text` (name, path, stat) written on the audiobook item `r` (`Store.audiobooks`' row)."""
@@ -1580,6 +1624,8 @@ class _Look:
             self._pass_over(path, st, why)
             return
         old = ab.get("transcript") if isinstance(ab.get("transcript"), dict) else {}
+        if old.get("origin") and os.path.exists(old["origin"]) and                 ls.path_key(os.path.abspath(old["origin"])) != ls.path_key(os.path.abspath(path)):
+            return                                           # its transcript is there still: this one is a second
         rel = old.get("rel") if old.get("sha256") == sha and old.get("rel") and \
             os.path.isfile(os.path.join(self.data_dir, *old["rel"].split("/"))) else None    # moved: its copy kept
         made = None
@@ -1598,6 +1644,9 @@ class _Look:
             self._trash(made)
         elif done is not None:
             self.out["attached"] += 1
+            gone = old.get("rel")                            # the transcript it replaced: its copy no item holds now
+            if made and gone and gone != rel and (self.store.item(done) or {}).get("rel_path") != gone:
+                self._trash(gone)
 
     def _audio_found(self, ab, clean_name, item_id=None, pair=None):
         """An audiobook's found-record for `take_in` (its first file's stats), or None (gone meanwhile). New: its item

@@ -209,9 +209,10 @@ def test_a_renamed_audiobook_folder_keeps_its_item_and_its_transcripts_copy():
         assert _subtitle_titles(store) == []
 
 
-def test_a_second_subtitle_named_alike_never_takes_the_transcripts_place():
-    """Its transcript recorded and still there: a second subtitle named like it later is never claimed (it would swap
-    the two at every look) — the transcript stays, the same copy, look after look."""
+def test_a_second_subtitle_named_alike_never_takes_the_transcripts_place_nor_a_title():
+    """Its transcript recorded and still there: a second subtitle named like it later (an `.ass` of the same lines) is
+    never claimed (it would swap the two at every look), nor a title of its own — the transcript stays, look after
+    look."""
     language = "ja"
     store, _data_dir, src, _m4b_path, srt = _alone(language, STAR)
     with store:
@@ -224,6 +225,68 @@ def test_a_second_subtitle_named_alike_never_takes_the_transcripts_place():
             [now] = _audio_items(store)
             assert now["id"] == item["id"] and now["rel_path"] == item["rel_path"]
             assert _record(store, item["id"])["transcript"]["origin"] == os.path.abspath(srt)
+            assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
+
+
+def test_the_same_audiobook_and_transcript_in_two_sources_is_one_item_counted_once():
+    """The folder copied into a second source: its audiobook is the same item even though that item now points at its
+    transcript, and the second transcript is never a second copy, item or title (counted once)."""
+    import shutil
+    language = "ja"
+    store, data_dir, src, _m4b_path, srt = _alone(language, STAR)
+    other = _drive("driveB")
+    shutil.copytree(os.path.dirname(srt), os.path.join(other, os.path.basename(os.path.dirname(srt))))
+    for where, _dirs, names in os.walk(other):
+        for n in names:
+            _settle(os.path.join(where, n))
+    with store:
+        a, b = store.add_source(src), store.add_source(other)
+        _look(store, language, a)
+        _look(store, language, b)
+        _look(store, language, a, full=True)
+        [item] = _audio_items(store)
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
+        recs = [r[2]["audiobook"] for r in store._audiobook_rows(item["id"])]   # one record per source (its files)
+        assert len(recs) == 2 and all(r["transcript"]["origin"] == os.path.abspath(srt) for r in recs)
+        copies = os.listdir(os.path.join(data_dir, *item["rel_path"].split("/")[:-1]))
+        assert [c for c in copies if c.endswith(".srt")] == [f"{STAR} ０１.srt"]
+        assert _counted(store, [item["id"]]) == [item["rel_path"]]
+
+
+def test_a_transcripts_copy_gone_from_the_library_is_copied_back():
+    """Item 8a, as a subtitle's: the copy deleted from `Library` (the original still there) — written back on the
+    next look that lists its folder, the item counted again."""
+    language = "ja"
+    store, data_dir, src, _m4b_path, srt = _alone(language, STAR)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root)
+        [item] = _audio_items(store)
+        copy = os.path.join(data_dir, *item["rel_path"].split("/"))
+        os.remove(copy)
+        store.sync_disk()
+        assert store.item(item["id"])["availability"] == "missing"
+        result = _look(store, language, root, full=True)
+        assert os.path.isfile(copy) and result["restored"] == 1
+        assert store.item(item["id"])["availability"] == "available"
+
+
+def test_a_renamed_and_edited_transcript_leaves_no_copy_behind():
+    """The transcript renamed and edited on disk: the new one is copied and recorded, the old copy goes to the trash
+    (never left in `Library` with no item holding it)."""
+    language = "ja"
+    store, data_dir, src, _m4b_path, srt = _alone(language, STAR)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root)
+        [item] = _audio_items(store)
+        folder = os.path.join(data_dir, *item["rel_path"].split("/")[:-1])
+        os.remove(srt)
+        _srt(os.path.join(os.path.dirname(srt), f"{STAR} 第1巻.srt"), _lines(language)[:12] + _lines(language)[:2])
+        _look(store, language, root, full=True)
+        [now] = _audio_items(store)
+        assert now["id"] == item["id"] and now["rel_path"].endswith(f"{STAR} 第1巻.srt")
+        assert sorted(c for c in os.listdir(folder) if c.endswith(".srt")) == [f"{STAR} 第1巻.srt"]
 
 
 def test_a_placeholder_audiobook_holds_its_transcript_back_until_it_is_here(monkeypatch):
@@ -325,9 +388,10 @@ def test_a_book_arriving_after_an_audiobook_counted_by_its_transcript_takes_the_
         assert audiobooks.transcript_use(_record(store, item["id"])) == audiobooks.TIMING
 
 
-def test_a_yes_takes_the_transcripts_count_back_and_undoing_a_pick_gives_it_back():
-    """Unsure (asked): its transcript counts meanwhile. *Find its book…*'s pick pairs it — the book counts, the item
-    waits; its Undo puts it back alone, its transcript counted again."""
+def test_an_asked_audiobook_waits_and_a_pick_takes_the_count_its_undo_gives_it_back():
+    """Unsure (asked about a book): its transcript waits for the answer (the book may be the same: never counted twice
+    meanwhile). *No* leaves it alone — its transcript counts. *Find its book…*'s pick pairs it — the book counts, the
+    item waits; its Undo puts it back alone, its transcript counted again."""
     language = "ja"
     store, _data_dir = _empty(language)
     src = _drive("driveA")
@@ -338,8 +402,11 @@ def test_a_yes_takes_the_transcripts_count_back_and_undoing_a_pick_gives_it_back
         root = store.add_source(src)
         _look(store, language, root, first=True)
         [item] = _audio_items(store)
-        assert _record(store, item["id"])["ask"] and item["availability"] == "available"
+        assert _record(store, item["id"])["ask"] and item["availability"] == "waiting"
+        assert audiobooks.transcript_use(_record(store, item["id"])) == audiobooks.ASKED
         store.answer_audiobook(item["id"], False)
+        alone = store.item(item["id"])
+        assert alone["availability"] == "available" and alone["rel_path"].endswith(f"{STAR}.srt")
         change = store.pick_audiobook_book(item["id"], book)
         assert change is not None
         now = store.item(item["id"])
@@ -347,8 +414,22 @@ def test_a_yes_takes_the_transcripts_count_back_and_undoing_a_pick_gives_it_back
         assert audiobooks.transcript_use(_record(store, item["id"])) == audiobooks.TIMING
         store.undo(change)
         back = store.item(item["id"])
-        assert back["availability"] == "available" and back["rel_path"] == item["rel_path"]
-        assert item["rel_path"] in _counted(store, [item["id"]])
+        assert back["availability"] == "available" and back["rel_path"] == alone["rel_path"]
+        assert alone["rel_path"] in _counted(store, [item["id"]])
+
+
+def test_a_paired_transcript_with_no_line_long_enough_to_look_for_says_nothing():
+    """H-13: a transcript whose cues are all too short to look for can't be checked against its book — never counted,
+    and *Needs you* says nothing (it has nothing to say it doesn't match)."""
+    language = "ja"
+    short = ["今日は晴れです。", "そうなんですね。", "ありがとうね。", "またあしたね。", "おやすみなさい。"] * 4
+    store, _data_dir, src, _srt_path = _paired(language, STAR, short)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        [heard] = [r for r in _book_items(store, STAR)[1] if r[3] == "audio"]
+        assert heard[4] == "waiting" and audiobooks.transcript_use(_record(store, heard[0])) == audiobooks.OTHER
+        assert [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == []
 
 
 # --- a transcript already in as a title of its own (before this change) -------------------------------------------- #
@@ -380,6 +461,26 @@ def test_a_transcript_already_in_as_its_own_title_becomes_the_audiobooks_item_wi
         assert _counted(store, [item["id"]]) == [item["rel_path"]]
         again = _look(store, language, root, full=True)
         assert again["added"] == 0 and store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
+
+
+def test_a_finished_transcript_merged_into_its_audiobook_stays_in_finished():
+    """The learner finished the transcript as a title of its own: becoming the audiobook's item, it stays in Finished
+    (its place is the learner's)."""
+    language = "ja"
+    store, _data_dir = _empty(language)
+    src = _drive("driveA")
+    folder = os.path.join(src, f"[1巻] {STAR} 01")
+    _srt(os.path.join(folder, f"{STAR} ０１.srt"), _lines(language)[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root)
+        [old] = [store.item(i) for (i,) in store.conn.execute("SELECT id FROM items")]
+        store.move([old["id"]], "graduated")
+        _settle(_m4b(os.path.join(folder, f"[1巻] {STAR} 01.m4b"), 3600, tags={"album": f"{STAR} 01"}))
+        _look(store, language, root)
+        [item] = _audio_items(store)
+        assert item["id"] == old["id"] and item["tier"] == "graduated"
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
 
 
 def test_a_transcript_already_in_beside_its_book_stops_counting_twice():
@@ -428,6 +529,25 @@ def _ab(title, volume=None, folder="f"):
 ))
 def test_which_subtitle_is_an_audiobooks_transcript(found, names, want):
     assert audiobooks.transcripts(found, names) == want
+
+
+def test_the_in_order_share_is_the_plain_scans_on_real_text():
+    """The index (`found_in_order`) finds exactly what a plain scan in order finds — the book's own lines shuffled,
+    repeated and mixed with another text's."""
+    import random
+    book = audiobooks.clean_text("".join(_lines("ja")) * 3)
+    lines = [audiobooks.clean_text(x) for x in _lines("ja") + _other_lines("ja")]
+    lines = [x for x in lines if len(x) >= audiobooks.CUE_MIN]
+    random.Random(7).shuffle(lines)
+
+    def plain(cues, text):
+        at, n = 0, 0
+        for c in cues:
+            i = text.find(c, at)
+            if i >= 0:
+                n, at = n + 1, i + len(c)
+        return n / len(cues)
+    assert audiobooks.found_in_order(lines, book) == plain(lines, book) and 0 < plain(lines, book) < 1
 
 
 def test_cues_and_the_in_order_share():

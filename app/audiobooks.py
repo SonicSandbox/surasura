@@ -23,6 +23,7 @@ cleaned names + the EPUB's metadata + the audio's tags + a length check, then ON
 
 Nothing here writes anything, opens Anki or the network. Standard library (and `extract`'s EPUB reading) only.
 """
+import bisect
 import difflib
 import hashlib
 import os
@@ -719,7 +720,7 @@ def length_text(seconds):
 TRANSCRIPT_EXTENSIONS = (".srt", ".ass", ".ssa")     # a timed subtitle the library reads (never a `.txt`: a book's)
 CUE_MIN = 8                     # a cue this long (clean characters) or longer is looked for in the book
 CONTENT_SHARE = 0.6             # this share of its cues found in the book, in order, and the transcript is the book's
-TEXT, TIMING, OTHER, UNCHECKED = "text", "timing", "other", "unchecked"    # what a transcript is for (`transcript_use`)
+TEXT, TIMING, OTHER, UNCHECKED, ASKED = "text", "timing", "other", "unchecked", "asked"   # `transcript_use`
 _RUBY = re.compile(r"<rt>.*?</rt>|<rp>.*?</rp>", re.S | re.I)
 _ASS_TAGS = re.compile(r"\{[^}]*\}")
 _MARKUP = re.compile(r"<[^>]*>")
@@ -789,29 +790,36 @@ def cues(text):
 
 def found_in_order(lines, book_text):
     """The share of a transcript's cues (`cues`) found in the book's text (`clean_text`'d), each after the one before
-    -> 0.0–1.0; None when the transcript has no cue to look for."""
+    -> 0.0–1.0; None when the transcript has no cue to look for. One pass over the book (its CUE_MIN-character runs'
+    places), then each cue tried only where its first run sits: milliseconds even for a transcript of another book."""
     if not lines:
         return None
+    places = {}
+    for i in range(len(book_text) - CUE_MIN + 1):
+        places.setdefault(book_text[i:i + CUE_MIN], []).append(i)
     at, n = 0, 0
     for line in lines:
-        i = book_text.find(line, at)
-        if i >= 0:
-            n += 1
-            at = i + len(line)
+        where = places.get(line[:CUE_MIN]) or ()
+        for i in where[bisect.bisect_left(where, at):]:
+            if book_text.startswith(line, i):
+                n += 1
+                at = i + len(line)
+                break
     return n / len(lines)
 
 
 def transcript_use(rec):
-    """What an audiobook record's transcript is for -> None (it has none); TEXT (alone or asked about: its content);
-    TIMING (paired, its cues found in that book: the book is the content, the transcript its timing); OTHER (paired,
-    not that book's: never used, a *Needs you* line says so); UNCHECKED (paired, the check not made for this book yet:
-    never counted)."""
+    """What an audiobook record's transcript is for -> None (it has none); TEXT (alone: its content); ASKED (H-8's
+    question about a book is open: never counted until the answer, so a book that is the same is never counted
+    twice meanwhile); TIMING (paired, its cues found in that book: the book is the content, the transcript its
+    timing); OTHER (paired, not that book's — or no cue long enough to look for: never used; *Needs you* says so only
+    when its cues were looked for); UNCHECKED (paired, the check not made for this book yet: never counted)."""
     said = (rec or {}).get("transcript")
     if not isinstance(said, dict):
         return None
     book = rec.get("book")
     if not isinstance(book, dict):
-        return TEXT
+        return ASKED if isinstance(rec.get("ask"), dict) else TEXT
     found = said.get("found")
     if not isinstance(found, dict) or found.get("book") != _book_mark(book):
         return UNCHECKED

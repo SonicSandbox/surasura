@@ -63,6 +63,7 @@ _TOP = ((6.2, 3.4), (13, 1.4), (20.6, 5.2), (14.6, 9), (8.2, 8.6))
 _LEFT = ((2.4, 10), (8.2, 8.6), (14.6, 9), (12.4, 14), (5, 15.4))
 _CRACK = ((13, 1.6), (11.6, 4.6), (13.4, 6.6))
 _STONES = {}                                # (size, dpr) -> QPixmap: drawn once each
+BOOKS_SHOWN = 20                            # a5-2 *Find its book…*: the library's books its menu lists, likeliest first
 LINES_SHOWN = 12                            # a card's per-file lines shown (*and N more*: a 300-file show is no
 #                                             1,000 widgets; the card's own answers still count every line — IK-L1-4)
 FOLDER_LINES_SHOWN = 3                      # ... on a folder's or the library's card (K3 / K1): its own answers
@@ -216,9 +217,9 @@ def _label(text, name, parent, wrap=True):
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
-           "start_fresh", "same_book", "not_book")
+           "start_fresh", "same_book", "not_book", "no_book")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs",
-                     "open_anki")
+                     "open_anki", "find_book")
 
 
 class NeedsCards(QWidget):
@@ -508,6 +509,40 @@ def _default_asks(opener):
                 pass
 
 
+def _default_books(opener, item_id):
+    """a5-2 *Find its book…*: the library's books, likeliest first for `item_id`'s audiobook (`Store.library_books`),
+    through a store handle of this worker's own (closed after)."""
+    if opener is None or getattr(opener, "mode", None) != "store" or not hasattr(opener, "handle"):
+        return []
+    try:
+        store = opener.handle()
+        if store is None or not hasattr(store, "library_books"):
+            return []
+        return store.library_books(item_id)
+    finally:
+        close = getattr(opener, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+
+
+def _held_book(books, path):
+    """(A worker.) *An EPUB on your computer…*: the library's book that IS this file — its path, else its bytes (sha256)
+    — or None."""
+    from app.library_store import path_key, sha256_of
+    want = path_key(os.path.abspath(path))
+    for b in books or ():
+        if path_key(os.path.abspath(b["epub"])) == want:
+            return b
+    try:
+        sha = sha256_of(path)
+    except OSError:
+        return None
+    return next((b for b in books or () if b.get("sha256") == sha), None)
+
+
 def match_folder(folder, lines):
     """*Choose a folder…* (a worker): each gone line's file in `folder` by its own name, else the one file there with
     its extension and its episode number -> [(line, path)]."""
@@ -591,6 +626,8 @@ class NeedsYou(QObject):
         # what the entries are read from, each on a worker (tests replace them)
         self.read_connect = service.read_connect
         self.read_asks = lambda: _default_asks(opener)
+        self.read_books = lambda item_id: _default_books(opener, item_id)      # a5-2 (Hon)
+        self.open_extract = None                 # a5-2: + Add's EPUB door for a book from disk (tests replace it)
         self.find_offline = service.find_offline
         self.read_settings = win.services.settings.get
         # the pickers (the system's own dialogs; tests replace them)
@@ -848,7 +885,7 @@ class NeedsYou(QObject):
 
     # --- the actions ------------------------------------------------------------------------------------------- #
     WRITES = frozenset(("choose_file", "choose_folder", "choose_video", "link_these", "remove", "remove_episode",
-                        "remove_all", "this_one", "its_new", "same_book", "not_book"))
+                        "remove_all", "this_one", "its_new", "same_book", "not_book", "find_book", "no_book"))
 
     def available(self, name, entry=None, line=None):
         """Whether `name` has a callable here (its button shown)."""
@@ -1163,6 +1200,89 @@ class NeedsYou(QObject):
         if self._give(entry.title, (item_id,), lambda t: writer.answer_audiobook(item_id, yes, key=key, label=t),
                       toast_it=False) is not None:
             self._say(strings.NEEDS_SAME_BOOK if yes else strings.NEEDS_NOT_BOOK)
+
+    # Hon (a5-2): after a *No* — find its book (the library's, else an EPUB on disk, as + Add's door adds it), or none
+    def _do_find_book(self, entry, _line):
+        """*Find its book…*: the library's books read on a worker (its arc turns meanwhile), then a menu under the
+        button — the likeliest first (`BOOKS_SHOWN`), then *A file on your computer…*. A pick pairs as a *Yes* does
+        (`pick_audiobook`, its toast's Undo)."""
+        item_id = entry.data["item_id"]
+        self._press("find_book", entry, self.read_books, item_id, then=lambda books: self._books_menu(entry, books),
+                    goes=False)
+
+    def _books_menu(self, entry, books):
+        from PyQt6.QtCore import QPoint
+        from PyQt6.QtGui import QAction
+        from app.qt import drag
+        if not self._alive():
+            return
+        self._stays("find_book", entry)
+        m = drag.list_menu(self.cards, entry.title)
+        for b in (books or [])[:BOOKS_SHOWN]:
+            act = QAction(strings.NEEDS_FIND_BOOK_LINE.format(title=b["title"], n=b["parts"]), m)
+            act.setToolTip(b["epub"])
+            act.triggered.connect(lambda _c=False, b=b: self._pick_book(entry, b["epub"], b["title"]))
+            m.addAction(act)
+        if books:
+            m.addSeparator()
+        act = QAction(strings.NEEDS_FIND_FILE, m)
+        act.setToolTip(strings.NEEDS_FIND_FILE_TIP)
+        act.triggered.connect(lambda _c=False: self._book_from_disk(entry))
+        m.addAction(act)
+        self.last_menu = m
+        control = self._control("find_book", entry)
+        if control is not None and control.isVisible():
+            m.popup(control.mapToGlobal(QPoint(0, control.height())))
+        return m
+
+    def _pick_book(self, entry, epub, title):
+        writer = self.win.services.writer
+        item_id = entry.data["item_id"]
+        self._give(strings.NEEDS_PICKED.format(book=title), (item_id,),
+                   lambda t: writer.pick_audiobook(item_id, epub, label=t))
+
+    def _book_from_disk(self, entry):
+        """An EPUB from the computer. One the library holds already — that file, or its bytes under another name — is
+        picked at once (looked up on a worker: its sha256 against the library's books). Any other opens + Add's own
+        door (Extract) with it, and the audiobook joins it once Extract has added THAT file (`on_added`, keyed by its
+        path: another job's book never). Closed before it ends: the book is in the library and the card's list holds
+        it."""
+        path = self.pick_file(strings.NEEDS_FIND_FILE_TITLE.format(audio=entry.data.get("title") or ""), "")
+        if not path or not path.lower().endswith(".epub"):
+            if path:
+                self._say(strings.NEEDS_FIND_NOT_EPUB)
+            return
+        item_id = entry.data["item_id"]
+        read = self.read_books
+        self._press("find_book", entry, lambda: _held_book(read(item_id), path),
+                    then=lambda held: self._held_or_extract(entry, path, held), goes=False)
+
+    def _held_or_extract(self, entry, path, held):
+        if not self._alive():
+            return
+        self._stays("find_book", entry)
+        if held is not None:                             # in the library already: picked as from the menu
+            self._pick_book(entry, held["epub"], held["title"])
+            return
+        opener = self.open_extract
+        if opener is None:
+            from app.qt import importers
+            opener = importers.open_extract
+        win = opener(self.win)
+        if win is None:
+            return
+        name = os.path.splitext(os.path.basename(path))[0]
+        win.on_added = (os.path.abspath(path), lambda added: self._pick_book(entry, added, name))
+        win.path.setText(path)
+        win.choose(path)
+        self._say(strings.NEEDS_FIND_EXTRACT.format(name=name))
+
+    def _do_no_book(self, entry, _line):
+        writer = self.win.services.writer
+        item_id = entry.data["item_id"]
+        if self._give(entry.title, (item_id,), lambda t: writer.audiobook_no_book(item_id, label=t),
+                      toast_it=False) is not None:
+            self._say(strings.NEEDS_NO_BOOK)
 
     # T6: a source folder that is gone
     def _do_find_folder(self, entry, _line):

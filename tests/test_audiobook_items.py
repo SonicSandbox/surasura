@@ -284,13 +284,17 @@ def test_an_unsure_pair_asks_one_question_and_a_no_is_kept_and_never_asked_again
         assert entry.title == f"Is this audiobook 「{NEKO}」 the book 「{NEKO}」?"
         assert entry.actions == ("same_book", "not_book") and "3 files (01.mp3 … 03.mp3)" in entry.say
         assert store.answer_audiobook(item["id"], False)
-        assert needs.asks_of(store) == [] and list(store.audiobook_answers().values()) == [False]
+        asked = lambda: [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_ASK]
+        assert asked() == [] and list(store.audiobook_answers().values()) == [False]
         assert store.meta().get(ls.AUDIOBOOKS_STALE) == "1"
         _look(store, language, root)                                             # weighed again: no other book
-        assert needs.asks_of(store) == [] and store.meta().get(ls.AUDIOBOOKS_STALE) == "0"
+        assert asked() == [] and store.meta().get(ls.AUDIOBOOKS_STALE) == "0"
         _look(store, language, root, full=True)
-        assert needs.asks_of(store) == [] and _record(store, item["id"])["book"] is None
+        assert asked() == [] and _record(store, item["id"])["book"] is None
         assert store.answer_audiobook(item["id"], True) is False                 # nothing open: nothing written
+        # a5-2: the *No* leaves the one card that offers to find its book, naming the book it answered
+        [find] = [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_FIND]
+        assert find["item_id"] == item["id"] and find["said_no"] == NEKO
 
 
 def test_a_yes_joins_the_book_title_after_its_last_part_and_is_kept():
@@ -327,7 +331,8 @@ def test_a_no_lets_the_next_book_be_asked():
         assert second is not None and second["epub"] != first
         store.answer_audiobook(item["id"], False)
         _look(store, language, root)
-        assert _record(store, item["id"])["ask"] is None and needs.asks_of(store) == []
+        assert _record(store, item["id"])["ask"] is None
+        assert [a["kind"] for a in needs.asks_of(store)] == [needs.AUDIOBOOK_FIND]     # a5-2: none left: find it
 
 
 def test_a_book_that_arrives_after_its_lone_audiobook_takes_it_in():
@@ -409,8 +414,9 @@ def test_a_book_row_with_its_audiobook_shows_one_headphones_row_waiting_quietly(
     assert heard.label == "🎧 With its audiobook" and heard.number is None and heard.text == "audio"
     assert heard.status.kind == "books" and heard.status.tip == view_rows.STRINGS["tip_audio_wait"]
     assert heard.play_tip == view_rows.STRINGS["play_audio_wait"] and not heard.can_play
-    assert row.line.endswith(" · 🎧 With its audiobook") and "3" not in row.line.split(" · ")[0]
-    assert row.chips[-1].text == "🎧" and f"「{NEKO}」" in row.chips[-1].tip
+    # a5-2: the book's own line; 🎧 before its title says the rest in its hover (`audio`), the chip's the same
+    assert row.line == "Parts 1–2" and row.audio.startswith(f"🎧 With its audiobook 「{NEKO}」")
+    assert row.chips[-1].text == "🎧" and row.chips[-1].tip == row.audio and not view_rows.audio_only(row)
 
 
 def test_an_audiobook_alone_row_and_tray_line_say_it_waits_for_anki_miner():
@@ -418,10 +424,11 @@ def test_an_audiobook_alone_row_and_tray_line_say_it_waits_for_anki_miner():
     works = {9: {"id": 9, "title": GINGA, "media_type": None}}
     row = view_rows._row(0, "arrivals", [audio], works, {}, {}, set(), set(), 20)
     assert row.media == "audiobook" and row.verb == "Listen" and row.title == GINGA
-    assert row.line == "Audiobook" and row.status.label == "Waits for Anki Miner"
-    assert row.episodes[0].label == GINGA
+    assert row.line == "Audio only · waits for Anki Miner" and row.status.label == "Waits for Anki Miner"
+    assert row.episodes[0].label == GINGA and view_rows.audio_only(row) and row.audio.startswith("🎧 Audio only")
     arrival = view_rows._arrival([audio], works, {}, {}, None)
-    assert ("waits for Anki Miner", "dim") in arrival.parts and ("no subtitles yet", "dim") not in arrival.parts
+    assert arrival.parts[0] == ("Audio only · waits for Anki Miner", "dim") and arrival.audio == row.audio
+    assert ("waits for Anki Miner", "dim") not in arrival.parts and ("no subtitles yet", "dim") not in arrival.parts
     assert view_rows.media_type_guess({"audio": 1}) == ls.media_type_guess({"audio": 1}) == "audiobook"
     assert view_rows.media_type_guess({"epub": 3, "audio": 1}) == "book"
 
@@ -507,7 +514,7 @@ def test_the_same_unsure_audiobook_in_two_sources_asks_once_and_one_answer_ends_
         assert store.answer_audiobook(items[0]["id"], False)
         for root in (ra, rb, ra):
             _look(store, language, root, full=True)
-        assert needs.asks_of(store) == []
+        assert [a["kind"] for a in needs.asks_of(store)] == [needs.AUDIOBOOK_FIND]     # a5-2: one card, its find
 
 
 def test_an_answer_to_a_question_no_longer_asked_writes_nothing():

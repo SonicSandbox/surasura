@@ -710,3 +710,115 @@ def length_text(seconds):
         return ""
     minutes = int(round(seconds / 60))
     return f"{minutes // 60} h {minutes % 60:02d} min" if minutes >= 60 else f"{minutes} min"
+
+
+# --- its transcript (Hon a6, H-12 ✅ Sonic, H-13 PROVISIONAL) ------------------------------------------------------- #
+# A subtitle file beside an audiobook is its transcript, never a title of its own. Alone, the transcript is the
+# audiobook's content (counted as a subtitle is); with its book, the book is the content and the transcript stays with
+# the audio for its timing (Anki Miner's Z-16 `subtitle_file`), counting nothing — unless it isn't the book's (H-13).
+TRANSCRIPT_EXTENSIONS = (".srt", ".ass", ".ssa")     # a timed subtitle the library reads (never a `.txt`: a book's)
+CUE_MIN = 8                     # a cue this long (clean characters) or longer is looked for in the book
+CONTENT_SHARE = 0.6             # this share of its cues found in the book, in order, and the transcript is the book's
+TEXT, TIMING, OTHER, UNCHECKED = "text", "timing", "other", "unchecked"    # what a transcript is for (`transcript_use`)
+_RUBY = re.compile(r"<rt>.*?</rt>|<rp>.*?</rp>", re.S | re.I)
+_ASS_TAGS = re.compile(r"\{[^}]*\}")
+_MARKUP = re.compile(r"<[^>]*>")
+_ASS_BREAK = re.compile(r"\\[Nnh]")             # an `.ass` line's own breaks (`\N`, `\n`) and hard space (`\h`)
+
+
+def is_transcript(name):
+    """A timed subtitle's name (`.srt`, `.ass`, `.ssa`) — never a Mac `._` twin."""
+    base = os.path.basename(str(name or ""))
+    return base.lower().endswith(TRANSCRIPT_EXTENSIONS) and not base.startswith("._")
+
+
+def transcripts(found, names):
+    """Which of `names` (the subtitle files of one folder, as listed) is each audiobook's transcript -> {index in
+    `found`: name}. `found`: the audiobooks of that folder. A name is an audiobook's when its clean title meets one of
+    the audiobook's (the same, or one holding the other: `title_level` CLOSE or better) and their volumes agree (the
+    same, or neither has one); else, a folder holding ONE audiobook and ONE subtitle: that one, whatever its name
+    (`transcript.srt`, `01.srt`). Each name goes to one audiobook at most (the best title first, then the audiobook
+    found first); one transcript per audiobook (the best title, then name order). A name no audiobook claims is left
+    for the look (a subtitle as any)."""
+    names = sorted({n for n in names if is_transcript(n)}, key=_natural)
+    if not found or not names:
+        return {}
+    weighed = []
+    for i, ab in enumerate(found):
+        forms, vols = _forms(ab.titles or [ab.title])
+        for n in names:
+            n_forms, n_vols = _forms([os.path.splitext(n)[0]])
+            level = _title_level(forms, n_forms) if forms and n_forms else 0
+            if level >= CLOSE and _volumes(vols, n_vols) in (SAME, NONE):
+                weighed.append((-level, i, _natural(n), n))
+    out, taken = {}, set()
+    for _level, i, _key, n in sorted(weighed):
+        if i not in out and n not in taken:
+            out[i] = n
+            taken.add(n)
+    if not out and len(found) == 1 and len(names) == 1:
+        out[0] = names[0]
+    return out
+
+
+def clean_text(text):
+    """A text as the content check compares it: NFKC, ruby readings and markup out, letters and digits only."""
+    text = _MARKUP.sub("", _RUBY.sub("", unicodedata.normalize("NFKC", str(text or ""))))
+    return "".join(ch for ch in text if unicodedata.category(ch)[0] in "LN")
+
+
+def cues(text):
+    """A transcript's lines as the content check looks for them -> [clean text] of each cue of CUE_MIN characters or
+    more: an `.srt`'s blocks (its numbers and times out), an `.ass` / `.ssa`'s `Dialogue:` lines (their style tags
+    and line breaks out)."""
+    text = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    out = []
+    if re.search(r"^\s*\[Script Info\]|^Dialogue:", text, re.M):
+        lines = [ln.split(",", 9)[9] for ln in text.split("\n") if ln.startswith("Dialogue:") and ln.count(",") >= 9]
+        blocks = [_ASS_BREAK.sub("", _ASS_TAGS.sub("", ln)) for ln in lines]
+    else:
+        blocks = ["".join(ln for ln in block.split("\n")
+                          if ln.strip() and "-->" not in ln and not ln.strip().isdigit())
+                  for block in re.split(r"\n\s*\n", text)]
+    for b in blocks:
+        t = clean_text(re.sub(r"<[^>]+>", "", b))
+        if len(t) >= CUE_MIN:
+            out.append(t)
+    return out
+
+
+def found_in_order(lines, book_text):
+    """The share of a transcript's cues (`cues`) found in the book's text (`clean_text`'d), each after the one before
+    -> 0.0–1.0; None when the transcript has no cue to look for."""
+    if not lines:
+        return None
+    at, n = 0, 0
+    for line in lines:
+        i = book_text.find(line, at)
+        if i >= 0:
+            n += 1
+            at = i + len(line)
+    return n / len(lines)
+
+
+def transcript_use(rec):
+    """What an audiobook record's transcript is for -> None (it has none); TEXT (alone or asked about: its content);
+    TIMING (paired, its cues found in that book: the book is the content, the transcript its timing); OTHER (paired,
+    not that book's: never used, a *Needs you* line says so); UNCHECKED (paired, the check not made for this book yet:
+    never counted)."""
+    said = (rec or {}).get("transcript")
+    if not isinstance(said, dict):
+        return None
+    book = rec.get("book")
+    if not isinstance(book, dict):
+        return TEXT
+    found = said.get("found")
+    if not isinstance(found, dict) or found.get("book") != _book_mark(book):
+        return UNCHECKED
+    share = found.get("share")
+    return TIMING if isinstance(share, (int, float)) and share >= CONTENT_SHARE else OTHER
+
+
+def _book_mark(book):
+    """The book a check was made against: its EPUB's sha256, else its path (`set_pair`'s `book`)."""
+    return book.get("sha256") or book.get("epub")

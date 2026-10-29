@@ -11564,6 +11564,7 @@ def _store_pair_audiobook(self, item_id, book=None, ask=None, answer=None, stale
                 cmd.fed_works.update(w for w in (old, work) if w is not None)
             self._put(tier, [item_id], ("after", last), cmd.version)
             cmd.feed([item_id])
+        self._transcript_checked(cmd, item_id)           # a6 (H-12, H-13): its transcript counts only while alone
         cmd.touch()
         return True
 
@@ -11605,9 +11606,11 @@ def _store_audiobook_finds(self):
 
 
 def _store_audiobook_hovers(self):
-    """a5-2: what the row's 🎧 says of each audiobook item -> {item_id: {title, n, first, last, seconds, paired}} (its
-    files' count, the first and last file's names, its length, paired or alone). One read; the reader asks again only
-    when an audiobook's item changed (`pair_audiobook` feeds it)."""
+    """a5-2: what the row's 🎧 says of each audiobook item -> {item_id: {title, n, first, last, seconds, paired,
+    transcript}} (its files' count, the first and last file's names, its length, paired or alone; a6: what its
+    transcript is for, `audiobooks.transcript_use`, None without one). One read; the reader asks again only when an
+    audiobook's item changed (`pair_audiobook`, `set_transcript` feed it)."""
+    from app import audiobooks
     out = {}
     with self._reading():
         for _k, item_id, rec in self._audiobook_rows():
@@ -11615,7 +11618,8 @@ def _store_audiobook_hovers(self):
             names = [os.path.basename(str(f)) for f in ab.get("files") or ()]
             out.setdefault(item_id, {"title": ab.get("title") or "", "n": len(names),
                                      "first": names[0] if names else "", "last": names[-1] if names else "",
-                                     "seconds": ab.get("seconds"), "paired": isinstance(ab.get("book"), dict)})
+                                     "seconds": ab.get("seconds"), "paired": isinstance(ab.get("book"), dict),
+                                     "transcript": audiobooks.transcript_use(ab)})
     return out
 
 
@@ -11757,6 +11761,7 @@ def _store_undo_audiobook_pick(self, cmd, change):
         answers[key] = said["answer"][1]
     self._set_meta({AUDIOBOOK_ANSWERS: _dumps(answers), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
     cmd.feed([said["item"]])
+    self._audio_state(cmd, said["item"])                 # a6: alone again, its transcript is its content again
     skipped = []
     if change.works["items"]:
         _o, skipped = self._undo_works(cmd, change)
@@ -11773,6 +11778,198 @@ def _store_audiobooks_weighed(self):
     self.bookkeeping({AUDIOBOOKS_STALE: "0"})
 
 
+# --- an audiobook's transcript (Hon a6: H-12 ✅ Sonic, H-13 PROVISIONAL) ------------------------------------------- #
+# A subtitle file beside an audiobook is its transcript: its records' `"transcript"` {origin, rel (Surasura's copy in
+# Library), sha256, size, mtime_ns, heard (the item's file name while it waits: its first audio file's), found (the
+# content check against the book it is paired with: {book, share})}. ONE rule says what the item is
+# (`_audio_state`, from `audiobooks.transcript_use`): alone (or asked about), the transcript is its content — the item
+# points at the copy and counts as a subtitle does; paired, the book is the content — the item waits again (its audio's
+# name, no file there), the copy kept for the audio's timing (Anki Miner's Z-16); a transcript the check finds isn't
+# the book's (under CONTENT_SHARE of its cues in order) is never used, and *Needs you* says so. Taking the key out of
+# the records, and each item's rel back to `heard`, undoes it all (no table, no schema).
+def _store_audio_state(self, cmd, item_id):
+    """The item's file and availability as its records say: TEXT → its transcript's copy (`available`, `missing` when
+    the copy is gone), anything else → its audio's name, `waiting`. An item with no transcript is left as it is (a
+    waiting audiobook). Its id, place, title and the learner's marks are kept. -> True when it changed."""
+    from app import audiobooks
+    rows = self._audiobook_rows(item_id)
+    ab = (rows[0][2].get("audiobook") or {}) if rows else {}
+    said = ab.get("transcript") if isinstance(ab.get("transcript"), dict) else None
+    row = self.conn.execute("SELECT rel_path, availability, tier, entry FROM items WHERE id = ?", (item_id,)).fetchone()
+    if row is None or not said or not said.get("rel") or not said.get("heard"):
+        return False
+    if audiobooks.transcript_use(ab) == audiobooks.TEXT:
+        rel = said["rel"]
+        size, mtime_ns, availability = _fingerprint(self.data_dir, rel)
+    else:
+        rel, size, mtime_ns, availability = said["heard"], None, None, "waiting"
+    entry = _json_dict(row[3]) or {}
+    if (row[0], row[1], entry.get("source_type")) == (rel, availability, "audio"):
+        return False
+    entry.update(physical_path=rel, source_type="audio")
+    if ab.get("title"):
+        entry["title"] = str(ab["title"])
+    title, folder, source_type = _columns(entry)
+    self.conn.execute("UPDATE items SET rel_path = ?, rel_key = ?, entry = ?, title = ?, parent_folder = ?, "
+                      "source_type = ?, search_key = ?, availability = ?, size = ?, mtime_ns = ? WHERE id = ?",
+                      (rel, path_key(rel), _dumps(entry), title, folder, source_type,
+                       search_fold(title or "", self.language), availability, size, mtime_ns, item_id))
+    if availability == "available" and said.get("sha256") and self._hash_column():
+        self.conn.execute("UPDATE items SET content_sha256 = ? WHERE id = ?", (said["sha256"], item_id))
+    cmd.touch({row[2]}, availability=True)
+    cmd.feed([item_id])
+    return True
+
+
+def _store_transcript_found(self, said, book):
+    """H-13's content check: the share of the transcript's cues (`audiobooks.cues`, of Surasura's copy) found in order
+    in the book's text (its parts' copies, in the book's order) -> {book, share}; None when either can't be read (the
+    check waits: never a guess). Milliseconds: one pass over each."""
+    from app import audiobooks
+    from app.path_utils import read_text
+    try:
+        lines = audiobooks.cues(read_text(os.path.join(self.data_dir, _strip(said["rel"])), self.language))
+    except (OSError, KeyError, TypeError):
+        return None
+    epub = book.get("epub")
+    if not isinstance(epub, str) or not epub:
+        return None
+    lo = SOURCE_KEY + path_key(os.path.abspath(epub)) + "#"
+    parts = []
+    for key, rel in self.conn.execute(f"SELECT p.content_key, i.rel_path FROM pairings p JOIN items i ON i.id = "
+                                      f"p.item_id WHERE p.content_key >= ? AND p.content_key < ? AND {_LIVE_ORIGIN}",
+                                      (lo, lo[:-1] + "$")):
+        n = key[len(lo):]
+        parts.append((int(n) if n.isdigit() else 0, rel))
+    text = []
+    for _n, rel in sorted(parts):
+        try:
+            with open(os.path.join(self.data_dir, _strip(rel)), encoding="utf-8", errors="replace") as f:
+                text.append(f.read())
+        except OSError:
+            return None
+    if not text:
+        return None
+    share = audiobooks.found_in_order(lines, audiobooks.clean_text("".join(text)))
+    return {"book": audiobooks._book_mark(book), "share": round(share, 4) if share is not None else None}
+
+
+def _store_transcript_checked(self, cmd, item_id):
+    """An audiobook item's transcript checked against the book it is paired with when its check isn't for that book
+    (`found`), then the item as its records say (`_audio_state`) — after any pairing write. -> True when it changed."""
+    from app import audiobooks
+    rows = self._audiobook_rows(item_id)
+    ab = (rows[0][2].get("audiobook") or {}) if rows else {}
+    said = ab.get("transcript")
+    if not isinstance(said, dict):
+        return False
+    if audiobooks.transcript_use(ab) == audiobooks.UNCHECKED:
+        found = self._transcript_found(said, ab["book"])
+        if found is not None:
+            for key, _i, rec in rows:
+                one = dict(rec["audiobook"], transcript=dict(rec["audiobook"].get("transcript") or said, found=found))
+                self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                                  (json.dumps(dict(rec, audiobook=one), sort_keys=True, ensure_ascii=False), key))
+            cmd.feed([item_id])
+            cmd.touch()
+    return self._audio_state(cmd, item_id)
+
+
+def _store_set_transcript(self, item_id, transcript=None, from_item=None, by=SOURCE_PRODUCER):
+    """An audiobook item's transcript written in ONE command (the look's; H-12): `transcript` {origin, rel, sha256,
+    size, mtime_ns} — its copy made by the look (`rel`), or the copy of `from_item`, a subtitle item the transcript was
+    taken in as before its audiobook was known: that item becomes the audiobook's (`_adopt_transcript_item`). None:
+    the transcript as recorded, checked again (a check that couldn't be made yet). Paired, it is checked against the
+    book (`found`); the item then is what its records say (`_audio_state`). -> the audiobook's item id, or None (no
+    such audiobook item, or `from_item` can't become it: nothing written)."""
+    from app import audiobooks
+    with self._command("audiobook", by) as cmd:
+        rows = self._audiobook_rows(item_id)
+        if not rows:
+            return None
+        target = item_id
+        if from_item is not None and from_item != item_id:
+            if not self._adopt_transcript_item(cmd, item_id, from_item, (transcript or {}).get("origin")):
+                return None
+            target = from_item
+            rows = self._audiobook_rows(target)
+        ab = rows[0][2].get("audiobook") or {}
+        old = ab.get("transcript") if isinstance(ab.get("transcript"), dict) else {}
+        if transcript is None and not old:
+            return None
+        said = dict(old, **(transcript or {}))
+        if not said.get("heard"):
+            said["heard"] = self._heard_rel(target, ab, said)
+        if old.get("sha256") != said.get("sha256") or old.get("rel") != said.get("rel"):
+            said.pop("found", None)                      # another transcript: checked again
+        for key, _i, rec in rows:
+            one = dict(rec["audiobook"], transcript=said)
+            self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                              (json.dumps(dict(rec, audiobook=one), sort_keys=True, ensure_ascii=False), key))
+        cmd.feed([target])
+        cmd.touch()
+        if audiobooks.transcript_use(dict(ab, transcript=said)) is not None:
+            self._transcript_checked(cmd, target)
+        return target
+
+
+def _store_heard_rel(self, item_id, ab, said):
+    """The item's file name while it waits (no file there): its own while it waits on an audio file's name, else
+    `<the transcript copy's folder>/<its sizes' key> <its first audio file>` — a waiting audiobook's (`sources`)."""
+    from app import audiobooks
+    row = self.conn.execute("SELECT rel_path, availability FROM items WHERE id = ?", (item_id,)).fetchone()
+    if row is not None and row[1] == "waiting" and audiobooks.is_audio(row[0] or ""):
+        return row[0]
+    key = audiobooks.sizes_key(audiobooks.from_record(ab))
+    first = os.path.basename(next(iter(ab.get("files") or ()), "") or "audio.m4b")
+    folder = str(said.get("rel") or (row[0] if row is not None else "") or CONTENT_FOLDER + "/x").rsplit("/", 1)[0]
+    return f"{folder}/{key[6:14]} {first}"
+
+
+def _store_adopt_transcript_item(self, cmd, audio_item, text_item, origin=None):
+    """H-12, a transcript already in as a subtitle of its own (taken in before its audiobook was known): THAT item
+    becomes the audiobook's — it keeps its id, its marks, its cards and its copy; the audiobook's records move onto it
+    (the transcript's own record, `origin`, dropped: it is the audiobook's `transcript` now, never a text a look
+    follows); it takes the waiting audio item's title and place, and the audio item (waiting, no file: nothing of the
+    learner's on it) goes, its title tidied as a Remove's. -> True when done; False (nothing written) when either is
+    gone, the audio item isn't a waiting one, or the subtitle item is an audiobook's already."""
+    a = self.conn.execute("SELECT work_id, tier, availability FROM items WHERE id = ?", (audio_item,)).fetchone()
+    s = self.conn.execute("SELECT work_id, source_type FROM items WHERE id = ?", (text_item,)).fetchone()
+    if a is None or s is None or a[2] != "waiting" or s[1] == "audio" or self._audiobook_rows(text_item):
+        return False
+    if origin:
+        self.conn.execute(f"DELETE FROM pairings WHERE item_id = ? AND content_key = ? AND "
+                          f"content_key >= 'src:' AND content_key < 'src;'", (text_item, origin_key(origin)))
+    self.conn.execute("UPDATE pairings SET item_id = ? WHERE item_id = ?", (text_item, audio_item))
+    if s[0] != a[0]:
+        self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (a[0], text_item))
+        cmd.reworked.add(text_item)
+        cmd.fed_works.update(w for w in (s[0], a[0]) if w is not None)
+    self._put(a[1], [text_item], ("after", audio_item), cmd.version)
+    self._take_out(cmd, audio_item)
+    cmd.feed([text_item])
+    return True
+
+
+def _store_transcript_mismatches(self):
+    """H-13's lines for *Needs you*: [{item_id, title, book, share, key}] — an audiobook paired with a book whose
+    transcript the check found isn't that book's (`audiobooks.OTHER`): never used, said once. `key`: the transcript's
+    bytes and the book's (a new one of either is a new line)."""
+    from app import audiobooks
+    out, seen = [], set()
+    with self._reading():
+        for _k, item_id, rec in self._audiobook_rows():
+            ab = rec.get("audiobook") or {}
+            if item_id in seen or audiobooks.transcript_use(ab) != audiobooks.OTHER:
+                continue
+            seen.add(item_id)
+            said, book = ab["transcript"], ab["book"]
+            out.append({"item_id": item_id, "title": ab.get("title") or "", "book": book.get("title") or "",
+                        "share": (said.get("found") or {}).get("share"), "transcript": said.get("origin") or "",
+                        "key": f"{said.get('sha256')}|{audiobooks._book_mark(book)}"})
+    return out
+
+
 Store._audiobook_rows = _store_audiobook_rows
 Store.audiobooks = _store_audiobooks
 Store.audiobook_answers = _store_audiobook_answers
@@ -11787,6 +11984,13 @@ Store.library_books = _store_library_books
 Store.pick_audiobook_book = _store_pick_audiobook_book
 Store._undo_audiobook_pick = _store_undo_audiobook_pick
 Store.audiobook_no_book = _store_audiobook_no_book
+Store._audio_state = _store_audio_state
+Store._transcript_found = _store_transcript_found
+Store._transcript_checked = _store_transcript_checked
+Store.set_transcript = _store_set_transcript
+Store._heard_rel = _store_heard_rel
+Store._adopt_transcript_item = _store_adopt_transcript_item
+Store.transcript_mismatches = _store_transcript_mismatches
 
 
 # ------------------------------------------------------------------------------------------------ #

@@ -143,6 +143,9 @@ class FakeWriter:
     def set_watched(self, ids, on=True, label=None):
         return self._put("set_watched", ids, label, on=on)
 
+    def join(self, piece_ids, label=None, ahead=False, how="parts", titles=False):      # L6.3: recorded, not applied
+        return self._put("join", [], label, piece_ids=list(piece_ids), ahead=ahead, how=how)
+
     def insert_at(self, paths, tier, before_id=None, after_id=None, near=(), label=None):
         return self._put("insert_at", [], label, files=list(paths), tier=tier, before_id=before_id, after_id=after_id,
                          near=list(near))
@@ -1968,27 +1971,37 @@ def _all_but_one(seed, win, i):
     return rows_of(win)[i]
 
 
-def test_the_last_files_done_offers_the_finish_and_its_move_to_finished_acts(world):
+def test_the_last_files_done_finishes_the_title_by_itself_through_the_finish_path(world):
+    """L6.3 R3 (was: the offer, *finished with it?*): the seed's titles came in together, nothing of this one waits
+    anywhere — the last file's Done marks it watched, then finishes it through the Finish path: the row leaves at
+    once, one toast with Undo and D14's *Keep* / *Leave its new cards out*."""
     seed, win, writer = world()
     row = _all_but_one(seed, win, 4)
     win.moves.done(row, row.episodes[-1])
-    card = win.toasts.card
-    assert card.base == strings.DONE_ALL.format(n=len(row.episodes))
-    assert [b.text() for b in card.buttons if not b.isHidden()] == [strings.TOAST_UNDO, strings.DONE_MOVE_FINISHED]
-    settle()
-    card.buttons[1].click()
-    assert calls(writer, "set_tier")[0][1] == drag.ids_of(row)
+    assert [c[0] for c in calls(writer)] == ["set_watched", "set_tier"]
+    assert calls(writer, "set_watched")[0][1] == [row.episodes[-1].id]
+    assert calls(writer, "set_tier")[0][1] == drag.ids_of(row) and calls(writer, "set_tier")[0][2]["tier"] == drag.FINISHED
     assert row.key not in [r.key for r in rows_of(win)]
-    assert win.toasts.card.base == strings.DRAG_FINISHED.format(title=row.title)
+    card = win.toasts.card
+    assert card.base == strings.DONE_FINISHED.format(n=len(row.episodes), title=row.title)
+    assert [b.text() for b in card.buttons if not b.isHidden()] == [strings.TOAST_UNDO, strings.DRAG_KEEP,
+                                                                    strings.DRAG_TAKE_OUT]
 
 
-def test_the_finish_toast_is_skipped_for_a_splits_first_part_and_hatos_mix(world):
+def test_the_last_files_done_on_a_splits_first_part_joins_it_forward_and_hatos_mix_only_marks(world):
+    """L6.3 R1 (was: a plain *watched* toast, the row left behind every file watched): a split's first part joins
+    the title's next part in Current, just before it (`ahead`), in one join after the mark. hato's mix only marks."""
     seed, win, writer = world()
     rs = rows_of(win)
     i = next(n for n, r in enumerate(rs) if drag.split_first(rs, r))
+    target = next(r for r in rs if r.key != rs[i].key and r.work_id == rs[i].work_id)
     row = _all_but_one(seed, win, i)
     win.moves.done(row, row.episodes[-1])
-    assert win.toasts.card.base == strings.DONE_ONE.format(title=row.title, ep=row.episodes[-1].label)
+    assert [c[0] for c in calls(writer)] == ["set_watched", "join"]
+    join = calls(writer, "join")[0][2]
+    assert join["piece_ids"] == [target.piece_id] + drag.pieces_of(row) and join["ahead"] is True
+    assert win.toasts.card.base.startswith(strings.DONE_JOINED.split("{line}")[0].format(n=len(row.episodes)))
+    writer.calls.clear()
     row = _all_but_one(seed, win, 0)
     win.moves.done(row, row.episodes[-1])
     assert win.toasts.card.base == strings.DONE_ONE.format(title=row.title, ep=row.episodes[-1].label)
@@ -2002,10 +2015,10 @@ def click_hero_done(win):
     return done
 
 
-def test_G3_2_up_next_done_with_every_file_watched_offers_move_to_finished_and_undo_takes_it_back(world):
-    """Up Next's ✓ Done did nothing once every file was watched (the click was swallowed). Now it offers the finish,
-    as the last file's Done does: nothing is marked (every file is watched already), *Move to Finished* finishes it
-    through the writer, and the Finished toast's Undo takes it back."""
+def test_G3_2_up_next_done_with_every_file_watched_finishes_it_by_itself_and_undo_takes_it_back(world):
+    """Up Next's ✓ Done did nothing once every file was watched (the click was swallowed). Since L6.3 it finishes the
+    title by itself, as the last file's Done does (R3): nothing is marked (every file is watched already), the Finish
+    path writes it, and the Finished toast's Undo takes it back."""
     seed, win, writer = world()
     moved = rows_of(win)[3]
     assert not drag.is_mix(moved) and not drag.split_first(rows_of(win), moved)
@@ -2019,16 +2032,11 @@ def test_G3_2_up_next_done_with_every_file_watched_offers_move_to_finished_and_u
     writer.calls.clear()
     done = click_hero_done(win)
     assert done[2] == strings.ROWS_DONE_ALL_TIP
-    assert calls(writer) == []                                        # nothing marked: an offer
-    card = win.toasts.card
-    assert card.base == strings.DONE_ALL.format(n=len(moved.episodes))
-    assert [b.text() for b in card.buttons if not b.isHidden()] == [strings.DONE_MOVE_FINISHED]
-    settle()
-    next(b for b in card.buttons if b.text() == strings.DONE_MOVE_FINISHED).click()
+    assert [c[0] for c in calls(writer)] == ["set_tier"]             # nothing marked: the finish alone
     op = calls(writer, "set_tier")[0]
     assert op[1] == drag.ids_of(moved) and op[2]["tier"] == "graduated"
     assert moved.key not in [r.key for r in rows_of(win)]
-    assert win.toasts.card.base == strings.DRAG_FINISHED.format(title=moved.title)
+    assert win.toasts.card.base == strings.DONE_FINISHED.format(n=len(moved.episodes), title=moved.title)
     assert wait_until(lambda: any(c.op == "set_tier" for c in writer.saved) and win.moves.tickets == [], 3)
     change = next(c for c in writer.saved if c.op == "set_tier")
     win.toasts.card.buttons[0].click()                                # the Finished toast's Undo
@@ -2054,9 +2062,9 @@ def test_G3_2_up_next_done_with_a_file_left_still_marks_it_watched_and_hatos_mix
     assert win.bar_line.full() == strings.WELL_UNLIT_MIX
 
 
-def test_G3_2_up_next_done_on_a_splits_first_part_all_watched_says_why_and_offers_no_finish(world):
+def test_G3_2_up_next_done_on_a_splits_first_part_all_watched_joins_it_forward_never_to_finished(world):
     """A split's first part never finishes while a later part is in Current (its parts stay together): with every
-    file watched, Up Next's Done writes nothing, shows no finish toast, and the bar says why."""
+    file watched, Up Next's Done joins it to that part (L6.3 R1) — one join, no mark, never a finish."""
     seed, win, writer = world()
     rs = rows_of(win)
     i = next(n for n, r in enumerate(rs) if drag.split_first(rs, r))
@@ -2071,8 +2079,9 @@ def test_G3_2_up_next_done_on_a_splits_first_part_all_watched_says_why_and_offer
     settle()
     writer.calls.clear()
     click_hero_done(win)
-    assert calls(writer) == []
-    assert win.bar_line.full() == strings.WELL_UNLIT_SPLIT
+    assert [c[0] for c in calls(writer)] == ["join"]
+    join = calls(writer, "join")[0][2]
+    assert join["ahead"] is True and join["piece_ids"][1:] == drag.pieces_of(moved)
     shown = win.toasts.card.base if win.toasts.card is not None else None
     assert shown != strings.DONE_ALL.format(n=len(moved.episodes))   # no finish offered
 

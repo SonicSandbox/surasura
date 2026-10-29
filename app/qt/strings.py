@@ -637,6 +637,9 @@ DONE_UNDONE_BACK = "{ep} not watched — its words are back."
 DONE_ALL = "✓ All {n} watched — finished with it?"
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
+# L6.3: what the last file's Done does by itself (its toast's Undo takes it back; the ✓ stays)
+DONE_FINISHED = "✓ All {n} watched · {title} finished · its cards stay put"
+DONE_JOINED = "✓ All {n} watched · joined to {line}"
 # --- LM11b G5: one show of a group all watched, the group's other shows not yet (GW-2 ⭐ A)
 DONE_SHOW_IN_GROUP = "✓ {show}: all {n} watched — finished with it?"
 DONE_MOVE_SHOW_FINISHED = "Move {show} to Finished"

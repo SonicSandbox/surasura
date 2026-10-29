@@ -366,3 +366,12 @@ def test_window_a_later_part_whose_earlier_part_waits_gets_the_plain_mark_never_
     writer.calls.clear()
     win.moves.done(rows_of(win)[i], None)
     assert calls(writer) == [] and win.bar_line.full() == strings.WELL_UNLIT_SPLIT
+
+
+def test_R1_a_part_starting_on_this_parts_own_last_number_is_not_its_next_part():
+    """`split_first`'s "later" is strictly after: a part whose first episode is this part's last (a second version
+    of Ep 12 kept apart) is never the one joined; the part from Ep 13 is."""
+    first = _row("p1", 1, 1, _eps(1, 12), index=0)
+    again = _row("p3", 1, 3, _eps(12, 1, watched=False, start_id=40), index=1)
+    second = _row("p2", 1, 2, _eps(13, 12, watched=False, start_id=13), index=2)
+    assert drag.when_done(_view([first, again, second]), first, NOW)[1] == [2, 1]

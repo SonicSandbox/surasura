@@ -18,6 +18,8 @@ MCP server (app/cli/mcp_server.py) keeps one per language for its session. Reads
 """
 import json
 import os
+import threading
+from contextlib import contextmanager
 
 MODES = ("chat", "reading")
 READING_SHARE = 0.03            # a reading's new words: under 3 % of its words (Sonic, P-1)
@@ -27,6 +29,22 @@ RECENT = 100                    # the newest known words, the ones a round uses 
 # top EASY_ZH_RANK words by count.
 EASY_JA_RANK = 5000
 EASY_ZH_RANK = 5000
+WATCHED = ("KnownWord.json", "IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt")   # read again when one changes
+
+# Every Checker step runs under one lock with the analyzer's language flag set for its language (SANITIZE_JA is the
+# process's): a Chinese check never reads Japanese with the flag off, and two calls never share the tagger at once.
+_RUN = threading.RLock()
+
+
+@contextmanager
+def _reading(japanese):
+    from app import analyzer
+    with _RUN:
+        saved, analyzer.SANITIZE_JA = analyzer.SANITIZE_JA, japanese
+        try:
+            yield
+        finally:
+            analyzer.SANITIZE_JA = saved
 
 
 def _known_file(language):
@@ -75,13 +93,16 @@ class Checker:
     last Generate's counts) are for tests and callers that hold them already."""
 
     def __init__(self, language, upcoming=(), settings=None, known=None, library=None, recent=None):
-        from app import analyzer, settings_manager, zh_script
         if language not in ("ja", "zh"):
             raise ValueError("language must be ja or zh")
+        self.japanese = language == "ja"
+        with _reading(self.japanese):                       # as every run sets it, before known words are read
+            self._start(language, upcoming, settings, known, library, recent)
+
+    def _start(self, language, upcoming, settings, known, library, recent):
+        from app import analyzer, settings_manager, zh_script
         self.language = language
         settings = settings_manager.load_settings() if settings is None else settings
-        analyzer.SANITIZE_JA = language == "ja"            # as every run sets it, before known words are read
-        self.japanese = language == "ja"
         self.rule = self.japanese and bool(settings.get("exclude_single", True))
         self.script = zh_script.effective(language, settings.get("zh_script", "asis"))
         if self.japanese:
@@ -115,11 +136,13 @@ class Checker:
             known_tuples, known_lemmas, ignore = self._known_sets
         self.known_tuples, self.known_lemmas, self.ignore = set(known_tuples), set(known_lemmas), set(ignore)
         terms = recent_terms(self.known_path, self.language) if self._recent_given is None else self._recent_given
-        self.recent_terms = list(terms)
-        self.recent = {}                                    # (lemma, reading) -> its place, 0 the newest
-        for at, term in enumerate(terms):
-            for lemma, reading, _surface, _orth in self.tokenizer.tokenize(term):
-                self.recent.setdefault((lemma, reading), at)
+        # One word each: an Anki "Also read" sentence is known, but its particles are no newly learned words.
+        self.recent_terms, self.recent = [], {}             # (lemma, reading) -> its place, 0 the newest
+        for term in terms:
+            tokens = self.tokenizer.tokenize(term)
+            if len(tokens) == 1:
+                self.recent.setdefault(tuple(tokens[0][:2]), len(self.recent_terms))
+                self.recent_terms.append(term)
         library = self._library
         if library is None and self.japanese:
             from app import sentence_corpus
@@ -135,16 +158,21 @@ class Checker:
         self._signature = self._stat()
 
     def _stat(self):
-        try:
-            st = os.stat(self.known_path)
-            return st.st_mtime_ns, st.st_size
-        except OSError:
-            return None
+        folder, out = os.path.dirname(self.known_path), []
+        for name in WATCHED:
+            try:
+                st = os.stat(os.path.join(folder, name))
+                out.append((st.st_mtime_ns, st.st_size))
+            except OSError:
+                out.append(None)
+        return tuple(out)
 
     def refresh(self):
-        """Read the known words again when KnownWord.json changed (a sync mid-session); a stat when it didn't."""
+        """Read the known words and the word lists again when one changed (a sync mid-session, an Ignore); four stats
+        when none did."""
         if self._known_sets is None and self._stat() != self._signature:
-            self._load()
+            with _reading(self.japanese):
+                self._load()
 
     def recent_words(self, limit=RECENT):
         """The newest known words as the learner wrote them, newest first."""
@@ -184,13 +212,17 @@ class Checker:
     def check(self, text, mode="chat"):
         """The verdict on `text` in `mode` (MODES) -> {"pass", "reasons", "sentences", "new_words", "new_share",
         "words", "known_used", "recent_used"}. `reasons` are instructions in plain words, empty on a pass."""
-        from app import analyzer
         if mode not in MODES:
             raise ValueError(f"mode must be one of {', '.join(MODES)}")
+        with _reading(self.japanese):
+            return self._check(str(text or ""), mode)
+
+    def _check(self, text, mode):
+        from app import analyzer
         sentences, new_words, known_used, recent_used = [], {}, {}, {}
         counted = new_uses = 0
         lang = self.language
-        for s_text, tokens in self.tokenizer.tokenize_sentences(str(text or "").replace("\r\n", "\n")):
+        for s_text, tokens in self.tokenizer.tokenize_sentences(text.replace("\r\n", "\n")):
             skip = analyzer.unoffered(s_text, tokens) if self.rule else ()
             present = {}
             for t_no, (lemma, reading, surface, orth) in enumerate(tokens):

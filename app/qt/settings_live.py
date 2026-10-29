@@ -459,6 +459,7 @@ class Live(QObject):
         self._checking = False
         self._level = {"busy": False, "again": False, "asked": 0}
         self._format = None               # the format last chosen (the pop opens on it)
+        self._copies = {}                 # A6: an AI app -> its Copy presses (the latest one sets the name back)
         page.row_built.connect(self._built)
         page.language_set.connect(self._language)
         b = page.bridge
@@ -893,7 +894,12 @@ class Live(QObject):
         door = self.parts.get("practice_ai", {}).get(app)
         if door is not None:
             door.setText(S.PRACTICE_COPIED)
-            QTimer.singleShot(2000, lambda: None if sip.isdeleted(door) else door.setText(name))
+            self._copies[app] = press = self._copies.get(app, 0) + 1      # a second press restarts the two seconds
+
+            def back():
+                if not sip.isdeleted(door) and self._copies.get(app) == press:
+                    door.setText(name)
+            QTimer.singleShot(2000, back)
         self.say(S.PRACTICE_COPIED_LINE.format(app=name), "practice_ai")
 
     def open_logs(self):

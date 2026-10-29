@@ -163,3 +163,51 @@ def test_the_cli_hands_mcp_to_the_server_before_its_json_channel_opens(monkeypat
     monkeypatch.setattr(mcp_server, "main", lambda argv: seen.append(argv) or 0)
     monkeypatch.setattr(contract, "open_channel", lambda out=None: pytest.fail("the JSON channel opened"))
     assert cli.main(["mcp"]) == 0 and seen == [[]]
+
+
+def test_a_wrong_language_and_a_busy_list_answer_with_what_to_do(monkeypatch):
+    from app.cli import contract
+
+    def busy(*_args, **_kwargs):
+        raise contract.CliError("busy", "Surasura is busy reading the list (a Generate is running).")
+    monkeypatch.setattr(mcp_server, "next_words", busy)
+
+    async def calls(client):
+        return (await client.call_tool("surasura_check_text", {"text": TALK, "language": "de"}),
+                await client.call_tool("surasura_practice_start", {}))
+    lang, round_ = _run(_state(), calls)
+    assert lang.is_error and "ja (Japanese) or zh (Chinese)" in lang.content[0].text
+    assert round_.is_error and "Try again in a moment" in round_.content[0].text
+
+
+def test_the_real_server_process_writes_only_mcp_messages_on_stdout(project_root):
+    """`python -m app.cli mcp` as an AI app runs it: every stdout line is one JSON-RPC message, through the checker's
+    load (it prints) and a call."""
+    import subprocess
+    import sys
+    p = subprocess.Popen([sys.executable, "-m", "app.cli", "mcp"], cwd=str(project_root), stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "surasura_check_text", "arguments": {"text": TALK, "language": "ja"}}}]
+    try:
+        for msg in msgs:
+            p.stdin.write((json.dumps(msg) + "\n").encode("utf-8"))
+        p.stdin.flush()
+        lines = []
+        while True:
+            line = p.stdout.readline()
+            assert line, "the server closed stdout before answering"
+            lines.append(json.loads(line))                  # a stray line fails here
+            if lines[-1].get("id") == 2:
+                break
+        p.stdin.close()
+        rest = [ln for ln in p.stdout.read().splitlines() if ln.strip()]
+        assert [json.loads(ln) for ln in rest] is not None  # nothing but JSON after the session either
+    finally:
+        p.kill() if p.poll() is None else None
+        p.wait(20)
+    answer = json.loads(lines[-1]["result"]["content"][0]["text"])
+    assert answer["words"] > 5 and "pass" in answer

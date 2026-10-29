@@ -236,3 +236,42 @@ def test_check_text_keeps_one_checker_per_language(monkeypatch):
     practice.check_text(ZH, "zh")
     practice.check_text(ZH, "zh", upcoming=_keys("zh", "电影"))
     assert made == ["zh"] and practice._CHECKERS["zh"].upcoming == _keys("zh", "电影")
+
+
+def test_a_chinese_checker_in_the_same_process_never_changes_how_japanese_reads():
+    """The analyzer's language flag is the process's: a Japanese loanword known as ナイフ stays known after a Chinese
+    Checker is made and used (the MCP server holds one of each)."""
+    text = "ナイフを見た。"
+    ja = _checker("ja", [text])
+    assert ja.check(text)["pass"]
+    zh = _checker("zh", [ZH])
+    assert zh.check(ZH)["pass"]
+    assert ja.check(text)["pass"], "a Chinese check turned Japanese lemma cleaning off"
+    assert zh.check(ZH)["pass"]
+
+
+def test_a_word_on_the_ignore_list_is_no_new_word_and_an_ignore_mid_session_is_picked_up():
+    """The Ignore list counts as the list counts it; adding a line while the server runs is read on the next check."""
+    folder = get_user_files_path("ja")
+    os.makedirs(folder, exist_ok=True)
+    known_text = "会議の資料を見ましたか。"
+    with open(os.path.join(folder, "KnownWord.json"), "w", encoding="utf-8") as f:
+        json.dump({"words": [{"dictForm": w, "knownStatus": "KNOWN"} for w in ("会議", "の", "資料", "を", "見る",
+                                                                               "ます", "た", "か")]}, f,
+                  ensure_ascii=False)
+    checker = practice.Checker("ja", settings={}, library=(None, 0))
+    text = "会議の議事録を見ましたか。"
+    assert "議事録" in _new(checker.check(text))
+    ignore = os.path.join(folder, "IgnoreList.txt")
+    with open(ignore, "w", encoding="utf-8") as f:
+        f.write("議事録\n")
+    checker.refresh()
+    assert "議事録" not in _new(checker.check(text))
+    assert checker.check(known_text)["pass"]
+
+
+def test_only_one_word_terms_are_newly_learned_words():
+    """An Anki "Also read" sentence is known, but its particles aren't newly learned words."""
+    checker = _checker("ja", [TALK], recent=["駅の前で待ってる", "駅", "映画"])
+    assert checker.recent_words() == ["駅", "映画"]
+    assert checker.check(TALK)["recent_used"] == ["駅", "映画"]

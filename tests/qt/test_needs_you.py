@@ -970,3 +970,15 @@ def test_michi_c_leave_them_is_kept_and_a_show_no_longer_waiting_is_never_offere
     settle(ny)
     assert not [e for e in ny.entries if e.kind == service.BACKLOG_SHOWS]
     assert not [c for c in writer.calls if c[0] == "place"]
+
+
+def test_michi_c_a_new_backlog_offer_asks_needs_you_again_without_a_new_sync(world, monkeypatch):
+    """The review's SHOULD 6: the offer is worked out after the bar said *synced*; its digest (`State.shows`) moving
+    asks the page again — the same digest never does."""
+    from app.qt import shell
+    from app.services import automation as A
+    before = A.State(A.SYNCED, "ja", 0, None, None, None, 5)
+    assert shell.needs_asked(before._replace(seq=6, shows="ab12"), before)
+    assert not shell.needs_asked(before._replace(seq=7, shows="ab12"), before._replace(seq=6, shows="ab12"))
+    assert shell.needs_asked(before, before._replace(sync=A.SYNCING))         # a sync that just ended, as before
+    assert not shell.needs_asked(before._replace(seq=8), before)

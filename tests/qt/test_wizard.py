@@ -1681,3 +1681,16 @@ def test_michi_c_add_them_with_no_writer_or_another_languages_library_adds_nothi
     shell.language = "zh"
     assert qneeds.give_shows(shell, [41], 1, "ja") is None and shell.moves.given == []
     assert qneeds.give_shows(shell, [41], 1, "zh") is not None
+
+
+def test_michi_c_a_look_that_found_anki_closed_is_asked_again_when_anki_answers(make):
+    """The review's NIT 13: Anki closed between the deck list and the read — no line; once Anki answers again the page
+    asks again (never stuck on the failed look until the page is entered again)."""
+    api = BehindApi(None)
+    wiz, shell, api, settings, _m = make(api=api)
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: api.asked and page.behind_line.isHidden())
+    api.record = BEHIND
+    page.anki_changed()
+    assert wait_until(lambda: page.btn_behind.isVisible())

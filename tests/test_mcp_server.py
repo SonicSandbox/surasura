@@ -365,3 +365,70 @@ def test_the_practice_chat_is_called_piyo_and_its_setup_keeps_the_surasura_id():
         text = mcp_server.setup_text(app, command)
         assert text.startswith(f"Add {practice.NAME}, Surasura's practice chat, to ")
         assert " surasura -- " in text or '"surasura": {' in text
+
+
+def test_settings_that_cant_be_read_still_start_a_new_round_but_never_a_kept_one(monkeypatch):
+    """A broken or half-written settings.json: a new round starts as before the saved rounds came (nothing kept or read
+    back: the switch can't be known); doing a round again says what's wrong."""
+    from app.cli import contract
+    _write_list()
+    state = _state()
+
+    def unreadable():
+        raise contract.CliError("settings-unreadable", "Surasura's settings (settings.json) can't be read.")
+    state.keep_rounds = unreadable
+
+    async def calls(client):
+        return (await client.call_tool("surasura_practice_start", {"words": 1}),
+                await client.call_tool("surasura_practice_start", {"again": "20261029-010000-abcdef01"}))
+    fresh, again = _run(state, calls)
+    brief = _data(fresh)
+    assert [w["word"] for w in brief["round_words"]] == ["冒険"] and "round_id" not in brief
+    assert again.is_error and "settings.json" in again.content[0].text
+
+
+def test_a_round_is_saved_in_its_own_language_whatever_the_save_names():
+    """A Japanese round's save never lands in Chinese: language left out → the round's own; named otherwise → said."""
+    from app import practice_rounds
+    _set_up("ja")
+    _set_up("zh")
+    state = _state()
+    state.keep_rounds = lambda: True
+
+    async def calls(client):
+        brief = _data(await client.call_tool("surasura_practice_start", {"words": 1}))
+        state.default_language = lambda: "zh"              # Surasura switched to Chinese meanwhile
+        wrong = await client.call_tool("surasura_save_round", {"round_id": brief["round_id"], "language": "zh"})
+        right = await client.call_tool("surasura_save_round", {"round_id": brief["round_id"]})
+        return brief["round_id"], wrong, right
+    round_id, wrong, right = _run(state, calls)
+    assert wrong.is_error and 'language "ja"' in wrong.content[0].text
+    assert _data(right)["saved"] is True
+    assert practice_rounds.load("ja", round_id)["language"] == "ja" and practice_rounds.rounds("zh") == []
+    assert round_id not in state.started                       # its file holds it now
+
+
+def test_a_hand_edited_round_done_again_still_starts():
+    """A kept quiz round whose words lost their readings and whose lines became plain text: done again, the brief comes
+    with what is usable; a round kept with no words says so (never "no list yet")."""
+    from app import practice_rounds
+    _set_up("ja")
+    _write_list()
+    quiz, empty = practice_rounds.new_id(), practice_rounds.new_id()
+    os.makedirs(practice_rounds.folder("ja"), exist_ok=True)
+    for round_id, words in ((quiz, [{"word": "冒険", "lines": ["冒険は危険だが、価値がある。", {"line": "冒険に出る。"}]}]),
+                            (empty, [])):
+        with open(os.path.join(practice_rounds.folder("ja"), round_id + ".json"), "w", encoding="utf-8") as f:
+            json.dump({"round": {"role": "teacher", "kind": "quiz", "source": "soon"}, "words": words}, f,
+                      ensure_ascii=False)
+    state = _state()
+    state.keep_rounds = lambda: True
+
+    async def calls(client):
+        return (await client.call_tool("surasura_practice_start", {"again": quiz}),
+                await client.call_tool("surasura_practice_start", {"again": empty}))
+    one, none = _run(state, calls)
+    brief = _data(one)
+    assert brief["round_words"] == [{"word": "冒険", "reading": "", "lines": [{"line": "冒険に出る。", "from": ""}]}]
+    assert brief["quiz_lines"] == [{"line": "冒険に出る。", "from": "", "word": "冒険"}]
+    assert "kept with no words" in _data(none)["note"]

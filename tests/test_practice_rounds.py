@@ -174,3 +174,56 @@ def test_rounds_are_never_trimmed_however_many_there_are():
 def test_the_switch_is_on_unless_it_is_set_to_false():
     assert pr.keeps({}) and pr.keeps(None) and pr.keeps({"practice_keep_rounds": True})
     assert not pr.keeps({"practice_keep_rounds": False})
+
+
+@pytest.mark.parametrize("hand_edited", [{"round": "senpai", "lines": []}, {"round": {}, "lines": 5},
+                                         {"round": {}, "words": 3}, {"round": {}, "notes": "メモ"}, ["not", "a", "round"]])
+def test_a_hand_edited_round_of_the_wrong_shape_is_passed_over_and_never_written_over(hand_edited):
+    """Valid JSON of the wrong shape (round not an object, lines not a list...) is "not a round": the listing and the
+    read-back pass it over (the other rounds still come), a save refuses it and leaves its bytes as they were."""
+    good = _saved("ja", JA_START, notes=["冒険が好き"], when=100)
+    odd = pr.new_id()
+    raw = json.dumps(hand_edited, ensure_ascii=False).encode("utf-8")
+    with open(_round_file("ja", odd), "wb") as f:
+        f.write(raw)
+    assert [r["round_id"] for r in pr.rounds("ja")] == [good]
+    assert [c["round_id"] for c in pr.context("ja")] == [good]
+    with pytest.raises(ValueError, match="isn't a round"):
+        pr.save("ja", odd, lines=["【senpai】冒険だ。"])
+    assert open(_round_file("ja", odd), "rb").read() == raw
+
+
+def test_a_saved_rounds_words_come_back_clean_whatever_a_hand_edit_left():
+    data = {"words": [{"word": "冒険"}, {"word": "夜市", "orth": 5, "lines": ["我们明天去夜市吧。", {"line": "夜市很热闹。"}]},
+                      "散歩", {"orth": "議事録"}, {"word": ""}]}
+    assert pr.words(data) == [{"word": "冒険", "orth": "冒険", "reading": "", "lines": []},
+                              {"word": "夜市", "orth": "夜市", "reading": "", "lines": [{"line": "夜市很热闹。", "from": ""}]}]
+
+
+def test_a_round_done_again_with_nothing_kept_still_reads_back_only_the_usual_three():
+    plain = _saved("zh", ZH_START, when=500)                              # kept, nothing added
+    rounds = [_saved("zh", ZH_START, notes=[f"笔记{n}"], when=400 - n * 50) for n in range(4)]
+    got = pr.context("zh", first=plain)
+    assert [c["round_id"] for c in got] == rounds[::-1][:pr.CONTEXT_ROUNDS]
+    again = pr.context("zh", first=rounds[0])                              # the oldest of them, done again: first, once
+    assert [c["round_id"] for c in again] == [rounds[0]] + rounds[::-1][:pr.CONTEXT_ROUNDS]
+
+
+def test_a_round_reads_back_its_newest_items_first_and_only_a_few_of_them():
+    """Short lines, many of them: a round gives back its newest CONTEXT_ITEMS lines, newest first (the char cap isn't
+    what stops it)."""
+    texts = [f"夜市{n}" for n in range(pr.CONTEXT_ITEMS + 4)]
+    _saved("zh", ZH_START, lines=texts)
+    (got,) = pr.context("zh")
+    assert got["lines"] == texts[::-1][:pr.CONTEXT_ITEMS]
+
+
+def test_only_surasuras_own_round_files_are_listed():
+    """A file the learner (or another program) put in practice/ — a copy, notes of their own — is never taken for a
+    round: listed, read back or written."""
+    good = _saved("ja", JA_START, notes=["冒険が好き"], when=100)
+    for name in ("notes.json", good + " (copy).json", "20261029-010000-abcdef01.json.bak"):
+        with open(os.path.join(pr.folder("ja"), name), "w", encoding="utf-8") as f:
+            json.dump({"round": {"role": "friend"}, "notes": [{"text": "ほかのファイル"}]}, f, ensure_ascii=False)
+    assert [r["round_id"] for r in pr.rounds("ja")] == [good]
+    assert [c["round_id"] for c in pr.context("ja")] == [good]

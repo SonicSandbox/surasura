@@ -31,6 +31,9 @@ CONTEXT_ITEMS = 6               # of each, its newest lines and notes
 CONTEXT_CHARS = 1500            # everything a brief carries back, at most
 CONTEXT_SCAN = 30               # the newest round files looked in for it (a round kept with nothing added is passed)
 LIST_LIMIT = 50                 # past rounds one listing may give
+# A round file's shape: a key that is there holds this type, else the file "isn't a round" and is left alone (a save
+# never writes over it, a listing and a read-back pass it over).
+_SHAPE = (("round", dict), ("words", list), ("lines", list), ("notes", list))
 _ID = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}\Z")
 
 
@@ -65,9 +68,23 @@ def _read(path, language):
         data = json.loads(read_text(path, language, errors="strict"))
     except (OSError, ValueError, UnicodeDecodeError) as e:
         raise ValueError(f"The saved round {os.path.basename(path)} can't be read, so it was left as it is ({e}).")
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or any(key in data and not isinstance(data[key], kind) for key, kind in _SHAPE):
         raise ValueError(f"The saved round {os.path.basename(path)} isn't a round, so it was left as it is.")
     return data
+
+
+def words(data):
+    """A saved round's words as a brief uses them, each {word, orth, reading, lines: [{line, from}]}; an entry that isn't
+    one (a hand-edited file) is passed over."""
+    out = []
+    for w in data.get("words") or []:
+        if isinstance(w, dict) and isinstance(w.get("word"), str) and w["word"]:
+            lines = [{"line": x["line"], "from": x.get("from") if isinstance(x.get("from"), str) else ""}
+                     for x in w.get("lines") or [] if isinstance(x, dict) and isinstance(x.get("line"), str)]
+            out.append({"word": w["word"], "orth": w.get("orth") if isinstance(w.get("orth"), str) else w["word"],
+                        "reading": w.get("reading") if isinstance(w.get("reading"), str) else "",
+                        "lines": lines if isinstance(w.get("lines"), list) else []})
+    return out
 
 
 def _texts(values, what):
@@ -106,9 +123,7 @@ def save(language, round_id, start=None, lines=None, notes=None):
                     "lines": [], "notes": []}
         data["saved"] = now
         for key, new in (("lines", lines), ("notes", notes)):
-            if not isinstance(data.get(key), list):
-                data[key] = []
-            data[key] += [{"text": text, "at": now} for text in new]
+            data[key] = data.get(key, []) + [{"text": text, "at": now} for text in new]
         _atomic_write_json(path, data)
     return data
 
@@ -146,8 +161,8 @@ def rounds(language, limit=10):
             continue
         out.append({"round_id": os.path.basename(path)[:-5], "started": data.get("started"), "saved": data.get("saved"),
                     **{k: v for k, v in (data.get("round") or {}).items() if k in ("role", "kind", "source", "words")},
-                    "round_words": [w.get("orth") or w.get("word") for w in data.get("words") or [] if isinstance(w, dict)],
-                    "lines_kept": len(data.get("lines") or []), "notes_kept": len(data.get("notes") or [])})
+                    "round_words": [w["orth"] for w in words(data)],
+                    "lines_kept": len(_texts_of(data, "lines")), "notes_kept": len(_texts_of(data, "notes"))})
     return out
 
 
@@ -158,14 +173,12 @@ def _texts_of(data, key):
 def context(language, first=None):
     """What a new round reads back: the newest CONTEXT_ROUNDS rounds with lines or notes kept (`first`, the round done
     again, before them), each its newest CONTEXT_ITEMS notes and lines, newest first, CONTEXT_CHARS in all."""
-    picked, seen = [], set()
-    candidates = ([_path(language, first)] if first else []) + [path for _m, path in _newest(language)[:CONTEXT_SCAN]]
-    for path in candidates:
-        if len(picked) >= CONTEXT_ROUNDS + (1 if first else 0):
+    picked = []
+    again = _path(language, first) if first else None
+    others = [path for _m, path in _newest(language)[:CONTEXT_SCAN] if path != again]
+    for path in ([again] if again else []) + others:
+        if len([p for p in picked if p[0] != again]) >= CONTEXT_ROUNDS:
             break
-        if path in seen:
-            continue
-        seen.add(path)
         try:
             data = _read(path, language)
         except ValueError:
@@ -174,9 +187,9 @@ def context(language, first=None):
             continue
         notes, lines = _texts_of(data, "notes")[::-1], _texts_of(data, "lines")[::-1]
         if notes or lines:
-            picked.append((data, notes[:CONTEXT_ITEMS], lines[:CONTEXT_ITEMS]))
+            picked.append((path, data, notes[:CONTEXT_ITEMS], lines[:CONTEXT_ITEMS]))
     out, left = [], CONTEXT_CHARS
-    for data, notes, lines in picked:
+    for _where, data, notes, lines in picked:
         kept = {"notes": [], "lines": []}
         for key, texts in (("notes", notes), ("lines", lines)):
             for text in texts:

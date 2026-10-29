@@ -190,15 +190,21 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
     from mcp.server.mcpserver.exceptions import ToolError
     from app import practice_rounds
     lang = state.language(language)
-    keep = state.keep_rounds()
+    try:
+        keep = state.keep_rounds()
+    except contract.CliError:               # settings.json unreadable: a new round still starts, nothing kept or read back
+        if again:
+            raise
+        contract.log.warning("mcp: settings.json unreadable; this round isn't kept")
+        keep = False
     saved = None
     if again:
         if not keep:
             raise ToolError(OFF)
         saved = practice_rounds.load(lang, again)
-        choices = saved.get("round") if isinstance(saved.get("round"), dict) else {}
+        choices = saved.get("round") or {}
         role, kind, source = choices.get("role"), choices.get("kind"), choices.get("source")
-        words = len(saved.get("words") or []) or choices.get("words") or 5
+        words = len(practice_rounds.words(saved)) or choices.get("words") or 5
     role, kind, source = (str(role or "friend").lower(), str(kind or "chat").lower(), str(source or "soon").lower())
     if role not in ROLES:
         raise ToolError(f"No role {role!r}. Pick one of: {', '.join(ROLES)}.")
@@ -213,7 +219,7 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
         raise ToolError("`words` is how many words to practise: a number from 1 to 20.")
     checker = state.checker(lang)
     if saved is not None:
-        targets = [w for w in saved.get("words") or [] if isinstance(w, dict) and w.get("word")][:words]
+        targets = practice_rounds.words(saved)[:words]
     else:
         targets = next_words(lang, source, words)
     upcoming = {(w["word"], w["reading"]) for w in next_words(lang, "soon", NEXT_WORDS)}
@@ -236,13 +242,12 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
     ]
     out = {"language": lang, "round": {"words": words, "role": role, "kind": kind, "source": source},
            "mode": mode, "rules": rules, "known_recent": recent,
-           "round_words": [{"word": w.get("orth") or w["word"], "reading": w.get("reading", ""),
-                            "lines": list(w.get("lines") or [])[:LINES_PER_WORD]} for w in targets]}
+           "round_words": [{"word": w["orth"], "reading": w["reading"], "lines": w["lines"][:LINES_PER_WORD]}
+                           for w in targets]}
     if keep:
         round_id = again or practice_rounds.new_id()
-        state.started[round_id] = {"round": dict(out["round"]), "words": [
-            {"word": w["word"], "orth": w.get("orth") or w["word"], "reading": w.get("reading", ""),
-             "lines": list(w.get("lines") or [])[:LINES_PER_WORD]} for w in targets]}
+        state.started[round_id] = {"language": lang, "round": dict(out["round"]), "words": [
+            dict(w, lines=w["lines"][:LINES_PER_WORD]) for w in targets]}
         out["round_id"] = round_id
         rules += [
             f"Surasura keeps this round so the learner can do it again: call surasura_save_round(round_id=\"{round_id}\") "
@@ -255,7 +260,9 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
             out["context"] = kept
             rules.append("`context` holds what the learner kept from earlier rounds, newest first: build on it, never "
                          "repeat it word for word.")
-    if not targets:
+    if not targets and saved is not None:
+        out["note"] = "This round was kept with no words of its own, so it brings in only easy everyday nouns."
+    elif not targets:
         out["note"] = ("Surasura has no list for this language yet (Generate hasn't run), so this round brings in only "
                        "easy everyday nouns.")
     if kind == "quiz":
@@ -276,11 +283,18 @@ def save_round(state, round_id, lines=None, notes=None, language=None):
     from mcp.server.mcpserver.exceptions import ToolError
     from app import practice_rounds
     from app.cli import verbs
+    start = state.started.get(round_id) if isinstance(round_id, str) else None
     lang = state.language(language)
+    if start and start["language"] != lang:
+        if language:
+            raise ToolError(f"Round {round_id} is a {start['language']} round: save it with language "
+                            f"\"{start['language']}\", or leave language out.")
+        lang = start["language"]            # Surasura's language changed since the round started: the round's own
     if not state.keep_rounds():
         raise ToolError(OFF)
     verbs.require_set_up(lang)
-    data = practice_rounds.save(lang, round_id, start=state.started.get(round_id), lines=lines, notes=notes)
+    data = practice_rounds.save(lang, round_id, start=start, lines=lines, notes=notes)
+    state.started.pop(round_id, None)       # its file holds it now
     return {"saved": True, "round_id": round_id, "lines_kept": len(data["lines"]), "notes_kept": len(data["notes"])}
 
 
@@ -361,10 +375,12 @@ def build(state=None, warm=True, serving=False):
                        instructions=INSTRUCTIONS, lifespan=lifespan)
     reads = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True,
                             open_world_hint=False)
+    starts = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=False,
+                             open_world_hint=False)   # reads only; each call gives a new round_id
     keeps = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
                             open_world_hint=False)
 
-    @server.tool(annotations=reads)
+    @server.tool(annotations=starts)
     def surasura_practice_start(words: int = 5, role: str = "friend", kind: str = "chat", source: str = "soon",
                                 language: str = "", again: str = "") -> dict:
         """Start a practice round with the learner's choices. words: how many words to practise (1-20). role: who's

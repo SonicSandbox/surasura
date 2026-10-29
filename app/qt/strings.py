@@ -278,6 +278,7 @@ JOURNEY_TIP = "Your list with its sentences, in its own window\n• Click to ope
 JOURNEY_NONE_TIP = "Your journey appears after your first Generate"
 JOURNEY_FAILED = "Couldn't open your journey: {why}"
 JOURNEY_NOT_YET = "{ep} isn't in your journey yet: it comes in at the next Generate"    # JO-1 (Sonic 2026-10-24)
+JOURNEY_LOOK_LATER = "Your journey's new look shows after your next Generate"    # a6 #5, A6W-2 (PROVISIONAL)
 # The header's button beside the level ▾ (laptop fixes: the journey never opens by itself, only from here or a link)
 HEADER_JOURNEY = "Journey ↗"
 HEADER_JOURNEY_NAME = "Open your journey"

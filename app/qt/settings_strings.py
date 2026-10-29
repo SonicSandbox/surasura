@@ -105,6 +105,7 @@ DOORS = {
 }
 # A row whose door says something else than the opener's own words: row id -> {opener: (label, tooltip)}
 ROW_DOORS = {
+    "junban_scope": {"junban": ("Choose the deck…", "Opens Junban’s window, where the deck is chosen")},   # a6 #9
     "backfill_fields": {"backfill": ("Fields…", "Opens Backfill, where each fill's field and each note type's "
                                                 "language are set")},
 }

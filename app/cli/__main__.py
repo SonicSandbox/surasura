@@ -118,6 +118,10 @@ def _refresh_tools_entry(verb):
 def main(argv=None, out=None):
     """Run one call; returns its exit code. `out` replaces stdout (tests)."""
     argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["mcp"]:
+        # The MCP server (app/cli/mcp_server.py) owns stdout as its wire: no JSON channel, no swapped stdout.
+        from app.cli import mcp_server
+        return mcp_server.main(argv[1:])
     contract.open_channel(out)
     saved = sys.stdout, sys.stderr
     try:

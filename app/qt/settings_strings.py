@@ -407,6 +407,12 @@ ROWS = {
                    "Anki Miner's state, and what it still needs", "anki miner install setup"),
     "hato": ("hato", "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),
+    "practice_ai": ("Practise with your AI",
+                    "Your AI app runs Surasura on this computer. What Surasura tells it (your known words, your "
+                    "list's next words, lines from your library) goes to that AI's company, as anything you type "
+                    "there does. Nothing else leaves.",
+                    "Copy the setup for your AI app, then paste it to your AI",
+                    "practice practise ai claude codex desktop mcp chat tutor copy setup"),
     "jimaku": ("jimaku", "Subtitles for anime. Its key will come from hato", "jimaku's key, through hato",
                "jimaku key api subtitles"),
     "anilist": ("AniList", "Brings the shows on your AniList into New arrivals, and fetches their subtitles. Never video",
@@ -632,6 +638,11 @@ MINER_STEP_1 = "1. In Anki Miner: Manage profiles… → New, and name it Surasu
 MINER_STEP_2 = "2. In that profile's Settings: Whitelist → choose file, and pick this file:"
 MINER_STEP_BOLD = "Also turn on Bold the word in the sentence."
 MINER_PATH_NAME = "The whitelist file's path"
+# A6: the practice server's Copy buttons (Connections' *Practise with your AI*), one per AI app (mcp_server.APPS)
+PRACTICE_APPS = {"claude-code": "Claude Code", "codex": "Codex", "claude-desktop": "Claude Desktop"}
+PRACTICE_COPY_TIP = ("Copies the setup for {app}: paste it to {app} (it runs it for you), or follow it yourself")
+PRACTICE_COPIED = "Copied"
+PRACTICE_COPIED_LINE = "The setup for {app} is copied: paste it to {app}."
 COPY_PATH = "Copy path"
 COPY_PATH_TIP = "Copy the whitelist file's path, to paste into Anki Miner's file chooser."
 PATH_COPIED = "The whitelist file's path is copied: paste it into Anki Miner's file chooser."

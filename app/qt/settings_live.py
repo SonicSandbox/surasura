@@ -459,6 +459,7 @@ class Live(QObject):
         self._checking = False
         self._level = {"busy": False, "again": False, "asked": 0}
         self._format = None               # the format last chosen (the pop opens on it)
+        self._copies = {}                 # A6: an AI app -> its Copy presses (the latest one sets the name back)
         page.row_built.connect(self._built)
         page.language_set.connect(self._language)
         b = page.bridge
@@ -615,6 +616,15 @@ class Live(QObject):
             door.clicked.connect(lambda _c=False, r=row_id: self.export(r))
             self._slot(row_id).layout().addWidget(door)
             self.parts[row_id] = {"export": door}
+        elif row_id == "practice_ai":                              # --- A6: one Copy per AI app
+            slot = self._slot(row_id).layout()
+            copies = {}
+            for app, name in S.PRACTICE_APPS.items():
+                door = sc.Door(name, tooltip=S.PRACTICE_COPY_TIP.format(app=name), name=f"{row.label}: {name}")
+                door.clicked.connect(lambda _c=False, a=app: self.copy_practice(a))
+                slot.addWidget(door)
+                copies[app] = door
+            self.parts[row_id] = copies
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
             door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
@@ -870,6 +880,27 @@ class Live(QObject):
             return
         self._paint_offer("")
         self._run(updates.offer_again)
+
+    def copy_practice(self, app):
+        """*Practise with your AI*: `app`'s whole setup on the clipboard (app/cli/mcp_server.setup_text: one sentence to
+        paste to the AI and the exact line, this install's path in it). The press shows *Copied* at once, back to the
+        app's name two seconds later; the line in the bar says where to paste it. Writes nothing anywhere else."""
+        from PyQt6 import sip
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication
+        from app.cli import mcp_server
+        QApplication.clipboard().setText(mcp_server.setup_text(app))
+        name = S.PRACTICE_APPS[app]
+        door = self.parts.get("practice_ai", {}).get(app)
+        if door is not None:
+            door.setText(S.PRACTICE_COPIED)
+            self._copies[app] = press = self._copies.get(app, 0) + 1      # a second press restarts the two seconds
+
+            def back():
+                if not sip.isdeleted(door) and self._copies.get(app) == press:
+                    door.setText(name)
+            QTimer.singleShot(2000, back)
+        self.say(S.PRACTICE_COPIED_LINE.format(app=name), "practice_ai")
 
     def open_logs(self):
         """*Processing log*: its folder found and opened on a worker (`press.open`), the door's arc turning by."""

@@ -4220,6 +4220,7 @@ def settings_signature(settings, language):
         "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
         "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
+        "practice_keep_rounds",         # A6: the practice server keeps its rounds, never a run
         "setup_seen",                   # the setup pages seen (the setup wizard, WZ-8): never a run
         "setup_passed",                 # the setup pages saved before setup finished (IK2-2): never a run
         "hints_seen",                   # W-1: the window's one-time hints shown, each per library: never a run

@@ -21,6 +21,9 @@ import os
 import threading
 from contextlib import contextmanager
 
+# The practice chat's name as the learner sees it (Sonic 2026-10-29, "for now"): the Settings row, the server's title,
+# the prompt and the copied setup say it; the server's id stays `surasura`, so a copied setup outlives a new name.
+NAME = "Piyo ぴよ"
 MODES = ("chat", "reading")
 READING_SHARE = 0.03            # a reading's new words: under 3 % of its words (Sonic, P-1)
 RECENT = 100                    # the newest known words, the ones a round uses first

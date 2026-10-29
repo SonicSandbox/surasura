@@ -759,8 +759,24 @@ def test_practise_with_your_ai_copies_the_whole_setup_and_says_copied_at_once(qa
     copied = QApplication.clipboard().text()
     assert copied == mcp_server.setup_text(app)
     assert r"C:\Program Files\Surasura\surasura-cli.exe" in copied.replace("\\\\", "\\")
-    assert copied.startswith("Add Surasura's practice server to ")
+    assert copied.startswith("Add Piyo ぴよ, Surasura's practice chat, to ")
+    assert " surasura -- " in copied or '"surasura"' in copied                # the server's id stays Surasura's
     assert doors[app].text() == S.PRACTICE_COPIED                        # at once, before any event loop turn
     assert any(S.PRACTICE_APPS[app] in line for line in shell.bar_line.lines)
     assert store.calls == []                                             # no setting written
     assert wait_until(lambda: doors[app].text() == S.PRACTICE_APPS[app], 4)
+
+
+def test_piyo_names_the_row_and_keep_practice_rounds_is_its_switch_on_by_default(qapp, fakes):
+    """The practice chat is Piyo ぴよ (Sonic, "for now"); under it the saved rounds' switch, on by default, writes only
+    its own key; its help says nothing is kept when it is off."""
+    from app import practice, settings_manager
+    page, store, _shell = make(fakes)
+    assert page.row("practice_ai").label.text().startswith(practice.NAME)
+    assert settings_manager.DEFAULT_SETTINGS["practice_keep_rounds"] is True
+    toggle = page.rows["practice_keep_rounds"].controls[0]
+    assert toggle.value() is True and toggle.toolTip()
+    assert "Off: nothing is kept" in help_of(page, "practice_keep_rounds")
+    from tests.qt.test_settings_page import change
+    change(toggle, False)
+    assert store.calls == [({"practice_keep_rounds": False}, None)]

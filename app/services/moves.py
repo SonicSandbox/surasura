@@ -117,6 +117,8 @@ KEPT += ("root",)
 # --- K3 / K1 (alpha 4): *Choose a folder…* on a folder's or the library's card — many relinks, one command
 JOURNALLED += ("relink_many",)
 KEPT += ("pairs",)
+# --- a5-2 (Hon): an audiobook's *Find its book…* (its book's EPUB `path`) and *It has no book*
+JOURNALLED += ("audiobook_pick", "audiobook_no_book")
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -403,6 +405,16 @@ class Writer:
         answer key: one asked since is never answered by it) — an answer kept, never on the Undo stack (`on_reread`),
         as `its_new`; journalled with both (a replay answers the same question)."""
         return self._put({"op": "audiobook_answer", "ids": [item_id], "yes": bool(yes), "key": key, "label": label})
+
+    def pick_audiobook(self, item_id, epub, label=None):
+        """`Store.pick_audiobook_book` (Hon, a5-2): *Find its book…*'s pick — the audiobook joins that book's title as
+        a *Yes* joins it, one command with its Undo (the item, its records and the answer back as they were)."""
+        return self._put({"op": "audiobook_pick", "ids": [item_id], "path": os.fspath(epub), "label": label})
+
+    def audiobook_no_book(self, item_id, label=None):
+        """`Store.audiobook_no_book` (Hon, a5-2): *It has no book* — the audiobook stays alone, never asked about a
+        book again; kept, as an answer is (never on the Undo stack, `on_reread`)."""
+        return self._put({"op": "audiobook_no_book", "ids": [item_id], "label": label})
 
     def link_video(self, item_id, video_path, label=None):
         """Connect's *Link…* (`app/connect/link.link`): the episode's video, as a pairing on the existing item —
@@ -992,6 +1004,11 @@ class Writer:
             return None
         if op == "audiobook_answer":                # Hon (H-8): an answer kept, nothing to undo
             store.answer_audiobook(ids[0], cmd["yes"], key=cmd.get("key"))
+            return None
+        if op == "audiobook_pick":                  # a5-2: the pick, undone as one change
+            return store.pick_audiobook_book(ids[0], cmd["path"])
+        if op == "audiobook_no_book":               # a5-2: an answer kept, nothing to undo
+            store.audiobook_no_book(ids[0])
             return None
         if op == "stop_source":                     # T6: None when it wasn't being read (a replay that landed)
             return store.stop_source(cmd["root"])

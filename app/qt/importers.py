@@ -783,6 +783,7 @@ class ExtractWindow(ToolWindow):
         """The child, every value glued to its option (a --- delimiter or a -draft name is a value, never an
         option)."""
         job = job or self.job()
+        self._started = job["path"]                       # a5-2: the book a *Find its book…* waits for (`on_added`)
         argv = ["extract.py", "--language", job["language"], f"--file={job['path']}", f"--name={name}",
                 "--section", job["section"]]
         if importers_view.is_deck(job["path"]):
@@ -812,6 +813,13 @@ class ExtractWindow(ToolWindow):
             line = self._failed_line(values["why"])
         self.say(line)
         self.end_write(line)
+        waiting = getattr(self, "on_added", None)     # a5-2 (Hon): (the EPUB an audiobook waits for, its call)
+        started = os.path.abspath(self._started) if getattr(self, "_started", None) else None
+        if waiting is not None and started is not None and \
+                os.path.normcase(started) == os.path.normcase(waiting[0]):   # that file's job, never another's
+            if key == "done":
+                self.on_added = None
+                waiting[1](started)
 
 
 # --- the doors (row 2: the importers and Extract) ------------------------------------------------------------------ #

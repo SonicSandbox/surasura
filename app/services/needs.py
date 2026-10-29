@@ -103,10 +103,11 @@ FILES_FOLDER = "files-folder"
 LIBRARY_GONE = "library-gone"
 LIBRARY_EMPTIED = "library-emptied"   # A5K-2: the library folder held none of the record's files at this run's start
 AUDIOBOOK_ASK = "audiobook-ask"       # Hon (H-8): is this audiobook that book? Asked once per pair, the answer kept
+AUDIOBOOK_FIND = "audiobook-find"     # Hon (a5-2): after a *No*, find its book — or it has none (never asked again)
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
-         FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK)
+         FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
@@ -122,6 +123,12 @@ STRINGS = {
     "abook_say": "{files}. Surasura isn't sure they're the same book: your answer is kept, and it never asks about "
                  "these two again.",
     "abook_files_one": "1 file", "abook_files": "{n} files", "abook_files_more": "{first} … {last}",
+    # Hon (a5-2, Sonic 2026-10-28: after a *No*, "offer that they find the book")
+    "abook_find_title": "Which book does the audiobook 「{audio}」 read?",
+    "abook_find_say": "{files}. Not 「{book}」, you said. Find its book in your library or on your computer, or tell "
+                      "Surasura it has none: it won't ask again.",
+    "abook_find_say_none": "{files}. Not that book, you said. Find its book in your library or on your computer, or "
+                           "tell Surasura it has none: it won't ask again.",
     "anki_closed_title": "Anki isn't open: {n} wait for it",
     "anki_needs_title": "Anki needs you: {n} wait for it",
     "anki_one": "1 episode", "anki_n": "{n:,} episodes",
@@ -333,7 +340,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     out += [e for e in big if e.key not in hidden]
     out += shows
     for ask in asks or ():
-        entry = _audiobook_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_ASK else _ask_entry(ask, by_id, seen)
+        entry = _audiobook_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_ASK else \
+            _audiobook_find_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_FIND else _ask_entry(ask, by_id, seen)
         if entry is not None:
             out.append(entry)
     for root in roots:
@@ -1129,16 +1137,14 @@ def asks_of(store):
         out.append({"rel": ask.get("rel"), "candidates": cands})
     if hasattr(store, "audiobook_asks"):
         out += [dict(a, kind=AUDIOBOOK_ASK) for a in store.audiobook_asks()]
+    if hasattr(store, "audiobook_finds"):                # a5-2: after a *No*, find its book
+        out += [dict(a, kind=AUDIOBOOK_FIND) for a in store.audiobook_finds()]
     return out
 
 
-def _audiobook_entry(ask, seen):
-    """H-8's card: *Is this audiobook 「…」 the book 「…」?* — its files (the first and last, how many) and length;
-    *Yes, the same book* (`same_book`) · *No* (`not_book`), both the store's `answer_audiobook` (kept, never asked
-    again). Keyed by the pair's answer key: a new edition of either is a new question."""
+def _audiobook_files(ask):
+    """An audiobook card's files and length: `8 files (01.mp3 … 08.mp3) · 1 h 25 min`."""
     from app.audiobooks import length_text
-    if not ask.get("key") or ask.get("item_id") is None:
-        return None
     names = [os.path.basename(str(f)) for f in ask.get("files") or ()]
     files = STRINGS["abook_files_one"] if len(names) == 1 else STRINGS["abook_files"].format(n=len(names))
     if len(names) > 1:
@@ -1146,12 +1152,38 @@ def _audiobook_entry(ask, seen):
     elif names:
         files += f" ({names[0]})"
     length = length_text(ask.get("seconds"))
+    return f"{files} · {length}" if length else files
+
+
+def _audiobook_find_entry(ask, seen):
+    """a5-2's card, after a *No* left an audiobook alone: *Which book does the audiobook 「…」 read?* — *Find its
+    book…* (`find_book`: the library's books, likeliest first, then an EPUB on the computer; the pick pairs as a *Yes*
+    does, with Undo) · *It has no book* (`no_book`: alone, never asked again). Keyed by its item."""
+    if ask.get("item_id") is None:
+        return None
+    key = f"find:{_digest(['audiobook-find', str(ask['item_id'])])}"
+    files = _audiobook_files(ask)
+    say = STRINGS["abook_find_say"].format(files=files, book=ask["said_no"]) if ask.get("said_no") else \
+        STRINGS["abook_find_say_none"].format(files=files)
+    return Entry(key=key, kind=AUDIOBOOK_FIND,
+                 title=STRINGS["abook_find_title"].format(audio=ask.get("title") or "?"), lines=(),
+                 actions=("find_book", "no_book"), unseen=key not in seen, say=say,
+                 data={"item_id": ask["item_id"], "title": ask.get("title") or ""})
+
+
+def _audiobook_entry(ask, seen):
+    """H-8's card: *Is this audiobook 「…」 the book 「…」?* — its files (the first and last, how many) and length;
+    *Yes, the same book* (`same_book`) · *No* (`not_book`), both the store's `answer_audiobook` (kept, never asked
+    again). Keyed by the pair's answer key: a new edition of either is a new question."""
+    if not ask.get("key") or ask.get("item_id") is None:
+        return None
+    names = [os.path.basename(str(f)) for f in ask.get("files") or ()]
     key = f"ask:{_digest(['audiobook', str(ask['key'])])}"
     return Entry(key=key, kind=AUDIOBOOK_ASK,
                  title=STRINGS["abook_title"].format(audio=ask.get("title") or (names[0] if names else "?"),
                                                      book=(ask.get("book") or {}).get("title") or "?"),
                  lines=(), actions=("same_book", "not_book"), unseen=key not in seen,
-                 say=STRINGS["abook_say"].format(files=f"{files} · {length}" if length else files),
+                 say=STRINGS["abook_say"].format(files=_audiobook_files(ask)),
                  data={"item_id": ask["item_id"], "key": ask["key"]})
 
 

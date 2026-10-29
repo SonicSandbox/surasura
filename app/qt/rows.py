@@ -424,6 +424,7 @@ STATUS_ICON = {"in_anki": "check", "mining": "mining", "waiting": "waiting", "mi
 # *Mine now*, Mine is *Mine this*, No video offers *Link…* (alpha 4 M1: *Mine text* gone). Its part's payload is an `Ask` (`id`: its first
 # file's, so a press and its release match as an episode's do; `ids`: the files it asks for; `episode`: the first).
 ACTIONS = {"waiting": "mine-now", "mine": "mine-this", "no_media": "no-media"}
+HEADPHONES = "🎧 "                               # a5-2 (Hon): before an audiobook's title
 STOP = "stop"                                       # R47: a *Mining* status's Stop (`Status.stop`: its job)
 ACTION_NAMES = frozenset(ACTIONS.values()) | {STOP}
 ASKS = ("mine-now", "mine-this")                    # the actions that ask Connect (round 8 row 45: they turn when pressed)
@@ -637,6 +638,19 @@ def pill_size(status, dpr=1.0):
         return QSize(max(h, round(13 + 12 * f)), h)
     w_text = TEXT.metrics("status-pill", dpr=dpr).horizontalAdvance(text)
     return QSize(round(pad * 2 * f + 13 + 6 * f + w_text), round(theme.SIZES["status-pill"] * f))
+
+
+def heard_title(row):
+    """a5-2 (Hon): a title as painted — 🎧 before it when the row holds an audiobook (`Row.audio`, its hover)."""
+    return f"{HEADPHONES}{row.title}" if getattr(row, "audio", "") else row.title
+
+
+def _audio_part(row, rect, role):
+    """a5-2: the 🎧 before a title as a part of its own, its hover the audiobook's words ([] for a row without one)."""
+    if not getattr(row, "audio", ""):
+        return []
+    w = TEXT.metrics(role).horizontalAdvance(HEADPHONES)
+    return [("audio", QRect(rect.left(), rect.top(), w, rect.height()), row.audio, None)]
 
 
 def paint_pill(p, status, rect, dpr=1.0, audio=False):
@@ -1423,9 +1437,10 @@ class RowDelegate(QStyledItemDelegate):
             if g["journey"] is not None:
                 out.append(("journey", g["journey"], strings.ROWS_JOURNEY_TIP, nxt))
             is_open = self.view.model().open_key == payload.key
-            if not is_open and self._sheet_there():    # G16: the string hides while Up Next is open; L4: no stone
+            if not is_open and self._sheet_there() and not view_rows.audio_only(payload):    # G16 / L4; a5-2
                 s = g["string"]
                 out += self._stone_parts(payload, self._info(payload)[0], s, s.top() + s.height() / 2, big=True)
+            out += _audio_part(payload, g["title"], "hero-title")                   # a5-2
             out.append(("title", g["title"], payload.title, None))
             if is_open:
                 out += self._episode_parts(payload, g["eps"], hero=True)
@@ -1441,10 +1456,12 @@ class RowDelegate(QStyledItemDelegate):
                 out.append((name, r, tip, pl))
             out.append(("up", g["up"], strings.ROWS_MOVE_TIP["up"], None))
             out.append(("down", g["down"], strings.ROWS_MOVE_TIP["down"], None))
-            if not is_open and self._sheet_there():    # L4: a stone is hit only where it is drawn
-                out += self._stone_parts(payload, self._info(payload)[0], g["gstr"], slab.top() + slab.height() / 2)
+            if not is_open and self._sheet_there() and not view_rows.audio_only(payload):  # L4: a stone is hit
+                out += self._stone_parts(payload, self._info(payload)[0], g["gstr"],     # only where it is drawn
+                                         slab.top() + slab.height() / 2)
             if g["stat"].width():                    # R47: mining's icon is its Stop while the job can be stopped
                 out.append(self._status_part(payload, payload.episodes, g["stat"], payload.media_word))
+            out += _audio_part(payload, g["main"], "row-title")                     # a5-2
             out.append(("title", QRect(slab.left(), slab.top(), g["main"].right() - slab.left() + 1, slab.height()),
                         payload.title + ("\n" + payload.line if payload.line else ""), None))
             if is_open:
@@ -2021,18 +2038,18 @@ class RowDelegate(QStyledItemDelegate):
         m = g["main"]
         mid = slab.top() + slab.height() / 2
         # a video's channel and hato's mix keep their line; a numbered piece's range and watched count are the string's
-        # Hon (H-6 PROVISIONAL): a book's title holding its audiobook says so under its title
-        heard = any(e.label == view_rows.STRINGS["with_audiobook"] for e in row.episodes)
-        sub = row.line if row.line and (row.media == "youtube" or row.source == "hato") else \
-            view_rows.STRINGS["with_audiobook"] if heard else ""
+        # Hon a5-2 (PROVISIONAL): 🎧 before the title (its words in its hover, `parts`); an audiobook alone keeps its
+        # quiet line, *Audio only · waits for Anki Miner*, and no stones
+        alone = view_rows.audio_only(row)
+        sub = row.line if row.line and (row.media == "youtube" or row.source == "hato" or alone) else ""
         t_h, s_h = round(13.5 * f * 1.3), round(12 * f * 1.3)
         top = mid - (t_h + 1 + s_h) / 2 if sub else mid - t_h / 2
         # one line each, cut with "…" inside the title's column, left of the string (the full title is in the tooltip):
         # cut and faded at the column's edge it read as a title clipped by the stones (laptop try, FEEDBACK 11)
-        TEXT.draw(p, m.left(), top + t_h / 2, row.title, "row-title", m.width(), c("ink"), dpr=dpr)
+        TEXT.draw(p, m.left(), top + t_h / 2, heard_title(row), "row-title", m.width(), c("ink"), dpr=dpr)
         if sub:
             TEXT.draw(p, m.left(), top + t_h + 1 + s_h / 2, sub, "row-sub", m.width(), c("ink-dim"), dpr=dpr)
-        if not opened:
+        if not opened and not alone:
             self._paint_string(p, self._info(row)[0], g["gstr"], mid, sheet, ring=active)
         self._paint_stat(p, row.status, g["stat"], mid, dpr)
         paint_diff(p, row.pct, row.pct_tone, row.n_new, g["diff"].right(), mid, dpr)
@@ -2411,7 +2428,7 @@ class RowDelegate(QStyledItemDelegate):
         t_h = round(13.5 * f * 1.3)
         s_h = round(12 * f * 1.3)
         top = line_r.center().y() - (t_h + 1 + s_h) / 2
-        TEXT.draw(p, x, top + t_h / 2, row.title, "row-title", text_w, c("ink"), dpr=dpr)
+        TEXT.draw(p, x, top + t_h / 2, heard_title(row), "row-title", text_w, c("ink"), dpr=dpr)
         sx = x
         if row.studying:
             sw = self._paint_studying(p, sx, top + t_h + 1 + s_h / 2, dpr)
@@ -2642,7 +2659,8 @@ class RowDelegate(QStyledItemDelegate):
         t = g["title"]
         ep_txt = row.title_ep
         ep_w = TEXT.metrics("hero-title", 500, dpr).horizontalAdvance(ep_txt) + 8 if ep_txt else 0
-        tw, _ = TEXT.draw(p, t.left(), t.center().y(), row.title, "hero-title", t.width() - ep_w, c("ink"), dpr=dpr)
+        tw, _ = TEXT.draw(p, t.left(), t.center().y(), heard_title(row), "hero-title", t.width() - ep_w, c("ink"),
+                          dpr=dpr)
         if ep_txt:
             TEXT.draw(p, t.left() + tw + 7, t.center().y(), ep_txt, "hero-title", ep_w, c("ink-dim"), weight=500,
                       dpr=dpr)
@@ -2656,7 +2674,9 @@ class RowDelegate(QStyledItemDelegate):
                                                                                     theme.SIZES["channel-cap"] * fz()),
                           c("ink-dim"), dpr=dpr)
         st = g["stats"]
-        if nxt.pct is None:
+        if view_rows.audio_only(row):                  # a5-2: an audiobook alone says so, never *not analysed yet*
+            TEXT.draw(p, st.left(), st.center().y(), row.line, "hero-sub", st.width(), c("ink-dim"), dpr=dpr)
+        elif nxt.pct is None:
             TEXT.draw(p, st.left(), st.center().y(), strings.ROWS_HERO_STATS_NONE, "hero-sub", st.width(),
                       c("ink-dim"), dpr=dpr)
         else:
@@ -2668,7 +2688,7 @@ class RowDelegate(QStyledItemDelegate):
             if j is not None:
                 TEXT.draw(p, j.left(), st.center().y(), strings.ROWS_HERO_NEW_LINK.format(n=nxt.n_new), "hero-sub",
                           j.width(), c("accent"), dpr=dpr)
-        if self.view.model().open_key != row.key:   # G16: the string where the chips were, hidden while open
+        if self.view.model().open_key != row.key and not view_rows.audio_only(row):   # G16; a5-2: none alone
             s = g["string"]
             self._paint_string(p, self._info(row)[0], s, s.top() + s.height() / 2, sheet, ring=True, big=True)
         self._paint_play(p, g["play"], row, nxt, dpr, sheet)
@@ -4138,7 +4158,7 @@ class RowsView(QListView):
         if name == "play" and payload is not None:
             if payload.can_play:
                 self.play_requested.emit(payload)
-        elif name in ("open", "title"):
+        elif name in ("open", "title", "audio"):     # a5-2: the 🎧 before a title is the title's
             self.toggle(idx)
         else:
             self._act(idx, part)

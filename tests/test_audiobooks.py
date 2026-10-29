@@ -176,6 +176,11 @@ def test_a_file_that_cannot_be_read_has_no_tags_never_an_error(tmp_path, payload
     ("後編集", {"後編集"}, None),
     ("Re:ゼロ (2019)", {"reゼロ"}, None),                       # a year in brackets is no volume
     ("【朗読】銀河鉄道の夜", {GINGA}, None),
+    # a series shelf's names (made-up title): the volume said twice, and before an author's and a site's brackets
+    ("[2巻] 星屑の剣士になりたくて！ 02", {"星屑の剣士になりたくて"}, "2"),
+    ("[05] 星屑の剣士になりたくて！ 05 [B0XXXXXXX1]", {"星屑の剣士になりたくて"}, "5"),
+    ("星屑の剣士になりたくて！ ０３ (架空 太郎) (books.example)", {"星屑の剣士になりたくて"}, "3"),
+    ("星屑の剣士になりたくて 05 (架空 太郎, 絵師) (books.example)", {"星屑の剣士になりたくて"}, "5"),
 ])
 def test_clean_names_and_volumes(name, forms, vol):
     got, got_vol = ab.clean(name)
@@ -587,3 +592,50 @@ def test_partly_repeated_track_numbers_fall_back_to_the_names(tmp_path):
         _mp3(str(folder / name), seconds=1200, frames={"TRCK": track})
     (b,) = ab.find(str(folder))
     assert [os.path.basename(p) for p in b.files] == ["01.mp3", "02.mp3", "03.mp3"]
+
+
+def test_a_series_shelf_pairs_each_volume_with_its_own_book_never_a_neighbours(tmp_path):
+    """A shelf as a learner keeps it (made-up titles, the patterns of a real one): one `.m4b` a volume named `[2巻] <title>
+    2.m4b` or `[05] <title> 05 [<store id>].m4b`, volume 1 in a folder of its own with a player's files and a cover;
+    EPUBs with full-width numbers, the author and a download site in brackets, one without its 「！」, one in a folder with
+    its `metadata.opf`; and another series' volumes in a folder named for their author, with no book: each volume pairs
+    with its own volume's book, sure, and the other series stays alone."""
+    series, other, author = "星屑の剣士になりたくて！", "異界転生 ～辺境から本気だす～", "架空 太郎"
+    shelf = tmp_path / "Audiobook"
+    books = []
+    for n in (2, 3, 4, 5, 6):
+        if n == 2:                                       # in its own folder, beside its metadata.opf and cover
+            path = shelf / f"{series} ０２" / f"{series} ０２ - {author}.epub"
+            (shelf / f"{series} ０２").mkdir(parents=True)
+            (shelf / f"{series} ０２" / "metadata.opf").write_text("<package/>", encoding="utf-8")
+        elif n == 5:                                     # its 「！」 left out, two names in its brackets
+            path = shelf / f"星屑の剣士になりたくて 05 ({author}, 絵師) (books.example).epub"
+        else:
+            path = shelf / f"{series} {chr(0xFF10 + n // 10)}{chr(0xFF10 + n % 10)} ({author}) (books.example).epub"
+        books.append(ab.book_of(_epub(str(path), f"{series} {chr(0xFF10)}{chr(0xFF10 + n)}", author), book_id=n,
+                                chars=125_000, sha256=f"v{n}"))
+    v1 = tmp_path / f"[1巻] {series} 01"
+    books.append(ab.book_of(_epub(str(tmp_path / f"{series} ０１ (HD).epub"), f"{series} ０１", author), book_id=1,
+                            chars=130_000, sha256="v1"))
+    _m4b(str(v1 / f"[1巻] {series} 01.m4b"), 9 * 3600, {"album": f"[1巻] {series} 01", "album_artist": author})
+    (v1 / "position.sabp.dat").write_bytes(bytes(64))
+    (v1 / "characters.sabp.xml").write_text("<characters/>", encoding="utf-8")
+    (v1 / "cover.jpg").write_bytes(bytes([0xFF, 0xD8]) + bytes(64))
+    for n in (2, 3, 4):
+        _m4b(str(shelf / f"[{n}巻] {series} {n:02}.m4b"), 8.7 * 3600, {"album": f"[{n}巻] {series} {n:02}"})
+        _m4b(str(shelf / f"[{n}巻] {other} {n}.m4b"), 7.3 * 3600, {"album": f"[{n}巻] {other} {n}"})
+    for n, asin in ((5, "B0XXXXXXX1"), (6, "B0XXXXXXX2")):
+        _m4b(str(shelf / f"[{n:02}] {series} {n:02} [{asin}].m4b"), 8.9 * 3600, {"album": f"[{n}巻] {series} {n:02}"})
+    _m4b(str(tmp_path / "辺境の孫の手" / f"[1巻] {other} 1" / f"[1巻] {other} 1.m4b"), 7.4 * 3600,
+         {"album": f"[1巻] {other} 1"})
+    found = ab.find(str(shelf)) + ab.find(str(v1)) + ab.find(str(tmp_path / "辺境の孫の手" / f"[1巻] {other} 1"))
+    assert len(found) == 10                               # 6 of the series, 4 of the other
+    paired = {}
+    for audio in found:
+        pair = ab.decide(audio, books)
+        if "異界転生" in audio.title:
+            assert pair is None, audio.title             # no book of that series anywhere: alone
+            continue
+        assert pair is not None and pair.how == ab.SURE, audio.title
+        paired[audio.volume] = pair.book.id
+    assert paired == {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6}

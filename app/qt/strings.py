@@ -1241,6 +1241,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "same_book": ("Yes, the same book", "The audiobook joins the book's title: one entry, the book's chapters and its "
                                         "audio. Kept: never asked again"),
     "not_book": ("No", "Not this book: never asked about these two again. Another book like it may be asked about"),
+    # Hon (a5-2 PROVISIONAL): after a *No*, find its book, or it has none
+    "find_book": ("Find its book…", "Pick its book from your library, or an EPUB on your computer: the audiobook joins "
+                                    "it as a Yes would. Undo takes it back"),
+    "no_book": ("It has no book", "It stays an audiobook of its own: Surasura never asks about its book again"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1341,6 +1345,14 @@ NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn 
 NEEDS_ITS_NEW = "{name} joins your library as a new file"
 NEEDS_SAME_BOOK = "The audiobook joins its book"
 NEEDS_NOT_BOOK = "Kept: never asked about these two again"
+NEEDS_PICKED = "The audiobook joins 「{book}」"            # a5-2: *Find its book…*'s pick (its toast's Undo)
+NEEDS_NO_BOOK = "Kept as an audiobook of its own: never asked again"
+NEEDS_FIND_BOOK_LINE = "{title} · {n} parts"
+NEEDS_FIND_FILE = "An EPUB on your computer…"
+NEEDS_FIND_FILE_TIP = "Added the way + Add adds an EPUB (Extract), then the audiobook joins it"
+NEEDS_FIND_FILE_TITLE = "The book the audiobook 「{audio}」 reads"
+NEEDS_FIND_NOT_EPUB = "That isn't an EPUB: pick the book's .epub file"
+NEEDS_FIND_EXTRACT = "Add 「{name}」 in Extract: once it is in your library, the audiobook joins it"
 NEEDS_ASKED_HATO = "Asked hato for its videos"
 NEEDS_MINE_ANYWAY = "It mines without timing, in turn"
 NEEDS_MINE_ANYWAY_NOT = "Nothing to mine there any more"

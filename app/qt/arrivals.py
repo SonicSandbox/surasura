@@ -660,6 +660,8 @@ def part_tip(arrival, part):
         return strings.TRAY_MORE_TIP
     if part == "number":
         return arrival.tip
+    if part == "row":                                    # a5-2: an audiobook's row says what its 🎧 is
+        return getattr(arrival, "audio", "") or None
     return None
 
 
@@ -729,7 +731,7 @@ def paint_row(p, rect, a, hot=None, focused=False, picked=False, dpr=1.0, m=None
     block = fm_t.height() + 2 + fm_l.height()
     y_title = row.top() + (row.height() - block) / 2 + fm_t.height() / 2
     y_line = y_title + fm_t.height() / 2 + 2 + fm_l.height() / 2
-    rows.TEXT.draw(p, x, y_title, a.title, "row-title", width, rows.c("ink"))
+    rows.TEXT.draw(p, x, y_title, rows.heard_title(a), "row-title", width, rows.c("ink"))     # a5-2: 🎧 before
     lx = x
     chip_ink = theme.SOURCE_INK.get(a.source)
     chip = style.qcolor(chip_ink) if chip_ink else rows.c("overlay-ink-dim")

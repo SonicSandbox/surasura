@@ -1371,7 +1371,8 @@ class _Look:
                 self.out["skipped"] += 1
                 continue
             fresh.append(ab)
-        lone = [(r["item_id"], r["audiobook"]) for r in held_in if not r["audiobook"].get("book")] if stale else []
+        lone = [(r["item_id"], r["audiobook"]) for r in held_in       # a5-2: *It has no book* is never weighed again
+                if not r["audiobook"].get("book") and not r["audiobook"].get("no_book")] if stale else []
         wanted = fresh + [audiobooks.from_record(rec) for _i, rec in lone]
         books = self._library_books(wanted) if wanted else []
         answers = self.store.audiobook_answers() if books else {}
@@ -1396,7 +1397,8 @@ class _Look:
                 f["item_id"] = gone[0][0]
                 f["moved_from"] = [k[len(ls.SOURCE_KEY):] for _i, k in gone]
                 old = records.get(gone[0][0]) or {}          # as it was paired (or asked, or alone): a move changes none
-                f["audiobook"].update(book=old.get("book"), ask=old.get("ask"))
+                f["audiobook"].update(book=old.get("book"), ask=old.get("ask"),     # and the learner's word on it
+                                      **{m: old[m] for m in ("said_no", "no_book") if old.get(m)})
                 f.pop("rel", None)
             self.out["found"] += 1
             batch.append(f)
@@ -1425,14 +1427,15 @@ class _Look:
         key = audiobooks.sizes_key(ab)
         show = clean_name(ab.title) or "Audiobook"
         rec = audiobooks.record(ab, pair if not isinstance(pair, dict) else None)
-        if isinstance(pair, dict):
-            rec.update(book=pair.get("book"), ask=pair.get("ask"))
+        if isinstance(pair, dict):                           # as it was paired, and the learner's word on it
+            rec.update(book=pair.get("book"), ask=pair.get("ask"),
+                       **{m: pair[m] for m in ("said_no", "no_book") if pair.get(m)})
         f = {"origin": ab.files[0], "size": st.st_size, "mtime_ns": st.st_mtime_ns, "show": show, "sha256": key,
              "audiobook": rec}
         if item_id is not None:
             f["item_id"] = item_id
         else:
-            f["rel"] = f"{ls.CONTENT_FOLDER}/{show} (audio)/{key[6:14]} {os.path.basename(ab.files[0])}"
+            f["rel"] = f"{ls.CONTENT_FOLDER}/{show}{audiobooks.AUDIO_MARK}/{key[6:14]} {os.path.basename(ab.files[0])}"
         return f
 
     def _known_audio(self, folder, names, by_file):

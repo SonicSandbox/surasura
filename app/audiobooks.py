@@ -43,6 +43,7 @@ HEAD_BYTES = 256 << 10          # an MP3's start read for its tag and first fram
 MOOV_MAX = 32 << 20             # an MP4's `moov` read up to this size (its tags, length and chapters)
 
 EXACT, CLOSE, LIKE = 3, 2, 1    # title levels (`score`)
+AUDIO_MARK = " (audio)"         # an audiobook alone's title folder (`<title> (audio)`: never a book's of that name)
 SURE, ASK, ANSWERED = "sure", "ask", "answered"
 
 Tags = namedtuple("Tags", "title album artist album_artist composer track disc seconds chapters",
@@ -85,7 +86,8 @@ _VOLUME = (
 )
 # a folder named only for what it holds (`吾輩は猫である/audio/`): its audiobook takes the name of the folder above
 _GENERIC = frozenset({"audio", "sound", "sounds", "mp3", "音声", "朗読", "オーディオブック", "audiobook", "audiobooks"})
-_TRAILING_NUMBER = re.compile(r"(?<=\D)[\s_\-]+(\d{1,3})\s*$")
+# a name's trailing number, bracketed tags after it allowed (`<title> ０３ (<author>) (<site>)`)
+_TRAILING_NUMBER = re.compile(r"(?<=\D)[\s_\-]+(\d{1,3})\s*((?:[(\[【][^)\]】]*[)\]】]\s*)*)$")
 _LETTER = re.compile(r"[^\W\d_]")
 _KANJI_DIGITS = dict(zip("〇一二三四五六七八九", range(10)))
 _KANJI_NUMBER = re.compile(r"[〇一二三四五六七八九十百]+")
@@ -117,10 +119,15 @@ def _volume(text):
         m = pattern.search(text)
         if m:
             found = next(g for g in m.groups() if g)
-            return (str(int(found)) if found.isdigit() else found), text[:m.start()] + " " + text[m.end():]
+            vol = str(int(found)) if found.isdigit() else found
+            text = text[:m.start()] + " " + text[m.end():]
+            t = _TRAILING_NUMBER.search(text)               # said twice (`[2巻] <title> 02`): never part of the title
+            if t and str(int(t.group(1))) == vol:
+                text = text[:t.start()] + " " + t.group(2)
+            return vol, text
     m = _TRAILING_NUMBER.search(text)
     if m and _LETTER.search(text[:m.start()]):              # `86` alone is a title, `SAO 3` a volume
-        return str(int(m.group(1))), text[:m.start()]
+        return str(int(m.group(1))), text[:m.start()] + " " + m.group(2)
     return None, text
 
 

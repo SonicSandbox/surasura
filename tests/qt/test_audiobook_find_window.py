@@ -157,6 +157,6 @@ def test_the_headphones_go_before_the_title_and_carry_the_words():
 
 
 def test_a_new_arrivals_row_says_its_audiobook_on_hover():
-    a = SimpleNamespace(audio="🎧 Audio only 「銀河鉄道の夜」", tip="3 parts")
-    assert arrivals.part_tip(a, "row") == a.audio and arrivals.part_tip(a, "number") == "3 parts"
-    assert arrivals.part_tip(SimpleNamespace(audio="", tip=""), "row") is None
+    a = SimpleNamespace(title="銀河鉄道の夜", audio="🎧 Audio only 「銀河鉄道の夜」", tip="3 parts")
+    assert arrivals.part_tip(a, "row") == "銀河鉄道の夜\n" + a.audio and arrivals.part_tip(a, "number") == "3 parts"
+    assert arrivals.part_tip(SimpleNamespace(title="銀河鉄道の夜", audio="", tip=""), "row") == "銀河鉄道の夜"   # a6 #3

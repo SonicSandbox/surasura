@@ -660,8 +660,9 @@ def part_tip(arrival, part):
         return strings.TRAY_MORE_TIP
     if part == "number":
         return arrival.tip
-    if part == "row":                                    # a5-2: an audiobook's row says what its 🎧 is
-        return getattr(arrival, "audio", "") or None
+    if part == "row":                # a6 #3: the full title (the painted one is cut), as Current's; a5-2: then the 🎧's
+        audio = getattr(arrival, "audio", "")
+        return f"{arrival.title}\n{audio}" if audio else arrival.title
     return None
 
 
@@ -1102,6 +1103,9 @@ class TrayList(QTableView):
             return
         key, part = self.at(pos)
         self._set_hot((key, part) if key is not None else None)
+        bubble = getattr(self.tray.win, "tooltips", None)
+        if bubble is not None:
+            bubble.hide_part_unless(self.viewport(), pos)          # a part's bubble goes when the hand leaves it
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -1140,11 +1144,25 @@ class TrayList(QTableView):
             key, part = self.at(event.pos())
             a = self.tray.arrival(key) if key is not None else None
             tip = part_tip(a, part) if a is not None else None
+            bubble = getattr(self.tray.win, "tooltips", None)   # a6 #3: the window's bubble, as Current's rows (it wraps
+            rect = None                                           # a long title); Qt's own on a tray with no window
             if tip:
-                QToolTip.showText(event.globalPos(), tip, self.viewport(),
-                                  row_parts(self.visualRect(self.model().index(self.row_of(key), 0)))[part])
+                parts = row_parts(self.visualRect(self.model().index(self.row_of(key), 0)))
+                rect = parts[part]
+                if part == "row":                                 # the title's words: up to the number, as Current's;
+                    rect = QRect(rect.left(), rect.top(), parts["text_right"] - rect.left(), rect.height())
+                    if not rect.contains(event.pos()):            # the gaps around it say nothing (no bubble that
+                        tip = None                                # blinks as the hand passes)
+            if tip:
+                if bubble is not None:
+                    bubble.request(self.viewport(), rect, tip)
+                else:
+                    QToolTip.showText(event.globalPos(), tip, self.viewport(), rect)
             else:
-                QToolTip.hideText()
+                if bubble is not None:
+                    bubble.hide()
+                else:
+                    QToolTip.hideText()
                 event.ignore()
             return True
         return super().viewportEvent(event)
@@ -1294,17 +1312,20 @@ class _Away(QObject):
             return True
         if event.type() != QEvent.Type.MouseButtonPress or not self.tray.isVisible():
             return False
-        if isinstance(obj, QWidget):
-            win = obj.window()
-            if win is not None and win.windowType() == Qt.WindowType.Popup:
-                return False                         # the ⋯ menu (it closes itself)
-            w = obj
-            while w is not None:
-                if w is self.tray or w is self.tray.inset:
-                    return False
-                if (isinstance(w, motion.Overlay) and w is not self.tray) or w.objectName() == "confirmscrim":
-                    return False
-                w = w.parentWidget()
+        if not isinstance(obj, QWidget):
+            # a6 #4: a real press reaches a window (QWidgetWindow) first, then the widget under it; the widget's copy
+            # is judged below. Judged here by its place alone, a pick in the ⋯ menu outside the tray closed it
+            return False
+        win = obj.window()
+        if win is not None and win.windowType() == Qt.WindowType.Popup:
+            return False                             # the ⋯ menu (it closes itself)
+        w = obj
+        while w is not None:
+            if w is self.tray or w is self.tray.inset:
+                return False
+            if (isinstance(w, motion.Overlay) and w is not self.tray) or w.objectName() == "confirmscrim":
+                return False
+            w = w.parentWidget()
         at = event.globalPosition().toPoint()
         for w in (self.tray, self.tray.inset):
             if w.rect().contains(w.mapFromGlobal(at)):

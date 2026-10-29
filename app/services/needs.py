@@ -104,10 +104,11 @@ LIBRARY_GONE = "library-gone"
 LIBRARY_EMPTIED = "library-emptied"   # A5K-2: the library folder held none of the record's files at this run's start
 AUDIOBOOK_ASK = "audiobook-ask"       # Hon (H-8): is this audiobook that book? Asked once per pair, the answer kept
 AUDIOBOOK_FIND = "audiobook-find"     # Hon (a5-2): after a *No*, find its book — or it has none (never asked again)
+AUDIOBOOK_TRANSCRIPT = "audiobook-transcript"   # Hon (a6, H-13): an audiobook's transcript isn't its book's: not used
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
-         FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND)
+         FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
@@ -129,6 +130,12 @@ STRINGS = {
                       "Surasura it has none: it won't ask again.",
     "abook_find_say_none": "{files}. Not that book, you said. Find its book in your library or on your computer, or "
                            "tell Surasura it has none: it won't ask again.",
+    # Hon (a6, H-13 PROVISIONAL): a transcript beside an audiobook that its book doesn't hold — never used in silence
+    "abook_transcript_title": "The transcript beside 「{audio}」 doesn't match 「{book}」",
+    "abook_transcript_say": "Only {share} of its lines are in that book, so it's another edition's or another "
+                            "book's: Surasura doesn't use it. The book's words count, as they did.",
+    "abook_transcript_say_none": "Its lines aren't in that book, so it's another edition's or another book's: "
+                                 "Surasura doesn't use it. The book's words count, as they did.",
     "anki_closed_title": "Anki isn't open: {n} wait for it",
     "anki_needs_title": "Anki needs you: {n} wait for it",
     "anki_one": "1 episode", "anki_n": "{n:,} episodes",
@@ -341,7 +348,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     out += shows
     for ask in asks or ():
         entry = _audiobook_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_ASK else \
-            _audiobook_find_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_FIND else _ask_entry(ask, by_id, seen)
+            _audiobook_find_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_FIND else \
+            _transcript_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_TRANSCRIPT else _ask_entry(ask, by_id, seen)
         if entry is not None:
             out.append(entry)
     for root in roots:
@@ -1139,6 +1147,8 @@ def asks_of(store):
         out += [dict(a, kind=AUDIOBOOK_ASK) for a in store.audiobook_asks()]
     if hasattr(store, "audiobook_finds"):                # a5-2: after a *No*, find its book
         out += [dict(a, kind=AUDIOBOOK_FIND) for a in store.audiobook_finds()]
+    if hasattr(store, "transcript_mismatches"):          # a6 (H-13): a transcript its book doesn't hold
+        out += [dict(a, kind=AUDIOBOOK_TRANSCRIPT) for a in store.transcript_mismatches()]
     return out
 
 
@@ -1169,6 +1179,23 @@ def _audiobook_find_entry(ask, seen):
                  title=STRINGS["abook_find_title"].format(audio=ask.get("title") or "?"), lines=(),
                  actions=("find_book", "no_book"), unseen=key not in seen, say=say,
                  data={"item_id": ask["item_id"], "title": ask.get("title") or ""})
+
+
+def _transcript_entry(ask, seen):
+    """a6's line (H-13): *The transcript beside 「…」 doesn't match 「…」* — how much of it the book holds, and that it
+    isn't used (the book's words count). Nothing to answer: its ⋯ (*Not now*, *Stop asking*) takes it away. Keyed by
+    the transcript's bytes and the book's (another of either is a new line)."""
+    if ask.get("item_id") is None or not ask.get("key"):
+        return None
+    key = f"transcript:{_digest(['audiobook-transcript', str(ask['key'])])}"
+    share = ask.get("share")
+    say = STRINGS["abook_transcript_say"].format(share=f"{share:.0%}") if isinstance(share, (int, float)) and share \
+        else STRINGS["abook_transcript_say_none"]
+    return Entry(key=key, kind=AUDIOBOOK_TRANSCRIPT,
+                 title=STRINGS["abook_transcript_title"].format(audio=ask.get("title") or "?",
+                                                                book=ask.get("book") or "?"),
+                 lines=(), actions=(), unseen=key not in seen, say=say,
+                 data={"item_id": ask["item_id"], "transcript": ask.get("transcript") or ""})
 
 
 def _audiobook_entry(ask, seen):

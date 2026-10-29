@@ -1204,6 +1204,23 @@
             opacity: 0.8;
         }
 
+        /* A run of watched parts of one show folded into one row (a6, Sonic 2026-10-29): its stone, its range
+           (*Ep 1–14 watched*) and a caret; a click shows each part in its place, a second click folds them again. */
+        .journey-fold .fold-head .fold-caret {
+            margin-left: 8px;
+            opacity: 0.8;
+            font-size: 0.9em;
+        }
+
+        .journey-fold .fold-body {
+            display: none;
+            padding-left: 12px;
+        }
+
+        .journey-fold.open .fold-body {
+            display: block;
+        }
+
         /* Manually-completed files collapse into their own section at the bottom of the sidebar, so
            a long-running journey doesn't mean scrolling past every episode you've already finished.
            They stay one click away rather than being hidden outright. */
@@ -1979,6 +1996,8 @@
 
             // Remember each file's natural sidebar position so un-marking one can put it back.
             fileList.forEach((item, i) => { item._order = i; });
+            // A run of watched parts of one show: one row (the generator names them, `"fold"`; a6)
+            fileList = foldWatchedRuns(fileList);
 
             // Split off the files YOU marked complete — they render into a collapsed section at the
             // TOP instead of sitting in the middle of the list. (Distinct from the analysis-derived
@@ -2021,12 +2040,13 @@
                 // into view, a collapsed Completed section opened for it (not saved).
                 setTimeout(() => {
                     const asked = fileFromHash();
-                    const at = asked ? activeList.findIndex(item => item.data && item.data.filename === asked) : -1;
+                    const at = asked ? activeList.findIndex(item => itemHolds(item, asked)) : -1;
                     if (loadThrough && at >= 0) loadThrough(at);
-                    const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab'));
+                    const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab:not(.fold-head)'));
                     const askedTab = asked ? tabs.find(t => t.dataset.file === asked) : null;
-                    const firstTab = askedTab
-                        || tabs.find(stillToStudy) || tabs.find(t => !t.closest('#completed-section')) || tabs[0];
+                    const firstTab = askedTab || tabs.find(stillToStudy)
+                        || tabs.find(t => !t.closest('#completed-section') && !t.closest('.fold-body')) || tabs[0];
+                    if (firstTab) openFoldOf(firstTab);         // a part inside a folded run: its fold shown (not kept)
                     if (askedTab) {
                         if (askedTab.closest('#completed-section') && completedCollapsed) {
                             completedCollapsed = false;
@@ -2044,7 +2064,66 @@
 
         // --- Collapsible "Completed" section ---------------------------------------------------- #
         function isItemCompleted(item) {
+            if (item && item.type === 'fold') return item.items.every(isItemCompleted);
             return !!(item && item.data && completedFiles.has(item.data.filename));
+        }
+
+        // --- A run of watched parts folded into one row (a6, Sonic 2026-10-29) -------------------------------- #
+        // The generator names each part of a fold (`"fold": k`, `_journey_folds`: two or more watched parts of one show
+        // next to each other) and its row's words (`globalData.folds[k].label`, *Ep 1–14 watched*). Each part keeps its
+        // own tab, in its place, inside the fold; the fold is one sidebar item. Rendering only.
+        function foldWatchedRuns(list) {
+            const folds = globalData.folds || [];
+            const out = [];
+            list.forEach(item => {
+                const k = item.data ? item.data.fold : undefined;
+                const last = out[out.length - 1];
+                if (k === undefined || k === null || !folds[k]) out.push(item);
+                else if (last && last.type === 'fold' && last.fold === k) last.items.push(item);
+                else out.push({ type: 'fold', fold: k, items: [item], _order: item._order });
+            });
+            // a fold of one part (never from the generator) is that part again
+            return out.map(item => (item.type === 'fold' && item.items.length < 2) ? item.items[0] : item);
+        }
+
+        function itemHolds(item, name) {
+            if (item && item.type === 'fold') return item.items.some(part => itemHolds(part, name));
+            return !!(item && item.data && item.data.filename === name);
+        }
+
+        function createFoldRow(item) {
+            const wrap = document.createElement('div');
+            wrap.className = 'journey-fold';
+            if (item._order !== undefined) wrap.dataset.order = item._order;
+            const head = document.createElement('div');
+            head.className = 'file-tab fold-head';
+            head.title = (typeof globalFoldTip !== 'undefined' && globalFoldTip) || '';
+            const label = escapeHtml(globalData.folds[item.fold].label);
+            // with Keep studying watched episodes on, the parts still count: their words, summed, where a count goes
+            const counted = item.items.filter(part => part.type === 'prog' && !part.data.aside);
+            const words = counted.reduce((n, part) => n + part.data.words.length, 0);
+            const count = counted.length ? ` <span style="font-size: 0.9em; opacity: 0.5; margin-left: 8px; font-family: monospace; white-space: nowrap;">(${words})</span>` : '';
+            head.innerHTML = `${journeyStone({ watched: true })}<span class="hidden-content" data-content="${label}" migaku_ignore data-yomichan-ignore></span>${count}<span class="fold-caret">▸</span>`;
+            const body = document.createElement('div');
+            body.className = 'fold-body';
+            item.items.forEach(part => body.appendChild(createSidebarTab(part)));
+            head.onclick = () => toggleFold(wrap);
+            wrap.appendChild(head);
+            wrap.appendChild(body);
+            return wrap;
+        }
+
+        function toggleFold(wrap, open) {
+            const shown = open === undefined ? !wrap.classList.contains('open') : open;
+            wrap.classList.toggle('open', shown);
+            const caret = wrap.querySelector('.fold-caret');
+            if (caret) caret.textContent = shown ? '▾' : '▸';
+        }
+
+        // A part inside a folded run, asked for or advanced to: its fold opened so the part shows.
+        function openFoldOf(tab) {
+            const wrap = tab && tab.closest('.journey-fold');
+            if (wrap && !wrap.classList.contains('open')) toggleFold(wrap, true);
         }
 
         function buildCompletedSection(container, doneList) {
@@ -2074,7 +2153,7 @@
             const body = document.getElementById('completed-section-body');
             const header = document.getElementById('completed-section-header');
             if (!wrap || !body || !header) return;
-            const n = body.querySelectorAll('.file-tab').length;
+            const n = body.querySelectorAll('.file-tab:not(.fold-head)').length;
             wrap.style.display = n ? 'block' : 'none';
             header.textContent = `${completedCollapsed ? '▸' : '▾'} Completed (${n})`;
             body.style.display = completedCollapsed ? 'none' : 'block';
@@ -2094,6 +2173,10 @@
             const tabsContainer = document.getElementById('file-tabs');
             const body = document.getElementById('completed-section-body');
             if (!tab || !tabsContainer || !body) return;
+            if (tab.closest('.fold-body')) {        // a part of a folded run stays in its place in the fold (its ✓ drawn)
+                applyCompletedSectionState();
+                return;
+            }
 
             if (isCompleted) {
                 body.appendChild(tab);
@@ -2102,7 +2185,7 @@
                 // inside the Completed section; no later sibling means it belongs at the end (the
                 // section is the container's FIRST child, so appending is correct).
                 const order = parseInt(tab.dataset.order || '0', 10);
-                const siblings = Array.from(tabsContainer.querySelectorAll(':scope > .file-tab'));
+                const siblings = Array.from(tabsContainer.querySelectorAll(':scope > .file-tab, :scope > .journey-fold'));
                 const after = siblings.find(t => parseInt(t.dataset.order || '0', 10) > order);
                 tabsContainer.insertBefore(tab, after || null);
             }
@@ -2111,6 +2194,7 @@
 
 
         function createSidebarTab(item) {
+            if (item.type === 'fold') return createFoldRow(item);
             const tab = document.createElement('div');
             tab.className = `file-tab`;
             // Every kind's file name, for `#file=` (`dataset.filename` stays the counted ones': `stillToStudy`).
@@ -2525,6 +2609,7 @@
             const activeIdx = tabs.findIndex(t => t.classList.contains('active'));
             for (let i = activeIdx + 1; i < tabs.length; i++) {
                 if (stillToStudy(tabs[i])) {
+                    openFoldOf(tabs[i]);
                     tabs[i].click();
                     return;
                 }

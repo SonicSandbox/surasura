@@ -4058,20 +4058,26 @@ class Store:
                                  f"{counts_sql(False)} AND availability != 'waiting')").fetchone()[0] == 1
 
     def watched_marks(self):
-        """The journey's stones (Sonic 2026-10-23): [(rel_path, tier, watched, counts)] for every item of the analysed
-        tiers that Generate's list reads or sets aside (`schedule`'s rows: no video waiting for its subtitle), in its
-        order — once one of them is watched; [] while none is (the report then is what it was), asked through the
-        partial index `items_watched` (`STONES_EXIST_SQL`: a library with no stone pays one look, S19). `counts` is the
-        one rule's (`counts`): a watched item counts only with `keep_watched` on. Finished stays out (its own view).
-        One read transaction."""
+        """The journey's stones (Sonic 2026-10-23): [(rel_path, tier, watched, counts, show, media)] for every item of
+        the analysed tiers that Generate's list reads or sets aside (`schedule`'s rows: no video waiting for its
+        subtitle), in its order — once one of them is watched; [] while none is (the report then is what it was), asked
+        through the partial index `items_watched` (`STONES_EXIST_SQL`: a library with no stone pays one look, S19).
+        `counts` is the one rule's (`counts`): a watched item counts only with `keep_watched` on. `show`: which show or
+        book it is of, as the window's rows read it (`view_rows._show_key`: its work, else its folder, else itself) —
+        `w<id>` / `f<folder>` / `i<id>`; `media`: its work's type as the learner typed it, else None (a6: the journey
+        folds a run of watched parts of one show into one row, `static_html_generator._journey_folds`). Finished stays
+        out (its own view). One read transaction."""
         with self._reading():
             if not self.conn.execute(STONES_EXIST_SQL).fetchone()[0]:
                 return []
             keep = self._keep_watched()
-            return [(rel, tier, 1 if watched else 0, counts(tier, watched, keep)) for tier in ANALYSED
-                    for rel, watched in self.conn.execute(
-                        "SELECT rel_path, watched FROM items WHERE tier = ? AND availability != 'waiting' "
-                        "ORDER BY ord, id", (tier,))]
+            return [(rel, tier, 1 if watched else 0, counts(tier, watched, keep),
+                     f"w{work}" if work is not None else f"f{folder}" if folder else f"i{item}", media)
+                    for tier in ANALYSED
+                    for item, rel, watched, work, folder, media in self.conn.execute(
+                        "SELECT i.id, i.rel_path, i.watched, i.work_id, i.parent_folder, w.media_type FROM items i "
+                        "LEFT JOIN works w ON w.id = i.work_id WHERE i.tier = ? AND i.availability != 'waiting' "
+                        "ORDER BY i.ord, i.id", (tier,))]
 
     # --- the library's options (L2.2 04 §4.2): the Soon line, the mine line, New arrivals ------------ #
 

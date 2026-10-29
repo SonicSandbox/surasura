@@ -57,6 +57,7 @@ POLL_MS = 500
 LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.due` says when it's an hour: FOCUS_S apart)
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
+JOURNEY_DRAW_WAIT = 60.0    # a6 #5: how long *Journey ↗* waits for a re-render (seconds), then opens the journey as it is
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
 # the window up and its bar saying so (`ShellWindow._finish_first`), then whatever is left of it at `shutdown`. Under
@@ -530,14 +531,50 @@ class Services:
         return os.path.exists(os.path.join(path_utils.get_user_file("results"), JOURNEY_FILE))
 
     def open_journey(self, file=None):
-        """(A worker.) *Your journey ↗*: the report as it is, never re-rendered (`open_report`); `file` (the report's
-        name for an episode's file): opened on it — or, when the journey doesn't list it yet (added since the last
-        Generate), where it opens by itself, -> `JOURNEY_LACKS` (JO-1: the window says so). -> False with none."""
+        """(A worker.) *Your journey ↗*: the report (`open_report`), drawn again first when only a setting it shows
+        changed (`draw_journey`); `file` (the report's name for an episode's file): opened on it — or, when the journey
+        doesn't list it yet (added since the last Generate), where it opens by itself, -> `JOURNEY_LACKS` (JO-1: the
+        window says so). -> False with none."""
         from app import static_html_generator as generator
+        self.draw_journey()
         held = file is None or generator.report_holds(file)
         opened = generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")),
                                        file=file if held else None)
         return JOURNEY_LACKS if opened and not held else opened
+
+    def draw_journey(self, wait=JOURNEY_DRAW_WAIT):
+        """(A worker.) a6 #5: the journey drawn again before it opens when the report isn't current but its analysis
+        is — a setting only the report reads changed (the theme, a Journey switch): the user's own Generate, which
+        re-renders and re-analyses nothing (seconds), waited for up to `wait`. A journey whose analysis is stale too is
+        opened as it is: a full Generate is the user's to ask (the Generate button's mark says so)."""
+        if self.closing.is_set():
+            return
+        try:
+            from app import analyzer, run_args
+            args = run_args.analyzer_args(settings_service.thaw(self.settings.get()), self.language)
+            if analyzer.report_is_current(args, self.language) \
+                    or analyzer.journey_is_current(args, self.language) is not True:
+                return
+        except Exception as e:
+            applog.log("shell", f"journey before opening: {e}")
+            return
+        ended, told = [], threading.Event()
+
+        def heard(run, _outcome):
+            ended.append(run)
+            told.set()
+        self.controller.on_end(heard)
+        try:
+            run = self.generate()
+            deadline = time.monotonic() + wait
+            while run is not None:
+                told.clear()
+                left = deadline - time.monotonic()
+                if run in ended or left <= 0:
+                    break
+                told.wait(left)
+        finally:
+            self.controller.unsubscribe(heard)
 
     def level(self):
         """(A worker.) The level chip's (band, automatic) (`automation.level`)."""
@@ -2449,6 +2486,8 @@ class ShellWindow(QMainWindow):
             stale = False
         if stale:
             bridge.run_in_worker(s.automation.recheck)      # the Generate button's mark asked again
+            if s.replan is not None and any(s.settings.kind(k, language) == "report" for k in keys):
+                s.replan.report_changed()                   # a6 #5: the journey drawn again (its mark leaves it out)
 
     # Generate
     def _show_generate(self, state):

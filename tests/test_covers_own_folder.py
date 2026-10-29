@@ -400,3 +400,47 @@ def test_a_poster_on_an_unplugged_drive_is_kept_never_replaced(shelf):
         assert shelf.row(work.id)[:2] == ("file", poster)
     finally:
         os.rename(gone, shelf.drive)
+
+
+def _record(shelf, path, item_id, sql=None, **extra):
+    """An origin record written as the store holds it (the window's handle reads only), with `sql` run first."""
+    import json
+    import sqlite3
+    raw = sqlite3.connect(shelf.store.db_path)
+    with raw:
+        if sql:
+            raw.execute(*sql)
+        raw.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                    (ls.origin_key(path), item_id, json.dumps(dict({"producer": "source", "origin": path}, **extra)),
+                     "2026-10-29T00:00:00"))
+    raw.close()
+
+
+def test_a_moved_or_other_version_record_names_no_folder(shelf):
+    """The store's live records only (mutant pass): a record whose file moved (D5's `moved_to`) or that is another
+    version of its episode (LM1b) names no folder of the title's — its old folder's art is not the title's."""
+    show = TITLES[shelf.language][0]
+    show_dir = os.path.join(shelf.drive, show)
+    episodes(show_dir, show, shelf.language, n=1)
+    root = shelf.read(shelf.drive)
+    work = shelf.work_titled(show)
+    item = shelf.store.conn.execute("SELECT MIN(id) FROM items WHERE work_id = ?", (work.id,)).fetchone()[0]
+    for name, mark in (("前の場所", {"moved_to": "src:elsewhere"}), ("別版", {"version": True})):
+        old = os.path.join(shelf.drive, name)
+        write(os.path.join(old, "poster.jpg"), jpeg())
+        _record(shelf, os.path.join(old, f"[Grp] {show} - 01.srt"), item, root=root, **mark)
+    assert shelf.work_titled(show).own_folders == (show_dir,)
+
+
+def test_a_file_with_no_title_never_takes_a_folders_picture_from_its_show(shelf):
+    """An item not given a title yet sitting in a show's folder doesn't make the folder shared (mutant pass)."""
+    a, b = TITLES[shelf.language]
+    show_dir = os.path.join(shelf.drive, a)
+    episodes(show_dir, a, shelf.language, n=1)
+    episodes(os.path.join(shelf.drive, b), b, shelf.language, n=1)
+    root = shelf.read(shelf.drive)
+    loose = shelf.store.conn.execute("SELECT MIN(id) FROM items WHERE work_id = ?",
+                                     (shelf.work_titled(b).id,)).fetchone()[0]
+    _record(shelf, os.path.join(show_dir, "extra.srt"), loose, sql=("UPDATE items SET work_id = NULL WHERE id = ?",
+                                                                    (loose,)), root=root)
+    assert shelf.work_titled(a).own_folders == (show_dir,)

@@ -236,7 +236,7 @@ def test_the_template_draws_a_fold_as_one_row_with_the_stone_that_opens_and_fold
     assert "toggleFold(wrap)" in row and "'▾' : '▸'" in _function(html, "toggleFold")
     assert "item.items.every(isItemCompleted)" in _function(html, "isItemCompleted")
     assert "openFoldOf(tabs[i])" in _function(html, "goToNextIncompleteFile"), "a ✓ advancing into a fold opens it"
-    assert "tab.closest('.fold-body')" in _function(html, "moveTabToCompletedSection"), "a part stays in its fold"
+    assert "tab.closest('.journey-fold')" in _function(html, "moveTabToCompletedSection"), "a part stays in its fold"
     first = html[html.index("// Initial Load"):]
     assert "openFoldOf(firstTab)" in first[:first.index("}, 50);")], "the asked part is shown, its fold opened"
     assert "itemHolds(item, asked)" in first, "the window's asked part found inside a fold, paged sidebar too"
@@ -254,3 +254,40 @@ def test_the_fold_says_its_range_as_the_windows_rows_do():
         "Parts 5–6 watched"
     assert view_rows.STRINGS["fold_watched"].format(range=view_rows.range_text("youtube", [], 4)) == "4 videos watched"
     assert view_rows.STRINGS["fold_watched"].format(range=view_rows.range_text(None, [1], 3)) == "3 episodes watched"
+
+
+def _aside(names):
+    return {"progressive": [{"filename": n, "watched": True, "aside": True, "words": []} for n in names],
+            "completed_files": []}
+
+
+def test_a_run_never_crosses_a_tier():
+    # why: the Soon line (or Goal) parts a show; the journey's row never holds parts of two tiers
+    marks = [(f"HighPriority/x/x_{n:02d}.srt", "now" if n < 4 else "soon", 1, 0, "w1", None) for n in range(1, 7)]
+    data = _aside([f"x_{n:02d}.srt" for n in range(1, 7)])
+    gen._journey_folds(data, [], marks)
+    assert [f["label"] for f in data["folds"]] == ["Ep 1–3 watched", "Ep 4–6 watched"]
+
+
+def test_a_name_two_marks_share_is_never_folded():
+    # why (a review find): the report keys a file by its name; show B's unwatched 01.srt and show A's watched 01.srt are
+    # one entry — B's, with its words — which a fold would hide under "watched"
+    marks = [("HighPriority/A/01.srt", "now", 1, 0, "w1", None), ("HighPriority/A/02.srt", "now", 1, 0, "w1", None),
+             ("HighPriority/A/03.srt", "now", 1, 0, "w1", None), ("HighPriority/B/01.srt", "now", 0, 1, "w2", None)]
+    data = _aside(["01.srt", "02.srt", "03.srt"])
+    data["progressive"][0] = {"filename": "01.srt", "words": ["冒険"]}           # B's counted entry holds the name
+    gen._journey_folds(data, [], marks)
+    assert "fold" not in data["progressive"][0]
+    assert [f["label"] for f in data["folds"]] == ["Ep 2–3 watched"]
+
+
+def test_a_fold_is_re_filed_whole_when_a_parts_check_changes():
+    # why (a review find): un-✓ one part of a fold sitting in Completed — the fold goes back to its place whole (its part
+    # still to study again), never a part left under Completed; the last part ✓'d files the whole fold under Completed
+    move = _function(_template(), "moveTabToCompletedSection")
+    assert "tab.closest('.journey-fold')" in move and ".every(part => completedFiles.has(part.dataset.file))" in move
+    assert move.index("tab = fold;") < move.index("if (isCompleted) {")
+    first = _template()[_template().index("// Initial Load"):]
+    first = first[:first.index("}, 50);")]
+    assert first.index("!t.closest('.fold-body')") < first.index("tabs.find(t => !t.closest('#completed-section')) ||"), \
+        "nothing open to study: a part in an active fold before anything under Completed"

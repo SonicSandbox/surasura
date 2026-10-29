@@ -957,13 +957,15 @@ def _journey_folds(data, file_order, marks, inline=False):
     template's order: `file_order` with *Show 'Target Met' inline* on, else the counted list), they are one fold: each
     of their entries gets `"fold": k`, and `data["folds"][k]` its row's words — `{"label": "Ep 1–14 watched", "n": 14}`,
     the range as the window's rows say it (`view_rows.range_text`: episodes, parts, videos). Rendering only: no word,
-    count or order changes, and an entry of one part alone stays as it is. Marks without a show (an older reader) or
-    none: no fold, the report as it was."""
+    count or order changes, and an entry of one part alone stays as it is. A name two marks share (`01.srt` in two
+    shows: the report keys a file by its name) is never folded — its entry may be the other, unwatched one. Marks
+    without a show (an older reader) or none: no fold, the report as it was."""
     if not marks or isinstance(marks, str):
         return
     from collections import Counter
     from app.path_utils import infer_source_type
     from app.services import view_rows
+    shared = {name for name, n in Counter(report_name(mark[0]) for mark in marks).items() if n > 1}
     runs, run_of, last = [], {}, None
     for rel, tier, watched, _counted, *show in marks:
         key = (tier, tuple(show)) if watched and show else None
@@ -973,7 +975,8 @@ def _journey_folds(data, file_order, marks, inline=False):
         if last is None or last[0] != key:
             last = (key, len(runs))
             runs.append(show[1] if len(show) > 1 else None)
-        run_of.setdefault(report_name(rel), (last[1], rel))
+        if report_name(rel) not in shared:
+            run_of[report_name(rel)] = (last[1], rel)
     if not runs:
         return
     entries = {entry["filename"]: entry for entry in data["progressive"]}

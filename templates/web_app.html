@@ -2045,7 +2045,8 @@
                     const tabs = Array.from(tabsContainer.querySelectorAll('.file-tab:not(.fold-head)'));
                     const askedTab = asked ? tabs.find(t => t.dataset.file === asked) : null;
                     const firstTab = askedTab || tabs.find(stillToStudy)
-                        || tabs.find(t => !t.closest('#completed-section') && !t.closest('.fold-body')) || tabs[0];
+                        || tabs.find(t => !t.closest('#completed-section') && !t.closest('.fold-body'))
+                        || tabs.find(t => !t.closest('#completed-section')) || tabs[0];
                     if (firstTab) openFoldOf(firstTab);         // a part inside a folded run: its fold shown (not kept)
                     if (askedTab) {
                         if (askedTab.closest('#completed-section') && completedCollapsed) {
@@ -2173,9 +2174,12 @@
             const tabsContainer = document.getElementById('file-tabs');
             const body = document.getElementById('completed-section-body');
             if (!tab || !tabsContainer || !body) return;
-            if (tab.closest('.fold-body')) {        // a part of a folded run stays in its place in the fold (its ✓ drawn)
-                applyCompletedSectionState();
-                return;
+            // A part of a folded run stays in its fold; the fold is re-filed whole: in Completed while every part is ✓
+            const fold = tab.closest('.journey-fold');
+            if (fold) {
+                isCompleted = Array.from(fold.querySelectorAll('.fold-body .file-tab'))
+                    .every(part => completedFiles.has(part.dataset.file));
+                tab = fold;
             }
 
             if (isCompleted) {

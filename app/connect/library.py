@@ -296,6 +296,29 @@ def made_notes_of(language):
         return {}
 
 
+def made_fingerprint(language):
+    """F-6: what the report's "In Anki" label reads of Connect's record (`made_notes_of`), in short — [rows, the last
+    made, the note ids' length] of `language`'s `made_words`; None with no store or no record (never raises). Its part
+    of the render signature: a card Connect made, or one whose card was deleted, re-renders the report."""
+    try:
+        from app import library_store
+        from app.path_utils import get_data_path, get_user_files_path
+        store = library_store.open_store(language, get_data_path(language), get_user_files_path(language),
+                                         role="reader")
+        if store is None:
+            return None
+        with store:
+            with store._reading():
+                if not store.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'made_words'"
+                                          ).fetchone():
+                    return None
+                rows, last, ids = store.conn.execute("SELECT COUNT(*), MAX(made_at), TOTAL(LENGTH(note_ids)) "
+                                                     "FROM made_words").fetchone()
+        return [rows, last, ids] if rows else None
+    except Exception:
+        return None
+
+
 def made_words_for(store, job):
     """The words a job's pick counts as made (never sent): every word Connect ever made (G1.3-4) — but for a job an
     ask made (*Mine this*, *Mine it too*, kind `asked`), only the words whose card the store still holds a note for:

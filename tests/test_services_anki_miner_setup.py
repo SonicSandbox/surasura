@@ -67,7 +67,7 @@ def _miner(*states, version="3.7.0"):
         say, do = says[id_]
         if state == "needs-you" and id_ == "anki_miner_setup":
             say, do = ("Anki Miner's own setup isn't finished (deck: no deck chosen).",
-                       "Open Anki Miner and finish its setup")
+                       setup.UPDATE_DO)
         elif state == "needs-you" and id_ == "anki_miner_profile":
             say, do = ("Anki Miner has no profile named Surasura.",
                        "In Anki Miner: Manage profiles… → New, name it Surasura")
@@ -77,6 +77,8 @@ def _miner(*states, version="3.7.0"):
         elif state == "not-checked":
             say, do = ("Checked once Anki Miner answers.", None)
         out.append(_c(id_, state, say, do))
+        if do == setup.UPDATE_DO:
+            out[-1]["update"] = True        # as setup.py marks it (A5F2): the page's Update button
     return out
 
 
@@ -176,7 +178,7 @@ def test_needs_setup_names_its_own_setup_as_the_fix(monkeypatch):
     result = M.look({}, "ja")
     assert result["state"] == "needs-setup"
     assert result["fix"] == {"say": "Anki Miner's own setup isn't finished (deck: no deck chosen).",
-                             "do": "Open Anki Miner and finish its setup", "update": False, "setup": False}
+                             "do": setup.UPDATE_DO, "update": True, "setup": False}
     assert _dots(result)["Its setup"] == ("warn", "Its setup: Needs you. Anki Miner's own setup isn't finished "
                                                   "(deck: no deck chosen).")
     assert _dots(result)["Anki Miner"][0] == "ok"
@@ -208,7 +210,7 @@ def test_a_check_that_stops_connect_is_the_fix_before_ankiweb_which_does_not(mon
     _pieces(monkeypatch, ankiweb="needs-you", miner=_miner("ok", "ok", "ok", "needs-you"),
             found={"path": MINER_PATH, "app": "3.7.0"})
     result = M.look({}, "ja")
-    assert result["fix"]["do"] == "Open Anki Miner and finish its setup"
+    assert result["fix"]["do"] == setup.UPDATE_DO
     assert _dots(result)["AnkiWeb"][0] == "warn"
     _pieces(monkeypatch, ankiweb="needs-you", miner=_miner("ok", "ok", "ok", "ok"),
             found={"path": MINER_PATH, "app": "3.7.0"})

@@ -1201,21 +1201,22 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
             profile = anki_miner.choose_profile(info, anki_miner.profiles(miner), name)    # 3.7: else your active one
             os.makedirs(run_dir, exist_ok=True)
             export = anki_miner.settings_export(miner, lang, export_path, profile)
-            mapping = fields.from_export(export, lang)
+            mapping = fields.from_export(export, lang, fields.pointer(info))     # A5F3: a pointer it can act on
         except anki_miner.AnkiMinerError as e:
             raise _miner_error(e) from None
         except fields.NeedsYou as e:
             raise CliError("needs-you", e.message, ask=e.message) from None
-    _check_note_type(loaded, mapping)
+    _check_note_type(loaded, mapping, info)
     if held is not None:
         held.update(set=(info, profile, mapping, export), stamp=now,
                     at=read_at if kept is not None else time.monotonic())
     return info, profile, mapping
 
 
-def _check_note_type(loaded, mapping):
+def _check_note_type(loaded, mapping, info=None):
     """The note type Anki Miner fills must take its mapping (the word field first): asked of Anki when it answers;
-    when it doesn't, Anki Miner's own `check` asks again before it mines."""
+    when it doesn't, Anki Miner's own `check` asks again before it mines. `info`: Anki Miner's version answer (where
+    it's set right: `fields.pointer`, A5F3)."""
     from app import anki_connect
     from app.connect import fields
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
@@ -1228,7 +1229,7 @@ def _check_note_type(loaded, mapping):
     except anki_connect.AnkiError:
         model_fields = None
     try:
-        fields.check_note_type(mapping, model_fields)
+        fields.check_note_type(mapping, model_fields, fields.pointer(info))
     except fields.NeedsYou as e:
         raise CliError("needs-you", e.message, ask=e.message) from None
 

@@ -3,7 +3,7 @@ in the last 30 days, each with *Put back* — and Settings' *Bring back N remove
 reads and the same command.
 
 - **The window** (`RemovedWindow`, on `windows.SecondaryWindow`; one of its kind, `open_window`; Esc closes it): one
-  line per Remove and title, newest first (the store's `Store.removed`, read as it opens — never polled — on a pool
+  line per Remove and title (one Remove of several titles one line, *120 titles*: alpha 5), newest first (the store's `Store.removed`, read as it opens — never polled — on a pool
   thread with a store handle of its own, `read_store`: never queued behind a look on the looks' worker, A4B-7): its
   title, *3 files · 12 days left* (the first of its files to go) and *Put back*. Nothing removed: one line, *Nothing
   removed in the last 30 days*; the store unreadable (None): it says so. A4B-3: the first `BUILT_AT_ONCE` lines are
@@ -117,6 +117,17 @@ def why_not(shell):
     return settings_sources.why_not(shell)
 
 
+def title_words(entry):
+    """An entry's title: its own, or *120 titles* for one Remove of several (the store's `title` None)."""
+    if _many(entry):
+        return strings.REMOVED_TITLES.format(n=entry["titles"])
+    return entry.get("title") or ""
+
+
+def _many(entry):
+    return entry.get("title") is None and (entry.get("titles") or 0) > 1
+
+
 def detail_words(entry):
     """An entry's second line: *3 files · 12 days left* (*last day* at 0; nothing in the trash, its original in a
     folder read: *from a folder Surasura reads*)."""
@@ -164,7 +175,7 @@ class RemovedLine(QWidget):
         words = QVBoxLayout()
         words.setContentsMargins(0, 0, 0, 0)
         words.setSpacing(0)
-        self.title = QLabel(entry.get("title") or "", self)
+        self.title = QLabel(title_words(entry), self)
         self.title.setObjectName("settingsvalue")
         self.title.setTextFormat(Qt.TextFormat.PlainText)
         self.title.setWordWrap(True)
@@ -174,8 +185,9 @@ class RemovedLine(QWidget):
         self.detail.setTextFormat(Qt.TextFormat.PlainText)
         words.addWidget(self.detail)
         line.addLayout(words, 1)
-        title = entry.get("title") or ""
-        self.tip = strings.REMOVED_PUT_BACK_TIP.format(title=title)     # (greyed: why, the window's `_enable`)
+        title = title_words(entry)
+        tip = strings.REMOVED_PUT_BACK_TIP_MANY if _many(entry) else strings.REMOVED_PUT_BACK_TIP
+        self.tip = tip.format(title=title)                              # (greyed: why, the window's `_enable`)
         self.put = sc.Door(strings.REMOVED_PUT_BACK, tooltip=self.tip,
                            name=strings.REMOVED_PUT_BACK_NAME.format(title=title), parent=self)
         self.put.clicked.connect(lambda _c=False: on_put(self.key))
@@ -462,8 +474,8 @@ class RemovedWindow(windows.SecondaryWindow):
             if event in ("refused", "ended"):
                 self._show(self.answer)
                 self.read()
-        if give_back(self.shell, entry.get("trash_ids"), strings.REMOVED_BACK.format(title=entry.get("title") or ""),
-                     told=told) is None:
+        back = strings.REMOVED_BACK_MANY if _many(entry) else strings.REMOVED_BACK
+        if give_back(self.shell, entry.get("trash_ids"), back.format(title=title_words(entry)), told=told) is None:
             self._putting.discard(key)
             if not self.gone:
                 self._show(self.answer)

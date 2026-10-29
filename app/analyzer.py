@@ -4363,7 +4363,10 @@ def _without_comments(value):
     return value
 
 
-def compute_render_signature(args, marks=None):
+_READ_NOW = object()     # compute_render_signature's `made` left out: Connect's record read now
+
+
+def compute_render_signature(args, marks=None, made=_READ_NOW):
     """Fingerprint of everything that changes the RENDERED report but NOT the analysis, so those
     changes re-render instead of re-analyzing. SHARED with the dashboard's fast path so the two can
     never disagree about whether the existing report is still correct.
@@ -4376,7 +4379,9 @@ def compute_render_signature(args, marks=None):
     byte of its contents, so toggling it reopens the existing file instead of re-rendering.
 
     `marks`: the journey's stones as the report was drawn from them (`generate_static_html`'s return, through
-    `signed_render`); None reads them now (`journey_marks`: the check before a run, the fast paths)."""
+    `signed_render`); None reads them now (`journey_marks`: the check before a run, the fast paths). `made`: Connect's
+    record as it was read before the report was drawn (`_made_fingerprint`, F-6 — signed with that, never read again:
+    a card recorded mid-draw is the next press's re-render); left out, read now."""
     try:
         _s = settings_manager.load_settings()
     except Exception:
@@ -4409,6 +4414,10 @@ def compute_render_signature(args, marks=None):
         # …and the answers to Junban's "Same word as one on your list?": a "yes" labels its word too
         # (Anki_Match_Consistency_Scope.md item 1).
         _backlog_fingerprint(getattr(args, "language", "ja"), "junban_pairs.json")
+        if _s.get("anki_backlog_on_generate", True) else None,
+        # …and Connect's record of the cards it made (F-6): a card is labelled on the row Connect made it for
+        # (static_html_generator._connect_rows, Japanese only), so a card made or deleted re-renders
+        (_made_fingerprint(getattr(args, "language", "ja")) if made is _READ_NOW else made)
         if _s.get("anki_backlog_on_generate", True) else None,
         # The report's own logic keys, which the templates read from the logic block they embed
         # (globalLogic): "Show 'Target Met' inline", "Hide Audio Button", the page size and the ✦ / ⚖
@@ -4452,14 +4461,14 @@ def journey_marks(language):
         return ls.UNREAD
 
 
-def signed_render(args, drawn, written):
+def signed_render(args, drawn, written, made=_READ_NOW):
     """The render signature a run records after drawing its report (`last_render_sig`): signed with the marks the
     report was drawn from (`drawn`, `generate_static_html`'s return), never read again — a mark landing mid-Generate is
     then the next press's re-render, never a report recorded as current that shows the wrong stones (S-1). "" (it
     matches no signature: the next press re-renders) when the report wasn't written or its marks couldn't be read."""
     if not written or isinstance(drawn, str):            # library_store.UNREAD
         return ""
-    return compute_render_signature(args, marks=drawn)
+    return compute_render_signature(args, marks=drawn, made=made)
 
 
 def _stones_fingerprint(language, marks=None):
@@ -4483,6 +4492,18 @@ def _backlog_fingerprint(language, name="anki_backlog.json"):
         st = os.stat(os.path.join(get_user_files_path(language), name))
         return [st.st_mtime, st.st_size]
     except (OSError, TypeError):
+        return None
+
+
+def _made_fingerprint(language):
+    """Connect's record (`connect.library.made_fingerprint`) for Japanese, whose report labels Connect's cards on
+    their rows; None for Chinese or without it (never raises)."""
+    if language != "ja":
+        return None
+    try:
+        from app.connect import library
+        return library.made_fingerprint(language)
+    except Exception:
         return None
 
 
@@ -4918,7 +4939,8 @@ def main():
                 # compute_render_signature — shared with the dashboard so the two can't drift). The
                 # journey's stones are read once: the check and the re-render use the same marks.
                 _marks = None if args.theme in ZEN_THEMES else journey_marks(language)
-                _render_sig = compute_render_signature(args, marks=_marks)
+                _made = _made_fingerprint(language)      # F-6: read once, before the report is drawn
+                _render_sig = compute_render_signature(args, marks=_marks, made=_made)
                 # Fast "same setting" path: if the presentation is ALSO unchanged, the existing
                 # report is already correct — just open it (no re-render, and pandas is never
                 # imported). Otherwise re-render with the new theme/Zen (still no re-analysis).
@@ -4934,7 +4956,7 @@ def main():
                         open_browser=not args.no_open, language=language, marks=_marks)
                     _report_failed = not _report_written(_html, _rendering)
                     try:
-                        _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed))
+                        _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed, _made))
                     except Exception:
                         pass
             except Exception as e:
@@ -6514,6 +6536,7 @@ def main():
     # --- STATIC GENERATION ---
     _progress("Writing the journey")
     _drawn = None               # the journey's stones the report was drawn from (`signed_render`)
+    _made = None                # Connect's record as read before it was drawn (F-6; a report not written signs "")
     if args.static:
         try:
             try:
@@ -6524,6 +6547,7 @@ def main():
             print("\n---------------------------------------------------")
             print("Generating Static HTML...")
             _rendering = time.time()
+            _made = _made_fingerprint(language)          # F-6: read before the report is drawn, signed with it
             _drawn = static_html_generator.generate_static_html(
                 theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
                 open_browser=not args.no_open, language=language)
@@ -6583,7 +6607,7 @@ def main():
             if _run_sig:
                 _store.set_meta("last_run_signature", _run_sig)
             if args.static:
-                _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed))
+                _store.set_meta("last_render_sig", signed_render(args, _drawn, not _report_failed, _made))
         except Exception:
             pass
         _store.close()

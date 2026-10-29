@@ -179,6 +179,23 @@ def test_before_37_the_update_leads_with_its_button_and_the_steps_by_hand_follow
     assert page.path_text == PATH and not page.btn_copy.isHidden()
 
 
+def test_what_only_an_update_brings_shows_its_own_words_and_the_update_never_steps_by_hand(make):
+    """A5F2: an Anki Miner whose setup needs what only its installer brings (an older one without settings-import, its
+    ffmpeg): the check's own words, the Update button, no steps in Anki Miner's window and no Finish its setup."""
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner's own setup isn't finished (ffmpeg: not found).", "do": connect_setup.UPDATE_DO,
+           "update": True, "setup": False}
+    wiz, *_ = make(miner=FakeMiner(miner_look("needs-setup", "3.10.1", fix)))
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None)
+    assert page.name.text().replace("​", "") == fix["say"] and page.name.text() != S.MINER_UPDATE_FIRST
+    assert page.sub.text().replace("​", "") == connect_setup.UPDATE_DO and not page.sub.isHidden()
+    assert page.steps.isHidden() and page.path.isHidden() and page.btn_copy.isHidden()
+    assert not page.btn_install.isHidden() and page.btn_install.text() == S.UPDATE_MINER
+    assert page.btn_setup.isHidden()
+
+
 def test_copy_path_copies_the_path_as_it_is_and_says_so(make):
     wiz, *_ = make(miner=FakeMiner(miner_look("needs-setup", "3.6.0", BEFORE_37)))
     go_to(wiz, "cards")

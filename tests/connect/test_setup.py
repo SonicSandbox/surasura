@@ -313,7 +313,8 @@ def test_a_surasura_profile_is_used_when_there_is_one(monkeypatch, fake_miner):
     ("ja", [{"name": "deck", "ok": False, "message": "no deck chosen"}], "deck: no deck chosen", "settings"),
     # what neither verb sets is still Surasura's to finish around, and named (intent keeper IK-A2)
     ("ja", [{"name": "dictionary", "ok": False, "message": "No dictionary is installed."},
-            {"name": "ffmpeg", "ok": False, "message": "ffmpeg not found"}], "ffmpeg: ffmpeg not found", "some"),
+            {"name": "ffmpeg", "ok": False, "message": "ffmpeg was not found. Install ffmpeg, or set its location in "
+                                                       "Anki Miner's settings."}], "ffmpeg: not found", "some"),
     ("zh", [{"name": "language-pack", "ok": False, "message": "The Chinese language pack isn't installed."}],
      "The Chinese language pack isn't installed.", False),         # an item name Surasura doesn't know: never ours
 ])
@@ -336,8 +337,8 @@ def test_anki_miners_own_setup_unfinished_names_what_it_says(monkeypatch, ready_
         assert check["do"] == setup.SETTINGS_DO and check["setup"] is True and check["items"] == ["deck"]
     elif ours:
         assert check["do"] == setup.SETUP_DO and check["setup"] is True and "Open Anki Miner" not in check["do"]
-    else:
-        assert check["do"] == "Open Anki Miner and finish its setup" and not check.get("setup")
+    else:       # A5F2: what neither verb sets comes with Anki Miner's installer: Surasura's update, never its window
+        assert check["do"] == setup.UPDATE_DO and not check.get("setup") and check["update"] is True
     asked = [c["argv"] for c in ready_37.calls() if c["argv"][1] == "check"][0]
     assert asked[2:4] == ["--language", language]
 
@@ -350,7 +351,7 @@ def test_an_anki_miner_that_names_no_setup_is_never_set_up_by_surasura(monkeypat
                   profiles=[{"id": "p-main", "name": "メイン", "active": True}],
                   check={"ready": False, "items": [{"name": "dictionary", "ok": False, "message": "none"}]})
     check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
-    assert not check.get("setup") and check["do"] == "Open Anki Miner and finish its setup"
+    assert not check.get("setup") and check["do"] == setup.UPDATE_DO and check["update"] is True
 
 
 def test_anki_miner_not_reaching_anki_while_anki_is_closed_is_only_a_wait(monkeypatch, ready_37):
@@ -399,19 +400,54 @@ def test_anki_closed_and_a_dictionary_missing_names_only_the_dictionary(monkeypa
     assert "deck" not in check["say"], "what Anki's being closed explains isn't named as missing"
 
 
-def test_anki_miner_not_reaching_anki_that_surasura_reaches_names_its_address(monkeypatch, ready_37):
+def test_anki_miner_not_reaching_anki_that_surasura_reaches_has_its_address_set_by_surasura(monkeypatch, ready_37):
+    """A5F2: Surasura sets Anki Miner's AnkiConnect address itself (settings-import, Z-3): *Finish its setup*, never
+    "check Anki Miner's AnkiConnect address"."""
     StandInAnki(monkeypatch)
     ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
                   check={"ready": False, "items": _items({"anki", "deck", "note_type", "fields"})})
     check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
-    assert check["state"] == "needs-you" and "address may differ" in check["say"]
+    assert check["state"] == "needs-you" and check["say"] == setup.ADDRESS_SAY
+    assert check["do"] == setup.ADDRESS_DO and check["setup"] is True and check["items"] == ["anki"]
 
 
-def test_a_named_profile_anki_miner_lacks_says_what_to_do_about_it(monkeypatch, ready_37):
+def test_an_address_anki_miner_cant_set_from_surasura_is_surasuras_update(monkeypatch, ready_37):
+    StandInAnki(monkeypatch)
+    ready_37.plan(app="3.7.0", features=[f for f in FEATURES_37 if f != "settings-import"],
+                  profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check={"ready": False, "items": _items({"anki", "deck", "note_type", "fields"})})
+    check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
+    assert check["say"] == setup.ADDRESS_SAY and check["do"] == setup.UPDATE_DO and check["update"] is True
+    assert not check.get("setup") and "Check Anki Miner" not in check["do"]
+
+
+def test_the_address_is_set_with_the_dictionaries_when_both_are_missing(monkeypatch, ready_37):
+    StandInAnki(monkeypatch)
+    _synced_once()
+    items = _items({"anki", "deck", "note_type", "fields"})
+    items[4] = {"name": "dictionary", "ok": False, "message": "No dictionary is installed."}
+    ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check={"ready": False, "items": items})
+    check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
+    assert check["setup"] is True and check["items"] == ["anki", "dictionary"]
+
+
+def test_a_named_profile_anki_miner_lacks_is_made_by_surasura(monkeypatch, ready_37):
+    """A5F2: never "make it in Anki Miner": Surasura makes it (settings-import, Z-3) on *Finish its setup*."""
     StandInAnki(monkeypatch)
     check = _by_id(setup.checks(_settings(ready_37, connect_anki_miner_profile="字幕"), "ja"))["anki_miner_profile"]
-    assert check["do"] == "Choose a profile Anki Miner has, or make it in Anki Miner"
-    assert "didn't answer" not in check["say"]
+    assert check["say"] == setup.PROFILE_SAY.format(name="字幕") and check["do"] == setup.PROFILE_DO
+    assert check["setup"] is True and check["make"] == "字幕"
+    assert "didn't answer" not in check["say"] and "in Anki Miner" not in check["do"]
+
+
+def test_a_named_profile_an_anki_miner_without_settings_import_lacks_points_at_surasura(monkeypatch, ready_37):
+    StandInAnki(monkeypatch)
+    ready_37.plan(app="3.7.0", features=[f for f in FEATURES_37 if f != "settings-import"],
+                  profiles=[{"id": "p-main", "name": "メイン", "active": True}])
+    check = _by_id(setup.checks(_settings(ready_37, connect_anki_miner_profile="字幕"), "ja"))["anki_miner_profile"]
+    assert check["do"] == setup.UPDATE_PROFILE_DO and not check.get("setup") and not check.get("make")
+    assert check["update"] is True, "its Update button is shown (review): never a pointer at a hidden one"
 
 
 def test_the_record_forgets_an_anki_miner_that_was_uninstalled(monkeypatch, ready_37):
@@ -547,3 +583,24 @@ def test_junban_without_backfill_names_backfill_as_skipped(monkeypatch):
     monkeypatch.setattr(setup, "_present", lambda module: module == "modules.junban.reposition")
     checks = {c["id"]: c for c in setup._modules()}
     assert checks["junban"]["state"] == "ok" and checks["backfill"]["state"] == "skipped"
+
+
+def test_anki_miners_own_words_that_send_you_to_its_window_are_said_as_surasuras(monkeypatch, ready_37):
+    """A5F2: Anki Miner's ffmpeg line says "set its location in Anki Miner's settings": named in Surasura's words,
+    the fix its update (its installer brings ffmpeg)."""
+    StandInAnki(monkeypatch)
+    _synced_once()
+    ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check={"ready": False, "items": _items({"ffmpeg", "ffprobe"}, "ffmpeg was not found. Install ffmpeg, "
+                                                         "or set its location in Anki Miner's settings.")})
+    check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
+    assert check["say"] == "Anki Miner's own setup isn't finished (ffmpeg: not found; ffprobe: not found)."
+    assert check["do"] == setup.UPDATE_DO and check["update"] is True and "Anki Miner's settings" not in check["say"]
+
+
+def test_a_setup_anki_miner_calls_unfinished_without_naming_anything_is_surasuras_update(monkeypatch, ready_37):
+    StandInAnki(monkeypatch)
+    ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check={"ready": False, "items": _items(set())})
+    check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
+    assert check["say"] == setup.UNSAID_SAY and check["do"] == setup.UPDATE_DO and check["update"] is True

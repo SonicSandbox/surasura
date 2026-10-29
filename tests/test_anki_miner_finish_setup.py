@@ -15,12 +15,15 @@ No real Anki Miner is run: `anki_miner.api` and the setup checks are stand-ins; 
 """
 import json
 import os
+import time
 
 import pytest
 
 from app.connect import anki_miner, library, setup
 from app.connect import settings_values
 from app.services import anki_miner_setup as M
+
+DICTS_JA = M.SAID_DICTS.format(language="Japanese", name="メイン").strip()
 
 MINER = "C:\\Users\\learner\\AppData\\Local\\Programs\\AnkiMiner\\AnkiMiner.exe"
 
@@ -124,7 +127,8 @@ def world(monkeypatch, tmp_path):
             check["setup"] = True
         else:
             check = setup._check("anki_miner_setup", "ok", "Anki Miner's own setup is finished.")
-        return {"checks": [check], "anki_miner": {"path": MINER, "profile": "p-main", "features": ["setup"]}}
+        return {"checks": [check], "anki_miner": {"path": MINER, "profile": "p-main", "profile_name": "メイン",
+                                                  "features": ["setup"]}}
 
     def run_setup(path, language, profile, progress_path, on_poll=None):
         state["runs"].append((path, language, profile))
@@ -151,7 +155,8 @@ def world(monkeypatch, tmp_path):
 def test_finish_setup_runs_anki_miners_setup_in_the_profile_connect_uses_and_cleans_its_progress_file(world):
     world["progress"] = {"schema": 1, "item": "jmdict", "stage": 2, "stages": 4, "done": 10, "total": 100}
     seen = []
-    assert M.finish_setup({}, "ja", lambda *a: seen.append(a)) == (M.SET_UP, None)
+    # A5F4: where its setup switched the dictionaries on is said (Z-11 writes only them, into that profile)
+    assert M.finish_setup({}, "ja", lambda *a: seen.append(a)) == (M.SET_UP, DICTS_JA)
     assert world["runs"] == [(MINER, "ja", "p-main")]
     assert seen == [(2, 4, "jmdict")]
     assert not world["staging"].exists(), "its progress file is gone after"
@@ -195,10 +200,11 @@ def test_dictionaries_in_with_a_deck_still_to_choose_is_said_as_such_never_finis
         out = real(settings, language, keep)
         if world["runs"]:
             out["checks"] = [setup._check("anki_miner_setup", "needs-you", "Anki Miner's own setup isn't finished "
-                                          "(deck: no deck chosen).", "Open Anki Miner and finish its setup")]
+                                          "(deck: no deck chosen).", setup.SETTINGS_DO)]
         return out
     monkeypatch.setattr(setup, "checks", checks)
-    assert M.finish_setup({}, "ja") == (M.SET_UP_REST, "Anki Miner's own setup isn't finished (deck: no deck chosen).")
+    assert M.finish_setup({}, "ja") == (M.SET_UP_REST, "Anki Miner's own setup isn't finished (deck: no deck chosen). "
+                                        + DICTS_JA)
 
 
 def test_a_setup_that_didnt_finish_is_not_offered_again_this_session(world, monkeypatch):
@@ -243,7 +249,7 @@ def test_the_setup_is_a_job_with_no_cancel_that_the_quit_leaves_to_finish(world)
     world["progress"] = {"schema": 1, "item": "jmdict", "stage": 1, "stages": 3, "done": 0, "total": 0}
     live = []
     answer = M.finish_setup_as_job(registry, {}, "ja", lambda *a: live.extend(registry.live(M.SETUP_JOB_KIND)))
-    assert answer == (M.SET_UP, None)
+    assert answer == (M.SET_UP, DICTS_JA)
     assert [(j.label, j.on_quit) for j in live] == [(M.SETUP_JOB_LABEL, "detach")], "listed while it runs"
     assert not live[0].can_cancel
     ended = [j for j in registry.snapshot() if j.kind == M.SETUP_JOB_KIND]
@@ -307,3 +313,44 @@ def test_a_kind_opens_only_with_its_own_ask(monkeypatch):
     assert anki_miner.mines("audio") and anki_miner.mines("audio", {"features": ["audio-episodes"]})
     assert not anki_miner.mines("audio", {"features": ["reading"]})
     assert not anki_miner.mines("books", {"features": ["audio-episodes"]}), "audio never opens books"
+
+
+# --- A5F1: a long download that writes no progress still reads as "finishing its setup" ------------------------------ #
+def test_run_setup_touches_its_folder_every_poll_so_a_quiet_download_is_never_read_as_close_anki_miner(
+        api, tmp_path, monkeypatch):
+    """`setting_up` reads the setup's folder and progress file as fresh for SETUP_FRESH_S: a single download writing
+    nothing for longer made a Connect run told BUSY say "close Anki Miner". The folder is touched each poll."""
+    from app import path_utils
+    _calls, answer = api
+    answer["verdict"] = _verdict()
+    monkeypatch.setattr(path_utils, "get_local_data_path", lambda: str(tmp_path))
+    folder = tmp_path / anki_miner.SETUP_STAGING
+    folder.mkdir()
+    stale = time.time() - anki_miner.SETUP_FRESH_S - 60       # an hour-long download's quiet stretch
+    beat = folder / anki_miner.HEARTBEAT
+    beat.write_text("")                     # an earlier poll's, as quiet as the folder (mutants F19 / F20)
+    os.utime(beat, (stale, stale))
+    os.utime(folder, (stale, stale))
+    assert anki_miner.setting_up() is False, "before the heartbeat: read as not running"
+    polled = []
+    anki_miner.run_setup(MINER, "ja", None, folder / "progress.json", on_poll=lambda: polled.append(1))
+    assert polled == [1], "the caller's own poll still runs"
+    assert anki_miner.setting_up() is True and os.stat(beat).st_mtime > stale
+    assert os.stat(folder).st_mtime == pytest.approx(stale), "the folder itself is never touched (review)"
+
+
+def test_a_heartbeat_into_a_folder_already_removed_never_raises(api, tmp_path):
+    _calls, answer = api
+    answer["verdict"] = _verdict()
+    anki_miner.run_setup(MINER, "ja", None, tmp_path / "gone" / "progress.json")
+
+
+# --- A5F2: the card's state names what Surasura sets itself and what only an update brings -------------------------- #
+def test_the_card_offers_finish_for_a_profile_surasura_makes_and_the_steps_only_before_37():
+    found = {"anki_miner": {"path": MINER, "app": "3.10.1"}}
+    made = {"id": "anki_miner_profile", "state": "needs-you", "setup": True, "make": "字幕", "say": "no 字幕"}
+    state = settings_values.card_state(dict(found, checks=[{"id": "anki_miner", "state": "ok"}, made]))
+    assert state["can_set_up"] is True and state["steps"] is False and state["update"] is False
+    old = {"id": "anki_miner_profile", "state": "needs-you", "update": True, "say": "no Surasura"}
+    state = settings_values.card_state(dict(found, checks=[{"id": "anki_miner", "state": "ok"}, old]))
+    assert state["steps"] is True and state["update"] is True and state["can_set_up"] is False

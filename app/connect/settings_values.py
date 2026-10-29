@@ -118,7 +118,8 @@ def answer_star(answer):
 def card_state(result):
     """What the Anki Miner card shows, from `setup.checks` -> {"state": "missing" | "setup" | "ready", "say",
     "missing": [plain sentences], "steps": bool (the two guided steps), "path", "version", "can_set_up": bool (A4M1-2:
-    what is missing is what Anki Miner's own setup installs — Surasura runs it, `check["setup"]`)}."""
+    what is missing is what Anki Miner's own setup installs — Surasura runs it, `check["setup"]`), "update": bool
+    (A5F2: what is missing comes with Anki Miner's installer: Surasura's update)}."""
     checks = {c["id"]: c for c in (result or {}).get("checks") or ()}
     found = (result or {}).get("anki_miner") or {}
     first = checks.get("anki_miner") or {}
@@ -132,7 +133,12 @@ def card_state(result):
         return {"state": "ready", "say": f"Ready — Anki Miner {version}" if version else "Ready", "missing": [],
                 "steps": False, "path": found.get("path"), "version": version}
     profile = checks.get("anki_miner_profile") or {}
+    # A5F2: the steps by hand only for an Anki Miner older than 3.7 lacking its "Surasura" profile (the check marks
+    # its update first); a profile Surasura makes, its address, its setup are *Finish its setup*'s; what only an update
+    # brings is `update` (the card's Install, as *Update Anki Miner…*)
     return {"state": "setup", "say": f"Installed {version or ''} — needs setup".replace("  ", " "),
-            "missing": [c["say"] for c in missing if c.get("say")], "steps": profile.get("state") == "needs-you",
+            "missing": [c["say"] for c in missing if c.get("say")],
+            "steps": profile.get("state") == "needs-you" and bool(profile.get("update")),
             "path": found.get("path"), "version": version,
-            "can_set_up": bool((checks.get("anki_miner_setup") or {}).get("setup"))}
+            "can_set_up": any(bool(c.get("setup")) for c in missing),
+            "update": any(bool(c.get("update")) for c in missing)}

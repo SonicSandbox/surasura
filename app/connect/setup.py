@@ -57,6 +57,19 @@ SETTINGS_SAY = "Anki Miner doesn't know where your {language} cards go yet ({nam
 SETTINGS_DO = "Surasura sets it for you from your own decks, nothing to open"
 BOTH_SAY = "Anki Miner still needs its dictionaries, and where your {language} cards go ({named})."
 BOTH_DO = "Surasura finishes it for you: Anki Miner downloads its dictionaries by itself, nothing to open"
+# A5F2 (Sonic: "I never want to open Anki Miner. Ever."): what Surasura sets itself with Anki Miner's settings-import
+# (Z-3) — its AnkiConnect address, a profile Surasura's setting names — and what only an update brings (an Anki Miner
+# naming neither verb, its ffmpeg): Surasura's own update, never Anki Miner's window
+ADDRESS_SAY = "Anki Miner can't reach Anki, though Surasura can: its AnkiConnect address may differ from Surasura's."
+ADDRESS_DO = "Surasura sets Anki Miner to its own address for you, nothing to open"
+PROFILE_SAY = "Anki Miner has no profile called \"{name}\", the one Surasura's Anki Miner profile setting names."
+PROFILE_DO = "Surasura makes it for you, a copy of your Anki Miner settings, nothing to open"
+UPDATE_DO = ("Update Anki Miner from Surasura (Settings → Anki & mining): its installer brings what's missing, and "
+             "Surasura finishes the rest for you")
+UPDATE_PROFILE_DO = ("Choose a profile Anki Miner has in Surasura's settings (Anki & mining → Anki Miner profile), or "
+                     "update Anki Miner from Surasura so Surasura can make it")
+ITEM_WORDS = {"ffmpeg": "not found", "ffprobe": "not found"}
+UNSAID_SAY = "Anki Miner says its own setup isn't finished, without saying what."
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 ANKICONNECT_CODE = "2055492159"     # AnkiConnect's add-on code on AnkiWeb
 
@@ -265,9 +278,16 @@ def _miner_error(id_, e):
     if e.kind == "too-old":
         return _check(id_, NEEDS_YOU, e.message, f"Update Anki Miner ({RELEASES})")
     if e.kind == "needs-you":
-        return _check(id_, NEEDS_YOU, e.message, "Choose a profile Anki Miner has, or make it in Anki Miner")
+        return _check(id_, NEEDS_YOU, e.message, UPDATE_PROFILE_DO)
     return _check(id_, NEEDS_YOU, f"Anki Miner didn't answer Surasura's question: {e.message}", "Check again in a "
                   "moment; if it still doesn't answer, update Anki Miner from Surasura (Settings → Anki & mining)")
+
+
+def _named(items):
+    """`check` items as the line names them: Anki Miner's own words, but Surasura's where its words send you to its
+    window (A5F2: its ffmpeg message says "set its location in Anki Miner's settings")."""
+    return "; ".join(f"{name}: {ITEM_WORDS.get(name) or item.get('message') or 'not ready'}"
+                     for name, item in items.items())
 
 
 def _anki_miner(settings, language, answered):
@@ -309,7 +329,17 @@ def _anki_miner(settings, language, answered):
         profile = anki_miner.choose_profile(info, listed, name)
     except anki_miner.AnkiMinerError as e:
         check = _miner_error("anki_miner_profile", e)
-        if e.kind == "needs-you" and name == anki_miner.DEFAULT_PROFILE:
+        if e.kind == "needs-you" and name != anki_miner.DEFAULT_PROFILE:
+            # A5F2: the profile your setting names, made by Surasura (a copy of the window's, as Anki Miner's own
+            # settings-import makes one) — *Finish its setup* (`services.anki_miner_setup.finish_setup`); an Anki
+            # Miner without settings-import: another profile in Surasura's settings, or Surasura's update
+            if "Z-3" in anki_miner.features(info):
+                check = _check("anki_miner_profile", NEEDS_YOU, PROFILE_SAY.format(name=name), PROFILE_DO)
+                check.update(setup=True, make=name)
+            else:
+                check = _check("anki_miner_profile", NEEDS_YOU, PROFILE_SAY.format(name=name), UPDATE_PROFILE_DO)
+                check["update"] = True      # review: its Update button shown (wizard, Settings), never a dead pointer
+        elif e.kind == "needs-you" and name == anki_miner.DEFAULT_PROFILE:
             check["do"] = ("In Anki Miner: Manage profiles… → New, name it Surasura; then in its Settings, Whitelist → "
                            f"choose file: {anki_miner.whitelist_path(language)}")
             # only before 3.7 (from 3.7 the usual profile is used, `choose_profile`): updating is the better fix — the
@@ -331,13 +361,15 @@ def _anki_miner(settings, language, answered):
     failed = {name_: item for name_, item in items.items() if not item.get("ok") and name_ not in FETCH_ONLY}
     anki_down = "anki" in failed
     own = {name_: item for name_, item in failed.items() if not (anki_down and name_ in ANKI_ITEMS)}
+    # A5F2: Anki Miner can't reach the Anki Surasura reaches: Surasura sets its address (Z-3), with the rest it sets
+    address = anki_down and answered and "Z-3" in anki_miner.features(info)
     if ready.get("ready") is True:          # its own verdict; what only its YouTube fetch needs never counts
         out.append(_check("anki_miner_setup", OK, "Anki Miner's own setup is finished."))
     elif own and anki_miner.can_set_up(info, own):
         # A4M1-2 / A4M1-2b (leans taken, PROVISIONAL): what Anki Miner's own `setup` installs and what its
         # `settings-import` sets (the deck, note type and fields), Surasura does for you
         # (`services.anki_miner_setup.finish_setup`) — never "open Anki Miner"
-        named = "; ".join(f"{name_}: {item.get('message') or 'not ready'}" for name_, item in own.items())
+        named = _named(own)
         ours = anki_miner.ours(info)
         rest = [name_ for name_ in own if name_ not in ours]
         where = set(own) & ours & anki_miner.SETTINGS_ITEMS
@@ -352,21 +384,31 @@ def _anki_miner(settings, language, answered):
             say, do = f"Anki Miner still needs its dictionaries ({named}).", SETUP_DO
         check = _check("anki_miner_setup", NEEDS_YOU, say, do)
         check["setup"] = True
-        check["items"] = sorted(own)        # what `finish_setup` sets: its setup's, its settings-import's
+        # what `finish_setup` sets: its setup's, its settings-import's (the address too, A5F2)
+        check["items"] = sorted(set(own) | ({"anki"} if address else set()))
         out.append(check)
     elif own:
-        named = "; ".join(f"{name_}: {item.get('message') or 'not ready'}" for name_, item in own.items())
-        out.append(_check("anki_miner_setup", NEEDS_YOU, f"Anki Miner's own setup isn't finished ({named}).",
-                          "Open Anki Miner and finish its setup"))
+        # A5F2: what neither verb of this Anki Miner sets (it names neither, or its ffmpeg is missing) comes with its
+        # installer: Surasura's own update, never Anki Miner's window
+        named = _named(own)
+        check = _check("anki_miner_setup", NEEDS_YOU, f"Anki Miner's own setup isn't finished ({named}).", UPDATE_DO)
+        check["update"] = True
+        out.append(check)
     elif anki_down and not answered:
         out.append(_check("anki_miner_setup", WAITING, "Anki Miner can't reach Anki: Connect waits until Anki is "
                           "open, then checks the rest of its setup.", "Open Anki"))
+    elif address:
+        check = _check("anki_miner_setup", NEEDS_YOU, ADDRESS_SAY, ADDRESS_DO)
+        check.update(setup=True, items=["anki"])
+        out.append(check)
     elif anki_down:
-        out.append(_check("anki_miner_setup", NEEDS_YOU, "Anki Miner can't reach Anki, though Surasura can: its "
-                          "AnkiConnect address may differ from Surasura's.", "Check Anki Miner's AnkiConnect address"))
+        check = _check("anki_miner_setup", NEEDS_YOU, ADDRESS_SAY, UPDATE_DO)
+        check["update"] = True
+        out.append(check)
     else:
-        out.append(_check("anki_miner_setup", NEEDS_YOU, "Anki Miner says its own setup isn't finished.",
-                          "Open Anki Miner and finish its setup"))
+        check = _check("anki_miner_setup", NEEDS_YOU, UNSAID_SAY, UPDATE_DO)
+        check["update"] = True
+        out.append(check)
     return out, found
 
 

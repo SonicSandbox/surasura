@@ -637,6 +637,10 @@ COPY_PATH_TIP = "Copy the whitelist file's path, to paste into Anki Miner's file
 PATH_COPIED = "The whitelist file's path is copied: paste it into Anki Miner's file chooser."
 INSTALL_MINER = "Install Anki Miner…"
 INSTALL_MINER_TIP = "Get Anki Miner, free: its installer, from its GitHub release.\n• Asks before it downloads"
+# A5F2: what only Anki Miner's installer brings (an older Anki Miner, its ffmpeg): the same route, as the update
+UPDATE_MINER_BUTTON = "Update Anki Miner…"
+UPDATE_MINER_BUTTON_TIP = ("Get the Anki Miner Surasura works with, free: its installer, from its GitHub release.\n"
+                           "• Asks before it downloads")
 BROWSE_MINER = "Browse…"
 BROWSE_MINER_TIP = "Anki Miner is installed somewhere else: show Surasura where."
 BROWSE_MINER_TITLE = "Where is Anki Miner?"

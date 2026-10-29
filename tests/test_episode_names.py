@@ -854,3 +854,84 @@ def test_a_japanese_special_word_after_the_number_marks_a_special():
     assert en.identity("Hoshizora Kissa - 05 特別編.srt").special == "特別編"
     assert en.identity("Hoshizora Kissa - 05 特別編.srt").key != en.identity("Hoshizora Kissa - 05.srt").key
     assert en.identity("Hoshizora Kissa - S01E05 - A Very Special Day.srt").special is False
+
+
+# Mattias, 2026-10-27: his anime folder (a made-up title here), 24 Japanese `.srt` named so and nothing else (no video); the
+# `.ab` (AnimeBytes', a release site's tag) was read as ISO 639-1 Abkhazian, every file refused and the folder lost
+_AB = "{show} S01E{n:02d}-[1080p][BDRIP][x265.FLAC].ab.srt"
+_POLISH = ("1\n00:00:01,000 --> 00:00:03,500\nGdzie jest ta herbaciarnia? Szukałam jej całą noc.\n\n"
+           "2\n00:00:04,000 --> 00:00:06,000\nNie martw się, zaraz będziemy na miejscu.\n")
+
+
+@pytest.mark.parametrize("name, language, stem", [
+    ("Hoshizora Kissa S01E01-[1080p][BDRIP][x265.FLAC].ab.srt", None,
+     "Hoshizora Kissa S01E01-[1080p][BDRIP][x265.FLAC].ab"),                  # a release's tag: no language, kept
+    ("Hoshizora Kissa S01E01-[1080p][BDRIP][x265.FLAC].ja.srt", "ja", "Hoshizora Kissa S01E01-[1080p][BDRIP][x265.FLAC]"),
+    ("Hoshizora Kissa S01E01.jpn.srt", "ja", "Hoshizora Kissa S01E01"),
+    ("Hoshizora Kissa S01E01.en.srt", "other", "Hoshizora Kissa S01E01"),        # a language the app names: as before
+    ("Hoshizora Kissa S01E01.pt-BR.srt", "other", "Hoshizora Kissa S01E01"),
+    ("Lanterns of Qinghe S01E01.zh-Hans.srt", "zh", "Lanterns of Qinghe S01E01"),
+    ("Hoshizora Kissa S01E01.abk.srt", "other", "Hoshizora Kissa S01E01"),       # ISO 639-2's three letters: as before
+    ("Hoshizora Kissa S01E01.pl.srt", None, "Hoshizora Kissa S01E01.pl"),       # Polish: no tag here, its text decides
+])
+def test_a_two_letter_dot_tag_is_a_language_only_when_the_app_names_it(name, language, stem):
+    """Mattias's `.ab`: of ISO 639-1's two letters a dot tag is a language only when it is one the app names (ours, and
+    the subtitle languages it names); another is no tag, so the look reads the file's text (`_refusal`). The episode
+    reads either way, and Connect still pairs the file with its video (`video_stems` drops a short unknown tag)."""
+    n = en.identity(name)
+    assert (n.language, n.stem, n.episode, n.season) == (language, stem, 1, 1)
+    assert os.path.splitext(name)[0].rsplit(".", 1)[0] in en.video_stems(name)
+    assert en.language_of("ab") is None and en.language_of("en") == "other" and en.language_of("English") == "other"
+
+
+@pytest.mark.usefixtures("_fresh_look")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_subtitle_only_show_tagged_ab_arrives_with_every_episode(language):
+    """Mattias's folder, end to end, nested two deep (`Anime/<show> S01/`): subtitles only, each `.ab.srt` in our
+    language — every episode is an item (none refused, none silently lost), as any subtitle with no video is: taken in
+    and counted, no video paired; one episode tagged `.ab` whose text is the other language is the text's, refused;
+    a Polish `.pl.srt` (a language the app doesn't name) is read and refused by its text, as an untagged one is."""
+    store, _data = _empty(language)
+    show = {"ja": "Hoshizora Kissa", "zh": "Lanterns of Qinghe"}[language]
+    src = _drive("driveA")
+    folder = os.path.join(src, "Anime", f"{show} S01")
+    for n in (1, 2, 3):
+        _write(os.path.join(folder, _AB.format(show=show, n=n)), _text(language, 4 * n))     # (4n: an .srt)
+    _write(os.path.join(folder, _AB.format(show=show, n=4)), _text(_OTHER[language], 4))      # the other language's
+    _write(os.path.join(folder, f"{show} S01E05.pl.srt"), _POLISH)
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert result["added"] == 3 and _items(store) == 3, result
+        rels = sorted(store.item(i)["rel_path"] for i in result["ids"])
+        assert rels == [f"Library/Anime/{show} S01/" + _AB.format(show=show, n=n) for n in (1, 2, 3)]
+        texts = {k: o for k, o in store.origins().items() if not o.version}
+        assert len(texts) == 3 and all(o.video_path is None for o in texts.values())    # no video: none paired
+        assert _look(store, language, root, full=True)["added"] == 0 and _items(store) == 3   # once
+
+
+@pytest.mark.usefixtures("_fresh_look")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_ab_tagged_subtitle_pairs_with_its_video_and_ours_beats_an_english_one(language):
+    """With the videos beside them: the `.ab.srt` is its video's episode (one item, the video paired, no waiting row);
+    an `.en.srt` of the same episode is still English (a language the app names) and never taken; a `.ja.srt` /
+    `.zh-Hans.srt` beside an `.ab.srt` of one episode is one item, never two."""
+    store, _data = _empty(language)
+    show = {"ja": "Hoshizora Kissa", "zh": "Lanterns of Qinghe"}[language]
+    tag = {"ja": "ja", "zh": "zh-Hans"}[language]
+    src = _drive("driveA")
+    folder = os.path.join(src, f"{show} S01", "Season 1")
+    for n in (1, 2):
+        stem = _AB.format(show=show, n=n)[:-len(".ab.srt")]
+        _video(os.path.join(folder, stem + ".mkv"), body=b"\x1a\x45\xdf\xa3 fake matroska %d " % n)
+        _write(os.path.join(folder, stem + ".ab.srt"), _text(language, 4 * n))
+        _write(os.path.join(folder, stem + ".en.srt"), _text(language, 4 * n + 1))   # its text ours: the tag holds
+    _write(os.path.join(folder, _AB.format(show=show, n=2)[:-len(".ab.srt")] + f".{tag}.srt"), _text(language, 12))
+    with store:
+        root = store.add_source(src)
+        result = _look(store, language, root, first=True)
+        assert result["added"] == 2 and result["waiting"] == 0 and _items(store) == 2, result
+        texts = {k: o for k, o in store.origins().items() if not o.version}
+        assert sorted(os.path.basename(o.video_path or "") for o in texts.values()) == \
+            [_AB.format(show=show, n=n)[:-len(".ab.srt")] + ".mkv" for n in (1, 2)]
+        assert not any(o.origin.endswith(".en.srt") for o in store.origins().values())

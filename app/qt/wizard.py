@@ -2103,10 +2103,10 @@ class CardsPage(_Page):
             name = (fix or {}).get("say") or S.MINER_MISSING
             sub = (fix or {}).get("do") or ""
             dot = "warn"
-        update = bool((fix or {}).get("update")) and not ready      # before 3.7: the update first (option A)
+        update = bool((fix or {}).get("update")) and not ready      # Surasura's update is the fix: its button
         sub, path = _split_path(sub)
-        by_hand = update or bool(path)                    # the steps go under the buttons, the path on its own line
-        if update:
+        by_hand = bool(path)                              # the steps go under the buttons, the path on its own line
+        if update and path:                               # before 3.7: the update first (option A), its profile by hand
             name = S.MINER_UPDATE_FIRST
             sub = f"{S.MINER_BY_HAND}\n{sub}" if sub else ""
         _set_text(self.name, _breakable(name))            # (neither is selected: a path in them may break)
@@ -3099,7 +3099,7 @@ class SetupWizard(QWidget):
             if answer[0] != "busy":         # busy: the choice stays for the next press (intent keeper)
                 page.show_ask(answer[1] if answer[0] == "ask" and language == self.language else None)
             detail = answer[1] if isinstance(answer[1], str) else (answer[1] or {}).get("said") or ""
-            if answer[0] in ("set-up", "ask") and detail:
+            if answer[0] in ("set-up", "ask", "busy") and detail:      # busy: what it set before (review)
                 detail = " " + detail
             self.say(S.SETUP_SAID.get(answer[0], "").format(detail=detail))
             self.look_miner()

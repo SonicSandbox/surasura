@@ -538,3 +538,26 @@ def test_review_a_press_refused_after_it_was_drawn_says_why_and_the_inset_never_
     assert not tray.bring_back_kept()
     why = settings_sources.why_not(win)
     assert said == [why] and not tray.bring_back.isEnabled() and store.removed()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_alpha5_one_remove_of_many_titles_is_one_line_its_put_back_and_tip_speak_of_them(real, language,
+                                                                                       monkeypatch):
+    # Mado's ask: `title` None + `titles` n -> *120 titles* over *1,386 files · 12 days left*; Put back's tip and
+    # toast say "they"; a single title as before
+    _store, win, _writer = real(language)
+    w = _open_removed(win)
+    many = {"trash_ids": list(range(1, 1387)), "title": None, "titles": 120, "removed_at": "2026-10-28T10:00:00",
+            "days_left": 12, "count": 1386, "can_return": True, "roots": []}
+    one = dict(_entries(language, 1)[0], titles=1, removed_at="2026-10-27T10:00:00")
+    w._show([many, one])
+    assert wait_until(w.settled, 5)
+    lines = [w.lines[k] for k in w.order]
+    assert [(ln.title.text(), ln.detail.text()) for ln in lines] == [
+        ("120 titles", "1,386 files · 12 days left"), (one["title"], "1 file · 30 days left")]
+    assert lines[0].tip == strings.REMOVED_PUT_BACK_TIP_MANY.format(title="120 titles")
+    assert lines[1].tip == strings.REMOVED_PUT_BACK_TIP.format(title=one["title"])
+    said = []
+    monkeypatch.setattr(removed, "give_back", lambda _shell, ids, text, told=None: said.append((len(ids), text)) or 1)
+    w.put_back(lines[0].key)
+    assert said == [(1386, "120 titles are back in your library")]

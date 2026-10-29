@@ -123,6 +123,7 @@ class Services:
         # duties (given: a test's); never one of `has_duties`' four
         self.replan = replan
         self._replan_wired = False
+        self._generate_wired = False            # a6: the controller's end heard once (`_generate_ended`)
         self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
         #                                         window's drag controller's: a press waiting for its re-order ends
         #                                         with some
@@ -193,7 +194,24 @@ class Services:
                 state = controller.state()
                 return state.message if state.state == generate_module.FAILED else None
             providers.update(update=updates.failure, generate=generate_failure)
+        on_end = getattr(self.controller, "on_end", None)
+        if on_end is not None and not self._generate_wired:
+            self._generate_wired = True
+            on_end(self._generate_ended)
         self._wire_replan()
+
+    def _generate_ended(self, _run, outcome):
+        """(The run's thread.) a6: a Generate that finished wrote a new plan, and nothing else tells the numbers so —
+        they re-read it only when the order moves (`moves.open_library`), and a Generate moves no order: Current's rows
+        kept *not analysed yet* until the next move. Any Generate — the user's, the automatic one, the keeper's."""
+        if outcome != "current" or self.closing.is_set():
+            return
+        resync = getattr(getattr(self.writer, "numbers", None), "resync", None)
+        if resync is not None:
+            try:
+                resync()
+            except Exception as e:
+                applog.log("shell", f"the numbers after a Generate: {e!r}")
 
     # --- W3.5 row 7: the re-order host and the journey keeper (`app/services/replan_host.py`) -------------------- #
     def _wire_replan(self):

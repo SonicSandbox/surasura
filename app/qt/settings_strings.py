@@ -6,6 +6,7 @@ mock's words carry a meaning 2.4 changed (A5: the one-kanji words, Junban's unli
 voice. A tooltip is 2.4's own where 2.4 had one, else the help line. Help is one line, never an essay; no fixed seed
 numbers (N5). `app/qt/settings_catalog.py` names each row's strings by its row id.
 """
+from app.practice import NAME as PRACTICE_NAME       # the practice chat's name (A6): one place, app/practice.py
 
 # --- the page ----------------------------------------------------------------------------------------------------- #
 SEARCH_PLACEHOLDER = "Search settings"
@@ -407,12 +408,17 @@ ROWS = {
                    "Anki Miner's state, and what it still needs", "anki miner install setup"),
     "hato": ("hato", "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),
-    "practice_ai": ("Practise with your AI",
+    "practice_ai": (f"{PRACTICE_NAME} — practise with your AI",
                     "Your AI app runs Surasura on this computer. What Surasura tells it (your known words, your "
-                    "list's next words, lines from your library) goes to that AI's company, as anything you type "
-                    "there does. Nothing else leaves.",
+                    "list's next words, lines from your library, what you kept from past rounds) goes to that AI's "
+                    "company, as anything you type there does. Nothing else leaves.",
                     "Copy the setup for your AI app, then paste it to your AI",
-                    "practice practise ai claude codex desktop mcp chat tutor copy setup"),
+                    "piyo ぴよ practice practise ai claude codex desktop mcp chat tutor copy setup"),
+    "practice_keep_rounds": ("Keep practice rounds",
+                             "Your rounds stay on this computer so you can do one again, and what you ask your AI to "
+                             "keep comes back in later rounds. Off: nothing is kept",
+                             "Keep each practice round in your User Files, to do again and to build on",
+                             "practice rounds keep save again history context ai"),
     "jimaku": ("jimaku", "Subtitles for anime. Its key will come from hato", "jimaku's key, through hato",
                "jimaku key api subtitles"),
     "anilist": ("AniList", "Brings the shows on your AniList into New arrivals, and fetches their subtitles. Never video",
@@ -638,7 +644,7 @@ MINER_STEP_1 = "1. In Anki Miner: Manage profiles… → New, and name it Surasu
 MINER_STEP_2 = "2. In that profile's Settings: Whitelist → choose file, and pick this file:"
 MINER_STEP_BOLD = "Also turn on Bold the word in the sentence."
 MINER_PATH_NAME = "The whitelist file's path"
-# A6: the practice server's Copy buttons (Connections' *Practise with your AI*), one per AI app (mcp_server.APPS)
+# A6: the practice server's Copy buttons (Connections' *Piyo ぴよ — practise with your AI*), one per AI app (mcp_server.APPS)
 PRACTICE_APPS = {"claude-code": "Claude Code", "codex": "Codex", "claude-desktop": "Claude Desktop"}
 PRACTICE_COPY_TIP = ("Copies the setup for {app}: paste it to {app} (it runs it for you), or follow it yourself")
 PRACTICE_COPIED = "Copied"

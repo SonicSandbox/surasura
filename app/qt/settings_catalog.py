@@ -313,6 +313,7 @@ ROWS = (
     # Connections (docked)
     _row("anki_miner", "connect", "custom", ("connect_anki_miner_path",)),                   # P8: Anki Miner's card
     _row("practice_ai", "connect", "custom"),                  # A6 (H9): Copy, per AI app, for the practice server
+    _row("practice_keep_rounds", "connect", "toggle", ("practice_keep_rounds",), sub=True),   # A6: saved rounds
     _row("hato", "connect", "status", group="houseki"),
     _row("jimaku", "connect", "status", when=_never),          # row 13: hidden until hato hands its key over
     _row("anilist", "connect", "status", when=_never),         # row 13: hidden until AniList's import is built

@@ -119,6 +119,10 @@ DEFAULT_SETTINGS = {
     # Show covers (the setup wizard's *Your shows* page, G1.2-19 / C1): on only by the user's own yes there — each show's
     # name is sent to AniList or TMDB for its cover. Off by default (and *Skip* writes nothing). Never in a signature.
     "covers_download": False,
+    # Keep practice rounds (A6, H9; Settings → Connections; app/practice_rounds.py): the practice server keeps each round
+    # in User Files/<lang>/practice/ so the learner can do it again, and what they ask to keep is read back to later
+    # rounds. On by default (PROVISIONAL A6P-6): nothing leaves; off, nothing is saved or read back. Never in a signature.
+    "practice_keep_rounds": True,
     # The version whose setup pages the learner has seen (the setup wizard, WZ-8): "" never — a profile set up in 2.x
     # sees 3.0's wizard once. Never in a signature.
     "setup_seen": "",

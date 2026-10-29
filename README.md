@@ -8,24 +8,45 @@
 
 **The only frequency list that matters is the one made from your own shows and books.**
 
+**Point it at your content folder. It works out the rest:** series, books, episodes, covers and order.
+
 </div>
 
-<!-- DEMO: the GIF goes here, with "Full demo (MP4)" under it -->
+<div align="center">
 
-![Surasura: your library in the order you'll watch and read it](docs/assets/images/readme/current.png)
+![Surasura 3.0: three episodes checked off, Mine, a new show placed from New arrivals, a show moved to Goal](docs/assets/images/readme/demo.gif)
+
+[▶ Full demo (MP4, 40 s)](docs/assets/images/readme/demo.mp4)
+
+</div>
 
 ## What it does
 
 | Your library, in your order | The words worth learning next |
 | :---: | :---: |
 | ![Current: Up Next with its cover, % known and new words](docs/assets/images/readme/current.png) | ![The journey: each episode's new words with a sentence from it](docs/assets/images/readme/journey.png) |
-| Each row is a show or a book. **% known** and **new words** are worked out from your own known words. | Every episode or chapter gets its own short list, in the order that pays off, with a sentence from your library for each word. |
-| ![New arrivals: new books and episodes, waiting to be placed](docs/assets/images/readme/arrivals.png) | ![Settings › Connections: Anki Miner and Piyo, practise with your AI](docs/assets/images/readme/settings-connect.png) |
-| New episodes and books **arrive by themselves**. ↑ puts one in your order. | **Connect** makes the cards (with Anki Miner). **Piyo ぴよ** lets you practise with your own AI. |
+| Each row is a show or a book. **% known** and **new words** are worked out from your own known words. | The words that open up the most of your shows and books, episode by episode, each with a sentence from your library. |
+| ![New arrivals: new shows and episodes, with their covers, waiting to be placed](docs/assets/images/readme/arrivals.png) | ![Mine: the episode's cards come next](docs/assets/images/readme/mine.png) |
+| New episodes and books **arrive by themselves**. ↑ puts one in your order. | **Mine** makes the cards with Anki Miner, and Anki shows them in your order. |
+
+**Also:** **Piyo ぴよ** lets you practise with your own AI app, on your own words.
+
+## What it reads
+
+| 📺 Subtitles | 📖 Books | 🎧 Audiobooks | ▶️ YouTube · bilibili | 📝 Text | 🗂️ Anki decks |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| `.srt` `.ass` `.ssa`, named the way releases name them (`.ja`, `.ab`, `[jpn]`…) | EPUB, split by chapter | `.m4b` `.mp3` `.m4a`… with their transcript, joined to their book when there is one | A video's subtitles, from its link | `.txt` `.md`, or pasted | A deck's sentences (`.apkg`) |
+
+Japanese and Chinese.
+
+| A book opens by chapter |
+| :---: |
+| ![A book opened by chapter: each chapter's % known and new words; 🎧 its audiobook joined to it](docs/assets/images/readme/book-chapters.png) |
 
 ## Get started
 
-1. **Point it at your folders.** Shows, books (EPUB) and audiobooks are read where they are. Nothing is moved.
+1. **Point it at your content folder.** It finds your shows, books (EPUB) and audiobooks where they are, and works out
+   their series, episodes and order. Nothing is moved. Covers come from AniList when you turn on *Download covers*.
 2. **Tell it what you know.** Your Anki deck, Jiten, Migaku, or a known-words file.
 3. **Watch and read in order.** Surasura picks each episode's new words; Anki Miner can make the cards for you.
 

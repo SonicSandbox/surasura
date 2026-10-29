@@ -861,7 +861,8 @@ def _empty_the_folder(data_dir, user_files_dir):
     for name in os.listdir(data_dir):
         full = os.path.join(data_dir, name)
         shutil.rmtree(full) if os.path.isdir(full) else os.remove(full)
-    os.remove(ls.manifest_path(user_files_dir))
+    if os.path.exists(ls.manifest_path(user_files_dir)):
+        os.remove(ls.manifest_path(user_files_dir))
     os.makedirs(os.path.join(data_dir, ls.CONTENT_FOLDER))                 # an empty folder made again holds no file
 
 
@@ -888,11 +889,17 @@ def test_a5k2_the_first_look_after_the_folder_was_emptied_notes_it_before_any_co
         assert note is not None and note["files"] == files and note["at"]
         assert at_start[0] == (note, versions)                # noted as the look starts, no version moved by it
         assert result["restored"] >= 1                                       # the look put copies back after it
-        assert store.note_emptied() is None                                  # (files there now; noted already)
+        assert store.note_emptied() is None                                  # (files there now)
         _look(store, language, root, full=True)
         _new_run()
         _look(store, language, root)
-        assert store.emptied() == note                                       # once: never noted again over it
+        assert store.emptied() == note                  # the folder filled again: the same note, its card waits
+        _empty_the_folder(data_dir, user_files_dir)                          # emptied again, weeks later
+        store.sync_disk()
+        _new_run()
+        _look(store, language, root)
+        again = store.emptied()
+        assert again["at"] > note["at"]                 # a new note: its card asked again (even after Keep)
         assert ls.export_copy(store) or True
         with open(ls.manifest_path(user_files_dir), encoding="utf-8") as f:
             assert ls.FOLDER_EMPTIED not in f.read()                         # never in the JSON copy
@@ -964,3 +971,60 @@ def test_a5k2_the_windows_reader_hands_the_note_to_needs_you_and_drops_it_with_a
         assert reader.emptied() is None
     finally:
         reader.stop()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_a_folder_that_cant_be_read_is_never_called_emptied(language, monkeypatch):
+    """On a doubt it holds files: a folder the walk can't read (access denied, a drive behind it gone) is never asked
+    to start fresh."""
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        real_walk = os.walk
+
+        def denied(path, onerror=None, **kw):
+            if onerror is not None:
+                onerror(PermissionError(13, "Access is denied", path))
+            return real_walk(path, onerror=onerror, **kw)
+        monkeypatch.setattr(ls.os, "walk", denied)
+        assert store.note_emptied() is None and store.emptied() is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a junction is Windows' folder link")
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_a_library_folder_linked_to_an_unplugged_drive_is_never_called_emptied(language, tmp_path):
+    """`Library/` a junction to a drive that is unplugged (its target gone): no file can be listed, yet nothing was
+    emptied — never asked."""
+    import _winapi
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        target = tmp_path / "unplugged"
+        lib = os.path.join(data_dir, ls.CONTENT_FOLDER)
+        shutil.move(lib, str(target))
+        for name in os.listdir(data_dir):
+            full = os.path.join(data_dir, name)
+            shutil.rmtree(full) if os.path.isdir(full) else os.remove(full)
+        _winapi.CreateJunction(str(target), lib)
+        shutil.rmtree(str(target))                                           # the drive unplugged
+        assert store.note_emptied() is None and store.emptied() is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_a_check_the_busy_store_refused_is_tried_again_at_the_next_look(language, monkeypatch):
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        _empty_the_folder(data_dir, user_files_dir)
+        _new_run()
+        real = ls.Store.note_emptied
+        calls = []
+
+        def busy_once(self):
+            calls.append(1)
+            if len(calls) == 1:
+                raise ls.StoreBusy("the library is busy")
+            return real(self)
+        monkeypatch.setattr(ls.Store, "note_emptied", busy_once)
+        _look(store, language, root, stop=lambda: True)                      # (stopped at once: nothing put back)
+        _look(store, language, root)
+        assert len(calls) == 2 and store.emptied() is not None
+        _look(store, language, root)
+        assert len(calls) == 2                                               # once it ran: not again this run

@@ -9021,13 +9021,13 @@ FOLDER_EMPTIED = "folder_emptied"
 def _store_note_emptied(self):
     """The library folder holds none of this record's files — not one top folder its items' copies live in (`Library/`,
     a 2.x tier's folder) holds a file, nor is a loose one there (a waiting video, which has no file, never counts): noted
-    in meta `folder_emptied` {"at", "files"} -> the files counted, or None (files there, an empty record, noted
-    already). A bookkeeping write (no version moves; never in the JSON copy); *Start fresh*'s fresh meta drops it."""
+    in meta `folder_emptied` {"at", "files"} -> the files counted, or None (files there, an empty record). Asked at each
+    run's first look: a note stays while the folder fills again (the card waits for its answer), and an emptying found
+    later is a new note — a new `at`, so a card asked again even after *Keep my old library*. A bookkeeping write (no
+    version moves; never in the JSON copy); *Start fresh*'s fresh meta drops it."""
     with self._reading():
-        if self.conn.execute("SELECT 1 FROM meta WHERE key = ?", (FOLDER_EMPTIED,)).fetchone():
-            return None
         rels = [r[0] for r in self.conn.execute("SELECT rel_path FROM items WHERE availability != 'waiting'")]
-    tops = {str(rel).split("/", 1)[0] for rel in rels if rel}
+    tops = {_strip(str(rel)).split("/", 1)[0] for rel in rels if rel}
     if not tops or any(_holds_a_file(os.path.join(self.data_dir, top)) for top in tops):
         return None
     self.bookkeeping({FOLDER_EMPTIED: _dumps({"at": _now(), "files": len(rels)})})
@@ -9036,12 +9036,21 @@ def _store_note_emptied(self):
 
 def _holds_a_file(path):
     """Is `path` a file, or a folder with a file anywhere under it (an empty `Library/` made again holds none)? The
-    walk stops at the first file."""
-    if os.path.isfile(path):
+    walk stops at the first file. On a doubt it holds one — a folder that can't be read, a link (a drive behind it
+    may only be unplugged): never asked to start fresh for an offline drive."""
+    if os.path.islink(path) or os.path.isfile(path):
         return True
-    for _folder, _dirs, files in os.walk(path):
-        if files:
-            return True
+    if not os.path.lexists(path):
+        return False
+
+    def unreadable(error):
+        raise error
+    try:
+        for folder, dirs, files in os.walk(path, onerror=unreadable):
+            if files or any(os.path.islink(os.path.join(folder, d)) for d in dirs):
+                return True
+    except OSError:
+        return True
     return False
 
 

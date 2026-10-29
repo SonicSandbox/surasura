@@ -199,9 +199,9 @@ def scan(store, language, root, first=False, progress=None, stop=None, full=Fals
         _RUNNING.add(key)
     try:
         if key not in _EMPTIED:                 # A5K-2: before this run's first look puts any copy back (item 8a)
-            _EMPTIED.add(key)
             try:
                 store.note_emptied()
+                _EMPTIED.add(key)               # (a check that failed — the store busy — is tried at the next look)
             except Exception as e:              # (never in the look's way: the card just isn't asked)
                 print(f"Sources: the library folder couldn't be checked: {e!r}")
         return _Look(store, language, root, first, progress, stop, full, rules, copying).run()

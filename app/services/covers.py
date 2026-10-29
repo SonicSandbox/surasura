@@ -28,12 +28,13 @@ decodes an image for the screen (Q6 does, off the window's thread).
   read, so nothing downloads (N4); a broken or non-image file is passed over (the next candidate, else the generated
   cover stays). A store that can't be written reads nothing (E4).
 - **`originals(store, work_ids=None)`** (a worker's read: the scan's, the online fetcher's) -> {work id: (its own
-  folders, its own EPUBs)} from the store's origin records: one read of the records, then one indexed look per folder
-  for another work's file. Own EPUBs: those its parts were read from. Own folders: those holding a file a source look
-  read for it (+ Add's, Extract's and a drop's files came from wherever: their folders are no work's), and one up from a
-  season folder, only where no other work's file sits (a library folder's loose files have no one cover). A look's
-  originals count while their source is read (never after *Stop reading*) and its folder is there (one check per
-  source: an unplugged drive costs one look). Nothing is ever written there.
+  folders, its own EPUBs, away)} from the store's live origin records: one read of the records, then one indexed key
+  range per folder for another work's file. Own EPUBs: those its parts were read from. Own folders: those holding an
+  original under a source folder being read (+ Add's, Extract's and a drop's files from elsewhere came from wherever:
+  their folders are no work's), and one up from a season folder — never up into the source's own folder — only where
+  no other work's file sits (a library folder's loose files, a shared *OVA* folder, have no one cover). An original under a source stopped (*Stop reading*)
+  or not there (an unplugged drive: one check per source) gives nothing, and a cover already recorded beside it is
+  kept until it is back (`away`). Nothing is ever written there.
 - **`keep_epub_cover(language, work_id, epub_path, writer)`**: the same for a book at its import (Extract's door: the
   EPUB is read where the user keeps it; the library holds only its parts), a background cover too.
 - **`keep_user_image(language, work_id, source_path, writer, current=None)`** (IK-7: *Choose an image…*): the user's image
@@ -48,7 +49,6 @@ import hashlib
 import json
 import os
 import posixpath
-import re
 import zipfile
 from collections import namedtuple
 from urllib.parse import unquote
@@ -67,8 +67,8 @@ _PLACEHOLDER = 0x1000 | 0x40000 | 0x400000      # OFFLINE · RECALL_ON_OPEN · R
 _REPLACEABLE = (None, "generated")              # a cover the scan may write over (unlocked)
 PACE_S = 0.1                    # the scan asks `cancel` this often while it waits for the writer's queue to empty
 
-Work = namedtuple("Work", "id rel_paths cover_source cover_ref cover_path cover_locked own_folders own_books",
-                  defaults=((), ()))    # own_*: `originals`' absolute folders beside its originals, and its EPUBs
+Work = namedtuple("Work", "id rel_paths cover_source cover_ref cover_path cover_locked own_folders own_books own_away",
+                  defaults=((), (), False))     # own_*: `originals` — the folders beside its originals, its EPUBs, away
 
 
 def works_from(items, works, own=None):
@@ -84,72 +84,75 @@ def works_from(items, works, own=None):
     for w in (works.values() if isinstance(works, dict) else works):
         if w["id"] in rels or w["id"] in own:
             out.append(Work(w["id"], tuple(rels.get(w["id"], ())), w.get("cover_source"), w.get("cover_ref"),
-                            w.get("cover_path"), bool(w.get("cover_locked")), *own.get(w["id"], ((), ()))))
+                            w.get("cover_path"), bool(w.get("cover_locked")), *own.get(w["id"], ((), (), False))))
     return out
 
 
 # --- a work's originals (Hon a6: a folder read where it is) ------------------------------------------------------- #
-_BOOK_PART = re.compile(r"(?i)(\.epub)#\d+$")    # an EPUB's part's origin (`<book>.epub#3`): the book
-_LIVE = ("(CASE WHEN json_valid(p.pairing) AND json_type(p.pairing) = 'object' THEN "
-         "json_extract(p.pairing, '$.moved_to') END) IS NULL")      # an origin whose file moved names no folder (D5)
-
-
 def originals(store, work_ids=None):
-    """{work id: (own folders, own books)} from the store's origin records (`work_ids`: those works only), read
-    through `store` (this thread's handle) in one read transaction (the module's docstring: which folders, which
-    books). Another version's record (LM1b) and one whose file moved (D5) name nothing."""
-    from app.library_store import _ORIGIN_ROW, _VERSION_ROW, SOURCE_KEY
-    field = lambda name: (f"CASE WHEN json_valid(p.pairing) AND json_type(p.pairing) = 'object' THEN "  # noqa: E731
-                          f"json_extract(p.pairing, '$.{name}') END")
-    sql = (f"SELECT i.work_id, p.content_key, {field('origin')}, {field('root')} FROM pairings p JOIN items i ON "
-           f"i.id = p.item_id WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND {_LIVE} AND i.work_id IS NOT NULL")
+    """{work id: (own folders, own books, away)} from the store's live origin records (`library_store._LIVE_ORIGIN`:
+    no other version, no moved file; `work_ids`: those works only), read through `store` (this thread's handle). An
+    origin is read by the innermost source folder that holds it and is read (the store's rule): a source's folders are
+    checked once each, outside the read; `away` — an original under a source stopped or not there (an unplugged drive)
+    — keeps a cover recorded beside it (`_replaceable`)."""
+    from app.library_store import _EPUB_PART, _LIVE_ORIGIN, _folder_prefix
+    with store._reading():
+        roots = store.conn.execute("SELECT path, kind FROM roots WHERE kind IN ('source', 'source-off') AND "
+                                   "path IS NOT NULL").fetchall()
+    sources = [(_folder_prefix(p)[0], kind == "source" and os.path.isdir(p)) for p, kind in roots]
+    tops = {prefix for prefix, _read in sources}
+    origin = ("CASE WHEN json_valid(p.pairing) AND json_type(p.pairing) = 'object' THEN "
+              "json_extract(p.pairing, '$.origin') END")
+    sql = (f"SELECT i.work_id, p.content_key, {origin} FROM pairings p JOIN items i ON i.id = p.item_id WHERE "
+           f"{_LIVE_ORIGIN} AND i.work_id IS NOT NULL")
     params = ()
     if work_ids is not None:
         sql += " AND i.work_id IN (SELECT value FROM json_each(?))"
         params = (json.dumps(sorted({int(w) for w in work_ids if w is not None})),)
     with store._reading():
         rows = store.conn.execute(sql + " ORDER BY i.ord, i.id, p.content_key", params).fetchall()
-        live = {r[0]: r[1] for r in store.conn.execute("SELECT id, path FROM roots WHERE kind = 'source'")}
-        there, books, folders = {}, {}, {}
-        for work, key, origin, root in rows:
-            if not isinstance(origin, str) or not os.path.isabs(origin):
+        books, folders, away = {}, {}, set()
+        for work, key, path in rows:
+            if not isinstance(path, str) or not os.path.isabs(path):
                 continue
-            if root is not None:                    # a look's: only while its source is read and there
-                if root not in there:
-                    there[root] = bool(live.get(root)) and os.path.isdir(live[root])
-                if not there[root]:
-                    continue
-            book = _BOOK_PART.sub(r"\1", origin)
-            if book != origin and book not in books.setdefault(work, []):
-                books[work].append(book)
-            at = (os.path.dirname(origin), key[len(SOURCE_KEY):].rsplit("/", 1)[0])
-            if root is not None and at not in folders.setdefault(work, []):
-                folders[work].append(at)       # + Add's, Extract's, a drop's file came from wherever: no folder
-        held, out = {}, {}                          # held: folder key -> the works with an origin directly in it
-        for work in set(books) | set(folders):
+            held = [read for prefix, read in sources if key.startswith(prefix)]
+            if held and not any(held):
+                away.add(work)                      # stopped, or its folder not there: nothing read there
+                continue
+            if _EPUB_PART.search(path):
+                book = path.rsplit("#", 1)[0]
+                if book not in books.setdefault(work, []):
+                    books[work].append(book)
+            if held and os.path.dirname(path) not in folders.setdefault(work, []):
+                folders[work].append(os.path.dirname(path))     # + Add's, Extract's, a drop's from elsewhere: none
+        shared, out = {}, {}                        # shared: a folder's key range -> the works with a file directly in it
+        for work in set(books) | set(folders) | away:
             own = []
-            for path, fkey in folders.get(work, ()):
+            for path in folders.get(work, ()):
                 up = os.path.dirname(path)
-                above = season_folder(os.path.basename(path)) is not None and up != path
-                for at, k in ((path, fkey),) + (((up, fkey.rsplit("/", 1)[0]),) if above else ()):
-                    if at in own:
+                for at in (path, up if season_folder(os.path.basename(path)) is not None and up != path else None):
+                    if at is None or at in own:
                         continue
-                    if k not in held:
-                        held[k] = _works_in(store, k)
-                    if held[k] <= {work}:
-                        own.append(at)
-            out[work] = (tuple(own), tuple(books.get(work, ())))
+                    span = _folder_prefix(at)
+                    if at is up and span[0] in tops:
+                        break                       # never up into a source's own folder (a tier's, in the library)
+                    if span not in shared:
+                        shared[span] = _works_in(store, *span)
+                    if not shared[span] <= {work}:
+                        break                       # another title's files here: no one's, nor the folder above
+                    own.append(at)
+            out[work] = (tuple(own), tuple(books.get(work, ())), work in away)
     return out
 
 
-def _works_in(store, folder_key):
-    """The works with an origin directly in this folder (its path key): one indexed range of the records' keys."""
-    from app.library_store import _ORIGIN_ROW, SOURCE_KEY
-    lo = SOURCE_KEY + folder_key + "/"
+def _works_in(store, lo, hi):
+    """The works with a live origin directly in the folder whose key range is [lo, hi) (`library_store._folder_prefix`):
+    one indexed range read of the records' keys, never the rest."""
+    from app.library_store import _MOVED_ROW, _VERSION_ROW
     return {r[0] for r in store.conn.execute(
-        f"SELECT DISTINCT i.work_id FROM pairings p JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW} AND "
-        f"p.content_key >= ? AND p.content_key < ? AND instr(substr(p.content_key, ?), '/') = 0 AND {_LIVE}",
-        (lo, lo[:-1] + "0", len(lo) + 1))}
+        f"SELECT DISTINCT i.work_id FROM pairings p JOIN items i ON i.id = p.item_id WHERE p.content_key >= ? AND "
+        f"p.content_key < ? AND instr(substr(p.content_key, ?), '/') = 0 AND NOT {_VERSION_ROW} AND NOT {_MOVED_ROW} "
+        f"AND i.work_id IS NOT NULL", (lo, hi, len(lo) + 1))}
 
 
 # --- what an image is (no decoder: its header and its end) ------------------------------------------------------- #
@@ -411,6 +414,8 @@ def _replaceable(language, data_dir, work, ref):
         return False
     if work.cover_source in _REPLACEABLE + _ONLINE or work.cover_ref == ref:
         return True
+    if work.own_away and work.cover_source == "file" and os.path.isabs(work.cover_ref or ""):
+        return False                                # beside an original whose drive is away: kept till it is back
     there = image_path(language, work, data_dir)
     return there is None or not os.path.exists(there)   # a placeholder counts as there (never read)
 
@@ -489,13 +494,13 @@ def _epub_record(language, data_dir, work, ref, path=None):
 def keep_epub_cover(language, work_id, epub_path, writer, data_dir=None):
     """A book's own cover at its import (Extract's door, once its parts are in the library as `work_id`): copied into
     the cache once and recorded as the scan records it (the store refuses it over the user's lock). The EPUB may be
-    anywhere: its record's ref is its path in the data folder when it is there, else its file name. -> True when
-    handed to the writer."""
+    anywhere: its record's ref is its path in the data folder when it is there, else its own path (as the scan records
+    an original EPUB: one record for one book). -> True when handed to the writer."""
     if not writer.can_write():
         return False
     from app.library_store import library_rel
     data_dir = data_dir or path_utils.get_data_path(language)
-    ref = library_rel(data_dir, os.path.abspath(epub_path)) or os.path.basename(epub_path)
+    ref = library_rel(data_dir, os.path.abspath(epub_path)) or os.path.abspath(epub_path)
     work = Work(work_id, (), None, None, None, False)
     path = _epub_record(language, data_dir, work, ref, path=epub_path)
     return bool(path) and writer.set_cover(work_id, "file", ref=ref, path=path, auto=True) is not None

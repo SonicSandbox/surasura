@@ -64,9 +64,8 @@ Q_SEARCH = ("query ($search: String) { Page(perPage: 10) { media(search: $search
             "} } }")
 
 Want = namedtuple("Want", "id title anilist_id video_id kind media_type cover_source cover_ref cover_path cover_locked "
-                         "rel_paths own_folders own_books", defaults=((), (), ()))
-#   rel_paths: its files'; own_folders / own_books: beside its originals (`covers.originals`) — the disk is looked at
-#   first (B2)
+                         "rel_paths own_folders own_books own_away", defaults=((), (), (), False))
+#   rel_paths: its files'; own_*: beside its originals (`covers.originals`) — the disk is looked at first (B2)
 Candidate = namedtuple("Candidate", "id cover_url title year format")
 
 
@@ -103,7 +102,7 @@ def wants_from(items, works, own=None):
             kind = max(counts, key=lambda k: (counts[k], k or ""))
             out.append(Want(w["id"], w.get("title") or "", w.get("anilist_id"), videos.get(w["id"]), kind,
                             w.get("media_type"), w.get("cover_source"), w.get("cover_ref"), w.get("cover_path"),
-                            bool(w.get("cover_locked")), tuple(rels.get(w["id"], ())), *own.get(w["id"], ((), ()))))
+                            bool(w.get("cover_locked")), tuple(rels.get(w["id"], ())), *own.get(w["id"], ((), (), False))))
     return out
 
 
@@ -455,7 +454,7 @@ class Fetcher:
         if not (w.rel_paths or w.own_folders or w.own_books) or not covers._my_turn(self.writer, lambda: self._stop):
             return False
         work = covers.Work(w.id, tuple(w.rel_paths), w.cover_source, w.cover_ref, w.cover_path, w.cover_locked,
-                           tuple(w.own_folders), tuple(w.own_books))
+                           tuple(w.own_folders), tuple(w.own_books), w.own_away)
         try:
             found = covers._scan_one(self.language, self.data_dir or path_utils.get_data_path(self.language), work,
                                      self.writer)

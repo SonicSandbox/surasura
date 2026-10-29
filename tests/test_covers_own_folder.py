@@ -265,7 +265,7 @@ def test_each_folder_is_looked_at_once_however_many_episodes_it_holds(shelf, mon
     shelf.read(shelf.drive)
     calls = []
     real = C._works_in
-    monkeypatch.setattr(C, "_works_in", lambda store, key: calls.append(key) or real(store, key))
+    monkeypatch.setattr(C, "_works_in", lambda store, lo, hi: calls.append(lo) or real(store, lo, hi))
     work = shelf.work_titled(show)
     assert len(calls) == 2 and len(set(calls)) == 2, calls
     assert work.own_folders == (os.path.join(shelf.drive, show, "第2期"), os.path.join(shelf.drive, show))
@@ -289,3 +289,114 @@ def test_the_online_fetcher_looks_beside_the_originals_before_asking_anilist(she
     assert h.until(lambda: shelf.heard.rereads > before and not shelf.writer.pending())
     assert shelf.row(work.id) == ("file", art, None, 0)
     assert anilist.posts == [] and anilist.gets == []
+
+
+# --- the review's round (register §findings 1, 2, 4, 5, 8, 9) -------------------------------------------------------- #
+def test_a_folders_check_reads_only_its_own_keys_however_big_the_library(shelf):
+    """Finding 1: the check for another title's files is one key range of its folder — its cost doesn't grow with
+    the library (before the fix it read every origin: 113 s for a 60k library's scan)."""
+    show = TITLES[shelf.language][0]
+    folder = episodes(os.path.join(shelf.drive, show), show, shelf.language, n=2)
+    shelf.read(shelf.drive)
+    span = ls._folder_prefix(folder)
+    work = shelf.work_titled(show).id
+
+    def steps():
+        n = [0]
+
+        def tick():
+            n[0] += 1
+        shelf.store.conn.set_progress_handler(tick, 1)
+        try:
+            with shelf.store._reading():
+                assert C._works_in(shelf.store, *span) == {work}
+        finally:
+            shelf.store.conn.set_progress_handler(None, 1)
+        return n[0]
+    small = steps()
+    item = shelf.store.conn.execute("SELECT MIN(id) FROM items").fetchone()[0]
+    far = ls.path_key(os.path.join(shelf.drive, "とても大きな棚"))                      # 5,000 origins elsewhere
+    import sqlite3
+    raw = sqlite3.connect(shelf.store.db_path)                       # the window's handle reads only
+    with raw:
+        raw.executemany("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES "
+                        "(?, ?, '{}', '2026-10-29T00:00:00')", [(f"{ls.SOURCE_KEY}{far}/{n:05d}.srt", item)
+                                                                for n in range(5000)])
+    raw.close()
+    assert steps() <= small * 2, "the check reads the rest of the library"
+
+
+def test_art_one_up_from_a_season_or_ova_folder_two_shows_share_is_no_ones(shelf):
+    """Finding 2: `Anime/OVA/` holds two shows' specials (the look makes them one title, `Anime/OVA`): the source's own
+    folder is never the folder above a season or specials folder, so `Anime/folder.jpg` is no one's."""
+    a, b = TITLES[shelf.language]
+    anime = os.path.join(shelf.drive, "アニメ")
+    episodes(os.path.join(anime, "OVA"), a, shelf.language, n=1)
+    episodes(os.path.join(anime, "OVA"), b, shelf.language, n=1)
+    write(os.path.join(anime, "folder.jpg"), jpeg())
+    shelf.read(anime)
+    assert all(os.path.normpath(anime) not in w.own_folders for w in shelf.works())
+    assert shelf.scan() == 0
+
+
+def test_art_above_a_season_folder_another_shows_files_share_is_no_ones(shelf):
+    """Finding 2, its other half: `<show>/Season 2` also holds another title's file (a look names titles by folder,
+    so the record is written here as a store would hold it): neither the season folder nor the show's folder above it
+    is taken."""
+    import json
+    import sqlite3
+    a, b = TITLES[shelf.language]
+    top = os.path.join(shelf.drive, "アニメ")
+    season = os.path.join(top, a, "Season 2")
+    episodes(season, a, shelf.language, n=1)
+    episodes(os.path.join(top, b), b, shelf.language, n=1)
+    write(os.path.join(top, a, "poster.jpg"), jpeg())
+    root = shelf.read(top)
+    work_a, work_b = shelf.work_titled(a), shelf.work_titled(b)
+    assert os.path.join(top, a) in work_a.own_folders
+    other = shelf.store.conn.execute("SELECT MIN(id) FROM items WHERE work_id = ?", (work_b.id,)).fetchone()[0]
+    stray = os.path.join(season, f"[Grp] {b} - 09.srt")
+    raw = sqlite3.connect(shelf.store.db_path)                       # the window's handle reads only
+    with raw:
+        raw.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                    (ls.origin_key(stray), other, json.dumps({"producer": "source", "root": root, "origin": stray}),
+                     "2026-10-29T00:00:00"))
+    raw.close()
+    assert shelf.work_titled(a).own_folders == ()
+    assert shelf.scan() == 0
+
+
+def test_a_folder_read_by_an_inner_source_still_counts_when_the_outer_one_is_stopped(shelf):
+    """Finding 4: the user reads `棚`, then also `棚/<show>`, then stops `棚`: the show's folder is still read (the
+    innermost folder being read decides — the store's rule — not the source that first recorded it)."""
+    show = TITLES[shelf.language][0]
+    show_dir = os.path.join(shelf.drive, show)
+    episodes(show_dir, show, shelf.language, n=1)
+    poster = write(os.path.join(show_dir, "poster.jpg"), jpeg())
+    outer = shelf.read(shelf.drive)
+    shelf.store.add_source(show_dir)
+    assert shelf.store.stop_source(outer) is not None
+    work = shelf.work_titled(show)
+    assert work.own_folders == (show_dir,) and not work.own_away
+    assert shelf.scan() == 1 and shelf.row(work.id) == ("file", poster, None, 0)
+
+
+def test_a_poster_on_an_unplugged_drive_is_kept_never_replaced(shelf):
+    """Finding 5: the poster beside the user's episodes is recorded; the drive is unplugged and art appears in the
+    library's copy folder: the poster stays (unplugged is not deleted), and shows again once the drive is back."""
+    show = TITLES[shelf.language][0]
+    show_dir = os.path.join(shelf.drive, show)
+    episodes(show_dir, show, shelf.language, n=1)
+    poster = write(os.path.join(show_dir, "poster.jpg"), jpeg())
+    shelf.read(shelf.drive)
+    work = shelf.work_titled(show)
+    assert shelf.scan() == 1 and shelf.row(work.id)[:2] == ("file", poster)
+    write(os.path.join(shelf.data_dir, *work.rel_paths[0].split("/")[:-1], "cover.png"), png())
+    gone = shelf.drive + " (unplugged)"
+    os.rename(shelf.drive, gone)
+    try:
+        assert shelf.work_titled(show).own_away
+        assert C.scan(shelf.language, shelf.works(), shelf.writer, data_dir=shelf.data_dir) == 0
+        assert shelf.row(work.id)[:2] == ("file", poster)
+    finally:
+        os.rename(gone, shelf.drive)

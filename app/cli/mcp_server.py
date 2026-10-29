@@ -230,7 +230,7 @@ def practice_start(state, words=5, role="friend", kind="chat", source="soon", la
     rules = [
         how,
         f"You are {who}. Speak as them: {register}. Start every reply with who is speaking, e.g. 【{role}】.",
-        f"Use as many of the learner's known words as reads naturally, the newly learned ones first: {'、'.join(recent) or '(none recorded yet)'}.",
+        f"Use as many of the learner's known words as reads naturally, the ones still being learned first: {'、'.join(recent) or '(none recorded yet)'}.",
         ("At most one word the learner doesn't know in a reply, and only in a sentence where every other word is known."
          if mode == "chat" else
          "At most one word the learner doesn't know in any sentence, and new words under 3% of the reading."),
@@ -337,7 +337,7 @@ def words_tool(state, which="recent", limit=20, language=None):
         return {"language": lang, "which": which,
                 "words": [{"word": w["orth"], "reading": w["reading"], "lines": w["lines"][:LINES_PER_WORD]}
                           for w in next_words(lang, which, limit)]}
-    raise ToolError("`which` is recent (the newest known words), soon (the list's next words), latest (the words of "
+    raise ToolError("`which` is recent (the words still being learned, then the newest known), soon (the list's next words), latest (the words of "
                     "what's next in the learner's content) or mix.")
 
 
@@ -406,9 +406,9 @@ def build(state=None, warm=True, serving=False):
 
     @server.tool(annotations=reads)
     def surasura_words(which: str = "recent", limit: int = 20, language: str = "") -> dict:
-        """The learner's words. which: recent (the newest known words, newest first), soon (their list's next words),
-        latest (the next words in what they watch or read next) or mix; each list word comes with lines from their
-        library. limit: how many (1-200)."""
+        """The learner's words. which: recent (the words to practise: still being learned in Anki, the least settled
+        first, then the newest known), soon (their list's next words), latest (the next words in what they watch or
+        read next) or mix; each list word comes with lines from their library. limit: how many (1-200)."""
         return _answered(words_tool, state, which, limit, language or None)
 
     @server.tool(annotations=reads)

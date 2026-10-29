@@ -275,3 +275,86 @@ def test_only_one_word_terms_are_newly_learned_words():
     checker = _checker("ja", [TALK], recent=["駅の前で待ってる", "駅", "映画"])
     assert checker.recent_words() == ["駅", "映画"]
     assert checker.check(TALK)["recent_used"] == ["駅", "映画"]
+
+
+# --- the words a round practises first: Anki's young cards, then the newest known (A6P-3, 2026-10-29) ----------- #
+def _learner(language, known, dated=(), young=None):
+    """The learner's real files in User Files/<language>: KnownWord.json knowing `known` (undated) and `dated`
+    ((word, ISO time)), and the young cards the last Anki sync recorded (`young`: [(word, interval)]; None: no sync)."""
+    folder = get_user_files_path(language)
+    os.makedirs(folder, exist_ok=True)
+    words = [{"dictForm": w, "knownStatus": "KNOWN"} for w in known]
+    words += [{"dictForm": w, "knownStatus": "KNOWN", "hasCard": 1, "created": when} for w, when in dated]
+    with open(os.path.join(folder, "KnownWord.json"), "w", encoding="utf-8") as f:
+        json.dump({"words": words}, f, ensure_ascii=False)
+    if young is not None:
+        _young_record(language, young)
+    return folder
+
+
+def _young_record(language, young):
+    """anki_young.json as `anki_sync.sync_young` writes it (note ids: the newest note last)."""
+    from app import anki_sync
+    notes = {str(1789712080047 + n): {"word": word, "interval": ivl} for n, (word, ivl) in enumerate(young)}
+    path = os.path.join(get_user_files_path(language), anki_sync.YOUNG_FILE)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"version": anki_sync.YOUNG_VERSION, "synced_at": "2026-10-29T09:00:00", "decks": ["TheBank"],
+                   "fields": [], "notes": notes}, f, ensure_ascii=False)
+
+
+TALK_WORDS = ("今日", "は", "天気", "が", "いい", "から", "映画", "を", "見る", "に", "行く", "う", "駅", "の", "前", "で",
+              "待つ", "て", "てる", "ね", "行こう", "待ってる")
+
+
+def test_practise_terms_put_ankis_young_cards_first_the_least_settled_first_then_the_newest_known_each_once():
+    folder = _learner("ja", TALK_WORDS, dated=[("駅", "2026-10-28T09:00:00"), ("映画", "2026-10-27T10:00:00")],
+                      young=[("天気", 6), ("映画", 1), ("前", 3)])
+    known = os.path.join(folder, "KnownWord.json")
+    # 映画 is young and newly known: once, in its young place
+    assert practice.practise_terms(known, "ja") == ["映画", "前", "天気", "駅"]
+    assert practice.practise_terms(known, "ja", limit=2) == ["映画", "前"]
+
+
+def test_with_no_anki_sync_or_no_young_cards_the_newest_known_words_alone_are_practised():
+    folder = _learner("ja", TALK_WORDS, dated=[("駅", "2026-10-28T09:00:00"), ("映画", "2026-10-27T10:00:00")])
+    known = os.path.join(folder, "KnownWord.json")
+    assert practice.practise_terms(known, "ja") == ["駅", "映画"]            # never synced: no record
+    _young_record("ja", [])
+    assert practice.practise_terms(known, "ja") == ["駅", "映画"]            # every card grown mature
+    with open(os.path.join(folder, "anki_young.json"), "w", encoding="utf-8") as f:
+        f.write("{not json")
+    assert practice.practise_terms(known, "ja") == ["駅", "映画"]            # a record that can't be read
+
+
+def test_a_round_reads_the_young_cards_from_the_file_with_anki_closed_and_never_calls_anki(monkeypatch):
+    """No live Anki call in a round, no wait at its start: the checker reads the record the last sync wrote."""
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: pytest.fail("a round reached Anki"))
+    _learner("ja", TALK_WORDS, dated=[("駅", "2026-10-28T09:00:00")], young=[("天気", 2), ("映画", 0)])
+    checker = practice.Checker("ja", settings={}, library=(None, 0))
+    assert checker.recent_words() == ["映画", "天気", "駅"]
+    assert checker.check(TALK)["recent_used"] == ["映画", "天気", "駅"]
+
+
+def test_a_young_word_the_list_doesnt_count_as_known_is_never_offered_as_known():
+    """The brief tells the AI these words are known; the checker must agree, or it would fail the AI's own draft."""
+    _learner("ja", TALK_WORDS, young=[("議事録", 1), ("天気", 2)])
+    checker = practice.Checker("ja", settings={}, library=(None, 0))
+    assert checker.recent_words() == ["天気"]
+
+
+def test_a_sync_mid_session_that_changes_the_young_cards_is_picked_up_on_the_next_check():
+    _learner("ja", TALK_WORDS, young=[("天気", 2)])
+    checker = practice.Checker("ja", settings={}, library=(None, 0))
+    assert checker.recent_words() == ["天気"]
+    _young_record("ja", [("天気", 9), ("駅", 1), ("前", 4)])
+    checker.refresh()
+    assert checker.recent_words() == ["駅", "前", "天気"]
+
+
+def test_chinese_young_cards_are_practised_first_too():
+    _learner("zh", ["我们", "明天", "去", "看", "电影", "吧", "夜市"], dated=[("夜市", "2026-10-28T09:00:00")],
+             young=[("电影", 5), ("明天", 1)])
+    checker = practice.Checker("zh", settings={}, library=(None, 0))
+    assert checker.recent_words() == ["明天", "电影", "夜市"]
+    assert checker.check("我们明天去看电影吧。")["recent_used"] == ["明天", "电影"]

@@ -130,7 +130,7 @@ def _filter(value, path, dropped):
         if child == "logic" and isinstance(item, dict):
             out[key] = _filter(item, child, dropped)
         elif known(child):
-            out[key] = item
+            out[key] = _no_secrets(item)
         elif isinstance(item, dict) and path and not SECRET.search(key) and key != "_comment":
             kept = _filter(item, child, dropped)         # a block of placed settings (logic.weights: .high, .low …)
             if kept:
@@ -138,6 +138,15 @@ def _filter(value, path, dropped):
         elif key != "_comment":
             dropped.append(child)
     return out
+
+
+def _no_secrets(value):
+    """`value` with every key named like a secret left out, at any depth (a placed block is kept whole otherwise)."""
+    if isinstance(value, dict):
+        return {k: _no_secrets(v) for k, v in value.items() if not (isinstance(k, str) and SECRET.search(k))}
+    if isinstance(value, list):
+        return [_no_secrets(v) for v in value]
+    return value
 
 
 def _clean(settings):
@@ -152,10 +161,10 @@ def default_name(now=None):
 
 
 def build(settings=None, now=None):
-    """The export's dict: settings.json as the file holds it (or `settings`), secrets left out, stamped."""
+    """The export's dict: settings.json as the file holds it (or `settings`), secrets left out at any depth, stamped."""
     from app.services.settings import file_as_is
     held = file_as_is() if settings is None else settings
-    held = {k: v for k, v in held.items() if isinstance(k, str) and not SECRET.search(k)}
+    held = {k: v for k, v in _no_secrets(held).items() if isinstance(k, str)}
     loaded = settings_manager.load_settings() if settings is None else held
     return {MARK: FORMAT, "version": app_version(), "language": loaded.get("target_language") or "ja",
             "exported": (now or _now()).isoformat(timespec="seconds"), "settings": held}
@@ -178,8 +187,12 @@ def _write_json(path, data):
                 pass
 
 
-def export(path, settings=None, now=None):
-    """The settings saved to `path` -> Outcome (its message the bar's)."""
+def export(path, settings=None, now=None, service=None, flush_s=10):
+    """The settings saved to `path` -> Outcome (its message the bar's). `service` (the window's settings service): its
+    queued changes written first, so a change pressed just before is in the file (not written in time: nothing saved)."""
+    flush = getattr(service, "flush", None)
+    if flush is not None and not flush(flush_s):
+        return Outcome(False, STRINGS["busy"], path)
     try:
         _write_json(path, build(settings, now))
     except (OSError, ValueError, TypeError) as e:
@@ -258,13 +271,16 @@ def record_path():
 def apply(plan, service=None, wait=settings_manager.LOCK_WAIT, flush_s=10):
     """settings.json replaced whole by `plan`'s settings -> Outcome (`path`: the dated copy of the settings before).
     `service` (the window's settings service): its queued changes land first, then it reads the new file. Nothing is
-    written when the copy can't be made, or when another program holds the lock past `wait`."""
+    written when they don't land in `flush_s`, when the copy can't be made, or when another program holds the lock
+    past `wait`. Left (the review's limits): a change pressed in the moment between the flush and the lock still
+    lands after the import — the window restarts at once; and a version's letters are never compared (2.6.0-alpha.3
+    reads as 2.6.0): the 3.0 line's versions are numbers only."""
     from app import locks
     if plan.refused is not None or plan.settings is None:
         return Outcome(False, plan.refused or STRINGS["not_ours"])
     flush = getattr(service, "flush", None)
-    if flush is not None:
-        flush(flush_s)                            # a change pressed just before is replaced too, never written after
+    if flush is not None and not flush(flush_s):  # a change pressed just before is replaced too, never written after:
+        return Outcome(False, STRINGS["busy"])    # one still queued (the lock held elsewhere) would land on top
     try:
         held = settings_manager._settings_lock(wait)
     except locks.Busy:
@@ -285,6 +301,10 @@ def apply(plan, service=None, wait=settings_manager.LOCK_WAIT, flush_s=10):
                                     "folders": list(plan.missing)})
     except OSError as e:
         print(f"Settings import: the folders' record wasn't written: {e}")
+        try:                                      # never the last import's cards for this one's settings
+            os.remove(record_path())
+        except OSError:
+            pass
     if getattr(service, "reload", None) is not None:
         try:
             service.reload()

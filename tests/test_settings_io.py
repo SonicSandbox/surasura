@@ -275,6 +275,7 @@ def test_a_newer_shape_of_file_is_refused(export_dir):
     ('{"words_per_day": 5, "logic": {}}', "not_ours"),            # a bare settings.json: no version to judge it by
     ('{"surasura_settings": 1, "version": "2.5.0", "settings": [1]}', "not_ours"),
     ('{"surasura_settings": 1, "settings": {"words_per_day": 5}}', "no_version"),
+    ('{"version": "2.5.0", "settings": {"words_per_day": 5}}', "not_ours"),        # its shape, but not our mark
     ('{"surasura_settings": 1, "version": "latest", "settings": {}}', "no_version")])
 def test_a_file_that_isnt_a_settings_export_is_refused(text, why, export_dir):
     plan = settings_io.read(_write(export_dir / "s.json", text))
@@ -421,3 +422,69 @@ def test_the_needs_card_key_is_one_for_a_case_or_slash_apart():
     a = needs.entries(None, settings_folders=["Z:\\Anime\\Videos"])[0]
     b = needs.entries(None, settings_folders=["z:/anime/videos"])[0]
     assert a.key == b.key
+
+
+# --- the review's round (KURA-A6S): flushed first, secrets at any depth, no stale record ---------------------------- #
+class _Stuck:
+    """A settings service whose queued change can't be written in time (the lock held by another program)."""
+    def __init__(self):
+        self.flushed = 0
+
+    def flush(self, timeout=None):
+        self.flushed += 1
+        return False
+
+
+def test_a_window_change_still_queued_after_the_wait_refuses_the_import_and_writes_nothing(ja, export_dir):
+    """Imported over a change that can't land yet, the change would land on top later: a merge. Refused instead."""
+    out = str(export_dir / "s.json")
+    _install({"target_language": "ja"})
+    settings_io.export(out)
+    path = _install(ja)
+    old = _bytes(path)
+    stuck = _Stuck()
+    outcome = settings_io.apply(settings_io.read(out), service=stuck, flush_s=0.1)
+    assert not outcome.ok and outcome.message == settings_io.STRINGS["busy"] and stuck.flushed == 1
+    assert _bytes(path) == old and _trash() == []
+
+
+def test_the_export_writes_the_windows_queued_change_first(export_dir):
+    _install({"target_language": "ja", "words_per_day": 7})
+    service = SettingsService(delay=0.5)
+    service.set({"words_per_day": 11})
+    out = str(export_dir / "s.json")
+    assert settings_io.export(out, service=service).ok
+    with open(out, encoding="utf-8") as f:
+        assert json.load(f)["settings"]["words_per_day"] == 11
+    assert not settings_io.export(str(export_dir / "t.json"), service=_Stuck(), flush_s=0.1).ok
+    assert not os.path.exists(export_dir / "t.json")
+
+
+def test_a_key_named_like_a_secret_is_left_out_at_any_depth_both_ways(export_dir):
+    _install({"placing_rules": {"hato": "top", "api_key": "sk-1"}, "logic": {"weights": {"high": 9, "token": "t"}},
+              "anki_sync_fields": {"ja": {"Word": "Expression", "password": "p"}}})
+    out = str(export_dir / "s.json")
+    settings_io.export(out)
+    text = _bytes(out).decode("utf-8")
+    assert "sk-1" not in text and '"t"' not in text and '"p"' not in text and "Expression" in text
+    plan = settings_io.read(_write(export_dir / "in.json", _stamped(settings_io.app_version(), {
+        "placing_rules": {"hato": "top", "secret": "s"}, "anki_sync_fields": [{"token": "x", "Word": "w"}]})))
+    assert plan.settings == {"placing_rules": {"hato": "top"}, "anki_sync_fields": [{"Word": "w"}]}
+
+
+def test_a_record_that_cant_be_written_takes_the_last_imports_cards_away(export_dir, monkeypatch):
+    with open(settings_io.record_path(), "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "folders": ["Z:/old import"]}, f)
+    out = str(export_dir / "s.json")
+    _install({"target_language": "ja", "connect_video_folders": ["Z:/old import"]})
+    settings_io.export(out)
+    real = settings_io._write_json
+
+    def no_record(path, data):
+        if path == settings_io.record_path():
+            raise OSError(13, "denied")
+        return real(path, data)
+    monkeypatch.setattr(settings_io, "_write_json", no_record)
+    assert settings_io.apply(settings_io.read(out, isdir=lambda p: False)).ok
+    assert not os.path.exists(settings_io.record_path())
+    assert settings_io.missing_folders(settings_manager.load_settings(), "ja") == []

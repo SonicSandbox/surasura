@@ -189,10 +189,26 @@ def test_B2_3_no_import_while_a_generate_runs_before_the_picker_or_at_the_answer
         assert wait_until(lambda: rows.asking is not None, 10)
         running[0] = True                                          # a Generate started while the card was open
         rows.asking.yes.click()
-        for _ in range(5):
-            QApplication.processEvents()
+        wait_until(lambda: False, 1.5)                             # (a worker given the import would land by now)
         assert _file() == {"target_language": "ja", "words_per_day": 2} and shell.restarts == []
         assert shell.bar_line.lines[-1] == S.SETTINGS_IMPORT_AFTER_GENERATE
+    finally:
+        _close(page)
+
+
+def test_an_import_that_fails_says_why_and_never_restarts(qapp, exported, monkeypatch):
+    def refuse(_path, move=False):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(path_utils, "backup_to_trash", refuse)
+    page, rows, shell = make()
+    try:
+        rows.open_file = lambda title: exported
+        rows.import_settings()
+        assert wait_until(lambda: rows.asking is not None, 10)
+        rows.asking.yes.click()
+        assert wait_until(lambda: any("nothing was changed" in line for line in shell.bar_line.lines), 10)
+        wait_until(lambda: False, 0.5)
+        assert shell.restarts == [] and _file() == {"target_language": "ja", "words_per_day": 2}
     finally:
         _close(page)
 

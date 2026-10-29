@@ -84,8 +84,9 @@ class SettingsFileRow(QObject):
             return None
         if not path.lower().endswith(".json"):
             path += ".json"
-        return qpress.run(self.export, f"settings:{ROW_ID}:export", settings_io.export, os.path.normpath(path),
-                          then=self._outcome, failed=self._failed, win=self.shell)
+        return qpress.run(self.export, f"settings:{ROW_ID}:export", settings_io.export, os.path.normpath(path), None,
+                          None, getattr(self.services, "settings", None), then=self._outcome, failed=self._failed,
+                          win=self.shell)
 
     def _outcome(self, outcome):
         if self.alive():

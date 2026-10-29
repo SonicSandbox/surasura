@@ -187,6 +187,13 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("soon_from"
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("group", "works", "string"),
                  defaults=tuple(Row._field_defaults.values())[:-1] + (False, (), None))
 # --- end LM11b G1
+# --- Hon a5-2 (Sonic 2026-10-28: "put the headphones in front of the title, and with the text next to it on hover"):
+# `audio`, the 🎧's hover ('' for a row with no audiobook): the window paints 🎧 before the title and shows these words
+# over it — *With its audiobook* (paired) or *Audio only* (alone), its files (how many, the first and last), its length.
+# Before `string`, which stays last
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("audio", "string"),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + ("", None))
+Arrival = namedtuple("Arrival", Arrival._fields + ("audio",), defaults=tuple(Arrival._field_defaults.values()) + ("",))
 
 
 def cover_of(work):
@@ -269,6 +276,13 @@ STRINGS = {
     "tip_with_audiobook": "🎧 With its audiobook 「{title}」 — the book's cards get its audio once Anki Miner mines "
                           "audio: nothing to do meanwhile.",
     "audiobook": "Audiobook",
+    # Hon a5-2 (lead's lean, PROVISIONAL): the 🎧 before a title, its words in its hover; an audiobook alone's quiet line
+    "audio_only": "Audio only · waits for Anki Miner",
+    "tip_audio_paired": "🎧 With its audiobook 「{title}」\n{files}\nThe book's cards get its audio once Anki Miner mines "
+                        "audio: nothing to do meanwhile.",
+    "tip_audio_alone": "🎧 Audio only 「{title}」\n{files}\nNothing to study here yet: it counts no words until Anki "
+                       "Miner gives its text.",
+    "audio_files_one": "1 file ({first})", "audio_files": "{n} files ({first} … {last})",
     "play_audio_wait": "Its audio is in your folder; it holds no words until Anki Miner gives its text",
     "arr_audio_wait": "waits for Anki Miner",
     "eps_more": " and {n} more",
@@ -688,6 +702,31 @@ def status_of(eps, word, line_n):
     return st, mark
 
 
+def audio_tip(piece):
+    """a5-2: the 🎧's hover for a row holding an audiobook's item, else '' — *With its audiobook 「…」* beside a book's
+    parts, *Audio only 「…」* alone; its files and length from the item's own summary (`audio`, the reader's, from
+    `Store.audiobook_hovers`), the title alone until it is read."""
+    from app.audiobooks import length_text
+    heard = [it for it in piece if it.get("source_type") == "audio"]
+    if not heard:
+        return ""
+    said = heard[0].get("audio") or {}
+    title = said.get("title") or heard[0].get("title") or ""
+    n = said.get("n") or 0
+    files = STRINGS["audio_files_one"].format(first=said.get("first")) if n == 1 else \
+        STRINGS["audio_files"].format(n=n, first=said.get("first"), last=said.get("last")) if n else ""
+    length = length_text(said.get("seconds"))
+    files = " · ".join(x for x in (files, length) if x)
+    tip = STRINGS["tip_audio_alone" if len(heard) == len(piece) else "tip_audio_paired"].format(title=title,
+                                                                                              files=files)
+    return tip.replace("\n\n", "\n")
+
+
+def audio_only(row):
+    """a5-2: a row of an audiobook alone — every file its audio (no stones, no word count: nothing to study yet)."""
+    return bool(getattr(row, "audio", "")) and bool(row.episodes) and all(_heard(e) for e in row.episodes)
+
+
 def _heard(e):
     """An audiobook's own waiting item (Hon, H-7) — its file an audio file, never a waiting video of an audio title."""
     from app.audiobooks import is_audio
@@ -979,9 +1018,11 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         title = work.get("title") or first.get("parent_folder") or eps[0].title
         nums = [e.number for e in eps if e.number is not None]
         heard = [it for it in piece if it.get("source_type") == "audio"]   # Hon (H-6, H-7): an audiobook's item
-        line = STRINGS["audiobook"] if len(heard) == n else range_text(media, nums, n - len(heard))
-        if heard and len(heard) < n:
-            line = f"{line} · " + STRINGS["with_audiobook"]
+        if heard and len(heard) == n and not work.get("title_by_user"):       # a5-2: alone, the 🎧 says it: its title
+            from app.audiobooks import AUDIO_MARK                            # folder's mark is never painted
+            title = title[:-len(AUDIO_MARK)] if title.endswith(AUDIO_MARK) else title
+        # a5-2: alone, its quiet line; paired, the book's own (the 🎧 before its title says the rest, `audio`)
+        line = STRINGS["audio_only"] if len(heard) == n else range_text(media, nums, n - len(heard))
     if not finished and 0 < n_watched < n and not single_video:
         line = f"{line} · " + STRINGS["watched"].format(k=n_watched, n=n)
     next_index = next((i for i, e in enumerate(eps) if not e.watched), n - 1)
@@ -990,13 +1031,13 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         title_ep = STRINGS["group_ep"].format(show=names[_show_key(piece[next_index])], label=nxt.label)
     else:
         title_ep = nxt.label if (n > 1 or media in EPISODIC) and media != "youtube" else ""
+    audio = "" if group else audio_tip(piece)            # a5-2: the 🎧's hover
     chips = ()
     more = 0
     if n > 1:
         chips = tuple(Chip(text=str(e.number) if e.number is not None else "🎧" if _heard(e)
                            else "•", watched=e.watched, next=(i == next_index), mined=bool(e.cards),
-                           tip=STRINGS["tip_with_audiobook"].format(title=e.title) if _heard(e)
-                           and e.label == STRINGS["with_audiobook"] else
+                           tip=audio if _heard(e) and audio else
                            e.label + (f" · {e.cards} cards in Anki" if e.cards else ""))
                       for i, e in enumerate(eps[:CHIPS_SHOWN]))
         more = max(0, n - CHIPS_SHOWN)
@@ -1021,7 +1062,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                accessible=accessible, description=line, chips=chips, more_chips=more, play_tip=nxt.play_tip,
                can_play=nxt.can_play, string=string, cover=cover_of(work), group=group,
                works=tuple(dict.fromkeys(it["work_id"] for it in piece if it.get("work_id") is not None)),
-               cards_out=any(it.get("in_learning_order", 1) == 0 for it in piece))     # --- W3.2 Q4
+               cards_out=any(it.get("in_learning_order", 1) == 0 for it in piece),     # --- W3.2 Q4
+               audio=audio)                                                            # a5-2
 
 
 class RowCache:
@@ -1364,7 +1406,7 @@ def _arrival(piece, works, cards, estimates, guessed):
     heard = sum(1 for e in eps if _heard(e))                        # Hon (H-7): an audiobook waits for Anki Miner
     if waiting > heard:
         parts += ((STRINGS["arr_no_subs"], "dim"),)
-    if heard:
+    if heard and heard < n:                                         # a5-2: alone, its line says it already
         parts += ((STRINGS["arr_audio_wait"], "dim"),)
     watched = all(e.watched for e in eps)
     unit = _arrival_unit(media)
@@ -1385,6 +1427,7 @@ def _arrival(piece, works, cards, estimates, guessed):
                    added_at=max((it.get("added_at") or "" for it in piece), default="") or None,
                    cover_title=row.cover_title, per_ep=per_ep, tip=tip, cover=row.cover, waiting=waiting,  # Q6, W1b
                    episodes=eps,                                                            # P4.1 WF
+                   audio=row.audio,                                                         # a5-2
                    accessible=STRINGS["acc_arrival"].format(title=row.title, line=" · ".join(t for t, _ in parts),
                                                             number=number).replace(" ·  · ", " · "))
 

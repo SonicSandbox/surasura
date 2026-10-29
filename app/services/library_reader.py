@@ -563,6 +563,7 @@ class LibraryReader:
         options_before = dict(self._options)
         before = set(self._items) if held and feed["full"] else None
         self._merge(feed)
+        self._audio_hovers(h, feed)                     # a5-2 (Hon): an audiobook's 🎧 hover, on its own row
         if held:                                        # E6: the dragged item gone meanwhile lets the drag go
             gone = [i for k, i in feed["gone"] if k == "item"] if before is None else sorted(before - set(self._items))
             if gone:
@@ -891,6 +892,25 @@ class LibraryReader:
             self._changed_ids = changed
         self._options = dict(feed.get("options") or {})
         self._seen, self._epoch = feed["version"], feed["epoch"]
+
+    def _audio_hovers(self, h, feed):
+        """a5-2 (Hon): each audiobook item's summary for its row's 🎧 hover (`Store.audiobook_hovers`: its files, the
+        first and last, its length), put on its own feed row as `audio` — read only when the feed brought an audiobook's
+        item (its record's change feeds it, `pair_audiobook`), so a row's cache keeps every other row (S19)."""
+        if feed["full"]:
+            ids = [i for i, r in self._items.items() if r.get("source_type") == "audio"]
+        else:
+            ids = [r["id"] for r in feed["items"] if r.get("source_type") == "audio"]
+        if not ids or not hasattr(h, "audiobook_hovers"):
+            return
+        try:
+            hovers = h.audiobook_hovers()
+        except Exception:
+            return
+        for i in ids:
+            r = self._items.get(i)
+            if r is not None and i in hovers:
+                r["audio"] = hovers[i]                  # the feed's new row (never one a built view holds)
 
     def _sorted_tiers(self):
         """Each tier's items in `(ord, id)` order: in full after a full read, else only the tiers something moved in."""

@@ -58,6 +58,9 @@ class NeedsWriter(FakeWriter):
     def remove(self, ids, label=None):
         return self._put("remove", ids, label)
 
+    def place(self, ids, where, label=None):
+        return self._put("place", ids, label, where=where)
+
 
 @pytest.fixture(autouse=True)
 def _stones_sheet(qapp):
@@ -914,3 +917,56 @@ def test_a3w6_the_line_comes_and_goes_with_connects_anki_wait_even_when_connects
     latest["feed"] = feed.build({"running": True, "languages": {"ja": connect}}, "ja")
     ny.connect_in(runner.NO_VIDEO)
     assert wait_until(lambda: not any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)
+
+
+# --- Michi-C (A7B-1…A7B-3): the shows behind the backlog ---------------------------------------------------------- #
+def _behind(ids, away=True):
+    shows = [{"title": "月影の旅人", "cards": 2300, "ids": list(ids), "state": "waiting"},
+             {"title": "夜市の灯", "cards": 60, "ids": [], "state": "in"}]
+    if away:
+        shows.append({"title": "海辺の約束", "cards": 40, "ids": [], "state": "away"})
+    return {"cards": 2400, "all": 2402, "id": "x", "shows": shows}
+
+
+def test_michi_c_the_shows_behind_the_backlog_are_one_card_and_add_them_places_them_at_soon_with_undo(world,
+                                                                                                    monkeypatch):
+    """2,400 new cards from three shows are ONE card (never one per show or per card); *Add them* is New arrivals' own
+    *Soon* through the window's writer (`place`), with the toast's Undo — never a second add path."""
+    seed, win, writer, ny = world()
+    arrival = ny.view.arrivals[0]
+    ids = list(arrival.item_ids)
+    monkeypatch.setattr(service, "backlog_offer", lambda lang: _behind(ids))
+    settle(ny)
+    cards = [e for e in ny.entries if e.kind == service.BACKLOG_SHOWS]
+    assert len(cards) == 1
+    entry = cards[0]
+    assert entry.title == ("2,400 of your new cards come from 3 shows; 2 are on this PC. "
+                           "Add the one that isn't in your list yet?")
+    assert entry.say == "Waiting in New arrivals: 月影の旅人 (2,300). Not on this PC: 海辺の約束 (40)."
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"add_shows", "leave_shows"}
+    assert all(b.toolTip() for b in ny.cards.buttons(entry.key))
+    button(ny, entry.key, "add_shows").click()
+    assert wait_until(lambda: any(c[0] == "place" for c in writer.calls), 5)
+    assert [c for c in writer.calls if c[0] == "place"] == [("place", ids, {"where": "soon"})]
+    assert wait_until(lambda: win.toasts.card.isVisible() and writer.saved, 5)
+    assert win.toasts.card.base == strings.NEEDS_SHOWS_ADDED_ONE
+    win.toasts.card.buttons[0].click()                         # its Undo
+    assert wait_until(lambda: writer.undone and writer.undone[-1].op == "place", 5)
+
+
+def test_michi_c_leave_them_is_kept_and_a_show_no_longer_waiting_is_never_offered(world, monkeypatch):
+    seed, win, writer, ny = world()
+    ids = list(ny.view.arrivals[0].item_ids)
+    monkeypatch.setattr(service, "backlog_offer", lambda lang: _behind([999999]))      # placed by hand since
+    settle(ny)
+    assert not [e for e in ny.entries if e.kind == service.BACKLOG_SHOWS]
+    monkeypatch.setattr(service, "backlog_offer", lambda lang: _behind(ids, away=False))
+    settle(ny)
+    entry = entry_of(ny, service.BACKLOG_SHOWS)
+    assert entry.title == ("2,400 of your new cards come from 2 shows; 2 are on this PC. "
+                           "Add the one that isn't in your list yet?")
+    button(ny, entry.key, "leave_shows").click()
+    assert wait_until(lambda: entry.key in service.read_answered("ja"), 5)
+    settle(ny)
+    assert not [e for e in ny.entries if e.kind == service.BACKLOG_SHOWS]
+    assert not [c for c in writer.calls if c[0] == "place"]

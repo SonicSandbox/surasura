@@ -216,6 +216,17 @@ def level(settings, language):
         return None, True
 
 
+def backlog_shows(language, settings, url):
+    """(A sync's thread.) The shows behind 順's deck's new cards worked out again (Michi-C, A7B-5:
+    `modules/junban/backlog_shows.refresh` — Anki read only, its fields only for notes not read before) for *Needs
+    you*'s one card. Nothing without 順 in this Surasura; never raises."""
+    try:
+        module = importlib.import_module("modules.junban.backlog_shows")
+    except Exception:
+        return None
+    return module.refresh(language, settings, url)
+
+
 class AutoSync:
     """The background known-words sync from a running Anki (`_maybe_anki_sync`), its result
     (`_on_anki_sync_result`) and Generate's read of the Anki backlog (`_maybe_backlog_sync`)."""
@@ -265,6 +276,7 @@ class AutoSync:
                 # Anki — your suspended / marked cards (laptop round 7 #43: the window's sync never read it)
                 result, _signal = anki_sync.sync_all(language, url, decks, fields, settings,
                                                      include_suspended=suspended)
+                backlog_shows(language, settings, url)     # before the bar hears it: *Needs you* reads it then
             else:
                 closed = True
         except Exception as e:

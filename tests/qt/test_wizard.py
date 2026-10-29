@@ -20,6 +20,7 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget
 
 from app.qt import press as qpress
+from app.qt import strings
 from app.qt import windows
 from app.qt import wizard as W
 from app.qt import wizard_strings as S
@@ -1593,3 +1594,70 @@ def test_check_again_paints_its_arc_before_anki_is_looked_at_until_the_answer(ma
     look = handed.at("anki_look")
     assert look.shown and look.painted >= 1 and page.btn_check.isEnabled()
     assert wait_until(lambda: not wiz._anki_looking and not arc_turning(page.btn_check))
+
+
+# --- Michi-C (A7B-1…A7B-3): the shows behind the deck's new cards, on the Card order page ----------------------------- #
+class BehindApi(FakeApi):
+    def __init__(self, record, **kw):
+        super().__init__(**kw)
+        self.record, self.asked = record, []
+
+    def backlog_shows(self, language, settings, deck):
+        self.asked.append((language, deck))
+        return self.record
+
+
+class GiveMoves:
+    def __init__(self):
+        self.given = []
+
+    def refused(self):
+        return None
+
+    def _give(self, ticket, command, toast=True):
+        self.given.append((ticket.text, command("label")))
+        return len(self.given)
+
+
+class PlaceWriter:
+    def place(self, ids, where, label=None):
+        return ("place", list(ids), where)
+
+
+BEHIND = {"cards": 2300, "all": 2300, "id": "x", "shows": [
+    {"title": "月影の旅人", "cards": 2000, "ids": [41, 42], "state": "waiting"},
+    {"title": "夜市の灯", "cards": 260, "ids": [], "state": "in"},
+    {"title": "海辺の約束", "cards": 40, "ids": [], "state": "away"}]}
+
+
+def test_michi_c_card_order_says_where_the_new_cards_came_from_and_add_them_places_the_waiting_ones(make):
+    """Setup's Card order (A7B-3): once Anki is open and a deck chosen, the page reads where the deck's new cards came
+    from (on a worker, the page's own deck) and says it in one line; *Add them* places the shows waiting in New arrivals
+    through the window's writer (New arrivals' own *Soon*, one Undo) — the one path *Needs you* uses."""
+    api = BehindApi(BEHIND)
+    wiz, shell, api, settings, _m = make(api=api)
+    shell.moves, shell.services.writer = GiveMoves(), PlaceWriter()
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: page.btn_behind.isVisible())
+    assert api.asked[-1] == ("ja", "日本語::Mining")
+    assert page.behind_line.text() == ("Your 2,300 new cards come from 3 shows; 2 are on this PC. "
+                                       "1 of them waits in New arrivals.")
+    assert page.btn_behind.toolTip() == S.BEHIND_ADD_TIP
+    QTest.mouseClick(page.btn_behind, Qt.MouseButton.LeftButton)
+    assert shell.moves.given == [(strings.NEEDS_SHOWS_ADDED_ONE, ("place", [41, 42], "soon"))]
+    assert page.behind_line.text() == S.BEHIND_ADDED and page.btn_behind.isHidden()
+
+
+def test_michi_c_card_order_with_nothing_waiting_says_so_without_a_button_and_with_no_source_says_nothing(make):
+    record = {**BEHIND, "shows": [dict(s, ids=[], state="in" if s["state"] == "waiting" else s["state"])
+                                  for s in BEHIND["shows"]]}
+    wiz, shell, api, settings, _m = make(api=BehindApi(record))
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: page.behind_line.isVisible() and page.behind_line.text() != S.BEHIND_LOOKING)
+    assert page.behind_line.text().endswith(S.BEHIND_IN) and page.btn_behind.isHidden()
+    wiz2, _shell2, _api2, _s2, _m2 = make(api=BehindApi(None))       # no Anki Miner card / Anki closed: no line
+    go_to(wiz2, "order")
+    assert wait_until(lambda: wiz2.page.behind_line.isHidden() and _api2.asked)
+    assert wiz2.page.btn_behind.isHidden()

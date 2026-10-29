@@ -480,7 +480,9 @@ def test_2_5_needs_no_new_runtime():
     # And tsubasa (T1 B), frozen into its own tsubasa.exe of the 3.0 bundle: only that program imports it.
     tsubasa = [l for l in lines if l.startswith("tsubasa-sync==")]
     assert len(tsubasa) == 1
-    assert [l for l in lines if l not in REQUIREMENTS_2_4_0 and l not in window + tsubasa] == ["zstandard"]
+    # And mcp (approved 2026-10-28, P-3) for the 3.0 practice server: only `surasura-cli mcp` imports it.
+    practice = ["mcp==2.3.0"]
+    assert [l for l in lines if l not in REQUIREMENTS_2_4_0 and l not in window + tsubasa + practice] == ["zstandard"]
     assert all(l in lines for l in REQUIREMENTS_2_4_0)
     import ast
     tree = ast.parse(open(ls.__file__, encoding="utf-8").read())

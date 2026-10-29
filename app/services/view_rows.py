@@ -298,6 +298,8 @@ STRINGS = {
     "nums": "#{a}–{b}", "videos": "{n} videos", "video": "1 video", "watched": "{k} of {n} watched",
     # a watched file set aside (Keep studying watched episodes off): the stone's tooltip and the report's panel (JS-1)
     "watched_leaves": "Watched: its words leave your list.",
+    # a6 (Sonic 2026-10-29): a run of watched parts of one show folded into one journey row (`range_text`'s range)
+    "fold_watched": "{range} watched", "fold_tip": "Watched (marked in your library): click to show each one",
     "channel_n": "{n} videos · {title}",
     "top_tip": "Everything above this line mines itself: your top {n} files",
     "top_tip_split": "Everything above this line mines itself: your top {n} files — of {title}, its first {k} of {m}",

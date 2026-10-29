@@ -537,6 +537,8 @@ class Services:
         window says so). -> False with none."""
         from app import static_html_generator as generator
         self.draw_journey()
+        if self.closing.is_set():
+            return None                                  # the window is going: no browser opened behind it
         held = file is None or generator.report_holds(file)
         opened = generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")),
                                        file=file if held else None)
@@ -544,37 +546,31 @@ class Services:
 
     def draw_journey(self, wait=JOURNEY_DRAW_WAIT):
         """(A worker.) a6 #5: the journey drawn again before it opens when the report isn't current but its analysis
-        is — a setting only the report reads changed (the theme, a Journey switch): the user's own Generate, which
-        re-renders and re-analyses nothing (seconds), waited for up to `wait`. A journey whose analysis is stale too is
-        opened as it is: a full Generate is the user's to ask (the Generate button's mark says so)."""
-        if self.closing.is_set():
-            return
-        try:
-            from app import analyzer, run_args
-            args = run_args.analyzer_args(settings_service.thaw(self.settings.get()), self.language)
-            if analyzer.report_is_current(args, self.language) \
-                    or analyzer.journey_is_current(args, self.language) is not True:
+        is — a setting only the report reads changed (the theme, a Journey switch). A Generate already in flight (the
+        keeper's re-render, the user's) is waited for first; then, still stale, the user's own Generate, which
+        re-renders and re-analyses nothing (seconds) — asked once — until no Generate runs or waits. Never longer than
+        `wait`, and never past the quit. A journey whose analysis is stale too is opened as it is: a full Generate is
+        the user's to ask (the Generate button's mark says so); with the duties not made yet (the first moments), too."""
+        from app.services import generate as generate_module
+        busy = (generate_module.QUEUED, generate_module.RUNNING, generate_module.CANCELLING)
+        deadline = time.monotonic() + wait
+        asked = False
+        while not self.closing.is_set() and self.controller is not None and time.monotonic() < deadline:
+            if self.controller.state().state in busy:
+                self.closing.wait(0.1)                   # a run in flight or waiting: its end, then look again
+                continue
+            try:
+                from app import analyzer, run_args
+                args = run_args.analyzer_args(settings_service.thaw(self.settings.get()), self.language)
+                if analyzer.report_is_current(args, self.language) \
+                        or analyzer.journey_is_current(args, self.language) is not True:
+                    return
+            except Exception as e:
+                applog.log("shell", f"journey before opening: {e}")
                 return
-        except Exception as e:
-            applog.log("shell", f"journey before opening: {e}")
-            return
-        ended, told = [], threading.Event()
-
-        def heard(run, _outcome):
-            ended.append(run)
-            told.set()
-        self.controller.on_end(heard)
-        try:
-            run = self.generate()
-            deadline = time.monotonic() + wait
-            while run is not None:
-                told.clear()
-                left = deadline - time.monotonic()
-                if run in ended or left <= 0:
-                    break
-                told.wait(left)
-        finally:
-            self.controller.unsubscribe(heard)
+            if asked or self.generate() is None:         # asked once: a run that ended and left it stale opens as is
+                return
+            asked = True
 
     def level(self):
         """(A worker.) The level chip's (band, automatic) (`automation.level`)."""

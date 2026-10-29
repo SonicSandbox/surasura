@@ -159,3 +159,98 @@ def test_journey_opens_after_a_re_render_when_only_a_report_setting_changed_and_
     t.join(10)
     assert not t.is_alive() and w.launches.count() == 1, "opened as it is: no full Generate behind a press"
     store.close()
+
+
+# --- *Journey ↗*'s wait, on a real controller (the review round: A6A-1, -2, -5, -6) ---------------------------------- #
+class _Press:
+    """`Services.draw_journey` on a real `GenerateController` whose runs are recorded, never launched (`_Launches`):
+    the report's two halves are the test's (`halves`), so each case says what the analyzer would answer."""
+
+    def __init__(self, monkeypatch, controller=True):
+        from app.services.generate import GenerateController
+        from app.services.jobs import JobRegistry
+        from tests.test_services_replan_host import _Launches
+        self.halves = {"report": False, "journey": True}
+        monkeypatch.setattr(run_args, "analyzer_args", lambda settings, language=None, **_k: ["analyzer.py"])
+        monkeypatch.setattr(analyzer, "report_is_current", lambda _a, _l: self.halves["report"])
+        monkeypatch.setattr(analyzer, "journey_is_current", lambda _a, _l: self.halves["journey"])
+        self.launches = _Launches()
+        self.controller = GenerateController(JobRegistry(), settle=0) if controller else None
+        self.services = SimpleNamespace(closing=threading.Event(), controller=self.controller, language="ja",
+                                        settings=SimpleNamespace(get=lambda: {"target_language": "ja"}),
+                                        generate=self.generate)
+        self.asked = 0
+        self.done = threading.Event()
+
+    def generate(self):
+        self.asked += 1
+        return self.controller.request("ja", argv=["analyzer.py"], launcher=self.launches)
+
+    def press(self):
+        def go():
+            shell.Services.draw_journey(self.services, wait=30)
+            self.done.set()
+        threading.Thread(target=go, daemon=True).start()
+
+    def end(self, n, report_current=True):
+        """The n-th run ends (1-based), the report as `report_current` says."""
+        assert h.until(lambda: self.launches.count() >= n, seconds=5), f"{self.launches.count()} runs, not {n}"
+        self.halves["report"] = report_current
+        self.launches.runs[n - 1].ended(0)
+
+
+def test_a_press_during_the_keepers_re_render_waits_for_it_and_asks_no_run_of_its_own(monkeypatch):
+    # A6A-6: the theme changed, the keeper's quiet run is drawing it: the press waits for that one, never a second
+    p = _Press(monkeypatch)
+    p.controller.request("ja", argv=["analyzer.py"], quiet=True, launcher=p.launches)
+    p.press()
+    assert not p.done.wait(0.5) and p.asked == 0
+    p.end(1)
+    assert p.done.wait(5) and p.asked == 0 and p.launches.count() == 1
+
+
+def test_a_generate_asked_behind_the_presss_run_is_waited_for_too_and_the_press_ends_with_it(monkeypatch):
+    # A6A-1: the press's run, then a Generate asked behind it: the press opens once no Generate runs or waits — never
+    # a minute's wait for a run the controller stopped telling about
+    p = _Press(monkeypatch)
+    p.press()
+    assert h.until(lambda: p.launches.count() == 1, seconds=5) and p.asked == 1
+    p.controller.request("ja", argv=["analyzer.py"], launcher=p.launches)       # the user's Generate, behind it
+    p.end(1, report_current=False)
+    assert not p.done.wait(0.5), "the Generate behind it still waits or runs"
+    p.end(2)
+    assert p.done.wait(5) and p.asked == 1
+
+
+def test_a_press_whose_run_is_cancelled_while_it_waits_its_turn_ends_with_it(monkeypatch):
+    # A6A-1: cancel() drops a run still waiting its turn without telling its end: the press leaves once all is idle
+    p = _Press(monkeypatch)
+    p.controller.request("ja", argv=["analyzer.py"], launcher=p.launches)       # a run in flight: the press's waits
+    p.halves["report"] = False
+    p.end(1, report_current=False)
+    p.press()
+    assert h.until(lambda: p.launches.count() == 2, seconds=5)
+    p.controller.cancel()
+    p.launches.runs[1].ended(1)
+    assert p.done.wait(5) and p.asked == 1, "asked once, then opened as it is"
+
+
+def test_the_quit_ends_the_wait_and_no_journey_opens_behind_a_closed_window(monkeypatch):
+    # A6A-2: a press, then the window closes: the wait ends at once and the browser is never asked
+    p = _Press(monkeypatch)
+    p.press()
+    assert h.until(lambda: p.launches.count() == 1, seconds=5)
+    p.services.closing.set()
+    assert p.done.wait(2)
+    from app import static_html_generator as generator
+    opened = []
+    monkeypatch.setattr(generator, "open_report", lambda **k: opened.append(k) or True)
+    p.services.draw_journey = lambda: None
+    assert shell.Services.open_journey(p.services) is None and opened == []
+
+
+def test_before_the_duties_are_made_the_journey_opens_as_it_is(monkeypatch):
+    # A6A-5: the first moments after the window shows (no controller yet): no error, no wait, nothing asked
+    p = _Press(monkeypatch, controller=False)
+    shell.Services.draw_journey(p.services, wait=5)
+    assert p.asked == 0

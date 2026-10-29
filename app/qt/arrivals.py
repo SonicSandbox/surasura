@@ -1145,11 +1145,15 @@ class TrayList(QTableView):
             a = self.tray.arrival(key) if key is not None else None
             tip = part_tip(a, part) if a is not None else None
             bubble = getattr(self.tray.win, "tooltips", None)   # a6 #3: the window's bubble, as Current's rows (it wraps
-            if tip:                                               # a long title); Qt's own on a tray with no window
+            rect = None                                           # a long title); Qt's own on a tray with no window
+            if tip:
                 parts = row_parts(self.visualRect(self.model().index(self.row_of(key), 0)))
                 rect = parts[part]
-                if part == "row":                                 # the title's words: up to the number, as Current's
+                if part == "row":                                 # the title's words: up to the number, as Current's;
                     rect = QRect(rect.left(), rect.top(), parts["text_right"] - rect.left(), rect.height())
+                    if not rect.contains(event.pos()):            # the gaps around it say nothing (no bubble that
+                        tip = None                                # blinks as the hand passes)
+            if tip:
                 if bubble is not None:
                     bubble.request(self.viewport(), rect, tip)
                 else:

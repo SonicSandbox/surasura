@@ -94,3 +94,18 @@ def test_a_click_away_still_closes_the_tray_when_no_menu_is_open(world):
     QTest.mouseClick(win.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      win.mapFromGlobal(at))
     assert wait_until(lambda: not tray.isVisible(), 3)
+
+
+def test_a_rest_in_the_gap_before_the_number_shows_no_title_bubble(world):
+    # A6A-3: only the title's words name the title; the gap before the number and the strip between rows say nothing,
+    # so the bubble never blinks on and off as the hand passes along a row
+    seed, win, _w = world()
+    tray = open_tray(win)
+    row = tray_rows(win)[0]
+    vp = tray.view.viewport()
+    parts = arrivals.row_parts(row.rect("row"))
+    gap = QPoint(parts["text_right"] + 4, row.rect("row").center().y())
+    assert tray.view.at(gap)[1] == "row"                              # the tray still calls it the row
+    QApplication.sendEvent(vp, QHelpEvent(QEvent.Type.ToolTip, gap, vp.mapToGlobal(gap)))
+    settle()
+    assert win.tooltips.showing() is None

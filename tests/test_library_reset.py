@@ -26,7 +26,7 @@ import pytest
 from app import library_store as ls
 from app import locks, sources
 from tests.test_library_store_support import LANGUAGES, library, names, pieces_ok, touch, write_manifest
-from tests.test_sources_scan import _SHOWS, _drive, _look, _text, _tree, _write
+from tests.test_sources_scan import _SHOWS, _drive, _look, _text, _tree, _video, _write
 
 
 @pytest.fixture(autouse=True)
@@ -34,9 +34,11 @@ def _fresh_module_state():
     """Each test starts as a new run of the app: no look made yet this run, no scan running."""
     sources._LOOKED.clear()
     sources._RUNNING.clear()
+    sources._EMPTIED.clear()
     yield
     sources._LOOKED.clear()
     sources._RUNNING.clear()
+    sources._EMPTIED.clear()
 
 
 class _Killed(BaseException):
@@ -843,3 +845,122 @@ def test_a_single_file_set_aside_is_copied_checked_then_its_original_is_removed(
     assert left == []
     assert dst.read_bytes() == content
     assert not src.exists(), "the checked original is removed, not left beside the library"
+
+
+# --- A5K-2 (Sonic ✅ 2026-10-28): the library folder emptied under its record ------------------------------------- #
+def _new_run():
+    """The app started again: no look made yet this run."""
+    sources._LOOKED.clear()
+    sources._RUNNING.clear()
+    sources._EMPTIED.clear()
+
+
+def _empty_the_folder(data_dir, user_files_dir):
+    """Mattias's "fresh start": Surasura's folder deleted (the data folder's every entry and the JSON copy) and unzipped
+    again in the same place — the record in the local app data folder is left as it was."""
+    for name in os.listdir(data_dir):
+        full = os.path.join(data_dir, name)
+        shutil.rmtree(full) if os.path.isdir(full) else os.remove(full)
+    os.remove(ls.manifest_path(user_files_dir))
+    os.makedirs(os.path.join(data_dir, ls.CONTENT_FOLDER))                 # an empty folder made again holds no file
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_the_first_look_after_the_folder_was_emptied_notes_it_before_any_copy_comes_back(language, monkeypatch):
+    """Mattias's reinstall: the record opens, its folder holds none of its files; the run's first look notes it (the
+    files counted: every item but a waiting video) BEFORE it puts the copies back from their originals (item 8a) —
+    after which nothing reads "gone", so K1's card never asks. Noted once (a later look, or the next run, adds
+    nothing); a bookkeeping write (no version moves, never in the JSON copy); *Start fresh* drops it."""
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        files = store.conn.execute("SELECT COUNT(*) FROM items WHERE availability != 'waiting'").fetchone()[0]
+        _empty_the_folder(data_dir, user_files_dir)
+        store.sync_disk()                                                    # the start's sync: the copies missing
+        versions = {k: v for k, v in store.meta().items() if k.endswith("_version")}
+        _new_run()
+        assert store.emptied() is None
+        at_start = []
+        run = sources._Look.run
+        monkeypatch.setattr(sources._Look, "run", lambda self: at_start.append(
+            (store.emptied(), {k: v for k, v in store.meta().items() if k.endswith("_version")})) or run(self))
+        result = _look(store, language, root)
+        note = store.emptied()
+        assert note is not None and note["files"] == files and note["at"]
+        assert at_start[0] == (note, versions)                # noted as the look starts, no version moved by it
+        assert result["restored"] >= 1                                       # the look put copies back after it
+        assert store.note_emptied() is None                                  # (files there now; noted already)
+        _look(store, language, root, full=True)
+        _new_run()
+        _look(store, language, root)
+        assert store.emptied() == note                                       # once: never noted again over it
+        assert ls.export_copy(store) or True
+        with open(ls.manifest_path(user_files_dir), encoding="utf-8") as f:
+            assert ls.FOLDER_EMPTIED not in f.read()                         # never in the JSON copy
+        ls.start_fresh(store)
+        assert store.emptied() is None                                       # a fresh library: asked no more
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_a_folder_holding_any_of_its_files_or_a_library_of_waiting_videos_is_never_noted(language, tmp_path):
+    """No note while one top folder its copies live in is there (a 2.x tier's alone: `HighPriority`), for an empty
+    record, nor for a library whose only items wait for a subtitle (no file is ever made for them)."""
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        for name in os.listdir(data_dir):
+            if name != "HighPriority":                                       # one tier folder left: not emptied
+                full = os.path.join(data_dir, name)
+                shutil.rmtree(full) if os.path.isdir(full) else os.remove(full)
+        assert store.note_emptied() is None and store.emptied() is None
+        ls.start_fresh(store)
+        assert store.note_emptied() is None                                  # an empty record
+        a = _SHOWS[language][0]
+        other = _drive("videos only")
+        for n in (1, 2):
+            _video(os.path.join(other, a, f"{a} - {n:02d}.mkv"), body=b"fake matroska %d " % n)
+        _look(store, language, store.add_source(other))
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 2
+        assert not os.path.exists(os.path.join(data_dir, "Library"))      # waiting: no file made
+        assert store.note_emptied() is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_a_check_that_fails_never_stops_the_look(language, monkeypatch, capsys):
+    """The check is in the look's way: one that raises is said in the log and the look goes on as before."""
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        _empty_the_folder(data_dir, user_files_dir)
+        store.sync_disk()
+        _new_run()
+        monkeypatch.setattr(ls.Store, "note_emptied", lambda self: (_ for _ in ()).throw(sqlite3.OperationalError("x")))
+        result = _look(store, language, root)
+        assert result["reachable"] and result["restored"] >= 1 and store.emptied() is None
+        assert "the library folder couldn't be checked" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_the_windows_reader_hands_the_note_to_needs_you_and_drops_it_with_a_fresh_library(language):
+    """The window's reader (`LibraryReader.emptied`) reads the note with its looks — one row — so *Needs you*'s gather
+    has it; after *Start fresh* it reads none."""
+    import time as _time
+    from app.services import library_reader
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        _empty_the_folder(data_dir, user_files_dir)
+        _new_run()
+        _look(store, language, root)
+        note = store.emptied()
+    reader = library_reader.LibraryReader(ls.StoreOpener(language, data_dir, user_files_dir), language=language,
+                                          poll=0.02)
+    reader.start()
+    try:
+        end = _time.monotonic() + 10
+        while reader.emptied() != note and _time.monotonic() < end:
+            _time.sleep(0.02)
+        assert note is not None and reader.emptied() == note
+        with ls.open_store(language, data_dir, user_files_dir) as again:
+            ls.start_fresh(again)
+        while reader.emptied() is not None and _time.monotonic() < end + 10:
+            _time.sleep(0.02)
+        assert reader.emptied() is None
+    finally:
+        reader.stop()

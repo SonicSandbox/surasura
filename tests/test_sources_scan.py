@@ -41,9 +41,11 @@ def _fresh_module_state():
     """Each test starts as a new run of the app: no look made yet this run, no scan running."""
     sources._LOOKED.clear()
     sources._RUNNING.clear()
+    sources._EMPTIED.clear()
     yield
     sources._LOOKED.clear()
     sources._RUNNING.clear()
+    sources._EMPTIED.clear()
 
 
 # --- helpers ------------------------------------------------------------------------------------------------------- #

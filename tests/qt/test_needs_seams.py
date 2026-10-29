@@ -753,3 +753,54 @@ def test_find_its_new_folder_holding_none_of_its_episodes_says_that_folder_isnt_
     assert heard[-1] == said
     assert not [c for c in writer.calls if c[0] == "stop_source"]         # the old folder is still read
     assert _cards(ny)                                                      # ... and its card stays
+
+
+# --- A5K-2 (Sonic ✅ 2026-10-28): the library folder emptied under its record ------------------------------------- #
+EMPTIED = {"at": "2026-10-28T22:04:37.031967Z", "files": 3895}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_the_reader_note_is_the_first_card_its_two_answers_with_tips_and_start_fresh_asks_settings_sheet(
+        world, language):
+    """The reader's note (`LibraryReader.emptied`) gathered into ONE card first, *Start fresh* · *Keep my old
+    library*, a tip on each; *Start fresh* is K1's own (Settings' sheet, then the looks' reset)."""
+    looks = SeamLooks(counts={"added": 2, "suspended": 0})
+    seed, win, writer, ny = world(language, looks=looks)
+    ny.find_offline = lambda _lang, _rels, _data: []
+    ny._emptied = lambda: EMPTIED
+    ny.view = many(language, 4, missing=0)                                # nothing gone: the copies came back
+    n = ny.gathers
+    ny.refresh()
+    _gathered(ny, n)
+    card = ny.entries[0]
+    assert card.kind == service.LIBRARY_EMPTIED
+    win.show_tab("needs")
+    buttons = ny.cards.buttons(card.key)
+    assert [b.property("action") for b in buttons] == ["start_fresh", "keep_old"]
+    assert [b.text() for b in buttons] == ["Start fresh", "Keep my old library"] and all(b.toolTip() for b in buttons)
+    _button(ny, card.key, "start_fresh").click()
+    assert wait_until(lambda: getattr(ny, "confirming", None) is not None, 5)
+    ny.confirming.yes.click()
+    assert wait_until(lambda: looks.fresh_calls == [False], 5)
+    assert writer.calls == []                                             # the looks reset it, never the window
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_keep_my_old_library_takes_the_card_off_for_good_with_undo(world, language):
+    seed, win, writer, ny = world(language, looks=SeamLooks())
+    ny.find_offline = lambda _lang, _rels, _data: []
+    ny._emptied = lambda: EMPTIED
+    ny.view = many(language, 4, missing=0)
+    n = ny.gathers
+    ny.refresh()
+    _gathered(ny, n)
+    win.show_tab("needs")
+    card = ny.entries[0]
+    _button(ny, card.key, "keep_old").click()
+    assert not ny.cards.buttons(card.key) or wait_until(lambda: not ny.cards.buttons(card.key), 1)   # off at the press
+    assert wait_until(lambda: card.key in service.read_hidden(language), 5)
+    assert wait_until(lambda: win.toasts.card is not None and win.toasts.card.base == strings.NEEDS_KEPT_OLD, 5)
+    n = ny.gathers
+    ny.refresh()
+    _gathered(ny, n)
+    assert not _of(ny, service.LIBRARY_EMPTIED) and writer.calls == []

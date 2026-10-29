@@ -137,6 +137,7 @@ NOT_READ_CLOUD = "It's in the cloud and not on this computer yet."
 _GUARD = threading.Lock()
 _RUNNING = set()                # stores a look is running on (their path keys): never two at once
 _LOOKED = set()                 # (store, source) looked at in full this run: later looks list only what changed
+_EMPTIED = set()                # A5K-2: the stores whose library folder this run's first look checked
 
 
 def cache_path(language):
@@ -197,6 +198,12 @@ def scan(store, language, root, first=False, progress=None, stop=None, full=Fals
             return _result(busy=True)
         _RUNNING.add(key)
     try:
+        if key not in _EMPTIED:                 # A5K-2: before this run's first look puts any copy back (item 8a)
+            _EMPTIED.add(key)
+            try:
+                store.note_emptied()
+            except Exception as e:              # (never in the look's way: the card just isn't asked)
+                print(f"Sources: the library folder couldn't be checked: {e!r}")
         return _Look(store, language, root, first, progress, stop, full, rules, copying).run()
     finally:
         with _GUARD:

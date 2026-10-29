@@ -754,6 +754,7 @@ class NeedsYou(QObject):
         find_miner = self.find_miner
         gone_folders = self.gone_folders
         library = self._library()
+        emptied = self._emptied()
         gone_judged = gone_folders if self._gone_judged else None     # never pruned by a summary that judged none
 
         def gather():
@@ -777,7 +778,8 @@ class NeedsYou(QObject):
                                   miner_found=bool(find_miner(settings)),     # row 13: D1's line waits for it
                                   gone_folders=gone_folders or (),
                                   hidden=service.read_hidden(lang),           # alpha 4 D2: Not now, Stop asking
-                                  settled=gone_judged is not None)            # K1: every folder had its look
+                                  settled=gone_judged is not None,            # K1: every folder had its look
+                                  emptied=emptied)                            # A5K-2: the folder emptied
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -1262,6 +1264,15 @@ class NeedsYou(QObject):
             self._say(strings.NEEDS_KEEP_WAITING.format(name=entry.data["name"]))
 
     # alpha 4 D2: every card's ⋯ — *Not now* (until tomorrow) and *Stop asking* (with Undo); a line for many's "for all"
+    def _emptied(self):
+        """A5K-2: the reader's note that the library folder held none of the record's files (`LibraryReader.emptied`),
+        or None."""
+        emptied = getattr(getattr(self.win.services, "library", None), "emptied", None)
+        try:
+            return emptied() if callable(emptied) else None
+        except Exception:
+            return None
+
     def more_entries(self, entry):
         """The ⋯'s entries for `entry` -> [name]: a card's *Not now* · *Stop asking*; a line for many's *Not now for
         all* (when it isn't one of its buttons) · *Stop asking for all*."""
@@ -1298,6 +1309,10 @@ class NeedsYou(QObject):
 
     def _do_stop_asking(self, entry, _line):
         self._hide((entry.key,), service.stop_asking, strings.NEEDS_STOPPED_ONE)
+
+    def _do_keep_old(self, entry, _line):
+        """A5K-2 *Keep my old library*: the card off for good (*Stop asking*'s write, its toast with Undo)."""
+        self._hide((entry.key,), service.stop_asking, strings.NEEDS_KEPT_OLD)
 
     def _do_later_all(self, entry, _line):
         keys = self._covered(entry)

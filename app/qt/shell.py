@@ -57,6 +57,7 @@ POLL_MS = 500
 LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.due` says when it's an hour: FOCUS_S apart)
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
+JOURNEY_OLD_LOOK = "old-look"   # ... opened as drawn before a Journey setting changed: a Generate is due (a6 #5)
 JOURNEY_DRAW_WAIT = 60.0    # a6 #5: how long *Journey ↗* waits for a re-render (seconds), then opens the journey as it is
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
@@ -534,15 +535,18 @@ class Services:
         """(A worker.) *Your journey ↗*: the report (`open_report`), drawn again first when only a setting it shows
         changed (`draw_journey`); `file` (the report's name for an episode's file): opened on it — or, when the journey
         doesn't list it yet (added since the last Generate), where it opens by itself, -> `JOURNEY_LACKS` (JO-1: the
-        window says so). -> False with none."""
+        window says so); drawn before a Journey setting changed while a Generate is due, -> `JOURNEY_OLD_LOOK` (the
+        window says its new look comes with that Generate). -> False with none."""
         from app import static_html_generator as generator
-        self.draw_journey()
+        later = self.draw_journey()
         if self.closing.is_set():
             return None                                  # the window is going: no browser opened behind it
         held = file is None or generator.report_holds(file)
         opened = generator.open_report(app_mode=bool(self.settings.get().get("open_app_mode")),
                                        file=file if held else None)
-        return JOURNEY_LACKS if opened and not held else opened
+        if opened and not held:
+            return JOURNEY_LACKS
+        return JOURNEY_OLD_LOOK if opened and later else opened
 
     def draw_journey(self, wait=JOURNEY_DRAW_WAIT):
         """(A worker.) a6 #5: the journey drawn again before it opens when the report isn't current but its analysis
@@ -550,7 +554,8 @@ class Services:
         keeper's re-render, the user's) is waited for first; then, still stale, the user's own Generate, which
         re-renders and re-analyses nothing (seconds) — asked once — until no Generate runs or waits. Never longer than
         `wait`, and never past the quit. A journey whose analysis is stale too is opened as it is: a full Generate is
-        the user's to ask (the Generate button's mark says so); with the duties not made yet (the first moments), too."""
+        the user's to ask (the Generate button's mark says so) -> True then (its new look waits for that Generate); with
+        the duties not made yet (the first moments) it opens as it is too, -> None."""
         from app.services import generate as generate_module
         busy = (generate_module.QUEUED, generate_module.RUNNING, generate_module.CANCELLING)
         deadline = time.monotonic() + wait
@@ -562,9 +567,10 @@ class Services:
             try:
                 from app import analyzer, run_args
                 args = run_args.analyzer_args(settings_service.thaw(self.settings.get()), self.language)
-                if analyzer.report_is_current(args, self.language) \
-                        or analyzer.journey_is_current(args, self.language) is not True:
+                if analyzer.report_is_current(args, self.language):
                     return
+                if analyzer.journey_is_current(args, self.language) is not True:
+                    return True
             except Exception as e:
                 applog.log("shell", f"journey before opening: {e}")
                 return
@@ -2552,6 +2558,9 @@ class ShellWindow(QMainWindow):
         def done(opened):
             if opened == JOURNEY_LACKS:             # JO-1: opened where it opens by itself; the bar says why
                 self.say(strings.JOURNEY_NOT_YET.format(ep=episode.label))
+                return
+            if opened == JOURNEY_OLD_LOOK:          # a6 #5 (A6W-2): its new look waits for the Generate that's due
+                self.say(strings.JOURNEY_LOOK_LATER)
                 return
             if opened:
                 return

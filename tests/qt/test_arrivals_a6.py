@@ -23,10 +23,10 @@ from tests.qt.test_arrivals import calls, open_tray, settle, tray_of, tray_rows,
 # --- #3: the full title in the row's hover ------------------------------------------------------------------------ #
 def test_a_rows_hover_carries_its_full_title_and_an_audiobooks_line_after_it():
     # a series whose volumes differ only at the end: the painted row cuts them alike, the hover tells them apart
-    vol3 = type("A", (), {"title": "本好きの下剋上 ～司書になるためには手段を選んでいられません～ 第三部 領主の養女 3",
+    vol3 = type("A", (), {"title": "星降る街の小さな工房 ～見習い魔女と七つの鍵の物語～ 第二部「北の塔」3",
                           "audio": "", "tip": ""})()
-    vol4 = type("A", (), {"title": "本好きの下剋上 ～司書になるためには手段を選んでいられません～ 第三部 領主の養女 4",
-                          "audio": "🎧 本好きの下剋上 4 (audiobook) — waits for Anki Miner", "tip": ""})()
+    vol4 = type("A", (), {"title": "星降る街の小さな工房 ～見習い魔女と七つの鍵の物語～ 第二部「北の塔」4",
+                          "audio": "🎧 星降る街の小さな工房 4 (audiobook) — waits for Anki Miner", "tip": ""})()
     assert arrivals.part_tip(vol3, "row") == vol3.title
     assert arrivals.part_tip(vol4, "row") == vol4.title + "\n" + vol4.audio
     zh = type("A", (), {"title": "三体Ⅱ：黑暗森林", "audio": "", "tip": ""})()
@@ -34,7 +34,7 @@ def test_a_rows_hover_carries_its_full_title_and_an_audiobooks_line_after_it():
 
 
 @pytest.mark.parametrize("language, title", [
-    ("ja", "本好きの下剋上 ～司書になるためには手段を選んでいられません～ 第三部「領主の養女」4"),
+    ("ja", "星降る街の小さな工房 ～見習い魔女と七つの鍵の物語～ 第二部「北の塔」4"),
     ("zh", "三体Ⅱ：黑暗森林（刘慈欣科幻小说系列·第二部·典藏版·上下两册合集）"),
 ])
 def test_hovering_a_tray_row_shows_its_full_title_in_the_windows_bubble_wrapped(world, language, title):

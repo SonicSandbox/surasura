@@ -254,3 +254,44 @@ def test_before_the_duties_are_made_the_journey_opens_as_it_is(monkeypatch):
     p = _Press(monkeypatch, controller=False)
     shell.Services.draw_journey(p.services, wait=5)
     assert p.asked == 0
+
+
+# --- A6W-2 (PROVISIONAL): the journey opened with its old look says so --------------------------------------------- #
+def test_opened_with_its_old_look_while_a_generate_is_due_the_answer_says_so(monkeypatch):
+    # the analysis moved too: the journey opens as it is, and the window is told its new look waits for the Generate
+    from app import static_html_generator as generator
+    opened = []
+    monkeypatch.setattr(generator, "open_report", lambda **k: opened.append(k) or True)
+    monkeypatch.setattr(generator, "report_holds", lambda name: name == "第01話.srt")
+    services = SimpleNamespace(closing=threading.Event(), settings=SimpleNamespace(get=lambda: {}),
+                               draw_journey=lambda: True)
+    assert shell.Services.open_journey(services) == shell.JOURNEY_OLD_LOOK
+    assert shell.Services.open_journey(services, "第01話.srt") == shell.JOURNEY_OLD_LOOK
+    assert shell.Services.open_journey(services, "第13話.srt") == shell.JOURNEY_LACKS, "an episode not in it: JO-1's"
+    services.draw_journey = lambda: None
+    assert shell.Services.open_journey(services) is True and len(opened) == 4
+
+
+def test_the_bar_says_the_new_look_comes_with_the_next_generate(qapp, tmp_path, monkeypatch):
+    from app.qt import strings
+    from tests.qt.conftest import wait_until
+    w = World(qapp, logs_folder=str(tmp_path / "logs"))
+    try:
+        monkeypatch.setattr(w.services, "open_journey", lambda *file: shell.JOURNEY_OLD_LOOK)
+        w.win._open_journey()
+        assert wait_until(lambda: w.win.bar_line.full() == strings.JOURNEY_LOOK_LATER)
+    finally:
+        w.close()
+
+
+def test_with_the_background_generate_off_a_report_setting_starts_no_run(gate, fired):
+    # IK-5: D29 off is the user's choice: the keeper hears the setting and runs nothing (Journey ↗ draws it instead)
+    from tests.test_services_replan_host import _Settings, _replan
+    replan, _registry, _controller, launches, _opener = _replan(_Settings(logic={"automation": False}),
+                                                                journey=lambda: True)
+    try:
+        replan.report_changed()
+        assert fired.done(replan.keeper)
+        assert replan.keeper.asked == 0 and launches.count() == 0
+    finally:
+        replan.finish(time.monotonic() + 1)

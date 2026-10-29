@@ -1274,6 +1274,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
                                         "words, places and cards; nothing on disk is moved or removed. Undo reads it "
                                         "again"),
     "keep_waiting": ("Keep waiting", "Hide this until the folder is back. If it goes again later, it asks again"),
+    # a6 settings import (SI-3): a video folder the imported settings name isn't on this PC
+    "find_settings_folder": ("Find it…", "Choose where this folder is on this computer: Connect looks there instead"),
+    "drop_settings_folder": ("Stop looking there", "Take this folder out of Connect's video folders. Nothing on disk "
+                                                   "is touched"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
     # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
@@ -1320,6 +1324,9 @@ NEEDS_LINKING_ONE = "Linking {label}'s video"
 NEEDS_KEPT = "Kept: their words still count"
 # T6: a gone source folder's answers (said in the bar, or the toast with Undo)
 NEEDS_FIND_TITLE = "Where is {name} now?"
+NEEDS_SETTINGS_FOLDER_TITLE = "Where is this video folder on this computer?"      # a6 settings import (SI-3)
+NEEDS_SETTINGS_FOLDER_FOUND = "Connect looks for videos in {folder} now"
+NEEDS_SETTINGS_FOLDER_DROPPED = "Connect no longer looks for videos in {folder}"
 NEEDS_FIND_JOINED = "{name} is read from {folder} now · {n:,} episodes joined their show"
 NEEDS_FIND_JOINED_ONE = "{name} is read from {folder} now · 1 episode joined its show"
 NEEDS_FIND_JOINED_LEFT = "{name}'s episodes joined {folder}: stop reading the old folder in that language's library"

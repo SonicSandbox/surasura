@@ -1525,13 +1525,15 @@ class ShellWindow(QMainWindow):
         if self.settings_page is not None:
             return self.settings_page
         from app.qt import settings_connect, settings_page, settings_rules, settings_sources, settings_store
+        from app.qt import settings_io
         holder = self.page_widgets["settings"]
         language = self.services.settings.get().get("target_language") or self.language
         page = settings_page.SettingsPage(self, language, parent=holder)
         holder.layout().insertWidget(0, page, 1)          # above the bottom edge every page carries
         self.settings_page = page
         for attach in (settings_connect.attach, settings_rules.attach, settings_store.attach,
-                       settings_sources.attach):                       # --- SRC W1b: *Library folders*
+                       settings_sources.attach,                        # --- SRC W1b: *Library folders*
+                       settings_io.attach):                            # --- a6: *Your settings*
             try:
                 attach(page)
             except Exception as e:                        # one package's rows never keep the page from opening

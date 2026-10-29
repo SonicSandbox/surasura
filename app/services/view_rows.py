@@ -121,7 +121,9 @@ GoalPiece = namedtuple("GoalPiece", "item_ids line piece_id", defaults=(None,))
 #   without one. Tiles never enter the first screen's cache
 GoalPiece = namedtuple("GoalPiece", GoalPiece._fields + ("first",), defaults=(None, None))
 #   first (L6.3): its lowest episode number, None when one of its files has none — whether it comes next after a part
-#   done in Current (`drag.when_done`)
+#   done in Current (`drag.when_done`); an audiobook's waiting item (`heard_item`) numbers nothing
+GoalPiece = namedtuple("GoalPiece", GoalPiece._fields + ("heard",), defaults=(None, None, False))
+#   heard (L6.3, H-6): it holds nothing but an audiobook's waiting item — no part of its title (`drag.when_done`)
 # --- end W3.2 Q2
 Month = namedtuple("Month", "label rows")
 Need = namedtuple("Need", "key work_id title line episodes cover_title")
@@ -410,6 +412,25 @@ def numbers_gap(episodes):
     """Whether the numbered files leave a hole (*Ep 1–4, 6*: Ep 5 is still to come, L6.3 R5); files with no number (a
     special, a video) don't count."""
     return len(runs([e.number for e in episodes if e.number is not None])) > 1
+
+
+def to_finish(episodes):
+    """The files a title is finished by (L6.3 with Hon's audiobooks, H-6 / H-7 PROVISIONAL): every one but an
+    audiobook's own waiting item (`_heard`) — it holds no words until Anki Miner gives its text, so there is nothing
+    to mark Done; beside its book, it goes where the book's row goes (into Finished with it). What `drag.when_done`
+    and the Done that asks it read, never a second copy."""
+    return [e for e in episodes if not _heard(e)]
+
+
+def heard_only(episodes):
+    """A row (or a piece) holding nothing but an audiobook's waiting item: no part of its title to finish or join."""
+    return bool(episodes) and not to_finish(episodes)
+
+
+def heard_item(item):
+    """`_heard`'s item for a feed row (the store's own words: `source_type` 'audio', availability 'waiting') — what
+    Goal's pieces are built from (`GoalPiece.first`, `.heard`)."""
+    return item.get("source_type") == "audio" and item.get("availability") == "waiting"
 # --- end L6.3
 
 
@@ -1529,10 +1550,12 @@ def _goal_work(key, ps, works, guessed):
     for p in ps:
         nums = [] if media == "youtube" else \
             [episode_number(it.get("title") or (it.get("rel_path") or "").rsplit("/", 1)[-1]) for it in p]
-        low = min(nums) if nums and None not in nums else None                       # L6.3: every file numbered
+        heard = [heard_item(it) for it in p]                 # L6.3 (H-6): an audiobook's waiting item numbers no part
+        text = [n for n, h in zip(nums, heard) if not h]
+        low = min(text) if text and None not in text else None                       # L6.3: every file numbered
         nums = [n for n in nums if n is not None]
         pieces_.append(GoalPiece(item_ids=tuple(it["id"] for it in p), line=range_text(media, nums, len(p)),
-                                 piece_id=p[0].get("piece_id"), first=low))
+                                 piece_id=p[0].get("piece_id"), first=low, heard=all(heard)))
     return GoalWork(key=key, work_id=first.get("work_id"), title=title, cover_title=work.get("title") or title,
                     media=media, source=source_of(first, work) or "disk", n_files=len(files), line=line,
                     pieces=tuple(pieces_), item_ids=tuple(it["id"] for it in files),

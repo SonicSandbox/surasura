@@ -54,8 +54,8 @@ def _goal(work, *pieces, group=False):
     return NS(work_id=work, group=group, pieces=tuple(pieces))
 
 
-def _gp(piece, first, ids, line):
-    return NS(piece_id=piece, first=first, item_ids=tuple(ids), line=line)
+def _gp(piece, first, ids, line, heard=False):
+    return NS(piece_id=piece, first=first, item_ids=tuple(ids), line=line, heard=heard)
 
 
 # --- R3: it finishes by itself ----------------------------------------------------------------------------------- #
@@ -375,3 +375,114 @@ def test_R1_a_part_starting_on_this_parts_own_last_number_is_not_its_next_part()
     again = _row("p3", 1, 3, _eps(12, 1, watched=False, start_id=40), index=1)
     second = _row("p2", 1, 2, _eps(13, 12, watched=False, start_id=13), index=2)
     assert drag.when_done(_view([first, again, second]), first, NOW)[1] == [2, 1]
+
+
+# --- Hon's audiobooks (H-6 / H-7): a book's audiobook item never holds its finish back, and is no part ------------- #
+# A book paired with its audiobook holds ONE more item after its last part: `source_type` 'audio', waiting for Anki
+# Miner, no number, never watched by itself (`view_rows.to_finish` leaves it out). Wrong, a learner would see a book
+# he has read to its last chapter sit in Current for good (the audio "unwatched"), its next part in Goal never come up,
+# a book that took its audiobook in last week read as a show still airing, or an audiobook alone leave by itself.
+BOOK = "吾輩は猫である"
+
+
+def _audio(item_id, added=NOW - 40 * DAY, watched=False):
+    """A book's audiobook item as the reader builds it (`view_rows._episode`): waiting, its text "audio", no number."""
+    return NS(id=item_id, number=None, watched=watched, waiting=True, text="audio",
+              rel_path=f"Library/{BOOK}/55e92410 01.mp3", added=_stamp(added))
+
+
+def _book(key, work, piece, chapters, index=0, **kw):
+    return _row(key, work, piece, chapters, index=index, title=BOOK, media="book", **kw)
+
+
+def test_audio_a_book_read_to_its_last_chapter_finishes_by_itself_its_audiobook_with_it():
+    """R3 with the audiobook still waiting: the book's row finishes by itself, and the verdict's Finish path takes the
+    row's every item (`ids_of`) — the audiobook goes into Finished beside its book (the store's own place for it)."""
+    row = _book("p1", 1, 1, _eps(1, 6) + (_audio(7),))
+    assert view_rows.to_finish(row.episodes) == list(row.episodes[:6])
+    assert drag.when_done(_view([row]), row, NOW) == ("finish",)
+    assert drag.ids_of(row)[-1] == 7
+    assert drag.all_n(row) == 6, "*All 6 read*, never counting the audiobook"
+
+
+def test_audio_an_audiobook_paired_last_week_is_no_sign_the_book_is_still_arriving():
+    """R4 reads the book's own files: the audiobook found days after the book (its own recent stamp) is never "its
+    newest file came in on its own"."""
+    row = _book("p1", 1, 1, _eps(1, 6) + (_audio(7, added=NOW - 2 * DAY),))
+    assert drag.when_done(_view([row]), row, NOW) == ("finish",)
+    weekly = _book("p1", 1, 1, _eps(1, 6, added=[NOW - 40 * DAY] * 5 + [NOW - 2 * DAY]) + (_audio(7),))
+    assert drag.when_done(_view([weekly]), weekly, NOW) == ("offer",), "the book's own newest part still counts"
+
+
+def test_audio_an_audiobook_alone_never_finishes_by_itself_heard_or_not():
+    """H-7: nothing to mark Done, so it never leaves by itself — marked listened by hand, it is today's offer."""
+    for heard in (False, True):
+        row = _row("p9", 9, 9, (_audio(90, watched=heard),), title="銀河鉄道の夜 (audio)", media="audiobook")
+        assert view_rows.heard_only(row.episodes)
+        assert drag.when_done(_view([row]), row, NOW) == ("offer",)
+        assert drag.all_n(row) == 1
+
+
+def test_audio_the_part_holding_the_audiobook_is_still_the_next_part_joined_to():
+    """R1: the book split in Current, its audiobook in the later part — the first part joins it (the audiobook's lack
+    of a number never makes it "before")."""
+    first = _book("p1", 1, 1, _eps(1, 3), index=0)
+    second = _book("p3", 1, 3, _eps(4, 3, watched=False, start_id=4) + (_audio(7),), index=1)
+    assert drag.split_first([first, second], first)
+    verdict = drag.when_done(_view([first, second]), first, NOW)
+    assert verdict[0] == "join" and verdict[1] == [3, 1] and verdict[2] is True
+    assert verdict[3] == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_audio_a_row_of_its_audiobook_alone_is_no_part_the_book_finishes_and_it_stays():
+    """The audiobook split off by hand into a row of its own: no later part to join (`split_first` passes it by),
+    never an earlier part waited on — the book finishes by itself, and the learner's own audiobook row stays put."""
+    book = _book("p1", 1, 1, _eps(1, 6), index=0)
+    alone = _book("p4", 1, 4, (_audio(7),), index=1)
+    assert not drag.split_first([book, alone], book)
+    assert drag.when_done(_view([book, alone]), book, NOW) == ("finish",)
+    assert drag.ids_of(book) == [1, 2, 3, 4, 5, 6]
+    before = _book("p1", 1, 1, _eps(1, 6), index=1)
+    assert drag.when_done(_view([alone, before]), before, NOW) == ("finish",), "above it, it waits on nothing either"
+    assert drag.when_done(_view([book, alone]), alone, NOW) == ("offer",), "and it never leaves by itself"
+
+
+def test_audio_the_goal_part_holding_the_audiobook_comes_up_and_one_of_only_audio_is_passed_by():
+    """R2: the next part waiting in Goal holds the audiobook — its first number is its first chapter's, so it comes up;
+    a Goal piece of the audiobook alone (`GoalPiece.heard`) is no part: the book finishes by itself."""
+    row = _book("p1", 1, 1, _eps(1, 3))
+    up = _goal(1, _gp(3, 4, (4, 5, 6, 7), "4 parts"))
+    assert drag.when_done(_view([row], goal=[up]), row, NOW) == ("join", [1, 3], False, [1, 2, 3, 4, 5, 6, 7],
+                                                                   "4 parts")
+    only = _goal(1, _gp(4, None, (7,), "1 part", heard=True))
+    assert drag.when_done(_view([row], goal=[only]), row, NOW) == ("finish",)
+    both = _goal(1, _gp(3, 4, (4, 5, 6), "Parts 4–6"), _gp(4, None, (7,), "1 part", heard=True))
+    assert drag.when_done(_view([row], goal=[both]), row, NOW)[1] == [1, 3]
+
+
+def test_audio_a_waiting_video_still_holds_a_finish_back_only_the_audiobook_is_passed_by():
+    """R5 unchanged: a video waiting for its subtitle (waiting, not audio) is still a file to come."""
+    sub = NS(id=7, number=7, watched=False, waiting=True, text=False, rel_path="Library/x/07.mkv",
+             added=_stamp(NOW - 40 * DAY))
+    row = _row("p1", 1, 1, _eps(1, 6) + (sub,))
+    assert view_rows.to_finish(row.episodes) == list(row.episodes)
+    assert drag.when_done(_view([row]), row, NOW) == ("offer",)
+
+
+def test_window_the_last_chapters_done_finishes_the_book_by_itself_its_audiobook_still_waiting(world):
+    """The Done path's own count (`done`'s `left`): a row whose last item is its book's audiobook, every other file
+    watched but one — that one's Done writes the mark, then the Finish path with the row's every item (the audiobook
+    with it), one toast; never *next: 🎧 With its audiobook*."""
+    seed, win, writer = world()
+    row = rows_of(win)[4]
+    *text, last = row.episodes
+    seed.library.commit(items=[{"id": e.id, "watched": 1} for e in text[:-1]] +
+                        [{"id": last.id, "source_type": "audio", "availability": "waiting",
+                          "rel_path": f"Library/{BOOK}/55e92410 01.mp3"}])
+    assert wait_until(lambda: view_rows.heard_only(rows_of(win)[4].episodes[-1:]) and
+                      sum(e.watched for e in rows_of(win)[4].episodes) == len(text) - 1, 3)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[-2])
+    assert wait_until(lambda: [c.op for c in writer.saved] == ["set_watched", "set_tier"], 3)
+    assert calls(writer, "set_tier")[0][1] == drag.ids_of(row), "the audiobook goes into Finished with its book"
+    assert win.toasts.card.base == strings.DONE_FINISHED.format(title=row.title)

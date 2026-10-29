@@ -311,6 +311,7 @@ class TestAnkiSyncWindow(unittest.TestCase):
         with patch.object(anki_sync, "sync", return_value=result), \
              patch.object(anki_sync, "load_state", return_value={}), \
              patch.object(anki_sync, "sync_backlog", **(backlog or {"return_value": (398, None)})) as read, \
+             patch.object(anki_sync, "sync_young", return_value=(0, None)), \
              patch.object(anki_sync, "count_backlog", return_value=398):
             self.win._sync_worker(False, snap)
         self.win._drain_once()

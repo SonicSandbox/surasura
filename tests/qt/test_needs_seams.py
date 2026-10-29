@@ -786,7 +786,7 @@ def test_a5k2_the_reader_note_is_the_first_card_its_two_answers_with_tips_and_st
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a5k2_keep_my_old_library_takes_the_card_off_for_good_with_undo(world, language):
+def test_a5k2_keep_my_old_library_takes_the_card_off_for_good_with_undo(world, language, monkeypatch):
     seed, win, writer, ny = world(language, looks=SeamLooks())
     ny.find_offline = lambda _lang, _rels, _data: []
     ny._emptied = lambda: EMPTIED
@@ -804,3 +804,5 @@ def test_a5k2_keep_my_old_library_takes_the_card_off_for_good_with_undo(world, l
     ny.refresh()
     _gathered(ny, n)
     assert not _of(ny, service.LIBRARY_EMPTIED) and writer.calls == []
+    monkeypatch.setattr(service, "_today", lambda: "2999-12-31")           # for good: never *Not now*'s day
+    assert card.key in service.read_hidden(language)

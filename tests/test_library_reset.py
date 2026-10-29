@@ -1028,3 +1028,23 @@ def test_a5k2_a_check_the_busy_store_refused_is_tried_again_at_the_next_look(lan
         assert len(calls) == 2 and store.emptied() is not None
         _look(store, language, root)
         assert len(calls) == 2                                               # once it ran: not again this run
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_a_library_whose_show_folders_are_links_is_never_called_emptied(language, tmp_path):
+    """`Library/<show>` a folder link (a symlink: the walk never follows one) to a drive holding the files: the
+    library folder holds them — never asked to start fresh."""
+    store, data_dir, user_files_dir, src, root = _world(language)
+    with store:
+        lib = os.path.join(data_dir, ls.CONTENT_FOLDER)
+        elsewhere = tmp_path / "shows"
+        shutil.move(lib, str(elsewhere))
+        for name in os.listdir(data_dir):
+            full = os.path.join(data_dir, name)
+            shutil.rmtree(full) if os.path.isdir(full) else os.remove(full)
+        os.makedirs(lib)
+        try:
+            os.symlink(str(elsewhere), os.path.join(lib, "linked"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("this account can't make a symlink")
+        assert store.note_emptied() is None and store.emptied() is None

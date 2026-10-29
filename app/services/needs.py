@@ -305,9 +305,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     shows = [e for e in shows if e.key not in hidden]
     out = []
     if emptied:
-        entry = _emptied_entry(emptied, seen)
-        if entry.key not in hidden:
-            out.append(entry)                       # A5K-2 leads the page
+        out.append(_emptied_entry(emptied, seen))   # A5K-2 leads the page (hidden: off below, as every card)
     if big and big[0].kind == LIBRARY_GONE:
         if big[0].key not in hidden:
             out.append(big[0])                      # K1 leads the page

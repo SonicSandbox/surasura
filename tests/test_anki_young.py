@@ -184,6 +184,22 @@ def test_a_young_note_edited_in_anki_is_read_again_with_its_corrected_word():
     assert [i for r in fake.requests_of("notesInfo") for i in r["params"]["notes"]] == [ids["冒険"]]
 
 
+def test_an_edited_note_deleted_before_its_word_is_read_never_keeps_its_old_word():
+    """Edited, then deleted between the search and the read: its old word must not stay as a practice word."""
+    fake, ids = _deck()
+    _young(fake)
+    fake.edit(ids["冒険"], [("Expression", "冒険家"), ("Sentence", "冒険家の例文です。"), ("Meaning", "adventurer")])
+    answer = fake._answer
+
+    def deleted(payload):
+        if payload["action"] == "notesInfo":
+            return _ok([{} for _ in payload["params"]["notes"]])
+        return answer(payload)
+    fake._answer = deleted
+    _young(fake)
+    assert [w for w, _i in anki_sync.young_words("ja")] == ["準備", "危険"]
+
+
 def test_an_anki_too_old_for_edited_still_records_the_intervals():
     fake, _ids = _deck()
     fake.edited_search = False

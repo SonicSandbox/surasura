@@ -1134,8 +1134,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     drawn = None
     if theme not in ("Zen Mode", "zen-focus"):
         drawn = _journey_stones(data, all_files_order, stats_map, language or target_lang, marks)
-        _journey_folds(data, all_files_order, drawn,
-                       bool((settings.get("logic") or {}).get("inline_completed_files", False)))
+        _logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
+        _journey_folds(data, all_files_order, drawn, bool(_logic.get("inline_completed_files", False)))
 
     # Load Priority
     if os.path.exists(PRIORITY_CSV):

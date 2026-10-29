@@ -9010,6 +9010,56 @@ def _store_removed(self, now=None):
     return out
 
 
+# --- A5K-2: a library folder emptied under its record (Sonic ✅ 2026-10-28) ----------------------------------------- #
+# The record lives in `%LOCALAPPDATA%`, keyed by the data folder's path (`library_db_path`): deleting Surasura's folder
+# and unzipping it again in the same place opens the old record, and the looks put every copy back from its original
+# (item 8a), its Removes' exclusions, tiers and Finished with them — the K1 card never sees a file gone. Noted ONCE, by
+# the run's first look before it puts anything back; *Needs you* then asks *Start fresh* · *Keep my old library*.
+FOLDER_EMPTIED = "folder_emptied"
+
+
+def _store_note_emptied(self):
+    """The library folder holds none of this record's files — not one top folder its items' copies live in (`Library/`,
+    a 2.x tier's folder) holds a file, nor is a loose one there (a waiting video, which has no file, never counts): noted
+    in meta `folder_emptied` {"at", "files"} -> the files counted, or None (files there, an empty record). Asked at each
+    run's first look: a note stays while the folder fills again (the card waits for its answer), and an emptying found
+    later is a new note — a new `at`, so a card asked again even after *Keep my old library*. A bookkeeping write (no
+    version moves; never in the JSON copy); *Start fresh*'s fresh meta drops it."""
+    with self._reading():
+        rels = [r[0] for r in self.conn.execute("SELECT rel_path FROM items WHERE availability != 'waiting'")]
+    tops = {_strip(str(rel)).split("/", 1)[0] for rel in rels if rel}
+    if not tops or any(_holds_a_file(os.path.join(self.data_dir, top)) for top in tops):
+        return None
+    self.bookkeeping({FOLDER_EMPTIED: _dumps({"at": _now(), "files": len(rels)})})
+    return len(rels)
+
+
+def _holds_a_file(path):
+    """Is `path` a file, or a folder with a file anywhere under it (an empty `Library/` made again holds none)? The
+    walk stops at the first file. On a doubt it holds one — a folder that can't be read, a link (a drive behind it
+    may only be unplugged): never asked to start fresh for an offline drive."""
+    if os.path.islink(path) or os.path.isfile(path):
+        return True
+    if not os.path.lexists(path):
+        return False
+
+    def unreadable(error):
+        raise error
+    try:
+        for folder, dirs, files in os.walk(path, onerror=unreadable):
+            if files or any(os.path.islink(os.path.join(folder, d)) for d in dirs):
+                return True
+    except OSError:
+        return True
+    return False
+
+
+def _store_emptied(self):
+    """`note_emptied`'s note {"at", "files"} while it is there (until a fresh library), else None. One read."""
+    row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (FOLDER_EMPTIED,)).fetchone()
+    return (_json_dict(row[0]) or None) if row else None
+
+
 def _store_removed_under(self, root_id):
     """Settings' *Bring back N removed* on a folder's line (Mattias's note 6: read again, it brings nothing back — a
     Remove keeps its files out for good): the trash ids of his Removes whose own original lies in that folder ->
@@ -11326,6 +11376,8 @@ Store._exclude_origins = _store_exclude_origins
 Store._let_origins_back = _store_let_origins_back
 Store._removed_rows = _store_removed_rows
 Store.removed = _store_removed
+Store.note_emptied = _store_note_emptied
+Store.emptied = _store_emptied
 Store.removed_under = _store_removed_under
 Store.removed_for = _store_removed_for
 Store._read_sources = _store_read_sources

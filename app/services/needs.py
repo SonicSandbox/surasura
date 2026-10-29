@@ -29,6 +29,11 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   more, more than half of Current's files, never under an offline root, is ONE `library-gone` card first, folding in
   every show's and folder's — *Start fresh* (`SourceLooks.fresh`: the old library backed up in the trash, never
   deleted) · *Choose a folder…*; a card until answered (asked once, Sonic 2026-10-27: "Your lean is good").
+  **The library folder emptied** (A5K-2, Sonic ✅ 2026-10-28: Mattias's "fresh start" — he deleted Surasura's folder and
+  unzipped it again in the same place; the record, kept elsewhere, came back with his removed files kept out): the
+  store's note (`Store.note_emptied`, the run's first look, before a copy is put back; handed in as `emptied`) is ONE
+  `library-emptied` card first — *Start fresh* (K1's: the old library in one dated backup, nothing deleted) · *Keep my
+  old library* (the card off for good, `stop_asking`; emptied again later, it asks again).
 - **an offline root as ONE entry** (E8, IK-8): *Drive E: is offline — 312 files* (`find_offline` finds the roots on a
   worker: the library folder not there, or a folder in it that links to a drive or share that isn't); it offers *Keep
   their words* and never *Remove*.
@@ -96,10 +101,11 @@ FOLDER_GONE = "folder-gone"
 # K3 / K1 (alpha 4): a library folder's files mostly gone, and the library's — one card each, never one per show
 FILES_FOLDER = "files-folder"
 LIBRARY_GONE = "library-gone"
+LIBRARY_EMPTIED = "library-emptied"   # A5K-2: the library folder held none of the record's files at this run's start
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
-         FILES_FOLDER, LIBRARY_GONE)
+         FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
@@ -146,6 +152,10 @@ STRINGS = {
     "library_title": "Most of your library's files are gone ({n} of {total})",
     "library_say": "Was Surasura installed again, or its library moved? Start fresh sets this library aside in a backup "
                    "(nothing is deleted) and reads your folders again; choose a folder… if you moved its files.",
+    "emptied_title": "Your library folder was emptied: start a fresh library?",
+    "emptied_say": "Surasura found this library from before ({n} files), but its folder holds none of them now. Start "
+                   "fresh sets it aside in a backup (nothing is deleted) and reads your folders again. Keep my old "
+                   "library carries on with it: its places, and the files you removed stay out.",
     "offline_say": "Its files keep their places and their words. They come back by themselves once it's connected.",
     "drive": "Drive {d}", "folder": "The folder {p}",
     "gap_title": "Connect lost track of your moves {span}: {n} {noun} in the top 20 {have} no cards",
@@ -239,7 +249,7 @@ def item_key(item_id):
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
-            hidden=frozenset()):
+            hidden=frozenset(), emptied=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -250,7 +260,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     (`source_looks.gone`, those *Keep waiting* hid left out by the window), one card each; `settled` (K1): every folder
     read had its look this run (the window's `gone_in(judged=True)`) — a copy a look can put back from its original
     (item 8a) is gone only until then, so the library's card waits for it; `hidden` (alpha 4 D2: `read_hidden`, *Not now* today and *Stop asking*): the cards
-    left out, and every count for many with them."""
+    left out, and every count for many with them; `emptied` (A5K-2): the store's `emptied()` note, the first card."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -294,6 +304,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
             shows.append(_video_entry(group, novideo[group], seen, mine_line))
     shows = [e for e in shows if e.key not in hidden]
     out = []
+    if emptied:
+        out.append(_emptied_entry(emptied, seen))   # A5K-2 leads the page (hidden: off below, as every card)
     if big and big[0].kind == LIBRARY_GONE:
         if big[0].key not in hidden:
             out.append(big[0])                      # K1 leads the page
@@ -530,6 +542,16 @@ def _files_folder_entry(folder, hits, total, seen):
                  say=STRINGS["files_folder_say"].format(shows=_shows(_titles(hits))),
                  data={"folder": folder, "item_ids": tuple(ids), "shows": tuple(_titles(hits)), "n": len(ids),
                        "files": total})
+
+
+def _emptied_entry(note, seen):
+    """A5K-2: the library folder emptied under its record -> ONE card, *Start fresh* · *Keep my old library*; its key
+    names the note's time (emptied again later, it asks again)."""
+    key = f"emptied:{note.get('at') or ''}"
+    files = note.get("files") or 0
+    return Entry(key=key, kind=LIBRARY_EMPTIED, title=STRINGS["emptied_title"], lines=(),
+                 actions=("start_fresh", "keep_old"), unseen=key not in seen,
+                 say=STRINGS["emptied_say"].format(n=view_rows.thousands(int(files))), data={"files": files})
 
 
 def _library_entry(hits, total, seen):

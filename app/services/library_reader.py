@@ -188,6 +188,7 @@ class LibraryReader:
         self._mode_at = 0.0
         self._recheck = False
         self._store_id = None
+        self._emptied = None                # A5K-2: the store's `emptied()` note, read with every look
         self._order_key = None             # (epoch, order_version, pins_version) the last read found
         self._versions_seen = None         # finish-pending: every version the last read found
         self.reads = 0                     # feed reads (tests)
@@ -410,6 +411,11 @@ class LibraryReader:
         library). Any thread."""
         return self._store_id
 
+    def emptied(self):
+        """A5K-2: the store's note that its library folder held none of its files ({"at", "files"}), else None. Any
+        thread."""
+        return self._emptied
+
     def republish(self):
         """The window let go of its own order once every write landed: the next look builds and publishes the store's
         view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4): the last
@@ -577,6 +583,8 @@ class LibraryReader:
         self._moved(h)
         if (self._store_id is None or feed["full"]) and hasattr(h, "meta"):
             self._store_id = h.meta().get("store_id")      # W-1 (W-5): a fresh library has an id of its own
+        if hasattr(h, "emptied"):
+            self._emptied = h.emptied()                     # A5K-2 (one row read): *Needs you* asks once it is there
         if held:                                        # E6: merged, never built or shown under the hand; a quiet
             if changed:                                 # look later in the drag never forgets what came in (AD-1)
                 self._held_dirty = True

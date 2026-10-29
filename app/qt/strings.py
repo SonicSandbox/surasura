@@ -1274,7 +1274,11 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     # alpha 4 K1: most of the library's files gone at once (*Start fresh*: Settings' *Start a fresh library* sheet)
     "start_fresh": ("Start fresh", "Set this library aside in one backup in the trash, never deleted, and read your "
                                    "folders again from scratch. It asks first"),
+    # A5K-2: the library folder emptied under its record
+    "keep_old": ("Keep my old library", "Carry on with this library as it was: its places come back, and the files "
+                                        "you removed stay out"),
 }
+NEEDS_KEPT_OLD = "Your old library is kept"
 NEEDS_LOOKING = "Looking…"
 NEEDS_MORE_LINES = "and {n} more"
 NEEDS_MORE_NAME = "More for {title}"             # alpha 4 D2: a card's ⋯

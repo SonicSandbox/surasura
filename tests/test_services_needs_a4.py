@@ -224,3 +224,38 @@ def test_alpha5_counts_of_a_thousand_or_more_read_with_a_comma(language):
     assert needs._shows(titles).endswith(" and 1,000 more")
     assert needs._shows(titles[:5]).endswith(" and 2 more")
     assert needs.STRINGS["anki_n"].format(n=1200) == "1,200 episodes"
+
+
+# --- A5K-2 (Sonic ✅ 2026-10-28): the library folder emptied under its record ------------------------------------- #
+NOTE = {"at": "2026-10-28T22:04:37.031967Z", "files": 3895}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_the_emptied_folder_is_one_card_first_start_fresh_or_keep_my_old_library(language):
+    """The store's note is ONE card leading the page — before K1's, the bulk line and every show's — with *Start
+    fresh* and *Keep my old library*, its files counted with a comma; no note, no card."""
+    out = needs.entries(view(language, 30), emptied=NOTE, settled=True)
+    first = out[0]
+    assert first.kind == needs.LIBRARY_EMPTIED and first.actions == ("start_fresh", "keep_old")
+    assert first.title == "Your library folder was emptied: start a fresh library?"
+    assert "(3,895 files)" in first.say and first.unseen and first.lines == ()
+    assert out[1].kind == needs.LIBRARY_GONE                                  # K1's follows when it holds too
+    assert all(e.kind != needs.LIBRARY_EMPTIED for e in needs.entries(view(language, 30), emptied=None))
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a5k2_keep_my_old_library_hides_it_for_good_and_a_new_emptying_asks_again(language, tmp_path, monkeypatch):
+    """*Keep my old library* = *Stop asking* on its key (the seen file, its Undo): hidden from then, never pruned by
+    a gather (its key names the note's time, a kind no prune judges); emptied again later — a new note — it asks."""
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(tmp_path))
+    key = needs.entries(None, emptied=NOTE)[0].key
+    assert key == f"emptied:{NOTE['at']}"
+    needs.stop_asking(language, [key])
+    hidden = needs.read_hidden(language)
+    assert key in hidden and needs.entries(view(language, 2), emptied=NOTE, hidden=hidden)[0].kind != \
+        needs.LIBRARY_EMPTIED
+    needs.prune(language, view(language, 2))
+    assert key in needs.read_hidden(language)                               # kept: no prune judges it
+    later = dict(NOTE, at="2026-11-02T08:00:00.000001Z")
+    assert needs.entries(view(language, 2), emptied=later, hidden=needs.read_hidden(language))[0].kind == \
+        needs.LIBRARY_EMPTIED

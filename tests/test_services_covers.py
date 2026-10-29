@@ -281,7 +281,7 @@ def test_a_book_at_its_import_keeps_its_cover_from_wherever_the_user_keeps_it(li
     assert h.until(lambda: lib.heard.rereads and not lib.writer.pending())
     assert lib.heard.saved == [] and not lib.writer.can_undo(), "B1: a book's cover is nobody's to undo"
     source, ref, path, _locked = lib.row(work)
-    assert (source, ref) == ("file", "進撃の巨人 1.epub") and path.startswith("cache:"), "its name, never its path"
+    assert (source, ref) == ("file", os.path.abspath(book)) and path.startswith("cache:"), "as the scan records it"
     assert os.path.isfile(C.image_path(lib.language, lib.one(work), lib.data_dir))
 
 

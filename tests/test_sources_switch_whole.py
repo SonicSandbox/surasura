@@ -17,7 +17,7 @@ from app import library_store as ls
 from app import sources
 from app.connect import library, videos
 from tests.test_library_store_support import LANGUAGES
-from tests.test_sources_groups import _show
+from tests.test_sources_groups import _a_minute_later, _show
 from tests.test_sources_scan import (_OURS, _SHOWS, _drive, _empty, _fresh_module_state, _library_files,  # noqa: F401
                                      _look, _text, _video, _write)
 from tests.test_sources_switch import (_BOOKS, _EDITION, _book, _chapters, _copy, _drop, _epub, _hato, _items,
@@ -64,7 +64,7 @@ def test_a_crash_inside_a_new_editions_switch_is_finished_whole_at_the_next_look
     child = subprocess.run([sys.executable, "-c", EDITION_CRASH, language, data_dir, uf, str(root)],
                            cwd=os.getcwd(), capture_output=True, text=True)
     assert child.returncode == 3, child.stderr[-600:]
-    monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)
+    _a_minute_later(monkeypatch)
     store = ls.open_store(language, data_dir, uf)
     with store:
         _look(store, language, root, full=True)
@@ -640,7 +640,7 @@ def test_a_crash_inside_an_editions_undo_is_finished_at_the_next_look(language, 
         assert len(_items(store)) > len(before)
         uf = store.user_files_dir
     _crash(language, data_dir, uf, root, mode, 2 if mode == "undo-before" else len(before) + 1, work)
-    monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)
+    _a_minute_later(monkeypatch)
     store = ls.open_store(language, data_dir, uf)
     with store:
         assert _look(store, language, root, full=True)["switched"] == 0
@@ -880,7 +880,7 @@ def test_a_crash_while_the_parts_past_the_end_go_ends_whole(language, mode, monk
     new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
     short = _parts(new, language)
     _crash(language, data_dir, uf, root, mode, len(short) + 1)
-    monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)
+    _a_minute_later(monkeypatch)
     store = ls.open_store(language, data_dir, uf)
     with store:
         _look(store, language, root, full=True)
@@ -909,7 +909,7 @@ def test_a_crash_while_the_extra_parts_go_in_ends_whole(language, monkeypatch):
     longer = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改", 2), language)
     parts = _parts(longer, language)
     _crash(language, data_dir, uf, root, "takein")
-    monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)
+    _a_minute_later(monkeypatch)
     store = ls.open_store(language, data_dir, uf)
     with store:
         _look(store, language, root, full=True)
@@ -1060,7 +1060,7 @@ def test_undo_pressed_again_soon_after_a_crash_inside_it_waits_for_the_look(lang
         again = store.undo_switch(work)
         assert again.waiting and again.notes
         assert [_copy(data_dir, rel) for _i, rel in before] == held and _notes(store)
-        monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)                # a minute later
+        _a_minute_later(monkeypatch)
         _look(store, language, root, full=True)
         assert [_copy(data_dir, rel) for _i, rel in before] == olds
         assert store.last_switch(work) is None and not _notes(store) and not _pending(store)
@@ -1428,7 +1428,7 @@ def test_a_crashed_edition_whose_part_changed_keeps_its_note_until_every_part_is
     child = subprocess.run([sys.executable, "-c", EDITION_CRASH, language, data_dir, uf, str(root)],
                            cwd=os.getcwd(), capture_output=True, text=True)
     assert child.returncode == 3, child.stderr[-600:]
-    monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)
+    _a_minute_later(monkeypatch)
     store = ls.open_store(language, data_dir, uf)
     with store:
         folder, name = before[-1][1].rsplit("/", 1)
@@ -1724,7 +1724,7 @@ def test_undo_pressed_again_once_its_note_counts_as_crashed_but_its_step_not_yet
         again = store.undo_switch(work)
         assert again.waiting and again.notes
         assert [_copy(data_dir, rel) for _i, rel in before] == held and _notes(store)
-        monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)                # a minute later
+        _a_minute_later(monkeypatch)
         _look(store, language, root, full=True)
         assert [_copy(data_dir, rel) for _i, rel in before] == olds
         assert store.last_switch(work) is None and not _notes(store) and not _pending(store)
@@ -1812,7 +1812,7 @@ def test_a_part_past_the_end_moved_before_a_crash_comes_back_with_its_text_on_un
     new = _epub(os.path.join(src, "Books", f"{_EDITION[language]}.epub"), _chapters(language, "改"), language)
     short = _parts(new, language)
     _crash(language, data_dir, uf, root, mode, len(short) + 1)
-    monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)
+    _a_minute_later(monkeypatch)
     store = ls.open_store(language, data_dir, uf)
     with store:
         _look(store, language, root, full=True)
@@ -1870,7 +1870,7 @@ def test_killed_between_the_given_up_parts_take_in_and_its_removal_never_loses_i
         note = ls._edition_note(store, key)
         staged = [x["part"] for x in note["extras"] if x.get("part")]
         assert staged and all(os.path.isfile(os.path.join(data_dir, *p.split("/"))) for p in staged)
-        monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)            # the next start, a minute later
+        _a_minute_later(monkeypatch)
         _look(store, language, root, full=True)
         assert not _notes(store)
         now = _items(store)
@@ -1906,7 +1906,7 @@ def test_killed_once_the_given_up_parts_are_on_the_trash_list_keeps_them_there(l
                 for _n in range(ls.EDITION_TRIES + 1):
                     _look(store, language, root, full=True)
         assert _notes(store)
-        monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)            # the next start; the move works again
+        _a_minute_later(monkeypatch)                # the move works again
         _look(store, language, root, full=True)
         assert not _notes(store) and _items(store) == before
         extra = store.trash_rows()[rows:]
@@ -2072,7 +2072,7 @@ def test_an_undo_with_no_parts_killed_between_its_tail_moves_and_restore_finishe
             with pytest.raises(_Killed):
                 store.undo_switch(work)
         assert _notes(store), "the Undo's note stands after the kill"
-        monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)        # the next start
+        _a_minute_later(monkeypatch)
         changes = store.settle_editions()
         notes = [n for c in changes for n in c.notes]
         assert not _notes(store) and not any("no longer in the trash" in n for n in notes), notes

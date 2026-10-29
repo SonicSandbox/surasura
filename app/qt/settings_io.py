@@ -109,7 +109,7 @@ class SettingsFileRow(QObject):
         if plan.refused is not None:
             self.say(plan.refused)
             return
-        title, body, yes = settings_io.question(plan)
+        title, body, yes = settings_io.question(plan, getattr(self.page, "language", None))
         self.asking = confirm.ask(self.page, title, body, yes, S.SETTINGS_IMPORT_YES_TIP, no=S.SETTINGS_IMPORT_NO,
                                   no_tip=S.SETTINGS_IMPORT_NO_TIP, default_no=True,
                                   on_answer=lambda answer: self._answered(plan, answer))

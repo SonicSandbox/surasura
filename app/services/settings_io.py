@@ -38,13 +38,14 @@ MARK = "surasura_settings"
 FORMAT = 1                       # the file's own shape; a newer one is refused as a newer version is
 RECORD = "settings_import.json"  # local data: the last import's folders not on this PC (the *Needs you* cards')
 NAME = "Surasura settings {date}.json"
+UNDO_NAME = "Surasura settings before import {stamp}.json"     # beside the dated copy: Import takes it (the way back)
 FOLDERS = "connect_video_folders"
 MINER_PATH = "connect_anki_miner_path"
 # A key named like a secret never leaves or comes in (none is in settings.json: Speech's key is in its keystore)
 SECRET = re.compile(r"(^|_)(api_?key|key|token|secret|password|passwd|credentials?)s?$", re.IGNORECASE)
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 
-Outcome = namedtuple("Outcome", "ok message path", defaults=(None,))
+Outcome = namedtuple("Outcome", "ok message path undo", defaults=(None, None))   # undo: the way back (an export)
 # read's answer: `refused` (plain words) or None; `settings` what apply writes; `dropped` the keys left out (dotted);
 # `missing` the video folders not on this PC; `miner_reset` Anki Miner's place not here (set back to its default)
 Plan = namedtuple("Plan", "refused settings version language exported dropped missing miner_reset source",
@@ -70,9 +71,11 @@ STRINGS = {
     "ask_missing_one": "1 video folder in them isn't on this computer: Needs you asks you to find it.",
     "ask_missing": "{n} video folders in them aren't on this computer: Needs you asks you to find them.",
     "ask_miner": "Anki Miner isn't where they say on this computer: Surasura finds it by itself.",
+    "ask_language": "Surasura opens in {language}.",
     "ask_restart": "Surasura restarts to use them.",
     "ask_yes": "Import and restart",
     "imported": "Settings imported. Your settings before are in {backup}",
+    "imported_undo": "Settings imported. To go back, import {undo}",
     "imported_first": "Settings imported.",
     "busy": "Your settings are being saved by another window just now. Try again in a moment.",
     "backup_failed": "Couldn't keep a copy of your settings now, so nothing was changed: {why}",
@@ -243,15 +246,16 @@ def read(path, isdir=os.path.isdir, isfile=os.path.isfile):
                 miner_reset, path)
 
 
-def question(plan):
-    """The words the window asks before an import replaces anything -> (title, body, yes)."""
+def question(plan, language=None):
+    """The words the window asks before an import replaces anything -> (title, body, yes). `language`: the one the
+    window shows now — a file of the other one says Surasura opens in it (its `target_language` comes in too)."""
     when = ""
     try:
         when = " on " + datetime.datetime.fromisoformat(plan.exported).strftime("%Y-%m-%d")
     except (TypeError, ValueError):
         pass
-    language = f" for {LANGUAGE_NAMES[plan.language]}" if plan.language in LANGUAGE_NAMES else ""
-    said = [STRINGS["ask_body"].format(version=plan.version, when=when, language=language)]
+    named = f" for {LANGUAGE_NAMES[plan.language]}" if plan.language in LANGUAGE_NAMES else ""
+    said = [STRINGS["ask_body"].format(version=plan.version, when=when, language=named)]
     n = len(plan.dropped)
     if n:
         said.append(STRINGS["ask_dropped_one"] if n == 1 else STRINGS["ask_dropped"].format(n=n))
@@ -260,6 +264,8 @@ def question(plan):
         said.append(STRINGS["ask_missing_one"] if n == 1 else STRINGS["ask_missing"].format(n=n))
     if plan.miner_reset:
         said.append(STRINGS["ask_miner"])
+    if language and plan.language != language and plan.language in LANGUAGE_NAMES:
+        said.append(STRINGS["ask_language"].format(language=LANGUAGE_NAMES[plan.language]))
     said.append(STRINGS["ask_restart"])
     return STRINGS["ask_title"], " ".join(said), STRINGS["ask_yes"]
 
@@ -291,6 +297,7 @@ def apply(plan, service=None, wait=settings_manager.LOCK_WAIT, flush_s=10):
             backup = path_utils.backup_to_trash(path)
         except OSError as e:
             return Outcome(False, STRINGS["backup_failed"].format(why=e.strerror or e))
+        undo = _undo(backup)
         if not settings_manager.save_settings(dict(plan.settings)):
             return Outcome(False, STRINGS["write_failed"], backup)
     finally:
@@ -310,7 +317,29 @@ def apply(plan, service=None, wait=settings_manager.LOCK_WAIT, flush_s=10):
             service.reload()
         except Exception as e:
             print(f"Settings import: the window's settings weren't read again: {e}")
+    if undo:
+        return Outcome(True, STRINGS["imported_undo"].format(undo=undo), backup, undo)
     return Outcome(True, STRINGS["imported"].format(backup=backup) if backup else STRINGS["imported_first"], backup)
+
+
+def _undo(backup):
+    """The way back (SI-6): the settings before, as an export beside their dated copy, so
+    Import takes them -> its path, or None (no settings before, or ones that can't be read or written: the dated copy
+    is still there)."""
+    if not backup:
+        return None
+    try:
+        with open(backup, "rb") as f:
+            before = json.loads(path_utils.decode_text(f.read(), None, "strict", name=os.path.basename(backup)))
+        if not isinstance(before, dict):
+            return None
+        stamp = os.path.splitext(os.path.basename(backup))[0].split(".", 1)[-1]
+        undo = os.path.join(os.path.dirname(backup), UNDO_NAME.format(stamp=stamp))
+        _write_json(undo, build(before))
+        return undo
+    except (OSError, ValueError, TypeError) as e:
+        print(f"Settings import: the way back wasn't kept as an export: {e}")
+        return None
 
 
 # --- the folders not on this PC (Needs you) ------------------------------------------------------------------------ #

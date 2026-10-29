@@ -134,7 +134,7 @@ def test_import_asks_once_before_anything_is_replaced_and_yes_replaces_then_rest
         assert wait_until(lambda: shell.restarts, 10)
         assert shell.restarts == [True]
         assert _file()["words_per_day"] == 12 and _file()["anki_sync_decks"] == {"ja": ["日本語::採掘", "日本語::アニメ"]}
-        assert shell.bar_line.lines[-1].startswith("Settings imported. Your settings before are in ")
+        assert shell.bar_line.lines[-1].startswith("Settings imported. To go back, import ")
     finally:
         _close(page)
 

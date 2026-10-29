@@ -155,7 +155,44 @@ def test_the_settings_before_are_kept_whole_in_a_dated_copy(ja, export_dir):
     old = _bytes(path)
     outcome = settings_io.apply(settings_io.read(out))
     assert outcome.ok and outcome.path and _bytes(outcome.path) == old
-    assert _trash() == [os.path.basename(outcome.path)] and outcome.path in outcome.message
+    assert sorted(_trash()) == sorted([os.path.basename(outcome.path), os.path.basename(outcome.undo)])
+    assert outcome.message == f"Settings imported. To go back, import {outcome.undo}"
+
+
+def test_the_way_back_is_an_export_import_takes_and_it_puts_the_settings_before_back(ja, export_dir):
+    """SI-6: undoing an import is Import again, never a copy by hand."""
+    out = str(export_dir / "s.json")
+    _install({"target_language": "zh", "words_per_day": 3})
+    settings_io.export(out)
+    _install(ja)
+    before = _signatures("ja")
+    outcome = settings_io.apply(settings_io.read(out))
+    assert os.path.basename(outcome.undo).startswith("Surasura settings before import ")
+    back = settings_io.read(outcome.undo, isdir=lambda p: True)
+    assert back.refused is None and back.language == "ja"
+    assert settings_io.apply(back).ok
+    assert _signatures("ja") == before
+    assert _file() == {k: v for k, v in ja.items() if k not in ("reinforce_segmentation", "hide_satoru")} | {
+        "logic": back.settings["logic"]}
+
+
+def test_no_settings_before_or_unreadable_ones_keep_only_the_dated_copy(export_dir):
+    out = str(export_dir / "s.json")
+    _install({"target_language": "ja"})
+    settings_io.export(out)
+    with open(path_utils.get_settings_path(), "w", encoding="utf-8") as f:
+        f.write("{broken")
+    outcome = settings_io.apply(settings_io.read(out))
+    assert outcome.ok and outcome.undo is None and outcome.path in outcome.message and len(_trash()) == 1
+
+
+def test_a_file_of_the_other_language_says_surasura_opens_in_it(zh, export_dir):
+    _install(zh)
+    out = str(export_dir / "s.json")
+    settings_io.export(out)
+    plan = settings_io.read(out, isdir=lambda p: True)
+    assert "Surasura opens in Chinese." in settings_io.question(plan, "ja")[1]
+    assert "opens in" not in settings_io.question(plan, "zh")[1] and "opens in" not in settings_io.question(plan)[1]
 
 
 def test_with_no_settings_yet_the_import_writes_them_and_says_so(export_dir):

@@ -111,6 +111,7 @@ class _Anki:
         monkeypatch.setattr(anki_connect, "probe", lambda url, *a, **k: {"ok": self.open})
         monkeypatch.setattr(anki_sync, "sync", self._sync)
         monkeypatch.setattr(anki_sync, "sync_backlog", self._backlog)
+        monkeypatch.setattr(anki_sync, "sync_young", lambda *a, **k: (0, None))
         # Known from Anki, the one sync order's last part (`sync_all`, laptop round 7 #43): never a real Anki here
         self.signals = []
         monkeypatch.setattr(anki_sync, "read_known_signal", lambda *a, **k: self.signals.append(a[0]))
@@ -833,6 +834,7 @@ def test_a_second_program_writing_known_words_is_never_written_across(live, monk
     _synced_once("ja")
     monkeypatch.setattr(anki_connect, "probe", lambda url, *a, **k: {"ok": True})
     monkeypatch.setattr(anki_sync, "sync_backlog", lambda *a, **k: None)
+    monkeypatch.setattr(anki_sync, "sync_young", lambda *a, **k: (0, None))
     monkeypatch.setattr(anki_sync, "KNOWN_LOCK_WAIT", 0.3)
     path = os.path.join(h.root(), "User Files", "ja", "KnownWord.json")
     before = open(path, "rb").read()

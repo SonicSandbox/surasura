@@ -745,6 +745,18 @@ def test_every_door_a_row_names_has_its_words_and_pending_doors_are_named():
     assert set(catalog.pending(registered)) <= set(catalog.PENDING_OPENERS)
 
 
+def test_a6_9_junbans_settings_show_one_preview_order_and_the_deck_rows_door_says_it_chooses_the_deck(qapp):
+    # a tester saw two *Preview order* buttons (the *Which cards* row's door and the Preview row's): the same window,
+    # the same words, so neither said what was different — the deck row's door names the deck instead
+    page, _store = make_page(dict(ALL_ON, enable_junban=True), "ja")
+    junban = [d for r in catalog.ROWS if r.section == "junban" for d in page.rows[r.id].doors.values()]
+    labels = [d.text() for d in junban]
+    assert labels.count(S.DOORS["junban"][0]) == 1, labels
+    scope = page.rows["junban_scope"].doors["junban"]
+    assert scope.text() == S.ROW_DOORS["junban_scope"]["junban"][0] != S.DOORS["junban"][0]
+    assert "deck" in scope.toolTip().lower()
+
+
 # --- the sliced build (B4) --------------------------------------------------------------------------------------------- #
 def test_the_page_is_built_in_slices_of_a_few_milliseconds_and_says_ready_once(qapp):
     store = Recorder(ALL_ON)

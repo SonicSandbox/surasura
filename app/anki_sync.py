@@ -57,6 +57,12 @@ BACKLOG_FILE = "anki_backlog.json"
 # read again in full, once. 2: a field is read as its one word (`anki_match.card_word`: 「撒く」 -> 撒く).
 # 3: in NFKC (ﾊﾞｼｯと -> バシッと).
 BACKLOG_VERSION = 3
+# The young cards of the same decks (Piyo ぴよ, Sonic 2026-10-29): each studied card not yet mature, its word and its
+# interval, so a practice round ranks the words still being learned first (`app/practice.py`) with Anki closed. Derived
+# data, read-only on Anki; a version change reads every young note again.
+YOUNG_FILE = "anki_young.json"
+YOUNG_VERSION = 1
+MATURE_DAYS = 21                    # Anki's own line: a card is mature from a 21-day interval
 
 # analyzer.has_target_language, built from the same ranges (app/unicode_ranges.py) — importing the
 # analyzer would load fugashi/pandas into the dashboard (I6). The copy this replaced stopped at U+9FAF,
@@ -123,6 +129,9 @@ class SyncResult:
     total_after: int = 0           # the known total the replace writes (`total_known`: the file now, for a dry run)
     changed: bool = False          # replace / restore with `expect`: the numbers moved since they were confirmed;
                                    # nothing was written (the numbers now are in this result)
+    # sync: the notes it read (notesInfo), handed to the young cards' read beside it (`sync_all`) so a card studied
+    # today isn't asked for twice; emptied there, never shown
+    read: list = field(default_factory=list, repr=False, compare=False)
 
 
 class _KnownFileError(Exception):
@@ -325,6 +334,16 @@ def _multi_ids(url, queries):
     return counts
 
 
+def _edited_days(since):
+    """The n of Anki's `edited:n` that covers every edit since `since` (an ISO time): whole days back, plus one for
+    Anki's day boundary. None without a usable `since` (a first read)."""
+    try:
+        elapsed = (datetime.now() - datetime.fromisoformat(str(since))).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    return int(max(0.0, elapsed) // 86400) + 2
+
+
 def _ids_and_edits(url, query, since):
     """(the note ids `query` finds, those among them whose text was edited since `since`) in ONE request.
 
@@ -333,11 +352,9 @@ def _ids_and_edits(url, query, since):
     once more at most, harmlessly. A review never counts, only an edit. No usable `since` (a first read)
     asks the one question; an Anki too old for `edited:` fails the second slot, and no edits is the answer.
     Raises AnkiError as `find_notes` does when the first slot fails."""
-    try:
-        elapsed = (datetime.now() - datetime.fromisoformat(str(since))).total_seconds()
-    except (TypeError, ValueError):
+    days = _edited_days(since)
+    if days is None:
         return anki_connect.find_notes(url, query), set()
-    days = int(max(0.0, elapsed) // 86400) + 2
     replies = anki_connect.multi([{"action": "findNotes", "params": {"query": query}},
                                   {"action": "findNotes", "params": {"query": f"({query}) edited:{days}"}}], url)
     found, edits = (list(replies) + [None, None])[:2]
@@ -524,6 +541,7 @@ def _sync(language, url, decks, fields, include_suspended, full):
     todo = [n for n in note_ids if n not in seen or n in edited]
     notes = anki_connect.notes_info(url, todo)
     result.scanned = len(notes)
+    result.read = notes
     terms = _terms_from_notes(notes, fields, language, result)
 
     # Re-read right before writing: never append to a stale in-memory copy.
@@ -631,12 +649,10 @@ def backlog_keys(language):
     return keys
 
 
-def _backlog_entry(note, fields, language):
-    """{word, keys, source, freqsort} for one backlog note, or None when it holds no usable word. The
-    word comes from the known sync's WORD field (`word_field`: Auto = the first; never the "Also read"
-    field, even on a note type that lacks the word field), read the way Junban reads it
-    (`anki_match.card_word`: 「撒く」 and 撒く<br>まく are 撒く), so the report and the reorder agree on a
-    card's word."""
+def _note_word(note, fields, language):
+    """A notesInfo note's word, or None when it holds none: the known sync's WORD field (`word_field`: Auto = the
+    first; never the "Also read" field, even on a note type that lacks the word field), read the way Junban reads it
+    (`anki_match.card_word`: 「撒く」 and 撒く<br>まく are 撒く). The backlog and the young cards both read it here."""
     from app import anki_match
     note_fields = note.get("fields") if isinstance(note.get("fields"), dict) else {}
     ordered = sorted(note_fields, key=lambda name: _field_order(note_fields[name]))
@@ -647,6 +663,20 @@ def _backlog_entry(note, fields, language):
     word = anki_match.card_word(value.get("value", "") if isinstance(value, dict) else "", language)
     if not word or not _has_target(word, language):
         return None
+    return word
+
+
+def _backlog_entry(note, fields, language):
+    """{word, keys, source, freqsort} for one backlog note, or None when it holds no usable word. The
+    word comes from the known sync's WORD field (`word_field`: Auto = the first; never the "Also read"
+    field, even on a note type that lacks the word field), read the way Junban reads it
+    (`anki_match.card_word`: 「撒く」 and 撒く<br>まく are 撒く), so the report and the reorder agree on a
+    card's word."""
+    from app import anki_match
+    word = _note_word(note, fields, language)
+    if word is None:
+        return None
+    note_fields = note.get("fields") if isinstance(note.get("fields"), dict) else {}
     keys = [word]
     folded = anki_match.fold_kana(word) if language == "ja" else word
     if folded != word:
@@ -666,7 +696,8 @@ def _backlog_entry(note, fields, language):
 def sync_all(language, url, decks, fields, settings, include_suspended=False, full=False, progress=None):
     """Every known-words sync, in one order (the window's automatic sync and *Sync now*, the Tk dashboard's,
     `surasura-cli known-sync`): the studied words (`sync`), the same decks' new cards (`sync_backlog`, for the report's
-    backlog marks), then Known from Anki (`read_known_signal`: your suspended or marked cards) -> `(result, signal)`.
+    backlog marks), their young cards (`sync_young`, for Piyo's practice rounds), then Known from Anki
+    (`read_known_signal`: your suspended or marked cards) -> `(result, signal)`.
     Before, the 3.0 window's sync stopped after the backlog, so the signal was read only by Connect's own known-sync
     — which the window's 5-minute sync nearly always throttled — and a card you suspended and marked never counted
     (laptop round 7 #43). The words the signal marks are words this sync made known: they join its `added` and
@@ -675,16 +706,24 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
     trusted this time.
     `progress(what, done, total)`: the command line's progress lines. Never raises (each part keeps its own rule)."""
     if progress is not None:
-        progress("reading Anki", 0, 2)
+        progress("reading Anki", 0, 3)
     result = sync(language, url, decks, fields, include_suspended=include_suspended, full=full)
     if getattr(result, "error", None):
         return result, None                 # Anki or KnownWord.json can't be trusted this time: nothing more read
     if progress is not None:
-        progress("reading Anki's new cards", 1, 2)
+        progress("reading Anki's new cards", 1, 3)
     try:
         sync_backlog(language, url, decks, fields)
     except Exception as e:                  # a backlog read that fails never costs the sync its result
         print(f"Anki sync: the backlog read failed ({e})")
+    if progress is not None:
+        progress("reading Anki's young cards", 2, 3)
+    try:
+        sync_young(language, url, decks, fields, read=getattr(result, "read", None))
+    except Exception as e:                  # nor does the young cards' read
+        print(f"Anki sync: the young cards' read failed ({e})")
+    if isinstance(getattr(result, "read", None), list):
+        result.read = []                    # read: the notes aren't kept past the sync
     signal = read_known_signal(language, url, decks, fields, settings)
     marked = len((signal or {}).get("marked") or ())
     if marked and result is not None:
@@ -760,6 +799,167 @@ def sync_backlog(language, url, decks, fields):
         except OSError as e:
             return count_backlog(language), f"Could not save your Anki backlog: {e}"
         return len(entries), None
+
+
+# --------------------------------------------------------------------------- #
+# The young cards (Piyo ぴよ's practice words) — the studied cards of the same decks not yet mature
+# --------------------------------------------------------------------------- #
+def _young_path(language):
+    return os.path.join(get_user_files_path(language), YOUNG_FILE)
+
+
+def young_lock_name(language):
+    return f"anki-young-{language}"
+
+
+def young_query(decks, interval=None):
+    """'(deck:"A" OR deck:"B") -is:new -is:suspended prop:ivl=<interval>': the notes with a studied card of that
+    interval in days (0 while it is in its first learning steps); without `interval`, every young one
+    (`prop:ivl<MATURE_DAYS`). A suspended card is put away, never being learned."""
+    terms = " OR ".join(f'deck:"{anki_connect.escape_query(d)}"' for d in _clean_decks(decks))
+    ivl = f"prop:ivl<{MATURE_DAYS}" if interval is None else f"prop:ivl={int(interval)}"
+    return f"({terms}) -is:new -is:suspended {ivl}"
+
+
+def load_young(language, path=None):
+    """The saved young cards' record (or the one at `path`), or {} when there is none or it cannot be read."""
+    try:
+        with open(path or _young_path(language), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+
+
+def young_words(language, path=None):
+    """[(word, interval)] of the saved young cards (or the record at `path`), the least settled first (the shortest
+    interval; among equals the newest note), each word once. [] for anyone who never synced, or once every young card
+    has grown mature."""
+    notes = load_young(language, path).get("notes")
+    rows = []
+    for note_id, entry in (notes.items() if isinstance(notes, dict) else ()):
+        if not isinstance(entry, dict) or not isinstance(entry.get("word"), str) or not entry["word"]:
+            continue
+        interval = entry.get("interval")
+        if isinstance(interval, bool) or not isinstance(interval, int):
+            continue
+        try:
+            newest = -int(note_id)
+        except ValueError:
+            newest = 0
+        rows.append((interval, newest, entry["word"]))
+    out, seen = [], set()
+    for interval, _newest, word in sorted(rows):
+        if word not in seen:
+            seen.add(word)
+            out.append((word, interval))
+    return out
+
+
+def count_young(language):
+    """How many young notes with a word the saved record holds — 0 when none has been read yet."""
+    notes = load_young(language).get("notes")
+    return sum(1 for e in (notes.values() if isinstance(notes, dict) else ())
+               if isinstance(e, dict) and isinstance(e.get("word"), str) and e["word"])
+
+
+def _young_notes(url, decks, since):
+    """({note id: the shortest interval of its young cards}, the young notes edited since `since`, whether the decks
+    hold any studied note) in ONE request: a findNotes per interval, 0 to MATURE_DAYS - 1 days, shortest first; the
+    decks' studied notes (`scope_query`: an empty answer there is Anki open on another profile, or the decks renamed —
+    not every card grown mature); and with `since` Anki's `edited:n` over the young ones (`_edited_days`; an Anki too
+    old for it fails that slot, and no edits is the answer). Raises AnkiError when an interval's or the decks' search
+    fails: a record missing some intervals would rank words wrongly."""
+    actions = [{"action": "findNotes", "params": {"query": young_query(decks, days)}} for days in range(MATURE_DAYS)]
+    actions.append({"action": "findNotes", "params": {"query": scope_query(decks)}})
+    days = _edited_days(since)
+    if days is not None:
+        actions.append({"action": "findNotes", "params": {"query": f"({young_query(decks)}) edited:{days}"}})
+    replies = list(anki_connect.multi(actions, url)) + [None] * len(actions)
+    intervals = {}
+    for interval, reply in zip(range(MATURE_DAYS + 1), replies):
+        if not isinstance(reply, dict) or reply.get("error") is not None or not isinstance(reply.get("result"), list):
+            error = reply.get("error") if isinstance(reply, dict) else None
+            raise AnkiError(f"Anki could not search your decks: {error or 'no answer'}", kind="action")
+        if interval < MATURE_DAYS:
+            for note_id in anki_connect._int_ids(reply["result"]):
+                intervals.setdefault(note_id, interval)
+    studied = bool(replies[MATURE_DAYS]["result"])
+    edits = replies[MATURE_DAYS + 1] if days is not None else None
+    edited = edits.get("result") if isinstance(edits, dict) and edits.get("error") is None else None
+    return intervals, set(anki_connect._int_ids(edited if isinstance(edited, list) else [])), studied
+
+
+def sync_young(language, url, decks, fields, read=None):
+    """Read the young cards of `decks` into `User Files/<lang>/anki_young.json`: each note with a studied card not yet
+    mature (an interval under MATURE_DAYS; never a new or suspended card), its word (`_note_word`, as the backlog reads
+    it) and the shortest interval of those cards — what Piyo's practice rounds rank first (`app/practice.py`), read
+    from this file with Anki closed.
+
+    Read-only on Anki, and two requests at most beside the sync's own (notesInfo in chunks of 250): notesInfo carries no interval and the known
+    sync reads only new or edited notes, while every review moves an interval with no edit — so one request asks the
+    notes of each interval (Anki's `prop:ivl=n` searches, 0 to 20 days, in one `multi`: no card is rendered, unlike
+    cardsInfo, and no search per card, unlike getIntervals) with the young notes edited since the last read. A note
+    the record doesn't hold yet, or one edited, takes its word from `read` (the notes the known sync read a moment
+    before: a card studied today, an edit) and only otherwise from a second request, notesInfo (a first read, a
+    mature card forgotten back to young, other decks or fields).
+    Written under its lock (`anki-young-<lang>`: two programs' syncs never interleave a read and a write) with a temp
+    file and os.replace, and only when what it holds changed. A failed read keeps the previous file; no young card at
+    all, in decks that still hold studied notes, writes an empty record (every card grew mature); none studied at all
+    keeps the last one (another profile open, the decks renamed). Never raises: returns `(count, error)`."""
+    decks = _clean_decks(decks)
+    fields = [str(f) for f in (fields or [])]
+    if not decks:
+        return 0, "Choose at least one deck first."
+    url = url or anki_connect.DEFAULT_URL
+    try:
+        from app import locks
+        held = locks.take(young_lock_name(language), "reading Anki's young cards", wait=KNOWN_LOCK_WAIT)
+    except Exception as e:                  # Busy: another program reads them right now; nothing written here
+        return count_young(language), f"Anki's young cards weren't read this time ({e})."
+    try:
+        return _sync_young(language, url, decks, fields, read)
+    finally:
+        held.release()
+
+
+def _sync_young(language, url, decks, fields, read=None):
+    old = load_young(language)
+    same_scope = (old.get("version") == YOUNG_VERSION and old.get("decks") == sorted(decks)
+                  and old.get("fields") == fields)
+    cached = old.get("notes") if same_scope and isinstance(old.get("notes"), dict) else {}
+    try:
+        intervals, edited, studied = _young_notes(url, decks, old.get("synced_at") if cached else None)
+        todo = [n for n in intervals if str(n) not in cached or n in edited]
+        fresh = {n.get("noteId"): n for n in read or () if isinstance(n, dict)}
+        ask = [n for n in todo if n not in fresh]
+        notes = [fresh[n] for n in todo if n in fresh] + (anki_connect.notes_info(url, ask) if ask else [])
+    except AnkiError as e:
+        return count_young(language), str(e)
+    if not studied and cached:
+        return count_young(language), ("Anki found no studied card in your decks (another profile open, or the decks "
+                                       "renamed?), so the last young cards were kept.")
+    entries = {}
+    for note_id, interval in intervals.items():
+        entry = cached.get(str(note_id))
+        if note_id not in edited and isinstance(entry, dict) and isinstance(entry.get("word"), str):
+            entries[str(note_id)] = {"word": entry["word"], "interval": interval}
+    for note in notes:
+        note_id = note.get("noteId")
+        if note_id in intervals:
+            # a note with no usable word is kept with "" so it isn't read again at every sync
+            entries[str(note_id)] = {"word": _note_word(note, fields, language) or "", "interval": intervals[note_id]}
+    # Nothing it holds changed: the file stays as it is — unless edits were read and its time (the edits' cursor) is a
+    # day old, so a note edited without a new word (a Hint, a Meaning) isn't read again at every sync for days.
+    if same_scope and old.get("notes") == entries and not (edited and _edited_days(old.get("synced_at")) > 2):
+        return count_young(language), None
+    record = {"version": YOUNG_VERSION, "synced_at": _now_iso(), "decks": sorted(decks), "fields": fields,
+              "notes": entries}
+    try:
+        _atomic_write_json(_young_path(language), record, indent=None)
+    except OSError as e:
+        return count_young(language), f"Could not save your Anki young cards: {e}"
+    return count_young(language), None
 
 
 # --------------------------------------------------------------------------- #

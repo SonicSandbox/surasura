@@ -30,9 +30,11 @@ frozen `View`:
 
 Every user-facing word is here or in the window's strings; nothing here imports Qt, Tk or pandas (the import guard).
 """
+import calendar
 import operator
 import os
 import re
+import time
 from collections import Counter, namedtuple
 from itertools import chain
 
@@ -95,6 +97,9 @@ Episode = namedtuple("Episode", Episode._fields + ("text",),
 #   text (alpha 4 M1, A4M1-3): what Anki Miner can't mine yet, this file being one (`connect.library.waits_for`,
 #   Connect's one rule) — "books" (a book or a text, by its file's own type) or "audio" (a podcast's or an
 #   audiobook's), else False; False in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("added",),
+                     defaults=tuple(Episode._field_defaults.values()) + (None,))
+#   added (L6.3): when the store took it in (`added_at`), what `still_arriving` reads; None in a cache from before
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -114,6 +119,9 @@ GoalWork = namedtuple("GoalWork", "key work_id title cover_title media source n_
 GoalPiece = namedtuple("GoalPiece", "item_ids line piece_id", defaults=(None,))
 #   piece_id (LM11b G3, IK-6): the piece its files are — what *Same show as…* joins a Goal show by; None when made
 #   without one. Tiles never enter the first screen's cache
+GoalPiece = namedtuple("GoalPiece", GoalPiece._fields + ("first",), defaults=(None, None))
+#   first (L6.3): its lowest episode number, None when one of its files has none — whether it comes next after a part
+#   done in Current (`drag.when_done`)
 # --- end W3.2 Q2
 Month = namedtuple("Month", "label rows")
 Need = namedtuple("Need", "key work_id title line episodes cover_title")
@@ -366,6 +374,43 @@ def runs(numbers):
         else:
             out.append((n, n))
     return out
+
+
+# --- L6.3: may a title whose every file is watched finish by itself? (`app/qt/drag.when_done` asks) ---------------- #
+ARRIVING_ALONE_S = 24 * 3600        # its newest file came in this long after the one before it: on its own …
+ARRIVING_RECENT_S = 14 * 24 * 3600  # … and within this long: it may still be airing (a weekly show), never finished early
+
+
+def _seconds(stamp):
+    """The store's `added_at` (`2026-10-28T18:20:01.123456Z`, UTC) -> seconds since the epoch, or None."""
+    try:
+        return calendar.timegm(time.strptime(str(stamp)[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (TypeError, ValueError):
+        return None
+
+
+def still_arriving(episodes, now=None):
+    """Whether a title may still be arriving (L6.3 R4, caught up ≠ finished without an airing field): its newest file
+    came in on its own — over `ARRIVING_ALONE_S` after the one before it — within the last `ARRIVING_RECENT_S`. Files
+    that came in together (a setup's first look, a season downloaded at once) never are; nor one file alone. A file
+    with no arrival time (a cache from before) can't tell: True (the offer asks)."""
+    stamps = [e.added for e in episodes]
+    if None in stamps:
+        return True
+    if len(stamps) < 2:
+        return False
+    before, newest = (_seconds(t) for t in sorted(stamps)[-2:])     # the store's stamps sort as text: two parsed
+    if before is None or newest is None:
+        return True
+    now = time.time() if now is None else now
+    return newest - before > ARRIVING_ALONE_S and now - newest < ARRIVING_RECENT_S
+
+
+def numbers_gap(episodes):
+    """Whether the numbered files leave a hole (*Ep 1–4, 6*: Ep 5 is still to come, L6.3 R5); files with no number (a
+    special, a video) don't count."""
+    return len(runs([e.number for e in episodes if e.number is not None])) > 1
+# --- end L6.3
 
 
 def range_text(media, numbers, count):
@@ -692,7 +737,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
-                 ask=ask, looking=looking, text=_waits_for(item, media))
+                 ask=ask, looking=looking, text=_waits_for(item, media), added=item.get("added_at"))
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -1484,9 +1529,10 @@ def _goal_work(key, ps, works, guessed):
     for p in ps:
         nums = [] if media == "youtube" else \
             [episode_number(it.get("title") or (it.get("rel_path") or "").rsplit("/", 1)[-1]) for it in p]
+        low = min(nums) if nums and None not in nums else None                       # L6.3: every file numbered
         nums = [n for n in nums if n is not None]
         pieces_.append(GoalPiece(item_ids=tuple(it["id"] for it in p), line=range_text(media, nums, len(p)),
-                                 piece_id=p[0].get("piece_id")))
+                                 piece_id=p[0].get("piece_id"), first=low))
     return GoalWork(key=key, work_id=first.get("work_id"), title=title, cover_title=work.get("title") or title,
                     media=media, source=source_of(first, work) or "disk", n_files=len(files), line=line,
                     pieces=tuple(pieces_), item_ids=tuple(it["id"] for it in files),

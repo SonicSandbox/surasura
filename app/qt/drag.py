@@ -185,6 +185,72 @@ def show_finished(row, ep):
     return ep.show, [e.id for e in mine]
 
 
+# --- L6.3 (Sonic 2026-10-28: a title finishes by itself, a split's parts join forward; Kura's scope, PROVISIONAL) --- #
+def _range(media, numbers, count):
+    return view_rows.range_text(media, [n for n in numbers if n is not None], count)
+
+
+def when_done(view, row, now=None, pending=False):
+    """What a row whose every file is watched does — ONE rule for the last file's Done and Up Next's ✓ Done (scope
+    `tracks/logic/work/L6.3/scope.md`):
+    - ("join", piece_ids, ahead, ids, line) — a split's part joins forward: R1 the title's next part in Current (this
+      part goes just before it, `ahead`); R2 its next part in Goal, whose first episode comes after this part's last
+      (it comes up after this one, into Current). One join, one Undo; never a part into Finished. A join finishes
+      nothing, so R4 / R5's checks (asked before a finish) don't hold it back.
+    - ("finish",) — R3: it finishes by itself, through the Finish path (`DragMoves.to_finished`).
+    - ("offer",) — today's *finished with it?*, for a whole title: R4 it may still be arriving (its newest file came
+      in on its own lately, `view_rows.still_arriving`, or it already has files in Finished: a show still airing), R5
+      a file still to come (a hole in its numbers, one in New arrivals, a video waiting for its subtitle), R6 *Keep
+      studying watched episodes* on (nothing moves by itself), a write still on its way (`pending`: the view may not
+      hold it yet), a group, a row of no title, the first screen's cache (Goal, New arrivals and Finished not read).
+    - None — nothing is offered (the plain ✓; Up Next's Done says why): hato's mix; a part of a title whose other part waits in Current, in Goal or inside a
+      group (a split part never enters Finished, 70 Q11: it waits for the rest), or that can't join now (R6, pending,
+      the cache, no piece).
+    `view` the window's view model (None: as the cache)."""
+    if not finishes(row):
+        return None
+    if getattr(row, "group", False):
+        return ("offer",)
+    rows_ = view.rows if view is not None else ()
+    first = split_first(rows_, row)
+    if view is None or view.cached or row.work_id is None:
+        return None if first else ("offer",)
+    still = view.keep_watched or pending             # R6 / a write on its way: nothing moves by itself
+    mine = pieces_of(row)
+    last = _last_number(row)
+    if first:                                        # `split_first`'s own reading of "later"
+        later = [r for r in rows_ if r.key != row.key and r.work_id == row.work_id and not getattr(r, "group", False)
+                 and (last is None or _first_number(r) is None or _first_number(r) > last)]
+        target = min(later, key=lambda r: (_first_number(r) is None, _first_number(r) or 0, r.index))
+        if still or not mine or target.piece_id is None:
+            return None
+        return ("join", [target.piece_id] + mine, True, ids_of(row) + ids_of(target),
+                _range(target.media, [e.number for e in target.episodes], len(target.episodes)))
+    tiles = [w for w in (getattr(view.goal, "works", None) or ()) if w.work_id == row.work_id]
+    if any(r.key != row.key and (r.work_id == row.work_id or row.work_id in (getattr(r, "works", None) or ()))
+           for r in rows_) or any(w.group for w in tiles):
+        return None                                  # an earlier part of it waits in Current, or in a group
+    goal = [p for w in tiles for p in w.pieces]
+    if goal:
+        nxt = [p for p in goal if p.first is not None and last is not None and p.first > last]
+        if len(nxt) != len(goal) or any(p.piece_id is None for p in nxt) or still or not mine:
+            return None                              # an earlier or unnumbered part waits in Goal: a part, never Finished
+        up = min(nxt, key=lambda p: p.first)
+        return ("join", mine + [up.piece_id], False, ids_of(row) + list(up.item_ids), up.line)
+    if still or any(e.waiting for e in row.episodes) or any(a.work_id == row.work_id for a in (view.arrivals or ())) \
+            or any(r.work_id == row.work_id for m in (view.finished or ()) for r in m.rows) \
+            or view_rows.numbers_gap(row.episodes) or view_rows.still_arriving(row.episodes, now):
+        return ("offer",)
+    return ("finish",)
+
+
+def pieces_of(row):
+    """The pieces a row stands for: its own, and the second of a show the Soon line runs through (B2-2)."""
+    out = [row.piece_id, getattr(row, "soon_piece", None) if getattr(row, "soon_from", None) is not None else None]
+    return [p for p in dict.fromkeys(out) if p is not None]
+# --- end L6.3
+
+
 def lines_for(view, rows_):
     """The top-20 line and the Soon line for `rows_` (the drop's order) as the reader would draw them: the top line
     after the row holding the same number of available files as before (split through it when it falls inside one),
@@ -1659,12 +1725,13 @@ class DragController(QObject):
         else:
             self._finish(d.title, d.ids, keys)
 
-    def _finish(self, title, ids, keys=(), many=False):
+    def _finish(self, title, ids, keys=(), many=False, text=None):
         """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Leave its new cards out of
         your order*, each written as `set_finished` (live, never greyed). finish-pending: the drop and *Leave its new
         cards out* each a press until the host's re-order for it lands (Anki moves after the Generate it starts: the
         bar's arc — the row has left this list)."""
-        ticket = Ticket((strings.PICKS_FINISHED if many else strings.DRAG_FINISHED).format(title=title), keys, ids)
+        ticket = Ticket(text or (strings.PICKS_FINISHED if many else strings.DRAG_FINISHED).format(title=title), keys,
+                        ids)
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False,
                       anki=on_bar) is None:
             return None
@@ -2200,21 +2267,25 @@ class DragController(QObject):
     # --- a Done ----------------------------------------------------------------------------------------------------- #
     def done(self, row, ep):
         """A stone or ✓ Done (the one path, S12): watched (its toast and Undo) — a stone already watched turns back —
-        and, when no file of the row is left unwatched, the finish toast (A2 #2; not for a split's first part or hato's
-        mix). `ep` None: Up Next's ✓ Done with every file already watched — nothing to mark, the finish toast offered
-        (G3.2; a split's first part or hato's mix: the bar says why it can't)."""
+        and, when no file of the row is left unwatched, L6.3's rule (`when_done`): it finishes by itself or joins its
+        next part (`_by_itself`), or the finish toast offers it (A2 #2), or nothing (a split's part, hato's mix). `ep`
+        None: Up Next's ✓ Done with every file already watched — nothing to mark, the same rule (G3.2; where nothing is
+        offered, the bar says why)."""
         if self.refused() is not None:
             return
         title = row.title
         if ep is None:
             view = self.page.view_model
-            if not finishes(row):
-                self.say(strings.WELL_UNLIT_MIX)
-            elif split_first(view.rows if view is not None else (), row):
-                self.say(strings.WELL_UNLIT_SPLIT)
-            else:
+            verdict = when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
+            if verdict is not None and verdict[0] != "offer":
+                self._by_itself(row, verdict)
+            elif verdict is not None:
                 self.win.toasts.show(strings.DONE_ALL.format(n=len(row.episodes)), buttons=[
                     (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
+            elif not finishes(row):
+                self.say(strings.WELL_UNLIT_MIX)
+            else:                                    # a split's part (L6.3: never Finished on its own)
+                self.say(strings.WELL_UNLIT_SPLIT)
             return
         # W-1: does this mark move what the list counts (the store's one rule; never a video waiting for its subtitle)
         moves_list = view_rows.mark_moves_list(row.tier, ep, getattr(self.page.view_model, "keep_watched", False))
@@ -2226,8 +2297,14 @@ class DragController(QObject):
             return
         left = [e for e in row.episodes if not e.watched and e.id != ep.id]
         view = self.page.view_model
-        rows_ = view.rows if view is not None else ()
-        if not left and finishes(row) and not split_first(rows_, row):
+        verdict = None if left else when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
+        if verdict is not None and verdict[0] != "offer":
+            ticket = Ticket(strings.DONE_ONE.format(title=title, ep=ep.label), (row.key,), (ep.id,))
+            if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
+                return
+            self._by_itself(row, verdict)
+            return
+        if verdict is not None:                      # ("offer",): today's *finished with it?*
             ticket = Ticket(strings.DONE_ALL.format(n=len(row.episodes)), (row.key,), (ep.id,))
             if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
                 return
@@ -2295,14 +2372,26 @@ class DragController(QObject):
             self.win.services.settings.set({"hints_seen": seen + [hint]})
     # --- end W-1
 
-    def to_finished(self, row):
-        """*Move to Finished* (the finish toast, ⋯): the row leaves Current at once; the Finished toast."""
+    def to_finished(self, row, text=None):
+        """*Move to Finished* (the finish toast, ⋯): the row leaves Current at once; the Finished toast (`text`: L6.3's
+        own words for a finish by itself)."""
         if self.refused() is not None:
             return
         base = self.base()
         if base is not None and any(r.key == row.key for r in base.rows):
             self._ahead(without(base, row.key, FINISHED), gone=(row.key, FINISHED))
-        self._finish(row.title, ids_of(row), (row.key,))
+        self._finish(row.title, ids_of(row), (row.key,), text=text)
+
+    def _by_itself(self, row, verdict):
+        """L6.3: what Surasura does by itself once every file of `row` is watched (`when_done`'s "finish" or "join"),
+        through the paths a hand would take — the Finish path (D14's *Keep* / *Leave out*, its Anki half after its
+        Generate) or the store's join (one command). Its toast's Undo takes back that move; the ✓ stays."""
+        if verdict[0] == "finish":
+            self.to_finished(row, text=strings.DONE_FINISHED.format(title=row.title))
+            return
+        _kind, pieces, ahead, ids, line = verdict
+        text = (strings.DONE_JOINED if ahead else strings.DONE_CAME_UP).format(line=line)   # ahead: a Current part
+        self._give(Ticket(text, (row.key,), ids), lambda t: self.writer.join(pieces, label=t, ahead=ahead))
 
     def finish_show(self, row, show, ids):
         """LM11b G5: *Move {show} to Finished* (the Done's toast) — the finish of that show's episodes in the group alone

@@ -123,12 +123,7 @@ def comes_first(part, target):
     return a is not None and b is not None and a < b
 
 
-def pieces_of(row):
-    """The pieces a row stands for: its own, and the second of a show the Soon line runs through (B2-2)."""
-    out = [row.piece_id]
-    if getattr(row, "soon_from", None) is not None:
-        out.append(getattr(row, "soon_piece", None))
-    return [p for p in dict.fromkeys(out) if p is not None]
+pieces_of = drag.pieces_of          # the pieces a row stands for (B2-2): one rule, L6.3's join forward reads it too
 
 
 def same_show(a, b):

@@ -747,7 +747,8 @@ def test_W1_a_hand_ask_still_mines_an_episode_marked_watched_while_the_option_is
     row, ep = next((r, e) for kind, r, _l in lst.model().entries if kind in (rows.HERO, rows.ROW)
                    for e in r.episodes if e.status is not None and e.status.kind == "waiting" and e.status.tone != "warn"
                    and (rows.action_of(r.status, r.episodes, None, r.media_word)[2] or rows.Ask(0, (), None)).ids
-                   and e.id in rows.action_of(r.status, r.episodes, None, r.media_word)[2].ids)
+                   and e.id in rows.action_of(r.status, r.episodes, None, r.media_word)[2].ids
+                   and any(not o.watched and o.id != e.id for o in r.episodes))   # L6.3: never its last (that finishes)
     before = rows.action_of(ep.status, (ep,), None, ep.media_word or row.media_word)
     assert before[0] == "mine-now"
     row_before = rows.action_of(row.status, row.episodes, None, row.media_word)

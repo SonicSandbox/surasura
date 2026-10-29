@@ -76,6 +76,7 @@ import time
 import unicodedata
 from collections import namedtuple
 
+from app import audiobooks
 from app import episode_names as en
 from app import library_store as ls
 from app.path_utils import decode_text, restart_trash_clock, write_source_marker
@@ -869,12 +870,13 @@ def _save_cache(language, data):
         log.warning("The source folders' times couldn't be saved (%s); they're listed again next look", path)
 
 
-def _listing(folder, links=None):
+def _listing(folder, links=None, audio=None):
     """(texts, epubs, videos {name lower: (path, stat)}, subfolders, placeholders, unread) of one folder, from the
     listing alone; `unread`: an entry whose stat failed (held by another program, a share's hiccup) was passed over, so
     the folder's time is not kept (H1). None when it can't be listed (gone, offline). `links` (alpha 4, a look's own
     folder): a list given gets [(path, why)] of what isn't a subfolder to read as it is — a folder link (why None:
-    the look decides, `_Look._link`), a cloud folder not on this computer, a Windows shortcut (`.lnk`)."""
+    the look decides, `_Look._link`), a cloud folder not on this computer, a Windows shortcut (`.lnk`). `audio` (Hon,
+    H-7): a list given gets the names of its audio files (`audiobooks.is_audio`, never stat'd here)."""
     from app.connect import runner
     texts, epubs, vids, subs, ghosts, unread = [], [], {}, [], 0, False
     try:
@@ -907,6 +909,8 @@ def _listing(folder, links=None):
                     kind = "text" if ls.is_content_name(low) else "epub" if low.endswith(EPUB) else \
                         "video" if runner.video_name(entry.name) else None
                     if kind is None:
+                        if audio is not None and audiobooks.is_audio(entry.name):
+                            audio.append(entry.name)
                         continue
                     st = entry.stat(follow_symlinks=False)
                 except OSError:
@@ -1022,6 +1026,7 @@ class _Look:
         self.back = []               # D5: known originals whose record says they moved, listed in their place again
         self.notes = {}              # alpha 4: {a folder's key: {path: [kind, why or patterns]}} found this look
         self.listed_now = set()      # alpha 4: the folders listed this look (their notes are this look's)
+        self.heard = []              # Hon (H-7): the folders listed this look holding audio files or disc folders
         self.read_roots = []         # alpha 4: the folders being read (their keys), for a link's target (`_link`)
 
     # --- the look ------------------------------------------------------------------------------------------------- #
@@ -1103,6 +1108,14 @@ class _Look:
             self._take(new, books)
             if self.to_copy:
                 self._copy_done(final=True)
+            if not self.stopped():
+                try:                                         # Hon (H-6…H-8): never the end of the look
+                    self._audiobooks(bool(books))
+                except Exception as e:                       # busy, or anything: their folders listed again next look
+                    for folder, _names in self.heard:
+                        self.unsettled.add(ls.path_key(folder))
+                    (log.info if isinstance(e, ls.StoreError) else log.warning)(
+                        "Audiobooks wait for the next look: %r", e, exc_info=not isinstance(e, ls.StoreError))
         self._keep_hashes()
         self._say(final=True)
         self.out["shows"] = len(self.shows)
@@ -1227,8 +1240,8 @@ class _Look:
                 seen[fkey] = held
                 stack.extend(reversed(held.get("subs") or []))
                 continue
-            links = []
-            listed = _listing(folder, links)
+            links, audio = [], []
+            listed = _listing(folder, links, audio)
             if listed is None:
                 if folder == root or _lost(root):
                     return None
@@ -1238,6 +1251,9 @@ class _Look:
             self._load()
             self.listed_now.add(fkey)
             texts, epubs, vids, subs, ghosts, unread = listed
+            discs = any(audiobooks.disc_number(os.path.basename(s)) is not None for s in subs)
+            if audio or discs:                               # its audiobooks read after the take-in (`_audiobooks`);
+                self.heard.append((folder, None if discs else audio))   # its audio names (None: disc folders too)
             if links:                                        # alpha 4: its links are checked again every look
                 self.unsettled.add(fkey)                     # (a target gone or back changes no folder's time)
             for link, why in links:                          # alpha 4: a folder link followed, else said
@@ -1292,6 +1308,198 @@ class _Look:
                 self.held_videos.append((waits, {e[1] for e in episodes}))
             self._say()
         return seen, new, known, books
+
+    # --- audiobooks (Hon, 3.0 E2; H-6…H-8 PROVISIONAL; rules in `app/audiobooks.py`) ------------------------------- #
+
+    def _audiobooks(self, books_came):
+        """The audiobooks of the folders listed this look that hold audio (`audiobooks.find` — only where the listing
+        named an audio file or a disc folder: never a second listing of every folder; a disc folder's by the one above;
+        never a cloud placeholder's bytes, never a file still being written: that folder waits) taken in as ONE waiting
+        item each (H-7) — paired with a library book when sure (H-6), asking about one when unsure (H-8) — in one
+        batch; one already in, kept out (S6) or moved (its files' sizes the same, its old first file gone: recorded on
+        its item, D5) is never a second. When a book came this look, or an answer said *No* (`AUDIOBOOKS_STALE`), the
+        lone ones already in are weighed again from their records (no file opened). Nothing is moved, renamed or
+        written in the learner's folders; only the audio's tags and a candidate book's package are read."""
+        from app.extract import clean_name
+        top = ls.path_key(self.roots.get(self.root_id) or self.base).rstrip("/")
+        folders = []
+        for folder, names in self.heard:
+            if audiobooks.disc_number(os.path.basename(os.path.normpath(folder))) is not None and \
+                    ls.path_key(folder).rstrip("/") != top:     # a disc folder's are the folder above's (never above
+                folder, names = os.path.dirname(os.path.normpath(folder)), None     # the source's own folder)
+            if all(f != folder for f, _n in folders):
+                folders.append((folder, names))
+        stale = books_came or self.store.meta().get(ls.AUDIOBOOKS_STALE) == "1"
+        if not folders and not stale:
+            return
+        self._load()
+        held_in = self.store.audiobooks()                    # one per item
+        records = {r["item_id"]: r["audiobook"] for r in held_in}
+        by_file = {}                                         # {a recorded audiobook's file: (its item, its size)}
+        for r in held_in:
+            for f, n in zip(r["audiobook"].get("files") or (), r["audiobook"].get("sizes") or ()):
+                by_file[ls.path_key(os.path.abspath(f))] = (r["item_id"], n)
+        found = []
+        for folder, names in folders:
+            if self.stopped():
+                return
+            if names and self._known_audio(folder, names, by_file):
+                continue                                     # S19: every file recorded as it is: no tag read again
+            waits = []
+
+            def held(st, waits=waits):
+                if ls.is_placeholder(st) or self._recent(st):
+                    waits.append(st)
+                    return True
+                return False
+            found += audiobooks.find(folder, held=held)
+            if waits:                                        # listed again next look (a placeholder: until it is here)
+                self.unsettled.add(ls.path_key(folder))
+        fresh, grown = [], []
+        for ab in found:
+            k = _key(ab.files[0])
+            same = next((by_file[ls.path_key(os.path.abspath(f))][0] for f in ab.files
+                         if ls.path_key(os.path.abspath(f)) in by_file), None)
+            if same is not None:                             # one in already: a file added, re-ordered or re-tagged
+                old = records[same]
+                if (list(ab.files), list(ab.sizes)) != (list(old.get("files") or ()), list(old.get("sizes") or ())):
+                    grown.append((same, k, ab, old))
+                continue
+            if k in self.origins:
+                continue
+            if k in self.ex_paths or audiobooks.sizes_key(ab) in self.ex_shas:    # Removed (S6), here or moved
+                self.out["skipped"] += 1
+                continue
+            fresh.append(ab)
+        lone = [(r["item_id"], r["audiobook"]) for r in held_in if not r["audiobook"].get("book")] if stale else []
+        wanted = fresh + [audiobooks.from_record(rec) for _i, rec in lone]
+        books = self._library_books(wanted) if wanted else []
+        answers = self.store.audiobook_answers() if books else {}
+        by_sizes = {}                                        # D5: a moved audiobook is its item's, by its files' sizes
+        for r in held_in:
+            sizes = tuple(r["audiobook"].get("sizes") or ())
+            if sizes:
+                by_sizes.setdefault(sizes, []).append((r["item_id"], r["key"]))
+        batch = []
+        for same, k, ab, old in grown:                       # a new first file: recorded on its item too
+            if k not in self.origins:
+                f = self._audio_found(ab, clean_name, item_id=same, pair=old)
+                if f is not None:
+                    batch.append(f)
+        for ab in fresh:
+            f = self._audio_found(ab, clean_name, pair=audiobooks.decide(ab, books, answers) if books else None)
+            if f is None:
+                continue
+            gone = [(i, k) for i, k in by_sizes.get(tuple(ab.sizes), ())
+                    if not self._origin_away(k) and not os.path.exists(self._origin_path(k))]
+            if len({i for i, _k in gone}) == 1:              # moved or renamed: the same item (its answer kept too)
+                f["item_id"] = gone[0][0]
+                f["moved_from"] = [k[len(ls.SOURCE_KEY):] for _i, k in gone]
+                old = records.get(gone[0][0]) or {}          # as it was paired (or asked, or alone): a move changes none
+                f["audiobook"].update(book=old.get("book"), ask=old.get("ask"))
+                f.pop("rel", None)
+            self.out["found"] += 1
+            batch.append(f)
+        self._commit(batch)
+        for same, _k, ab, _old in grown:                     # its records say what it holds now (Connect's list)
+            fields = {x: v for x, v in audiobooks.record(ab).items() if x not in ("book", "ask")}
+            self.store.pair_audiobook(same, fields=fields)
+        for item_id, rec in lone:                            # weighed again: the next book after a *No*, a new book
+            if self.stopped():
+                return
+            pair = audiobooks.decide(audiobooks.from_record(rec), books, answers) if books else None
+            said = audiobooks.set_pair(dict(rec), pair)
+            if (said["book"], said["ask"]) != (rec.get("book"), rec.get("ask")):
+                self.store.pair_audiobook(item_id, book=said["book"], ask=said["ask"])
+        if stale and self.store.meta().get(ls.AUDIOBOOKS_STALE) == "1":
+            self.store.audiobooks_weighed()
+
+    def _audio_found(self, ab, clean_name, item_id=None, pair=None):
+        """An audiobook's found-record for `take_in` (its first file's stats), or None (gone meanwhile). New: its item
+        at `Library/<title> (audio)/<its sizes' key> <first file>` (no file made: one item per audiobook, the same files
+        in two sources one); `item_id`: recorded on that item. `pair`: `decide`'s Pair, or a record's {book, ask}."""
+        try:
+            st = os.stat(ab.files[0])
+        except OSError:
+            return None
+        key = audiobooks.sizes_key(ab)
+        show = clean_name(ab.title) or "Audiobook"
+        rec = audiobooks.record(ab, pair if not isinstance(pair, dict) else None)
+        if isinstance(pair, dict):
+            rec.update(book=pair.get("book"), ask=pair.get("ask"))
+        f = {"origin": ab.files[0], "size": st.st_size, "mtime_ns": st.st_mtime_ns, "show": show, "sha256": key,
+             "audiobook": rec}
+        if item_id is not None:
+            f["item_id"] = item_id
+        else:
+            f["rel"] = f"{ls.CONTENT_FOLDER}/{show} (audio)/{key[6:14]} {os.path.basename(ab.files[0])}"
+        return f
+
+    def _known_audio(self, folder, names, by_file):
+        """Is every audio file of `folder` (its listing's `names`) recorded on an audiobook at its size? (One stat each,
+        no tag read: an unchanged audiobook costs a full look nothing more.)"""
+        for name in names:
+            path = os.path.join(folder, name)
+            held = by_file.get(ls.path_key(os.path.abspath(path)))
+            try:
+                if held is None or os.stat(path).st_size != held[1]:
+                    return False
+            except OSError:
+                return False
+        return True
+
+    def _origin_away(self, key):
+        """D5: is the source of an origin (its content key) away — whether its file left is unknown (G5)?"""
+        o = self.origins.get(key[len(ls.SOURCE_KEY):]) if key.startswith(ls.SOURCE_KEY) else None
+        return o is not None and self._root_away(o.root)
+
+    def _origin_path(self, key):
+        """The path an origin's content key names (`src:<path key>`), from the origins read this look, else the key's."""
+        o = self.origins.get(key[len(ls.SOURCE_KEY):]) if key.startswith(ls.SOURCE_KEY) else None
+        return o.origin if o is not None and o.origin else key[len(ls.SOURCE_KEY):]
+
+    def _library_books(self, wanted):
+        """The library's books as `audiobooks.decide` weighs them: one per EPUB among the origins (`<epub>#<n>`) — its
+        sha256, one of its parts' items, its characters (its parts' copies' bytes / 3) — and only a book whose file name
+        is like one of `wanted`'s titles, or that sits near one, has its package's titles read (a look never opens every
+        EPUB; a cloud placeholder's never: its name stands for it)."""
+        by_epub = {}
+        for o in self.origins.values():
+            if o.version or o.moved_to or not o.origin or not ls._EPUB_PART.search(o.origin):
+                continue
+            epub = o.origin.rsplit("#", 1)[0]
+            by_epub.setdefault(ls.path_key(epub), [epub, o.sha256, o.item_id, []])[3].append(o.rel_path)
+        if not by_epub:
+            return []
+        forms = set()
+        for ab in wanted:
+            forms |= audiobooks._forms(ab.titles)[0]
+        alike, near = [], []                                 # a name like a title's; else, only then, the near ones
+        for held in by_epub.values():
+            stem = os.path.splitext(os.path.basename(held[0]))[0]
+            if audiobooks._title_level(forms, audiobooks._forms([stem])[0]):
+                alike.append(held)
+            elif any(audiobooks._near(ab.folder, os.path.dirname(held[0])) < 2 for ab in wanted):
+                near.append(held)
+        out = []
+        for epub, sha, item, rels in alike or near:
+            stem = os.path.splitext(os.path.basename(epub))[0]
+            chars = 0
+            for rel in rels:
+                try:
+                    chars += os.path.getsize(os.path.join(self.data_dir, rel)) // 3
+                except (OSError, TypeError):
+                    pass
+            try:
+                placeholder = ls.is_placeholder(os.stat(epub))
+            except OSError:
+                placeholder = True                           # gone or away: its name only
+            if placeholder:
+                out.append(audiobooks.Book(id=item, path=os.path.abspath(epub), titles=(stem,), chars=chars or None,
+                                           sha256=sha))
+            else:
+                out.append(audiobooks.book_of(epub, book_id=item, chars=chars or None, sha256=sha))
+        return out
 
     def _note(self, folder, path, kind, what):
         """Alpha 4: one thing to say about `path`, found while `folder` was listed (`notes`): kept with the folder's

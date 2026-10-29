@@ -216,7 +216,7 @@ def _label(text, name, parent, wrap=True):
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
-           "start_fresh")
+           "start_fresh", "same_book", "not_book")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs",
                      "open_anki")
 
@@ -848,7 +848,7 @@ class NeedsYou(QObject):
 
     # --- the actions ------------------------------------------------------------------------------------------- #
     WRITES = frozenset(("choose_file", "choose_folder", "choose_video", "link_these", "remove", "remove_episode",
-                        "remove_all", "this_one", "its_new"))
+                        "remove_all", "this_one", "its_new", "same_book", "not_book"))
 
     def available(self, name, entry=None, line=None):
         """Whether `name` has a callable here (its button shown)."""
@@ -1149,6 +1149,20 @@ class NeedsYou(QObject):
         writer = self.win.services.writer
         if self._give(entry.data["rel"], (), lambda t: writer.its_new(path, label=t), toast_it=False) is not None:
             self._say(strings.NEEDS_ITS_NEW.format(name=entry.data["rel"].rsplit("/", 1)[-1]))
+
+    # Hon (H-8): is this audiobook that book? Kept, never asked again (`Store.answer_audiobook`, no Undo: an answer)
+    def _do_same_book(self, entry, _line):
+        self._audiobook(entry, True)
+
+    def _do_not_book(self, entry, _line):
+        self._audiobook(entry, False)
+
+    def _audiobook(self, entry, yes):
+        writer = self.win.services.writer
+        item_id, key = entry.data["item_id"], entry.data["key"]
+        if self._give(entry.title, (item_id,), lambda t: writer.answer_audiobook(item_id, yes, key=key, label=t),
+                      toast_it=False) is not None:
+            self._say(strings.NEEDS_SAME_BOOK if yes else strings.NEEDS_NOT_BOOK)
 
     # T6: a source folder that is gone
     def _do_find_folder(self, entry, _line):

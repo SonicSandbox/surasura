@@ -383,11 +383,12 @@ def _chpl(data):
 
 
 # --- finding ------------------------------------------------------------------------------------------------------- #
-def find(folder, root=None):
+def find(folder, root=None, held=None):
     """The audiobooks of one folder (its disc folders joined in) -> [Audiobook], in name order. A disc folder's own
     files are its parent's (none here) unless it is the `root` looked at; disc folders named with a title
     (`吾輩は猫である CD1`, `坊っちゃん CD1`) join by that title, each title one audiobook; a folder holding a video has
-    none."""
+    none. `held(stat)`: True for an audio file that must not be opened yet (a cloud placeholder: its read would
+    download it; one still being written) — the folder gives none until the next look."""
     from app.connect.runner import video_file, video_name
     if disc_number(os.path.basename(os.path.normpath(folder))) is not None and \
             (root is None or os.path.normpath(folder) != os.path.normpath(root)):
@@ -401,6 +402,8 @@ def find(folder, root=None):
             elif video_name(entry.name) and video_file(entry.name, entry.stat().st_size):
                 return []
             elif is_audio(entry.name):
+                if held is not None and held(entry.stat()):
+                    return []
                 own.append((None, entry.path))
         for title, folders in discs.items():
             for disc in folders:
@@ -410,8 +413,10 @@ def find(folder, root=None):
                     if video_name(entry.name) and video_file(entry.name, entry.stat().st_size):
                         return []
                     if is_audio(entry.name):
-                        held = own if not title else titled.setdefault(title, ([], disc.name))[0]
-                        held.append((disc_number(disc.name), entry.path))
+                        if held is not None and held(entry.stat()):
+                            return []
+                        into = own if not title else titled.setdefault(title, ([], disc.name))[0]
+                        into.append((disc_number(disc.name), entry.path))
     except OSError:
         return []
     groups = []                                              # [(files, the folder's name as a title or None)]
@@ -642,3 +647,59 @@ def decide(audiobook, books, answers=None):
             s.length is not False and not tie and
             (s.near < 2 or s.author or (s.title == EXACT and s.length is True)))
     return Pair(book, SURE if sure else ASK, key)
+
+
+# --- the library's record (PR 2: `sources` finds, `library_store` keeps) ------------------------------------------- #
+def record(audiobook, pair=None):
+    """An audiobook as its item's origin record holds it (`"audiobook"`): what Connect will need (its files in order,
+    their sizes, the length, its chapters) and what `decide` weighs again without opening a file (`from_record`);
+    `book` (paired: sure or answered) or `ask` (the one question) from `pair`."""
+    rec = {"folder": audiobook.folder, "files": list(audiobook.files), "sizes": list(audiobook.sizes or ()),
+           "size": audiobook.size, "seconds": audiobook.seconds, "chapters": audiobook.chapters,
+           "title": audiobook.title, "titles": list(audiobook.titles), "authors": list(audiobook.authors),
+           "volume": audiobook.volume, "book": None, "ask": None}
+    if pair is not None:
+        set_pair(rec, pair)
+    return rec
+
+
+def set_pair(rec, pair):
+    """`decide`'s Pair written into a record: *sure* / *answered* -> `book`, *ask* -> `ask`; None -> neither. A book
+    is named by its EPUB (path and sha256), one of its parts' item (`Book.id`) and its title."""
+    rec["book"] = rec["ask"] = None
+    if pair is None:
+        return rec
+    book = pair.book
+    said = {"item": book.id, "epub": book.path, "sha256": book.sha256, "key": pair.key,
+            "title": next(iter(book.titles), None)}
+    if pair.how == ASK:
+        rec["ask"] = said
+    else:
+        rec["book"] = dict(said, how=pair.how)
+    return rec
+
+
+def from_record(rec):
+    """The Audiobook a record holds (`record`), its files never opened."""
+    sizes = tuple(rec.get("sizes") or ())
+    return Audiobook(folder=rec.get("folder") or os.path.dirname(next(iter(rec.get("files") or ()), "")),
+                     files=list(rec.get("files") or ()), title=rec.get("title") or "",
+                     titles=list(rec.get("titles") or ()), authors=list(rec.get("authors") or ()),
+                     volume=rec.get("volume"), seconds=rec.get("seconds"),
+                     size=rec.get("size") if rec.get("size") is not None else sum(sizes), sizes=sizes,
+                     chapters=rec.get("chapters"))
+
+
+def sizes_key(audiobook):
+    """The audiobook's identity by its bytes' sizes in order (`audio:<sha1>`): its origin record's `sha256` (a Remove
+    keeps it out by this after a rename or a move, S6) and its item's name; the same files copied elsewhere share it."""
+    sizes = ",".join(str(n) for n in (audiobook.sizes or (audiobook.size,)))
+    return "audio:" + hashlib.sha1(sizes.encode("utf-8")).hexdigest()
+
+
+def length_text(seconds):
+    """`9 h 12 min`, `48 min`; '' when unknown."""
+    if not seconds:
+        return ""
+    minutes = int(round(seconds / 60))
+    return f"{minutes // 60} h {minutes % 60:02d} min" if minutes >= 60 else f"{minutes} min"

@@ -2021,7 +2021,10 @@ class RowDelegate(QStyledItemDelegate):
         m = g["main"]
         mid = slab.top() + slab.height() / 2
         # a video's channel and hato's mix keep their line; a numbered piece's range and watched count are the string's
-        sub = row.line if row.line and (row.media == "youtube" or row.source == "hato") else ""
+        # Hon (H-6 PROVISIONAL): a book's title holding its audiobook says so under its title
+        heard = any(e.label == view_rows.STRINGS["with_audiobook"] for e in row.episodes)
+        sub = row.line if row.line and (row.media == "youtube" or row.source == "hato") else \
+            view_rows.STRINGS["with_audiobook"] if heard else ""
         t_h, s_h = round(13.5 * f * 1.3), round(12 * f * 1.3)
         top = mid - (t_h + 1 + s_h) / 2 if sub else mid - t_h / 2
         # one line each, cut with "…" inside the title's column, left of the string (the full title is in the tooltip):

@@ -1529,9 +1529,11 @@ class _Look:
         kept out (Removed, S6) keeps its transcript out too: never a title of its own."""
         claimed, listed = self.claimed, self.transcribed
         self.claimed, self.transcribed = [], []
-        held = self.store.audiobooks() if claimed or listed or self.heard else []
+        held = self.store.audiobooks(every=True) if claimed or listed or self.heard else []
         by_file = {ls.path_key(os.path.abspath(f)): r for r in held for f in r["audiobook"].get("files") or ()}
-        by_item = {r["item_id"]: r for r in held}
+        by_item = {}                                         # (each source's record: its files; one per item below)
+        for r in held:
+            by_item.setdefault(r["item_id"], r)
         for ab, item, text, origin in claimed:
             if self.stopped():
                 return
@@ -1559,9 +1561,7 @@ class _Look:
             except (ls.StoreError, OSError) as e:
                 log.info("A transcript waits for the next look (%s): %r", path, e)
                 self._wait(os.path.dirname(path))
-            if outcome == "wait":
-                self._wait(os.path.dirname(path))
-        for r in held:                                       # a check that waited (a book's copy unreadable then)
+        for r in by_item.values():                           # a check that waited (a book's copy unreadable then)
             if audiobooks.transcript_use(r["audiobook"]) == audiobooks.UNCHECKED and not self.stopped():
                 self.store.set_transcript(r["item_id"])
 

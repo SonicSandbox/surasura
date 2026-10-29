@@ -14,6 +14,7 @@ Why these matter: Sonic's own vol 1 (an M4B, its `.srt` and its EPUB side by sid
 book's and the transcript's. Every look here runs on real files built on disk (an EPUB of real text, M4Bs and MP3s
 with real tags and lengths, transcripts of real sentences) and proves the source folders are never written to.
 """
+import logging
 import os
 import unicodedata
 
@@ -29,6 +30,16 @@ from tests.test_library_store_support import RESOURCES
 from tests.test_sources_scan import _drive, _empty, _look
 
 STAR, ISEKAI, SAIYU = "星屑の剣士になりたくて！", "異界転生", "西游记"
+
+
+@pytest.fixture(autouse=True)
+def _no_look_swallows_an_error(caplog):
+    """The look keeps going past an audiobook's error (logged, its folders listed again): here, any such error fails
+    the test — a defect never hides behind the next look."""
+    yield
+    said = [r.getMessage() for r in caplog.get_records("call") if r.levelno >= logging.WARNING and
+            "Audiobooks wait" in r.getMessage()]
+    assert not said, said
 
 
 # --- builders ------------------------------------------------------------------------------------------------------ #
@@ -188,6 +199,8 @@ def test_an_edited_transcript_is_copied_again_over_its_copy():
         with open(os.path.join(data_dir, *now["rel_path"].split("/")), encoding="utf-8") as f:
             assert f.read().count("-->") == len(grown)
         assert _record(store, item["id"])["transcript"]["size"] == os.path.getsize(srt)
+        copy = os.path.join(data_dir, *now["rel_path"].split("/"))
+        assert store.item(item["id"])["size"] == os.path.getsize(copy)            # the item's own stats follow
 
 
 def test_a_renamed_audiobook_folder_keeps_its_item_and_its_transcripts_copy():
@@ -243,6 +256,7 @@ def test_the_same_audiobook_and_transcript_in_two_sources_is_one_item_counted_on
         a, b = store.add_source(src), store.add_source(other)
         _look(store, language, a)
         _look(store, language, b)
+        assert _look(store, language, b, full=True)["waiting"] == 0             # nothing left waiting (no re-listing)
         _look(store, language, a, full=True)
         [item] = _audio_items(store)
         assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 1
@@ -287,6 +301,47 @@ def test_a_renamed_and_edited_transcript_leaves_no_copy_behind():
         [now] = _audio_items(store)
         assert now["id"] == item["id"] and now["rel_path"].endswith(f"{STAR} 第1巻.srt")
         assert sorted(c for c in os.listdir(folder) if c.endswith(".srt")) == [f"{STAR} 第1巻.srt"]
+
+
+def test_a_file_added_to_an_audiobook_or_its_audio_renamed_keeps_its_transcript():
+    """Its records written anew (a new first file: `grown`; its audio renamed: D5's move) still hold its transcript:
+    the same item, counted by it."""
+    from tests.test_audiobooks import _mp3
+    language = "ja"
+    store, _data_dir = _empty(language)
+    src = _drive("driveA")
+    folder = os.path.join(src, ISEKAI)
+    _audio_folder(folder, ISEKAI, 3000)
+    _srt(os.path.join(folder, f"{ISEKAI}.srt"), _lines(language)[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root)
+        [item] = _audio_items(store)
+        _settle(_mp3(os.path.join(folder, "00.mp3"), seconds=600, frames={"TALB": ISEKAI, "TRCK": "0"}))
+        _look(store, language, root, full=True)
+        os.rename(os.path.join(folder, "02.mp3"), os.path.join(folder, "02b.mp3"))
+        _look(store, language, root, full=True)
+        [now] = _audio_items(store)
+        rec = _record(store, item["id"])
+        assert now["id"] == item["id"] and now["availability"] == "available"
+        assert rec["files"][0].endswith("00.mp3") and rec["transcript"]["origin"].endswith(f"{ISEKAI}.srt")
+        assert store.audiobook_hovers()[item["id"]]["transcript"] == audiobooks.TEXT
+
+
+def test_a_check_that_couldnt_be_made_is_made_by_a_later_look(monkeypatch):
+    """The book's copies unreadable when the pair is made: never counted, nothing said — a later look checks it."""
+    language = "ja"
+    store, _data_dir, src, _srt_path = _paired(language, STAR, _lines(language)[:12])
+    with store:
+        root = store.add_source(src)
+        with monkeypatch.context() as patched:
+            patched.setattr(ls.Store, "_transcript_found", lambda self, said, book: None)
+            _look(store, language, root, first=True)
+        [heard] = [r for r in _book_items(store, STAR)[1] if r[3] == "audio"]
+        assert heard[4] == "waiting" and audiobooks.transcript_use(_record(store, heard[0])) == audiobooks.UNCHECKED
+        assert [a for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == []
+        _look(store, language, root, full=True)
+        assert audiobooks.transcript_use(_record(store, heard[0])) == audiobooks.TIMING
 
 
 def test_a_placeholder_audiobook_holds_its_transcript_back_until_it_is_here(monkeypatch):
@@ -364,6 +419,22 @@ def test_a_transcript_its_book_doesnt_hold_is_never_used_and_needs_you_says_so(l
         assert entry.title == f"The transcript beside 「{heard_title}」 doesn't match 「{title}」"
         assert entry.actions == () and "doesn't use it" in entry.say
         assert store.item(heard[0])["rel_path"] not in _counted(store)
+
+
+def test_a_paired_transcript_rewritten_as_another_text_is_checked_again():
+    """The check is the transcript's bytes': its file rewritten with another text's lines (copied over its copy, S5),
+    the next look checks it again — no longer the book's: not used, and *Needs you* says so."""
+    language = "ja"
+    store, _data_dir, src, srt = _paired(language, STAR, _lines(language)[:12])
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        [heard] = [r for r in _book_items(store, STAR)[1] if r[3] == "audio"]
+        assert audiobooks.transcript_use(_record(store, heard[0])) == audiobooks.TIMING
+        _srt(srt, _other_lines(language) * 2)
+        _look(store, language, root, full=True)
+        assert audiobooks.transcript_use(_record(store, heard[0])) == audiobooks.OTHER
+        assert [a["item_id"] for a in needs.asks_of(store) if a["kind"] == needs.AUDIOBOOK_TRANSCRIPT] == [heard[0]]
 
 
 def test_a_book_arriving_after_an_audiobook_counted_by_its_transcript_takes_the_count_back():
@@ -524,6 +595,8 @@ def _ab(title, volume=None, folder="f"):
     ([_ab("西游记")], ["a.srt", "b.srt"], {}),
     # a `.txt` is never a transcript (a book's text)
     ([_ab("西游记")], ["西游记.txt"], {}),
+    # a transcript with no volume beside two volumes of the title: neither's (never a guess)
+    ([_ab("異界転生 2", "2"), _ab("異界転生 3", "3")], ["異界転生.srt"], {}),
     # another volume's transcript is never this one's, even alone in the folder by name
     ([_ab("異界転生 2", "2")], ["異界転生 05.srt", "notes.srt"], {}),
 ))

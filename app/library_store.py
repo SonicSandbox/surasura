@@ -11462,13 +11462,14 @@ def _store_audiobook_rows(self, item_id=None):
     return [(k, i, _json_dict(t) or {}) for k, i, t in rows]
 
 
-def _store_audiobooks(self):
+def _store_audiobooks(self, every=False):
     """[{item_id, key, audiobook}] of every audiobook item, one each (its first live record: an item holding the same
-    audiobook from two sources keeps them alike, `pair_audiobook`) — what a look weighs again (one read)."""
+    audiobook from two sources keeps them alike, `pair_audiobook`) — what a look weighs again (one read); `every`: each
+    live record (a6: an item's files in each source, its transcript's claim found by any of them)."""
     with self._reading():
         out = {}
         for k, i, r in self._audiobook_rows():
-            out.setdefault(i, {"item_id": i, "key": k, "audiobook": r["audiobook"]})
+            out.setdefault(k if every else i, {"item_id": i, "key": k, "audiobook": r["audiobook"]})
         return list(out.values())
 
 
@@ -11941,8 +11942,8 @@ def _store_adopt_transcript_item(self, cmd, audio_item, text_item, origin=None):
     if a is None or s is None or a[2] != "waiting" or s[1] == "audio" or self._audiobook_rows(text_item):
         return False
     if origin:
-        self.conn.execute(f"DELETE FROM pairings WHERE item_id = ? AND content_key = ? AND "
-                          f"content_key >= 'src:' AND content_key < 'src;'", (text_item, origin_key(origin)))
+        self.conn.execute("DELETE FROM pairings WHERE item_id = ? AND content_key = ? AND "
+                          "content_key >= 'src:' AND content_key < 'src;'", (text_item, origin_key(origin)))
     self.conn.execute("UPDATE pairings SET item_id = ? WHERE item_id = ?", (text_item, audio_item))
     if s[0] != a[0]:
         self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (a[0], text_item))

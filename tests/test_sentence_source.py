@@ -372,8 +372,11 @@ class TestSourceBadgeRendering(unittest.TestCase):
                 self.assertIn("function fmtCueTime", content, "cue-time formatter missing")
                 self.assertIn("hover += ' @ ' + fmtCueTime(at)", content,
                               "the cue time must be appended to the hover label")
+                self.assertIn("hover += '–' + fmtCueTime(end)", content,
+                              "and its line's end (E5.1), when it is another second")
                 self.assertIn("data['At ' + n]", content,
                               "each extra sentence must get its own cue time")
+                self.assertIn("data['End ' + n]", content, "and its own line's end")
 
     def test_youtube_badge_is_a_link_that_opens_the_video(self):
         """For a YouTube source the VIDEO is the thing, not the transcript file. Click opens it at
@@ -408,7 +411,7 @@ class TestSourceBadgeRendering(unittest.TestCase):
         # t.text is the display-trimmed sentence; the pairing with its own source is the point here.
         # It is passed to the badge a second time as the 4th argument, which is what the optional
         # speech module reads — the badge speaks exactly the sentence shown next to it.
-        self.assertIn("${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at, t.text, c.aud)}",
+        self.assertIn("${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at, t.text, c.aud, c.end)}",
                       content,
                       "Zen must pair each sentence with its own source, anchor and cue time")
         # Class matched loosely — see test_badge_is_hidden_from_dictionary_extensions.

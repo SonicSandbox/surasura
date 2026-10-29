@@ -4,11 +4,10 @@ Spec: docs/agent instructions/Chinese_Script_Conversion_Spec.md §5.5. A deep li
 a snippet to find in the SOURCE FILE, so it has to be the file's own wording. With a Chinese script
 chosen, the report's sentence is converted text that doesn't occur in a file written in the other
 script. AnchorFinder therefore searches a converted copy of the file and returns the original text
-at the same offsets, which works because every conversion is length-preserving (zh_script I3). Cue
-times are offsets into the same file, so they keep working unchanged.
+at the same offsets, which works because every conversion is length-preserving (zh_script I3). Line
+times come from Connect's line reader (app/cues.py, E5.1), whose text is searched converted the same way.
 
-As-is must stay exactly the old search: `_hay` IS the raw text, and the memo signature is unchanged
-so nobody's anchor cache is discarded on upgrade.
+As-is must stay exactly the old search: `_hay` IS the raw text.
 """
 
 import json
@@ -55,31 +54,36 @@ def test_a_traditional_sentence_anchors_on_a_simplified_file(tmp_path, zh_resour
     assert anchor and anchor in line and raw.count(anchor) == 1
 
 
-def test_cue_time_survives_the_conversion(tmp_path):
+def test_line_times_survive_the_conversion(tmp_path):
+    """The line reader's text is searched converted too (length-preserving), so a Simplified report's sentence
+    finds its Traditional cue: 00:01:10,500 --> 00:01:14,000."""
     path = _write(tmp_path / "ep01.srt", TRAD_SRT)
     finder = AnchorFinder(script="s")
     anchor = finder.anchor(path, "许多学者认为，台湾必须持续学习新技术。")
     assert anchor and anchor in TRAD_SRT
-    assert finder.cue_time(path, anchor) == 70
+    assert finder.line(path, "许多学者认为，台湾必须持续学习新技术。") == (70.5, 74.0)
+    assert AnchorFinder().line(path, "许多学者认为，台湾必须持续学习新技术。") == (None, None), \
+        "as-is can't find converted text"
 
 
 def test_the_whitespace_tolerant_path_maps_back_too(tmp_path):
     """The spaced cue can't match verbatim; the loose search runs on the converted copy and must still
-    hand back a run of the ORIGINAL text."""
+    hand back a run of the ORIGINAL text. Its line is found without the spaces, as the tokenizer yields it."""
     path = _write(tmp_path / "ep01.srt", TRAD_SRT)
     finder = AnchorFinder(script="s")
     anchor = finder.anchor(path, "研究人员后来发现早餐很重要。")
     assert anchor and anchor in TRAD_SRT, anchor
-    assert finder.cue_time(path, anchor) == 120
+    assert finder.line(path, "研究人员后来发现早餐很重要｡") == (120, 123)
 
 
-def test_as_is_searches_the_raw_text_and_keeps_its_memo_signature(tmp_path):
+def test_as_is_searches_the_raw_text_and_signs_its_memo_with_the_line_reader(tmp_path):
+    """A memo from before E5.1 ([anchor, whole seconds]) is recomputed once: every signature names the line reader (and the engine)."""
     path = _write(tmp_path / "ep01.srt", TRAD_SRT)
     st = os.stat(path)
     as_is = AnchorFinder()
     assert as_is._hay(path) is as_is._raw(path)
-    assert as_is._file_sig(path) == [st.st_mtime, st.st_size]
-    assert AnchorFinder(script="t")._file_sig(path) == [st.st_mtime, st.st_size, "t"]
+    assert as_is._file_sig(path) == [st.st_mtime, st.st_size, as_is._lines()]
+    assert AnchorFinder(script="t")._file_sig(path) == [st.st_mtime, st.st_size, "t", as_is._lines()]
 
 
 def test_a_script_switch_does_not_reuse_the_other_scripts_answers(tmp_path):
@@ -90,11 +94,11 @@ def test_a_script_switch_does_not_reuse_the_other_scripts_answers(tmp_path):
     sentence = "经济部官员表示，半导体需求仍然强劲。"
 
     first = AnchorFinder(cache_path=memo)
-    assert first.resolve(path, sentence) == ("", None)
+    assert first.resolve(path, sentence) == ("", None, None)
     first.save_memo()
 
-    anchor, at = AnchorFinder(cache_path=memo, script="s").resolve(path, sentence)
-    assert anchor and anchor in TRAD_SRT and at == 5
+    anchor, at, end = AnchorFinder(cache_path=memo, script="s").resolve(path, sentence)
+    assert anchor and anchor in TRAD_SRT and (at, end) == (5, 8)
 
 
 # ---- the whole chain: analyzer -> CSV -> report ------------------------------------------------ #

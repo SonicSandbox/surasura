@@ -2,7 +2,6 @@ import os
 import re
 import sys
 import json
-import bisect
 import pandas as pd
 import webbrowser
 
@@ -178,11 +177,10 @@ class AnchorFinder:
     MIN_LEN = 5          # shorter than this is too generic to point at anything
     MAX_ANCHOR = 40      # bounds the whitespace-tolerant pattern
     MAX_CHUNKS = 6       # a sentence can span a dozen cues; a few of the longest is plenty
-
-    # Subtitle cue headers. SRT: '00:01:31,083 --> 00:01:33,118'.
-    # ASS/SSA: 'Dialogue: 0,0:01:31.08,0:01:33.11,Default,,...'.
-    _SRT_TIME = re.compile(r"(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->")
-    _ASS_TIME = re.compile(r"^Dialogue:[^,]*,\s*(\d{1,2}):(\d{2}):(\d{2})[.:](\d{1,2})", re.M)
+    # The memo's answers: [anchor, start, end]. A memo written before the times came from Connect's line reader
+    # (E5.1) holds [anchor, whole seconds] found otherwise, and is recomputed: its files' signatures differ. The
+    # signature also names the engine: the reader cleans lines as a Generate does, and that changes only with it.
+    LINES = "cues-1"
 
     def __init__(self, cache_path=None, script="asis", language=None):
         # The Chinese script the report's sentences were converted to (`zh_script`, already
@@ -195,11 +193,9 @@ class AnchorFinder:
         self._language = language
         self._converted = {}
         self._cache = {}
-        self._cues = {}
+        self._timelines = {}
         self._sidecars = {}
-        # Where each anchor was found. anchor() already located it; cue_time() used to scan the
-        # whole file again to rediscover the same offset, which was the single biggest cost in the
-        # pass (0.82s of 1.66s on a 1,500-file library).
+        # Where each anchor was found, so _original() hands back the file's own wording at that place.
         self._pos = {}
         # Optional on-disk memo so a RE-render (theme change, Words Per Day) doesn't redo the work.
         self._cache_path = cache_path
@@ -229,7 +225,7 @@ class AnchorFinder:
     def _original(self, path, needle, pos=None):
         """The file's own wording for `needle`, found at `pos` in the searched text (default: where
         _unique recorded it). As-is that IS `needle`. Remembers the position under the original
-        wording too, so cue_time() doesn't have to search for it again."""
+        wording too."""
         if self._script == "asis":
             return needle
         if pos is None:
@@ -350,14 +346,20 @@ class AnchorFinder:
                 self._sigs[path] = [st.st_mtime, st.st_size]
                 if self._script != "asis":
                     # Answers found through a conversion are re-verified after a script switch.
-                    # As-is keeps the old signature, so nobody's memo is thrown away on upgrade.
                     self._sigs[path].append(self._script)
+                self._sigs[path].append(self._lines())
             except OSError:
                 self._sigs[path] = None
         return self._sigs[path]
 
+    def _lines(self):
+        """The memo signature's last part: the line reader's version and the engine's (`LINES`)."""
+        from app.analyzer import ENGINE_REVISION
+        return f"{self.LINES}/{ENGINE_REVISION}"
+
     def resolve(self, abs_path, sentence):
-        """(anchor, cue_seconds) for a sentence, memoised across renders.
+        """(anchor, start, end) for a sentence, memoised across renders: the scroll-to-text anchor, and the
+        seconds (millisecond precision) its lines start and end at — None for a file with no timed lines.
 
         A file's entries are dropped whenever its (mtime, size) changes, so an edited source can
         never serve a stale anchor."""
@@ -371,14 +373,14 @@ class AnchorFinder:
             self._entries[abs_path] = entry
 
         hit = entry["a"].get(sentence)
-        if hit is not None:
-            return hit[0], hit[1]
+        if hit is not None and len(hit) == 3:       # (a gone file's old entry: its signature is None either way)
+            return hit[0], hit[1], hit[2]
 
         anchor = self.anchor(abs_path, sentence)
-        at = self.cue_time(abs_path, anchor) if anchor else None
-        entry["a"][sentence] = [anchor, at]
+        start, end = self.line(abs_path, sentence)
+        entry["a"][sentence] = [anchor, start, end]
         self._memo_dirty = True
-        return anchor, at
+        return anchor, start, end
 
     def save_memo(self):
         """Persist the memo, keeping ONLY the files this render actually used.
@@ -418,58 +420,28 @@ class AnchorFinder:
             self._sidecars[path] = data
         return self._sidecars[path]
 
-    def _cue_index(self, path):
-        """(offsets, seconds) for every cue in a timed file — parallel ascending lists.
+    def line(self, abs_path, sentence):
+        """(start, end) in seconds, millisecond precision, of the lines `sentence` is said in, or (None, None).
 
-        Subtitles carry their timings inline; a YouTube transcript is plain prose whose timings live
-        in its sidecar, so the cue texts are located in the file to give them offsets. Anything with
-        neither returns empty, which is how prose opts out of timestamps."""
-        if path not in self._cues:
-            offsets, seconds = [], []
-            low = path.lower()
-            if low.endswith(('.srt', '.ass', '.ssa')):
-                raw = self._raw(path)
-                pattern = self._ASS_TIME if low.endswith(('.ass', '.ssa')) else self._SRT_TIME
-                for match in pattern.finditer(raw):
-                    hh, mm, ss, _frac = match.groups()
-                    offsets.append(match.end())
-                    seconds.append(int(hh) * 3600 + int(mm) * 60 + int(ss))
-            else:
-                cues = self.sidecar(path).get('cues') or []
-                if cues:
-                    raw, pos = self._raw(path), 0
-                    for entry in cues:
-                        try:
-                            text, sec = entry[0], int(entry[1])
-                        except (TypeError, ValueError, IndexError, KeyError):
-                            continue
-                        if not isinstance(text, str) or not text:
-                            continue      # a hand-edited or truncated sidecar must not crash a render
-                        at = raw.find(text, pos)
-                        if at == -1:
-                            continue      # cue text was cleaned differently — skip, don't guess
-                        offsets.append(at)
-                        seconds.append(sec)
-                        pos = at + len(text)
-            self._cues[path] = (offsets, seconds)
-        return self._cues[path]
-
-    def cue_time(self, abs_path, anchor):
-        """Start time in whole seconds of the subtitle cue containing `anchor`, or None.
-
-        The anchor is verbatim file text, so its offset places it inside exactly one cue — no
-        guesswork, and no change to how the file was tokenized."""
-        offsets, seconds = self._cue_index(abs_path)
-        if not offsets or not anchor:
-            return None
-        # anchor() already located this; only fall back to scanning when called standalone.
-        pos = self._pos.get((abs_path, anchor))
-        if pos is None:
-            pos = self._raw(abs_path).find(anchor)
-        if pos == -1:
-            return None
-        i = bisect.bisect_right(offsets, pos) - 1
-        return seconds[i] if i >= 0 else None
+        The times are Connect's line reader's (`cues.timeline`, E5.1): the cues a card is cut from, read once per
+        file, so the journey, a card and a clip name one line. A sentence said across several lines runs from the
+        first one's start to the last one's end; one said more than once is its first time."""
+        timeline = self._timelines.get(abs_path)
+        if timeline is None:
+            from app import cues
+            try:
+                timeline = cues.timeline(abs_path, self._language or "ja", self._script)
+            except OSError:             # gone since the run: no times, as it has no anchor
+                timeline = cues.Timeline()
+            except Exception as e:      # an unreadable file: no times, never a failed report
+                print(f"Warning: could not read the lines of {abs_path}: {e}")
+                timeline = cues.Timeline()
+            self._timelines[abs_path] = timeline
+        found = timeline.line(sentence)
+        if found is None:
+            return None, None
+        from app.cues import seconds
+        return seconds(found[0]), seconds(found[1])
 
     def anchor(self, abs_path, sentence):
         """A snippet of `sentence` that occurs exactly once in the file, or "" if there is none."""
@@ -568,8 +540,9 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
     made before sources.json carried absolute paths fall back to the relative one.
 
     With a `finder`, each sentence also gets a `Frag N` — a snippet verified to occur exactly once
-    in the source file, which the report turns into a scroll-to-text link. Deliberately NOT named
-    "Context …": both templates collect example sentences with startsWith('Context ')."""
+    in the source file, which the report turns into a scroll-to-text link, and a timed file's sentence an
+    `At N` / `End N` — the seconds its lines start and end at, as Connect's line reader reads them (E5.1).
+    Deliberately NOT named "Context …": both templates collect example sentences with startsWith('Context ')."""
     for rec in records:
         for key in [k for k in rec if k.startswith("Src ")]:
             val = rec.get(key)
@@ -602,12 +575,14 @@ def _intern_sources(records, source_map, table, index, finder=None, audio_probe=
 
             if finder is not None:
                 if isinstance(sentence, str) and sentence:
-                    frag, at = finder.resolve(table[idx][2], sentence)
+                    frag, at, end = finder.resolve(table[idx][2], sentence)
                     if frag:
                         rec[f"Frag {n}"] = frag
-                        # Subtitles/transcripts: the cue this sentence sits in, shown on hover.
-                        if at is not None:
-                            rec[f"At {n}"] = at
+                    # Subtitles/transcripts: when the sentence's lines start and end (Connect's line reader), shown
+                    # on hover and opened by a video's link — found with or without an anchor.
+                    if at is not None:
+                        rec[f"At {n}"] = at
+                        rec[f"End {n}"] = end
 
             # Optional speech module: mark sentences whose audio is already on disk, so the badge
             # can show that clicking will play instantly instead of pausing to generate. Named

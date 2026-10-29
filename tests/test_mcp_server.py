@@ -6,13 +6,13 @@ import csv
 import json
 import os
 
-import anyio
 import pytest
 
 from app import analyzer, practice
 from app.cli import mcp_server, verbs
 
 pytest.importorskip("mcp")
+import anyio  # noqa: E402  (mcp's own dependency)
 from mcp import Client  # noqa: E402
 
 TALK = "今日は天気がいいから、映画を見に行こう。駅の前で待ってるね。"

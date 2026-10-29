@@ -129,6 +129,9 @@ class SyncResult:
     total_after: int = 0           # the known total the replace writes (`total_known`: the file now, for a dry run)
     changed: bool = False          # replace / restore with `expect`: the numbers moved since they were confirmed;
                                    # nothing was written (the numbers now are in this result)
+    # sync: the notes it read (notesInfo), handed to the young cards' read beside it (`sync_all`) so a card studied
+    # today isn't asked for twice; emptied there, never shown
+    read: list = field(default_factory=list, repr=False, compare=False)
 
 
 class _KnownFileError(Exception):
@@ -538,6 +541,7 @@ def _sync(language, url, decks, fields, include_suspended, full):
     todo = [n for n in note_ids if n not in seen or n in edited]
     notes = anki_connect.notes_info(url, todo)
     result.scanned = len(notes)
+    result.read = notes
     terms = _terms_from_notes(notes, fields, language, result)
 
     # Re-read right before writing: never append to a stale in-memory copy.
@@ -715,9 +719,11 @@ def sync_all(language, url, decks, fields, settings, include_suspended=False, fu
     if progress is not None:
         progress("reading Anki's young cards", 2, 3)
     try:
-        sync_young(language, url, decks, fields)
+        sync_young(language, url, decks, fields, read=getattr(result, "read", None))
     except Exception as e:                  # nor does the young cards' read
         print(f"Anki sync: the young cards' read failed ({e})")
+    if isinstance(getattr(result, "read", None), list):
+        result.read = []                    # read: the notes aren't kept past the sync
     signal = read_known_signal(language, url, decks, fields, settings)
     marked = len((signal or {}).get("marked") or ())
     if marked and result is not None:
@@ -879,7 +885,7 @@ def _young_notes(url, decks, since):
     return intervals, set(anki_connect._int_ids(edited if isinstance(edited, list) else []))
 
 
-def sync_young(language, url, decks, fields):
+def sync_young(language, url, decks, fields, read=None):
     """Read the young cards of `decks` into `User Files/<lang>/anki_young.json`: each note with a studied card not yet
     mature (an interval under MATURE_DAYS; never a new or suspended card), its word (`_note_word`, as the backlog reads
     it) and the shortest interval of those cards — what Piyo's practice rounds rank first (`app/practice.py`), read
@@ -888,8 +894,10 @@ def sync_young(language, url, decks, fields):
     Read-only on Anki, and two requests at most beside the sync's own: notesInfo carries no interval and the known
     sync reads only new or edited notes, while every review moves an interval with no edit — so one request asks the
     notes of each interval (Anki's `prop:ivl=n` searches, 0 to 20 days, in one `multi`: no card is rendered, unlike
-    cardsInfo, and no search per card, unlike getIntervals) with the young notes edited since the last read; a
-    second, notesInfo, reads the word only of a note the record doesn't hold yet or that was edited.
+    cardsInfo, and no search per card, unlike getIntervals) with the young notes edited since the last read. A note
+    the record doesn't hold yet, or one edited, takes its word from `read` (the notes the known sync read a moment
+    before: a card studied today, an edit) and only otherwise from a second request, notesInfo (a first read, a
+    mature card forgotten back to young, other decks or fields).
     Written under its lock (`anki-young-<lang>`: two programs' syncs never interleave a read and a write) with a temp
     file and os.replace, and only when what it holds changed. A failed read keeps the previous file; no young card at
     all writes an empty record (every card grew mature). Never raises: returns `(count, error)`."""
@@ -904,12 +912,12 @@ def sync_young(language, url, decks, fields):
     except Exception as e:                  # Busy: another program reads them right now; nothing written here
         return count_young(language), f"Anki's young cards weren't read this time ({e})."
     try:
-        return _sync_young(language, url, decks, fields)
+        return _sync_young(language, url, decks, fields, read)
     finally:
         held.release()
 
 
-def _sync_young(language, url, decks, fields):
+def _sync_young(language, url, decks, fields, read=None):
     old = load_young(language)
     same_scope = (old.get("version") == YOUNG_VERSION and old.get("decks") == sorted(decks)
                   and old.get("fields") == fields)
@@ -917,7 +925,9 @@ def _sync_young(language, url, decks, fields):
     try:
         intervals, edited = _young_notes(url, decks, old.get("synced_at") if cached else None)
         todo = [n for n in intervals if str(n) not in cached or n in edited]
-        notes = anki_connect.notes_info(url, todo) if todo else []
+        fresh = {n.get("noteId"): n for n in read or () if isinstance(n, dict)}
+        ask = [n for n in todo if n not in fresh]
+        notes = [fresh[n] for n in todo if n in fresh] + (anki_connect.notes_info(url, ask) if ask else [])
     except AnkiError as e:
         return count_young(language), str(e)
     entries = {}

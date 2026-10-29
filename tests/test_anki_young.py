@@ -370,16 +370,18 @@ def test_a_chinese_deck_records_its_young_words_in_zh_user_files():
 
 def test_every_sync_reads_the_young_cards_after_the_new_cards_and_a_failed_sync_reads_none(monkeypatch):
     class Result:
-        def __init__(self, error=None):
-            self.added, self.total_known, self.error = 0, 5, error
+        def __init__(self, error=None, read=None):
+            self.added, self.total_known, self.error, self.read = 0, 5, error, read
     calls = []
     monkeypatch.setattr(anki_sync, "sync_backlog", lambda *a, **k: calls.append("backlog"))
-    monkeypatch.setattr(anki_sync, "sync_young", lambda *a, **k: calls.append(("young", a)))
+    monkeypatch.setattr(anki_sync, "sync_young", lambda *a, **k: calls.append(("young", a, k)))
     monkeypatch.setattr(anki_sync, "read_known_signal", lambda *a, **k: calls.append("signal"))
-    monkeypatch.setattr(anki_sync, "sync", lambda *a, **k: Result())
+    read = [{"noteId": 1789712080047}]
+    monkeypatch.setattr(anki_sync, "sync", lambda *a, **k: Result(read=read))
     progress = []
-    anki_sync.sync_all("ja", URL, ["TheBank"], ["Word"], {}, progress=lambda *p: progress.append(p))
-    assert calls == ["backlog", ("young", ("ja", URL, ["TheBank"], ["Word"])), "signal"]
+    result, _signal = anki_sync.sync_all("ja", URL, ["TheBank"], ["Word"], {}, progress=lambda *p: progress.append(p))
+    assert calls == ["backlog", ("young", ("ja", URL, ["TheBank"], ["Word"]), {"read": read}), "signal"]
+    assert result.read == [], "the notes the sync read aren't kept past it"
     assert progress == [("reading Anki", 0, 3), ("reading Anki's new cards", 1, 3), ("reading Anki's young cards", 2, 3)]
     calls.clear()
     monkeypatch.setattr(anki_sync, "sync", lambda *a, **k: Result(error="KnownWord.json can't be read"))
@@ -396,3 +398,26 @@ def test_a_young_read_that_raises_never_costs_the_sync_its_result(monkeypatch):
     monkeypatch.setattr(anki_sync, "read_known_signal", lambda *a, **k: None)
     result, _signal = anki_sync.sync_all("ja", URL, ["TheBank"], [], {})
     assert (result.added, result.total_known, result.error) == (2, 9, None)
+
+
+def test_a_card_studied_today_is_read_once_by_the_sync_and_never_asked_for_again_by_the_young_read(monkeypatch):
+    """The young read takes the words of the notes the known sync just read; it asks Anki only for a note the sync
+    didn't read — a mature card forgotten back to young."""
+    monkeypatch.setattr(anki_sync, "_connect_on", lambda: False)
+    fake, ids = _deck()
+
+    def sync_all():
+        fake.requests.clear()
+        with mock.patch("urllib.request.urlopen", fake):
+            result, _signal = anki_sync.sync_all("ja", URL, ["TheBank"], [], {})
+        assert result.error is None
+        return [i for r in fake.requests_of("notesInfo") for i in r["params"]["notes"]]
+
+    read = sync_all()                                       # the first sync reads every studied note, once
+    assert sorted(read) == sorted(set(read)) and anki_sync.young_words("ja") == [("準備", 0), ("冒険", 3), ("危険", 5)]
+    fresh = fake.young("求める", [1])
+    assert sync_all() == [fresh], "studied today: the sync's own read, not a second one"
+    assert ("求める", 1) in anki_sync.young_words("ja")
+    fake.note(ids["価値"])["ivls"] = [1]                  # a mature card forgotten in review
+    assert sync_all() == [ids["価値"]], "only the young read asks: the sync read it long ago"
+    assert ("価値", 1) in anki_sync.young_words("ja")

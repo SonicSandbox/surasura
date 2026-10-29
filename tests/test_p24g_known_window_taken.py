@@ -26,6 +26,7 @@ class TestKnownFromAnkiWindowAfterAnAutoSync(_DashboardHarness):
              patch.object(anki_connect, "probe", return_value={"ok": True}), \
              patch.object(anki_sync, "sync", return_value=None), \
              patch.object(anki_sync, "sync_backlog", return_value=None), \
+             patch.object(anki_sync, "sync_young", return_value=(0, None)), \
              patch.object(anki_sync, "read_known_signal", return_value={"news": True}), \
              patch.object(known_signal_window, "view", return_value=seen) as view:
             target()

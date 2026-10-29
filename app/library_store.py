@@ -11934,7 +11934,7 @@ def _store_adopt_transcript_item(self, cmd, audio_item, text_item, origin=None):
     learner's on it) goes, its title tidied as a Remove's. -> True when done; False (nothing written) when either is
     gone, the audio item isn't a waiting one, or the subtitle item is an audiobook's already."""
     a = self.conn.execute("SELECT work_id, tier, availability FROM items WHERE id = ?", (audio_item,)).fetchone()
-    s = self.conn.execute("SELECT work_id, source_type FROM items WHERE id = ?", (text_item,)).fetchone()
+    s = self.conn.execute("SELECT work_id, source_type, tier FROM items WHERE id = ?", (text_item,)).fetchone()
     if a is None or s is None or a[2] != "waiting" or s[1] == "audio" or self._audiobook_rows(text_item):
         return False
     if origin:
@@ -11946,6 +11946,7 @@ def _store_adopt_transcript_item(self, cmd, audio_item, text_item, origin=None):
         cmd.reworked.add(text_item)
         cmd.fed_works.update(w for w in (s[0], a[0]) if w is not None)
     self._put(a[1], [text_item], ("after", audio_item), cmd.version)
+    cmd.touch({s[2], a[1]})                              # the tier it left counts one file fewer
     self._take_out(cmd, audio_item)
     cmd.feed([text_item])
     return True

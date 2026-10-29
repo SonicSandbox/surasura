@@ -209,6 +209,23 @@ def test_a_renamed_audiobook_folder_keeps_its_item_and_its_transcripts_copy():
         assert _subtitle_titles(store) == []
 
 
+def test_a_second_subtitle_named_alike_never_takes_the_transcripts_place():
+    """Its transcript recorded and still there: a second subtitle named like it later is never claimed (it would swap
+    the two at every look) — the transcript stays, the same copy, look after look."""
+    language = "ja"
+    store, _data_dir, src, _m4b_path, srt = _alone(language, STAR)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root)
+        [item] = _audio_items(store)
+        _srt(os.path.join(os.path.dirname(srt), f"{STAR} ０１ (2).srt"), _lines(language)[:8])
+        for _ in range(2):
+            _look(store, language, root, full=True)
+            [now] = _audio_items(store)
+            assert now["id"] == item["id"] and now["rel_path"] == item["rel_path"]
+            assert _record(store, item["id"])["transcript"]["origin"] == os.path.abspath(srt)
+
+
 def test_a_placeholder_audiobook_holds_its_transcript_back_until_it_is_here(monkeypatch):
     """A cloud placeholder's audio is never opened; its transcript waits with it (never a title of its own meanwhile)."""
     language = "ja"

@@ -1474,14 +1474,14 @@ class _Look:
                  (self.no_text.get(_key(t[1])) or [])[:2] != [t[2].st_size, t[2].st_mtime_ns]]
         if not cands:
             return left
-        here = []                                            # [(Audiobook, its item or None)]
+        here = []                                            # [(Audiobook, its item or None, its record or {})]
         if audio and self._known_audio(folder, audio, {k: (v[0], v[1]) for k, v in files.items()}):
             seen = set()                                     # every audio file recorded as it is: no tag read (S19)
             for n in audio:
                 item, _n, ab = files[ls.path_key(os.path.abspath(os.path.join(folder, n)))]
                 if item not in seen:
                     seen.add(item)
-                    here.append((audiobooks.from_record(ab), item))
+                    here.append((audiobooks.from_record(ab), item, ab))
         else:
             found, waits = self._found_in(folder)
             if waits:
@@ -1491,11 +1491,14 @@ class _Look:
             for ab in found:
                 held = next((files[k] for k in (ls.path_key(os.path.abspath(f)) for f in ab.files) if k in files),
                             None)
-                here.append((ab, held[0] if held else None))
-        claimed = audiobooks.transcripts([ab for ab, _i in here], [t[0] for t in cands])
+                here.append((ab, held[0] if held else None, held[2] if held else {}))
+        claimed = audiobooks.transcripts([h[0] for h in here], [t[0] for t in cands])
         by_name = {t[0]: t for t in cands}
         gone = set()
         for i, name in sorted(claimed.items()):
+            said = here[i][2].get("transcript") if isinstance(here[i][2].get("transcript"), dict) else {}
+            if said.get("origin") and os.path.exists(said["origin"]):
+                continue                                     # its own transcript is there still: never a second
             t = by_name[name]
             o = self.origins.get(_key(t[1]))
             if o is not None and (o.version or o.moved_to):

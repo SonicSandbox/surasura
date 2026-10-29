@@ -723,8 +723,8 @@ def audio_tip(piece):
 
 
 def audio_only(row):
-    """a5-2: a row of an audiobook alone — every file its audio (no stones, no word count: nothing to study yet)."""
-    return bool(getattr(row, "audio", "")) and bool(row.episodes) and all(_heard(e) for e in row.episodes)
+    """a5-2: a row of an audiobook alone (no stones, no word count: nothing to study yet) — `heard_only`'s rule."""
+    return heard_only(row.episodes)
 
 
 def _heard(e):
@@ -997,7 +997,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     if connect is not None:                          # --- P4.1 L2
         st = _row_connected(st, eps, connect, said)
     n = len(eps)
-    n_watched = sum(1 for e in eps if e.watched)
+    finish = to_finish(eps)                              # a5-2 with L6.3: a book's own files (never its audiobook's
+    n_watched = sum(1 for e in finish if e.watched)      # waiting item) are what is watched and what is next
     known = sum(numbers.get(it["id"], (0, 0, 0))[0] for it in piece)
     counted = sum(numbers.get(it["id"], (0, 0, 0))[1] for it in piece)
     news = [numbers[it["id"]][2] for it in piece if it["id"] in numbers and numbers[it["id"]][2] is not None]
@@ -1023,9 +1024,10 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
             title = title[:-len(AUDIO_MARK)] if title.endswith(AUDIO_MARK) else title
         # a5-2: alone, its quiet line; paired, the book's own (the 🎧 before its title says the rest, `audio`)
         line = STRINGS["audio_only"] if len(heard) == n else range_text(media, nums, n - len(heard))
-    if not finished and 0 < n_watched < n and not single_video:
-        line = f"{line} · " + STRINGS["watched"].format(k=n_watched, n=n)
-    next_index = next((i for i, e in enumerate(eps) if not e.watched), n - 1)
+    if not finished and 0 < n_watched < len(finish) and not single_video:
+        line = f"{line} · " + STRINGS["watched"].format(k=n_watched, n=len(finish))
+    next_index = next((i for i, e in enumerate(eps) if not e.watched and not _heard(e)),
+                      max((i for i, e in enumerate(eps) if not _heard(e)), default=n - 1))
     nxt = eps[next_index]
     if group:
         title_ep = STRINGS["group_ep"].format(show=names[_show_key(piece[next_index])], label=nxt.label)

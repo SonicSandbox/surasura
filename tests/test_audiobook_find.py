@@ -419,3 +419,22 @@ def test_an_old_picks_undo_never_undoes_a_later_pick_of_another_book_in_the_same
         late = store.undo(first)
         assert late is not None and late.notes
         assert _record(store, item["id"])["book"]["epub"] == os.path.abspath(b)
+
+
+def test_up_next_and_the_watched_count_read_the_books_own_files_never_its_audiobook():
+    """Kura's #200 seam (`view_rows.to_finish`, one rule): a book with its audiobook — *k/n watched* counts the book's
+    parts only, and Up Next is the next part (the last part once all are watched), never the waiting audiobook."""
+    parts = [{"id": i, "tier": "now", "ord": float(i), "rel_path": f"Library/{NEKO}/{NEKO}_0{i}.txt",
+              "title": f"{NEKO}_0{i} (1-{i}) 第一章.txt", "source_type": "epub", "availability": "available",
+              "work_id": 7, "piece_id": 1, "watched": i == 1} for i in (1, 2, 3)]
+    audio = dict(parts[0], id=4, ord=4.0, rel_path=f"Library/{NEKO}/01.mp3", title=NEKO, source_type="audio",
+                 availability="waiting", watched=False)
+    works = {7: {"id": 7, "title": NEKO, "media_type": "book"}}
+    row = view_rows._row(0, "now", parts + [audio], works, {}, {}, set(), set(), 20)
+    assert row.line.endswith("1 of 3 watched") and row.episodes[row.next_index].id == 2 and row.n_watched == 1
+    done = [dict(p, watched=True) for p in parts]
+    row = view_rows._row(0, "now", done + [audio], works, {}, {}, set(), set(), 20)
+    assert row.episodes[row.next_index].id == 3 and "watched" not in row.line
+    alone = view_rows._row(0, "now", [dict(audio, work_id=9)], {9: {"id": 9, "title": NEKO}}, {}, {}, set(), set(),
+                           20)
+    assert alone.next_index == 0 and view_rows.audio_only(alone) == view_rows.heard_only(alone.episodes) is True

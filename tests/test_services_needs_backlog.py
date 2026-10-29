@@ -92,15 +92,18 @@ def test_the_last_offer_is_read_only_for_the_saved_deck_and_none_without_junban(
     import sys
     import types
     kept = {"deck": "Mining", "shows": [], "cards": 1, "all": 1}
-    fake = types.SimpleNamespace(offer=lambda language, deck=None: kept if deck in (None, kept["deck"]) else None)
+    fake = types.ModuleType("modules.junban.backlog_shows")
+    fake.offer = lambda language, deck=None: kept if deck in (None, kept["deck"]) else None
+    # the module stood in, its packages too (GitHub's checkout has no private modules/ at all)
+    parent = sys.modules.get("modules.junban") or types.ModuleType("modules.junban")
+    monkeypatch.setitem(sys.modules, "modules", sys.modules.get("modules") or types.ModuleType("modules"))
+    monkeypatch.setitem(sys.modules, "modules.junban", parent)
+    monkeypatch.setattr(parent, "backlog_shows", fake, raising=False)
     monkeypatch.setitem(sys.modules, "modules.junban.backlog_shows", fake)
-    monkeypatch.setattr(sys.modules["modules.junban"], "backlog_shows", fake, raising=False) \
-        if "modules.junban" in sys.modules else None
     assert needs.backlog_offer("ja", {"junban_deck": "Mining"}) == kept
     assert needs.backlog_offer("ja", {"junban_deck": "Other"}) is None
     assert needs.backlog_offer("ja", {}) is None
     assert needs.backlog_offer("ja", {"junban_deck": "Mining", "enable_junban": False}) is None
-    monkeypatch.setitem(sys.modules, "modules.junban.backlog_shows", None)        # 順 not in this Surasura
-    if "modules.junban" in sys.modules:
-        monkeypatch.delattr(sys.modules["modules.junban"], "backlog_shows", raising=False)
+    monkeypatch.delattr(parent, "backlog_shows")                                  # 順 not in this Surasura
+    monkeypatch.setitem(sys.modules, "modules.junban.backlog_shows", None)
     assert needs.backlog_offer("ja", {"junban_deck": "Mining"}) is None

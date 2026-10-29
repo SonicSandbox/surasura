@@ -17,16 +17,24 @@ and when — to tell Anki Miner the line to cut a card from. This reads them, by
   was said in, and `written`: the word as the file writes it (Chinese read in another script is written in the
   file's own). A Japanese token also carries its tagger node (`node`: part of speech, a joined word's parts), for
   the callers that need more than the key.
+- `timeline(path, language, script)` -> Timeline: a timed file's lines and where each starts in the text a Generate
+  reads (a subtitle's `read` + `_text`; a video transcript's sidecar lines), and `Timeline.line(sentence)`: the
+  (start, end) of the lines a report sentence is said in — the report's line times (E5.1, ✅ D2 2026-10-07), so the
+  journey, a card and a clip name one line.
 
 Standard library only (no pysrt): the times are read here, the text by the analyzer's own functions. Nothing is
-written. Haya's E2.2 and Connect's pick (`app/connect/pick.py`) read it.
+written. Haya's E2.2, Connect's pick (`app/connect/pick.py`) and the report (`static_html_generator.AnchorFinder`)
+read it.
 """
 import bisect
+import json
+import os
 import re
+import unicodedata
 from collections import namedtuple
 
 from app import analyzer, zh_script
-from app.path_utils import read_text
+from app.path_utils import SIDECAR_SUFFIX, read_text
 
 # One subtitle line: `index` its place among the cues kept (file order), `start` / `end` milliseconds as the file
 # writes them (no offset), `text` the line as speech, `caption` the caption window it belongs to, `sung` a line no
@@ -303,3 +311,106 @@ def tokens(cues, language="ja", script="asis", tokenizer=None):
                 out.append(Token(lemma, reading, surface, orth, cue.index, sentence, node, surface))
     out.sort(key=lambda token: token.cue)       # stable: each cue's words stay in the order said
     return out
+
+
+class Timeline:
+    """A timed file's lines and the text a Generate reads from it (`timeline`): `cues`, and `offsets` / `indexes` —
+    where each line starts in the text (ascending) and which cue it is. `script` ("s" / "t"): a Chinese
+    report's sentences are in that script, so they are looked for in the text so converted (length-preserving)."""
+
+    def __init__(self, cues=None, text="", starts=(), script="asis", language="ja"):
+        self.cues = cues if cues is not None else Cues()
+        self.offsets = [offset for offset, _cue in starts]
+        self.indexes = [cue for _offset, cue in starts]
+        if script in ("s", "t") and text:
+            text = zh_script.convert(text, script)
+        # The text without its whitespace — a sentence as the tokenizer yields it holds none of the spaces between a
+        # subtitle's phrases or an .ass file's captions — and where each of its characters stands in the text.
+        self._at = [i for i, ch in enumerate(text) if not ch.isspace()] if self.offsets else []
+        self._squeezed = "".join(text[i] for i in self._at)
+        self._line_starts = set(self.offsets)
+        self._ends = frozenset(analyzer.LOGIC.get("sentence_boundaries", {}).get(language, "。｡．！？!?")) | {"。"}
+
+    def _starts_sentence(self, at):
+        """Does the character at `at` (in the text without whitespace) start a sentence: the text's or a line's start,
+        or after what ends one — a sentence end of the language's (`sentence_boundaries`), a closing bracket or
+        quote, the 。 a Generate closes a caption with."""
+        if at == 0 or self._at[at] in self._line_starts:
+            return True
+        before = self._squeezed[at - 1]
+        return before in self._ends or unicodedata.category(before) in ("Pe", "Pf")
+
+    def _cue(self, offset):
+        """The line `offset` stands in; None before the first (a transcript's title and header)."""
+        i = bisect.bisect_right(self.offsets, offset) - 1
+        return self.indexes[i] if i >= 0 else None
+
+    def line(self, sentence):
+        """(start, end) in milliseconds of the lines `sentence` is said in — its first line's start, its last line's
+        end — or None (no timed lines, or the sentence isn't in the text). A sentence said more than once is its first
+        time (as the pick takes the earliest of equal lines)."""
+        needle = "".join((sentence or "").split())
+        if not needle or not self._squeezed:
+            return None
+        found = self._squeezed.find(needle)
+        if found < 0:
+            return None
+        # Where it is a sentence of its own, starting and ending one: a short one (うん｡, 大丈夫｡, うっ…) also stands
+        # inside or at the start of longer ones said before it (そうかうん｡, うっ…うわああっ！).
+        at = found
+        while at >= 0 and not (self._starts_sentence(at) and (at + len(needle) == len(self._squeezed)
+                                                              or self._starts_sentence(at + len(needle)))):
+            at = self._squeezed.find(needle, at + 1)
+        found = found if at < 0 else at
+        first = self._cue(self._at[found])
+        if first is None:
+            return None
+        last = self._cue(self._at[found + len(needle) - 1])
+        return self.cues[first].start, max(self.cues[last].end, self.cues[first].start)
+
+
+def _transcript(path, language):
+    """A video transcript's lines (a .txt the YouTube downloader wrote, its sidecar `<stem>.surasura.json` holding
+    [[text, whole seconds]]): each found in the file in order — one cleaned otherwise than the file writes it is
+    left out — from its second until the next line's. (Cues, file text, starts); none without a sidecar."""
+    try:
+        with open(os.path.splitext(str(path))[0] + SIDECAR_SUFFIX, "r", encoding="utf-8") as f:
+            entries = json.load(f).get("cues") or []
+        if not isinstance(entries, list):
+            return Cues(), "", []
+    except Exception:
+        return Cues(), "", []
+    try:
+        text = read_text(path, language)
+    except OSError:
+        return Cues(), "", []
+    found, pos = [], 0
+    for entry in entries:
+        try:
+            line, sec = entry[0], int(entry[1])
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        if not isinstance(line, str) or not line:
+            continue            # a hand-edited or truncated sidecar never stops a report
+        at = text.find(line, pos)
+        if at == -1:
+            continue
+        found.append((at, sec * 1000, line))
+        pos = at + len(line)
+    cues = Cues()
+    for n, (at, start, line) in enumerate(found):
+        end = found[n + 1][1] if n + 1 < len(found) else start
+        cues.append(Cue(n, start, max(end, start), line, n, False, True))
+    return cues, text, [(at, n) for n, (at, _start, _line) in enumerate(found)]
+
+
+def timeline(path, language="ja", script="asis"):
+    """The timed lines of the file at `path` and the text a Generate reads from it: Timeline. A subtitle (.srt, .ass,
+    .ssa): `read` and the text `tokens` reads (`_text`), so a sentence's lines are the cues Connect cuts a card from.
+    A video transcript: its sidecar's lines (`_transcript`). Anything else has none (every `line` is None)."""
+    if str(path).lower().endswith(SUBTITLES):
+        cues = read(path, language)
+        text, starts = _text(cues, language)
+        return Timeline(cues, text, starts, script, language)
+    cues, text, starts = _transcript(path, language)
+    return Timeline(cues, text, starts, script, language)

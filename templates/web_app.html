@@ -2377,7 +2377,7 @@
             const displayCtx = safeCtx.replace(regex, `<strong style="color:var(--primary);">${safeWord}</strong>`);
 
             const rowTip = trimmed.trimmed ? ` title="${escapeHtml(contextFull)}"` : '';
-            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${safeWord}</span><span style="display:inline-block; max-width: 800px;"${rowTip}>${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], context, data["Aud 1"])}`;
+            el.innerHTML = `<span style="display:inline-block; width:80px; font-size:0.8rem; color:var(--text-secondary); vertical-align:top; margin-right:10px;">${safeWord}</span><span style="display:inline-block; max-width: 800px;"${rowTip}>${displayCtx}</span>${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], context, data["Aud 1"], data["End 1"])}`;
             return el;
         }
 
@@ -2927,7 +2927,7 @@
                         </div>
                     </div>
                 </div>
-                <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], c1, data["Aud 1"])}</div>
+                <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], c1, data["Aud 1"], data["End 1"])}</div>
             `;
 
             // Extra Contexts (DOM Pruning)
@@ -2962,7 +2962,7 @@
                                 const n = k.replace('Context ', '');
                                 // Speaks the WINDOWED text, matching what's on screen (the same
                                 // rule the Listen button follows).
-                                const badge = sourceBadge(data['Src ' + n], data['Frag ' + n], data['At ' + n], t.text, data['Aud ' + n]);
+                                const badge = sourceBadge(data['Src ' + n], data['Frag ' + n], data['At ' + n], t.text, data['Aud ' + n], data['End ' + n]);
                                 innerHtmlString += `<div class="context-item"${tip}>${formatted}${badge}</div>`;
                             }
                         });
@@ -3212,7 +3212,7 @@
             return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
         }
 
-        function sourceBadge(idx, frag, at, text, hasAudio) {
+        function sourceBadge(idx, frag, at, text, hasAudio, end) {
             const mode = (typeof globalSourceDisplay !== 'undefined') ? globalSourceDisplay : 'off';
             if (mode === 'off' || idx === null || idx === undefined || idx === "") return '';
             const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
@@ -3224,7 +3224,13 @@
             const fullPath = row[2] || name;
             // group/file, e.g. 'test_book/chapter_1.txt' — plus the cue time for subtitles.
             let hover = row[3] || name;
-            if (at !== null && at !== undefined && at !== "") hover += ' @ ' + fmtCueTime(at);
+            // When the sentence's lines start and end — Connect's line reader's times (E5.1), the line a card is cut from.
+            if (at !== null && at !== undefined && at !== "") {
+                hover += ' @ ' + fmtCueTime(at);
+                if (end !== null && end !== undefined && end !== "" && fmtCueTime(end) !== fmtCueTime(at)) {
+                    hover += '–' + fmtCueTime(end);
+                }
+            }
             let label;
             if (mode === 'icon') label = icon;
             else if (mode === 'filename') label = escapeHtml(name);
@@ -3549,7 +3555,7 @@
             const sents = hit.sents.map(s => {
                 const t = trimContext(s.text, s.needle, cap);
                 const title = t.trimmed ? ` title="${escapeHtml(s.text)}"` : '';
-                return `<div class="rs-sent"${title}>${rsMark(t.text, s.needle)}${sourceBadge(row['Src ' + s.n], row['Frag ' + s.n], row['At ' + s.n], t.text, row['Aud ' + s.n])}</div>`;
+                return `<div class="rs-sent"${title}>${rsMark(t.text, s.needle)}${sourceBadge(row['Src ' + s.n], row['Frag ' + s.n], row['At ' + s.n], t.text, row['Aud ' + s.n], row['End ' + s.n])}</div>`;
             }).join('');
             el.innerHTML = `
                 <div class="card-header">

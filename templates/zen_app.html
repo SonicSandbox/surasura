@@ -712,7 +712,7 @@
             return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
         }
 
-        function sourceBadge(idx, frag, at, text, hasAudio) {
+        function sourceBadge(idx, frag, at, text, hasAudio, end) {
             const mode = (typeof globalSourceDisplay !== 'undefined') ? globalSourceDisplay : 'off';
             if (mode === 'off' || idx === null || idx === undefined || idx === "") return '';
             const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
@@ -724,7 +724,13 @@
             const fullPath = row[2] || name;
             // group/file, e.g. 'test_book/chapter_1.txt' — plus the cue time for subtitles.
             let hover = row[3] || name;
-            if (at !== null && at !== undefined && at !== "") hover += ' @ ' + fmtCueTime(at);
+            // When the sentence's lines start and end — Connect's line reader's times (E5.1), the line a card is cut from.
+            if (at !== null && at !== undefined && at !== "") {
+                hover += ' @ ' + fmtCueTime(at);
+                if (end !== null && end !== undefined && end !== "" && fmtCueTime(end) !== fmtCueTime(at)) {
+                    hover += '–' + fmtCueTime(end);
+                }
+            }
             let label;
             if (mode === 'icon') label = icon;
             else if (mode === 'filename') label = escapeHtml(name);
@@ -972,7 +978,7 @@
                 // Keep each sentence paired with its own source ("Context 3" -> "Src 3"/"Frag 3").
                 const n = k.replace('Context ', '');
                 if (data[k]) contexts.push({ text: data[k], src: data['Src ' + n],
-                                             frag: data['Frag ' + n], at: data['At ' + n],
+                                             frag: data['Frag ' + n], at: data['At ' + n], end: data['End ' + n],
                                              aud: data['Aud ' + n] });
             });
 
@@ -981,7 +987,7 @@
                 const t = trimContext(c.text, word, zenCap);
                 // Keep the untrimmed sentence reachable on hover when we windowed it.
                 const tip = t.trimmed ? ` title="${escapeHtml(c.text)}"` : '';
-                return `<span class="context-line"${tip}>${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at, t.text, c.aud)}</span>`;
+                return `<span class="context-line"${tip}>${formatContext(t.text)}${sourceBadge(c.src, c.frag, c.at, t.text, c.aud, c.end)}</span>`;
             }).join("");
 
             el.innerHTML = `

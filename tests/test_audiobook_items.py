@@ -540,17 +540,22 @@ def test_a_removed_audiobook_stays_out_after_its_folder_is_renamed():
 
 
 def test_a_paired_audiobook_never_moves_the_soon_line():
-    """R2-B1: the waiting row beside its book is no row the Soon line counts: no title's text crosses it for it."""
+    """R2-B1: the waiting row beside its book is no row the Soon line counts — the book's parts filling NOW, its
+    audiobook found later joins them in NOW and pushes nothing (and nothing of its own) below the line."""
     language = "ja"
-    store, _data_dir, src = _unsure(language)
+    store, _data_dir = _empty(language)
+    src = _drive("driveA")
+    _epub(os.path.join(src, "Books", f"{NEKO}.epub"), NEKO, language)
     with store:
         root = store.add_source(src)
         _look(store, language, root, first=True)
         _work, rows = _book_items(store, NEKO)
         store.set_soon_line(len(rows))                                            # the book's parts: all of NOW
         before = {r[0]: r[1] for r in _book_items(store, NEKO)[1]}
+        assert set(before.values()) == {"now"}
+        _audio_folder(os.path.join(src, "Books", NEKO), NEKO, _fit(language))
+        _look(store, language, root)
         item = _audio_items(store)[0]
-        store.answer_audiobook(item["id"], True)
         after = {r[0]: r[1] for r in _book_items(store, NEKO)[1]}
         assert {i: after[i] for i in before} == before and after[item["id"]] == "now"
 
@@ -599,3 +604,21 @@ def test_a_waiting_video_of_a_podcast_title_still_says_no_subtitles_yet():
     row = view_rows._row(0, "arrivals", [video], {12: {"id": 12, "title": "ラジオ", "media_type": "podcast"}}, {}, {},
                          set(), set(), 20)
     assert row.status.kind == "no_subs"
+
+
+def test_a_yes_after_the_book_is_gone_is_kept_and_leaves_the_audiobook_alone():
+    """R2 (mutant B5): the book removed while its question waits — *Yes* is kept (never asked again about it), and
+    the audiobook stays a title of its own, never half-paired."""
+    language = "ja"
+    store, _data_dir, src = _unsure(language)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        item = _audio_items(store)[0]
+        key = _record(store, item["id"])["ask"]["key"]
+        store.remove([r[0] for r in _book_items(store, NEKO)[1] if r[0] != item["id"]])
+        assert store.answer_audiobook(item["id"], True, key=key)
+        assert store.audiobook_answers() == {key: True}
+        assert store.meta().get(ls.AUDIOBOOKS_STALE) == "1"                      # weighed again: another book may be
+        rec = _record(store, item["id"])
+        assert rec["book"] is None and rec["ask"] is None and needs.asks_of(store) == []

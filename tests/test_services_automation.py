@@ -1477,3 +1477,39 @@ def test_sync_now_with_the_closed_flag_set_asks_nothing_and_answers_closed_even_
         assert answers == ["closed"] and anki.syncs == [] and puts == []
     finally:
         auto.close()
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_michi_c_each_sync_works_out_the_backlogs_shows_before_the_bar_hears_it(live, monkeypatch, lang):
+    """The shows behind the backlog (Michi-C, A7B-5): read again inside every sync that reached Anki — after the known
+    words and the new cards, before the bar says *synced* (so *Needs you*, asked again then, reads the new offer) —
+    and never with Anki closed."""
+    h.seed_library(lang)
+    _synced_once(lang)
+    anki = _Anki(monkeypatch, added=0)
+    order = []
+    monkeypatch.setattr(A, "backlog_shows", lambda language, settings, url: order.append(
+        ("shows", language, url, len(anki.syncs), len(anki.backlogs))))
+    auto, registry, _c, _l = _make(_settings(lang, anki_auto_generate=False), lang=lang)
+    auto.subscribe(lambda state: order.append(("bar", state.sync)))
+    auto.activated()
+    _settle(auto, registry)
+    shows = [o for o in order if o[0] == "shows"]
+    assert len(shows) == 1 and shows[0][1] == lang and shows[0][2].startswith("http://127.0.0.1")
+    assert shows[0][3:] == (1, 1)                                        # after the sync and the new cards' read
+    assert order.index(shows[0]) < order.index(("bar", A.SYNCED))
+    auto.close()
+    anki.open = False
+    order.clear()
+    auto, registry, _c, _l = _make(_settings(lang, anki_auto_generate=False), lang=lang)
+    auto.sync_now()
+    _settle(auto, registry)
+    assert not [o for o in order if o[0] == "shows"]                    # Anki closed: nothing read
+    auto.close()
+
+
+def test_michi_c_without_junban_in_this_surasura_the_sync_hook_does_nothing(monkeypatch):
+    def missing(name):
+        raise ImportError(name)
+    monkeypatch.setattr(A.importlib, "import_module", missing)
+    assert A.backlog_shows("ja", {"junban_deck": "Mining"}, "http://127.0.0.1:8765") is None

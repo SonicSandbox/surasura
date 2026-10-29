@@ -1644,6 +1644,10 @@ def test_michi_c_card_order_says_where_the_new_cards_came_from_and_add_them_plac
     assert page.behind_line.text() == ("Your 2,300 new cards come from 3 shows; 2 are on this PC. "
                                        "1 of them waits in New arrivals.")
     assert page.btn_behind.toolTip() == S.BEHIND_ADD_TIP
+    asked = len(api.asked)
+    page.anki_changed()                                            # Anki looked at again: the same deck, no new read
+    page._show()
+    assert not wait_until(lambda: len(api.asked) > asked, 0.5)
     QTest.mouseClick(page.btn_behind, Qt.MouseButton.LeftButton)
     assert shell.moves.given == [(strings.NEEDS_SHOWS_ADDED_ONE, ("place", [41, 42], "soon"))]
     assert page.behind_line.text() == S.BEHIND_ADDED and page.btn_behind.isHidden()

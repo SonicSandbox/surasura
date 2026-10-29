@@ -195,11 +195,11 @@ STRINGS = {
     # Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the backlog
     "behind_cards": "Your {n:,} new cards", "behind_cards_one": "Your new card",
     "behind_cards_some": "{n:,} of your new cards",
-    "behind_from": "{cards} come from {s} shows; {found} are on this PC.",
-    "behind_from_found_one": "{cards} come from {s} shows; one is on this PC.",
-    "behind_from_none": "{cards} come from {s} shows; none of them is on this PC.",
-    "behind_from_one": "{cards} come from 1 show, on this PC.",
-    "behind_from_one_away": "{cards} come from 1 show, not on this PC.",
+    "behind_from": "{cards} {come} from {s} shows; {found} are on this PC.",
+    "behind_from_found_one": "{cards} {come} from {s} shows; one is on this PC.",
+    "behind_from_none": "{cards} {come} from {s} shows; none of them is on this PC.",
+    "behind_from_one": "{cards} {come} from 1 show, on this PC.",
+    "behind_from_one_away": "{cards} {come} from 1 show, not on this PC.",
     "behind_add": "Add the {k} that aren't in your list yet?", "behind_add_one": "Add the one that isn't in your list yet?",
     "behind_add_all": "Add them to your list?", "behind_add_it": "Add it to your list?",
     "behind_waiting": "Waiting in New arrivals: {names}.", "behind_away": "Not on this PC: {names}.",
@@ -844,10 +844,11 @@ def backlog_head(record):
     cards = (STRINGS["behind_cards_one"] if n == 1 and every <= 1 else
              STRINGS["behind_cards"].format(n=n) if every <= n else STRINGS["behind_cards_some"].format(n=n))
     found = sum(1 for s in shows if s.get("state") != "away")
+    come = "comes" if n == 1 and every <= 1 else "come"
     if len(shows) == 1:
-        return STRINGS["behind_from_one" if found else "behind_from_one_away"].format(cards=cards)
+        return STRINGS["behind_from_one" if found else "behind_from_one_away"].format(cards=cards, come=come)
     key = "behind_from" if found > 1 else "behind_from_found_one" if found == 1 else "behind_from_none"
-    return STRINGS[key].format(cards=cards, s=len(shows), found=found)
+    return STRINGS[key].format(cards=cards, come=come, s=len(shows), found=found)
 
 
 def _backlog_entry(record, view, seen):

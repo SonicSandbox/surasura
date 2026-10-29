@@ -740,3 +740,27 @@ def test_export_paints_its_arc_before_its_readiness_is_read_and_greys_no_row(qap
     assert all(page.row(r).isEnabled() for r in live.EXPORTS)
     assert wait_until(lambda: page.live.pop is not None) and not arc_turning(door)    # the pop is the next reaction
     page.live.pop.close()
+
+
+# --- A6: Practise with your AI — one Copy per AI app ------------------------------------------------------------- #
+@pytest.mark.parametrize("app", ["claude-code", "codex", "claude-desktop"])
+def test_practise_with_your_ai_copies_the_whole_setup_and_says_copied_at_once(qapp, fakes, monkeypatch, app):
+    """One press: the app's whole setup on the clipboard (the sentence for the AI and the exact line, this install's
+    path in it), *Copied* on the button at once and the line in the bar; nothing written anywhere else."""
+    from app.cli import mcp_server
+    monkeypatch.setattr(mcp_server, "server_command",
+                        lambda: (r"C:\Program Files\Surasura\surasura-cli.exe", ["mcp"], {}))
+    page, store, shell = make(fakes)
+    doors = page.live.parts["practice_ai"]
+    assert list(doors) == ["claude-code", "codex", "claude-desktop"]
+    assert all(door.toolTip() for door in doors.values())                # a tooltip on every button
+    assert "Nothing else leaves" in help_of(page, "practice_ai")         # what leaves, beside the buttons
+    doors[app].click()
+    copied = QApplication.clipboard().text()
+    assert copied == mcp_server.setup_text(app)
+    assert r"C:\Program Files\Surasura\surasura-cli.exe" in copied.replace("\\\\", "\\")
+    assert copied.startswith("Add Surasura's practice server to ")
+    assert doors[app].text() == S.PRACTICE_COPIED                        # at once, before any event loop turn
+    assert any(S.PRACTICE_APPS[app] in line for line in shell.bar_line.lines)
+    assert store.calls == []                                             # no setting written
+    assert wait_until(lambda: doors[app].text() == S.PRACTICE_APPS[app], 4)

@@ -13,3 +13,4 @@ zstandard
 PyQt6==6.11.*
 PyQt6-Qt6==6.11.*
 tsubasa-sync==0.1.10
+mcp==2.3.0

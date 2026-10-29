@@ -78,6 +78,7 @@ FILLED_BY = {
     "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
+    "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
 }
 
 
@@ -311,6 +312,7 @@ ROWS = (
 
     # Connections (docked)
     _row("anki_miner", "connect", "custom", ("connect_anki_miner_path",)),                   # P8: Anki Miner's card
+    _row("practice_ai", "connect", "custom"),                  # A6 (H9): Copy, per AI app, for the practice server
     _row("hato", "connect", "status", group="houseki"),
     _row("jimaku", "connect", "status", when=_never),          # row 13: hidden until hato hands its key over
     _row("anilist", "connect", "status", when=_never),         # row 13: hidden until AniList's import is built

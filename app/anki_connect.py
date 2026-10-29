@@ -92,6 +92,7 @@ READ_ACTIONS = frozenset({
     "cardsModTime", "notesModTime",         # the fast re-plan's warm card map (E1.1 03 §3.2): reads only
     "guiReviewActive", "getActiveProfile", "getProfiles",
     "reloadCollection", "guiDeckBrowser",
+    "guiBrowse", "guiSelectCard",           # 順's *Try it* / *Show them in Anki*: Anki's browser opened, nothing changed
 })
 
 

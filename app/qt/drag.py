@@ -127,12 +127,14 @@ def soon_slot(rows_, src):
 def split_first(rows_, row):
     """A split's first part (A2: the Finished well stays unlit, ⋯ leaves Finished out): another Current row of the same
     title whose files come after this one's. (Goal's parts aren't in the view: a later part waiting in Goal isn't seen.)
-    A group (LM11b G1: the learner's own row of several shows, its work_id its first show's) is never a part."""
-    if row.work_id is None or getattr(row, "group", False):
+    A group (LM11b G1: the learner's own row of several shows, its work_id its first show's) is never a part; nor a row
+    holding only its book's audiobook (`view_rows.heard_only`, H-6: nothing to finish or join), asked or asked about."""
+    if row.work_id is None or getattr(row, "group", False) or view_rows.heard_only(row.episodes):
         return False
     mine = _last_number(row)
     for r in rows_:
-        if r.key != row.key and r.work_id == row.work_id and not getattr(r, "group", False):
+        if r.key != row.key and r.work_id == row.work_id and not getattr(r, "group", False) and \
+                not view_rows.heard_only(r.episodes):
             theirs = _first_number(r)
             if mine is None or theirs is None or theirs > mine:
                 return True
@@ -175,14 +177,16 @@ def show_finished(row, ep):
     """LM11b G5 (GW-2 ⭐ A): marking `ep` leaves no episode of its show in a group unwatched while another show of the
     group still waits -> (the show's name, its episodes' ids in the group), else None. Never hato's mix; a run's last
     Done is the row's own finish (a group of one show is a run: the store's rule); episodes with no show to name (a
-    first screen's cache from before) are offered nothing."""
+    first screen's cache from before) are offered nothing. Watched reads `view_rows.to_finish`'s files (L6.3, H-6): a
+    book's waiting audiobook item never holds its show back, nor stands for another show still waiting; it goes with
+    its show's ids."""
     if not row.group or not finishes(row) or ep.work_id is None or not ep.show:
         return None
-    mine = [e for e in row.episodes if e.work_id == ep.work_id]
-    if any(not e.watched and e.id != ep.id for e in mine) or \
-            not any(not e.watched for e in row.episodes if e.work_id != ep.work_id):
+    text = view_rows.to_finish(row.episodes)
+    if any(not e.watched and e.id != ep.id for e in text if e.work_id == ep.work_id) or \
+            not any(not e.watched for e in text if e.work_id != ep.work_id):
         return None
-    return ep.show, [e.id for e in mine]
+    return ep.show, [e.id for e in row.episodes if e.work_id == ep.work_id]
 
 
 # --- L6.3 (Sonic 2026-10-28: a title finishes by itself, a split's parts join forward; Kura's scope, PROVISIONAL) --- #
@@ -206,12 +210,19 @@ def when_done(view, row, now=None, pending=False):
     - None — nothing is offered (the plain ✓; Up Next's Done says why): hato's mix; a part of a title whose other part waits in Current, in Goal or inside a
       group (a split part never enters Finished, 70 Q11: it waits for the rest), or that can't join now (R6, pending,
       the cache, no piece).
-    `view` the window's view model (None: as the cache)."""
+    Its files are `view_rows.to_finish`'s (Hon's audiobooks, H-6 / H-7): a book's audiobook item, waiting for Anki
+    Miner, never holds it back and goes where the book's row goes (into Finished with it); a row of nothing but one —
+    an audiobook alone, or one split off by hand — is no part (never joined to, never waited on) and never finishes by
+    itself (nothing to mark Done: the offer). `view` the window's view model (None: as the cache)."""
     if not finishes(row):
         return None
     if getattr(row, "group", False):
         return ("offer",)
-    rows_ = view.rows if view is not None else ()
+    eps = view_rows.to_finish(row.episodes)
+    if not eps:
+        return ("offer",)                            # an audiobook alone (H-7): nothing to finish it by
+    rows_ = [r for r in (view.rows if view is not None else ())
+             if getattr(r, "group", False) or not view_rows.heard_only(r.episodes)]
     first = split_first(rows_, row)
     if view is None or view.cached or row.work_id is None:
         return None if first else ("offer",)
@@ -230,18 +241,24 @@ def when_done(view, row, now=None, pending=False):
     if any(r.key != row.key and (r.work_id == row.work_id or row.work_id in (getattr(r, "works", None) or ()))
            for r in rows_) or any(w.group for w in tiles):
         return None                                  # an earlier part of it waits in Current, or in a group
-    goal = [p for w in tiles for p in w.pieces]
+    goal = [p for w in tiles for p in w.pieces if not p.heard]
     if goal:
         nxt = [p for p in goal if p.first is not None and last is not None and p.first > last]
         if len(nxt) != len(goal) or any(p.piece_id is None for p in nxt) or still or not mine:
             return None                              # an earlier or unnumbered part waits in Goal: a part, never Finished
         up = min(nxt, key=lambda p: p.first)
         return ("join", mine + [up.piece_id], False, ids_of(row) + list(up.item_ids), up.line)
-    if still or any(e.waiting for e in row.episodes) or any(a.work_id == row.work_id for a in (view.arrivals or ())) \
+    if still or any(e.waiting for e in eps) or any(a.work_id == row.work_id for a in (view.arrivals or ())) \
             or any(r.work_id == row.work_id for m in (view.finished or ()) for r in m.rows) \
-            or view_rows.numbers_gap(row.episodes) or view_rows.still_arriving(row.episodes, now):
+            or view_rows.numbers_gap(eps) or view_rows.still_arriving(eps, now):
         return ("offer",)
     return ("finish",)
+
+
+def all_n(row):
+    """*All N watched*'s N: the files `view_rows.to_finish` counts (a book's audiobook item never one beside its
+    book); an audiobook alone, marked listened by hand, is its one file."""
+    return len(view_rows.to_finish(row.episodes)) or len(row.episodes)
 
 
 def pieces_of(row):
@@ -2280,7 +2297,7 @@ class DragController(QObject):
             if verdict is not None and verdict[0] != "offer":
                 self._by_itself(row, verdict)
             elif verdict is not None:
-                self.win.toasts.show(strings.DONE_ALL.format(n=len(row.episodes)), buttons=[
+                self.win.toasts.show(strings.DONE_ALL.format(n=all_n(row)), buttons=[
                     (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
             elif not finishes(row):
                 self.say(strings.WELL_UNLIT_MIX)
@@ -2295,7 +2312,7 @@ class DragController(QObject):
             ticket = Ticket(text, (row.key,), (ep.id,))
             self._give(ticket, lambda t: self.writer.set_watched([ep.id], False, label=t))
             return
-        left = [e for e in row.episodes if not e.watched and e.id != ep.id]
+        left = [e for e in view_rows.to_finish(row.episodes) if not e.watched and e.id != ep.id]   # H-6: never its audio
         view = self.page.view_model
         verdict = None if left else when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
         if verdict is not None and verdict[0] != "offer":
@@ -2305,7 +2322,7 @@ class DragController(QObject):
             self._by_itself(row, verdict)
             return
         if verdict is not None:                      # ("offer",): today's *finished with it?*
-            ticket = Ticket(strings.DONE_ALL.format(n=len(row.episodes)), (row.key,), (ep.id,))
+            ticket = Ticket(strings.DONE_ALL.format(n=all_n(row)), (row.key,), (ep.id,))
             if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
                 return
             self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,

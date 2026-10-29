@@ -65,6 +65,12 @@ def _group_b(store):
     return next(o["group"] for o in store.other_subtitles(item) if o["label"] == "SubsB")
 
 
+def _a_minute_later(monkeypatch):
+    """The next start, a minute after a crash: every switch note stamped before now is stale. -1 s, never 0: Python
+    3.11's time.time() on Windows ticks every 15.6 ms, so a note stamped in the same tick is 0 s old, never > 0."""
+    monkeypatch.setattr(ls, "SWITCH_STALE_S", -1)
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_the_shows_group_is_recorded_at_its_first_take_in_and_never_decided_again(language):
     """A29: a show starting mid-season — 13 from A (`.srt`) and B (`.ass`): B is picked (`.ass` first) and recorded on
@@ -566,7 +572,7 @@ def test_a_crash_inside_a_switch_is_put_back_at_the_next_look(language, monkeypa
     child = subprocess.run([sys.executable, "-c", CRASH, language, data_dir, uf, str(work)] + list(target),
                            cwd=os.getcwd(), capture_output=True, text=True)
     assert child.returncode == 3, child.stderr[-600:]
-    monkeypatch.setattr(ls, "SWITCH_STALE_S", 0)
+    _a_minute_later(monkeypatch)
     store = ls.open_store(language, data_dir, uf)
     with store:
         old = os.path.join(data_dir, *copies[1][min(copies[1])].split("/"))

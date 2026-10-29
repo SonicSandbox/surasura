@@ -48,6 +48,20 @@ def _library(language, watch, episodes=6, keep=False, inline=False, media=None):
     return store, shown, counted
 
 
+def _rerender_in_order(tmp_path, order):
+    """The report again with its statistics in the library's order (`_render` writes its Target-met file last, as no
+    real run would: the statistics follow the library). -> html."""
+    results = tmp_path / "results"
+    stats = json.loads((results / "file_statistics.json").read_text(encoding="utf-8"))
+    by_name = {s["File"]: s for s in stats}
+    (results / "file_statistics.json").write_text(json.dumps([by_name[n] for n in order], ensure_ascii=False),
+                                                  encoding="utf-8")
+    out = results / "reading_list_static.html"
+    with patch.object(gen, "RESULTS_DIR", str(results)),             patch.object(gen, "PRIORITY_CSV", str(results / "priority_learning_list.csv")),             patch.object(gen, "PROGRESSIVE_CSV", str(results / "progressive_learning_list.csv")),             patch.object(gen, "OUTPUT_FILE", str(out)):
+        gen.generate_static_html(open_browser=False)
+    return out.read_text(encoding="utf-8")
+
+
 def _folds(data, inline=False):
     """[(label, [filenames])] in the sidebar's order."""
     sidebar = data["progressive"]
@@ -291,3 +305,27 @@ def test_a_fold_is_re_filed_whole_when_a_parts_check_changes():
     first = first[:first.index("}, 50);")]
     assert first.index("!t.closest('.fold-body')") < first.index("tabs.find(t => !t.closest('#completed-section')) ||"), \
         "nothing open to study: a part in an active fold before anything under Completed"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_unwatched_part_away_from_the_sidebar_still_breaks_the_run(language, tmp_path):
+    # why: Ep 3 is not watched but every word of it is known (Target Met, at the bottom): Ep 2 and Ep 4 sit next to each
+    # other in the sidebar, yet they are not next to each other in the show — two rows, never "Ep 1–2, 4–5"
+    store, shown, counted = _library(language, watch=[0, 1, 3, 4])
+    met = shown[2]
+    data = _payload(_render(tmp_path, language, [n for n in counted if n != met] + [met]))
+    store.close()
+    assert met in [e["filename"] for e in data["completed_files"]]
+    assert _folds(data) == [("Ep 1–2 watched", shown[0:2]), ("Ep 4–5 watched", shown[3:5])]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_with_target_met_shown_inline_a_met_part_stays_in_its_fold(language, tmp_path):
+    # why: with *Show 'Target Met' inline* on, a watched part whose words are all known sits in its place, so the run
+    # is one row again (the fold follows the sidebar as the setting draws it)
+    store, shown, counted = _library(language, watch=[0, 1, 2, 3, 4], keep=True, inline=True)
+    met = shown[2]
+    _render(tmp_path, language, [n for n in counted if n != met] + [met])
+    data = _payload(_rerender_in_order(tmp_path, counted))
+    store.close()
+    assert _folds(data, inline=True) == [("Ep 1–5 watched", shown[0:5])]

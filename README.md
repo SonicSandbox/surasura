@@ -14,9 +14,9 @@
 
 <div align="center">
 
-![Surasura 3.0: three episodes checked off, Mine, a new show placed from New arrivals, a show moved to Goal](docs/assets/images/readme/demo.gif)
+![Surasura 3.0: three episodes checked off, Mine, a new show dragged in from New arrivals, a show moved to Goal](docs/assets/images/readme/demo.gif)
 
-[▶ Full demo (MP4, 40 s)](docs/assets/images/readme/demo.mp4)
+[▶ Full demo (MP4, 45 s)](docs/assets/images/readme/demo.mp4)
 
 </div>
 
@@ -27,7 +27,7 @@
 | ![Current: Up Next with its cover, % known and new words](docs/assets/images/readme/current.png) | ![The journey: each episode's new words with a sentence from it](docs/assets/images/readme/journey.png) |
 | Each row is a show or a book. **% known** and **new words** are worked out from your own known words. | The words that open up the most of your shows and books, episode by episode, each with a sentence from your library. |
 | ![New arrivals: new shows and episodes, with their covers, waiting to be placed](docs/assets/images/readme/arrivals.png) | ![Mine: the episode's cards come next](docs/assets/images/readme/mine.png) |
-| New episodes, books and videos **arrive by themselves**. ↑ puts one in your order. | **Mine** makes the cards with Anki Miner, and Anki shows them in your order. |
+| New episodes, books and videos **arrive by themselves**. Drag one into your order, or press ↑. | **Mine** makes the cards with Anki Miner, and Anki shows them in your order. |
 
 **Also:** **Piyo ぴよ** lets you practise with your own AI app, on your own words.
 

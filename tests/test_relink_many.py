@@ -14,6 +14,7 @@ import shutil
 import time
 
 from app import library_store as ls
+from app.services import moves as M
 from tests import services_helpers as h
 from tests.test_services_moves import lib, make_writer  # noqa: F401 (fixtures)
 
@@ -116,3 +117,72 @@ def test_a_file_in_the_trash_is_never_a_gone_files_new_place(lib):
     from app.services import needs
     line = needs.NeedLine(key="item:1", text="", item_id=a, label="x", number=None, rel_path=rel, actions=())
     assert needs.match_tree(lib.data_dir, "", [line]) == []                  # never found there either
+
+
+def test_none_relinked_still_names_why_and_leaves_no_undo(lib, make_writer):
+    """Alpha 5 (Mado): with none relinked the store returns None (an empty change would be an Undo for nothing) but
+    still hands out why (`left_out`); the writer gives it to the press's ticket on the empty landing (`ticket.left`),
+    so the bar can say why — and nothing is saved, nothing is on the Undo stack, the journal is emptied."""
+    a, b = lib.current()[:2]
+    full_b = os.path.join(lib.data_dir, *_rel(lib, b)[0].split("/"))
+    outside = os.path.join(os.path.dirname(lib.data_dir), "外.srt")
+    with open(outside, "w", encoding="utf-8") as f:
+        f.write("字幕")
+    left = []
+    assert lib.store.relink_many([(a, full_b), (b, outside)], left_out=left) is None
+    assert left == [(a, "another item's file"), (b, "not in the library")]
+    assert lib.store.relink_many([], left_out=left) is None and len(left) == 2    # nothing asked: nothing added
+
+    class Press:                                         # the window's ticket (`drag.Ticket`: `left` None until told)
+        left = None
+    w, heard = make_writer()
+    press = Press()
+    w.relink_many([(a, full_b), (b, outside)], label=press)
+    got = []
+    assert h.until(lambda: got.extend(w.landed_empty()) or press in got)
+    assert press.left == [(a, "another item's file"), (b, "not in the library")]
+    assert h.until(lambda: not os.path.exists(M.journal_path(lib.language)))       # its journal entry gone too
+    assert heard.saved == [] and not w._undo
+    assert _rel(lib, a)[0] != _rel(lib, b)[0]                     # nothing moved
+
+
+def test_a_label_with_no_left_and_a_relink_that_took_some_are_as_before(lib, make_writer):
+    """A plain text label (no `left`) lands as nothing unharmed; a relink that took one pair is a change with
+    `change.left`, never a ticket's (its "saved" says why)."""
+    a, b = lib.current()[:2]
+    full_b = os.path.join(lib.data_dir, *_rel(lib, b)[0].split("/"))
+    w, heard = make_writer()
+    w.relink_many([(a, full_b)], label="none")
+    got = []
+    assert h.until(lambda: got.extend(w.landed_empty()) or "none" in got)
+    (_i, moved), = _move_away(lib, [a])
+
+    class Press:
+        left = None
+    press = Press()
+    w.relink_many([(a, moved), (b, full_b)], label=press)
+    assert h.until(lambda: heard.saved)
+    assert press.left is None and heard.saved[0][0].left == [(b, "there already")]
+
+
+def test_a_relink_that_failed_hands_no_why(lib, make_writer, monkeypatch):
+    """Alpha 5 review: a relink whose write failed (an error after the pairs were looked at) names no why — nothing
+    was relinked because it failed, not because of the pairs; its ticket's `left` stays None (the writer's failed
+    note says what happened)."""
+    a, b = lib.current()[:2]
+    full_b = os.path.join(lib.data_dir, *_rel(lib, b)[0].split("/"))
+    real = ls.Store.relink_many
+
+    def failing(self, pairs, left_out=None):
+        real(self, pairs, left_out=left_out)
+        raise RuntimeError("the disk went away")
+    monkeypatch.setattr(ls.Store, "relink_many", failing)
+
+    class Press:
+        left = None
+    w, heard = make_writer()
+    press = Press()
+    w.relink_many([(a, full_b)], label=press)
+    got = []
+    assert h.until(lambda: got.extend(w.landed_empty()) or press in got)
+    assert press.left is None and heard.saved == []

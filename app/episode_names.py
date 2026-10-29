@@ -16,8 +16,9 @@ keeps a pattern of its own (Sonic: one shared rule, never a second copy).
   `_track3_[jpn]`, an underscore's word (`_karaoke`), `N_Language` (`3_Japanese`: a track named by its language, no
   episode or show of its own, A11); a re-timer's mark (`.synced`, `.retimed`: `retimed`, LF-17) comes off too; the
   Chinese fansub marks (`CHS CHT SC TC GB BIG5 简 繁 简体 繁體`). A bracket or an
-  underscore reads a short list (never `[Fin]`, `[END]`: no language); a dot tag every ISO 639 code. Flags: `forced sdh
-  hi cc signs songs s&s karaoke op ed commentary lyrics`. Two languages in one mark (`chs&jpn`, `GB_JP`, `简日双语`) =
+  underscore reads a short list (never `[Fin]`, `[END]`: no language); a dot tag ISO 639-2's codes and, of 639-1's
+  two letters, only the languages the app names (`.ab`, a release site's tag, is no tag: the text decides). Flags:
+  `forced sdh hi cc signs songs s&s karaoke op ed commentary lyrics`. Two languages in one mark (`chs&jpn`, `GB_JP`, `简日双语`) =
   `bilingual` (`language` None, both in `languages`): picked only when nothing monolingual exists.
 - **show**: the show as written (NFKC), a store's `show_of_name`: every `[…]` / `(…)` tag, resolution and hash, a
   version and the episode marker with all after it come off; a season stays in it (`S2`, `2期`, `II`; `S02E05` reads
@@ -76,14 +77,13 @@ class Name(NamedTuple):
 
 # --- the marks ------------------------------------------------------------------------------------------------- #
 
-# A dot tag's language (`Show - 05.ja.srt`, `.pt-BR`): ISO 639-1 and 639-2 (B and T), a few names; `sc` / `tc` are
-# Chinese here, never Sardinian; a tag not listed is no tag
-_ISO_639_1 = ("aa ab ae af ak am an ar as av ay az ba be bg bh bi bm bn bo br bs ca ce ch co cr cs cu cv cy da de "
-              "dv dz ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he ho hr ht hu hy hz ia id ie "
-              "ig ii ik in io is it iu iw jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu "
-              "lv mg mh mi mk ml mn mr ms mt my na nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu "
-              "rm rn ro ru rw sa sd se sg si sk sl sm sn so sq sr ss st su sv sw ta te tg th ti tk tl tn to tr ts "
-              "tt tw ty ug uk ur uz ve vi vo wa wo xh yi yo za zu")
+# A dot tag's language (`Show - 05.ja.srt`, `.pt-BR`): ISO 639-2 (B and T), a few names; `sc` / `tc` are Chinese here,
+# never Sardinian; a tag not listed is no tag. Of ISO 639-1's two letters only the languages the app names (ours, and
+# the subtitle languages it names: `_NAMED`): a two-letter tag is as often a release's own (`.ab`, AnimeBytes', is no
+# Abkhazian: Mattias 2026-10-27, his whole show refused) — another is no tag, and the file's text decides (the look's
+# one language rule, `sources._refusal`). PROVISIONAL (Kura alpha 5, to be checked in use)
+_NAMED = {"en": "english", "ko": "korean", "es": "spanish", "fr": "french", "de": "german", "pt": "portuguese",
+          "ru": "russian", "it": "italian", "ar": "arabic", "vi": "vietnamese", "th": "thai", "id": "indonesian"}
 _ISO_639_2 = ("aar abk ave afr aka amh arg ara asm ava aym aze bak bel bul bih bis bam ben tib bod bre bos cat che "
               "cha cos cre cze ces chu chv wel cym dan ger deu div dzo ewe gre ell eng epo spa est baq eus per fas "
               "ful fin fij fao fre fra fry gle gla glg grn guj glv hau heb hin hmo hrv hat hun arm hye her ina ind "
@@ -96,8 +96,7 @@ _ISO_639_2 = ("aar abk ave afr aka amh arg ara asm ava aym aze bak bel bul bih b
 _JA = "ja jp jpn jap japanese 日本語 日本语 日语 日文".split()
 _ZH = ("zh zho chi chs cht sc tc gb big5 chinese cmn yue 中文 简体 繁体 繁體 简中 繁中 简体中文 繁體中文 繁体中文 简繁 "
        "中文简体 中文繁体 simplified traditional").split()                                       # (D4)
-_LANGS = dict.fromkeys((_ISO_639_1 + " " + _ISO_639_2 + " english korean spanish french german portuguese russian "
-                        "italian arabic vietnamese thai indonesian").split(), "other")
+_LANGS = dict.fromkeys(list(_NAMED) + list(_NAMED.values()) + _ISO_639_2.split(), "other")
 _LANGS.update(dict.fromkeys(_JA, "ja"))
 _LANGS.update(dict.fromkeys(_ZH, "zh"))
 LANGS = _LANGS                  # the one language table: the look's named-folder rule reads it too (`Subs/<language>`)

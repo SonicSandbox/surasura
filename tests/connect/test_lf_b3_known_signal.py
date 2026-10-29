@@ -1,9 +1,9 @@
 """Laptop round 7 #43 (build 3): cards suspended and marked in Anki (一緒に, やがる) never counted as known.
 
 Rules pinned, in plain words:
-- every known-words sync runs one order (`anki_sync.sync_all`): the studied words, the decks' new cards, then Known
-  from Anki (your suspended / marked cards) — the 3.0 window's sync included, which before stopped after the new
-  cards, so the signal was read only behind Connect's throttled known-sync and never ran on the laptop;
+- every known-words sync runs one order (`anki_sync.sync_all`): the studied words, the decks' new and young cards,
+  then Known from Anki (your suspended / marked cards) — the 3.0 window's sync included, which before stopped after the
+  new cards, so the signal was read only behind Connect's throttled known-sync and never ran on the laptop;
 - the words the signal marks are words this sync made known: they count in its `added` and its known total, so the
   window's own rule (a sync that added words → the automatic Generate) runs for them too;
 - the cards already signalled at the first read are a one-time question (*Mark their words known?*): 3.0's Needs you
@@ -33,10 +33,11 @@ def test_every_sync_reads_the_signal_last_and_counts_its_words(monkeypatch):
     calls = []
     monkeypatch.setattr(anki_sync, "sync", lambda *a, **k: (calls.append("sync"), Result(added=2, total=10))[1])
     monkeypatch.setattr(anki_sync, "sync_backlog", lambda *a, **k: calls.append("backlog"))
+    monkeypatch.setattr(anki_sync, "sync_young", lambda *a, **k: calls.append("young"))
     monkeypatch.setattr(anki_sync, "read_known_signal",
                         lambda *a, **k: (calls.append("signal"), {"marked": ["一緒に", "やがる"], "offered": 0})[1])
     result, signal = anki_sync.sync_all("ja", "http://127.0.0.1:8765", ["Deck"], [], {"connect_enabled": True})
-    assert calls == ["sync", "backlog", "signal"]
+    assert calls == ["sync", "backlog", "young", "signal"]
     assert signal["marked"] == ["一緒に", "やがる"]
     assert (result.added, result.total_known) == (4, 12), "the signal's words are this sync's new known words"
 
@@ -45,6 +46,7 @@ def test_a_sync_with_no_signal_keeps_its_own_counts(monkeypatch):
     # why: Connect off (None) or an offer only: nothing marked, so the sync's counts are its own
     monkeypatch.setattr(anki_sync, "sync", lambda *a, **k: Result(added=1, total=5))
     monkeypatch.setattr(anki_sync, "sync_backlog", lambda *a, **k: None)
+    monkeypatch.setattr(anki_sync, "sync_young", lambda *a, **k: None)
     for signal in (None, {"marked": [], "offered": 40}):
         monkeypatch.setattr(anki_sync, "read_known_signal", lambda *a, _s=signal, **k: _s)
         result, _ = anki_sync.sync_all("ja", None, ["Deck"], [], {})

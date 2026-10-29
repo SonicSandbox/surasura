@@ -345,7 +345,7 @@ def _scan_library(opener, language, writer, cancel, data_dir):
         return 0
     try:
         feed = h.read_feed()
-        works = disk.works_from(feed["items"], feed["works"])
+        works = disk.works_from(feed["items"], feed["works"], disk.originals(h))     # Hon a6: beside the originals too
         return disk.scan(language, works, writer, cancel=cancel.is_set, data_dir=data_dir)
     finally:
         close = getattr(opener, "close", None)       # this thread's handle (a store handle belongs to its thread)

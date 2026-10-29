@@ -296,6 +296,7 @@ def _young_record(language, young):
     """anki_young.json as `anki_sync.sync_young` writes it (note ids: the newest note last)."""
     from app import anki_sync
     notes = {str(1789712080047 + n): {"word": word, "interval": ivl} for n, (word, ivl) in enumerate(young)}
+    os.makedirs(get_user_files_path(language), exist_ok=True)
     path = os.path.join(get_user_files_path(language), anki_sync.YOUNG_FILE)
     with open(path, "w", encoding="utf-8") as f:
         json.dump({"version": anki_sync.YOUNG_VERSION, "synced_at": "2026-10-29T09:00:00", "decks": ["TheBank"],
@@ -358,3 +359,15 @@ def test_chinese_young_cards_are_practised_first_too():
     checker = practice.Checker("zh", settings={}, library=(None, 0))
     assert checker.recent_words() == ["明天", "电影", "夜市"]
     assert checker.check("我们明天去看电影吧。")["recent_used"] == ["明天", "电影"]
+
+
+def test_practise_terms_read_the_young_cards_beside_the_known_words_file_they_are_given(tmp_path):
+    """The record that counts is the one in the same User Files folder as the KnownWord.json being read."""
+    from app import anki_sync
+    known = tmp_path / "KnownWord.json"
+    known.write_text(json.dumps({"words": [{"dictForm": "駅", "knownStatus": "KNOWN", "created": "2026-10-28T09:00:00"}]},
+                                ensure_ascii=False), encoding="utf-8")
+    (tmp_path / anki_sync.YOUNG_FILE).write_text(json.dumps({"notes": {"1": {"word": "天気", "interval": 2}}},
+                                                            ensure_ascii=False), encoding="utf-8")
+    _young_record("ja", [("映画", 1)])                  # another folder's record: not this learner's
+    assert practice.practise_terms(str(known), "ja") == ["天気", "駅"]

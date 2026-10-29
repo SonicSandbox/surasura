@@ -224,6 +224,21 @@ def test_a_record_from_another_version_or_one_that_cant_be_read_is_read_again_in
     assert _record()["version"] == anki_sync.YOUNG_VERSION
 
 
+def test_a_hand_edited_record_of_the_wrong_types_gives_only_its_good_words():
+    """Read with Anki closed, so a record edited by hand must never break a round: odd entries are passed over."""
+    os.makedirs(os.path.dirname(_path()), exist_ok=True)
+    notes = {"1789712080047": {"word": "冒険", "interval": 3}, "1789712080048": {"word": "準備", "interval": "2"},
+             "1789712080049": {"word": 42, "interval": 1}, "1789712080050": ["危険", 1],
+             "1789712080051": {"word": "価値", "interval": True}, "not-an-id": {"word": "求める", "interval": 0},
+             "1789712080052": {"interval": 1}}
+    for record in ({"notes": notes}, {"notes": [["冒険", 3]]}, {"notes": "冒険"}, ["冒険"]):
+        with open(_path(), "w", encoding="utf-8") as f:
+            json.dump(record, f, ensure_ascii=False)
+        expected = [("求める", 0), ("冒険", 3)] if record == {"notes": notes} else []
+        assert anki_sync.young_words("ja") == expected
+        assert anki_sync.count_young("ja") == (4 if expected else 0)   # 準備 and 価値 hold a word, odd intervals
+
+
 # --------------------------------------------------------------------------- #
 # The empty state, and failures: the last record kept
 # --------------------------------------------------------------------------- #

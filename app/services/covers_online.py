@@ -64,7 +64,9 @@ Q_SEARCH = ("query ($search: String) { Page(perPage: 10) { media(search: $search
             "} } }")
 
 Want = namedtuple("Want", "id title anilist_id video_id kind media_type cover_source cover_ref cover_path cover_locked "
-                         "rel_paths", defaults=((),))     # rel_paths: its files' (the disk is looked at first: B2)
+                         "rel_paths own_folders own_books", defaults=((), (), ()))
+#   rel_paths: its files'; own_folders / own_books: beside its originals (`covers.originals`) — the disk is looked at
+#   first (B2)
 Candidate = namedtuple("Candidate", "id cover_url title year format")
 
 
@@ -74,13 +76,14 @@ def _user_agent():
     return f"Surasura/{__version__}"
 
 
-def wants_from(items, works):
+def wants_from(items, works, own=None):
     """[Want] from the feed's rows (`Store.read_feed`'s `items` / `works`, the reader's copy): each work with its
     files' commonest source type (a video waiting for its subtitles is the store's `subtitle` from its take-in: a show
     that came in video-only, setup's scan or a look's, is asked like any show wherever it is — New arrivals, Current,
     Finished) and, for a YouTube title, its first video's id (the downloader's file name, "<title> [<id>]":
-    `path_utils`' own reading of it)."""
+    `path_utils`' own reading of it), and its own folders and books (`own`: `covers.originals(...)`)."""
     kinds, videos, rels = {}, {}, {}
+    own = own or {}
     for item in sorted(items, key=lambda r: (r.get("ord") or 0, r["id"])):
         w = item.get("work_id")
         if w is None:
@@ -100,7 +103,7 @@ def wants_from(items, works):
             kind = max(counts, key=lambda k: (counts[k], k or ""))
             out.append(Want(w["id"], w.get("title") or "", w.get("anilist_id"), videos.get(w["id"]), kind,
                             w.get("media_type"), w.get("cover_source"), w.get("cover_ref"), w.get("cover_path"),
-                            bool(w.get("cover_locked")), tuple(rels.get(w["id"], ()))))
+                            bool(w.get("cover_locked")), tuple(rels.get(w["id"], ())), *own.get(w["id"], ((), ()))))
     return out
 
 
@@ -449,9 +452,10 @@ class Fetcher:
     def _on_disk(self, w):
         """(B2, D-1 *disk art first*) The art beside its files (`covers._scan_one`), looked at before AniList is asked:
         a title that arrived mid-session, which the open's scan never saw. True: recorded from disk, nothing asked."""
-        if not w.rel_paths or not covers._my_turn(self.writer, lambda: self._stop):
+        if not (w.rel_paths or w.own_folders or w.own_books) or not covers._my_turn(self.writer, lambda: self._stop):
             return False
-        work = covers.Work(w.id, tuple(w.rel_paths), w.cover_source, w.cover_ref, w.cover_path, w.cover_locked)
+        work = covers.Work(w.id, tuple(w.rel_paths), w.cover_source, w.cover_ref, w.cover_path, w.cover_locked,
+                           tuple(w.own_folders), tuple(w.own_books))
         try:
             found = covers._scan_one(self.language, self.data_dir or path_utils.get_data_path(self.language), work,
                                      self.writer)
@@ -714,5 +718,5 @@ def wants_for(store, work_ids, chunk=500):
                       store.conn.execute(f"SELECT {work_cols} FROM works WHERE id IN ({marks})", part)]
             items += [dict(zip(FEED_ITEM_FIELDS, r)) for r in
                       store.conn.execute(f"SELECT {item_cols} FROM items WHERE work_id IN ({marks})", part)]
-    return wants_from(items, works)
+    return wants_from(items, works, covers.originals(store, ids))
 # --- end W3.2 L3

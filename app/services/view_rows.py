@@ -283,6 +283,11 @@ STRINGS = {
     "tip_audio_alone": "🎧 Audio only 「{title}」\n{files}\nNothing to study here yet: it counts no words until Anki "
                        "Miner gives its text.",
     "audio_files_one": "1 file ({first})", "audio_files": "{n} files ({first} … {last})",
+    # Hon a6 (H-12 ✅ Sonic, H-13 PROVISIONAL): an audiobook's transcript — alone, its content; paired, the book's
+    "tip_audio_transcript": "🎧 Audiobook 「{title}」 with its transcript\n{files}\nIts transcript is its text: its "
+                            "words count as an episode's do. Its cards wait until Anki Miner mines audio.",
+    "audio_transcript_timing": "Its transcript stays with the audio for timing: the book's words count, never twice.",
+    "audio_transcript_other": "The transcript beside it isn't this book's, so it isn't used.",
     "play_audio_wait": "Its audio is in your folder; it holds no words until Anki Miner gives its text",
     "arr_audio_wait": "waits for Anki Miner",
     "eps_more": " and {n} more",
@@ -712,13 +717,19 @@ def audio_tip(piece):
         return ""
     said = heard[0].get("audio") or {}
     title = said.get("title") or heard[0].get("title") or ""
+    use = said.get("transcript")
     n = said.get("n") or 0
     files = STRINGS["audio_files_one"].format(first=said.get("first")) if n == 1 else \
         STRINGS["audio_files"].format(n=n, first=said.get("first"), last=said.get("last")) if n else ""
     length = length_text(said.get("seconds"))
     files = " · ".join(x for x in (files, length) if x)
-    tip = STRINGS["tip_audio_alone" if len(heard) == len(piece) else "tip_audio_paired"].format(title=title,
-                                                                                              files=files)
+    if heard[0].get("availability") not in (None, "waiting"):     # a6: its transcript is its content
+        tip = STRINGS["tip_audio_transcript"].format(title=title, files=files)
+    else:
+        tip = STRINGS["tip_audio_alone" if len(heard) == len(piece) else "tip_audio_paired"].format(title=title,
+                                                                                                  files=files)
+        if use in ("timing", "other") and len(heard) < len(piece):
+            tip += "\n" + STRINGS["audio_transcript_timing" if use == "timing" else "audio_transcript_other"]
     return tip.replace("\n\n", "\n")
 
 
@@ -1022,8 +1033,10 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         if heard and len(heard) == n and not work.get("title_by_user"):       # a5-2: alone, the 🎧 says it: its title
             from app.audiobooks import AUDIO_MARK                            # folder's mark is never painted
             title = title[:-len(AUDIO_MARK)] if title.endswith(AUDIO_MARK) else title
-        # a5-2: alone, its quiet line; paired, the book's own (the 🎧 before its title says the rest, `audio`)
-        line = STRINGS["audio_only"] if len(heard) == n else range_text(media, nums, n - len(heard))
+        # a5-2: alone, its quiet line; paired, the book's own (the 🎧 before its title says the rest, `audio`); a6: one
+        # whose transcript is its text is no waiting item (`heard_item`): its line is an episode's
+        waits = [it for it in heard if heard_item(it)]
+        line = STRINGS["audio_only"] if waits and len(waits) == n else range_text(media, nums, n - len(waits))
     if not finished and 0 < n_watched < len(finish) and not single_video:
         line = f"{line} · " + STRINGS["watched"].format(k=n_watched, n=len(finish))
     next_index = next((i for i, e in enumerate(eps) if not e.watched and not _heard(e)),

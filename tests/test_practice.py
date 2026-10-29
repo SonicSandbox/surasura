@@ -411,3 +411,5 @@ def test_a_learner_with_more_young_cards_than_a_round_can_use_gets_the_first_hun
     _learner("ja", words, young=[(w, n % 21) for n, w in enumerate(words)])
     checker = practice.Checker("ja", settings={}, library=(None, 0))
     assert len(checker.recent_words()) == practice.RECENT == 100
+    # and no more are read: a KnownWord.json of thousands of dated words would otherwise be tokenized at every load
+    assert len(checker.recent) == len(checker.recent_terms) == 100

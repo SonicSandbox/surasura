@@ -486,3 +486,31 @@ def test_window_the_last_chapters_done_finishes_the_book_by_itself_its_audiobook
     assert wait_until(lambda: [c.op for c in writer.saved] == ["set_watched", "set_tier"], 3)
     assert calls(writer, "set_tier")[0][1] == drag.ids_of(row), "the audiobook goes into Finished with its book"
     assert win.toasts.card.base == strings.DONE_FINISHED.format(title=row.title)
+
+
+def test_audio_a_row_of_its_audiobook_alone_is_never_a_splits_first_part_so_finished_stays_offered():
+    """Review B2 / H1: asked about itself, the audiobook row split off by hand is no part either — the Finished well,
+    ⋯ and a drag (`split_first`, `any_split_first`) offer it Finished as any whole title."""
+    book = _book("p1", 1, 1, _eps(1, 6, watched=False), index=0)
+    alone = _book("p4", 1, 4, (_audio(7),), index=1)
+    assert not drag.split_first([book, alone], alone)
+    assert not drag.any_split_first([book, alone], {"p4"})
+    assert not drag.any_split_first([book, alone], {"p1"})
+
+
+def test_audio_a_book_in_a_group_finishes_its_show_though_its_audiobook_waits():
+    """Review B3 (LM11b G5 in a group): a book with its audiobook beside another show still waiting — the book's last
+    chapter offers *Move {show} to Finished* (its ids with the audiobook); another show's waiting audiobook is never
+    "a show still waiting"."""
+    def ep(item, work, show, number, watched, audio=False):
+        e = _audio(item, watched=watched) if audio else NS(id=item, number=number, watched=watched, waiting=False,
+                                                           added=_stamp(NOW - 40 * DAY))
+        e.work_id, e.show = work, show
+        return e
+    book = [ep(1, 1, BOOK, 1, True), ep(2, 1, BOOK, 2, False), ep(3, 1, BOOK, None, False, audio=True)]
+    other = [ep(4, 2, "銀河鉄道の夜", 1, False)]
+    group = _row("g1", 1, 1, tuple(book + other), group=True)
+    assert drag.show_finished(group, book[1]) == (BOOK, [1, 2, 3])
+    done = _row("g1", 1, 1, tuple(book + [ep(4, 2, "銀河鉄道の夜", 1, True), ep(5, 2, "銀河鉄道の夜", None, False,
+                                                                           audio=True)]), group=True)
+    assert drag.show_finished(done, book[1]) is None, "the other show's audiobook is no show still waiting"

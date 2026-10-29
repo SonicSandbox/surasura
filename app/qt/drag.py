@@ -128,8 +128,8 @@ def split_first(rows_, row):
     """A split's first part (A2: the Finished well stays unlit, ⋯ leaves Finished out): another Current row of the same
     title whose files come after this one's. (Goal's parts aren't in the view: a later part waiting in Goal isn't seen.)
     A group (LM11b G1: the learner's own row of several shows, its work_id its first show's) is never a part; nor a row
-    holding only its book's audiobook (`view_rows.heard_only`, H-6: nothing to finish or join)."""
-    if row.work_id is None or getattr(row, "group", False):
+    holding only its book's audiobook (`view_rows.heard_only`, H-6: nothing to finish or join), asked or asked about."""
+    if row.work_id is None or getattr(row, "group", False) or view_rows.heard_only(row.episodes):
         return False
     mine = _last_number(row)
     for r in rows_:
@@ -177,14 +177,16 @@ def show_finished(row, ep):
     """LM11b G5 (GW-2 ⭐ A): marking `ep` leaves no episode of its show in a group unwatched while another show of the
     group still waits -> (the show's name, its episodes' ids in the group), else None. Never hato's mix; a run's last
     Done is the row's own finish (a group of one show is a run: the store's rule); episodes with no show to name (a
-    first screen's cache from before) are offered nothing."""
+    first screen's cache from before) are offered nothing. Watched reads `view_rows.to_finish`'s files (L6.3, H-6): a
+    book's waiting audiobook item never holds its show back, nor stands for another show still waiting; it goes with
+    its show's ids."""
     if not row.group or not finishes(row) or ep.work_id is None or not ep.show:
         return None
-    mine = [e for e in row.episodes if e.work_id == ep.work_id]
-    if any(not e.watched and e.id != ep.id for e in mine) or \
-            not any(not e.watched for e in row.episodes if e.work_id != ep.work_id):
+    text = view_rows.to_finish(row.episodes)
+    if any(not e.watched and e.id != ep.id for e in text if e.work_id == ep.work_id) or \
+            not any(not e.watched for e in text if e.work_id != ep.work_id):
         return None
-    return ep.show, [e.id for e in mine]
+    return ep.show, [e.id for e in row.episodes if e.work_id == ep.work_id]
 
 
 # --- L6.3 (Sonic 2026-10-28: a title finishes by itself, a split's parts join forward; Kura's scope, PROVISIONAL) --- #
@@ -254,7 +256,8 @@ def when_done(view, row, now=None, pending=False):
 
 
 def all_n(row):
-    """*All N watched*'s N: the files `view_rows.to_finish` counts (a book's audiobook item never one)."""
+    """*All N watched*'s N: the files `view_rows.to_finish` counts (a book's audiobook item never one beside its
+    book); an audiobook alone, marked listened by hand, is its one file."""
     return len(view_rows.to_finish(row.episodes)) or len(row.episodes)
 
 

@@ -318,9 +318,9 @@ def test_the_report_finds_a_cp932_subtitles_anchor_and_cue(tmp_path):
     from app.static_html_generator import AnchorFinder
     path = _save(tmp_path, "sample.srt", SAMPLE_CUES, "cp932")
     finder = AnchorFinder(language="ja")
-    anchor = finder.anchor(path, "クソあの５人だけでなくお前も俺の邪魔をするのか！")
+    anchor, at, end = finder.resolve(path, "クソあの５人だけでなくお前も俺の邪魔をするのか！")
     assert anchor
-    assert finder.cue_time(path, anchor) == 7
+    assert (at, end) == (7.465, 12.554), "the cue reader's line: 00:00:07,465 --> 00:00:12,554"
 
 
 def test_settings_saved_with_a_bom_are_the_users_not_the_defaults():

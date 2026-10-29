@@ -77,13 +77,13 @@ def test_the_whitespace_tolerant_path_maps_back_too(tmp_path):
 
 
 def test_as_is_searches_the_raw_text_and_signs_its_memo_with_the_line_reader(tmp_path):
-    """A memo from before E5.1 ([anchor, whole seconds]) is recomputed once: every signature names the line reader."""
+    """A memo from before E5.1 ([anchor, whole seconds]) is recomputed once: every signature names the line reader (and the engine)."""
     path = _write(tmp_path / "ep01.srt", TRAD_SRT)
     st = os.stat(path)
     as_is = AnchorFinder()
     assert as_is._hay(path) is as_is._raw(path)
-    assert as_is._file_sig(path) == [st.st_mtime, st.st_size, AnchorFinder.LINES]
-    assert AnchorFinder(script="t")._file_sig(path) == [st.st_mtime, st.st_size, "t", AnchorFinder.LINES]
+    assert as_is._file_sig(path) == [st.st_mtime, st.st_size, as_is._lines()]
+    assert AnchorFinder(script="t")._file_sig(path) == [st.st_mtime, st.st_size, "t", as_is._lines()]
 
 
 def test_a_script_switch_does_not_reuse_the_other_scripts_answers(tmp_path):

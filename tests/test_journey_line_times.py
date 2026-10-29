@@ -242,3 +242,65 @@ def test_a_memo_from_before_the_line_reader_is_recomputed(tmp_path):
     cache.write_text(json.dumps({EPISODE: {"sig": [st.st_mtime, st.st_size],
                                            "a": {"どうぞ。": ["", None]}}}, ensure_ascii=False), encoding="utf-8")
     assert AnchorFinder(cache_path=str(cache)).resolve(EPISODE, "どうぞ。") == ("", 109.3, 112.1)
+
+
+def test_an_old_memo_of_a_file_since_gone_is_never_served(tmp_path):
+    """A gone file's signature is None before and after E5.1: its old two-item answer is recomputed, never read as
+    three (which raised and left a view of the report empty)."""
+    import json
+    cache = tmp_path / "anchor_cache.json"
+    gone = str(tmp_path / "moved_away.srt")
+    cache.write_text(json.dumps({gone: {"sig": None, "a": {"どうぞ。": ["", 5]}}}, ensure_ascii=False),
+                     encoding="utf-8")
+    assert AnchorFinder(cache_path=str(cache)).resolve(gone, "どうぞ。") == ("", None, None)
+
+
+@pytest.mark.parametrize("mark", ["‎", "​", "⁠", "﻿"])
+def test_an_invisible_mark_opening_each_line_never_stretches_a_line(tmp_path, mark):
+    """A direction mark or a zero-width space (Unicode Cf) opening each cue — subtitles exported from some tools — is
+    left out of the search as whitespace is: each sentence keeps its own line's end."""
+    path = _srt(tmp_path, [("00:00:01,000", "00:00:03,000", mark + "文化祭まで、あと三日しかないよ。"),
+                           ("00:00:03,500", "00:00:06,000", mark + "二時間目の授業、ちゃんと聞いてた？"),
+                           ("00:00:06,400", "00:00:08,800", mark + "ごめん、ぼーっとしてて気がつかなかった。")])
+    finder = AnchorFinder()
+    for sentence in _sentences(path, "ja"):
+        line = finder.line(path, sentence)
+        assert line is not None and line[1] - line[0] <= 2.5, (sentence, line)
+
+
+TRANSCRIPT_WITH_CUES = ("夜市めぐりは楽しいですね\nチャンネル | 2026-01-01 | 3:10\nCaptions: Japanese (manual)\n"
+                        "https://www.youtube.com/watch?v=dQw4w9WgXcQ\n\n" + "-" * 60 + "\n\n"
+                        "今日は夜市めぐりに来ました [拍手] 皆さんありがとうございます 夜市めぐりは楽しいですね")
+
+
+def test_a_transcript_sentence_is_found_as_a_generate_reads_it(tmp_path):
+    """A video transcript is searched without what a Generate takes out (the sound cue [拍手]), and its lines are
+    looked for in its body, never its title (the video is named after its last line): the YouTube link opens at
+    the line's second."""
+    import json
+    from app.path_utils import SIDECAR_SUFFIX
+    txt = tmp_path / "チャンネル - 夜市めぐり [dQw4w9WgXcQ].txt"
+    txt.write_text(TRANSCRIPT_WITH_CUES, encoding="utf-8")
+    (tmp_path / ("チャンネル - 夜市めぐり [dQw4w9WgXcQ]" + SIDECAR_SUFFIX)).write_text(json.dumps(
+        {"video_id": "dQw4w9WgXcQ", "cues": [["今日は夜市めぐりに来ました [拍手]", 5],
+                                             ["皆さんありがとうございます", 9], ["夜市めぐりは楽しいですね", 14]]},
+        ensure_ascii=False), encoding="utf-8")
+    path = str(txt)
+    sentences = _sentences(path, "ja")
+    sentence = next(s for s in sentences if "ありがとう" in s)
+    assert "拍手" not in sentence
+    finder = AnchorFinder()
+    assert finder.line(path, sentence)[0] == 5, "the sentence starts in the line said at 0:05"
+    assert finder.line(path, sentence) == (5, 14), "the whole line, from its first cue to its last"
+    assert finder.line(path, "皆さんありがとうございます")[0] == 9
+    assert finder.line(path, "夜市めぐりは楽しいですね") == (14, 14), "the body's line, not the title"
+
+
+def test_a_short_sentence_after_a_closing_quote_is_that_line(tmp_path):
+    """「行くぞ！」 うん｡ — after a closing quote a sentence starts: うん｡ is said there (5:01) before its line alone
+    (20:07), and inside そっか うん｡ (1:02) it is no sentence. The reader's own placement agrees."""
+    path = _srt(tmp_path, [("00:01:02,780", "00:01:07,120", "そっか うん｡"),
+                           ("00:05:01,000", "00:05:03,500", "「行くぞ！」 うん｡"),
+                           ("00:20:07,120", "00:20:09,790", "うん｡")])
+    assert "うん｡" in _sentences(path, "ja")
+    assert AnchorFinder().line(path, "うん｡") == (301.0, 303.5) == _seconds(_readers_lines(path, "ja")["うん｡"])

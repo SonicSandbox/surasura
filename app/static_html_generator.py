@@ -178,7 +178,8 @@ class AnchorFinder:
     MAX_ANCHOR = 40      # bounds the whitespace-tolerant pattern
     MAX_CHUNKS = 6       # a sentence can span a dozen cues; a few of the longest is plenty
     # The memo's answers: [anchor, start, end]. A memo written before the times came from Connect's line reader
-    # (E5.1) holds [anchor, whole seconds] found otherwise, and is recomputed: its files' signatures differ.
+    # (E5.1) holds [anchor, whole seconds] found otherwise, and is recomputed: its files' signatures differ. The
+    # signature also names the engine: the reader cleans lines as a Generate does, and that changes only with it.
     LINES = "cues-1"
 
     def __init__(self, cache_path=None, script="asis", language=None):
@@ -346,10 +347,15 @@ class AnchorFinder:
                 if self._script != "asis":
                     # Answers found through a conversion are re-verified after a script switch.
                     self._sigs[path].append(self._script)
-                self._sigs[path].append(self.LINES)
+                self._sigs[path].append(self._lines())
             except OSError:
                 self._sigs[path] = None
         return self._sigs[path]
+
+    def _lines(self):
+        """The memo signature's last part: the line reader's version and the engine's (`LINES`)."""
+        from app.analyzer import ENGINE_REVISION
+        return f"{self.LINES}/{ENGINE_REVISION}"
 
     def resolve(self, abs_path, sentence):
         """(anchor, start, end) for a sentence, memoised across renders: the scroll-to-text anchor, and the
@@ -367,7 +373,7 @@ class AnchorFinder:
             self._entries[abs_path] = entry
 
         hit = entry["a"].get(sentence)
-        if hit is not None:
+        if hit is not None and len(hit) == 3:       # (a gone file's old entry: its signature is None either way)
             return hit[0], hit[1], hit[2]
 
         anchor = self.anchor(abs_path, sentence)

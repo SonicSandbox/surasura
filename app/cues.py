@@ -313,60 +313,78 @@ def tokens(cues, language="ja", script="asis", tokenizer=None):
     return out
 
 
-class Timeline:
-    """A timed file's lines and the text a Generate reads from it (`timeline`): `cues`, and `offsets` / `indexes` —
-    where each line starts in the text (ascending) and which cue it is. `script` ("s" / "t"): a Chinese
-    report's sentences are in that script, so they are looked for in the text so converted (length-preserving)."""
+def _squeezed(text):
+    """`text` as a sentence is searched in it: no whitespace (a sentence as the tokenizer yields it holds none of the
+    spaces between a subtitle's phrases or an .ass file's captions) and no invisible format character (a direction
+    mark, a zero-width space: Unicode Cf)."""
+    return "".join(ch for ch in text if not ch.isspace() and unicodedata.category(ch) != "Cf")
 
-    def __init__(self, cues=None, text="", starts=(), script="asis", language="ja"):
-        self.cues = cues if cues is not None else Cues()
-        self.offsets = [offset for offset, _cue in starts]
-        self.indexes = [cue for _offset, cue in starts]
+
+class Timeline:
+    """A timed file's lines and the text a Generate reads from it (`timeline`), kept as `line` needs it: the text
+    squeezed (`_squeezed`), where each line starts in it (ascending) and that line's start and end (ms). `script`
+    ("s" / "t"): a Chinese report's sentences are in that script, so they are looked for in the text so converted
+    (length-preserving). `removed`: a pattern of what a Generate takes out of the text, left out of the search too (a
+    video transcript's timestamps and sound cues: its text is the file's own)."""
+
+    def __init__(self, cues=None, text="", starts=(), script="asis", language="ja", removed=None):
+        cues = cues if cues is not None else Cues()
         if script in ("s", "t") and text:
             text = zh_script.convert(text, script)
-        # The text without its whitespace — a sentence as the tokenizer yields it holds none of the spaces between a
-        # subtitle's phrases or an .ass file's captions — and where each of its characters stands in the text.
-        self._at = [i for i, ch in enumerate(text) if not ch.isspace()] if self.offsets else []
-        self._squeezed = "".join(text[i] for i in self._at)
-        self._line_starts = set(self.offsets)
-        self._ends = frozenset(analyzer.LOGIC.get("sentence_boundaries", {}).get(language, "。｡．！？!?")) | {"。"}
+        if removed is not None and starts:
+            text = removed.sub(lambda m: " " * len(m.group()), text)       # blanked: every offset stays
+        # The squeezed text a piece at a time, between two lines' starts, noting where each line starts in it
+        pieces, kept, self._lines, self._times, at = [], 0, [], [], 0
+        for offset, cue in starts:
+            piece = _squeezed(text[at:offset])
+            pieces.append(piece)
+            kept, at = kept + len(piece), max(at, offset)
+            self._lines.append(kept)
+            self._times.append((cues[cue].start, cues[cue].end))
+        pieces.append(_squeezed(text[at:]) if starts else "")
+        self._squeezed = "".join(pieces)
+        self._line_starts = set(self._lines)
+        self._closers = frozenset(analyzer.LOGIC.get("sentence_boundaries", {}).get(language, "。｡．！？!?")) | {"。"}
 
     def _starts_sentence(self, at):
-        """Does the character at `at` (in the text without whitespace) start a sentence: the text's or a line's start,
-        or after what ends one — a sentence end of the language's (`sentence_boundaries`), a closing bracket or
-        quote, the 。 a Generate closes a caption with."""
-        if at == 0 or self._at[at] in self._line_starts:
+        """Does the character at `at` (in the squeezed text) start a sentence: the text's or a line's start, or after
+        what ends one — a sentence end of the language's (`sentence_boundaries`), a closing bracket or quote, the 。 a
+        Generate closes a caption with."""
+        if at == 0 or at in self._line_starts:
             return True
         before = self._squeezed[at - 1]
-        return before in self._ends or unicodedata.category(before) in ("Pe", "Pf")
+        return before in self._closers or unicodedata.category(before) in ("Pe", "Pf")
 
-    def _cue(self, offset):
-        """The line `offset` stands in; None before the first (a transcript's title and header)."""
-        i = bisect.bisect_right(self.offsets, offset) - 1
-        return self.indexes[i] if i >= 0 else None
+    def _cue(self, at):
+        """The line the character at `at` (in the squeezed text) is said in; None before the first (a transcript's
+        title and header)."""
+        i = bisect.bisect_right(self._lines, at) - 1
+        return i if i >= 0 else None
 
     def line(self, sentence):
         """(start, end) in milliseconds of the lines `sentence` is said in — its first line's start, its last line's
         end — or None (no timed lines, or the sentence isn't in the text). A sentence said more than once is its first
         time (as the pick takes the earliest of equal lines)."""
-        needle = "".join((sentence or "").split())
+        needle = _squeezed(sentence or "")
         if not needle or not self._squeezed:
             return None
         found = self._squeezed.find(needle)
         if found < 0:
             return None
         # Where it is a sentence of its own, starting and ending one: a short one (うん｡, 大丈夫｡, うっ…) also stands
-        # inside or at the start of longer ones said before it (そうかうん｡, うっ…うわああっ！).
+        # inside or at the start of longer ones said before it (そうかうん｡, うっ…うわああっ！). Where the tokenizer
+        # keeps a ！ inside a sentence (はい！と言った: its quotation rule, which needs the tagger) a line ending there
+        # can still be taken: the same words, said as a sentence by its punctuation.
         at = found
         while at >= 0 and not (self._starts_sentence(at) and (at + len(needle) == len(self._squeezed)
                                                               or self._starts_sentence(at + len(needle)))):
             at = self._squeezed.find(needle, at + 1)
         found = found if at < 0 else at
-        first = self._cue(self._at[found])
+        first = self._cue(found)
         if first is None:
             return None
-        last = self._cue(self._at[found + len(needle) - 1])
-        return self.cues[first].start, max(self.cues[last].end, self.cues[first].start)
+        start, _end = self._times[first]
+        return start, max(self._times[self._cue(found + len(needle) - 1)][1], start)
 
 
 def _transcript(path, language):
@@ -384,7 +402,8 @@ def _transcript(path, language):
         text = read_text(path, language)
     except OSError:
         return Cues(), "", []
-    found, pos = [], 0
+    body = analyzer.transcript_body(text)
+    found, pos = [], 0 if body is None else len(text) - len(body)        # the lines are the body's, never the title
     for entry in entries:
         try:
             line, sec = entry[0], int(entry[1])
@@ -407,10 +426,25 @@ def _transcript(path, language):
 def timeline(path, language="ja", script="asis"):
     """The timed lines of the file at `path` and the text a Generate reads from it: Timeline. A subtitle (.srt, .ass,
     .ssa): `read` and the text `tokens` reads (`_text`), so a sentence's lines are the cues Connect cuts a card from.
-    A video transcript: its sidecar's lines (`_transcript`). Anything else has none (every `line` is None)."""
+    A video transcript: its sidecar's lines (`_transcript`), searched without what a Generate takes out of it (its
+    timestamps, sound cues, inline readings: `analyzer.strip_text_conventions`). Anything else has none (every `line`
+    is None)."""
     if str(path).lower().endswith(SUBTITLES):
         cues = read(path, language)
         text, starts = _text(cues, language)
         return Timeline(cues, text, starts, script, language)
     cues, text, starts = _transcript(path, language)
-    return Timeline(cues, text, starts, script, language)
+    return Timeline(cues, text, starts, script, language, _transcript_removed())
+
+
+_TRANSCRIPT_REMOVED = []
+
+
+def _transcript_removed():
+    """What a Generate takes out of a video transcript's text — its timestamps, the captions' sound cues, what the
+    reader removes inside a line (`analyzer.REMOVED_INLINE`) — as one pattern, made once."""
+    if not _TRANSCRIPT_REMOVED:
+        _TRANSCRIPT_REMOVED.append(re.compile("|".join((analyzer._TRANSCRIPT_TIME_RE.pattern,
+                                                        analyzer._SOUND_CUE_RE.pattern, analyzer.REMOVED_INLINE)),
+                                              re.M))
+    return _TRANSCRIPT_REMOVED[0]

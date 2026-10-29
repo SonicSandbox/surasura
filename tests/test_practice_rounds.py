@@ -207,6 +207,8 @@ def test_a_round_done_again_with_nothing_kept_still_reads_back_only_the_usual_th
     assert [c["round_id"] for c in got] == rounds[::-1][:pr.CONTEXT_ROUNDS]
     again = pr.context("zh", first=rounds[0])                              # the oldest of them, done again: first, once
     assert [c["round_id"] for c in again] == [rounds[0]] + rounds[::-1][:pr.CONTEXT_ROUNDS]
+    newest = pr.context("zh", first=rounds[-1])                            # the newest, done again: still once
+    assert [c["round_id"] for c in newest] == [rounds[-1]] + rounds[::-1][1:pr.CONTEXT_ROUNDS + 1]
 
 
 def test_a_round_reads_back_its_newest_items_first_and_only_a_few_of_them():

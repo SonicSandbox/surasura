@@ -75,6 +75,8 @@ def test_the_ai_app_sees_four_read_only_tools_one_that_keeps_rounds_and_the_prac
         a = tool.annotations
         assert a.read_only_hint is (tool.name != "surasura_save_round")    # the one write: Surasura's own round file
         assert a.destructive_hint is False and a.open_world_hint is False
+        # every read gives the same answer again but the round's start: each call is a new round_id
+        assert a.idempotent_hint is (tool.name not in ("surasura_practice_start", "surasura_save_round"))
     (prompt,) = prompts.prompts
     assert prompt.name == "practice" and [a.name for a in prompt.arguments] == ["words", "role", "kind", "source"]
 

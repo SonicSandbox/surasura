@@ -355,8 +355,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     offer = (connect or {}).get("known_offer")
     if offer:
         out.append(_known_entry(offer, seen))
-    behind = _backlog_entry(backlog, view, seen) if backlog else None
-    if behind is not None and behind.key not in answered:
+    behind = _backlog_entry(backlog, view, seen, answered) if backlog else None
+    if behind is not None:
         out.append(behind)
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
@@ -818,14 +818,30 @@ def _known_entry(offer, seen):
                  unseen=key not in seen, say=STRINGS["known_say"].format(states=states), data={"cards": n})
 
 
-def backlog_offer(language):
+def backlog_offer(language, settings=None):
     """The shows behind 順's deck's new cards (`modules/junban/backlog_shows`'s last offer, read-only), or None (no
-    offer, 順 not in this Surasura)."""
+    offer, 順 not in this Surasura or switched off, no deck saved, or an offer worked out for another deck — setup's
+    page may look at a deck that is never saved)."""
+    settings = settings or {}
+    if settings.get("enable_junban") is False:
+        return None
     try:
+        from app.services import setup_wizard
+        deck = setup_wizard.junban_deck(settings, language)
+        if not deck:
+            return None
         from modules.junban import backlog_shows
-        return backlog_shows.offer(language)
+        return backlog_shows.offer(language, deck=deck)
     except Exception:
         return None
+
+
+def behind_key(show):
+    """A waiting show's *Leave them* key: its title (`plain`) — a new episode of it, or one of its files placed by hand,
+    never asks again; another show waiting does."""
+    import unicodedata
+    title = unicodedata.normalize("NFKC", str((show or {}).get("title") or "")).casefold()
+    return f"{BACKLOG_SHOWS}:{''.join(ch for ch in title if ch.isalnum())}"
 
 
 def _names(shows, most=5):
@@ -851,13 +867,14 @@ def backlog_head(record):
     return STRINGS[key].format(cards=cards, come=come, s=len(shows), found=found)
 
 
-def _backlog_entry(record, view, seen):
+def _backlog_entry(record, view, seen, answered=frozenset()):
     """ONE card for the shows behind the backlog (A7B-3), or None when none of their files waits in New arrivals now
-    (`view.arrivals`: one placed by hand, or by *Add them*, since the offer was worked out is no longer offered)."""
+    (`view.arrivals`: one placed by hand, or by *Add them*, since the offer was worked out is no longer offered) or
+    every show still waiting was left (*Leave them*: `behind_key`, one per show)."""
     arrivals = {i for a in (getattr(view, "arrivals", None) or ()) for i in (a.item_ids or ())}
     shows = [s for s in record.get("shows") or () if isinstance(s, dict)]
     waiting = [dict(s, ids=[i for i in s.get("ids") or () if i in arrivals])
-               for s in shows if s.get("state") == "waiting"]
+               for s in shows if s.get("state") == "waiting" and behind_key(s) not in answered]
     waiting = [s for s in waiting if s["ids"]]
     if not waiting:
         return None
@@ -869,9 +886,10 @@ def _backlog_entry(record, view, seen):
     say = " ".join([STRINGS["behind_waiting"].format(names=_names(waiting))] +
                    ([STRINGS["behind_away"].format(names=_names(away))] if away else []))
     ids = sorted(i for s in waiting for i in s["ids"])
-    key = f"{BACKLOG_SHOWS}:{_digest([str(i) for i in ids])}"      # a show placed or a new one waiting: asked again
+    left = sorted(behind_key(s) for s in waiting)
+    key = f"{BACKLOG_SHOWS}:{_digest(left)}"                        # seen: these shows; another one counts again
     return Entry(key=key, kind=BACKLOG_SHOWS, title=f"{head} {ask}", lines=(), actions=("add_shows", "leave_shows"),
-                 unseen=key not in seen, say=say, data={"ids": ids, "shows": len(waiting)})
+                 unseen=key not in seen, say=say, data={"ids": ids, "shows": len(waiting), "left": left})
 
 
 def badge(entries_):
@@ -885,6 +903,8 @@ def answer_keys(thing):
         return [item_key(thing.item_id)]
     if thing.kind in (GONE, BULK, FILES_FOLDER, LIBRARY_GONE):
         return [item_key(i) for i in (thing.data or {}).get("item_ids") or ()]
+    if thing.kind == BACKLOG_SHOWS:
+        return list((thing.data or {}).get("left") or ()) or [thing.key]       # one per show it held
     return [thing.key]
 
 

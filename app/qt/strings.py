@@ -1349,6 +1349,7 @@ NEEDS_KNOWN_LEFT = "Left as they are · cards you suspend or mark from now on st
 NEEDS_SHOWS_ADDED = "Added {n} shows from your Anki backlog"
 NEEDS_SHOWS_ADDED_ONE = "Added a show from your Anki backlog"
 NEEDS_SHOWS_LEFT = "Left in New arrivals · a show that comes in later asks again"
+NEEDS_SHOWS_NOT_ADDED = "Nothing was added: your library can't be changed just now · try again in a moment"
 NEEDS_FIRST_CARDS_AUTOMATION_OFF = "automatic actions are off in Settings; turn them on, then ask again"
 NEEDS_ITS_NEW = "{name} joins your library as a new file"
 NEEDS_SAME_BOOK = "The audiobook joins its book"

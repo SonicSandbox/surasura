@@ -2537,6 +2537,9 @@ class ShellWindow(QMainWindow):
         if (getattr(state, "sync", None) == "synced" and getattr(d.auto_state, "sync", None) != "synced"
                 and getattr(self, "needs_you", None) is not None):
             self.needs_you.synced()             # laptop round 7 #43: Known from Anki's question may have come or gone
+        elif (getattr(state, "shows", None) != getattr(d.auto_state, "shows", None)
+              and getattr(self, "needs_you", None) is not None):
+            self.needs_you.synced()             # Michi-C: the shows behind the backlog worked out again
         known = getattr(state, "known", None)
         if known is not None and known != getattr(d.auto_state, "known", None):
             self._previews_moved()                         # W3.1b: new known words move the bands' numbers

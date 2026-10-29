@@ -1665,3 +1665,19 @@ def test_michi_c_card_order_with_nothing_waiting_says_so_without_a_button_and_wi
     go_to(wiz2, "order")
     assert wait_until(lambda: wiz2.page.behind_line.isHidden() and _api2.asked)
     assert wiz2.page.btn_behind.isHidden()
+
+
+def test_michi_c_add_them_with_no_writer_or_another_languages_library_adds_nothing_and_says_so(make):
+    """The review's SHOULD 10: the window's bar is under the page, so the page itself says when nothing was added; ids
+    of one language's library are never placed in another's."""
+    from app.qt import needs as qneeds
+    wiz, shell, api, settings, _m = make(api=BehindApi(BEHIND))
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: page.btn_behind.isVisible())
+    QTest.mouseClick(page.btn_behind, Qt.MouseButton.LeftButton)          # the stand-in window has no writer
+    assert page.behind_line.text() == S.BEHIND_NOT_ADDED and page.btn_behind.isVisible()
+    shell.moves, shell.services.writer = GiveMoves(), PlaceWriter()
+    shell.language = "zh"
+    assert qneeds.give_shows(shell, [41], 1, "ja") is None and shell.moves.given == []
+    assert qneeds.give_shows(shell, [41], 1, "zh") is not None

@@ -935,7 +935,7 @@ def test_michi_c_the_shows_behind_the_backlog_are_one_card_and_add_them_places_t
     seed, win, writer, ny = world()
     arrival = ny.view.arrivals[0]
     ids = list(arrival.item_ids)
-    monkeypatch.setattr(service, "backlog_offer", lambda lang: _behind(ids))
+    monkeypatch.setattr(service, "backlog_offer", lambda lang, settings=None: _behind(ids))
     settle(ny)
     cards = [e for e in ny.entries if e.kind == service.BACKLOG_SHOWS]
     assert len(cards) == 1
@@ -957,16 +957,16 @@ def test_michi_c_the_shows_behind_the_backlog_are_one_card_and_add_them_places_t
 def test_michi_c_leave_them_is_kept_and_a_show_no_longer_waiting_is_never_offered(world, monkeypatch):
     seed, win, writer, ny = world()
     ids = list(ny.view.arrivals[0].item_ids)
-    monkeypatch.setattr(service, "backlog_offer", lambda lang: _behind([999999]))      # placed by hand since
+    monkeypatch.setattr(service, "backlog_offer", lambda lang, settings=None: _behind([999999]))      # placed by hand since
     settle(ny)
     assert not [e for e in ny.entries if e.kind == service.BACKLOG_SHOWS]
-    monkeypatch.setattr(service, "backlog_offer", lambda lang: _behind(ids, away=False))
+    monkeypatch.setattr(service, "backlog_offer", lambda lang, settings=None: _behind(ids, away=False))
     settle(ny)
     entry = entry_of(ny, service.BACKLOG_SHOWS)
     assert entry.title == ("2,400 of your new cards come from 2 shows; 2 are on this PC. "
                            "Add the one that isn't in your list yet?")
     button(ny, entry.key, "leave_shows").click()
-    assert wait_until(lambda: entry.key in service.read_answered("ja"), 5)
+    assert wait_until(lambda: service.behind_key({"title": "月影の旅人"}) in service.read_answered("ja"), 5)
     settle(ny)
     assert not [e for e in ny.entries if e.kind == service.BACKLOG_SHOWS]
     assert not [c for c in writer.calls if c[0] == "place"]

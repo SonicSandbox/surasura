@@ -1882,6 +1882,8 @@ class OrderPage(_Page):
         def done(record):
             if self._behind_key == key:
                 self._behind = record
+                if record is None:
+                    self._behind_key = None        # (Anki closed meanwhile: asked again when it answers)
                 self._paint_behind()
         bridge.run_in_worker(look, then=self.wiz.alive(done), failed=self.wiz.alive(lambda _info: done(None)))
 
@@ -1907,9 +1909,12 @@ class OrderPage(_Page):
         """*Add them*: `needs.give_shows`, the window's writer (one Undo) — the one add path *Needs you* uses too."""
         from app.qt import needs as qneeds
         waiting = self._waiting_behind()
-        if qneeds.give_shows(self.wiz.shell, [i for s in waiting for i in s["ids"]], len(waiting)) is not None:
+        if qneeds.give_shows(self.wiz.shell, [i for s in waiting for i in s["ids"]], len(waiting),
+                             self.wiz.language) is not None:
             _set_text(self.behind_line, S.BEHIND_ADDED)
             _show(self.btn_behind, False)
+        else:                                       # (the window's bar is under the page: said here)
+            _set_text(self.behind_line, S.BEHIND_NOT_ADDED)
     # --- end Michi-C
 
     def _decks(self):

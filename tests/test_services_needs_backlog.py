@@ -40,7 +40,7 @@ def test_the_backlog_is_one_card_naming_the_shows_waiting_and_those_not_on_this_
                           "Add the 2 that aren't in your list yet?")
     assert card.say == (f"Waiting in New arrivals: {titles[0]} (900), {titles[1]} (899). "
                         f"Not on this PC: {titles[8]} (40).")
-    assert card.actions == ("add_shows", "leave_shows") and card.data == {"ids": [11, 12, 13], "shows": 2}
+    assert card.actions == ("add_shows", "leave_shows") and card.data["ids"] == [11, 12, 13] and card.data["shows"] == 2
     assert card.unseen and needs.BACKLOG_SHOWS in needs.NO_LATER
 
 
@@ -54,14 +54,21 @@ def test_only_files_new_arrivals_still_holds_are_offered_and_none_left_is_no_car
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_leave_them_holds_until_another_show_waits(language):
+    """The review's MUST 2: *Leave them* answers each show it held — a new episode of a show left, one of its files
+    placed by hand, an Undo: still left; another show waiting: asked about that show alone."""
+    titles = names(language)
     first = next(e for e in needs.entries(view(11, 12), backlog=offer(language)) if e.kind == needs.BACKLOG_SHOWS)
-    answered = frozenset({first.key})
-    assert not [e for e in needs.entries(view(11, 12), backlog=offer(language), answered=answered)
-                if e.kind == needs.BACKLOG_SHOWS]
-    more = offer(language, waiting=((11, 12), (13,)))
-    again = [e for e in needs.entries(view(11, 12, 13), backlog=more, answered=answered)
-             if e.kind == needs.BACKLOG_SHOWS]
+    answered = frozenset(needs.answer_keys(first))
+    assert answered == {needs.behind_key({"title": titles[0]})}
+
+    def card(v, record):
+        return [e for e in needs.entries(v, backlog=record, answered=answered) if e.kind == needs.BACKLOG_SHOWS]
+    assert not card(view(11, 12), offer(language))
+    assert not card(view(11, 12, 14), offer(language, waiting=((11, 12, 14),)))     # a new episode of it
+    assert not card(view(12), offer(language))                                       # one placed by hand
+    again = card(view(11, 12, 13), offer(language, waiting=((11, 12), (13,))))
     assert len(again) == 1 and again[0].key != first.key and again[0].unseen
+    assert again[0].data["ids"] == [13] and again[0].data["left"] == [needs.behind_key({"title": titles[1]})]
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -79,7 +86,21 @@ def test_the_first_sentence_counts_right_for_one_some_and_none(language):
         "Your new card comes from 1 show, on this PC."
 
 
-def test_the_last_offer_is_read_only_through_the_module_and_none_without_it(monkeypatch):
+def test_the_last_offer_is_read_only_for_the_saved_deck_and_none_without_junban(monkeypatch):
+    """The review's SHOULD 7: no deck saved, 順 off, an offer for another deck (setup's page looked at one never
+    saved), or no 順 in this Surasura: no card."""
     import sys
+    import types
+    kept = {"deck": "Mining", "shows": [], "cards": 1, "all": 1}
+    fake = types.SimpleNamespace(offer=lambda language, deck=None: kept if deck in (None, kept["deck"]) else None)
+    monkeypatch.setitem(sys.modules, "modules.junban.backlog_shows", fake)
+    monkeypatch.setattr(sys.modules["modules.junban"], "backlog_shows", fake, raising=False) \
+        if "modules.junban" in sys.modules else None
+    assert needs.backlog_offer("ja", {"junban_deck": "Mining"}) == kept
+    assert needs.backlog_offer("ja", {"junban_deck": "Other"}) is None
+    assert needs.backlog_offer("ja", {}) is None
+    assert needs.backlog_offer("ja", {"junban_deck": "Mining", "enable_junban": False}) is None
     monkeypatch.setitem(sys.modules, "modules.junban.backlog_shows", None)        # 順 not in this Surasura
-    assert needs.backlog_offer("ja") is None
+    if "modules.junban" in sys.modules:
+        monkeypatch.delattr(sys.modules["modules.junban"], "backlog_shows", raising=False)
+    assert needs.backlog_offer("ja", {"junban_deck": "Mining"}) is None

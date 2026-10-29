@@ -817,7 +817,7 @@ class NeedsYou(QObject):
                                   hidden=service.read_hidden(lang),           # alpha 4 D2: Not now, Stop asking
                                   settled=gone_judged is not None,            # K1: every folder had its look
                                   emptied=emptied,                            # A5K-2: the folder emptied
-                                  backlog=service.backlog_offer(lang))        # Michi-C: the shows behind the backlog
+                                  backlog=service.backlog_offer(lang, settings))   # Michi-C: the backlog's shows
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -1719,13 +1719,14 @@ class NeedsYou(QObject):
 
     # the shows behind the backlog (Michi-C, A7B-2): New arrivals' own *Soon*, through the window's writer
     def _do_add_shows(self, entry, _line):
-        give_shows(self.win, (entry.data or {}).get("ids"), (entry.data or {}).get("shows"))
+        if give_shows(self.win, (entry.data or {}).get("ids"), (entry.data or {}).get("shows"), self.language) is None:
+            self._say(strings.NEEDS_SHOWS_NOT_ADDED)
 
     def _do_leave_shows(self, entry, _line):
         def done(_n):
             self._say(strings.NEEDS_SHOWS_LEFT)
             self.refresh()
-        self._press("leave_shows", entry, service.answer, self.language, [entry.key], then=done)
+        self._press("leave_shows", entry, service.answer, self.language, service.answer_keys(entry), then=done)
 
     def synced(self):
         """A known-words sync ended (the automation's): Known from Anki's question may have come or gone."""
@@ -1745,15 +1746,18 @@ class NeedsYou(QObject):
                     goes=False)
 
 
-def give_shows(win, ids, shows):
+def give_shows(win, ids, shows, language):
     """*Add them* (Michi-C, A7B-2) — *Needs you*'s card and setup's *Card order* line: the backlog's shows from New
     arrivals into Current at Soon (New arrivals' own ⋯ *Soon*, `Writer.place`), by the drag controller's tickets (its
-    toast's Undo, Ctrl+Z) -> the ticket's number, or None (nothing to add, no writer, the library refuses writes)."""
+    toast's Undo, Ctrl+Z) -> the ticket's number, or None (nothing to add, no writer, the library refuses writes, or
+    the window's library is another language's: its ids aren't these)."""
     from app.qt import drag
     ids = [i for i in ids or () if isinstance(i, int)]
     moves = getattr(win, "moves", None)
     writer = getattr(getattr(win, "services", None), "writer", None)
     if not ids or moves is None or writer is None or moves.refused() is not None:
+        return None
+    if getattr(win, "language", language) != language:
         return None
     n = int(shows or 0)
     text = strings.NEEDS_SHOWS_ADDED_ONE if n == 1 else strings.NEEDS_SHOWS_ADDED.format(n=n)

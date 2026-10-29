@@ -185,6 +185,7 @@ BEHIND_ADD = "Add them"
 BEHIND_ADD_TIP = ("Puts these shows from New arrivals into your list, at Soon: their cards go in the order you'll meet "
                   "the words.\n• Undo: the toast, or Ctrl+Z")
 BEHIND_ADDED = "Added: their cards go in the order you'll meet the words."
+BEHIND_NOT_ADDED = "Nothing was added: your library can't be changed just now. Try again in a moment."
 
 # --- 5 · cards made for you ------------------------------------------------------------------------------------------- #
 CARDS_TITLE = "Cards that make themselves"

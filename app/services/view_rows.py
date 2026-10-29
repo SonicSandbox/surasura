@@ -618,11 +618,11 @@ def _waits_for(item, media):
 
 
 def _mines(kind):
-    """Could this Surasura make cards from `kind` at all (`anki_miner.mines`, no Anki Miner asked)? False in this
-    build: the row's quiet line is right whatever Anki Miner is installed. Alpha 4 M1 — the build that teaches Surasura
-    Z-9 / Z-16 asks the installed Anki Miner here too (the setup record's features, as `runner.Steps.mines`)."""
+    """Can Connect make cards from `kind` now (`anki_miner.mines_now`: this Surasura knows it and the Anki Miner its
+    setup record last found names it — Connect's jobs' own answer)? Alpha 4 M1; Z-9 (books and texts) known since
+    2026-10-28, Z-16 (audio) not yet."""
     from app.connect import anki_miner
-    return anki_miner.mines("audio" if kind == "audio" else "books")
+    return anki_miner.mines_now("audio" if kind == "audio" else "books")
 
 
 # --- building ------------------------------------------------------------------------------------------------------ #

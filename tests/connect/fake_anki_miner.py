@@ -28,6 +28,16 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
     {"clear_leftovers": 0.3}                               # 3.10: this long after it starts, before its setup, an
                                                            # unconsumed cancel file is deleted once (runfolder.py)
 
+Round 2's Z-9 (`reading` in `features`; the request's own JSON, `tracks/pipeline/work/AM-round2/send/`): an episode
+may name `reading_file` instead of `video_file` + `subtitle_file`, a word `unit_index` beside `line_text`; each row of a
+reading episode adds `unit_index` and `location`, its `line_start` / `start` / `end` null, its `sentence` the unit's:
+
+    {"units": [{"index": 0, "location": "一", "text": "吾輩は猫である。"}, ...],  # the source's units (Z-19's list);
+                                                           # none: a .txt's sentences, each at location "ch.0"
+     "mine": "source-unreadable"}                          # SOURCE_UNREADABLE before any Anki write, no result
+    {"cover": true, "chapters": [{"title": "一", "index": 0}]}   # `inspect` (Z-19, with `inspect` in features):
+                                                           # each source's answer; "units": true writes inspect-<n>.json
+
 Every call is appended to FAKE_ANKI_MINER_LOG (one JSON line: argv, and the run file's bytes' facts for `mine`), so a
 test can see what was asked and in what order; so is each progress step it couldn't write (`progress_skipped`, as
 Anki Miner warns and goes on). The run file is checked as Anki Miner checks it: strict UTF-8 with no
@@ -43,6 +53,8 @@ EPISODE_KEYS = {"run_id", "video_file", "subtitle_file", "subtitle_offset", "aud
                 "source_label_override", "secondary_subtitle_file", "secondary_subtitle_offset", "series_name_override",
                 "episode_name_override", "tags", "words"}
 WORD_KEYS = {"word", "line_start", "line_text", "line_expansion"}
+READING_EPISODE_KEYS = {"run_id", "reading_file", "source_label_override", "series_name_override",
+                        "episode_name_override", "tags", "words"}
 # 3.7.0 (contract.py FEATURES): what each name adds to what the run file may hold
 FEATURES_37 = ["sentence-rules-off", "bold-target", "named-words-whitelisted", "script-fold", "filter-names",
                "word-from-line", "dry-run", "render", "media", "settings-import", "setup", "fetch", "beside-window"]
@@ -113,8 +125,12 @@ def _read_run_file(path, plan):
     if "sentence-rules-off" in features and any(config.get(k, False) is not False for k in SENTENCE_KEYS):
         raise ValueError("deduplicate_sentences is always off for API runs: send false, or leave it out.")
     word_keys = WORD_KEYS | ({"surface", "reading"} if "word-from-line" in features else set())
+    word_keys |= {"unit_index"} if "reading" in features else set()
     for episode in data["episodes"]:
-        if set(episode) - EPISODE_KEYS or not {"run_id", "video_file", "subtitle_file", "words"} <= set(episode):
+        if "reading" in features and "reading_file" in episode:
+            if set(episode) - READING_EPISODE_KEYS or not {"run_id", "reading_file", "words"} <= set(episode):
+                raise ValueError("unknown or missing episode keys")
+        elif set(episode) - EPISODE_KEYS or not {"run_id", "video_file", "subtitle_file", "words"} <= set(episode):
             raise ValueError("unknown or missing episode keys")
         if not isinstance(episode.get("tags", ""), str) or not isinstance(episode.get("subtitle_offset", 0.0), float):
             raise ValueError("tags must be a string, subtitle_offset a number")
@@ -132,7 +148,39 @@ def _read_run_file(path, plan):
                 raise ValueError("line_expansion must be [before, after]")
             if word.get("line_start") is not None and not isinstance(word["line_start"], float):
                 raise ValueError("line_start must be a number")
+            unit = word.get("unit_index")
+            if "unit_index" in word and (isinstance(unit, bool) or not isinstance(unit, int) or unit < 0):
+                raise ValueError("unit_index must be a whole number of 0 or more")
     return data
+
+
+def _units(path, plan):
+    """A reading source's units: the plan's, else a .txt's sentences (each at "ch.0"); a file that isn't there: None."""
+    if not os.path.isfile(path):
+        return None
+    if "units" in plan:
+        return plan["units"]
+    if not path.lower().endswith(".txt"):
+        return []
+    with open(path, encoding="utf-8") as f:
+        text = "".join(f.read().split())
+    out, at = [], 0
+    for n, ch in enumerate(text):
+        if ch in "。！？":
+            out.append({"index": len(out), "location": "ch.0", "text": text[at:n + 1]})
+            at = n + 1
+    if text[at:]:
+        out.append({"index": len(out), "location": "ch.0", "text": text[at:]})
+    return out
+
+
+def _unit_of(request, units):
+    """The unit a word names: its `unit_index`, else the first unit holding its `line_text` (whitespace ignored)."""
+    if isinstance(request.get("unit_index"), int):
+        return next((u for u in units if u["index"] == request["unit_index"]), None)
+    line = "".join(str(request.get("line_text") or "").split())
+    return next((u for u in units if line and (line in "".join(u["text"].split())
+                                               or "".join(u["text"].split()) in line)), None)
 
 
 def _mine(argv, plan):
@@ -161,6 +209,11 @@ def _mine(argv, plan):
     if how == "video-unreadable":       # refused at its own check, before any Anki write: no result file
         runs = [{"run_id": e["run_id"], "ok": False, "error": "VIDEO_UNREADABLE",
                  "message": f"The video cannot be opened: {e['video_file']}", "file": None} for e in data["episodes"]]
+        return {**_ok("mine", runs=runs), "ok": False}
+    readings = {e["run_id"]: _units(e["reading_file"], plan) for e in data["episodes"] if "reading_file" in e}
+    if how == "source-unreadable" or any(units is None for units in readings.values()):
+        runs = [{"run_id": e["run_id"], "ok": False, "error": "SOURCE_UNREADABLE",
+                 "message": "The book has no readable text (DRM?)", "file": None} for e in data["episodes"]]
         return {**_ok("mine", runs=runs), "ok": False}
     runs, made_from_line = [], "word-from-line" in plan.get("features", [])
     dry = data.get("dry_run") is True
@@ -196,6 +249,11 @@ def _mine(argv, plan):
                 status = "uncertain" if n == plan.get("fail_after", 0) else "not_attempted"
             if dry and status == "created":
                 status = "ready"                    # a dry run: what it would mine, nothing written
+            unit = None
+            if episode["run_id"] in readings:      # Z-9: the word's unit, by its index or its line
+                unit = _unit_of(request, readings[episode["run_id"]])
+                if unit is None and status in ("created", "ready"):
+                    status = "not_found"
             note += 1
             start = request.get("line_start")
             if start is not None:
@@ -205,6 +263,9 @@ def _mine(argv, plan):
                    "status": status, "note_id": note if status == "created" else None, "media_missing": [],
                    "line_start": start if status != "not_found" else None, "sentence": None, "start": start,
                    "end": None, "filter": plan.get("filter", {}).get(request["word"]) if status == "not_found" else None}
+            if episode["run_id"] in readings:
+                row.update(line_start=None, start=None, end=None, sentence=unit and unit["text"],
+                           unit_index=unit and unit["index"], location=unit and unit["location"])
             if made_from_line:                      # 3.7: every row says whether its word was made from its line
                 row["from_line"] = status not in ("not_found", "not_attempted") and \
                     request["word"] in plan.get("from_line", [])
@@ -239,6 +300,25 @@ def _mine(argv, plan):
     if how == "internal-after-result":  # shared.close() raising after the runs: INTERNAL, runs []
         return _failed("mine", "INTERNAL", "RuntimeError: closing the lookup services failed")
     return {**_ok("mine", runs=runs), "ok": all(r["ok"] for r in runs)}
+
+
+def _inspect(argv, plan):
+    """Z-19 (`inspect` in features): each source's kind, title, units and chapter map; "units": true on a source also
+    writes `inspect-<n>.json` (its units) in the run folder. No Anki, no lock."""
+    with open(argv[1], encoding="utf-8") as f:
+        data = json.load(f)
+    out = []
+    for n, source in enumerate(data.get("sources") or (), 1):
+        units = _units(source["path"], plan)
+        if units is None:
+            return _failed("inspect", "SOURCE_UNREADABLE", f"Cannot read {source['path']}")
+        out.append({"path": source["path"], "kind": "book", "title": os.path.splitext(os.path.basename(
+            source["path"]))[0], "cover": bool(plan.get("cover")), "units": len(units),
+            "chapters": plan.get("chapters", []), "needs": [], "warnings": []})
+        if source.get("units"):
+            with open(os.path.join(data["run_dir"], f"inspect-{n}.json"), "w", encoding="utf-8") as f:
+                json.dump({"units": units}, f, ensure_ascii=False)
+    return {**_ok("inspect"), "result": {"sources": out}}
 
 
 def _cancel_seen(folder, wait=5.0):
@@ -290,6 +370,8 @@ def main(argv):
         verdict = _ok("settings-export")
     elif command == "mine":
         verdict = _mine(argv, plan)
+    elif command == "inspect" and "inspect" in plan.get("features", []):
+        verdict = _inspect(argv, plan)
     else:
         verdict = _failed(command, "BAD_ARGUMENTS", "unknown command")
     if plan.get("schema", 1) != 1:

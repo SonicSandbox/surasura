@@ -98,6 +98,9 @@ BOOKS_WAIT = "Waits for Anki Miner to read books: Connect makes its cards by its
 # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio (Z-16)
 AUDIO_WAIT = "Waits for Anki Miner to mine audio: Connect makes its cards by itself once Anki Miner can."
 WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT}       # `library.waits_for`'s kinds -> the job's line
+# Z-9: a book or a text Anki Miner couldn't open (`SOURCE_UNREADABLE`, with its reason) — *Needs you*, plain: nothing
+# here sends you to Anki Miner (alpha 4 M1); the job is tried again at Connect's next start
+BOOK_UNREADABLE = "{title}: Anki Miner couldn't read this book or text ({why})."
 UNKNOWN = "unknown"         # `Steps.waiting_items`: an audio item whose video can't be looked for now (never moved)
 NO_LIST = "Waiting for a current list: Generate didn't finish."
 LIBRARY_BUSY = "Surasura's library is busy: tried again shortly."
@@ -843,17 +846,18 @@ def _pick(steps, ledger, lang, job, record=True):
     when it found none after an earlier batch made some (those recorded, then filled and ordered: adversary #6)."""
     jid = job["id"]
     ledger.set_state(jid, "picking")
-    video = steps.video(lang, job)
-    if video is None and job.get("kind") == LEVEL and not job.get("asked_at"):
+    book = _reading_source(steps, lang, job)        # Z-9: a book or a text, once Anki Miner reads them
+    video = steps.video(lang, job) if book is None else None
+    if book is None and video is None and job.get("kind") == LEVEL and not job.get("asked_at"):
         # laptop round 8 #49 (LF4-1 ⭐ A): a level raise never asks for a video — an episode already mined whose video
         # is gone waits quietly (its own reason: never *Needs you*'s *No video*), and goes on at a start that finds the
         # video again (review A8: its new words aren't lost); your ask on it asks for the video as any (A1)
         raise Wait(LEVEL_NO_VIDEO, look=False)
-    if video is None:
+    if book is None and video is None:
         folder = steps.video_moved(lang, job)
         raise Wait(MOVED.format(folder=folder) if folder else NO_VIDEO, look=False)
     pairing = steps.pairing(lang, job)
-    got = steps.pick(lang, job, video)
+    got = steps.pick(lang, job, video) if book is None else steps.pick(lang, job, None, reading=book[0])
     declined = ledger.declined(lang, job["item_id"])     # Anki Miner turned them down once: never sent again (#19)
     if got.get("anki_miner"):
         # laptop round 8 #52 (LF4-4 ⭐ A): a word this Anki Miner has no definition for, in any episode, is no card here
@@ -863,6 +867,8 @@ def _pick(steps, ledger, lang, job, record=True):
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
+    if book is not None:
+        picked["reading"], picked["book"] = book    # the file Anki Miner reads; the EPUB its cards are placed in
     before = ledger.picked(jid) or {}
     if before.get("forced") and before.get("pairing") == picked["pairing"] and before.get("video") == video:
         picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing and video you said it for (D5: a
@@ -883,6 +889,16 @@ def _pick(steps, ledger, lang, job, record=True):
         return None
     ledger.set_state(jid, "fit-check", picked=picked)
     return picked
+
+
+def _reading_source(steps, lang, job):
+    """Z-9: (the file Anki Miner reads, the EPUB or None) for a job whose item is a book or a text while Anki Miner
+    reads them (`steps.mines`; the item by `library.waits_for`, the rows' one rule: `steps.reading`), else None — a
+    video's job, exactly as before."""
+    reading, mines = getattr(steps, "reading", None), getattr(steps, "mines", None)
+    if reading is None or mines is None or not mines(lang, "books"):
+        return None
+    return reading(lang, job)
 
 
 class _Finished(Exception):
@@ -925,6 +941,10 @@ def _fit(steps, ledger, lang, job):
     pairing = steps.pairing(lang, job)
     if fit_check.version(pairing) != picked.get("pairing"):
         raise Repick()                      # E17: hato re-timed it, or a new subtitle
+    if picked.get("reading"):
+        picked["offset"] = 0.0              # Z-9: a book's sentences have no times: nothing to check
+        ledger.set_state(jid, "mining", picked=picked)
+        return
     if picked.get("forced"):
         # *Mine anyway* (G1.3-6, E16; P4.1 row 4.1.9): you chose to mine it not timed — tsubasa isn't asked, and the
         # lines are cut where the subtitle puts them (no shift)
@@ -1453,10 +1473,8 @@ class Steps:
     def mines(self, lang, kind):
         """Alpha 4 M1 / A4M1-3: can Connect make cards from `kind` ("books", "audio") now — this Surasura knows its ask
         and the Anki Miner its setup record last found names it (`anki_miner.mines`)? No record yet: no."""
-        from app.connect import anki_miner, setup
-        if not anki_miner.mines(kind):
-            return False                    # this build mines none of it whatever Anki Miner says: no record read
-        return anki_miner.mines(kind, setup.read_record().get("anki_miner") or {"features": []})
+        from app.connect import anki_miner
+        return anki_miner.mines_now(kind)
 
     def show(self, lang, job):
         """The title of the show the job's episode belongs to (its work's), for the cards' `Surasura::from::` tag; None
@@ -1499,6 +1517,23 @@ class Steps:
         from app.connect import library
         with self._open(lang) as store:
             return library.pairing_of(store, job["item_id"])
+
+    def reading(self, lang, job):
+        """Z-9: (the file Anki Miner reads, the EPUB or None) when the job's item is a book or a text
+        (`library.waits_for`), else None (`connect.reading.source`: the EPUB a part was cut from, else the item's own
+        text). A busy store is a Wait."""
+        from app.connect import library, reading
+        with _held():
+            with self._open(lang) as store:
+                item = store.item(job["item_id"]) or {}
+                if library.waits_for(item) != "books":
+                    return None
+                pairing = library.pairing_of(store, job["item_id"])
+            path = self.subtitle(lang, job)
+        if not path:
+            return None
+        found, book = reading.source(path, pairing)
+        return reading.as_text(found, self.run_dir(job), lang), book
 
     def subtitle(self, lang, job):
         from app.path_utils import get_data_path
@@ -1948,6 +1983,8 @@ class Steps:
         (review B #2); some of its actions failed -> that episode's own wait (R2-1)."""
         from app import anki_connect, locks
         from app.connect import media_names
+        if picked.get("reading"):
+            return None                     # Z-9: a book's cards have no clip; their picture is the book's cover
         fields = getattr(self._job_mapping(job), "fields", None) or self._export_fields(lang, job)
         if not lines or not fields:
             return None
@@ -1995,7 +2032,7 @@ class Steps:
         from app.cli.verbs import _connect_folder
         return os.path.join(_connect_folder(), "runs", _tag(job))
 
-    def pick(self, lang, job, video):
+    def pick(self, lang, job, video, reading=None):
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import library
@@ -2008,8 +2045,8 @@ class Steps:
             got = self._plan_now(lang)
         if subtitle is None or not os.path.isfile(subtitle):
             raise Needs("no-subtitle", "An episode's subtitle isn't in Surasura's library any more.")
-        ns = SimpleNamespace(lang=lang, file=subtitle, video=video, words=None, job=str(job["id"]), wait=WAIT_S,
-                             made=made, listed=got.listed if got is not None else None,
+        ns = SimpleNamespace(lang=lang, file=subtitle, video=video, reading=reading, words=None, job=str(job["id"]),
+                             wait=WAIT_S, made=made, listed=got.listed if got is not None else None,
                              held=self._anki_miner_held(lang))
         try:
             out = verbs.pick(ns)
@@ -2058,11 +2095,18 @@ class Steps:
                                          expect_profile=picked.get("profile"),
                                          on_progress=getattr(self, "on_progress", None), known=setup[:2],
                                          should_stop=getattr(self, "should_stop", None),
-                                         show=self.show(lang, job))
+                                         show=self.show(lang, job), reading=picked.get("reading"))
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":
                 raise Repick() from None
+            if e.kind == "no-reading":          # Z-9: another Anki Miner since the pick: the book waits as before,
+                from app.connect import setup   # the record told what is installed (or it is queued again at once)
+                setup.note_anki_miner(e.verdict)
+                raise Skip(BOOKS_WAIT) from None
+            if e.kind == "unreadable" and picked.get("reading"):
+                title = self.title(lang, job) or os.path.basename(picked["reading"])
+                raise Needs("book-unreadable", BOOK_UNREADABLE.format(title=title, why=e.message)) from None
             if e.kind == "cancelled" and getattr(e, "stopped", False):
                 # #47: you stopped it before its result was written: what reached Anki is found by the job's tag
                 return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True, "stopped": True}
@@ -2070,10 +2114,37 @@ class Steps:
                 return {"outcomes": [dict(_unsure(w)) for w in words], "app": None, "doubt": True}
             raise _miner_wait_or_needs(e, self.url) from None
         # in doubt: a crash or a timeout after the run (`error`), or a run Anki Miner itself says failed
+        if picked.get("reading"):
+            self._place(lang, job, picked, done.get("outcomes") or [])
         run = done.get("run") or {}
         doubt = bool(done.get("error")) or (bool(run) and not run.get("ok"))
         return {"outcomes": done.get("outcomes") or [], "app": done.get("app"), "doubt": doubt,
                 "tag_pending": done.get("tag_pending") or [], "stopped": bool(done.get("stopped"))}
+
+    def _place(self, lang, job, picked, outcomes):
+        """Z-9: each card Anki Miner made from a book put on its part (`connect.reading.place`, Hon's chapter record):
+        `part` its item id; one whose sentence lies in another part than the job's (the same sentence twice in the
+        book) is `other_line`, as a video's card cut from another line is, and logged. A text (no EPUB), a book whose
+        parts carry no record, a store busy now: not placed (the card is the job's part's, as it was picked)."""
+        from app.connect import library, reading
+        book = picked.get("book")
+        if not book or not any(o.get("location") for o in outcomes):
+            return
+        try:
+            with self._open(lang) as store:
+                parts = library.book_parts(store, book)
+        except (Wait, Needs):
+            return
+        documents = reading.documents_of(book)
+        lines = {(w["word"], w["reading"]): w.get("line_text") for w in picked.get("words") or ()}
+        for o in outcomes:
+            if not o.get("location"):
+                continue
+            o["part"] = reading.place(o["location"], lines.get((o["word"], o["reading"])), parts, documents)
+            o["other_line"] = o["part"] is not None and o["part"] != job["item_id"]
+            if o["other_line"]:
+                log.info("Connect: job %s's card for %s took its sentence from another part of the book (%s, %s)",
+                         job["id"], o["word"], o["location"], o["part"])
 
     def by_tag(self, lang, job, picked, words):
         """Which of `words` reached Anki, found by the job's tag (read-only) -> outcomes (made / uncertain)."""

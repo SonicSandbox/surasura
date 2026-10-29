@@ -1237,7 +1237,8 @@ def _check_note_type(loaded, mapping, info=None):
 def pick(args):
     """The words of one subtitle to make cards from, each with its line (start + end), the words left out and why,
     and — given the video and an installed Anki Miner — the run file for its `--api mine` (P1.3 row 1.3.3). Writes
-    only the run file, under local data (`connect/runs/<job>/`)."""
+    only the run file, under local data (`connect/runs/<job>/`). Connect's book or text (Z-9, never on the command
+    line: `reading`, the file Anki Miner reads): the words of the item's text (`file`), each with its sentence."""
     from app import cues
     from app.connect import pick as picking, runfile
     loaded = settings()
@@ -1267,21 +1268,27 @@ def pick(args):
     # handed the job's copy (row 1.3.2: reading rows and arrows off) — the same lines at the same times
     from app import caption_clean
     tokenizer, script = _reading(loaded, lang)
-    contract.emit_progress("reading the subtitle", 0, 3)
+    book = getattr(args, "reading", None)
+    contract.emit_progress("reading the text" if book else "reading the subtitle", 0, 3)
     run_dir = os.path.join(_connect_folder(), "runs", job)
     try:
-        subtitle = caption_clean.copy_for(args.file, run_dir, lang)
-        read = cues.read(args.file, lang)
+        if book:
+            subtitle = None
+            read, tokens = cues.reading(args.file, lang, script, tokenizer)
+        else:
+            subtitle = caption_clean.copy_for(args.file, run_dir, lang)
+            read = cues.read(args.file, lang)
     except (OSError, UnicodeDecodeError, ValueError) as e:
-        raise CliError("bad-data", f"The subtitle can't be read: {e}") from None
-    tokens = cues.tokens(read, lang, script, tokenizer)
+        raise CliError("bad-data", f"The {'text' if book else 'subtitle'} can't be read: {e}") from None
+    if not book:
+        tokens = cues.tokens(read, lang, script, tokenizer)
     is_known = _known_test(lang, tokenizer, script)
     phrase_set = _phrase_set(loaded, lang)
 
-    out = {"language": lang, "file": os.path.abspath(args.file), "subtitle": os.path.abspath(subtitle), "mode": mode,
-           "job": job, "run_file": None}
+    out = {"language": lang, "file": os.path.abspath(args.file), "subtitle": subtitle and os.path.abspath(subtitle),
+           "mode": mode, "job": job, "run_file": None}
     setup = None
-    if args.video is not None:
+    if args.video is not None or book:
         contract.emit_progress("asking Anki Miner", 1, 3)
         # Connect's run hands in its set of look-ups (`held`, row 25: never on the command line)
         setup = _anki_miner_setup(loaded, lang, run_dir, held=getattr(args, "held", None))
@@ -1310,8 +1317,13 @@ def pick(args):
         if not chosen["words"]:
             out["skipped"] = "no words to make cards from"
         else:
-            episode = runfile.episode(f"{job}-1", args.video, subtitle, runfile.word_requests(chosen["words"], named),
-                                      tags=runfile.job_tag(job))
+            if book:
+                episode = runfile.reading_episode(f"{job}-1", book, runfile.word_requests(chosen["words"], named,
+                                                                                         book=True),
+                                                  tags=runfile.job_tag(job))
+            else:
+                episode = runfile.episode(f"{job}-1", args.video, subtitle,
+                                          runfile.word_requests(chosen["words"], named), tags=runfile.job_tag(job))
             data = runfile.build(run_dir, lang, [episode], profile=profile,
                                  run_config=runfile.config(mapping, info.get("app"), named))
             try:

@@ -37,8 +37,10 @@ Cue = namedtuple("Cue", "index start end text caption sung counted")
 
 class Cues(list):
     """`read`'s answer: the cues, and `joiner` — what a Generate puts between two captions of this file ("" for an
-    .srt, " " for an .ass), so `tokens` reads the file's text exactly as a Generate does."""
+    .srt, " " for an .ass), so `tokens` reads the file's text exactly as a Generate does; `units`: a book's or a
+    text's sentences (`reading`), not a subtitle's lines."""
     joiner = ""
+    units = False
 
 # One word said in a cue: the analyzer's key and spellings (lemma, reading, surface, orth), the index of its cue,
 # the sentence it was read in (its text, as the tokenizer yields it), and (Japanese) the tagger's node it was read
@@ -190,6 +192,36 @@ def read(path, language="ja"):
             caption = screen[colour]
         cues.append(Cue(len(cues), start, end, text, caption, sung, counted))
     return cues
+
+
+def reading(path, language="ja", script="asis", tokenizer=None):
+    """A book's or a text's sentences as cues, and their words (Z-9: Anki Miner mines a reading source by each word's
+    sentence, `line_text`) -> (Cues, [Token]). The file is read as a Generate reads it (`analyzer.extract_text`), each
+    sentence the tokenizer yields one cue (no times: 0) whose text is the sentence as the file writes it, its line
+    breaks and spaces out (Japanese: Anki Miner joins a paragraph's wrapped lines with nothing) or one space (Chinese).
+    The Cues' `units` is True: a card is cut from its own sentence, never its neighbours (`pick.line_expansion`)."""
+    if tokenizer is None:
+        tokenizer = (analyzer.ChineseTokenizer(script=script) if language == "zh"
+                     else analyzer.JapaneseTokenizer())
+    text = analyzer.extract_text(str(path), language) or ""
+    shown = zh_script.convert(text, getattr(tokenizer, "script", "asis")) if language == "zh" else text
+    cues, out, last, cursor, said = Cues(), [], None, 0, 0
+    cues.units = True
+    for sentence, (lemma, reading_, surface, orth), node in _read(tokenizer, text, language):
+        if sentence is not last:
+            last = sentence
+            found = shown.find(sentence, said) if sentence else -1
+            written = text[found:found + len(sentence)] if found >= 0 else sentence
+            said = found + len(sentence) if found >= 0 else said
+            line = re.sub(r"\s+", "" if language == "ja" else " ", written).strip()
+            cues.append(Cue(len(cues), 0, 0, line, len(cues), False, True))
+            cursor = max(cursor, found) if found >= 0 else cursor
+        found = shown.find(surface, cursor) if surface else -1
+        at = cursor if found < 0 else found
+        cursor = at + len(surface)
+        out.append(Token(lemma, reading_, surface, orth, len(cues) - 1, sentence, node,
+                         text[at:cursor] if found >= 0 else surface))
+    return cues, out
 
 
 def _text(cues, language):

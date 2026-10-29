@@ -418,17 +418,23 @@ def _waits_line(ep):
 def videos_of(row, ids):
     """K67 (IK S3: Anki Miner mines video only), one rule for one file and for many: of `ids`, the files that are
     videos, each by its own type (`Episode.media_word`; the row's for a first screen's cache from before — LM11b: a
-    group holds several types) -> (their ids in order, the first other file's episode or None)."""
+    group holds several types) -> (their ids in order, the first other file's episode or None). A book's or a text's
+    file counts with them once Connect mines books (Z-9: `Episode.text`, `view_rows._mines`)."""
     by = {e.id: e for e in row.episodes}
     word = getattr(row, "media_word", "video")
     videos, other = [], None
     for i in ids:
         ep = by.get(i)
-        if ((ep.media_word if ep is not None else None) or word) == "video":
+        if ((ep.media_word if ep is not None else None) or word) == "video" or                 (getattr(ep, "text", False) == "books" and _mines_books()):
             videos.append(i)
         elif other is None:
             other = ep
     return videos, other
+
+
+def _mines_books():
+    from app.services import view_rows
+    return view_rows._mines("books")
 
 
 def _made_words(made):

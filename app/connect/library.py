@@ -8,6 +8,7 @@ last id and the pairings, read with the store's own queries (`_mine_ids`, `_log_
 Light (02 §5): the standard library and the store only.
 """
 import json
+import os
 from collections import namedtuple
 
 READER = "connect"          # the placement log's reader for Connect (✅ G1.1-2: its watermark is set at switch-on)
@@ -76,6 +77,27 @@ def waits_for(item, media=None):
     if text_only(item):
         return "books"
     return "audio" if item and media in AUDIO_TYPES else None
+
+
+def book_parts(store, epub):
+    """{item id: chapter record} of every part of `epub` the store holds (its live origins `<epub>#<n>`, Hon's
+    `chapter` key: `connect.reading.place`); a part from before the record (no `chapter`) is left out. One range read
+    of the pairings, the store's own key order."""
+    from app import library_store
+    lo = library_store.SOURCE_KEY + library_store.path_key(os.path.abspath(epub)) + "#"
+    out = {}
+    with store._reading():
+        rows = store.conn.execute(
+            f"SELECT p.item_id, p.pairing FROM pairings p WHERE p.content_key >= ? AND p.content_key < ? AND "
+            f"{library_store._LIVE_ORIGIN}", (lo, lo[:-1] + "$")).fetchall()
+    for item_id, text in rows:
+        try:
+            record = json.loads(text).get("chapter")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(record, dict):
+            out[item_id] = record
+    return out
 
 
 def media_of(store, item):

@@ -17,6 +17,7 @@ report itself is the generator's, from a real library store with real stones, Ja
 import json
 import os
 import re
+import threading
 
 import pytest
 
@@ -263,7 +264,8 @@ def test_an_episode_the_journey_doesnt_list_yet_opens_it_where_it_opens_by_itsel
     met = _payload(html)["completed_files"][0]["filename"]
     assert all(gen.report_holds(n) for n in (names[0], names[1], met)), "counted, set aside, Target met"
     assert not gen.report_holds("新しい_第13話.srt") and not gen.report_holds(names[0] + "x")
-    services = SimpleNamespace(settings=SimpleNamespace(get=lambda: {}))
+    services = SimpleNamespace(settings=SimpleNamespace(get=lambda: {}), draw_journey=lambda: None,   # (current: a6 #5)
+                               closing=threading.Event())
     assert shell.Services.open_journey(services, names[1]) is True and opened[-1].endswith(gen.OPEN_ON_NAME)
     assert shell.Services.open_journey(services, "新しい_第13話.srt") == shell.JOURNEY_LACKS
     assert opened[-1] == f"file://{results / gen.REPORT_NAME}", "where it opens by itself"

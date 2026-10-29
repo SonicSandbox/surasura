@@ -439,6 +439,15 @@ class Replan:
         keeper, _host = self._pair()
         keeper.changed("level")
 
+    def report_changed(self):
+        """A setting only the report reads written (Settings' Journey rows: the theme, a switch; a6 #5): the keeper
+        looks as for a stone (`marked`: a Generate in flight is never withdrawn), so its quiet run re-renders the
+        journey and re-analyses nothing — unless a Generate was already due (an analysis setting changed and not yet
+        generated): then that whole run comes now, as it would at the next focus. No poke: the order and the pins
+        stand."""
+        keeper, _host = self._pair()
+        keeper.marked("settings")
+
     def update_state(self, state):
         """The update service's state: while it holds the children the host is let go; when the hold ends, back."""
         holding = state in HOLDING

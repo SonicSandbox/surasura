@@ -705,17 +705,6 @@ def _gone(path):
 def wants_for(store, work_ids, chunk=500):
     """[Want] for these works only (the titles the window paints or that arrived — never the library), read through
     `store` (this thread's handle) in one read transaction: their rows and their files' source types."""
-    from app.library_store import FEED_ITEM_FIELDS, FEED_WORK_FIELDS
-    ids = sorted({int(w) for w in work_ids if w is not None})
-    items, works = [], []
-    item_cols, work_cols = ", ".join(FEED_ITEM_FIELDS), ", ".join(FEED_WORK_FIELDS)
-    with store._reading():
-        for at in range(0, len(ids), chunk):
-            part = ids[at:at + chunk]
-            marks = ", ".join("?" * len(part))
-            works += [dict(zip(FEED_WORK_FIELDS, r)) for r in
-                      store.conn.execute(f"SELECT {work_cols} FROM works WHERE id IN ({marks})", part)]
-            items += [dict(zip(FEED_ITEM_FIELDS, r)) for r in
-                      store.conn.execute(f"SELECT {item_cols} FROM items WHERE work_id IN ({marks})", part)]
-    return wants_from(items, works, covers.originals(store, ids))
+    items, works = covers.rows_for(store, work_ids, chunk)
+    return wants_from(items, works, covers.originals(store, work_ids))
 # --- end W3.2 L3

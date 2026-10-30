@@ -20,6 +20,10 @@ and records them) — painted wherever the window shows a cover, the generated c
 - **The disk scan** (`start_scan(opener, language, writer)`): `services.covers.scan` on a thread of its own after the
   first frame (and when another library opens), over the store's feed read on that thread — once per open; a new start
   cancels the one running. It records through the writer.
+- **A title that arrives or changes while the window is open** (Hon a7, `follow(reader, language, writer)`): the
+  reader names the works whose files arrived or changed (`LibraryReader.subscribe_arrived`: a folder read, + Add,
+  Extract, a drop — books as shows, whatever the download switch says) and `look(opener, work_ids)` scans those
+  titles only (`services.covers.works_for`), on a worker of its own, after the first frame — the same scan, one path.
 - **Change cover…** (`cover_menu_entries(row)` → [(name, label, tip, callable)], for the ⋯ menu): *Choose an image…*
   (a file picker → `services.covers.keep_user_image` on a worker: copied into `User Files/<lang>/covers/`, the image it
   replaces kept dated — then recorded, locked, with its toast's Undo) and *Use a generated cover* (locked, Undo).
@@ -51,6 +55,9 @@ _DEFERRED = []                  # keys asked for meanwhile, (key, job) — start
 _where = {"language": "ja", "data_dir": None}
 _library = {"writer": None, "window": None, "moves": None}
 _scan = {"cancel": None, "thread": None}
+_look = {"opener": None, "language": None, "writer": None, "pending": {}, "thread": None,
+         "cancel": threading.Event()}   # Hon a7: the titles that arrived mid-session, looked at in the order told
+_look_lock = threading.Lock()
 _notifier = []
 decodes = [0]                   # pictures decoded (tests: one per key)
 
@@ -96,6 +103,8 @@ def release(token):
         key, job = _DEFERRED.pop(0)
         if key in _running:
             _start(key, job)
+    if _look["pending"]:                        # Hon a7: the titles that arrived meanwhile
+        look(_look["opener"], ())
     if _online["pending"]:                      # --- W3.2 L3: the online asks held back meanwhile
         _flush_soon()
 
@@ -338,14 +347,18 @@ def start_scan(opener, language, writer):
     return t
 
 
-def _scan_library(opener, language, writer, cancel, data_dir):
+def _scan_library(opener, language, writer, cancel, data_dir, work_ids=None):
+    """The library's works (`work_ids` None: the open's scan), else those works only (Hon a7: `look`), scanned."""
     from app.services import covers as disk
     h = opener.handle()
     if h is None:
         return 0
     try:
-        feed = h.read_feed()
-        works = disk.works_from(feed["items"], feed["works"], disk.originals(h))     # Hon a6: beside the originals too
+        if work_ids is None:
+            feed = h.read_feed()
+            works = disk.works_from(feed["items"], feed["works"], disk.originals(h))     # Hon a6: beside the originals
+        else:
+            works = disk.works_for(h, work_ids)
         return disk.scan(language, works, writer, cancel=cancel.is_set, data_dir=data_dir)
     finally:
         close = getattr(opener, "close", None)       # this thread's handle (a store handle belongs to its thread)
@@ -358,6 +371,63 @@ def _scan_library(opener, language, writer, cancel, data_dir):
 def stop_scan():
     if _scan["cancel"] is not None:
         _scan["cancel"].set()
+    _look["cancel"].set()                       # Hon a7: and the arrivals' look, between titles
+
+
+# --- Hon a7: a title that arrives or changes while the window is open ---------------------------------------------- #
+def follow(reader, language, writer):
+    """(GUI thread.) The covers of the titles whose files arrive or change from now on in `reader`'s library
+    (`subscribe_arrived`), recorded through `writer`; the library left's looks are let go (a `stop_scan` ended its
+    worker). A reader without the call (a test's) follows nothing."""
+    opener = getattr(reader, "opener", None)
+    with _look_lock:
+        _look.update(opener=opener, language=language, writer=writer, pending={}, thread=None,
+                     cancel=threading.Event())          # (the library left's worker ends by its own cancel)
+    subscribe = getattr(reader, "subscribe_arrived", None)
+    if subscribe is not None and opener is not None and writer is not None:
+        subscribe(lambda work_ids: look(opener, work_ids))
+
+
+def look(opener, work_ids):
+    """(Any thread: the reader's.) These titles' covers from disk (`_scan_library(..., work_ids)`) on the looks' worker —
+    started now unless one runs (it takes them next) or no first frame is out yet (`release` starts it). Nothing for
+    another library than the one followed. -> the worker started, or None."""
+    with _look_lock:
+        if opener is None or opener is not _look["opener"] or _look["writer"] is None:
+            return None
+        for w in work_ids:
+            _look["pending"][w] = None
+        if not _look["pending"] or _look["thread"] is not None or _HELD:
+            return None
+        t = _look["thread"] = threading.Thread(target=_looking, args=(opener, _look["language"], _look["writer"],
+                                                                      _look["cancel"]),
+                                               name=f"window-covers-look-{_look['language']}", daemon=True)
+    t.start()
+    return t
+
+
+def _looking(opener, language, writer, cancel):
+    """(The looks' worker.) What was told, a batch at a time, until nothing is left (or `cancel`): each title once
+    however often it was told meanwhile."""
+    me = threading.current_thread()
+    data_dir = getattr(opener, "data_dir", None)
+    try:
+        while not cancel.is_set():
+            with _look_lock:
+                ids = list(_look["pending"]) if _look["opener"] is opener else []
+                if not ids:                     # let go under the lock: a title told from now on starts a worker
+                    if _look["thread"] is me:
+                        _look["thread"] = None
+                    return
+                _look["pending"].clear()
+            try:
+                _scan_library(opener, language, writer, cancel, data_dir, ids)
+            except Exception as e:              # never in the window's way: the generated covers stay
+                print(f"Covers: the look at {len(ids)} new titles stopped: {e!r}")
+    finally:
+        with _look_lock:
+            if _look["thread"] is me:
+                _look["thread"] = None
 
 
 def _scanned(result):

@@ -900,6 +900,37 @@ def append_text(path, text, language=None):
         f.write(data)
 
 
+# Python's csv refuses a field over 131,072 characters, and a list's `Sources` names every file a word is in: on a
+# library of a few thousand files and few known words — a new user's — a common word passes it (a7: New arrivals, the
+# shadow check and Connect's list all failed). C's long is 32 bits on Windows, so sys.maxsize can't be the limit.
+LIST_FIELD_LIMIT = 2 ** 31 - 1
+
+
+def list_reader(f, header=True):
+    """A csv reader for one of Generate's lists (`results/*.csv`, or a list written the same way) on the open file
+    `f`: `csv.DictReader` (header=False: `csv.reader`), the field limit raised for the process first. Every reader of
+    a list reads through it."""
+    import csv
+    if csv.field_size_limit() < LIST_FIELD_LIMIT:
+        csv.field_size_limit(LIST_FIELD_LIMIT)
+    return csv.DictReader(f) if header else csv.reader(f)
+
+
+def write_app_log(msg):
+    """One line (or a traceback) in the app's log, `<local data>/logs/app_debug_log.txt`, stamped with the time to the
+    millisecond and the process (several children write it at once). Every writer of the log writes through it
+    (`app_entry.log_error`, the window's `applog.log`). Logging never stops the app."""
+    try:
+        from datetime import datetime
+        folder = os.path.join(get_local_data_path(), "logs")
+        os.makedirs(folder, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(os.path.join(folder, "app_debug_log.txt"), "a", encoding="utf-8") as f:
+            f.write(f"{stamp} [{os.getpid()}] {msg}\n")
+    except Exception:
+        pass
+
+
 def build_subprocess_env(frozen=None):
     """Environment for a child process launched by run_command_async (analyzer / importers / indexer).
 

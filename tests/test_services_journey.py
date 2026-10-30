@@ -238,6 +238,25 @@ def test_the_users_generate_is_never_cancelled_and_the_automatic_one_waits_for_i
     assert [v.cancelled for v in _generates(registry)] == [False, False]
 
 
+def test_a_quiet_time_that_ends_during_the_users_generate_asks_nothing_beside_it():
+    """a7 (mutant M2): a move armed the quiet time, then the user pressed Generate before it ended — the timer fires
+    during the user's run and asks for nothing beside it (nothing queued behind it either); its one look after the run
+    finds the journey current (the user's run read the move) and nothing more runs."""
+    state = {"pending": True}
+    keeper, controller, _registry, launches = _keeper(pending=lambda: state["pending"])
+    keeper.changed("move")
+    user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].feed(_line("Counting words"))
+    time.sleep(FAST["journey_settle_s"] + 0.4)      # the quiet time ends during the user's run
+    assert launches.count() == 1 and controller._pending is None, "nothing asked beside it, nothing queued"
+    state["pending"] = False                        # the user's run read the move
+    user.ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.5)
+    assert launches.count() == 1 and keeper.asked == 0
+
+
 def test_an_automatic_run_waiting_its_turn_gives_way_to_the_users():
     """The automatic run is still waiting for `results` (another program's Generate): the user's press takes its place
     — one run, the user's."""

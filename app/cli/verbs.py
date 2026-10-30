@@ -218,9 +218,10 @@ def _int(value):
 
 
 def _read_rows(path):
+    from app.path_utils import list_reader
     try:
         with open(path, encoding="utf-8-sig", newline="") as f:
-            return list(csv.DictReader(f))
+            return list(list_reader(f))
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError, csv.Error) as e:
@@ -560,9 +561,10 @@ def child_command(argv):
 
 
 def _count_rows(path):
+    from app.path_utils import list_reader
     try:
         with open(path, encoding="utf-8-sig", newline="") as f:
-            return max(0, sum(1 for _row in csv.reader(f)) - 1)
+            return max(0, sum(1 for _row in list_reader(f, header=False)) - 1)
     except OSError:
         return 0
 

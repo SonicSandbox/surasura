@@ -43,6 +43,7 @@ from array import array
 from bisect import bisect_left
 from collections import namedtuple
 
+from app.path_utils import list_reader
 from app.unicode_ranges import HAN, KANA
 
 # --- normalisation ---------------------------------------------------------------------------- #
@@ -431,7 +432,7 @@ def build_index(csv_path=None, want_contexts=False, thresholds=None, only=None, 
             _read(rows)
         else:
             with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
-                _read(csv.DictReader(handle))
+                _read(list_reader(handle))
     except (OSError, UnicodeError, csv.Error):
         # A truncated or unreadable list means "no matches", which the planner already handles by
         # leaving every card where it is. It must never mean "crash on the way to a write".

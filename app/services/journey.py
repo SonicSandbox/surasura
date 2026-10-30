@@ -421,13 +421,12 @@ def _stamped(run_signature):
 
 
 def _lists():
-    import csv
-    from app.path_utils import get_user_file
+    from app.path_utils import get_user_file, list_reader
     out = {}
     for name, key in (("priority_learning_list.csv", "priority"), ("progressive_learning_list.csv", "progressive")):
         try:
             with open(os.path.join(get_user_file("results"), name), encoding="utf-8-sig", newline="") as f:
-                out[key] = list(csv.DictReader(f))
+                out[key] = list(list_reader(f))
         except OSError:
             out[key] = []
     return out

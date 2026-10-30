@@ -25,8 +25,8 @@ from datetime import datetime
 import abc
 
 from app.path_utils import (get_user_file, get_resource, get_data_path, get_user_files_path,
-                            is_content_file, infer_source_type, library_available, read_source_marker, read_text,
-                            report_name, SUBTITLE_EXTENSIONS)
+                            is_content_file, infer_source_type, library_available, list_reader, read_source_marker,
+                            read_text, report_name, SUBTITLE_EXTENSIONS)
 from app import settings_manager
 from app import word_selection
 from app import modality
@@ -2569,7 +2569,7 @@ def load_yomitan_frequency_list(csv_path, script="asis", language=None):
         return word_to_rank
     
     try:
-        reader = csv.DictReader(read_text(csv_path, language).splitlines())
+        reader = list_reader(read_text(csv_path, language).splitlines())
         for row in reader:
             try:
                 # Sanitize to match analysis lemmas ONLY when JA term sanitization is active.

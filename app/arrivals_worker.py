@@ -239,13 +239,15 @@ class Worker:
         again (`_list_of`). {} when it can't be read: the pick ranks by nothing listed."""
         import csv
         from app import analyzer, locks
-        if signature is not None and analyzer.read_run_stamp(analyzer.RESULTS_DIR) != signature                 and locks.in_use("results"):
+        from app.path_utils import list_reader
+        if signature is not None and analyzer.read_run_stamp(analyzer.RESULTS_DIR) != signature \
+                and locks.in_use("results"):
             return None
         out = {}
         try:
             with open(os.path.join(analyzer.RESULTS_DIR, "priority_learning_list.csv"), encoding="utf-8-sig",
                       newline="") as f:
-                for row in csv.DictReader(f):
+                for row in list_reader(f):
                     out.setdefault((row.get("Word", ""), row.get("Reading", "")), len(out))
         except (OSError, ValueError, csv.Error) as e:   # unreadable or damaged: the pick ranks by nothing listed
             print(f"arrivals worker: the list couldn't be read: {e}", file=sys.stderr)
@@ -356,10 +358,11 @@ class Worker:
         return out
 
 
-def main(argv=None):
+def main(argv=None, before_exit=None):
     """The worker: its loop, then the process ends — exit 0 when its input closed, on "quit", or idle. Ended with
     `os._exit`: the thread reading stdin is blocked in a read nothing can interrupt, and an interpreter shutting down
-    around it aborts (the store is closed and every answer flushed by then: nothing is left to tidy)."""
+    around it aborts (the store is closed and every answer flushed by then: nothing is left to tidy). `before_exit(code)`
+    is called first (app_entry's end line in the app's log, which `os._exit` would skip)."""
     code = 1
     try:
         code = _loop(argv)
@@ -368,8 +371,10 @@ def main(argv=None):
         traceback.print_exc()                       # to stderr (the client's log), then exit 1
     finally:
         try:
+            if before_exit is not None:
+                before_exit(code)
             sys.stderr.flush()
-        except (OSError, ValueError):
+        except Exception:
             pass
         os._exit(code)
 

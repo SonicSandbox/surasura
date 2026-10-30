@@ -49,12 +49,31 @@ def _settle():
         QApplication.processEvents()
 
 
+_HELD = {}          # the entries a test put on *Needs you* (`_entries`): what the page's own gather lands from then on
+
+
+@pytest.fixture(autouse=True)
+def _gathered(monkeypatch):
+    """The page's own gather lands the entries the test put on the page, never the seed's over them: it gathers on a
+    worker as the window opens and again when opening the page marks its cards seen, and a real gather landing after the
+    test's entries took away the card the press had just washed (the in-file flake, 1-2 tests red every run,
+    2026-10-30)."""
+    real = service.entries
+    monkeypatch.setattr(service, "entries", lambda *a, **k: _HELD["entries"] if "entries" in _HELD else real(*a, **k))
+    yield
+    _HELD.clear()
+
+
 def _entries(ny, *entries):
-    """*Needs you* holding `entries` (as its gather lands them) behind a failure card that comes first."""
+    """*Needs you* holding `entries` (as its gather lands them) behind a failure card that comes first — a gather
+    already under way is dropped (`refresh` asks again: its answer is no longer the last asked)."""
     failure = service.Entry(key="failure:1:x", kind=service.FAILURE, title="Generate stopped (exit code 1).",
                             lines=(), actions=("open_logs", "save_logs"), unseen=True, say="", data={"at": 1})
-    ny.entries = (failure,) + tuple(entries)
+    ny.entries = _HELD["entries"] = (failure,) + tuple(entries)
     ny._paint()
+    ny.refresh()
+    assert wait_until(lambda: not ny._running, 10)
+    assert ny.entries == _HELD["entries"]
     _settle()
 
 

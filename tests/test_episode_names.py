@@ -446,6 +446,38 @@ def test_a_season_or_specials_folder_is_read_one_way(folder, season):
     assert en.season_folder(folder) == season
 
 
+@pytest.mark.parametrize("path, title", [
+    ("Sousou no Frieren/Season 1", "Sousou no Frieren Season 1"),           # season 1 written out, from a folder
+    ("Sousou no Frieren/S02", "Sousou no Frieren Season 2"),
+    ("Sousou no Frieren/season02", "Sousou no Frieren Season 2"),
+    ("Kusuriya no Hitorigoto/2nd Season", "Kusuriya no Hitorigoto Season 2"),
+    ("葬送のフリーレン/第2期", "葬送のフリーレン Season 2"),
+    ("葬送のフリーレン/第二期", "葬送のフリーレン Season 2"),
+    ("葬送のフリーレン/2期", "葬送のフリーレン Season 2"),
+    ("鬼灭之刃/第二季", "鬼灭之刃 Season 2"),
+    ("進撃の巨人/シーズン3", "進撃の巨人 Season 3"),
+    ("Dr. Stone/Season 3 - New World", "Dr. Stone Season 3 - New World"),    # an arc after the season stays
+    ("The Apothecary Diaries S01/Season 01", "The Apothecary Diaries Season 1"),   # the season said once
+    ("Re Zero II/Season 2", "Re Zero Season 2"),
+    ("Show S2/Season 1", "Show S2 Season 1"),                               # two seasons said: both kept
+    ("Sousou no Frieren/Specials", "Sousou no Frieren Specials"),
+    ("Sousou no Frieren/SPs", "Sousou no Frieren Specials"),
+    ("Sousou no Frieren/OVA", "Sousou no Frieren OVA"),
+    ("Sousou no Frieren/Extras", "Sousou no Frieren Extras"),
+    ("Sousou no Frieren/Season 1/Specials", "Sousou no Frieren Season 1 Specials"),
+    ("Sousou no Frieren", "Sousou no Frieren"),                             # a show folder: its name
+    ("夜市", "夜市"),
+    ("Season 1", "Season 1"),                                               # nothing above it: as written
+    ("Hoshizora Kissa/Part 2", "Hoshizora Kissa/Part 2"),                   # no season: as written (grouping's)
+    ("Hoshizora Kissa/Subs", "Hoshizora Kissa/Subs"),
+    ("", ""),
+])
+def test_a_folder_works_title_names_a_season_folder_with_its_show(path, title):
+    """Alpha 6's Finished tab read `<show>/S01`: a work by a season folder is the show above it and its season, read by
+    `season_folder` (one rule with the look and the covers); a specials folder is `<show> Specials`."""
+    assert en.folder_title(path) == title
+
+
 # --- every reader on one rule ------------------------------------------------------------------------------------ #
 
 AGREE = [r[0] for r in PINNED] + [

@@ -396,6 +396,71 @@ def test_find_it_for_me_says_what_it_found(main, runs, tmp_path):
     assert wait_until(lambda: _card(w) is not None) and runs.calls == []
 
 
+def test_find_it_pressed_three_times_looks_once_asks_once_and_replaces_once(main, runs, tmp_path, monkeypatch):
+    """Alpha 6 (one import ran three times): *Find it* had no press of its own, so three presses read the export three
+    times and stacked three questions, and each Yes replaced the known words again. Now *Find it* and *Choose…* are one
+    press (`migaku:read`): a press while it looks or reads does nothing, *Choose…* opens no picker, one question."""
+    import shutil
+    _known(CURRENT)
+    shutil.copy2(MIGAKU, tmp_path / "MigakuDb.db")
+    picked = []
+    monkeypatch.setattr(importers, "_pick_file", lambda *a: picked.append(a) or MIGAKU)
+    looks = []
+    real = importers.importers_view.find_migaku
+    monkeypatch.setattr(importers.importers_view, "find_migaku", lambda folder=None: looks.append(folder) or real(folder))
+    w = importers.open_migaku(main)
+    for _ in range(3):
+        w.find_it(str(tmp_path))
+        w.choose.click()
+    assert wait_until(lambda: _card(w) is not None)
+    QApplication.processEvents()
+    assert len(looks) == 1 and picked == []
+    assert len([c for c in w.findChildren(confirm.Confirm) if c.answer is None]) == 1
+    _card(w).yes.click()
+    assert len(runs.calls) == 1 and runs.calls[0].argv[:2] == ["migaku_converter.py", str(tmp_path / "MigakuDb.db")]
+    w.find_it(str(tmp_path))                                  # a press while the replace runs: nothing (and disabled)
+    assert not w.find.isEnabled() and len(looks) == 1
+    runs.end(0, "Conversion complete!")
+    assert w.status.text() == strings.MIGAKU_DONE and len(runs.calls) == 1 and _card(w) is None
+
+
+def test_a_newer_migaku_question_drops_the_open_one_and_a_plan_read_during_a_replace_is_never_asked(main, runs):
+    """The one-question rule (`ToolWindow.ask`), for reads already under way: the newer question stands and the older
+    is answered No with no callback (one Yes, one replace); a plan whose read ends while a replace runs asks nothing —
+    the replace moves its numbers (the window reads again if it must, IK-56)."""
+    from app import importers_view
+    _known(CURRENT)
+    w = importers.open_migaku(main)
+    plan = importers_view.migaku_plan(MIGAKU, "ja")
+    w._ask(plan, "ja")
+    first = _card(w)
+    w._ask(plan, "ja")
+    second = _card(w)
+    assert first is not None and second is not None and first is not second
+    assert first.answer is False and second.answer is None
+    second.yes.click()
+    assert len(runs.calls) == 1 and w.busy()
+    w._ask(plan, "ja")
+    assert _card(w) is None and len(runs.calls) == 1
+    runs.end(0, "Conversion complete!")
+    assert len(runs.calls) == 1 and _card(w) is None
+
+
+def test_the_deck_windows_question_is_one_at_a_time_too(main, runs):
+    """The rule is every importer window's (`ToolWindow.ask`), so the deck's keeps it: a second Import press drops the
+    first question; a question asked while its import runs never opens."""
+    d = importers.open_deck(main)
+    d.choose(DECK)
+    assert wait_until(lambda: d.deck is not None)
+    d.go.click()
+    first = _card(d)
+    d._ask()
+    assert first.answer is False and _card(d) is not first and _card(d) is not None
+    _card(d).yes.click()
+    assert len(runs.calls) == 1 and d.busy()
+    assert d.ask("t", "b", "yes", "tip", on_answer=lambda yes: None) is None and _card(d) is None
+
+
 def test_a_db_that_isnt_migakus_is_said_and_nothing_asked(main, runs, tmp_path):
     import sqlite3
     other = tmp_path / "other.db"

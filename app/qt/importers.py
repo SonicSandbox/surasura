@@ -167,7 +167,14 @@ class ToolWindow(windows.SecondaryWindow):
             self.say(strings.IMPORTERS_BUSY)
 
     def ask(self, title, body, yes, yes_tip, on_answer, **how):
-        """`confirm.ask` in this window, kept as `question` until it is answered or dropped."""
+        """`confirm.ask` in this window, kept as `question` until it is answered or dropped. One question at a time and
+        none while a write runs (alpha 6: three reads asked three times, and each Yes replaced the known words again):
+        a newer question drops one still open, unanswered (its numbers are older); one read while a write runs is
+        never asked (the write moves its numbers). -> the card, or None."""
+        if self.busy():
+            return None
+        if self.question is not None and self.question.answer is None:
+            self.question.drop()
         self.question = confirm.ask(self, title, body, yes, yes_tip, on_answer=on_answer, **how)
         return self.question
 
@@ -321,7 +328,7 @@ class MigakuWindow(ToolWindow):
         self.copy = _button(self, strings.MIGAKU_COPY, strings.MIGAKU_COPY_TIP, self._copy)
         self.body.addLayout(_row(self.code, self.copy, stretch_at=0))
         self.body.addWidget(_line(self, strings.MIGAKU_STEP2))
-        self.find = _button(self, strings.MIGAKU_FIND, strings.MIGAKU_FIND_TIP, self.find_it)
+        self.find = qpress.room(_button(self, strings.MIGAKU_FIND, strings.MIGAKU_FIND_TIP, self.find_it))
         self.choose = qpress.room(_button(self, strings.MIGAKU_CHOOSE, strings.MIGAKU_CHOOSE_TIP, self._choose))
         self.body.addLayout(_row(self.find, self.choose))
         self.refresh()
@@ -331,16 +338,21 @@ class MigakuWindow(ToolWindow):
         self.say(strings.MIGAKU_COPIED)
 
     def find_it(self, folder=None):
+        """*Find it*: the export looked for, then read, through *Choose…*'s press (`migaku:read`): a press while either
+        looks or reads does nothing, so one press asks once."""
+        if qpress.live(self, "migaku:read"):
+            return
         self.say(strings.MIGAKU_LOOKING)
-        bridge.run_in_worker(importers_view.find_migaku, folder, then=self.alive(self._found),
-                             failed=self.alive(lambda info: self.say(strings.IMPORTERS_READ_FAILED.format(why=info[0]))))
+        qpress.run(self.find, "migaku:read", importers_view.find_migaku, folder, then=self.alive(self._found),
+                   failed=self.alive(lambda info: self.say(strings.IMPORTERS_READ_FAILED.format(why=info[0]))),
+                   win=self)
 
     def _found(self, answer):
         path, count = answer
         if path is None:
             self.say(strings.MIGAKU_NOT_MIGAKU if count else strings.MIGAKU_NO_DB)
             return
-        self.read(path)
+        self.read(path, control=self.find)
 
     def _choose(self):
         if qpress.live(self, "migaku:read"):
@@ -350,8 +362,9 @@ class MigakuWindow(ToolWindow):
             self.read(path, control=self.choose)
 
     def read(self, path, control=None):
-        """Read the export's words first (a worker), then ask with both numbers. `control`: *Choose…*, pressed — its
-        arc turns from the file picked until the question (round 8 row 45); a press meanwhile reads nothing more."""
+        """Read the export's words first (a worker), then ask with both numbers. `control`: *Find it* or *Choose…*,
+        pressed — its arc turns from the file picked until the question (round 8 row 45); a press of either meanwhile
+        reads nothing more."""
         language = self.language
         then, failed = self.alive(lambda plan: self._ask(plan, language)), self.alive(self._unread)
         if control is not None:

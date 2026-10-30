@@ -325,9 +325,10 @@ def test_done_many_finishing_one_show_of_a_group_offers_that_shows_finish(world)
     assert _shown_buttons(card)[-1] == strings.DONE_MOVE_SHOW_FINISHED.format(show=SHOW_A)
 
 
-# --- the review round (reviews/A7K-register.md) ---------------------------------------------------------------------- #
+# --- the review round ------------------------------------------------------------------------------------------- #
 def test_done_many_as_the_librarys_first_mark_says_their_words_left_the_list_once(world):
-    """W-1's one-time hint is the mark-many's too: twenty chapters leaving the list say so, with *Keep studying them*."""
+    """W-1's one-time hint is the mark-many's too: twenty chapters leaving the list say so, with *Keep studying
+    them*."""
     seed, win, writer = world(hint_seen=False)
     i = next(n for n, r in enumerate(rows_of(win)) if len(r.episodes) >= 6 and not any(e.watched for e in r.episodes))
     row = rows_of(win)[i]

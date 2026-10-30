@@ -439,7 +439,8 @@ def still_arriving(episodes, now=None, airing=None):
     if None in stamps:
         return True
     if len(stamps) < 2:
-        return len(episodes) == 1 and episodes[0].number is not None and             getattr(episodes[0], "media_word", None) == "video"
+        return (len(episodes) == 1 and episodes[0].number is not None
+                and getattr(episodes[0], "media_word", None) == "video")
     before, newest = (_seconds(t) for t in sorted(stamps)[-2:])     # the store's stamps sort as text: two parsed
     if before is None or newest is None:
         return True

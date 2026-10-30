@@ -754,7 +754,8 @@ def test_practise_with_your_ai_copies_the_whole_setup_and_says_copied_at_once(qa
     doors = page.live.parts["practice_ai"]
     assert list(doors) == ["claude-code", "codex", "claude-desktop"]
     assert all(door.toolTip() for door in doors.values())                # a tooltip on every button
-    assert "Nothing else leaves" in help_of(page, "practice_ai")         # what leaves, beside the buttons
+    assert "AI's company" in help_of(page, "practice_ai")                # what leaves, beside the buttons
+    assert "Nothing else leaves" in page.live.parts["practice_then"]["then"].toolTip()   # in full behind its ?
     doors[app].click()
     copied = QApplication.clipboard().text()
     assert copied == mcp_server.setup_text(app)
@@ -765,6 +766,38 @@ def test_practise_with_your_ai_copies_the_whole_setup_and_says_copied_at_once(qa
     assert any(S.PRACTICE_APPS[app] in line for line in shell.bar_line.lines)
     assert store.calls == []                                             # no setting written
     assert wait_until(lambda: doors[app].text() == S.PRACTICE_APPS[app], 4)
+
+
+def test_piyo_says_both_ways_to_start_a_round_and_copies_a_starter_message(qapp, fakes):
+    """A7 (Sonic's first try, 2026-10-30: "I connected it with the prompt but now what"): the row's ? gives both ways
+    to start — Claude Code's /surasura:practice with its four words, every choice the round tool takes and one example;
+    or just saying it — and *Copy a starter message* puts that message on the clipboard, *Copied* at once, the bar
+    saying where to paste it. A story is a good first try (the tooltips). Nothing written. The row's own words stay
+    no longer than *Download covers*' (Sonic: "far too long"); what leaves, in full, is behind the ? too."""
+    from app import practice
+    from app.cli import mcp_server
+    page, store, shell = make(fakes)
+    parts = page.live.parts["practice_then"]
+    assert len(S.ROWS["practice_ai"][1]) <= len(S.ROWS["covers_download"][1])
+    assert parts["then"].text() == "?" and parts["then"].objectName() == "helpmark"
+    lines = parts["then"].toolTip().split("<br>")
+    assert lines[0].startswith("<b>What leaves:</b>") and lines[0].endswith("Nothing else leaves.")
+    assert lines[2] == "Then, to start a round:"
+    assert lines[3].startswith("• In Claude Code, type /surasura:practice and four words")
+    assert "/surasura:practice (MCP)" in lines[3] and lines[4] == f"• For example: {mcp_server.SLASH_EXAMPLE}"
+    for choice in tuple(mcp_server.ROLES) + tuple(mcp_server.KINDS) + mcp_server.SOURCES:
+        assert choice in lines[3], choice
+    assert lines[5] == f"• Or, in Claude Code, Codex or Claude Desktop, just say it: “{practice.STARTER}”"
+    assert page.row("practice_ai").isAncestorOf(parts["then"])          # the row's own words, beside the starter
+    starter = parts["starter"]
+    assert "story is a good first try" in starter.toolTip()
+    assert "short story is a good first try" in S.ROWS["practice_ai"][2]   # the row's own tooltip
+    starter.click()
+    assert QApplication.clipboard().text() == practice.STARTER
+    assert starter.text() == S.PRACTICE_COPIED                           # at once, before any event loop turn
+    assert S.PRACTICE_STARTER_COPIED_LINE in shell.bar_line.lines
+    assert store.calls == []                                             # no setting written
+    assert wait_until(lambda: starter.text() == S.PRACTICE_STARTER, 4)
 
 
 def test_piyo_names_the_row_and_keep_practice_rounds_is_its_switch_on_by_default(qapp, fakes):

@@ -1,5 +1,5 @@
 # <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ) - The Immersion Architect
-![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg) ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
 
 *For Intermediate-Advanced learners. Supports Japanese & Chinese...* 
 
@@ -247,4 +247,13 @@ Settings → Data & System → Data credits.
 
 ## 📜License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Surasura is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any
+later version (`GPL-3.0-or-later`; the text is in `LICENSE`, the written exception in `LICENSE-EXCEPTION.md`).
+It comes with no warranty.
+
+- **Versions up to and including 2.5.x were released under the MIT License.** Anyone holding them keeps those
+  rights; the MIT notice is kept in `licenses/Surasura-MIT-before-3.0.txt` for the code released under it.
+- The Windows program bundles third-party libraries under their own licences (PyQt6 and Qt among them); their
+  texts ship in the program's `_internal\licenses\` folder and are listed in Settings → Data & System.
+- Sending a change? See `CONTRIBUTING.md`.

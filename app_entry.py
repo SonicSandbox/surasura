@@ -72,7 +72,7 @@ def _qt_window():
         raise
 
 
-_run = {}      # the command this process runs and when it began (`main`), for its one end line (`_log_end`)
+_run = {}      # the command this process runs and when it began (`run`), for its one end line (`_log_end`)
 
 
 def _log_end(code):
@@ -85,17 +85,17 @@ def _log_end(code):
         log_error(f"Ended {_run.get('command')} after {time.monotonic() - started:.1f} s (exit {code})")
 
 
-def main():
-    """The program: one command (`_main`), its end logged (`_log_end`)."""
+def run():
+    """The program: one command (`main`, the dispatch), its end logged (`_log_end`)."""
     import time
     args = [arg for arg in sys.argv[1:] if arg != "--headless"]
     command = args[0] if args else "window"
     if command == "--multiprocessing-fork":         # a frozen run's pool worker (freeze_support): no command of its own
-        return _main()
+        return main()
     _run.update(command=command, started=time.monotonic())
     code = 0
     try:
-        _main()
+        main()
     except SystemExit as e:
         code = 0 if e.code is None else e.code
         raise
@@ -106,7 +106,7 @@ def main():
         _log_end(code)
 
 
-def _main():
+def main():
     # Force UTF-8 for stdout/stderr to avoid UnicodeEncodeError in frozen Windows builds
     if sys.platform == "win32":
         try:
@@ -328,4 +328,4 @@ def _main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    run()

@@ -2,7 +2,7 @@
 window. A crash is logged and exits 1 with no Critical Error box; an unknown or missing command exits 2 and never opens
 the dashboard; the log is in the local data folder, not the folder the program was started from.
 
-Each case runs app_entry.main() in a fresh process with tkinter and the dashboard blocked at import, so a regression
+Each case runs app_entry.run() in a fresh process with tkinter and the dashboard blocked at import, so a regression
 records the attempt instead of opening a real dialog that would hang the run.
 """
 import json
@@ -15,7 +15,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _run_entry(root, argv, analyzer_main="raise"):
-    """app_entry.main() with `argv`. Returns (exit code, the GUI imports it attempted, the argv the analyzer saw)."""
+    """app_entry.run() (the program as it starts: the dispatch, its end logged) with `argv`. Returns (exit code, the GUI
+    imports it attempted, the argv the analyzer saw)."""
     script = textwrap.dedent(f"""
         import json, sys
 
@@ -40,7 +41,7 @@ def _run_entry(root, argv, analyzer_main="raise"):
 
         sys.argv = ["Surasura.exe"] + {argv!r}
         try:
-            app_entry.main()
+            app_entry.run()
             code = 0
         except SystemExit as e:
             code = e.code
@@ -103,7 +104,8 @@ def test_every_log_line_is_stamped_and_each_command_logs_its_end_with_its_length
     _run_entry(tmp_path, ["analyzer", "--headless", "--lang", "ja"], analyzer_main="ok")
     _run_entry(tmp_path, ["analyzer", "--headless"])                        # a crash: exit 1
     _run_entry(tmp_path, ["nope", "--headless"])                            # an unknown command: exit 2
-    lines = [line for line in _app_log(tmp_path).splitlines() if not line.startswith(("Traceback", " ", "RuntimeError"))]
+    lines = [line for line in _app_log(tmp_path).splitlines()                      # a traceback's lines aside
+             if "App starting" in line or "Ended " in line or "CRITICAL ERROR" in line or "Unknown command" in line]
     stamp = r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} \[\d+\] "
     assert lines and all(re.match(stamp, line) for line in lines), lines
     ends = [msg for msg in (re.sub(stamp, "", line) for line in lines) if msg.startswith("Ended ")]

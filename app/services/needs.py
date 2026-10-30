@@ -54,8 +54,8 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   that aren't in your list yet?* · *Add them* (the window's writer, `place(ids, "soon")`: one Undo) · *Leave them*
   (answered; a show placed since, or a new one waiting, asks again).
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
-  logs nothing, so Connect makes no card for them by itself; once it took something in, it offers ONE line (`offer`,
-  kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
+  logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
+  (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
 
 An entry's `actions` are names only; the window maps each to its call and hides the names in `WIRED_LATER` until a
 callable is set. `badge(entries)` counts the unseen ones (P1.2-1: seen ones stay listed and stop counting).

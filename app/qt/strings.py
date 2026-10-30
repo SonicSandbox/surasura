@@ -704,6 +704,9 @@ TRAY_MENU = {
     "folder": ("Open its folder", "Show its files in Explorer"),
     "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
+TRAY_SORT_ALL = "Sort them all…"            # Mado-O: the sort screen, New arrivals' full view
+TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Ignore, by a key each.\n"
+                     "• Anything you don't sort stays here")
 TRAY_PLACED = {
     "top": "{title} is at the top of Current",
     "after-show": "{title} placed after its show",

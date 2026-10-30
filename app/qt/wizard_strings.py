@@ -139,7 +139,7 @@ READ_BUSY = "Surasura is already reading your folders: try again in a moment."
 COPYING = "Copying into your library: {done:,} of {total:,} files…"                       # K5
 READ_BIG = "{line} · That's a big library: over 15,000 items. You can Stop and pick fewer folders."   # K5 (A4K-4)
 EVERY_CORE = "Use every core"                                                              # K5 C4
-EVERY_CORE_LINE = "Reads a big library sooner; the computer is busier meanwhile. Settings › Content has it too."
+EVERY_CORE_LINE = "Reads your library faster; the computer is busier while it does. Settings › Content has it too."
 EVERY_CORE_TIP = ("On: reading and copying your library use every core of your computer, so it ends sooner.\n"
                   "Off: half of them, so the computer stays quick to use")
 READ_WAITING = "Waiting for your library: another part of Surasura is saving. Reading goes on by itself…"   # K4
@@ -285,3 +285,52 @@ NO_SHOWS = "Add a show first, and the numbers show here."
 MAKING = "Making your list… The first time reads every show and book, so it can take a few minutes."
 MAKING_PCT = "Making your list… {pct} % · The first time can take a few minutes."
 NOT_STARTED = "Your list couldn't start: press Generate at the top when you're ready."
+
+# --- after page 3: the load screen and the sort screen (Sonic 2026-10-30) ------------------------------------------- #
+LOAD_NAME = "Getting your library ready"
+LOAD_MARK_NAME = "Surasura"
+LOAD_SCAN = "Reading your library · {episodes} in {shows}"
+LOAD_COPY = "Bringing your files in · {done:,} of {total:,}"
+LOAD_WAIT = "Waiting for your library…"
+LOAD_INDEX = "Reading the words · {done:,} of {total:,}"
+LOAD_INDEX_START = "Reading the words…"
+LOAD_COVERS = "Finding covers · {done:,} of {total:,}"
+LOAD_COVERS_START = "Finding covers…"
+LOAD_ANKI = "Bringing in your known words from Anki…"
+LOAD_STOP = "Stop"
+LOAD_STOP_TIP = ("Stop here and sort what was read so far. Nothing read is lost; a folder not reached yet stays on "
+                 "the page to read again.")
+LOAD_STOPPING = "Stopping…"
+LOAD_LINES = ("Come back after an episode",
+              "Your shows are read once, so every list after this is quick",
+              "Make a tea; this part only happens once",
+              "Every word you already know will fade from your list",
+              "The bigger the library, the better the list")
+SORT_NAME = "Sort your library"
+SORT_TITLE = "Where does each one go?"
+SORT_LINE = "Sort the one at the top. The next one comes up by itself."
+SORT_COUNT = "{n:,} left to sort"
+SORT_GROUPS = {"new": "NEW", "watched": "ALREADY WATCHED"}
+# (key, label, tip, the key's name on screen): Soon first, the one key that isn't an arrow (Sonic 2026-10-30)
+SORT_CHOICES = (("soon", "Soon", "Below Current's Soon line: after what you're on now. It still counts toward your "
+                                 "list.", "S"),
+                ("now", "Current", "Study it now: it goes to the top of Current.", "→"),
+                ("goal", "Goal", "Someday, in no order: what you'll get to later. It counts toward your list.", "↓"),
+                ("finished", "Finished", "Watched or read already: a record, and still a source of sentences. Its "
+                                         "words stop pushing your list around.", "↑"),
+                ("ignore", "Ignore", "Never read its folder again, when the folder holds only this; otherwise it's "
+                                     "taken out of your library. Your files stay where they are; Undo brings it "
+                                     "back.", "←"))
+SORT_UNDO = "Undo"
+SORT_UNDO_TIP = "Bring back the last one you sorted.\n• Ctrl+Z"
+SORT_REST = "Put the rest in…"
+SORT_REST_TIP = "Every title still here in one place, at once. One Undo brings them all back."
+SORT_DONE = "Done"
+SORT_DONE_TIP = "Go on. Anything still here waits in New arrivals."
+SORT_CLOSE_TIP = "Close. Anything still here waits in New arrivals.\n• Esc"
+SORT_MORE = "and {n:,} more"
+SORT_EMPTY = "All sorted."
+SORT_PLACED = {"now": "{title} → Current", "soon": "{title} → Soon", "goal": "{title} → Goal",
+               "finished": "{title} → Finished", "ignore": "{title} ignored"}
+SORT_REST_PLACED = "{n:,} titles → {place}"
+SORT_KEYS_NAME = "Keys"

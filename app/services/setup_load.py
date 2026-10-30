@@ -14,12 +14,14 @@ TAIL = 4096                     # the log's last bytes read for its newest count
 _COUNT = re.compile(re.escape(PROGRESS_LINE).replace(r"\{done\}", r"(\d+)").replace(r"\{total\}", r"(\d+)"))
 
 
-def read_count(path):
+def read_count(path, since=None):
     """(A worker.) The indexer's newest `PROGRESS_LINE` in its log `path` -> (done, total), or None (no log, no count
-    yet, a log being rewritten)."""
+    yet, a log being rewritten). `since` (a time.time()): a log last written before it is an earlier run's — None."""
     if not path:
         return None
     try:
+        if since is not None and os.path.getmtime(path) < since:
+            return None
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()

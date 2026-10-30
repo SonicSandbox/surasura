@@ -13,7 +13,9 @@ What a wrong answer would cost a learner:
 The wizard over its stand-in window (test_wizard's `make`) with the real store in a temp library; real Japanese
 subtitles from tests/Test Resources/; the window's chores and covers stand-ins that record what they were asked.
 """
+import os
 import threading
+import time
 
 import pytest
 
@@ -24,26 +26,32 @@ from PyQt6.QtTest import QTest
 from app import library_store as ls
 from app.qt import sort_screen
 from app.qt import wizard_strings as S
-from app.services import chores as chores_module
 from tests.qt.conftest import wait_until
 from tests.qt.test_wizard import go_to, make  # noqa: F401  (`make`: the wizard, a stand-in window)
-from tests.qt.test_wizard_sources import (SHOWS, SourcesApi, _fresh_look_state, _folder,  # noqa: F401
+from tests.qt.test_wizard_sources import (LOOSE, SHOWS, SourcesApi, _fresh_look_state, _folder,  # noqa: F401
                                           _items, _pick, empty_library)
 from tests.test_sources_scan import _drive
 
 
 class Chores:
-    """The window's chores as the load screen asks them: `index(force=True)` (started: None), its log's path."""
+    """The window's chores as the load screen asks them: `index(force=True)` (started: None), its log's path, and
+    whether an index ask is under way (`running`: set by an ask unless `runs` is False — nothing to read, an update
+    waiting, a run that couldn't start)."""
 
-    def __init__(self, log, answer=None):
-        self.log, self.answer, self.asked = log, answer, []
+    def __init__(self, log, answer=None, runs=True):
+        self.log, self.answer, self.asked, self.runs = log, answer, [], runs
+        self.running = False
 
     def index(self, force=False):
         self.asked.append(force)
+        self.running = self.runs
         return self.answer
 
     def index_log(self):
         return self.log
+
+    def indexing(self):
+        return self.running
 
 
 def _covers(shell, counts=((1, 2), (2, 2)), hold=None):
@@ -66,15 +74,14 @@ def _covers(shell, counts=((1, 2), (2, 2)), hold=None):
     return asked
 
 
-def _start(make, tmp_path, monkeypatch, chores=True, covers=True, needed=False):
-    """The wizard on page 3, one folder picked; the window's chores (its log in `tmp_path`) and covers set."""
-    monkeypatch.setattr(chores_module, "index_needed", lambda *a: needed)
+def _start(make, tmp_path, chores=True, runs=True, folders=1):
+    """The wizard on page 3, `folders` folders picked; the window's chores (its log in `tmp_path`) set."""
     wiz, shell, api, settings, _m = make(api=SourcesApi())
     log = str(tmp_path / "indexer-window.log")
     if chores:
-        shell.chores = Chores(log)
+        shell.chores = Chores(log, runs=runs)
     go_to(wiz, "shows")
-    _pick(wiz, _folder("anime", SHOWS))
+    _pick(wiz, _folder("anime", SHOWS), *([_folder("dramas", LOOSE, start=100)] if folders > 1 else []))
     return wiz, shell, log
 
 
@@ -86,17 +93,22 @@ def _task(wiz):
 def test_the_steps_run_in_order_each_with_its_count_then_the_sort_screen(make, empty_library, tmp_path, monkeypatch):
     """The look, then the words (the window's indexer asked once, forced; its count read from its log), then the
     covers (their count), then — no sync running — the sort screen, which *Done* leaves for page 4."""
-    wiz, shell, log = _start(make, tmp_path, monkeypatch)
+    wiz, shell, log = _start(make, tmp_path)
+    with open(log, "w", encoding="utf-8") as f:                                # an earlier run's log, finished
+        f.write("Indexer: 5000 of 5000\n")
+    os.utime(log, (time.time() - 120, time.time() - 120))
     hold = threading.Event()
     asked = _covers(shell, hold=hold)
     wiz.next()
     assert isinstance(wiz.covered, sort_screen.LoadScreen)
     assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)            # the look ended: the words
     assert shell.chores.asked == [True]
+    QTest.qWait(1200)
+    assert _task(wiz) == S.LOAD_INDEX_START, "never the earlier run's count"
     with open(log, "w", encoding="utf-8") as f:
         f.write("Indexer: starting (ja)\nIndexer: 3 of 7\n")
     assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX.format(done=3, total=7), 5)
-    wiz._indexed("ja")                                                         # the indexer's run ended, nothing left
+    shell.chores.running = False                                               # the indexer's run ended
     assert wait_until(lambda: _task(wiz) == S.LOAD_COVERS.format(done=2, total=2), 5)
     assert asked == [1]
     hold.set()
@@ -106,13 +118,13 @@ def test_the_steps_run_in_order_each_with_its_count_then_the_sort_screen(make, e
     assert wiz.covered is None and wiz.index == 3
 
 
-def test_an_index_run_with_more_left_waits_for_the_next_and_three_runs_end_the_step(make, empty_library, tmp_path,
-                                                                                    monkeypatch):
-    """A run asked while another ran leaves work: the step waits for the next run; after three it goes on whatever is
-    left (the indexer finishes it behind the window) — never stuck."""
-    wiz, shell, _log = _start(make, tmp_path, monkeypatch, covers=False, needed=True)
+def test_runs_that_keep_coming_end_the_step_after_three(make, empty_library, tmp_path):
+    """The library changing all along keeps the indexer busy run after run: after three runs the step goes on
+    whatever is left (the indexer finishes it behind the window) — never stuck."""
+    wiz, shell, _log = _start(make, tmp_path)
     wiz.next()
     assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)
+    assert shell.chores.running
     wiz._indexed("zh")                                                         # another language's run: not this one
     wiz._indexed("ja")
     wiz._indexed("ja")
@@ -122,16 +134,25 @@ def test_an_index_run_with_more_left_waits_for_the_next_and_three_runs_end_the_s
     assert wait_until(lambda: isinstance(wiz.covered, sort_screen.SortScreen), 5)
 
 
-def test_no_indexer_no_covers_and_no_sync_pass_straight_to_the_sort_screen(make, empty_library, tmp_path, monkeypatch):
+def test_no_indexer_no_covers_and_no_sync_pass_straight_to_the_sort_screen(make, empty_library, tmp_path):
     """Anki absent (page 2 never synced), no chores (indexing off), no covers to scan: each step is passed by."""
-    wiz, shell, _log = _start(make, tmp_path, monkeypatch, chores=False)
+    wiz, shell, _log = _start(make, tmp_path, chores=False)
     assert not wiz._sync_running
     wiz.next()
     assert wait_until(lambda: isinstance(wiz.covered, sort_screen.SortScreen), 30)
 
 
-def test_the_last_step_waits_for_page_twos_sync_and_goes_on_when_it_ends(make, empty_library, tmp_path, monkeypatch):
-    wiz, shell, _log = _start(make, tmp_path, monkeypatch, chores=False)
+def test_an_index_ask_that_brings_no_run_ends_the_step(make, empty_library, tmp_path):
+    """The ask was taken but no run comes — nothing left to read, an update waiting to install, an indexer that
+    couldn't start: no `indexed` ever arrives, and the step still ends by itself (the chores idle)."""
+    wiz, shell, _log = _start(make, tmp_path, runs=False)
+    wiz.next()
+    assert wait_until(lambda: isinstance(wiz.covered, sort_screen.SortScreen), 30)
+    assert shell.chores.asked == [True]
+
+
+def test_the_last_step_waits_for_page_twos_sync_and_goes_on_when_it_ends(make, empty_library, tmp_path):
+    wiz, shell, _log = _start(make, tmp_path, chores=False)
     wiz._sync_running = True                                                   # page 2's first sync, still running
     wiz.next()
     assert wait_until(lambda: _task(wiz) == S.LOAD_ANKI, 30)
@@ -156,7 +177,7 @@ def test_stop_while_reading_keeps_what_came_in_and_goes_to_the_sorting(make, emp
             release.wait(10)
         return change
     monkeypatch.setattr(ls.Store, "take_in", take_in)
-    wiz, shell, _log = _start(make, tmp_path, monkeypatch)
+    wiz, shell, _log = _start(make, tmp_path, folders=2)
     wiz.next()
     assert wait_until(reached.is_set, 30)
     load = wiz.covered
@@ -168,22 +189,24 @@ def test_stop_while_reading_keeps_what_came_in_and_goes_to_the_sorting(make, emp
     items = _items()
     assert taken[0] and sorted(i for i, *_r in items) == sorted(taken[0])
     assert {t for _i, t, _o, _r in items} == {"arrivals"}
+    QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
+    assert wiz.covered is None and wiz.index == 2, "page 3 stays: the folder never reached is still listed"
+    assert len(wiz.page.folders) == 1 and not wiz.page.reading_line.isHidden()
 
 
-def test_stop_while_the_words_are_read_goes_to_the_sorting_at_once(make, empty_library, tmp_path, monkeypatch):
-    wiz, shell, _log = _start(make, tmp_path, monkeypatch)
+def test_stop_while_the_words_are_read_goes_to_the_sorting_at_once(make, empty_library, tmp_path):
+    wiz, shell, _log = _start(make, tmp_path)
     wiz.next()
     assert wait_until(lambda: _task(wiz) == S.LOAD_INDEX_START, 30)
     QTest.mouseClick(wiz.covered.btn_stop, Qt.MouseButton.LeftButton)
     assert isinstance(wiz.covered, sort_screen.SortScreen)
     wiz._indexed("ja")                                                         # the run ending later changes nothing
+    shell.chores.running = False
     QTest.qWait(100)
     assert isinstance(wiz.covered, sort_screen.SortScreen)
 
 
-def test_a_folder_with_nothing_to_read_lifts_the_cover_and_the_page_says_so(make, empty_library, tmp_path,
-                                                                            monkeypatch):
-    monkeypatch.setattr(chores_module, "index_needed", lambda *a: False)
+def test_a_folder_with_nothing_to_read_lifts_the_cover_and_the_page_says_so(make, empty_library):
     wiz, shell, _api, _settings, _m = make(api=SourcesApi())
     go_to(wiz, "shows")
     _pick(wiz, _drive("nothing-here"))
@@ -194,9 +217,9 @@ def test_a_folder_with_nothing_to_read_lifts_the_cover_and_the_page_says_so(make
     assert _items() == []
 
 
-def test_the_wizard_takes_no_press_while_it_is_covered(make, empty_library, tmp_path, monkeypatch):
+def test_the_wizard_takes_no_press_while_it_is_covered(make, empty_library, tmp_path):
     """Next, Back, Skip and Enter do nothing under the cover: only its own Stop, and the sort screen's own keys."""
-    wiz, shell, _log = _start(make, tmp_path, monkeypatch, chores=False)
+    wiz, shell, _log = _start(make, tmp_path, chores=False)
     wiz.next()
     assert wait_until(lambda: isinstance(wiz.covered, sort_screen.SortScreen), 30)
     for act in (wiz.next, wiz.back, wiz.skip, wiz.enter):
@@ -217,10 +240,10 @@ class _Writer:
         return self.n
 
 
-def test_the_cards_line_is_checked_only_once_the_sorts_places_are_saved(make, empty_library, tmp_path, monkeypatch):
+def test_the_cards_line_is_checked_only_once_the_sorts_places_are_saved(make, empty_library, tmp_path):
     """*Done* straight after the last key: D1's check (`sorted_offer`) waits until the writer has saved every place
     the sorting gave — never a check of the store before they landed, which would miss the line."""
-    wiz, shell, _log = _start(make, tmp_path, monkeypatch, chores=False)
+    wiz, shell, _log = _start(make, tmp_path, chores=False)
     writer = shell.services.writer = _Writer(2)
     seen = []
     api = wiz.api

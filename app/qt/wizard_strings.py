@@ -294,7 +294,8 @@ LOAD_COVERS = "Finding covers · {done:,} of {total:,}"
 LOAD_COVERS_START = "Finding covers…"
 LOAD_ANKI = "Bringing in your known words from Anki…"
 LOAD_STOP = "Stop"
-LOAD_STOP_TIP = "Stop here and sort what was read so far. Nothing read is lost; the rest is read later by itself."
+LOAD_STOP_TIP = ("Stop here and sort what was read so far. Nothing read is lost; a folder not reached yet stays on "
+                 "the page to read again.")
 LOAD_STOPPING = "Stopping…"
 LOAD_LINES = ("Come back after an episode",
               "Your shows are read once, so every list after this is quick",

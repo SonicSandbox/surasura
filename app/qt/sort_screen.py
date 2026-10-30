@@ -9,8 +9,8 @@
   only what changed (S19).
 - **`SortScreen`**: every title in New arrivals (the reader's `arrival_groups`, followed as the window gets each view —
   `set_groups`), large: the title at the top is the one the keys act on — it looks picked (the window's `row-picked`
-  wash, the accent edge) with a gap under it — then the next few, then *and N more*. Its five choices **Current · Soon
-  · Goal · Finished · Ignore** (buttons on the top title, keys **→ S ↓ ↑ ←**, shown on screen), *Put the rest in…*,
+  wash, the accent edge) with a gap under it — then the next few, then *and N more*. Its five choices **Soon · Current
+  · Goal · Finished · Ignore** (buttons on the top title, keys **S → ↓ ↑ ←**, shown on screen), *Put the rest in…*,
   *Undo* (Ctrl+Z), *Done*. A choice takes the title off at once (pending — the press rule) and the next comes up; a
   refused one comes back. **It decides nothing:** every placement is New arrivals' own (`arrivals.give_place`,
   `item_menu.give_skip`, `MovesController.undo_last`), through the window's writer. Opened by setup (after the load
@@ -20,7 +20,7 @@ import math
 import os
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QPointF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QPainterPath, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget)
 
@@ -191,7 +191,7 @@ class Mark(motion.Spinner):
 
     def _on_frame(self, phase):
         angle = math.sin(phase * 2 * math.pi)
-        if abs(angle - self.angle) >= 0.004:        # under a hundredth of a degree's turn of a tip: nothing to paint
+        if abs(angle - self.angle) >= 0.004:        # under a fiftieth of a degree's turn: nothing to paint
             self.angle = angle
             self.update()
 
@@ -496,8 +496,9 @@ class SortScreen(QWidget):
 
     def _paint(self):
         rows = self.visible_rows()
-        key = tuple((a.key, a.title, getattr(a, "folder", None), len(a.item_ids), getattr(a, "cover", None))
-                    for _k, a in rows[:NEXT_SHOWN + 1]) + (len(rows), bool(self.history), self.heard)
+        key = tuple((kind, a.key, a.title, getattr(a, "folder", None), len(a.item_ids), getattr(a, "cover", None),
+                     getattr(a, "line", None), getattr(a, "media_word", None))
+                    for kind, a in rows[:NEXT_SHOWN + 1]) + (len(rows), bool(self.history), self.heard)
         if key == self._shown:
             return                                  # nothing it shows changed (S19)
         self._shown = key
@@ -564,45 +565,56 @@ class SortScreen(QWidget):
         if name == "ignore":
             self._ignore(a, moves, entry)
             return True
-        from app.qt import arrivals, drag
-        entry["ticket"] = drag.Ticket(entry["text"], entry["keys"], a.item_ids)
+        from app.qt import arrivals
         seq = arrivals.give_place(moves, entry["text"], list(a.item_ids), PLACE_OF[name], toast=False,
-                                  ticket=entry["ticket"])
+                                  ticket=self._ticket(entry, a.item_ids))
         if seq is None:
             self._refused(entry)
         return seq
+
+    def _ticket(self, entry, ids):
+        """The entry's own ticket — kept for its Undo, and told when its command ends unsaved (it landed as nothing,
+        or was let go): the titles come back as a refusal does, never hidden for good."""
+        from app.qt import drag
+        ticket = entry["ticket"] = drag.Ticket(entry["text"], entry["keys"], ids)
+
+        def told(event):
+            if event == "ended" and ticket.change is None and not entry["undone"] and not sip.isdeleted(self):
+                self._refused(entry)
+        ticket.told = told
+        return ticket
 
     def _ignore(self, a, moves, entry):
         """← Ignore: the title's own folder never read again (`give_skip`, Q7's) — only a folder holding no other title
         (`looks.skippable(..., own=True)`); else the title taken out of the library (`writer.remove`: its copy to the
         trash, the original where it is, kept out of every later look). One Undo either way; an Undo pressed while the
         folder is still being looked for gives nothing at all."""
-        from app.qt import bridge, drag, item_menu
+        from app.qt import bridge, item_menu
         ids = list(a.item_ids)
 
         def act(folders):
-            if sip.isdeleted(self) or entry["undone"]:
+            if entry["undone"]:
                 return
-            ticket = entry["ticket"] = drag.Ticket(entry["text"], entry["keys"], ids)
+            ticket = self._ticket(entry, ids)
             if folders:
                 seq = item_menu.give_skip(moves, folders[0], ids, toast=False, ticket=ticket)
             else:
                 seq = moves._give(ticket, lambda t: moves.writer.remove(ids, label=t), toast=False)
-            if seq is None:
+            if seq is None and not sip.isdeleted(self):
                 self._refused(entry)
         looks = getattr(self.win, "looks", None)
         if looks is None or not hasattr(looks, "skippable"):
-            act([])
+            act([])                                         # (no folder is being read: nothing to skip)
             return
-        relay = bridge.Relay(self)
+        relay = bridge.Relay(self.win if isinstance(self.win, QObject) else self)     # (outlives a screen closed meanwhile)
 
         def found(folders):
             relay.deleteLater()
             act(list(folders or ()))
         relay.said.connect(found)
         if not looks.skippable(ids, relay.call, own=True):
-            relay.deleteLater()
-            act([])
+            relay.deleteLater()                             # the looks can't answer now (closing): nothing guessed
+            self._refused(entry)
 
     def _refused(self, entry):
         """A choice the writer refused: its titles back where they were, and the screen says it wasn't saved."""
@@ -628,9 +640,9 @@ class SortScreen(QWidget):
         ids = [i for _k, a in rows for i in a.item_ids]
         label = next(lab for n, lab, *_r in S.SORT_CHOICES if n == name)
         entry = self._take([a.key for _k, a in rows], name, S.SORT_REST_PLACED.format(n=len(rows), place=label))
-        from app.qt import arrivals, drag
-        entry["ticket"] = drag.Ticket(entry["text"], entry["keys"], ids)
-        seq = arrivals.give_place(moves, entry["text"], ids, PLACE_OF[name], toast=False, ticket=entry["ticket"])
+        from app.qt import arrivals
+        seq = arrivals.give_place(moves, entry["text"], ids, PLACE_OF[name], toast=False,
+                                  ticket=self._ticket(entry, ids))
         if seq is None:
             self._refused(entry)
         return seq

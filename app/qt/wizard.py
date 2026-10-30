@@ -2430,7 +2430,7 @@ class SetupWizard(QWidget):
         self.reading = None                 # SRC W1a: page 3's first look running (its Stop: a threading.Event)
         self._read_seq = 0
         self.covered = None                 # Mado-O: the load screen or the sort screen over the wizard, or None
-        self._load = None                   # … the load's state while one runs: {"step", "ids", "stopped", "indexed"}
+        self._load = None                   # … the load's state: {"step", "ids", "stopped", "indexed", "since"}
         self._sync_running = False          # page 2's first known-words sync under way (the load's last step waits)
         # the folder picker (the system's own dialog; tests replace it)
         self.pick_dialog = lambda title, start: QFileDialog.getExistingDirectory(self, title, start)
@@ -3125,7 +3125,7 @@ class SetupWizard(QWidget):
         from app.qt import sort_screen
         screen = sort_screen.LoadScreen()
         screen.stop.connect(self.alive(self._load_stop))
-        self._load = {"step": "scan", "ids": [], "stopped": False, "indexed": 0}
+        self._load = {"step": "scan", "ids": [], "stopped": False, "indexed": 0, "since": None}
         self._cover(screen)
         self._load_said((0, 0))
 
@@ -3173,9 +3173,11 @@ class SetupWizard(QWidget):
         return getattr(self.shell, "chores", None)
 
     def _load_index(self):
-        """The token store's indexing, the window's own (`Chores.index(force=True)`), its count read from its log."""
+        """The token store's indexing, the window's own (`Chores.index(force=True)`), its count read from its log (only
+        once this run wrote it)."""
         load = self._load
         load["step"] = "index"
+        load["since"] = time.time()
         chores = self._chores()
         asked = chores.index(force=True) if chores is not None else "none"
         if asked not in (None, "busy"):           # off (a test's switch), closed, no chores: nothing to wait for
@@ -3185,37 +3187,34 @@ class SetupWizard(QWidget):
         self._load_tick()
 
     def _load_tick(self):
+        """Every half second while the words are read: the count from the log; and the step ends as soon as the
+        window's chores have no index ask left — its run ended, or none came (nothing to read, an update waiting, a
+        run that couldn't start): never a cover waiting for a run that won't come."""
         load, chores = self._load, self._chores()
         if load is None or load["step"] != "index" or chores is None:
+            return
+        idle = getattr(chores, "indexing", None)
+        if callable(idle) and not idle():
+            self._load_covers()
             return
         from app.services import setup_load
 
         def shown(count):
             if count is not None and self._load is load and load["step"] == "index":
                 self._load_task(S.LOAD_INDEX.format(done=count[0], total=count[1]))
-        bridge.run_in_worker(setup_load.read_count, chores.index_log(), then=self.alive(shown),
+        bridge.run_in_worker(setup_load.read_count, chores.index_log(), load["since"], then=self.alive(shown),
                              failed=lambda info: applog.log("wizard", f"indexer count: {info[0]}"))
         self.later(500, self.alive(self._load_tick))
 
     def _load_indexed(self, language):
-        """An indexer run ended: the step ends once the store has nothing left to read (a run asked while another ran
-        is the next one), or after three runs whatever they left."""
+        """An indexer run ended: after three runs (the library changing all along) the step ends whatever they left —
+        the indexer finishes it behind the window; before that, the tick sees the chores idle."""
         load = self._load
         if load is None or load["step"] != "index" or language != self.language:
             return
         load["indexed"] += 1
         if load["indexed"] >= 3:
             self._load_covers()
-            return
-        from app.services import chores as chores_module
-        from app.zh_script import effective
-        script = effective(language, self._settings().get("zh_script", "asis"))
-
-        def checked(needed):
-            if self._load is load and load["step"] == "index" and not needed:
-                self._load_covers()
-        bridge.run_in_worker(chores_module.index_needed, language, script, then=self.alive(checked),
-                             failed=lambda info: self.alive(checked)(False))
 
     def _load_covers(self):
         """The covers beside the files and in the EPUBs (`shell.scan_covers`, the window's own disk scan)."""
@@ -3225,11 +3224,11 @@ class SetupWizard(QWidget):
         relay = bridge.Relay(self)
 
         def heard(said):
+            if said[0] == "end" and not sip.isdeleted(relay):
+                relay.deleteLater()                       # (after a Stop too: never left under the wizard)
             if self._load is not load or load["step"] != "covers":
                 return
             if said[0] == "end":
-                if not sip.isdeleted(relay):
-                    relay.deleteLater()
                 self._load_anki()
             else:
                 self._load_task(S.LOAD_COVERS.format(done=said[1], total=said[2]))
@@ -3293,9 +3292,10 @@ class SetupWizard(QWidget):
         if callable(offer):
             bridge.run_in_worker(once_saved, language, list(load["ids"]), then=offered,
                                  failed=lambda info: applog.log("wizard", f"cards line after sorting: {info[0]}"))
-        if self.page.id == "shows":
-            self._save("shows", self.page.answers())
-            self._advance()
+        page = self.page
+        if page.id == "shows" and not page.folders and page.refused_line.isHidden():
+            self._save("shows", page.answers())
+            self._advance()                               # else page 3 stays: what it says, the folders not read yet
     # --- end Mado-O
 
     # --- Anki Miner (page 5) -------------------------------------------------------------------------------------------- #

@@ -369,6 +369,50 @@ def test_a_choice_the_writer_refuses_comes_back_and_the_screen_says_it_wasnt_sav
     assert screen.said.text() == strings.MOVE_NOT_SAVED
 
 
+def test_a_choice_that_ends_unsaved_comes_back(world):
+    """The writer took the command but it landed as nothing (or was let go at a switch): the title is still in New
+    arrivals, so it comes back on the screen with words — never hidden for good with a count that leaves it out."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    top = screen.top_arrival()
+    writer.nothing.add("place")
+    press(screen, Qt.Key.Key_S)
+    assert top.key not in keys_shown(screen)
+    assert wait_until(lambda: top.key in keys_shown(screen), 5)
+    assert screen.history == [] and screen.said.text() == strings.MOVE_NOT_SAVED
+
+
+def test_ignore_when_the_folders_cant_be_looked_at_guesses_nothing(world):
+    """The looks can't answer (the window closing): *Ignore* never turns into a removal; the title comes back."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    top = screen.top_arrival()
+    win.looks = OwnLooks([])
+    win.looks.skippable = lambda ids, then, own=False: False
+    press(screen, Qt.Key.Key_Left)
+    assert screen.top_arrival().key == top.key and screen.said.text() == strings.MOVE_NOT_SAVED
+    wait_until(lambda: False, 0.3)
+    assert writer.calls == []
+
+
+def test_an_ignore_pressed_just_before_done_still_lands(world):
+    """*Ignore*, then *Done* before its folder answer came: the screen is gone, the Ignore is still given."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    top = screen.top_arrival()
+    folder = os.path.join(os.sep, "Media", top.title)
+    win.looks = OwnLooks([folder], hold=True)
+    writer.under[folder] = list(top.item_ids)
+    press(screen, Qt.Key.Key_Left)
+    QTest.mouseClick(screen.btn_done, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: sip.isdeleted(screen) or not screen.isVisible(), 3)
+    from PyQt6.QtCore import QCoreApplication, QEvent as E
+    QCoreApplication.sendPostedEvents(None, E.Type.DeferredDelete.value)       # the screen really gone
+    assert sip.isdeleted(screen)
+    win.looks.release()
+    assert wait_until(lambda: calls(writer, "skip_folder"), 5)
+
+
 # --- closing --------------------------------------------------------------------------------------------------------- #
 def test_esc_and_done_close_the_tray_door_and_leave_the_rest_in_new_arrivals(world):
     _seed, win, writer = world()

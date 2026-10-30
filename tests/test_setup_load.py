@@ -41,6 +41,15 @@ def test_no_count_yet_reads_as_none(tmp_path, text):
     assert setup_load.read_count(_log(tmp_path, text)) is None
 
 
+def test_a_log_last_written_before_the_ask_is_an_earlier_runs(tmp_path):
+    """`since`: the run asked for hasn't written its log yet — the earlier run's last count (often its whole total) is
+    never shown as this one's."""
+    path = _log(tmp_path, "Indexer: 5000 of 5000\n")
+    written = os.path.getmtime(path)
+    assert setup_load.read_count(path, since=written + 5) is None
+    assert setup_load.read_count(path, since=written - 5) == (5000, 5000)
+
+
 def test_no_log_reads_as_none(tmp_path):
     assert setup_load.read_count(None) is None and setup_load.read_count("") is None
     assert setup_load.read_count(str(tmp_path / "never-written.log")) is None

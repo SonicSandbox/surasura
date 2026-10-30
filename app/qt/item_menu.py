@@ -31,7 +31,8 @@ shown in a field: `Writer.rename_piece`, empty = named after its shows again, th
 with…*, *Same show as…*, *Change cover…*, *Never read this folder* or *Open its folder* (each is one show's). Its writes
 toast at the press, with Undo (*· saving…* until the store saved them; IK-2: no mark on the rows).
 **An episode's own ⋯ (row 28):** an opened row's episode line under the hand or the keyboard shows its own ⋯
-(`rows.RowsView.episode_menu_requested`): *Mark watched* / *Mark not watched* (the page's one Done path), *Play* (▶'s
+(`rows.RowsView.episode_menu_requested`): *Mark watched* / *Mark not watched* (the page's one Done path), right under a
+*Mark watched* its extension *…and everything before it* when 2+ files would be marked (a7: `drag.done_many`), *Play* (▶'s
 path, when it can play), *Split here…* after it (when that split is allowed), then each `episode_hooks` entry —
 callables `(row, ep) -> [Entry]`, asked as the menu opens; an entry's `payload`, a callable, runs when it is picked.
 **Group… (LM11b G4):** Ctrl+click picks Current's rows and an opened row's episodes (its stones), Shift+click the rows
@@ -395,7 +396,13 @@ class ItemActions(QObject):
             ok = writable or not writes
             return Entry(name, label or words, (tip or own_tip) if ok else reason, ok, **kw)
         group = getattr(row, "group", False)
-        out = [entry("unpin") if row.studying else entry("pin")]
+        out = []
+        files = view_rows.to_finish(row.episodes)    # a7 (DIAGNOSIS 11): every file not watched yet, at once — first,
+        left = [e for e in files if not e.watched]   # beside the moves (Finished is one)
+        if len(files) >= 2 and left:
+            out.append(entry("watched-all", tip=strings.ITEM_MENU["watched-all"][1].format(n=len(left)),
+                             payload=left))
+        out.append(entry("unpin") if row.studying else entry("pin"))
         if row.work_id is not None and not group:
             kinds = [entry("type-to", label=strings.ITEM_TYPES[m], tip=strings.ITEM_TYPE_TIP.format(
                 kind=strings.ITEM_TYPES[m]), checked=row.media == m, payload=m) for m in library_store.MEDIA_TYPES]
@@ -622,6 +629,8 @@ class ItemActions(QObject):
             payload()
         elif name == "folder":
             self.open_folder(row)
+        elif name == "watched-all" and payload:          # a7: one command, one Undo (`drag.done_many`)
+            self.page.done_many(row, payload)
         elif name == "remove":
             self.ask_remove(row)
         elif name == "rename":                           # --- LM11b G3
@@ -644,10 +653,16 @@ class ItemActions(QObject):
         words, tip = strings.ITEM_EP_MARK
         out = [Entry("ep-unwatched" if ep.watched else "ep-watched", words.format(action=action),
                      tip.format(ep=name, action=action) if reason is None else reason, reason is None)]
+        k = next((i for i, e in enumerate(row.episodes) if e.id == ep.id), None)
+        upto = [] if k is None or ep.watched else \
+            [e for e in view_rows.to_finish(row.episodes[:k + 1]) if not e.watched]
+        if len(upto) >= 2:                           # a7 (DIAGNOSIS 11): *Mark watched*'s extension (Sonic 10-30), right
+            words, tip = strings.ITEM_EP_UPTO        # under it: it and every one before it, at once
+            out.append(Entry("ep-upto", words, tip.format(ep=name, n=len(upto)) if reason is None else reason,
+                             reason is None, payload=upto))
         if ep.can_play:                              # IK-2: ▶'s own verb and tip (`view_rows`: the episode's media)
             out.append(Entry("ep-play", view_rows.VERB.get(ep.media_word or row.media_word, view_rows.VERB["video"]),
                              ep.play_tip, True))
-        k = next((i for i, e in enumerate(row.episodes) if e.id == ep.id), None)
         if joinable(row) and k is not None and k + 1 < len(row.episodes) and \
                 view_rows.split_piece(row, k + 1) is not None:
             words, tip = strings.ITEM_SPLIT_HERE.format(ep=name), \
@@ -688,6 +703,8 @@ class ItemActions(QObject):
     def episode_pick(self, row, ep, name, payload=None):
         if name in ("ep-watched", "ep-unwatched"):
             self.page.done(row, ep)                  # the one path for a Done (S12): watched ↔ not watched
+        elif name == "ep-upto" and payload:
+            self.page.done_many(row, payload)        # a7: one command, one Undo (`drag.done_many`)
         elif name == "ep-play":
             self.lst.play_requested.emit(ep)         # ▶'s own path
         elif name == "split" and payload is not None:

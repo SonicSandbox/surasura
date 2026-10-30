@@ -738,7 +738,9 @@ SCHEMA_2_SQL = (
 FEED_POLL = 0.1                  # s: a window looks at `PRAGMA data_version` this often (its store worker)
 FEED_ITEM_FIELDS = ("id", "tier", "ord", "rel_path", "title", "parent_folder", "source_type", "availability",
                     "work_id", "piece_id", "watched", "mined_at", "pinned", "mine_asked", "graduated_at",
-                    "in_learning_order", "added_at", "feed_in")
+                    "in_learning_order", "added_at", "feed_in", "mtime_ns")
+#   mtime_ns (a7): the file's own date — a source's copy keeps its original's (`sources._dated`) — what
+#   `view_rows.still_arriving` reads beside `added_at` (a first look takes a whole show in at one time)
 FEED_WORK_FIELDS = ("id", "title", "title_by_user", "titles", "folder_key", "anilist_id", "tmdb_id", "youtube_channel",
                     "media_type", "media_type_by", "cover_source", "cover_ref", "cover_path", "cover_fetched_at",
                     "cover_locked", "feed_in")
@@ -9572,8 +9574,10 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
     runs = runs if first and first != SORT and not waiting else None
     if joined:
         tier, where = joined[1], ("after", joined[2])
-    elif first and not waiting and _tier_2x(record.get("origin")) == "goal":
-        tier, where = "goal", ("end",)               # K8: a 2.x library's Goal folder read as his library's folder
+    elif first and not waiting and _tier_2x(record.get("origin")) in ("goal", "graduated"):
+        # K8: a 2.x library's Goal folder read as his library's folder; a7: its Graduated one lands in Finished (Sonic
+        # 2026-10-30), dated *Earlier* as every title finished before Surasura (`import_finished`, the 2.x image)
+        tier, where = _tier_2x(record.get("origin")), ("end",)
         runs = None                                  # (no Current run of its show to keep)
     else:
         tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first if not waiting else False, waiting,
@@ -9605,12 +9609,14 @@ def _tier_2x(origin):
     """K8 (alpha 4, Mattias's note 9; A4K-3 PROVISIONAL): the tier a 2.x library's own folders give a file read from
     inside them on setup's first look (and *Start fresh*'s, the same look) — `…/data/<ja|zh>/GoalContent/<show>/…`
     "goal" (`HighPriority` "now",
-    `LowPriority` "soon": Current either way, in the order a look reads them) — or None. No content migration (Sonic
+    `LowPriority` "soon": Current either way, in the order a look reads them; a7, Sonic 2026-10-30: `Graduated`
+    "graduated", Finished, dated *Earlier*) — or None. No content migration (Sonic
     2026-10-23): it is still the folder he points setup at; his 2.x Goal stays his Goal — a show he had partly moved up in
     2.x (episodes 1–3 in HighPriority, the rest in GoalContent) keeps that split, whichever folder is picked first."""
     parts = os.path.normpath(origin).split(os.sep) if isinstance(origin, str) else []
     for i in range(len(parts) - 2, 1, -1):
-        tier = _TIER_OF_FOLDER_FOLDED.get(parts[i].casefold())
+        tier = _TIER_OF_FOLDER_FOLDED.get(parts[i].casefold()) or \
+            ("graduated" if parts[i].casefold() == GRADUATED_FOLDER.casefold() else None)
         if tier and parts[i - 1].casefold() in ("ja", "zh") and parts[i - 2].casefold() == "data":
             return tier
     return None

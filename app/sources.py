@@ -709,6 +709,16 @@ def _write_part(part, data):
         os.fsync(dst.fileno())
 
 
+def _dated(part, st):
+    """(a7) The copy keeps its original's date, as every copy the store makes does (`moves._copy_whole`'s `copystat`):
+    when an episode appeared is the original's time, never the look's — a first look at a weekly show reads as weekly
+    (`view_rows.still_arriving`). A copy whose date can't be set keeps the look's (as before)."""
+    try:
+        os.utime(part, ns=(st.st_mtime_ns, st.st_mtime_ns))
+    except (OSError, AttributeError):
+        pass
+
+
 def _write_parts_at_once(pool, jobs):
     """K5 C2: [(a `.part`, its bytes)] each written and flushed (`_write_part`), by `pool`'s threads when there is one
     (a file's write and flush let go of the GIL). Every write has ended before this returns or raises (the first
@@ -3075,6 +3085,7 @@ class _Look:
         if digest is None or not self._same(path, st):   # a short or long read, or changed while copied
             _drop(part)
             return None
+        _dated(part, st)
         return digest
 
     def _copy(self, path, st, show, name, sha, data=None):
@@ -3098,6 +3109,7 @@ class _Look:
             except OSError:
                 _drop(part)
                 return None
+            _dated(part, st)
         elif self._checked_copy(path, st, part) != sha:
             _drop(part)
             return None
@@ -3149,6 +3161,12 @@ class _Look:
         if sha == old_sha:
             _drop(part)
             return "same", sha
+        try:                                                 # (a7) new bytes dated as the copy they replace — a v2
+            new, old = os.stat(part), os.stat(full)          # from the same archive, the same size — would read as
+            if (new.st_size, new.st_mtime_ns) == (old.st_size, old.st_mtime_ns):    # unchanged to the disk sync:
+                os.utime(part)                               # it keeps the copy's own time instead
+        except OSError:
+            pass
         try:
             kept = self._trash_copy(full)
         except OSError:

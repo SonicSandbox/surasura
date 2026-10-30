@@ -227,6 +227,7 @@ class CurrentPage(Page):
         # W3.1a: what the rows ask for, handed to whoever does it (package F: the window's writer, the toasts, Undo).
         # Until a hook is set, nothing is written.
         self.on_done = None                         # (row, episode): the Done — watched, its toast, Undo, the finish
+        self.on_done_many = None                    # a7 (row, episodes): ⋯'s mark-many — one command, one Undo
         self.on_nudge = None                        # (row, -1 | +1): ↑ ↓
         self.on_menu = None                         # (row, global QPoint): ⋯
         self.on_journey = None                      # (row, episode): Up Next's ↗
@@ -243,6 +244,11 @@ class CurrentPage(Page):
         `✓ X watched · next: Y` with Undo, and after a Done that leaves no file unwatched the signed finish toast). A
         stone already watched is the old chip's click: the hook reads `episode.watched` and turns it back."""
         self._ask(self.on_done, row, episode)
+
+    def done_many(self, row, episodes):
+        """a7: ⋯'s *…and everything before it* / *Mark all watched* — `on_done_many(row, episodes)`: one command, one
+        toast, one Undo, then what the one Done does once nothing is left unwatched."""
+        self._ask(self.on_done_many, row, episodes)
 
     @staticmethod
     def _ask(hook, *args):

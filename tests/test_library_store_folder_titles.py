@@ -132,6 +132,58 @@ def test_path_titles_already_in_a_store_are_retitled_once_never_a_users_and_noth
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_that_is_not_its_own_folders_path_is_never_retitled(language):
+    """Only a title still named by ITS folder's path is the old naming: a work titled by another folder's path (a
+    merge kept the other's title, `<show>/Season 1` over the `<show>/S02` folder) or by a record is left as it is."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[58]
+    with store:
+        root = store.add_source(src)
+        rels = _take_seasons(store, language, data_dir, root, src, show)
+        second = _work_of(store, rels[f"{show}/S02"])
+        with store._command("test_other_title", "sync") as cmd:
+            store.conn.execute("UPDATE works SET title = ?, titles = '[]' WHERE id = ?", (f"{show}/Season 1", second))
+            store._rekey_work(second)
+            cmd.touch()
+        assert store.retitle_folder_works() == []
+        assert _works(store)[second][0] == f"{show}/Season 1"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_added_or_a_work_merged_between_the_read_and_the_write_is_kept(language, monkeypatch):
+    """The helper reads the candidates, then writes in its own command while the window writes too: what changed in
+    between stands — a show title a record added stays among the other titles (search and `_work_by_record` still find
+    it), and a work no longer of that folder (a merge moved its key) keeps its title."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[59]
+    with store:
+        root = store.add_source(src)
+        rels = _take_seasons(store, language, data_dir, root, src, show)
+        _as_before_alpha7(store, rels)
+        one, two = _work_of(store, rels[f"{show}/Season 1"]), _work_of(store, rels[f"{show}/S02"])
+        real, moved = ls.folder_title, []
+
+        def meanwhile(below):                            # the window's writes, after the helper's read
+            if not moved:
+                moved.append(1)
+                with store._command("test_meanwhile", "sync") as cmd:
+                    store.conn.execute("UPDATE works SET titles = ? WHERE id = ?", (json.dumps(["Sousou no Frieren"]), one))
+                    store.conn.execute("UPDATE works SET folder_key = ? WHERE id = ?", (ls.path_key(f"{show}/other"), two))
+                    store._rekey_work(one)
+                    cmd.touch()
+            return real(below)
+        monkeypatch.setattr(ls, "folder_title", meanwhile)
+        done = store.retitle_folder_works()
+        works = _works(store)
+        assert one in done and two not in done
+        assert works[one][:2] == (f"{show} Season 1", ["Sousou no Frieren", f"{show}/Season 1"])
+        assert store.search("Sousou no Frieren")[0] == [one]
+        assert works[two][0] == f"{show}/S02", "merged elsewhere meanwhile: its title stands"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_the_helpers_run_retitles_a_store_alpha6_left(language):
     """The retitle is the helper's (`maintain`, beside `tidy_works`), so his library gets it at the window's first
     helper run after the update, and the window reads the new titles from the feed."""

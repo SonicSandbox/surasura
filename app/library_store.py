@@ -2046,17 +2046,20 @@ class Store:
         titles (search still finds it). Never a title the user named, one with no folder or one already its folder's;
         no item, order or folder key touched, so it is done once and every later run finds nothing. One command (the
         window reads the works). Returns the ids retitled."""
-        found = [(w, folder_title(t), t, ts) for w, t, ts, fk in self.conn.execute(
-            "SELECT id, title, titles, folder_key FROM works WHERE title_by_user = 0 AND folder_key IS NOT NULL")
+        found = [(w, folder_title(t), t) for w, t, fk in self.conn.execute(
+            "SELECT id, title, folder_key FROM works WHERE title_by_user = 0 AND folder_key IS NOT NULL "
+            "AND instr(title, '/') > 0")                       # a path title has a '/': the rest is never read again
             if path_key(t) == fk and folder_title(t) != t]
         if not found:
             return []
         with self._command("retitle_folder_works", "sync") as cmd:
             done = []
-            for wid, title, old, titles in found:
-                row = self.conn.execute("SELECT title, title_by_user FROM works WHERE id = ?", (wid,)).fetchone()
-                if row is None or row[0] != old or row[1]:
-                    continue                                    # renamed or gone meanwhile: the user's stands
+            for wid, title, old in found:
+                row = self.conn.execute("SELECT title, titles, folder_key, title_by_user FROM works WHERE id = ?",
+                                        (wid,)).fetchone()
+                if row is None or row[0] != old or row[2] != path_key(old) or row[3]:
+                    continue                    # renamed, merged or gone since the read: as it is now, it stands
+                titles = row[1]
                 others = [t for t in json.loads(titles or "[]") + [old] if t != title]
                 self.conn.execute("UPDATE works SET title = ?, titles = ? WHERE id = ?",
                                   (title, _dumps(list(dict.fromkeys(others))), wid))

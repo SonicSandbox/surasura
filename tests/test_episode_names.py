@@ -459,7 +459,10 @@ def test_a_season_or_specials_folder_is_read_one_way(folder, season):
     ("Dr. Stone/Season 3 - New World", "Dr. Stone Season 3 - New World"),    # an arc after the season stays
     ("The Apothecary Diaries S01/Season 01", "The Apothecary Diaries Season 1"),   # the season said once
     ("Re Zero II/Season 2", "Re Zero Season 2"),
-    ("Show S2/Season 1", "Show S2 Season 1"),                               # two seasons said: both kept
+    ("Show S2/Season 1", "Show S2 Season 1"),
+    ("The.Apothecary.Diaries.S01/S01", "The Apothecary Diaries Season 1"),   # a release's dots: said once too
+    ("Kusuriya_no_Hitorigoto_Season_2/Season 2", "Kusuriya no Hitorigoto Season 2"),
+    ("/S01", "/S01"),                                                       # no show above it: as written                               # two seasons said: both kept
     ("Sousou no Frieren/Specials", "Sousou no Frieren Specials"),
     ("Sousou no Frieren/SPs", "Sousou no Frieren Specials"),
     ("Sousou no Frieren/OVA", "Sousou no Frieren OVA"),

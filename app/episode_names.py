@@ -306,19 +306,24 @@ def season_folder(name):
 
 def folder_title(path):
     """A title named by its folder below the tier (L2.2 05 §5.3 (4)), read by `season_folder`: a season folder is the
-    folder above it and its season, written out (`Frieren/S01` → `Frieren Season 1`, `第2期` → `Season 2`; a
-    season the folder above already says is said once: `Show S01/Season 01` → `Show Season 1`; an arc after it stays:
+    folder above it and its season, written out (`Frieren/S01` → `Frieren Season 1`, `Frieren/第2期` → `Frieren
+    Season 2`; a season the folder above already says is said once: `Show S01/Season 01`, `Show.S01/S01` → `Show
+    Season 1`; an arc after it stays:
     `Season 2 - Arc` → `… Season 2 - Arc`); a specials folder the folder above and `Specials` (`OVA`, `OAD`, `Extras`
-    keep their word). Any other path is as written (one folder: its name). Pure."""
+    keep their word). Any other path is as written (one folder: its name; nothing above it). Pure."""
     parts = (path or "").split("/")
     kind = season_folder(parts[-1]) if len(parts) > 1 else None
     if kind is None:
         return path or ""
     above = folder_title("/".join(parts[:-1]))
+    if not above.strip():
+        return path                                     # no show above it to name it with
     text = unicodedata.normalize("NFKC", parts[-1]).strip()
     if kind == "special":
         return f"{above} {_SPECIALS_WORD.get(text.casefold(), 'Specials')}"
     show, said = _season(above)
+    if said is None:                                    # `Show.S01`, `Show_Season_1`: a release's dots or underscores
+        show, said = _season(re.sub(r"[._]+", " ", above).strip())
     if said == kind and show.strip():
         above = show.rstrip(" -–~._")
     tail = (_SEASON_FOLDER.fullmatch(text).group("tail") or "").strip(" ._")

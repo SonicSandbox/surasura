@@ -555,10 +555,11 @@ class JitenWindow(ToolWindow):
         key, values = importers_view.replace_outcome(code, self._why())
         if key == "changed":
             self.say(strings.KNOWN_CHANGED)
-            self.end_write()
             self._folder = folder or self._folder         # kept by `after`, whichever of the two comes first
             if cards and self._folder:
-                self._fetched(0, cards)                   # the same cards, the numbers as they are now
+                self._fetched(0, cards)                   # the same cards, the numbers as they are now (it ends the write)
+            else:
+                self.end_write()
             return
         line = strings.JITEN_DONE if key == "done" else self._failed_line(values["why"])
         if key == "done":

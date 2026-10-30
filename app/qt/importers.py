@@ -656,7 +656,8 @@ class ExtractWindow(ToolWindow):
         self.go = _button(self, strings.EXTRACT_GO, strings.EXTRACT_GO_TIP, self.check, "primary")
         line = QHBoxLayout()
         line.addWidget(self.section)
-        line.addStretch(1)
+        self.section_line = _line(self, strings.EXTRACT_SECTION_LINE)      # a7: Current by default, said
+        line.addWidget(self.section_line, 1)
         line.addWidget(self.go)
         self.body.addLayout(line)
         self.refresh()

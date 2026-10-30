@@ -180,3 +180,15 @@ def wait_until(predicate, timeout=5.0):
         time.sleep(0.005)
     QApplication.processEvents()
     return predicate()
+
+
+def own_folder_answers(monkeypatch, tmp_path, name):
+    """a7: `own_folder.read` answering with a real folder (a non-ASCII path, as the user keeps shows) and recording
+    what each press asked it."""
+    from app.services import own_folder
+    there = tmp_path / "ユーザーの棚" / name
+    there.mkdir(parents=True)
+    asked = []
+    monkeypatch.setattr(own_folder, "read", lambda opener, data, ids=(), rels=(), folders=():
+                        asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there))
+    return str(there), asked

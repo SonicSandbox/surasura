@@ -2,6 +2,7 @@
 (every directive and flag the spec names; the uninstall list exact); the packager's defines are checked for the real
 program and a test build; when Inno Setup's compiler is on this PC, the script is compiled over a tiny program folder
 (a test build's defines only: nothing is installed here; the install / uninstall proof is the row's own run)."""
+import ntpath
 import os
 import re
 import subprocess
@@ -156,13 +157,33 @@ def test_the_uninstall_forgets_the_tools_entry_only_when_it_names_this_installs_
     from app import path_utils, tools_entry
     code = "\n".join(_sections()["code"])
     forget = code[code.index("procedure ForgetToolsEntry"):code.index("procedure CurUninstallStepChanged")]
-    tools = os.path.join(r"{localappdata}", path_utils.VENDOR, "tools", tools_entry.TOOL + ".json")
+    tools = ntpath.join(r"{localappdata}", path_utils.VENDOR, "tools", tools_entry.TOOL + ".json")
     assert f"Entry := ExpandConstant('{tools}');" in forget
     assert r"Cli := ExpandConstant('{app}\surasura-cli.exe');" in forget
     assert "StringChangeEx(Cli, '\\', '\\\\', True);" in forget
     assert "Pos('\"' + AnsiLowercase(Cli) + '\"', AnsiLowercase(UTF8Decode(Raw))) > 0" in forget
     step = code[code.index("procedure CurUninstallStepChanged"):]
     assert step.index("if CurUninstallStep = usPostUninstall then\nForgetToolsEntry;") < step.index("UninstallSilent")
+
+
+def test_the_uninstallers_search_finds_the_bytes_tools_entry_writes_and_never_a_sibling_folder(tmp_path, monkeypatch):
+    # The uninstaller's match above, done the script's way on what tools_entry really writes: a profile folder in
+    # Japanese and mixed case is found (UTF-8, never \u); a test build's folder beside it (Surasura-test) never is.
+    # A change to tools_entry's format (ensure_ascii, forward slashes) fails here, not in a learner's uninstall.
+    from app import tools_entry
+    programs = "C:\\Users\\ミカエル\\AppData\\Local\\Programs"
+    cli = programs + "\\Surasura\\surasura-cli.exe"
+    monkeypatch.setenv("SURASURA_TOOLS_CLI", cli)
+    monkeypatch.setenv("HOUSEKI_TOOLS_DIR", str(tmp_path))
+    assert tools_entry.refresh({}) is True
+    with open(tmp_path / (tools_entry.TOOL + ".json"), "rb") as f:
+        text = f.read().decode("utf-8").lower()             # UTF8Decode, AnsiLowercase
+
+    def found(app):                                         # StringChangeEx(Cli, '\', '\\'), then Pos('"' + Cli + '"')
+        return ('"' + (app + "\\surasura-cli.exe").replace("\\", "\\\\").lower() + '"') in text
+
+    assert found(programs + "\\Surasura") and found(programs.upper() + "\\SURASURA")
+    assert not found(programs + "\\Surasura-test") and not found(programs + "\\Sura")
 
 
 def test_an_upgrade_keeps_library_json_unless_a_library_is_given():

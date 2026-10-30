@@ -117,8 +117,9 @@ def test_a_show_split_between_2x_tiers_keeps_its_split_whichever_folder_is_picke
     assert len(tiers["goal"]) == 2 and len(tiers["now"] + tiers["soon"]) == 1
 
 
+@pytest.mark.parametrize("first", [True, ls.SORT])           # setup's look, plain or for the sort screen
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_2x_graduated_folder_read_at_setup_lands_in_finished_dated_earlier(language):
+def test_a_2x_graduated_folder_read_at_setup_lands_in_finished_dated_earlier(language, first):
     """a7 (Sonic 2026-10-30): a show he finished in 2.x lands in Finished on setup's first look, never in Current to
     be finished again — dated *Earlier* (no date), as every title finished before Surasura (the Finished importer, the
     2.x migration), never this month's top of Finished; the same folder read by a later look (not setup's) is a new
@@ -132,7 +133,7 @@ def test_a_2x_graduated_folder_read_at_setup_lands_in_finished_dated_earlier(lan
     with store:
         for tier_folder in ("Graduated", "HighPriority"):
             root = store.add_source(os.path.join(data, tier_folder))
-            _look(store, language, root, first=True)
+            _look(store, language, root, first=first)
         finished = [(i, e["title"]) for i, e, _a in store.ordered("graduated")]
         tiers = _tiers(store)
         dates = [r[0] for r in store.conn.execute(

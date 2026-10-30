@@ -245,19 +245,34 @@ def test_open_its_folder_opens_the_folder_its_files_are_in(fin, monkeypatch):
     opened = []
     from app.qt import screens
     monkeypatch.setattr(screens, "open_with_system", opened.append)     # (a folder: the system's opener, a worker)
-    folder = finished.folder_of("ja", row)
+    from app import path_utils
+    folder = os.path.dirname(os.path.join(path_utils.get_data_path("ja"), *row.episodes[0].rel_path.split("/")))
     os.makedirs(folder, exist_ok=True)
-    win.finished.menu_pick(row, "folder")
+    win.finished.menu_pick(row, "folder")                # no original (a stand-in's): the copy's folder (a7)
     assert wait_until(lambda: opened == [folder], 3)
     assert folder.endswith(os.path.dirname(row.episodes[0].rel_path).replace("/", os.sep))
 
 
-def test_open_its_folder_says_so_when_the_folder_is_gone(fin, monkeypatch):
+def test_open_its_folder_opens_the_nearest_folder_there_when_its_own_is_gone(fin, monkeypatch):
+    """a7 (DIAGNOSIS 7): a gone folder opens the nearest one above it inside the library — never nothing; only a
+    library with no folder at all says so."""
     _seed, win, _w, _e = fin()
     row = finished_rows(win)[1][1]
     opened = []
+    from app import path_utils
     from app.qt import screens
+    from app.services import own_folder
     monkeypatch.setattr(screens, "open_with_system", opened.append)     # (a folder: the system's opener, a worker)
+    data = path_utils.get_data_path("ja")
+    rels = [e.rel_path for e in row.episodes if e.rel_path]
+    os.makedirs(data, exist_ok=True)                    # the library's folder (always there in the app)
+    assert not os.path.isdir(os.path.dirname(os.path.join(data, *rels[0].split("/"))))
+    win.finished.menu_pick(row, "folder")
+    assert wait_until(lambda: opened == [own_folder.library_side(data, rels)], 3)
+    assert opened[0].startswith(data)
+    opened.clear()
+    monkeypatch.setattr(own_folder, "read", lambda *_a, **_k: os.path.join(data, "ない"))   # none at all: said
+    assert wait_until(lambda: not win.presses.any_live(), 3)
     win.finished.menu_pick(row, "folder")
     assert wait_until(lambda: win.bar_line.full() == strings.FIN_NO_FOLDER.format(title=row.title), 3)
     assert opened == []
@@ -766,3 +781,20 @@ def test_LM11b_H_C1_ctrl_or_shift_on_a_finished_rows_part_never_acts(fin, mods):
     assert calls(writer) == [] and menus == [] and plays == [] and not lst.picked_rows
     click(lst, part(lst, i, "put-back")[1].center())                  # a plain click still acts
     assert calls(writer, "put_back")
+
+
+from tests.qt.conftest import own_folder_answers as _own_folder_answers  # noqa: E402 (a7)
+
+
+def test_open_its_folder_opens_the_shows_own_folder_on_a_worker(fin, monkeypatch, tmp_path):
+    """a7 (DIAGNOSIS 7): Finished's *Open its folder* (and Current's: the same `open_folder_of`) opens where the show
+    is kept (`own_folder`, every episode's id asked at once), never Surasura's copy."""
+    _seed, win, _w, _e = fin()
+    row = finished_rows(win)[0][1]
+    opened = []
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
+    there, asked = _own_folder_answers(monkeypatch, tmp_path, row.title)
+    win.finished.menu_pick(row, "folder")
+    assert wait_until(lambda: opened == [there], 3)
+    assert asked == [(tuple(e.id for e in row.episodes), tuple(e.rel_path for e in row.episodes if e.rel_path), ())]

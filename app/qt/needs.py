@@ -230,7 +230,7 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
            "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs",
-                     "open_anki", "find_book")
+                     "open_anki", "find_book", "choose_video", "choose_file")      # a7: a picker's start looked for
 
 
 class NeedsCards(QWidget):
@@ -1047,25 +1047,59 @@ class NeedsYou(QObject):
         self.found.pop(entry.key, None)
         self._paint()
 
-    def _do_choose_video(self, entry, line):
-        folder = os.path.join(self._data(), *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
-        path = self.pick_file(strings.NEEDS_CHOOSE_VIDEO_TITLE.format(label=line.label), folder)
-        if not path:
+    def _start_then(self, name, entry, find, pick, line=None):
+        """a7 (DIAGNOSIS 7): where a picker starts, worked out on a worker (`find()`: a drive may be slow or gone) under
+        one press — `name`'s arc turns from the click, a second click meanwhile does nothing (A7S-3) — then
+        `pick(folder)` here, only on the window and language it was pressed in (ids repeat across stores: A4B-5)."""
+        language = getattr(self.win, "language", None)
+        p = qpress.begin(self._control(name, entry, line), self._press_key(name, entry, line and line.key),
+                         win=self.win)
+        if p is None:
             return
-        writer = self.win.services.writer
-        self._give(line.label, (line.item_id,), lambda t: writer.link_video(line.item_id, path, label=t),
-                   toast_it=False)
-        self.win.toasts.show(strings.NEEDS_LINKING_ONE.format(label=line.label))
+
+        def then(folder):
+            if p.live():
+                qpress.end(p, self.win)
+            if self._alive() and getattr(self.win, "language", None) == language:
+                pick(folder)
+        bridge.run_in_worker(find, then=then, failed=lambda _info: then(self._data()))
+
+    def _do_choose_video(self, entry, line):
+        """*Choose file…* for a video: the picker starts in the content's own folder (`own_folder`, a7: where its
+        subtitles are read from — a video is linked wherever it is), else the nearest one above, else the copy's."""
+        from app.services import own_folder
+        data, opener = self._data(), own_folder.opener_of(self.win)
+        ids = (line.item_id,) + tuple(ln.item_id for ln in entry.lines if ln.item_id != line.item_id)
+        folders = ((entry.data or {}).get("folder", ""),)
+
+        def pick(folder):
+            path = self.pick_file(strings.NEEDS_CHOOSE_VIDEO_TITLE.format(label=line.label), folder)
+            if not path:
+                return
+            writer = self.win.services.writer
+            self._give(line.label, (line.item_id,), lambda t: writer.link_video(line.item_id, path, label=t),
+                       toast_it=False)
+            self.win.toasts.show(strings.NEEDS_LINKING_ONE.format(label=line.label))
+        self._start_then("choose_video", entry, lambda: own_folder.read(opener, data, ids, (line.rel_path,), folders),
+                         pick, line)
 
     # a file gone: point it at its file (relink), keep its words, or remove it
     def _do_choose_file(self, entry, line):
-        folder = os.path.join(self._data(), *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
-        path = self.pick_file(strings.NEEDS_CHOOSE_FILE_TITLE.format(label=line.label), folder)
-        if not path:
-            return
-        writer = self.win.services.writer
-        self._give(strings.NEEDS_RELINKED.format(label=line.label), (line.item_id,),
-                   lambda t: writer.relink(line.item_id, path, label=t))
+        """*Choose file…* for a file gone: the picker starts at its copy's folder, else the nearest one above it in the
+        library (`own_folder.library_side`: the store takes only a file inside the library, `Store.relink`)."""
+        from app.services import own_folder
+        data = self._data()
+        folders = ((entry.data or {}).get("folder", ""),)
+
+        def pick(folder):
+            path = self.pick_file(strings.NEEDS_CHOOSE_FILE_TITLE.format(label=line.label), folder)
+            if not path:
+                return
+            writer = self.win.services.writer
+            self._give(strings.NEEDS_RELINKED.format(label=line.label), (line.item_id,),
+                       lambda t: writer.relink(line.item_id, path, label=t))
+        self._start_then("choose_file", entry, lambda: own_folder.library_side(data, (line.rel_path,), folders), pick,
+                         line)
 
     def _do_choose_folder(self, entry, _line):
         """*Choose a folder…*: one press from the click to the toast (round 8 row 45) — its arc turns while the folder
@@ -1077,7 +1111,6 @@ class NeedsYou(QObject):
         it was pressed in: closed, or another library shown since (ids repeat across stores), nothing is given
         (A4B-5)."""
         data = self._data()
-        start = os.path.join(data, *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
         lines = tuple(entry.lines)
         tree = entry.kind in (service.FILES_FOLDER, service.LIBRARY_GONE)
         language = getattr(self.win, "language", None)
@@ -1096,7 +1129,7 @@ class NeedsYou(QObject):
             if not here():
                 ended()
                 return
-            folder = self.pick_folder(strings.NEEDS_CHOOSE_FOLDER_TITLE, start if there else data)
+            folder = self.pick_folder(strings.NEEDS_CHOOSE_FOLDER_TITLE, there or data)
             if not folder:
                 ended()
                 return
@@ -1113,7 +1146,10 @@ class NeedsYou(QObject):
                 self._failed(info)
             bridge.run_in_worker(_matched_inside, folder, (entry.data or {}).get("folder", ""), lines, tree, data,
                                  then=matched, failed=broke)
-        bridge.run_in_worker(os.path.isdir, start, then=pick, failed=lambda _info: pick(False))
+        # a7: the copy's folder, else the nearest one above it in the library (only a file inside it is taken)
+        from app.services import own_folder
+        bridge.run_in_worker(own_folder.library_side, data, (), ((entry.data or {}).get("folder", ""),),
+                             then=pick, failed=lambda _info: pick(None))
 
     def _relink_many(self, found, n, folder, tree):
         """`found` = (the pairs matched inside the library folder, how many more were matched outside it): every one
@@ -1282,16 +1318,21 @@ class NeedsYou(QObject):
         picked at once (looked up on a worker: its sha256 against the library's books). Any other opens + Add's own
         door (Extract) with it, and the audiobook joins it once Extract has added THAT file (`on_added`, keyed by its
         path: another job's book never). Closed before it ends: the book is in the library and the card's list holds
-        it."""
-        path = self.pick_file(strings.NEEDS_FIND_FILE_TITLE.format(audio=entry.data.get("title") or ""), "")
-        if not path or not path.lower().endswith(".epub"):
-            if path:
-                self._say(strings.NEEDS_FIND_NOT_EPUB)
-            return
+        it. The picker starts in the audiobook's own folder (`own_folder`, a7: a book often sits beside it)."""
+        from app.services import own_folder
         item_id = entry.data["item_id"]
-        read = self.read_books
-        self._press("find_book", entry, lambda: _held_book(read(item_id), path),
-                    then=lambda held: self._held_or_extract(entry, path, held), goes=False)
+        data, opener = self._data(), own_folder.opener_of(self.win)
+
+        def pick(folder):
+            path = self.pick_file(strings.NEEDS_FIND_FILE_TITLE.format(audio=entry.data.get("title") or ""), folder)
+            if not path or not path.lower().endswith(".epub"):
+                if path:
+                    self._say(strings.NEEDS_FIND_NOT_EPUB)
+                return
+            read = self.read_books
+            self._press("find_book", entry, lambda: _held_book(read(item_id), path),
+                        then=lambda held: self._held_or_extract(entry, path, held), goes=False)
+        self._start_then("find_book", entry, lambda: own_folder.read(opener, data, (item_id,)), pick)
 
     def _held_or_extract(self, entry, path, held):
         if not self._alive():

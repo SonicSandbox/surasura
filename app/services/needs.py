@@ -198,8 +198,8 @@ STRINGS = {
     "first_say": "Your shows came in from your folders without cards: Surasura asks before it makes any.",
     "known_title": "You'd already {states} {n} cards in Anki: mark their words known?",
     "known_title_one": "You'd already {states} a card in Anki: mark its word known?",
-    "known_say": "Count as known in Anki (Settings › Anki) found them there when it first looked, so it asks once. "
-                 "Every card you {states} from now on counts by itself.",
+    "known_say": "Count as known in Anki (Settings › Known words) found them there when it first looked, so it asks "
+                 "once. Every card you {states} from now on counts by itself.",
     # Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the backlog
     "behind_cards": "Your {n:,} new cards", "behind_cards_one": "Your new card",
     "behind_cards_some": "{n:,} of your new cards",

@@ -653,7 +653,7 @@ DONE_MOVE_SHOW_FINISHED_TIP = "Move {show}'s {n} files to Finished, under its ow
 MENU_NAME = "What you can do with {title}"
 MENU_ITEMS = {
     "up-next": ("Up next", "Make it the next thing you watch or read"),
-    "soon": ("Soon", "Move it to Soon: next in line, after what's in NOW"),
+    "soon": ("Soon", "Move it to Soon: next in line in Current, after what's at its top"),
     "goal": ("Goal", "Move it to Goal: someday, in no order"),
     "finished": ("Finished", "Move it to Finished: you're done with it"),
     "journey": ("See it in your journey", "Open your journey"),                     # JO-2: short
@@ -1001,6 +1001,7 @@ EXTRACT_UNDERSTAND = "I understand"
 EXTRACT_UNDERSTAND_TIP = ("Only use an Anki deck if it is 100 % immersion content: otherwise your list's frequencies "
                           "go wrong\n• It's an alternative to adding subtitles or a visual novel's text")
 EXTRACT_SECTION_NAME = "The section the parts go to"
+EXTRACT_SECTION_LINE = "The parts go into Current unless you pick another section"     # a7 (DIAGNOSIS 2)
 EXTRACT_SECTIONS = {"now": "Current", "soon": "Soon", "goal": "Goal"}
 EXTRACT_GO = "Extract"
 EXTRACT_GO_TIP = "Split the file into parts and add them to the chosen section"
@@ -1061,8 +1062,9 @@ ANKI_RESOLVED_JOIN = "   ·   "
 ANKI_FIELDS_JOIN = " + "
 ANKI_SKIPPED = "{model} → (no such field — skipped)"
 ANKI_SUSPENDED = "Include suspended cards"
-ANKI_SUSPENDED_TIP = ("Count cards you've suspended as known. Off by default — suspended cards are often ones you "
-                      "struggled with")
+ANKI_SUSPENDED_TIP = ("Cards you studied and then suspended count as known. Off by default — a suspended card is "
+                      "often one you struggled with. New cards you suspend count only with Count as known in Anki, in "
+                      "Settings › Known words")                                    # a7 (A7S-1/8): Settings' words
 ANKI_AUTO = "Sync automatically when Anki is running"
 ANKI_AUTO_TIP = "When Anki is open, Surasura adds new known words on its own — at start-up and when you come back to it"
 ANKI_GENERATE = "Generate when Anki adds known words"

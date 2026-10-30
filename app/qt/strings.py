@@ -103,7 +103,7 @@ ITEM_MENU = {
     "folder": ("Open its folder", "Open the folder its files are in"),
     "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
     # a7 (DIAGNOSIS 11): every file not watched yet, marked at once ({n}: how many)
-    "watched-all": ("Mark all watched", "Mark its {n} files not watched yet as watched\n"
+    "watched-all": ("Mark all watched", "Mark every file of it watched: {n} not watched yet\n"
                                         "• One Undo takes them all back"),
     # LM11b G4: on what Ctrl+click picked ({n}: the rows and episodes picked)
     "group": ("Group…", "Put these {n} into one row in Current\n• Undo takes them apart again"),
@@ -632,6 +632,7 @@ LIBRARY_NOT_OPENED = "Your library couldn't be opened. Open the logs folder (the
 DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
 DONE_ONE = "✓ {title} {ep} watched"
 DONE_MANY = "✓ {title}: {n} marked watched"        # a7: ⋯'s mark-many, one toast, one Undo
+DONE_MANY_LEFT = "✓ {title}: {n} marked watched — their words left your list."   # ... W-1's first mark (DONE_LEFT)
 DONE_UNDONE = "{title} {ep} marked not watched"
 # --- W-1 (Sonic 2026-10-22, Q4): while *Keep studying watched episodes* is off — the first mark (once per library), the
 # un-mark

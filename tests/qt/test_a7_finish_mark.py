@@ -33,10 +33,12 @@ _CHAPTER = {"ja": "第{n}章", "zh": "第{n}章"}
 
 
 def _show(language, src, ages):
-    """A show folder in the source: one subtitle per episode, episode k's original dated `ages[k]` days back."""
+    """A show folder in the source: one subtitle per episode, episode k's original dated `ages[k]` days back (its
+    last read today: a copy is dated by when its original was written, never read)."""
     show = _SHOW[language]
     for k, age in enumerate(ages):
-        _write(os.path.join(src, show, f"{show} - {k + 1:02d}.srt"), _text(language, k + 1), age=age * DAY)
+        path = _write(os.path.join(src, show, f"{show} - {k + 1:02d}.srt"), _text(language, k + 1), age=age * DAY)
+        os.utime(path, ns=(time.time_ns(), os.stat(path).st_mtime_ns))
     return show
 
 
@@ -163,7 +165,7 @@ def test_a_30_chapter_book_marked_up_to_chapter_20_in_one_command_and_one_undo_t
     ids = [e.id for e in row.episodes]
     assert wait_until(lambda: _watched(store, ids) == ids[:20], 10)
     assert store.versions()["state_version"] == v + 1, "ONE command for the twenty"
-    assert win.toasts.card.base == strings.DONE_MANY.format(title=row.title, n=20)
+    assert win.toasts.card.base == strings.DONE_MANY_LEFT.format(title=row.title, n=20)   # the library's first mark
     win.toasts.card.buttons[0].click()                                 # its Undo
     assert wait_until(lambda: _watched(store, ids) == [], 10), "one Undo takes all twenty back"
     settle()
@@ -321,3 +323,85 @@ def test_done_many_finishing_one_show_of_a_group_offers_that_shows_finish(world)
     card = win.toasts.card
     assert card.base == strings.DONE_SHOW_IN_GROUP.format(show=SHOW_A, n=3)
     assert _shown_buttons(card)[-1] == strings.DONE_MOVE_SHOW_FINISHED.format(show=SHOW_A)
+
+
+# --- the review round (reviews/A7K-register.md) ---------------------------------------------------------------------- #
+def test_done_many_as_the_librarys_first_mark_says_their_words_left_the_list_once(world):
+    """W-1's one-time hint is the mark-many's too: twenty chapters leaving the list say so, with *Keep studying them*."""
+    seed, win, writer = world(hint_seen=False)
+    i = next(n for n, r in enumerate(rows_of(win)) if len(r.episodes) >= 6 and not any(e.watched for e in r.episodes))
+    row = rows_of(win)[i]
+    win.moves.done_many(row, row.episodes[:4])
+    card = win.toasts.card
+    assert card.base == strings.DONE_MANY_LEFT.format(title=row.title, n=4)
+    assert _shown_buttons(card)[-2:] == [strings.DONE_KEEP, strings.DONE_OK]
+    assert win.services.settings.get().get("hints_seen")
+
+
+def test_done_many_reads_the_row_as_it_is_now_a_file_not_in_it_is_left_out(world):
+    """A menu left open while the row changed: its payload names a file the row no longer holds — never marked."""
+    seed, win, writer = world()
+    rs = rows_of(win)
+    i = next(n for n, r in enumerate(rs) if len(r.episodes) >= 6 and not any(e.watched for e in r.episodes))
+    row, other = rs[i], next(r for r in rs if r.key != rs[i].key and r.episodes)
+    win.moves.done_many(row, list(row.episodes[:3]) + [other.episodes[0]])
+    assert calls(writer, "set_watched") == [("set_watched", [e.id for e in row.episodes[:3]], {"on": True})]
+
+
+def test_done_many_finishing_an_earlier_show_of_a_group_offers_it_while_a_later_show_still_waits(world):
+    """SHOW_A's three and SHOW_B's first marked at once: SHOW_A is all watched, SHOW_B isn't — SHOW_A's finish is
+    offered (the last mark alone is SHOW_B's)."""
+    seed, win, writer = world(apply=False)
+    row = _show_group(win, a_watched=0, b_watched=0)
+    a = [e for e in row.episodes if e.show == SHOW_A]
+    b = [e for e in row.episodes if e.show != SHOW_A]
+    win.moves.done_many(row, a + b[:1])
+    assert win.toasts.card.base == strings.DONE_SHOW_IN_GROUP.format(show=SHOW_A, n=3)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_v2_of_the_same_size_and_date_replacing_the_copy_never_reads_as_unchanged(language):
+    """A release group's v2 from the same archive: the same size, the same date as v1 — copied over v1's copy, it
+    takes the copy's own time, so the store's disk sync (size + time) still sees the copy changed."""
+    from tests.test_sources_scan import _settle
+    show, tag = _SHOW[language], language
+
+    def v1_only(s):
+        _write(os.path.join(s, show, f"[Grp] {show} - 01.{tag}.srt"), _text(language, 1, "あ"), age=3 * DAY)
+    store, src = _first_look(language, v1_only)
+    with store:
+        v1 = os.path.join(src, show, f"[Grp] {show} - 01.{tag}.srt")
+        copy = os.path.join(store.data_dir, "Library", show, os.path.basename(v1))
+        before = os.stat(copy)
+        assert before.st_mtime_ns == os.stat(v1).st_mtime_ns
+        v2 = _write(os.path.join(src, show, f"[Grp] {show} - 01v2.{tag}.srt"), _text(language, 1, "い"), age=0)
+        os.utime(v2, ns=(before.st_mtime_ns, before.st_mtime_ns))
+        assert os.path.getsize(v2) == before.st_size
+        _settle(src)
+        assert _look(store, language, store.a7_root)["recopied"] == 1
+        after = os.stat(copy)
+        assert (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns)
+
+
+def test_a_date_ahead_of_the_clock_tells_nothing_and_a_lone_premiere_is_still_airing():
+    """A file dated next month (a wrong clock) never holds a finished season for weeks; one numbered episode of a show
+    alone may be its premiere's week (A7K-5): asked, never finished by itself — a film or a video with no number is."""
+    now = time.time()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime(now - 30 * DAY))
+    blank = view_rows.Episode._make([None] * len(view_rows.Episode._fields))
+    eps = [blank._replace(id=k, added=stamp, disk=int((now - 40 * DAY) * 1e9)) for k in range(3)]
+    eps.append(blank._replace(id=9, added=stamp, disk=int((now + 30 * DAY) * 1e9)))
+    assert not view_rows.still_arriving(eps, now)
+    one = blank._replace(id=1, number=1, media_word="video", added=stamp)
+    assert view_rows.still_arriving([one], now)
+    assert not view_rows.still_arriving([one._replace(number=None)], now), "a film"
+    assert not view_rows.still_arriving([one._replace(media_word="text")], now), "a book's one part"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_premiere_set_up_alone_by_the_first_look_is_asked_never_finished(language):
+    store, _src = _first_look(language, lambda s: _show(language, s, [1]))
+    with store:
+        view = _view(store, language)
+        row = _row(view, _SHOW[language])
+        assert drag.when_done(view, row, time.time()) == ("offer",)

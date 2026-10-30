@@ -3161,6 +3161,12 @@ class _Look:
         if sha == old_sha:
             _drop(part)
             return "same", sha
+        try:                                                 # (a7) new bytes dated as the copy they replace — a v2
+            new, old = os.stat(part), os.stat(full)          # from the same archive, the same size — would read as
+            if (new.st_size, new.st_mtime_ns) == (old.st_size, old.st_mtime_ns):    # unchanged to the disk sync:
+                os.utime(part)                               # it keeps the copy's own time instead
+        except OSError:
+            pass
         try:
             kept = self._trash_copy(full)
         except OSError:

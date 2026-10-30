@@ -428,7 +428,8 @@ def still_arriving(episodes, now=None, airing=None):
     the last `ARRIVING_RECENT_S`, by EITHER clock: when the store took each file in (`added`), or the file's own date
     (`disk`: the original's — a setup's first look takes a whole show in at one time, so only the files' dates show a
     weekly show as weekly). Files that came in together by both clocks (a season downloaded at once) never are; nor
-    one file alone. A file with no arrival time (a cache from before) can't tell: True (the offer asks).
+    one file alone — but one numbered episode of a show alone is (a premiere's week: A7K-5, PROVISIONAL), never a film
+    or a video with no number. A file with no arrival time (a cache from before) can't tell: True (the offer asks).
     `airing`: what an airing source says of the title — True still airing (it may be arriving, whatever the files
     say), False done airing (the files' times no longer hold it back), None nothing known: 3.0 asks no airing source
     (AniList's status waits on Sonic's word for that network use; it would come in here), the files' times decide."""
@@ -438,7 +439,7 @@ def still_arriving(episodes, now=None, airing=None):
     if None in stamps:
         return True
     if len(stamps) < 2:
-        return False
+        return len(episodes) == 1 and episodes[0].number is not None and             getattr(episodes[0], "media_word", None) == "video"
     before, newest = (_seconds(t) for t in sorted(stamps)[-2:])     # the store's stamps sort as text: two parsed
     if before is None or newest is None:
         return True
@@ -446,6 +447,7 @@ def still_arriving(episodes, now=None, airing=None):
     if _came_alone((before, newest), now):
         return True
     disk = [e.disk / 1e9 for e in episodes if getattr(e, "disk", None) is not None]
+    disk = [t for t in disk if t <= now + ARRIVING_ALONE_S]          # a date ahead of the clock tells nothing
     return len(disk) >= 2 and _came_alone(disk, now)
 
 

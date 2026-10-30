@@ -3221,8 +3221,8 @@ class ShellWindow(QMainWindow):
         library, writer = self.services.library, self.services.writer
         if library is None or writer is None:
             return None
-        return qcovers.start_scan(getattr(library, "opener", None), self.language, writer, progress=progress,
-                                  then=then)
+        listen = {k: v for k, v in (("progress", progress), ("then", then)) if v is not None}
+        return qcovers.start_scan(getattr(library, "opener", None), self.language, writer, **listen)
         # --- end W3.2 Q6
 
     def showEvent(self, event):

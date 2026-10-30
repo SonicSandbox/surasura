@@ -153,7 +153,7 @@ class Mark(motion.Spinner):
         self._parts = None
         self.paints = 0                 # paint events (the tests' frame budget)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-        self.setAccessibleName("Surasura")
+        self.setAccessibleName(S.LOAD_MARK_NAME)
         self.set_running(True)
 
     def _cut(self):

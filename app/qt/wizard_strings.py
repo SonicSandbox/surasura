@@ -288,6 +288,7 @@ NOT_STARTED = "Your list couldn't start: press Generate at the top when you're r
 
 # --- after page 3: the load screen and the sort screen (Sonic 2026-10-30) ------------------------------------------- #
 LOAD_NAME = "Getting your library ready"
+LOAD_MARK_NAME = "Surasura"
 LOAD_SCAN = "Reading your library · {episodes} in {shows}"
 LOAD_COPY = "Bringing your files in · {done:,} of {total:,}"
 LOAD_WAIT = "Waiting for your library…"

@@ -97,6 +97,16 @@ STAND_ASIDE = {
     "weights": "Your tier weights aren't whole numbers — Generate re-orders Anki",
 }
 STAND_ASIDE_ELSE = "Generate re-orders Anki this time"
+# D7 (`unavailable`): why the preview can't run with these settings
+ONE_DECK = "It needs one deck: choose it in 順's deck list (never All decks)."
+NOT_COVERAGE = "Not with Coverage selection: there the list's words depend on the order, so only Generate can tell."
+NOT_I_PLUS_ONE = "Not with 'Only i+1': there the list's words depend on the order, so only Generate can tell."
+# a7 (Sonic 2026-10-29: yellow only with a decision): Only i+1 or Coverage standing the host aside is a fact, said as one
+MODE_NAMES = {NOT_COVERAGE: "Coverage %", NOT_I_PLUS_ONE: "Only i+1 sentences"}
+AFTER_GENERATE = ("Anki is re-ordered after each Generate, not as you move: with {mode} on, your list's words depend on "
+                  "its order")
+NOT_BY_ITSELF = ("Anki isn't re-ordered as you move: with {mode} on, your list's words depend on its order — 順 "
+                 "re-orders it when you run it")
 
 
 class GivesUp(str):
@@ -109,10 +119,20 @@ class GivesUp(str):
     __slots__ = ()
 
 
+class Fails(GivesUp):
+    """a7 (Sonic 2026-10-29: yellow only with a decision): a line that gives up on a fault — the host's job stopped on
+    an error, a refusal it never retries. A press waiting ends failed with it, as with any line that gives up; the phase
+    strip shows it red, never amber (a fault is no decision). Said as that kind (`Host._tell(line, fails=True)`) and
+    carried over the pipe the same way."""
+    __slots__ = ()
+
+
 class InJunban(GivesUp):
     """Alpha 3 (the lead's ruling on the intent keeper's IKA3-1): a line that gives up whose fix is in 順's own window —
-    the unfinished reorder's Undo, a deck to pick. The phase strip's 順 press opens that window for it (else Junban's
-    settings). Said as that kind (`Host._tell(line, in_junban=True)`) and carried over the pipe the same way."""
+    the unfinished reorder's Undo, a deck to pick. The phase strip's 順 press opens that window for it, the control
+    highlighted (else Junban's settings). Said as that kind (`Host._tell(line, in_junban=True)`) and carried over the
+    pipe the same way. a7: the one kind of line that makes 順 amber — every other line that gives up (Anki closed, a
+    Generate to press, Only i+1 or Coverage) is said in the hover with nothing to decide, and a `Fails` is red."""
     __slots__ = ()
 
 
@@ -159,11 +179,11 @@ def unavailable(settings):
     settings = settings or {}
     scope = str(settings.get("junban_scope") or "deck").strip().lower()
     if scope != "deck" or not str(settings.get("junban_deck") or "").strip():
-        return "It needs one deck: choose it in 順's deck list (never All decks)."
+        return ONE_DECK
     if settings.get("strategy") == "coverage":
-        return "Not with Coverage selection: there the list's words depend on the order, so only Generate can tell."
+        return NOT_COVERAGE
     if settings.get("only_i_plus_one"):
-        return "Not with 'Only i+1': there the list's words depend on the order, so only Generate can tell."
+        return NOT_I_PLUS_ONE
     deck = deck_set_aside(settings)
     if deck:
         now = str(settings.get("junban_deck") or "").strip()
@@ -231,6 +251,30 @@ def stands_aside(settings, language):
     why — D29 off, Junban off or absent, D7 (`unavailable`), the (language, deck) pair not recorded — in that order.
     `junban_replan_preview` (2.x's box) is never read: on 3.0, D29 is the one switch."""
     return _stand_aside(settings, language)[0]
+
+
+def aside_line(settings, language):
+    """a7 (Sonic 2026-10-29: "If yellow i would expect it to let me go somewhere to make a decision that is
+    highlighted. If no decision it shouldn't be yellow but something else."): `stands_aside`'s reason as the bar and
+    the phase strip say it, or None (the host may run). `OFF` for the user's own choices (D29 off, 順 off or absent);
+    `InJunban` where the fix is a deck to pick in 順's window (D7's one deck, the deck not recorded); Only i+1 or
+    Coverage a fact (a plain `GivesUp`): Generate's own 順 run re-orders Anki when it is switched on with a recorded
+    deck (`automation.reorders`' rule) — else 順 does when the user runs it; with that switch on and no deck recorded,
+    the deck to pick in 順 is the decision (Generate can't re-order without it). Asked on the host's worker."""
+    settings = settings or {}
+    why, deck = _stand_aside(settings, language)
+    if why is None:
+        return None
+    if deck or why == ONE_DECK:
+        return InJunban(why)
+    mode = MODE_NAMES.get(why)
+    if mode is None:
+        return ends_with(why)
+    if settings.get("junban_auto_reorder") is not True:
+        return GivesUp(NOT_BY_ITSELF.format(mode=mode))
+    if recorded_deck(settings, language) is None:
+        return InJunban(_deck_line(settings, language))
+    return GivesUp(AFTER_GENERATE.format(mode=mode))
 
 
 def automation_on(settings, language):
@@ -419,7 +463,7 @@ class Host:
                     try:
                         self._warm() if kind == "warm" else self._job(kind)
                     except Exception as e:          # a background job must never take the window down
-                        self._tell(f"Re-ordering as you move stopped: {e}", gives_up=True)
+                        self._tell(f"Re-ordering as you move stopped: {e}", fails=True)
             self._sync_step(force="sync-now" in run)
             if self._done_at is not None and time.monotonic() >= self._done_at:
                 self._done_at = None
@@ -431,10 +475,10 @@ class Host:
 
     # --- pieces ---------------------------------------------------------------------------------------------- #
 
-    def _tell(self, line, gives_up=False, in_junban=False):
+    def _tell(self, line, gives_up=False, in_junban=False, fails=False):
         """The bar's line; `gives_up`: one that leaves the re-order it owes to the user (`GivesUp`); `in_junban`: one
-        of those whose fix is in 順's window (`InJunban`)."""
-        line = InJunban(line) if in_junban else GivesUp(line) if gives_up else line
+        of those whose fix is in 順's window (`InJunban`); `fails`: one of those on a fault (`Fails`)."""
+        line = InJunban(line) if in_junban else Fails(line) if fails else GivesUp(line) if gives_up else line
         self.last = line
         try:
             self._say(line)
@@ -756,10 +800,11 @@ class Host:
         finally:
             self._working(False)
         self._sync_at = self._due_sync(settings)
-        if report.get("stands_aside"):
+        if report.get("stands_aside") or report.get("one_deck"):
             # FT C1: a put-back cleared this deck while the job waited for the lock — nothing written; the next job's
-            # gate reads the file and stands aside too. Said, never retried: picking the deck in 順 is the user's.
-            self._tell((report.get("problems") or [""])[0], gives_up=True)
+            # gate reads the file and stands aside too. Said, never retried: picking the deck in 順 is the user's. So
+            # is All decks met by the job itself (`one_deck`: the scope changed after the gate was asked).
+            self._tell((report.get("problems") or [""])[0], in_junban=True)
             return None
         if report.get("busy"):
             if not self._cancel.is_set():
@@ -779,7 +824,7 @@ class Host:
             problems = report.get("problems") or ["it could not finish"]
             again = bool(written or report.get("failures") or report.get("anki_error") == "offline")
             self._tell(f"Anki re-ordered {written:,} cards, then stopped: {problems[0]} — the rest at the next re-order"
-                       if written else f"Anki not re-ordered: {problems[0]}", gives_up=not again)
+                       if written else f"Anki not re-ordered: {problems[0]}", fails=not again)
             if again:
                 self._retry(kind)                    # Anki went away mid-write: again soon. A refusal only the user
             return report                            # can clear (an unfinished run, a missing deck) waits for them
@@ -1203,7 +1248,8 @@ class Remote:
 
     def _receive(self, message):
         if "say" in message:
-            kind = InJunban if message.get("in_junban") else GivesUp if message.get("gives_up") else str
+            kind = (InJunban if message.get("in_junban") else Fails if message.get("fails")
+                    else GivesUp if message.get("gives_up") else str)
             self._last = kind(message["say"])
             try:
                 self._say(self._last)
@@ -1358,7 +1404,8 @@ def helper_main(argv=None):
             send(dict(message, seen=state["seen"]))
 
     host = Host(args.language, say=lambda line: tell(say=line, gives_up=isinstance(line, GivesUp),
-                                                     in_junban=isinstance(line, InJunban)), working=lambda on: tell(working=bool(on)),
+                                                     in_junban=isinstance(line, InJunban),
+                                                     fails=isinstance(line, Fails)), working=lambda on: tell(working=bool(on)),
                 generate=(lambda reason: tell(generate=reason)) if args.generate else None)
 
     def report(force=False):                      # with `lock` held

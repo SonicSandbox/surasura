@@ -101,7 +101,10 @@ def test_you_reviewing_is_a_still_arc_on_the_anki_circle_saying_why_and_how_many
 
 
 @pytest.mark.parametrize("lang", ["ja", "zh"])
-def test_anki_closed_is_amber_and_says_so_beside_the_ones_that_clear_by_themselves(running, lang):
+def test_anki_closed_is_a_still_arc_saying_so_beside_the_ones_that_clear_by_themselves(running, lang):
+    """a7 (Sonic 2026-10-29: "If no decision it shouldn't be yellow but something else"): Anki closed decides nothing —
+    its episodes' cards are made once Anki opens — so it waits with the ones that clear by themselves, a still arc,
+    never amber; *Needs you* keeps its line (and *Open Anki*: `needs._anki_entry`, the record's ANKI items)."""
     ids = _items(lang)
     with Ledger() as ledger:
         _job(ledger, lang, ids[0], "waiting", runner.REVIEWING)
@@ -111,10 +114,25 @@ def test_anki_closed_is_amber_and_says_so_beside_the_ones_that_clear_by_themselv
     got = feed.Provider(lang, lambda: ON).feed()
     assert [got.items[i].kind for i in ids[:4]] == [feed.ANKI_WAIT, feed.ANKI_WAIT, feed.ANKI, feed.ANKI]
     anki = _strip(got)[P.ANKI]
-    assert anki.needs == "Waiting for Anki: it isn't open · 2 episodes", "amber names only what waits on you"
-    assert set(anki.lines) == {f"{S.CONNECT_WAIT_LABEL} · Waiting for Anki: it isn't open · 2 episodes",
-                               f"{S.CONNECT_WAIT_LABEL} · Waiting while you review in Anki · 1 episode; "
-                               f"Waiting for Anki: it's busy · 1 episode"}
+    assert anki.needs is None and anki.go is None and anki.waiting, "Anki closed is no decision: never amber"
+    assert anki.lines == (f"{S.CONNECT_WAIT_LABEL} · Waiting while you review in Anki · 1 episode; "
+                          f"Waiting for Anki: it's busy · 1 episode; Waiting for Anki: it isn't open · 2 episodes",)
+
+
+@pytest.mark.parametrize("reason", [anki_session.UNUSABLE, anki_session.OTHER_PROFILE.format("日本語", "User 1"),
+                                    anki_session.NO_PROFILE_YET, anki_session.NO_PROFILE_DECKS])
+def test_anki_asking_for_you_is_amber_and_names_needs_yous_anki_line_as_where_to_decide(running, reason):
+    """a7: a permission prompt, another profile open, none named — only you can end it, in Anki: amber, and the press
+    goes to *Needs you*'s Anki line (`needs.ANKI_WAIT`), which says what to do. Anki closed beside it stays a still
+    arc of its own (two slots of one circle)."""
+    rec = {"running": True, "languages": {"ja": {"jobs": [
+        {"item": 1, "job": 1, "state": "waiting", "reason": reason},
+        {"item": 2, "job": 2, "state": "waiting", "reason": runner.ANKI_CLOSED}]}}}
+    got = feed.build(rec, "ja")
+    assert {it.kind for it in got.items.values()} == {feed.ANKI}
+    anki = _strip(got)[P.ANKI]
+    assert anki.needs == f"{reason.rstrip('.')} · 1 episode" and anki.go == P.Go("needs", ("anki-wait",))
+    assert f"{S.CONNECT_WAIT_LABEL} · Waiting for Anki: it isn't open · 1 episode" in anki.lines
 
 
 def test_a_row_waiting_while_you_review_is_a_plain_waiting_and_one_waiting_on_closed_anki_is_amber():
@@ -345,6 +363,7 @@ def test_what_waits_on_you_says_its_kind_and_count_never_one_clause_an_episode()
     says = [f"雲の上の郵便屋さん - {n:02d}: Not timed to its video, so no cards. Mine anyway…" for n in range(1, 13)]
     miner = _strip(_looked(*[_item(feed.NOT_TIMED, say, i) for i, say in enumerate(says)]))[P.MINER]
     assert miner.needs == "Not timed to its video · 12 episodes"
+    assert miner.go.place == "needs" and P.CONNECT_CARDS in miner.go.at         # a7: where to decide, its Needs-you cards
 
 
 def test_an_episode_held_by_another_needs_you_entry_is_amber_with_short_words(running):

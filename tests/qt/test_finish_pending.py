@@ -636,3 +636,17 @@ def test_the_real_host_switched_off_while_it_waits_ends_it_quietly(real_host):
     host.poke()
     assert wait_until(lambda: not p.live(), 10)
     assert p.state != press_service.FAILED and not win.bar_arc.isVisible()
+
+
+def test_a7_a_press_ended_by_only_i_plus_one_says_the_strips_words(window, monkeypatch):
+    """a7: the gate's stand-aside ends a waiting press with the same words the strip says (`aside_line`), never
+    the old "Not with 'Only i+1'" line beside the new one."""
+    from app import replan_preview as rp
+    store, win, writer = window()
+    line = rp.GivesUp(rp.AFTER_GENERATE.format(mode="Only i+1 sentences"))
+    monkeypatch.setattr(drag, "_aside", lambda settings, language: line)
+    row = win.page_widgets["current"].view_model.rows[2]
+    win.moves.to_finished(row)
+    p = anki_presses(win)[0]
+    assert wait_until(lambda: not p.live(), 5)
+    assert p.words == line and win.bar_line.full() == line

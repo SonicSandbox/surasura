@@ -504,12 +504,11 @@ class Replan:
         return fresh() if fresh is not None else self._settings_now()
 
     def _asker(self, keeper):
-        """`keeper.changed` for the host's Generate asks and the journey look: skipped while a Generate runs or waits
-        (`keeper.generating`; its end re-orders through the keeper's `on_done`) — a move would withdraw the keeper's run
-        in flight and start one from scratch (one change, two Generates)."""
+        """`keeper.changed` for the host's Generate asks and the journey look. A Generate running or waiting is never
+        withdrawn for it (a7): the keeper looks once after it ends, whose check asks nothing when that run read it all —
+        a language switch's start look included, while the old language's run is being stopped."""
         def ask(reason):
-            if not keeper.generating():
-                keeper.changed(reason)
+            keeper.changed(reason)
         return ask
 
     def _automation(self):

@@ -321,10 +321,10 @@ def test_the_start_catches_up_once_and_asks_for_the_journey_only_when_the_store_
 
 
 @pytest.mark.parametrize("state", ["QUEUED", "RUNNING"])
-def test_the_starts_journey_look_asks_nothing_while_a_generate_runs_or_waits(gate, monkeypatch, state):
-    """The start and a language switch look at the journey (`changed("start")` when the store says it is pending), but
-    never while a Generate runs or waits its turn: the keeper's `on_done` re-orders after it, and an ask now would
-    withdraw that run and start one from scratch (one change, two Generates)."""
+def test_the_starts_journey_look_waits_for_a_generate_that_runs_or_waits(gate, monkeypatch, state):
+    """The start and a language switch look at the journey (`changed("start")` when the store says it is pending). While
+    a Generate runs or waits its turn the keeper hears it but asks for nothing and withdraws nothing (a7): its look
+    comes once that run has ended (one change, never two Generates)."""
     from types import SimpleNamespace
     from app.services import generate as G
     replan, _registry, controller, launches, opener = _replan(pending=lambda language: True)
@@ -332,10 +332,10 @@ def test_the_starts_journey_look_asks_nothing_while_a_generate_runs_or_waits(gat
     replan.start()
     _quiet(replan)
     assert opener.hosts[0].calls == ["catch_up"]
-    assert replan.keeper.reasons == [] and launches.count() == 0
+    assert replan.keeper.reasons == ["start"] and replan.keeper._again == "start" and launches.count() == 0
     replan.language_changed("zh")
     _quiet(replan)
-    assert replan.keeper.reasons == [] and launches.count() == 0
+    assert replan.keeper.reasons == ["start"] and replan.keeper._again == "start" and launches.count() == 0
     replan.finish(time.monotonic() + 1)
 
 
@@ -967,3 +967,13 @@ def test_switched_off_with_a_host_open_tells_off_once_with_no_words_and_the_upda
     look()
     assert heard.count(replan_preview.OFF) == 2
     replan.finish(time.monotonic() + 1)
+
+
+def test_the_hosts_ask_reaches_the_keeper_even_while_a_generate_runs():
+    """a7 (review S1): the keeper never withdraws a run for a change and looks once after it, so the host's asks go to
+    it whatever runs — a language switch's start look while the old language's run is being stopped is not lost."""
+    from app.services.replan_host import Replan
+    asked = []
+    keeper = type("K", (), {"generating": lambda self: True, "changed": lambda self, reason: asked.append(reason)})()
+    Replan._asker(None, keeper)("start")
+    assert asked == ["start"]

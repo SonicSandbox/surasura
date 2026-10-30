@@ -4550,6 +4550,41 @@ def read_run_stamp(results_dir):
         return None
 
 
+def write_list(write, path):
+    """a7: a list written whole or not at all — `write(temp)` writes it beside `path` (`df.to_csv`, a csv writer), then
+    `os.replace`: a reader (New arrivals' worker, the journey's shadow compare, Connect) never reads half a list, only
+    the last one or the new one. A reader holding the old one open (Windows refuses the replace) is waited for, tried
+    every 50 ms for up to 10 s (a list is read in about a second); after that the temp is copied over it, as the list
+    was written before. The temp never stays; one a killed run left is removed by the next write, once a minute old."""
+    import shutil
+    tmp = f"{path}.{os.getpid()}.tmp"
+    folder, name = os.path.split(path)
+    for old in os.listdir(folder or "."):           # a run killed while writing left its temp: gone after a minute
+        if old.startswith(name + ".") and old.endswith(".tmp") and old != os.path.basename(tmp):
+            try:
+                if time.time() - os.path.getmtime(os.path.join(folder, old)) > 60:
+                    os.remove(os.path.join(folder, old))
+            except OSError:
+                pass
+    try:
+        write(tmp)
+        deadline = time.monotonic() + 10.0
+        while True:
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+        shutil.copyfile(tmp, path)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 def _set_run_stamp(results_dir, signature):
     """Record (or, with signature=None, forget) which run the outputs in `results_dir` belong to.
     Best-effort: a stamp that can't be written only costs one extra full run next time."""
@@ -4595,8 +4630,8 @@ def _report_written(path, since):
 # A cancel: the window that started the run names a file in SURASURA_CANCEL_FILE and makes it to cancel. The run looks
 # for it (a stat) at each step and before each file it tokenizes, and stops there as long as it hasn't reached *Writing
 # your list* — nothing of results/ written but the stamp it dropped as it started — answering the `cancelled` error
-# line (GENERATE_CANCELLED). From *Writing your list* on it finishes: the CSV writes aren't atomic, and only the run
-# itself knows which step it is in (W1.3 adversary #6, #7). (Not stdin: on Windows a thread waiting on a pipe stalls
+# line (GENERATE_CANCELLED). From *Writing your list* on it finishes: each list is written whole (`write_list`, a7), but
+# the outputs together are not one write, and only the run itself knows which step it is in (W1.3 adversary #6, #7). (Not stdin: on Windows a thread waiting on a pipe stalls
 # the run's other calls on it.)
 PROGRESS_STEPS = ("Reading your files", "Counting words", "Picking sentences", "Writing your list",
                   "Writing the journey")
@@ -6164,7 +6199,7 @@ def main():
             df_display = df.drop(columns=["_MinSeq"], errors='ignore')
             
         valid_lrs = set(zip(df_display['Word'], df_display['Reading']))
-        df_display.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+        write_list(lambda tmp: df_display.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_CSV)
         try:
             print(f"Saved priority list to {OUTPUT_CSV}")
         except UnicodeEncodeError:
@@ -6528,7 +6563,7 @@ def main():
         
     df_prog = pd.DataFrame(progressive_rows)
     if not df_prog.empty:
-        df_prog.to_csv(OUTPUT_PROGRESSIVE, index=False, encoding='utf-8-sig')
+        write_list(lambda tmp: df_prog.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_PROGRESSIVE)
         print(f"Saved progressive report to {OUTPUT_PROGRESSIVE}")
     else:
         print("No progressive words found (all known).")

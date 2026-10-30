@@ -291,9 +291,10 @@ class Chores:
                 os.makedirs(self._log_folder, exist_ok=True)
                 log = open(os.path.join(self._log_folder, LOG_NAME), "w", encoding="utf-8")
             flags = 0x08000000 if sys.platform == "win32" else 0          # CREATE_NO_WINDOW
-            proc = self._popen(indexer_command(language), stdin=subprocess.DEVNULL,
-                               stdout=log if log is not None else subprocess.DEVNULL, stderr=subprocess.STDOUT,
-                               env=env, creationflags=flags)
+            from app.connect.power import popen_below_normal            # a7: below the window, its pools too
+            proc = popen_below_normal(indexer_command(language), popen=self._popen, stdin=subprocess.DEVNULL,
+                                      stdout=log if log is not None else subprocess.DEVNULL,
+                                      stderr=subprocess.STDOUT, env=env, creationflags=flags)
             with self._lock:
                 self._proc = proc
                 stop = job.cancelled

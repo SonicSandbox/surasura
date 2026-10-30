@@ -19,7 +19,8 @@ requests to settle, for a job it can't run beside, or for another program's Gene
   program's Generate may take it, and the analyzer waits its turn).
 - **Cancel during a run** is the run's own decision: the controller makes the run's cancel file
   (`SURASURA_CANCEL_FILE`), and the analyzer
-  stops at its next step if it hasn't reached *Writing your list* (the CSV writes aren't atomic: P1.2 deferred that),
+  stops at its next step if it hasn't reached *Writing your list* (each list is written whole since a7, the outputs
+  together are not one write),
   else finishes. Only the run knows which step it is in — the reader always trails it — so the controller never ends
   the child itself. A run started without `--progress-json` (the Tk dashboard's) can't be asked: a cancel waits for its
   end. A cancelled run leaves the last journey's files as they were; the analyzer dropped its stamp as it started, so
@@ -34,7 +35,8 @@ requests to settle, for a job it can't run beside, or for another program's Gene
   line); a language switch forgets them (`forget_failure`). A run that finished though it was asked to stop (past
   *Writing your list*) is a finished run: `current`, and its job done, not cancelled (E3.2's review A12 / A13).
 - Children are started with `subprocess` and read on a reader thread (§4.1: no QProcess, headless in tests), with the
-  environment from `path_utils.build_subprocess_env`. A window that starts the child its own way (the Tk dashboard:
+  environment from `path_utils.build_subprocess_env`, below normal priority (`power.popen_below_normal`, a7: the
+  window, at normal priority, stays quick beside a run). A window that starts the child its own way (the Tk dashboard:
   its log, spinner and update wait) hands `request` a `launcher` and reports the end through the run (`Run.ended`).
 
 Nothing here waits on the caller's thread. Listeners (`subscribe`, a request's `on_wait`) run on the controller's
@@ -75,7 +77,7 @@ def percent(state):
 
 def can_cancel(state):
     """Whether a click cancels now: asked for or waiting, or running before *Writing your list* (from there the run
-    finishes — the CSV writes aren't atomic)."""
+    finishes — the outputs together aren't one write)."""
     if state.state == QUEUED:
         return True
     if state.state != RUNNING:
@@ -378,8 +380,9 @@ class GenerateController:
 
     def withdraw(self, run):
         """Take back one request (`run`, as `request` returned it) and nothing else — E3.2's journey keeper withdraws
-        its own automatic run when the moves start again, never a run the user asked for: dropped while it settles or
-        waits its turn; cancelled in flight (as `cancel`). Nothing when it is over or another request took its place."""
+        its own automatic run when its window closes (never for a move since a7: the move looks again after the run),
+        never a run the user asked for: dropped while it settles or waits its turn; cancelled in flight (as `cancel`).
+        Nothing when it is over or another request took its place."""
         snap = None
         with self._lock:
             pending = self._pending is run
@@ -399,7 +402,7 @@ class GenerateController:
 
     def withdrawn(self, job_id):
         """finish-pending (FP-A3): was the Generate job `job_id` taken back by its asker (`withdraw`: the journey
-        keeper's run, asked again once the moves settle), not stopped by the user? Any thread."""
+        keeper's run, its window closing), not stopped by the user? Any thread."""
         with self._lock:
             return any(run.job is not None and run.job.id == job_id for run in self._withdrawn)
 
@@ -499,9 +502,10 @@ class GenerateController:
         run.cancel_file = os.path.join(folder, f"generate-cancel-{os.getpid()}-{id(run)}.flag")
         env["SURASURA_CANCEL_FILE"] = run.cancel_file
         flags = 0x08000000 if sys.platform == "win32" else 0          # CREATE_NO_WINDOW
-        proc = subprocess.Popen(command_line(run.argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                env=env, creationflags=flags)
+        from app.connect.power import popen_below_normal                # a7: never beside the window at its priority
+        proc = popen_below_normal(command_line(run.argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                  env=env, creationflags=flags)
         run.started(proc)
 
         def read():

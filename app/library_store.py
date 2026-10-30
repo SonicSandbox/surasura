@@ -7101,9 +7101,10 @@ def spawn_maintain(language, *extra):
     flags = 0
     if sys.platform == "win32":
         flags = 0x00000008 | 0x00000200 | 0x08000000   # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
-    return subprocess.Popen(_helper_args(language, "maintain", *extra), env=_helper_env(), creationflags=flags,
-                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            start_new_session=(sys.platform != "win32"))
+    from app.connect.power import popen_below_normal          # a7: background work, below the window
+    return popen_below_normal(_helper_args(language, "maintain", *extra), env=_helper_env(), creationflags=flags,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              start_new_session=(sys.platform != "win32"))
 
 
 def _helper_args(language, command, *extra):

@@ -127,14 +127,31 @@ def preselect(settings, language):
     return out
 
 
-def _reads(settings, language):
-    """(this language's saved decks, 順's deck — None while it is the other language's recorded one —, the band)."""
-    from app import anki_window, replan_preview
-    decks = anki_window.saved(settings, language)[0]
+def junban_deck(settings, language):
+    """順's deck for `language`, or None — None while it is the deck recorded for the other language (AD-1)."""
+    from app import replan_preview
     deck = str(settings.get("junban_deck") or "").strip() or None
     if _pair(settings) not in ("", language) and deck == str(settings.get(replan_preview.DECK) or "").strip():
         deck = None
-    return decks, deck, ((settings.get("logic") or {}).get("selection") or {}).get("band")
+    return deck
+
+
+def backlog_shows(language, settings, deck):
+    """(A worker; setup's *Card order*, Michi-C A7B-3.) The shows behind `deck`'s new cards ->
+    `modules/junban/backlog_shows`' offer record, or None (順 not in this Surasura, Anki closed, no Anki Miner card).
+    Reads Anki only; worked out again from the library each time (page 3's reading may have taken shows in)."""
+    try:
+        from modules.junban import backlog_shows as shows
+    except Exception:
+        return None
+    return shows.refresh(language, settings, force=True, deck=deck)
+
+
+def _reads(settings, language):
+    """(this language's saved decks, 順's deck — None while it is the other language's recorded one —, the band)."""
+    from app import anki_window
+    decks = anki_window.saved(settings, language)[0]
+    return decks, junban_deck(settings, language), ((settings.get("logic") or {}).get("selection") or {}).get("band")
 
 
 def _current(settings, language, decks, deck, band):

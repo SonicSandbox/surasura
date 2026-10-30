@@ -28,7 +28,9 @@ and `_maybe_junban_auto`, as one service a window builds once.
 backlog read only read Anki and write their files atomically under the known-words lock, so closing never waits for
 them (`on_quit="detach"`, as the Tk `on_closing`); neither can be cancelled (no Stop on the update's wait list).
 """
+import hashlib
 import importlib
+import json
 import math
 import os
 import queue
@@ -53,7 +55,8 @@ SYNC_LABEL = "Updating known words from Anki"
 BACKLOG_LABEL = "Reading Anki's new cards"
 JUNBAN_LABEL = "Re-ordering Anki (automatic)"
 
-State = namedtuple("State", "sync language added known message junban seq")
+State = namedtuple("State", "sync language added known message junban seq shows", defaults=(None,))
+#   shows (Michi-C): the shows behind the backlog's last offer, as a short digest — a new one asks *Needs you* again
 # What `level` reads (IK-28): only a write of one of these reads the token store again for the bar's level chip.
 LEVEL_KEYS = ("logic.selection", "logic.names_recurring", "logic.names_kanji", "logic.names_work_terms", "zh_script")
 
@@ -216,6 +219,18 @@ def level(settings, language):
         return None, True
 
 
+def backlog_shows(language, settings, url):
+    """(The worker, after every sync that read Anki: `AutoSync.ended`.) The shows behind 順's deck's new cards worked
+    out again (Michi-C, A7B-5: `modules/junban/backlog_shows.refresh` — Anki read only, its fields only for notes not
+    read before; the library named again only when the notes or the store moved) for *Needs you*'s one card -> the
+    offer record, or None. Nothing without 順 in this Surasura; never raises."""
+    try:
+        module = importlib.import_module("modules.junban.backlog_shows")
+    except Exception:
+        return None
+    return module.refresh(language, settings, url)
+
+
 class AutoSync:
     """The background known-words sync from a running Anki (`_maybe_anki_sync`), its result
     (`_on_anki_sync_result`) and Generate's read of the Anki backlog (`_maybe_backlog_sync`)."""
@@ -295,6 +310,23 @@ class AutoSync:
             o.publish(sync=SYNCED, added=result.added, message=None)     # its count is another language's (D31)
         if result is not None:
             o.worker.put(self.result, result, language)
+            if not result.error:
+                o.worker.put(self.shows, language)      # after the bar heard it: never holds the sync or its Generate
+
+    def shows(self, language):
+        """(The worker.) The shows behind the backlog after a sync (`backlog_shows`): a new offer is published
+        (`State.shows`, a digest), so the window asks *Needs you* again."""
+        o = self._owner
+        settings = o.settings_now()
+        try:
+            from app import anki_connect
+            record = backlog_shows(language, settings, anki_connect.address(settings))
+        except Exception as e:
+            print(f"Backlog shows: skipped ({e})")
+            return
+        if language == o.language:
+            said = json.dumps(record, sort_keys=True, ensure_ascii=False, default=str) if record else ""
+            o.publish(shows=hashlib.sha1(said.encode("utf-8")).hexdigest()[:12] if said else None)
 
     def result(self, result, language):
         """(The worker.) After a sync (`_on_anki_sync_result`): when it changed the known words, the automatic

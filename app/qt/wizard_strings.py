@@ -175,6 +175,17 @@ OPEN_ANKI_TIP = "Starts Anki with Surasura, so what you reviewed on your phone i
 ORDER_OFF = "Card order is switched off: turn 順 on in Settings to use it."
 ORDER_ABSENT = "Card order (順) isn't part of this Surasura."
 ORDER_AUTOMATION_OFF = "Automatic actions are off in Settings: this starts once they're on."
+# Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the deck's new cards — the first sentence is *Needs you*'s
+# (`app/services/needs.backlog_head`: *Your 2,300 new cards come from 14 shows; 12 are on this PC.*), then one of these
+BEHIND_LOOKING = "Looking at where your new cards came from…"
+BEHIND_WAIT = ("1 of them waits in New arrivals.", "{k} of them wait in New arrivals.")
+BEHIND_IN = "They're in your list: their cards go in the order you'll meet the words."
+BEHIND_NONE = "Add their subtitles to put their cards in order."
+BEHIND_ADD = "Add them"
+BEHIND_ADD_TIP = ("Puts these shows from New arrivals into your list, at Soon: their cards go in the order you'll meet "
+                  "the words.\n• Undo: the toast, or Ctrl+Z")
+BEHIND_ADDED = "Added: their cards go in the order you'll meet the words."
+BEHIND_NOT_ADDED = "Nothing was added: your library can't be changed just now. Try again in a moment."
 
 # --- 5 · cards made for you ------------------------------------------------------------------------------------------- #
 CARDS_TITLE = "Cards that make themselves"

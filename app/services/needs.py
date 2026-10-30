@@ -48,6 +48,11 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   offer, never marked by themselves (`connect/known_signal.py`); this is where 3.0 asks it — *You'd already suspended
   and marked 40 cards in Anki: mark their words known?* · *Mark them known* (`known_signal.accept_offer`) · *Leave them*
   (`decline_offer`). Read with Connect's record (`known_offer`, read-only); answered, it is gone.
+- **the shows behind the backlog** (Michi-C, A7B-1…A7B-3 PROVISIONAL; Sonic 2026-10-29 "Genius"): ONE card while a
+  show 順's deck's new cards came from is on this PC and waits in New arrivals (`backlog_offer`: `modules/junban/
+  backlog_shows`' last offer, read-only) — *Your 2,300 new cards come from 14 shows; 12 are on this PC. Add the 3
+  that aren't in your list yet?* · *Add them* (the window's writer, `place(ids, "soon")`: one Undo) · *Leave them*
+  (answered; a show placed since, or a new one waiting, asks again).
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once it took something in, it offers ONE line (`offer`,
   kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
@@ -105,11 +110,13 @@ LIBRARY_EMPTIED = "library-emptied"   # A5K-2: the library folder held none of t
 AUDIOBOOK_ASK = "audiobook-ask"       # Hon (H-8): is this audiobook that book? Asked once per pair, the answer kept
 AUDIOBOOK_FIND = "audiobook-find"     # Hon (a5-2): after a *No*, find its book — or it has none (never asked again)
 AUDIOBOOK_TRANSCRIPT = "audiobook-transcript"   # Hon (a6, H-13): an audiobook's transcript isn't its book's: not used
+BACKLOG_SHOWS = "backlog-shows"       # Michi-C (A7B-3): the shows behind 順's deck's new cards, on this PC, not listed
 SETTINGS_FOLDER = "settings-folder"   # a6 settings import (SI-3): a video folder the imported settings name isn't here
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
-         FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER)
+         FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
+         BACKLOG_SHOWS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
@@ -191,6 +198,18 @@ STRINGS = {
     "known_title_one": "You'd already {states} a card in Anki: mark its word known?",
     "known_say": "Count as known in Anki (Settings › Anki) found them there when it first looked, so it asks once. "
                  "Every card you {states} from now on counts by itself.",
+    # Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the backlog
+    "behind_cards": "Your {n:,} new cards", "behind_cards_one": "Your new card",
+    "behind_cards_some": "{n:,} of your new cards",
+    "behind_from": "{cards} {come} from {s} shows; {found} are on this PC.",
+    "behind_from_found_one": "{cards} {come} from {s} shows; one is on this PC.",
+    "behind_from_none": "{cards} {come} from {s} shows; none of them is on this PC.",
+    "behind_from_one": "{cards} {come} from 1 show, on this PC.",
+    "behind_from_one_away": "{cards} {come} from 1 show, not on this PC.",
+    "behind_add": "Add the {k} that aren't in your list yet?", "behind_add_one": "Add the one that isn't in your list yet?",
+    "behind_add_all": "Add them to your list?", "behind_add_it": "Add it to your list?",
+    "behind_waiting": "Waiting in New arrivals: {names}.", "behind_away": "Not on this PC: {names}.",
+    "behind_name": "{title} ({n:,})", "behind_more": "and {k} more",
     "why_found": "→ …\\{name} ✓ found", "why_found_own": "→ …\\{name} ✓ found in its own folder ({k} more in your "
                                                          "video folders)",
     "why_found_named": "→ …\\{name} ✓ found: the one in a folder named like the show",
@@ -211,7 +230,7 @@ REASONS = {ASK: "reason_ask", FOLDER_GONE: "reason_folder", OFFLINE: "reason_off
            "repick": "reason_cards", "mine-failed": "reason_cards", "error": "reason_cards", GAP: "reason_gap"}
 REASON_AT = 3                       # cards of one reason that bring its line (the bulk answer's own: two shows)
 # the cards whose own two answers both end them: no ⋯ (its *Not now* would say the same as their own)
-NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER))
+NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS))
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -274,7 +293,7 @@ def item_key(item_id):
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
-            hidden=frozenset(), emptied=None, settings_folders=()):
+            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -287,7 +306,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     (item 8a) is gone only until then, so the library's card waits for it; `hidden` (alpha 4 D2: `read_hidden`, *Not now* today and *Stop asking*): the cards
     left out, and every count for many with them; `emptied` (A5K-2): the store's `emptied()` note, the first card;
     `settings_folders` (a6, SI-3): the video folders an imported settings file names that this PC lacks
-    (`settings_io.missing_folders`), one card each beside the gone source folders'."""
+    (`settings_io.missing_folders`), one card each beside the gone source folders';
+    `backlog` (Michi-C): `backlog_offer`'s record — one card while a show behind 順's deck's new cards waits in New
+    arrivals (only the files New arrivals still holds), until *Leave them* (a new show asks again)."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -342,6 +363,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     offer = (connect or {}).get("known_offer")
     if offer:
         out.append(_known_entry(offer, seen))
+    behind = _backlog_entry(backlog, view, seen, answered) if backlog else None
+    if behind is not None:
+        out.append(behind)
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
@@ -814,6 +838,80 @@ def _known_entry(offer, seen):
                  unseen=key not in seen, say=STRINGS["known_say"].format(states=states), data={"cards": n})
 
 
+def backlog_offer(language, settings=None):
+    """The shows behind 順's deck's new cards (`modules/junban/backlog_shows`'s last offer, read-only), or None (no
+    offer, 順 not in this Surasura or switched off, no deck saved, or an offer worked out for another deck — setup's
+    page may look at a deck that is never saved)."""
+    settings = settings or {}
+    if settings.get("enable_junban") is False:
+        return None
+    try:
+        from app.services import setup_wizard
+        deck = setup_wizard.junban_deck(settings, language)
+        if not deck:
+            return None
+        from modules.junban import backlog_shows
+        return backlog_shows.offer(language, deck=deck)
+    except Exception:
+        return None
+
+
+def behind_key(show):
+    """A waiting show's *Leave them* key: its title (`plain`) — a new episode of it, or one of its files placed by hand,
+    never asks again; another show waiting does."""
+    import unicodedata
+    title = unicodedata.normalize("NFKC", str((show or {}).get("title") or "")).casefold()
+    return f"{BACKLOG_SHOWS}:{''.join(ch for ch in title if ch.isalnum())}"
+
+
+def _names(shows, most=5):
+    words = [STRINGS["behind_name"].format(title=s.get("title") or "?", n=int(s.get("cards") or 0))
+             for s in shows[:most]]
+    if len(shows) > most:
+        words.append(STRINGS["behind_more"].format(k=len(shows) - most))
+    return ", ".join(words)
+
+
+def backlog_head(record):
+    """The offer's first sentence (the card's and setup's *Card order* line): *Your 2,300 new cards come from 14 shows;
+    12 are on this PC.*"""
+    shows = [s for s in (record or {}).get("shows") or () if isinstance(s, dict)]
+    n, every = int((record or {}).get("cards") or 0), int((record or {}).get("all") or 0)
+    cards = (STRINGS["behind_cards_one"] if n == 1 and every <= 1 else
+             STRINGS["behind_cards"].format(n=n) if every <= n else STRINGS["behind_cards_some"].format(n=n))
+    found = sum(1 for s in shows if s.get("state") != "away")
+    come = "comes" if n == 1 and every <= 1 else "come"
+    if len(shows) == 1:
+        return STRINGS["behind_from_one" if found else "behind_from_one_away"].format(cards=cards, come=come)
+    key = "behind_from" if found > 1 else "behind_from_found_one" if found == 1 else "behind_from_none"
+    return STRINGS[key].format(cards=cards, come=come, s=len(shows), found=found)
+
+
+def _backlog_entry(record, view, seen, answered=frozenset()):
+    """ONE card for the shows behind the backlog (A7B-3), or None when none of their files waits in New arrivals now
+    (`view.arrivals`: one placed by hand, or by *Add them*, since the offer was worked out is no longer offered) or
+    every show still waiting was left (*Leave them*: `behind_key`, one per show)."""
+    arrivals = {i for a in (getattr(view, "arrivals", None) or ()) for i in (a.item_ids or ())}
+    shows = [s for s in record.get("shows") or () if isinstance(s, dict)]
+    waiting = [dict(s, ids=[i for i in s.get("ids") or () if i in arrivals])
+               for s in shows if s.get("state") == "waiting" and behind_key(s) not in answered]
+    waiting = [s for s in waiting if s["ids"]]
+    if not waiting:
+        return None
+    head, found = backlog_head(record), sum(1 for s in shows if s.get("state") != "away")
+    k = len(waiting)
+    ask = (STRINGS["behind_add_it"] if k == 1 and found == 1 else STRINGS["behind_add_all"] if k == found else
+           STRINGS["behind_add_one"] if k == 1 else STRINGS["behind_add"].format(k=k))
+    away = [s for s in shows if s.get("state") == "away"]
+    say = " ".join([STRINGS["behind_waiting"].format(names=_names(waiting))] +
+                   ([STRINGS["behind_away"].format(names=_names(away))] if away else []))
+    ids = sorted(i for s in waiting for i in s["ids"])
+    left = sorted(behind_key(s) for s in waiting)
+    key = f"{BACKLOG_SHOWS}:{_digest(left)}"                        # seen: these shows; another one counts again
+    return Entry(key=key, kind=BACKLOG_SHOWS, title=f"{head} {ask}", lines=(), actions=("add_shows", "leave_shows"),
+                 unseen=key not in seen, say=say, data={"ids": ids, "shows": len(waiting), "left": left})
+
+
 def badge(entries_):
     """The tab's number: the unseen entries (P1.2-1: a seen one stays listed and stops counting)."""
     return sum(1 for e in entries_ if e.unseen)
@@ -825,6 +923,8 @@ def answer_keys(thing):
         return [item_key(thing.item_id)]
     if thing.kind in (GONE, BULK, FILES_FOLDER, LIBRARY_GONE):
         return [item_key(i) for i in (thing.data or {}).get("item_ids") or ()]
+    if thing.kind == BACKLOG_SHOWS:
+        return list((thing.data or {}).get("left") or ()) or [thing.key]       # one per show it held
     return [thing.key]
 
 

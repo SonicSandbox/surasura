@@ -1195,6 +1195,14 @@ class _Duties:
 
 
 # --- the window ------------------------------------------------------------------------------------------------------ #
+def needs_asked(state, before):
+    """Does the automation's new `state` ask *Needs you* again? A sync that just ended (laptop round 7 #43: Known from
+    Anki's question may have come or gone), or the shows behind the backlog worked out anew (Michi-C: `State.shows`)."""
+    if getattr(state, "sync", None) == "synced" and getattr(before, "sync", None) != "synced":
+        return True
+    return getattr(state, "shows", None) != getattr(before, "shows", None)
+
+
 class ShellWindow(QMainWindow):
     first_frame = pyqtSignal()
     closing = pyqtSignal()                                # before the window hides (single instance stops listening)
@@ -2598,9 +2606,8 @@ class ShellWindow(QMainWindow):
     # the bar's marks
     def _show_automation(self, state):
         d = self.duties
-        if (getattr(state, "sync", None) == "synced" and getattr(d.auto_state, "sync", None) != "synced"
-                and getattr(self, "needs_you", None) is not None):
-            self.needs_you.synced()             # laptop round 7 #43: Known from Anki's question may have come or gone
+        if needs_asked(state, d.auto_state) and getattr(self, "needs_you", None) is not None:
+            self.needs_you.synced()
         known = getattr(state, "known", None)
         if known is not None and known != getattr(d.auto_state, "known", None):
             self._previews_moved()                         # W3.1b: new known words move the bands' numbers

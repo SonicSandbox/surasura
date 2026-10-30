@@ -1477,3 +1477,49 @@ def test_sync_now_with_the_closed_flag_set_asks_nothing_and_answers_closed_even_
         assert answers == ["closed"] and anki.syncs == [] and puts == []
     finally:
         auto.close()
+
+
+@pytest.mark.parametrize("lang", ["ja", "zh"])
+def test_michi_c_each_sync_works_out_the_backlogs_shows_after_the_bar_hears_it(live, monkeypatch, lang):
+    """The shows behind the backlog (Michi-C, A7B-5; the review's SHOULD 6): worked out on the worker after every sync
+    that read Anki — the automatic one and one by hand (*Sync now*, setup's first) — once the bar said *synced* (never
+    holding the sync, its Generate or another sync); a new offer is published (`State.shows`) so *Needs you* asks
+    again; never with Anki closed."""
+    h.seed_library(lang)
+    _synced_once(lang)
+    anki = _Anki(monkeypatch, added=0)
+    order = []
+    offers = iter([{"id": "a", "cards": 3}, {"id": "a", "cards": 3}, {"id": "b", "cards": 4}])
+    monkeypatch.setattr(A, "backlog_shows", lambda language, settings, url: (order.append(
+        ("shows", language, url, len(anki.syncs), len(anki.backlogs))), next(offers))[1])
+    auto, registry, _c, _l = _make(_settings(lang, anki_auto_generate=False), lang=lang)
+    auto.subscribe(lambda state: order.append(("bar", state.sync, state.shows)))
+    auto.activated()
+    _settle(auto, registry)
+    assert auto.worker.idle(5)
+    shows = [o for o in order if o[0] == "shows"]
+    assert len(shows) == 1 and shows[0][1] == lang and shows[0][2].startswith("http://127.0.0.1")
+    assert shows[0][3:] == (1, 1)                                        # after the sync and the new cards' read
+    synced = next(i for i, o in enumerate(order) if o[:2] == ("bar", A.SYNCED))
+    assert synced < order.index(shows[0])                                # the bar first
+    first = auto.state().shows
+    assert first
+    auto.anki_synced(anki_sync.SyncResult(added=0, total_known=0), lang)     # a sync by hand: the same offer
+    assert auto.worker.idle(5) and len([o for o in order if o[0] == "shows"]) == 2 and auto.state().shows == first
+    auto.anki_synced(anki_sync.SyncResult(added=0, total_known=0), lang)     # a new offer: published
+    assert auto.worker.idle(5) and auto.state().shows not in (None, first)
+    auto.close()
+    anki.open = False
+    order.clear()
+    auto, registry, _c, _l = _make(_settings(lang, anki_auto_generate=False), lang=lang)
+    auto.sync_now()
+    _settle(auto, registry)
+    assert not [o for o in order if o[0] == "shows"]                    # Anki closed: nothing read
+    auto.close()
+
+
+def test_michi_c_without_junban_in_this_surasura_the_sync_hook_does_nothing(monkeypatch):
+    def missing(name):
+        raise ImportError(name)
+    monkeypatch.setattr(A.importlib, "import_module", missing)
+    assert A.backlog_shows("ja", {"junban_deck": "Mining"}, "http://127.0.0.1:8765") is None

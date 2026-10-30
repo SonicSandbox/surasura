@@ -1822,8 +1822,21 @@ class OrderPage(_Page):
         deck.addWidget(self.deck_box)
         deck.addStretch(1)
         rows.addLayout(deck)
+        # --- Michi-C (A7B-3): the shows behind the deck's new cards, read on a worker; *Add them* when some wait
+        behind = QHBoxLayout()
+        behind.setSpacing(_px(14))
+        self.behind_line = _label("wizsub", "", self.controls, wrap=True)
+        self.behind_line.setVisible(False)
+        behind.addWidget(self.behind_line, 1)
+        self.btn_behind = _button(S.BEHIND_ADD, S.BEHIND_ADD_TIP, self._add_behind, self.controls)
+        self.btn_behind.setVisible(False)
+        behind.addWidget(self.btn_behind, 0, Qt.AlignmentFlag.AlignTop)
+        rows.addLayout(behind)
+        self._behind_key = None           # (language, deck) last looked at
+        self._behind = None               # its offer record
+        # --- end Michi-C
         rows.addWidget(style.separator(self.controls))
-        later = QVBoxLayout()                             # the words above the three (beside them they were wider
+        later = QVBoxLayout()                            # the words above the three (beside them they were wider
         later.setSpacing(_px(6))                          # than the least window at Large text)
         later.addWidget(_label("wizlabel", S.LATER, self.controls, wrap=True))
         self.later = Channel(S.LATER_NAME, self.controls)
@@ -1847,6 +1860,62 @@ class OrderPage(_Page):
 
     def _deck_picked(self):
         self._deck = self.deck_box.currentText() or None
+        self._look_behind()
+
+    # --- Michi-C (A7B-1…A7B-3): the shows behind the deck's new cards ------------------------------------------------- #
+    def _look_behind(self):
+        """Asked once per (language, deck) on a worker (`setup_wizard.backlog_shows`: Anki read only; the page's deck,
+        not saved yet); the line says *Looking…* meanwhile. Nothing without 順 here or with Anki closed."""
+        deck = self.deck_box.currentText() or None
+        key = (self.wiz.language, deck)
+        if not deck or key == self._behind_key:
+            return
+        self._behind_key, self._behind = key, None
+        _set_text(self.behind_line, S.BEHIND_LOOKING)
+        _show(self.behind_line, True)
+        _show(self.btn_behind, False)
+        language, settings, api = self.wiz.language, self.wiz._settings(), self.wiz.api
+
+        def look():
+            return api.backlog_shows(language, settings, deck)
+
+        def done(record):
+            if self._behind_key == key:
+                self._behind = record
+                if record is None:
+                    self._behind_key = None        # (Anki closed meanwhile: asked again when it answers)
+                self._paint_behind()
+        bridge.run_in_worker(look, then=self.wiz.alive(done), failed=self.wiz.alive(lambda _info: done(None)))
+
+    def _waiting_behind(self):
+        return [s for s in (self._behind or {}).get("shows") or () if s.get("state") == "waiting" and s.get("ids")]
+
+    def _paint_behind(self):
+        from app.services import needs
+        record = self._behind
+        if not record:
+            _show(self.behind_line, False)
+            _show(self.btn_behind, False)
+            return
+        k = len(self._waiting_behind())
+        found = any(s.get("state") != "away" for s in record.get("shows") or ())
+        tail = ((S.BEHIND_WAIT[0] if k == 1 else S.BEHIND_WAIT[1].format(k=k)) if k else
+                S.BEHIND_IN if found else S.BEHIND_NONE)
+        _set_text(self.behind_line, f"{needs.backlog_head(record)} {tail}")
+        _show(self.behind_line, True)
+        _show(self.btn_behind, bool(k))
+
+    def _add_behind(self):
+        """*Add them*: `needs.give_shows`, the window's writer (one Undo) — the one add path *Needs you* uses too."""
+        from app.qt import needs as qneeds
+        waiting = self._waiting_behind()
+        if qneeds.give_shows(self.wiz.shell, [i for s in waiting for i in s["ids"]], len(waiting),
+                             self.wiz.language) is not None:
+            _set_text(self.behind_line, S.BEHIND_ADDED)
+            _show(self.btn_behind, False)
+        else:                                       # (the window's bar is under the page: said here)
+            _set_text(self.behind_line, S.BEHIND_NOT_ADDED)
+    # --- end Michi-C
 
     def _decks(self):
         look = self.wiz.anki or {}
@@ -1881,6 +1950,7 @@ class OrderPage(_Page):
                 self.deck_box.blockSignals(True)
                 self.deck_box.setCurrentIndex(index)
                 self.deck_box.blockSignals(False)
+            self._look_behind()
         self.wiz.paint_footer()
 
     def answers(self):
@@ -1894,6 +1964,7 @@ class OrderPage(_Page):
     def entered(self):
         if not self.wiz.junban_off() and (self.wiz.anki is None or not self.wiz.anki.get("open")):
             self.wiz.look_anki()
+        self._behind_key = None            # looked at again: page 3's reading may have taken shows in since
         self._show()
 
     def anki_changed(self):

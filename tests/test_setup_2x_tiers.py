@@ -118,10 +118,11 @@ def test_a_show_split_between_2x_tiers_keeps_its_split_whichever_folder_is_picke
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_2x_graduated_folder_read_at_setup_lands_in_finished_dated_and_watched(language):
-    """a7 (Sonic 2026-10-30): a show he finished in 2.x lands in Finished on setup's first look — dated and watched as
-    a finish leaves it, so it never sits in Current to be finished again; the same folder read by a later look (not
-    setup's) is a new arrival like any, never finished by its folder's name (the next test)."""
+def test_a_2x_graduated_folder_read_at_setup_lands_in_finished_dated_earlier(language):
+    """a7 (Sonic 2026-10-30): a show he finished in 2.x lands in Finished on setup's first look, never in Current to
+    be finished again — dated *Earlier* (no date), as every title finished before Surasura (the Finished importer, the
+    2.x migration), never this month's top of Finished; the same folder read by a later look (not setup's) is a new
+    arrival like any, never finished by its folder's name (the next test)."""
     store, _data = _empty(language)
     data = _old_library(language)
     done_show = SHOWS[language][0] + "（完）"
@@ -134,11 +135,11 @@ def test_a_2x_graduated_folder_read_at_setup_lands_in_finished_dated_and_watched
             _look(store, language, root, first=True)
         finished = [(i, e["title"]) for i, e, _a in store.ordered("graduated")]
         tiers = _tiers(store)
-        rows = store.conn.execute(
-            f"SELECT graduated_at, watched FROM items WHERE id IN ({','.join('?' * len(finished))})",
-            [i for i, _t in finished]).fetchall()
+        dates = [r[0] for r in store.conn.execute(
+            f"SELECT graduated_at FROM items WHERE id IN ({','.join('?' * len(finished))})",
+            [i for i, _t in finished]).fetchall()]
     assert len(finished) == 2 and all(done_show in t for _i, t in finished)
-    assert all(at and watched == 1 for at, watched in rows), "dated and watched, as a finish leaves it"
+    assert dates == [None, None], "Earlier, as the Finished importer dates a title finished before Surasura"
     assert not any(done_show in t for t in tiers["now"] + tiers["soon"] + tiers["goal"] + tiers["arrivals"])
     assert len([t for t in tiers["now"] + tiers["soon"] if SHOWS[language][1] in t]) == 3, "its NOW show as before"
 
@@ -163,3 +164,25 @@ def test_the_2x_graduated_folder_is_read_only_inside_a_data_folder_whatever_its_
     assert ls._tier_2x(sep.join(["D:", "Surasura", "data", "ja", "Graduated", "A", "1.srt"])) == "graduated"
     assert ls._tier_2x(sep.join(["D:", "Surasura", "data", "zh", "graduated", "A", "1.srt"])) == "graduated"
     assert ls._tier_2x(sep.join(["D:", "Media", "Graduated", "A", "1.srt"])) is None
+
+
+def test_a_show_finished_a_file_at_a_time_in_2x_keeps_its_finished_files_in_finished_and_the_rest_in_current():
+    """The review's split: episodes 1–2 graduated in 2.x, 3 still in HighPriority — as K8 keeps a Goal split, his 2.x
+    finish stays his: two in Finished, one in Current, whichever folder setup reads first."""
+    language = "ja"
+    store, _data = _empty(language)
+    top = os.path.join(_drive("old"), "Surasura")
+    with open(os.path.join(_mk(top, "User Files", language), "KnownWord.json"), "w", encoding="utf-8") as f:
+        json.dump({}, f)
+    data = os.path.join(top, "data", language)
+    show = SHOWS[language][1]
+    for n in (1, 2):
+        _write(os.path.join(data, "Graduated", show, f"{show} - {n:02d}.srt"), _text(language, n, extra="「済」"))
+    _write(os.path.join(data, "HighPriority", show, f"{show} - 03.srt"), _text(language, 3, extra="「次」"))
+    with store:
+        for tier_folder in ("HighPriority", "Graduated"):
+            root = store.add_source(os.path.join(data, tier_folder))
+            _look(store, language, root, first=True)
+        tiers = _tiers(store)
+        finished = store.ordered("graduated")
+    assert len(finished) == 2 and len(tiers["now"] + tiers["soon"]) == 1 and tiers["arrivals"] == []

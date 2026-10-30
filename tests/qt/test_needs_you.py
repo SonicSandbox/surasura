@@ -982,3 +982,46 @@ def test_michi_c_a_new_backlog_offer_asks_needs_you_again_without_a_new_sync(wor
     assert not shell.needs_asked(before._replace(seq=7, shows="ab12"), before._replace(seq=6, shows="ab12"))
     assert shell.needs_asked(before, before._replace(sync=A.SYNCING))         # a sync that just ended, as before
     assert not shell.needs_asked(before._replace(seq=8), before)
+
+
+def _own_folder_answers(monkeypatch, tmp_path, name):
+    """a7: `own_folder.read` answering with a real folder (a non-ASCII path, as the user keeps shows) and recording
+    what each press asked it."""
+    from app.services import own_folder
+    there = tmp_path / "ユーザーの棚" / name
+    there.mkdir(parents=True)
+    asked = []
+    monkeypatch.setattr(own_folder, "read", lambda opener, data, ids=(), rels=(), folders=():
+                        asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there))
+    return str(there), asked
+
+
+def test_choose_file_for_a_video_starts_in_the_shows_own_folder_and_for_a_gone_file_in_the_library(world, monkeypatch,
+                                                                                                 tmp_path):
+    """a7 (DIAGNOSIS 7, Sonic: "should be opening the location of the content itself"): a video is linked wherever it
+    is, so its picker starts where the show is read from (`own_folder`); a gone copy is pointed only at a file inside
+    the library (`Store.relink`), so that picker starts at the copy's side (`library_side`), never the show's folder."""
+    from app.services import own_folder
+    seed, win, writer, ny = world()
+    row, eps = no_video_show(win, n=2)
+    ny.read_connect = lambda _lang: jobs(*eps)
+    ny.read_settings = lambda: {"connect_enabled": True, "connect_video_folders": {}}
+    settle(ny)
+    card = next(e for e in ny.entries if e.kind == service.NO_VIDEO)
+    button(ny, card.key, "find_videos").click()
+    assert wait_until(lambda: card.key in ny.found and not ny.looking, 10)
+    there, asked = _own_folder_answers(monkeypatch, tmp_path, row.title)
+    started = []
+    ny.pick_file = lambda title, folder: started.append(folder) or ""
+    button(ny, card.key, "choose_video").click()
+    assert wait_until(lambda: started, 5)
+    assert started == [there]
+    assert asked[0][0][0] == card.lines[0].item_id and asked[0][1] == (card.lines[0].rel_path,)
+    gone = next(e for e in ny.entries if e.kind == service.GONE)
+    sides = []
+    monkeypatch.setattr(own_folder, "library_side", lambda data, rels=(), folders=():
+                        sides.append(rels) or data)
+    del started[:], asked[:]
+    button(ny, gone.key, "choose_file", gone.lines[0]).click()
+    assert wait_until(lambda: started, 5)
+    assert started == [ny.data_dir] and sides == [(gone.lines[0].rel_path,)] and asked == []

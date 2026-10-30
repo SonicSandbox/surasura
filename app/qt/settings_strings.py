@@ -6,6 +6,7 @@ mock's words carry a meaning 2.4 changed (A5: the one-kanji words, Junban's unli
 voice. A tooltip is 2.4's own where 2.4 had one, else the help line. Help is one line, never an essay; no fixed seed
 numbers (N5). `app/qt/settings_catalog.py` names each row's strings by its row id.
 """
+from app.connect.settings_values import WORDS as MINE_WORDS   # *Words to make cards from*: Connect's own words
 from app.practice import NAME as PRACTICE_NAME       # the practice chat's name (A6): one place, app/practice.py
 
 # --- the page ----------------------------------------------------------------------------------------------------- #
@@ -140,9 +141,20 @@ ROWS = {
     "use_every_core": ("Use every core", "Reads a big library faster; the computer is busier meanwhile",
                        "Off: reading and copying a library uses half your computer's cores, so it stays quick to use. "
                        "On: every core — a first read of thousands of books ends sooner", "cores speed faster cpu"),
-    "anki_sync_include_suspended": ("Count suspended cards as known", "",
-                                    "Count cards you've suspended as known. Off by default — suspended cards are often "
-                                    "ones you struggled with", "suspended known"),
+    # a7 (DIAGNOSIS 3): this row and *Count as known in Anki* under it answer one question two ways — each says so
+    "anki_sync_include_suspended": ("Count suspended cards as known",
+                                    "Every card you've ever suspended, as if studied",
+                                    "Every card you've suspended in your decks counts as known, whenever you "
+                                    "suspended it. Off by default: an old suspended card is often one you struggled "
+                                    "with. To make suspending say “I know this” from now on, use Count as known in "
+                                    "Anki below", "suspended known"),
+    "known_from_anki": ("Count as known in Anki",
+                        "A card counts only when it is in every state you pick, all at once",
+                        "Suspend (or mark, or flag) a card in Anki to say “I know this”: its word turns known at the "
+                        "next sync, and you can undo it. A card counts only when it is in every state you pick — "
+                        "Suspended + Marked counts only cards both suspended and marked. Cards already suspended are "
+                        "asked about once. None picked: off. Count suspended cards as known, above, counts every "
+                        "suspended card instead", "known from anki suspended marked flag"),
 
     # Anki & mining
     "anki_connection": ("Connection", "Through the free AnkiConnect add-on", "Whether Surasura reaches Anki now",
@@ -161,7 +173,10 @@ ROWS = {
     "connect_needs_miner": ("Make cards for me", "Needs Anki Miner: set it up in Connections",
                             "Surasura Connect makes your cards with Anki Miner. Once it is installed, this switch "
                             "appears here", "connect make cards mine automatically anki miner needs"),
-    "connect_mine_words": ("Words to make cards from", "", "Which words of an episode become cards",
+    "connect_mine_words": ("Words to make cards from",
+                           "“Your list” already takes i+1 lines first. Pick “Only i+1” only to skip the rest",
+                           "Which words of an episode become cards. Your list is i+1 first and then the words without "
+                           "an i+1 line; Only i+1 leaves those out and takes words off your list too",
                            "words to make cards from mine mode which words all unknown i+1 list"),
     "mine_line": ("Mine automatically", "The files at the top of Current mine themselves the moment they’re placed",
                   "How many files at the top of Current mine themselves", "auto top mines itself mine line"),
@@ -175,12 +190,13 @@ ROWS = {
                             "Surasura makes cards while fewer new cards wait in Anki for this language: yours and "
                             "Surasura's. Suspended cards never count. 0: no limit",
                             "cap backlog waiting keep up to limit"),
-    "known_from_anki": ("Count as known in Anki", "A card in every state you pick marks its word known",
-                        "A card in every state you pick here marks its word known (all must hold: Suspended + Marked "
-                        "is both). None picked: off", "known from anki suspended marked flag"),
-    "connect_video_folders": ("Where videos are looked for", "Surasura pairs a subtitle with its video by name",
-                              "The folders (and their subfolders) where Connect looks for a moved video, for this "
-                              "language", "video folders pair moved"),
+    # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
+    "connect_video_folders": ("More video folders",
+                              "Your library’s own folders are always searched. Add one only if your videos live "
+                              "somewhere else",
+                              "Videos are found beside their subtitles and in your library’s folders, with their "
+                              "subfolders. Add a folder here (for this language) only for videos kept outside them",
+                              "video folders pair moved where videos looked for more"),
     "connect_trust_timing": ("Trust my subtitles’ timing",
                              "When nothing on this PC can check them, mine at the subtitles’ own times",
                              "Surasura mines an episode by itself only once hato or tsubasa has checked its subtitles "
@@ -514,13 +530,16 @@ ROWS = {
     # --- end W3.2 L3
 }
 
+# *Count as known in Anki* with two states or more picked: its line names them (`settings_catalog.help_line`)
+KNOWN_ALL_OF = "Counts only cards that are {states}, all at once"
+
 # Backfill's fills by name (`junban_backfill_fills`' values): its two switches, and Your setup's line
 FILLS = {"patterns": "パターン", "sentence": "例文"}
 
 # --- the choices: row id -> {value: label}; choice cards also have a line under each -------------------------------- #
 OPTIONS = {
     "known_road": {"anki": "Anki", "import": "Import a list"},
-    "connect_mine_words": {"list": "Your list", "unknown": "Every unknown word", "i1": "Only i+1"},
+    "connect_mine_words": {value: label for value, label, _line in MINE_WORDS},
     "connect_open_anki": {False: "Wait for me", True: "Open Anki for me"},
     "junban_order_all": {False: "First, in the order you made them", True: "In your list’s order"},
     "known_from_anki": {"suspended": "Suspended", "marked": "Marked", "flag:1": "Flag 1 (Red)",
@@ -548,9 +567,7 @@ OPTIONS = {
 }
 # The line under each choice card (Connect's own words, P3.1)
 OPTION_LINES = {
-    "connect_mine_words": {"list": "Words on your list that you don't know and have no card yet.",
-                           "unknown": "Every word of the episode you don't know yet.",
-                           "i1": "Only words with a line whose other words you know."},
+    "connect_mine_words": {value: line for value, _label, line in MINE_WORDS},
 }
 # An option's own tooltip (a choice's or a tablet's), where its label alone doesn't say it
 OPTION_TIPS = {

@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import QApplication
 
 from app import settings_manager, theme
 from app.qt import arrivals, freeze, motion, shell, strings
-from app.services import library_reader, view_rows
+from app.services import library_reader, own_folder, view_rows
 from tests.fixtures import window_seed
 from tests.qt.conftest import wait_until
 from tests.qt.test_drag import (FakeWriter, LEFT, NONE, calls, mouse, move_global, release_global, row_point, settle,
@@ -424,14 +424,18 @@ def test_open_its_folder_opens_the_arrivals_own_folder(world, monkeypatch):
     open_tray(win)
     row = tray_rows(win)[1]
     rel = row.arrival.rel_paths[0]
-    want = os.path.dirname(os.path.join(path_utils.get_data_path("ja"), *rel.split("/")))
-    tray_of(win).act(row.arrival, "folder")                           # N4: gone: looked for on a worker, then said
-    assert wait_until(lambda: win.bar_line.full() == strings.TRAY_NO_FOLDER.format(path=want), 5)
-    assert opened == []
+    data = path_utils.get_data_path("ja")
+    want = os.path.dirname(os.path.join(data, *rel.split("/")))
+    os.makedirs(data, exist_ok=True)                    # the library's folder (always there in the app)
+    tray_of(win).act(row.arrival, "folder")             # N4: gone: looked for on a worker — a7: the nearest one there
+    above = own_folder.library_side(data, (rel,))
+    assert not os.path.isdir(want) and above != want and want.startswith(above)
+    assert wait_until(lambda: opened == [above], 5)
+    assert wait_until(lambda: not win.presses.any_live(), 5)
     os.makedirs(want, exist_ok=True)
     menu = tray_of(win).menu(row.key)
     next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["folder"][0]).trigger()
-    assert wait_until(lambda: opened == [want], 5) and calls(writer) == []
+    assert wait_until(lambda: opened == [above, want], 5) and calls(writer) == []
 
 
 def test_N1_after_its_show_is_greyed_while_none_of_its_show_is_in_current_and_N4_the_menu_goes_once_hidden(world):
@@ -1504,3 +1508,29 @@ def test_real_store_A4_two_picked_arrivals_to_goal_in_one_command_and_one_undo_b
     settle()
     next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO).click()
     assert wait_until(lambda: all(store.item(i)["tier"] == "arrivals" for i in ids), 5)
+
+
+def _own_folder_answers(monkeypatch, tmp_path, name):
+    """a7: `own_folder.read` answering with a real folder (a non-ASCII path, as the user keeps shows) and recording
+    what each press asked it."""
+    from app.services import own_folder
+    there = tmp_path / "ユーザーの棚" / name
+    there.mkdir(parents=True)
+    asked = []
+    monkeypatch.setattr(own_folder, "read", lambda opener, data, ids=(), rels=(), folders=():
+                        asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there))
+    return str(there), asked
+
+
+def test_open_its_folder_opens_where_the_arrival_came_from(world, monkeypatch, tmp_path):
+    """a7 (DIAGNOSIS 7): New arrivals' *Open its folder* opens the content's own folder (`own_folder`)."""
+    from app.qt import screens
+    opened = []
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
+    seed, win, writer = world()
+    open_tray(win)
+    row = tray_rows(win)[1]
+    there, asked = _own_folder_answers(monkeypatch, tmp_path, "星降る喫茶店")
+    tray_of(win).act(row.arrival, "folder")
+    assert wait_until(lambda: opened == [there], 5)
+    assert asked == [(tuple(row.arrival.item_ids), tuple(row.arrival.rel_paths), ())] and calls(writer) == []

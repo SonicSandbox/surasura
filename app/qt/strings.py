@@ -1001,6 +1001,7 @@ EXTRACT_UNDERSTAND = "I understand"
 EXTRACT_UNDERSTAND_TIP = ("Only use an Anki deck if it is 100 % immersion content: otherwise your list's frequencies "
                           "go wrong\n• It's an alternative to adding subtitles or a visual novel's text")
 EXTRACT_SECTION_NAME = "The section the parts go to"
+EXTRACT_SECTION_LINE = "The parts go into Current unless you pick another section"     # a7 (DIAGNOSIS 2)
 EXTRACT_SECTIONS = {"now": "Current", "soon": "Soon", "goal": "Goal"}
 EXTRACT_GO = "Extract"
 EXTRACT_GO_TIP = "Split the file into parts and add them to the chosen section"

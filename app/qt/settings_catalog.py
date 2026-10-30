@@ -200,6 +200,9 @@ ROWS = (
     _row("words_to_leave_out", "known", "door", door=("word-lists",)),
     _row("anki_sync_include_suspended", "known", "toggle", ("anki_sync_include_suspended",), adv=True,
          group="counts_as_known"),
+    # a7 (DIAGNOSIS 3): Connect's *Count as known in Anki* beside it — two answers to one question, one place
+    _row("known_from_anki", "known", "tablets", ("known_from_anki",), adv=True,
+         options=tuple(term for term, _label in settings_values.KNOWN), when=_CONNECT),
 
     # Anki & mining
     _row("anki_connection", "anki", "status"),
@@ -212,9 +215,6 @@ ROWS = (
     _row("connect_send_grammar", "anki", "toggle", ("connect_send_grammar",), when=_CONNECT),
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
-    _row("known_from_anki", "anki", "tablets", ("known_from_anki",),
-         options=tuple(term for term, _label in settings_values.KNOWN), when=_CONNECT),
-    _row("connect_video_folders", "anki", "list", ("connect_video_folders",), when=_CONNECT),
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
     # Q29: *Your own cards* — first, or in the list's order — and, under it, the tag that marks them (it keeps them
     # from being suspended under either choice, so it is never greyed)
@@ -226,6 +226,8 @@ ROWS = (
     _row("journey_settle_s", "anki", "number", ("journey_settle_s",), adv=True, bounds=(0, None)),
     _row("journey_settle_battery_s", "anki", "number", ("journey_settle_battery_s",), adv=True, bounds=(0, None)),
     _row("connect_anki_miner_profile", "anki", "text", ("connect_anki_miner_profile",), adv=True, when=_CONNECT),
+    # a7 (DIAGNOSIS 5): the library's own folders are always searched, so a folder here is only an extra
+    _row("connect_video_folders", "anki", "list", ("connect_video_folders",), adv=True, when=_CONNECT),
     _row("anki_connect_url", "anki", "text", ("anki_connect_url",), adv=True),
 
     # Junban (with modules/junban; its rows follow the switch, Put Anki back stays: N3)
@@ -467,6 +469,18 @@ def _one(settings, key, language):
         from app import settings_manager
         found = settings_manager.placing_rules(found)
     return found
+
+
+def help_line(row, settings, language):
+    """The line under `row`'s label now: its help, except *Count as known in Anki* with two states or more picked —
+    then it names them, all at once (a7, DIAGNOSIS 3: an "and" that catches almost nothing is never silent)."""
+    if row.id == "known_from_anki":
+        held = set(value(row, settings, language) or ())
+        picked = [t for t in row.options if t in held]                  # in the setting's order (`known_value`)
+        if len(picked) > 1:
+            names = S.OPTIONS[row.id]
+            return S.KNOWN_ALL_OF.format(states=" + ".join(names.get(t, t) for t in picked))
+    return row.help
 
 
 def value(row, settings, language):

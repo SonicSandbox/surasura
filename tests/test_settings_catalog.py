@@ -873,3 +873,68 @@ def test_B2_7_one_look_says_which_tools_are_here_and_one_rule_when_make_cards_is
     assert [T.make_cards_shown(level, ready=True) for level in (T.MISSING, T.INSTALLED, T.READY)] == [
         False, False, True]
     assert not T.make_cards_shown(T.INSTALLED, on=True, ready=True)
+
+
+# --- a7 (Sonic's alpha 6 try, DIAGNOSIS 3–5): where three of Connect's rows sit, and what they say ------------------- #
+CONNECT_ON = {"connect_enabled": True}
+
+
+def test_count_as_known_in_anki_sits_in_known_words_beside_count_suspended_cards_and_each_names_the_other():
+    """DIAGNOSIS 3: *Count as known in Anki* sat in Anki & mining while *Count suspended cards as known* sat in Known
+    words saying suspended cards are ones you struggled with — two answers to one question, apart and contradicting.
+    Now side by side under *What counts as known*, still shown only with Connect on, and each says what the other
+    does."""
+    ids = [r.id for r in catalog.ROWS]
+    row, suspended = catalog.ROW["known_from_anki"], catalog.ROW["anki_sync_include_suspended"]
+    assert (row.section, row.adv, row.kind) == ("known", True, "tablets")
+    assert ids.index("known_from_anki") == ids.index("anki_sync_include_suspended") + 1
+    assert suspended.group == "counts_as_known" and row.group is None          # under the one group name
+    assert "known_from_anki" in _shown(CONNECT_ON, "ja") and "known_from_anki" not in _shown({}, "ja")
+    assert "Count as known in Anki" in suspended.tip and "Count suspended cards as known" in row.tip
+    assert "every state you pick" in row.help                                   # the "and", in the line itself
+    assert "struggled" in suspended.tip and "whenever you suspended it" in suspended.tip
+
+
+def test_count_as_known_in_ankis_line_names_every_state_picked_so_an_and_is_never_silent():
+    """His `["suspended", "marked"]` counted only cards both suspended AND marked — almost none — with nothing on the
+    page saying so. Two states or more: the line names them, all at once; one or none: the row's own line."""
+    row = catalog.ROW["known_from_anki"]
+    two = dict(CONNECT_ON, known_from_anki=["suspended", "marked"])
+    assert catalog.help_line(row, two, "ja") == "Counts only cards that are Suspended + Marked, all at once"
+    three = dict(CONNECT_ON, known_from_anki=["flag:1", "suspended", "flag:3"])
+    assert catalog.help_line(row, three, "zh") == ("Counts only cards that are Suspended + Flag 1 (Red) + Flag 3 "
+                                                   "(Green), all at once")          # in the setting's order
+    for one in (["suspended"], [], "marked", ["suspended", "flag:33"]):        # a term it doesn't know is no state
+        assert catalog.help_line(row, dict(CONNECT_ON, known_from_anki=one), "ja") == row.help, one
+    assert catalog.help_line(catalog.ROW["connect_backlog_cap"], two, "ja") == catalog.ROW["connect_backlog_cap"].help
+
+
+def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_only_i_plus_one_another_set():
+    """DIAGNOSIS 4 (Sonic: "worth mentioning that it is i+1 AND the other stuff so people don't see i+1 and jump on
+    it"): `pick.py`'s *Your list* takes every listed word, an i+1 line first; *Only i+1* any word with one, list or not.
+    Both Settings (3.0's and 2.x's Tk panel) read one copy of the words."""
+    row = catalog.ROW["connect_mine_words"]
+    lines = {v: line for v, _label, line in catalog.options(row, CONNECT_ON, "ja")}
+    assert lines["list"].startswith("i+1 first, then the rest") and "every word on your list" in lines["list"]
+    assert "on your list or not" in lines["i1"] and "The rest get no card" in lines["i1"]
+    assert "i+1 lines first" in row.help and "Only i+1" in row.help
+    assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}
+    assert S.OPTIONS[row.id] == {v: label for v, label, _line in settings_values.WORDS}
+
+
+def test_more_video_folders_is_an_extra_under_more_options_that_says_the_library_is_always_searched():
+    """DIAGNOSIS 5: *Where videos are looked for* asked for folders the library's own already are; it is an extra now,
+    for videos kept elsewhere — under Anki & mining's *More options*, with Connect on."""
+    row = catalog.ROW["connect_video_folders"]
+    assert (row.section, row.adv, row.kind, row.label) == ("anki", True, "list", "More video folders")
+    assert "always searched" in row.help and "somewhere else" in row.help
+    assert "connect_video_folders" in _shown(CONNECT_ON, "ja") and "connect_video_folders" not in _shown({}, "ja")
+
+
+@pytest.mark.parametrize("query, row_id", [("where videos", "connect_video_folders"),
+                                           ("more video", "connect_video_folders"),
+                                           ("suspended", "known_from_anki"),
+                                           ("suspended", "anki_sync_include_suspended"),
+                                           ("i+1", "connect_mine_words")])
+def test_the_moved_rows_are_found_by_search_under_their_old_and_new_words(query, row_id):
+    assert row_id in catalog.find(query, CONNECT_ON, "ja", EVERYTHING)

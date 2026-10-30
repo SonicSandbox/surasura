@@ -1359,6 +1359,7 @@ class ShellWindow(QMainWindow):
             ny = self.needs_you
             self.phase.lands = lambda go: go.place != "needs" or ny.first_of(go.at) is not None
             self.needs_you.changed.connect(self.phase.refresh)
+            self.needs_you.changed.connect(self._connect_fault)
             needs_page.controller = self.needs_you
             self.needs_you.failures_in(services.status.snapshot().needs_you)
             if needs_page.view_model is not None:
@@ -2242,6 +2243,16 @@ class ShellWindow(QMainWindow):
         label.setToolTip(tip if text else "")
         label.setVisible(bool(text))
         self.status_paints[label] = self.status_paints.get(label, 0) + 1
+
+    def _connect_fault(self):
+        """A7N-3 (Sonic 2026-10-30): Connect's own Generate failed — its *Needs you* card (`feed.FAULT_KINDS`) makes ス
+        red with its words, as a Generate you start does: looked at, still said in the hover (no longer red); gone with
+        the card (fixed by the next Generate, dismissed, *Not now*)."""
+        from app.connect import feed as connect_feed
+        fault = next((e for e in self.needs_you.shown_entries()
+                      if (e.data or {}).get("connect") and e.kind in connect_feed.FAULT_KINDS), None)
+        self.phase.set_extra(phase_service.SURASURA, "connect-fault", "failed" if fault is not None else None,
+                             fault.title if fault is not None else None)
 
     def _paint_needs(self):
         """The Needs you tab: shown while anything is listed, its badge the unseen entries (the bar's failures, the

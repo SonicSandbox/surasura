@@ -171,19 +171,48 @@ def test_a_failure_stays_red_until_seen_or_the_next_run_and_a_job_that_ended_wai
     assert P.fold(last, ()) is last                                                         # nothing newer: the same
 
 
-def test_a_wait_on_you_is_amber_at_once_and_an_ended_one_stays_until_seen():
-    """Q1: each on its own circle — not timed → Anki Miner, Anki closed → Anki."""
+def test_a_wait_on_you_is_amber_at_once_with_where_it_is_decided_and_an_ended_one_stays_until_seen():
+    """Q1: each on its own circle — not timed → Anki Miner, Anki asking for you → Anki. a7 (Sonic 2026-10-29: amber
+    only with a decision): each names where it is decided (`go`), the Needs-you cards of its kinds."""
     registry = JobRegistry()
     registry.record("mine-wait", "Connect", automatic=True, reason="Not timed to its video",
                     needs="Not timed to its video")
     got = P.read(_views(registry))                                    # (automatic, but a wait on you shows at once)
     assert got[P.MINER].needs == "Not timed to its video" and not got[P.MINER].waiting
+    assert got[P.MINER].go == P.Go("needs", P.NEEDS_GO["mine-wait"].at) and "not-timed" in got[P.MINER].go.at
+    asks = registry.record("mine-anki", "Connect", automatic=True, reason="profile", needs="profile")
+    asks.finish(needs="Waiting for Anki's profile")                   # ended waiting on you: amber until looked at
+    last = P.fold({}, _views(registry))
+    got = P.read(_views(registry), last=last)
+    assert got[P.ANKI].needs == "Waiting for Anki's profile" and got[P.ANKI].last.state == "needs"
+    assert got[P.ANKI].go == P.Go("needs", ("anki-wait",)) and got[P.ANKI].done is None
+    seen = P.read(_views(registry), last=last, seen={asks.id})[P.ANKI]
+    assert seen.needs is None and seen.go is None
+
+
+def test_a7_a_wait_on_you_that_names_no_place_to_decide_is_never_amber():
+    """a7 (Sonic 2026-10-29: "If no decision it shouldn't be yellow but something else"): a job of a kind with no place
+    (`NEEDS_GO`) waiting on you is a plain wait (the still arc), one that ended so is said in its hover only; the
+    window's own wait on you with no `Go` is words only — never amber, so a press never lands where nothing is asked."""
+    registry = JobRegistry()
+    registry.record("anki-session", "Looking at Anki", automatic=True, reason="Anki is closed", needs="Anki is closed")
+    got = P.read(_views(registry))
+    assert got[P.ANKI].needs is None and got[P.ANKI].go is None and got[P.ANKI].waiting
+    registry = JobRegistry()
     sync = registry.submit("anki-sync", "Updating known words from Anki", lambda j: None)
     sync.finish(needs="Anki is closed")                               # Michi's ask: Anki closed during a sync
     last = P.fold({}, _views(registry))
     got = P.read(_views(registry), last=last)
-    assert got[P.ANKI].needs == "Anki is closed" and got[P.ANKI].last.state == "needs" and got[P.ANKI].done is None
-    assert P.read(_views(registry), last=last, seen={sync.id})[P.ANKI].needs is None
+    assert got[P.ANKI].needs is None and got[P.ANKI].last.state == "needs" and got[P.ANKI].last.words == "Anki is closed"
+    got = P.read((), extra={P.JUNBAN: [("needs", "a line naming no place")], P.ARRIVALS: [("info", "E: is offline")]})
+    assert got[P.JUNBAN].needs is None and got[P.JUNBAN].lines == ("a line naming no place",)
+    assert not (got[P.JUNBAN].running or got[P.JUNBAN].waiting or got[P.JUNBAN].failed)
+    assert got[P.ARRIVALS].needs is None and got[P.ARRIVALS].lines == ("E: is offline",)
+    assert not (got[P.ARRIVALS].running or got[P.ARRIVALS].waiting or got[P.ARRIVALS].failed)
+    got = P.read((), extra={P.JUNBAN: [("needs", "pick a deck", P.Go("junban", "deck"))],
+                            P.ARRIVALS: [("failed", "it stopped")]})
+    assert got[P.JUNBAN].needs == "pick a deck" and got[P.JUNBAN].go == P.Go("junban", "deck")
+    assert got[P.ARRIVALS].failed == "it stopped" and got[P.ARRIVALS].needs is None
 
 
 def test_presses_entries_and_the_windows_own_light_their_circles():
@@ -193,7 +222,8 @@ def test_presses_entries_and_the_windows_own_light_their_circles():
     entries = (S.Entry("Command line (generate): it failed", "t1", False, "cli:generate"),
                S.Entry("Command line (status): it failed", "t2", False, "cli:status"),       # no circle: Needs you only
                S.Entry("Generate failed", "t3", True, "generate"))                           # seen already
-    extra = {P.ARRIVALS: [("needs", "D:\\Anime can't be reached"), ("waiting", "Saving your moves…")]}
+    extra = {P.ARRIVALS: [("needs", "D:\\Anime can't be reached", P.Go("needs", ("folder-gone",))),
+                          ("waiting", "Saving your moves…")]}
     got = P.read((), presses.showing(), entries, extra)
     assert got[P.ANKI].waiting and not got[P.ANKI].running
     assert got[P.SURASURA].failed == "Command line (generate): it failed"

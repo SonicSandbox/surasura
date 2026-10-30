@@ -345,7 +345,9 @@ CONNECT_JOB_MISSED = 2                    # looks without mining before its job 
 # prompt, another profile or none (`mine-anki`, `needs`: Anki's circle, amber) — and the ones waiting on Anki for
 # something that clears by itself, you reviewing, Anki busy (`mine-anki`, `anki_wait`: Anki's circle, a still arc;
 # alpha 2's try, T1: `runner.anki_needs_you` is the one rule). One you stopped waits for your *Mine now*: no job
-# (your own choice).
+# (your own choice). a7 (Sonic 2026-10-29: yellow only with a decision): Anki closed is no decision — its cards are made
+# once Anki opens — so its episodes wait in the plain slot (`anki_wait`, a still arc); *Needs you* keeps its line and
+# its *Open Anki* (`needs._anki_entry`, read from the same record).
 CONNECT_WAIT_KIND = "mine-wait"
 CONNECT_ANKI_KIND = "mine-anki"
 CONNECT_WAIT_LABEL = "Connect"
@@ -370,12 +372,14 @@ def _waits(items):
     What waits on you (`needs`: no video, not timed, another *Needs you* entry) says its kind's words: each such
     reason names its own episode or folder, which *Needs you* and the rows already say (adversary A1: one clause an
     episode)."""
-    from app.connect import feed as connect_feed, runner
+    from app.connect import anki_session, feed as connect_feed, runner
     reasons = {}
     for it in items:
         slot = CONNECT_WAITS.get(it.kind)
         if slot is None or it.tip == runner.STOPPED_BY_YOU:
             continue
+        if slot == "anki" and it.tip in (runner.ANKI_CLOSED, anki_session.CLOSED):
+            slot = "anki_wait"                          # a7: Anki closed, no decision (above)
         why = connect_feed.WORDS[it.kind] if slot == "needs" else ((it.tip or "").strip().rstrip(".") or it.words)
         reasons.setdefault(slot, {}).setdefault(why, 0)
         reasons[slot][why] += 1

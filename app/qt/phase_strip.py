@@ -5,7 +5,8 @@
   on its 1 px tile). The state is shown only **around** the mark, on its ring: dim at rest · the accent arc turning
   while it runs (`motion.spin_arc`, the press's one look; still under Reduced motion) · a still, fainter arc while it
   waits · a done tick — the ring in `ok`, held `press.LINGER_S` (2 s) then faded back (`MOTION["phase-fade"]`, the
-  one clock) · failed red until hovered or the next run · needs-you amber. Several can be lit at once.
+  one clock) · failed red until hovered or the next run · needs-you amber — only with a decision waiting, and a
+  press then opens where it is, highlighted (a7, below). Several can be lit at once.
 - **The hover** (the bubble, `tooltip.py`, rich text; alpha 3, Sonic 2026-10-24: short and plain): the circle's name
   and what it does on one line; what it is doing now — one line per job under way (`status.job_line`), else its own
   standing line (Anki Miner: Connect's, 順: the re-order host's — the old ⇄ and ⇅ marks), else, lit by a press with no
@@ -14,13 +15,17 @@
   PHASE_JOB_NAMES`, by kind or label: *Indexing* is *Reading your files*). A failure or an ended wait on you counts as
   looked at once its bubble has really shown and the hover leaves it (`Tooltips.shown`: never on a pass by the keyboard
   or the pointer quicker than the bubble). Its words move in place while it shows.
-- **順 amber while its line asks for Sonic** (alpha 3, the lead's ruling on IKA3-1 — Sonic's T1 rule): the re-order
-  host's line said as giving up (`replan_preview.GivesUp`: Anki closed, a Generate to press, a deck to pick, an
-  unfinished run to undo) is 順's *needs* for as long as it stands; one whose fix is in 順's window
-  (`replan_preview.InJunban`) makes a 順 press open that window (`asks_in_window`) instead of the settings.
-- **届 amber while a source folder is gone** (T6, Sonic 2026-10-24): the shell's own part (`set_extra`), for as long as
-  its *Needs you* card stands (*Keep waiting* takes both away); a 届 press opens *Needs you* then (`set_needs_asks`,
-  `asks_in_window`), else Sources — the 順 rule above, one rule for both.
+- **Amber means a decision, and a press goes to it** (a7, Sonic 2026-10-29: "If yellow i would expect it to let me go
+  somewhere to make a decision that is highlighted. If no decision it shouldn't be yellow but something else."): a
+  circle is amber only while a wait on you names where it is decided (`phase.Go`, the circle's `go`), and its press
+  opens that place with the row highlighted (`go(circle)`: the shell's `_circle_pressed`) — *Needs you* at the card
+  (Anki Miner's episodes waiting on you, Anki asking for you, a gone folder) or 順's window at its control (the
+  re-order host's `replan_preview.InJunban`: a deck to pick, an unfinished reorder to undo). What decides nothing is
+  never amber: 順's other lines (Anki closed, a Generate to press, Only i+1 or Coverage) are words in its hover, a
+  `replan_preview.Fails` is red; Anki closed is a plain wait (Connect's `anki_wait` slot); an offline folder is words
+  in 届's hover. Its hover's last line says what to decide and where (`press_words`).
+- **届 amber while a source folder is gone** (T6, Sonic 2026-10-24): the shell's own part (`set_extra`, with its
+  `Go`), for as long as its *Needs you* card stands (*Keep waiting* takes both away).
 - **A press opens the circle's settings** (alpha 3, Sonic: "I'd actually prefer if pressing it opened up their
   settings"; PROVISIONAL, he feels it in alpha 3 — it replaces build 6's "no buttons"): `opened(circle)`, the shell
   reveals `SETTINGS[circle]` (the Settings tab is there at once: no pending mark, the press rule's one-frame case). Only
@@ -32,7 +37,7 @@
   job to show (Q6's 1 s) or a tick's end — never a frame's pace.
 - **Fed by** the registry's raw snapshot (`set_jobs`, `bridge.jobs_changed`), the status snapshot (`set_status`:
   *Needs you*'s entries by source), the window's presses (`follow_presses`) and the window's own (`set_extra`: the
-  offline folders, moves waiting on a busy store). The status snapshot's `replan` and `connect` lines are 順's and
+  offline and gone folders, moves waiting on a busy store). The status snapshot's `replan` and `connect` lines are 順's and
   Anki Miner's standing lines (`set_status`; their words moved in place, no circle repainted: S19).
 """
 import html
@@ -67,6 +72,14 @@ def _named(view):
     """`view` with its plain name for the hover (`strings.PHASE_JOB_NAMES`, by kind, else by label), or as it is."""
     name = strings.PHASE_JOB_NAMES.get(view.kind) or strings.PHASE_JOB_NAMES.get(view.label)
     return view._replace(label=name) if name and name != view.label else view
+
+
+def _junban_part(line):
+    """順's line as its circle's own part (a7): a decision in 順's window (`InJunban`) amber, with where — the Undo for
+    the unfinished reorder, else the deck list; a fault (`Fails`) red."""
+    if isinstance(line, replan_preview.Fails):
+        return ("failed", str(line))
+    return ("needs", str(line), phase.Go("junban", "restore" if line == replan_preview.RESTORE_FIRST else "deck"))
 
 
 def _mix(a, b, t):
@@ -108,8 +121,7 @@ class PhaseStrip(QWidget):
         self._pressed = None                   # the circle a mouse press went down on
         self._focus = None                     # the circle the keyboard is on
         self._hand = False                     # the pointer shows the hand (over a circle that opens)
-        self._asks = None                      # 順's line when it asks for the user (`replan_preview.GivesUp`), or None
-        self._needs_asks = False               # T6: a gone folder's *Needs you* card stands: a 届 press opens that page
+        self._asks = None                      # 順's line when it is a part of its own (a decision or a fault), or None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.refresh)
@@ -127,14 +139,14 @@ class PhaseStrip(QWidget):
     def set_status(self, snap):
         standing = {c: getattr(snap, field, None) or "" for c, field in STANDING.items()}
         asks = standing.get(phase.JUNBAN)
-        asks = asks if isinstance(asks, replan_preview.GivesUp) and asks else None
+        asks = asks if isinstance(asks, (replan_preview.InJunban, replan_preview.Fails)) and asks else None
         standing = {c: line for c, line in standing.items() if line and not (c == phase.JUNBAN and asks)}
         parts = self._extra.get(phase.JUNBAN, {})
         if (parts.get("asks") or (None, None))[1] != asks or type(self._asks) is not type(asks):
             self._asks = asks
             parts = self._extra.setdefault(phase.JUNBAN, {})
             if asks:
-                parts["asks"] = ("needs", str(asks))
+                parts["asks"] = _junban_part(asks)
             else:
                 parts.pop("asks", None)
             self._entries = tuple(getattr(snap, "needs_you", None) or ())
@@ -151,29 +163,20 @@ class PhaseStrip(QWidget):
             self._retext()
             self.setAccessibleDescription(self.summary())
 
-    def asks_in_window(self, circle):
-        """Whether `circle`'s press opens where its fix is rather than its settings: 順 while its line's fix is in 順's
-        window (the unfinished reorder's Undo, a deck to pick: `replan_preview.InJunban`); 届 while a gone folder's
-        *Needs you* card stands (T6, `set_needs_asks`)."""
-        if circle == phase.ARRIVALS:
-            return self._needs_asks
-        return circle == phase.JUNBAN and isinstance(self._asks, replan_preview.InJunban)
-
-    def set_needs_asks(self, on):
-        """T6: a gone folder's *Needs you* card stands (or no longer does): 届's press opens that page — its hover's
-        last line says so (words only: no circle repaints for it, S19)."""
-        on = bool(on)
-        if on == self._needs_asks:
-            return
-        self._needs_asks = on
-        self._retext()
-        self.setAccessibleDescription(self.summary())
+    def go(self, circle):
+        """Where `circle`'s decision is (`phase.Go`) while it is amber, else None: its press opens that place, the row
+        highlighted, instead of its settings (a7)."""
+        st = self.states[circle]
+        return st.go if st.needs else None
 
     def press_words(self, circle):
-        """What a press on `circle` does, as its hover's last line says it."""
-        if not self.asks_in_window(circle):
+        """What a press on `circle` does, as its hover's last line says it: while it is amber, what to decide and where."""
+        go = self.go(circle)
+        if go is None:
             return strings.PHASE_PRESS
-        return strings.PHASE_PRESS_NEEDS if circle == phase.ARRIVALS else strings.PHASE_PRESS_WINDOW
+        if go.place == "junban":
+            return strings.PHASE_PRESS_RESTORE if go.at == "restore" else strings.PHASE_PRESS_DECK
+        return strings.PHASE_PRESS_NEEDS
 
     def set_opens(self, circles):
         """The circles whose press opens their settings (the shell's: those with settings to show)."""
@@ -193,16 +196,18 @@ class PhaseStrip(QWidget):
         presses.subscribe(lambda _p: self.refresh())
         self.refresh()
 
-    def set_extra(self, circle, key, state=None, words=None):
-        """The window's own part of `circle` (`state` "waiting" · "running" · "needs", with its words), or none."""
+    def set_extra(self, circle, key, state=None, words=None, go=None):
+        """The window's own part of `circle` (`state` "waiting" · "running" · "info" · "failed" · "needs" — amber only
+        with `go`, where it is decided: `phase.Go`, a7 — with its words), or none."""
         parts = self._extra.setdefault(circle, {})
+        part = (state, words) if go is None else (state, words, go)
         if state is None:
             if parts.pop(key, None) is None:
                 return
-        elif parts.get(key) == (state, words):
+        elif parts.get(key) == part:
             return
         else:
-            parts[key] = (state, words)
+            parts[key] = part
         self.refresh()
 
     # --- reading -------------------------------------------------------------------------------------------- #
@@ -217,7 +222,8 @@ class PhaseStrip(QWidget):
         for p in presses:
             if p.live():
                 self._seen.discard(("press", p.key))           # pressed again: its next failure is news
-        extra = {c: list(parts.values()) for c, parts in self._extra.items() if parts}
+        extra = {c: [p for key, p in parts.items() if not (p[0] == "failed" and ("extra", c, key, p[1]) in self._seen)]
+                 for c, parts in self._extra.items() if parts}
         got = phase.read(self._views, presses, self._entries, extra, self._last, self._seen, now)
         for c in phase.CIRCLES:
             st = got[c]
@@ -247,6 +253,7 @@ class PhaseStrip(QWidget):
             out.append(end.id)
         out += [("entry", e.text, e.at) for e in self._entries if phase.SOURCES.get(getattr(e, "source", None)) == circle]
         out += [("press", p.key) for p in self._shown if not p.live() and phase.press_circle(p.key) == circle]
+        out += [("extra", circle, key, p[1]) for key, p in self._extra.get(circle, {}).items() if p[0] == "failed"]
         return out
 
     def _wake(self, now):
@@ -423,13 +430,15 @@ class PhaseStrip(QWidget):
             what = getattr(self._last.get(circle), "label", None) or strings.PHASE_NAMES[circle]   # the job's name
             if last.state == "failed":
                 out.append(esc(strings.PHASE_FAILED.format(what=what, time=at, why=last.words or "")))
-            elif last.state == "needs":
+            elif last.state == "needs" and st.needs:
                 out.append(esc(strings.PHASE_NEEDS.format(why=last.words)))
+            elif last.state == "needs":                 # (a7: it named no place to decide — no *Needs you*)
+                out.append(esc(strings.PHASE_ENDED_WAITING.format(what=what, time=at, why=last.words)))
             elif last.state == "stopped":
                 out.append(esc(strings.PHASE_STOPPED.format(what=what, time=at)))
             else:
                 out.append(esc(strings.PHASE_DONE.format(what=what, time=at)))
-        if circle in self.opens:
+        if circle in self.opens or self.go(circle) is not None:
             press = self.press_words(circle)
             out.append(f'<span style="color:{dim}">{esc(press)}</span>')
         return '<p style="margin:0">' + "<br>".join(out) + "</p>"
@@ -452,7 +461,7 @@ class PhaseStrip(QWidget):
 
     # --- the press: a circle's settings (alpha 3) --------------------------------------------------------------- #
     def _pressable(self, circle):
-        return circle is not None and circle in self.opens
+        return circle is not None and (circle in self.opens or self.go(circle) is not None)
 
     def _under_mouse(self):
         return self.circle_at(self.mapFromGlobal(QCursor.pos())) if self.underMouse() else None

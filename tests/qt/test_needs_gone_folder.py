@@ -189,12 +189,13 @@ def test_todoke_is_amber_while_a_gone_card_stands_and_its_press_opens_needs_you_
     _told(win, language, _gone_row(language))
     assert wait_until(lambda: _cards(ny), 10)
     assert win.phase.states[ARRIVALS].needs                               # amber
-    assert win.phase.asks_in_window(ARRIVALS)
+    assert win.phase.go(ARRIVALS) == phase_service.Go("needs", ("folder-gone",))
     assert strings.PHASE_PRESS_NEEDS in win.phase.hover_text(ARRIVALS)
     win._circle_pressed(ARRIVALS)
     assert win.current_tab() == "needs" and opened == []
-    _told(win, language, _away_row())                                     # only away now: the line's amber, Sources
-    assert not win.phase.asks_in_window(ARRIVALS)
+    assert ny.revealed == next(e.key for e in ny.entries if e.kind == "folder-gone")   # a7: at its card, washed
+    _told(win, language, _away_row())                                     # only away now: words, no amber, Sources
+    assert win.phase.go(ARRIVALS) is None and not win.phase.states[ARRIVALS].needs
     win.show_tab("current")
     win._circle_pressed(ARRIVALS)
     assert opened == ["library_folders"]

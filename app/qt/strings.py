@@ -549,10 +549,13 @@ PHASE_STOPPED = "Last: {what} — stopped {time}"
 PHASE_FAILED = "Last: {what} — failed {time}: {why}"
 PHASE_FAILED_NOW = "Failed: {why}"
 PHASE_NEEDS = "Needs you: {why}"
+PHASE_ENDED_WAITING = "Last: {what} — stopped {time}: {why}"   # a7: it ended waiting, with nothing for you to decide
 PHASE_TIME = "%H:%M"
 PHASE_PRESS = "Press to open its settings"         # the hover's last line, on a circle that has some (mouse or keys)
-PHASE_PRESS_WINDOW = "Press to open 順's window and fix it"   # 順 while its line's fix is in its window (InJunban)
-PHASE_PRESS_NEEDS = "Press to open Needs you and answer it"   # 届 while a gone folder's card stands (T6)
+# a7 (Sonic 2026-10-29): an amber circle's last line — what waits for your decision, and where a press takes you to it
+PHASE_PRESS_NEEDS = "Waiting for your decision: press to answer it in Needs you"
+PHASE_PRESS_DECK = "Waiting for your decision: press to pick your deck in 順's window"
+PHASE_PRESS_RESTORE = "Waiting for your decision: press to undo the unfinished reorder in 順's window"
 # T6: 届's words while a source folder is gone (its *Needs you* card stands)
 PHASE_FOLDER_GONE = "{name} was moved or deleted: Needs you asks what to do"
 PHASE_FOLDERS_GONE = "{n} folders were moved or deleted: Needs you asks what to do"

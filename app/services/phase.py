@@ -10,7 +10,8 @@ of the five circles at the bar's bottom left each piece of work lights, and in w
   window's presses by their key's first word (`PRESSES`: lit before the job exists; one that failed is the circle's
   failure — its words, red until hovered or the next run: PS-A1), *Needs you*'s entries by
   their source (`SOURCES`; none → no circle, still in Needs you: Q1), and what the window adds itself (`extra`: the
-  offline folders → 届 amber, moves waiting on a busy store → 届 queued).
+  offline folders → 届's hover (a7: a fact, no decision), a gone folder → 届 amber, moves waiting on a busy store → 届
+  queued).
 - **Its state** (`Circle`): `running` (the accent arc turns) · `waiting` (queued or held: a still arc) · `needs` (it
   waits on you: amber) · `failed` (red until hovered — `seen` — or the next run: Q3) · `done` (the newest ended run,
   for the 2 s tick the painter shows on the way from lit to dim) — and the hover's `lines` (one per live job, its
@@ -19,6 +20,11 @@ of the five circles at the bar's bottom left each piece of work lights, and in w
   lights its circle once it has run (or waited, a recorded wait) that long; a wait on you shows at once. One never
   shown ends without a tick. A job leaves the status line only once a circle will show it (`placed`, Q5): an
   automatic one held before it starts (a gate, a queue) has no start to count from, so the line keeps it (PS-A2).
+- **Amber only with a decision, and where it is** (a7, Sonic 2026-10-29: "If yellow i would expect it to let me go
+  somewhere to make a decision that is highlighted. If no decision it shouldn't be yellow but something else."): a
+  wait on you counts as `needs` only when it names its place (`Go`): a job's by its kind (`NEEDS_GO`), the window's own
+  part with its own. A wait on you that names none is said in the hover and never painted amber; a fact the window
+  adds is `info` (words only) and a fault `failed` (red). The press opens `Circle.go` with its row highlighted.
 - **A run is a job that ran** (`ran`): one that ended before it started (cancelled while queued, a queued automatic
   job absorbed by yours) or while it waited (a recorded wait that went: an episode now mined) is no *Done*, no tick
   and no failure.
@@ -54,7 +60,18 @@ SOURCES = {
     "cli:junban": JUNBAN, "cli:resort": JUNBAN, "cli:backfill": JUNBAN,
 }
 
-Circle = namedtuple("Circle", "running waiting needs failed done lines last")
+# a7: where a wait on you is decided — `place` "needs" (the *Needs you* page, at its first card of the kinds `at`) or
+# "junban" (順's window, at its control `at`: "deck" · "restore")
+Go = namedtuple("Go", "place at")
+# The job kinds that wait on you -> where (Connect's mirror, `status.mirror_connect`): its episodes with no video, not
+# timed or held by one of its own entries are each a card on *Needs you*; Anki asking for you (a prompt, another
+# profile — never Anki closed: a plain wait, `status._waits`) is that page's Anki line
+NEEDS_GO = {
+    "mine-wait": Go("needs", ("no-video", "not-timed", "no-pairing", "repick", "mine-failed", "error")),
+    "mine-anki": Go("needs", ("anki-wait",)),
+}
+
+Circle = namedtuple("Circle", "running waiting needs failed done lines last go", defaults=(None,))
 IDLE = Circle(False, False, None, None, None, (), None)
 Ended = namedtuple("Ended", "state words at id")       # the hover's last line: `state` "done" · "stopped" · "failed"
 
@@ -127,12 +144,14 @@ def ended(view):
 def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(), now=None):
     """{circle: Circle} now. `views`: the registry's snapshot; `presses`: the window's live presses (each with `key`,
     `state`, `words`: the live ones and those that failed); `entries`: *Needs you*'s (`status.Entry`); `extra`:
-    {circle: [(state, words)]} the window adds (`state` "waiting" · "running" · "needs"); `last`: `fold`'s; `seen`: the
+    {circle: [(state, words[, go])]} the window adds (`state` "waiting" · "running" · "needs" — amber only with its `go`,
+    a7 — · "info" · "failed"); `last`: `fold`'s; `seen`: the
     failures and ended waits on you looked at (their job ids, `("entry", text, at)` or `("press", key)`); `now`: the
     wall clock (time.time())."""
     now = time.time() if now is None else now
     last = last or {}
-    got = {c: {"running": False, "waiting": False, "needs": [], "failed": None, "lines": []} for c in CIRCLES}
+    got = {c: {"running": False, "waiting": False, "needs": [], "failed": None, "lines": [], "go": None}
+           for c in CIRCLES}
     live = {c: False for c in CIRCLES}
     for v in views:
         circle = circle_of(v)
@@ -143,8 +162,11 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
         if not shown(v, now):
             continue
         live[circle] = True
-        if v.needs:
+        if v.needs and NEEDS_GO.get(v.kind):
             g["needs"].append(v.needs)
+            g["go"] = g["go"] or NEEDS_GO[v.kind]
+        elif v.needs:
+            g["waiting"] = True                 # (a wait on you naming no place: a plain wait, its words in the hover)
         elif v.state in (jobs_module.RUNNING, jobs_module.CANCELLING):
             g["running"] = True
         else:
@@ -168,11 +190,15 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
         g = got.get(circle)
         if g is None:
             continue
-        for state, words in parts:
+        for state, words, *go in parts:
+            go = go[0] if go else None
             if words:
                 g["lines"].append(words)
-            if state == "needs":
+            if state == "needs" and go is not None:
                 g["needs"].append(words)
+                g["go"] = g["go"] or go
+            elif state == "failed":
+                g["failed"] = g["failed"] or words or "failed"
             elif state == "running":
                 g["running"] = live[circle] = True
             elif state == "waiting":
@@ -188,16 +214,17 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
         g = got[circle]
         end = last.get(circle)
         tail = ended(end) if end is not None else None
-        failed, done, needs = g["failed"], None, list(g["needs"])
+        failed, done, needs, go = g["failed"], None, list(g["needs"]), g["go"]
         if tail is not None and not live[circle]:
             if tail.state == "failed" and end.id not in seen:
                 failed = failed or tail.words or "failed"
-            elif tail.state == "needs" and end.id not in seen:
+            elif tail.state == "needs" and end.id not in seen and NEEDS_GO.get(end.kind):
                 needs.append(tail.words)
+                go = go or NEEDS_GO[end.kind]
             elif tail.state == "done":
                 done = end.id
         if live[circle]:
             failed = None                       # the next run under way: the failure before it is over (Q3)
         out[circle] = Circle(g["running"], g["waiting"] and not g["running"], "; ".join(needs) or None, failed,
-                             done, tuple(g["lines"]), tail)
+                             done, tuple(g["lines"]), tail, go if needs else None)
     return out

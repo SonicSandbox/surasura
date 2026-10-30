@@ -918,3 +918,14 @@ def test_connects_mirrored_job_is_what_the_close_names_and_never_what_it_stops()
     J.stop_at_quit(registry)
     assert [v.label for v in registry.live(S.CONNECT_JOB_KIND)] == [S.CONNECT_JOB_LABEL]
     S.mirror_connect(registry, None)
+
+
+def test_a7_the_reorder_lines_kind_changing_with_the_same_words_is_news_to_the_strip():
+    """a7: "Anki not re-ordered: …" said as a retry (a plain line), then as a fault (`Fails`): the same words, but the
+    strip paints them differently, so the second is delivered."""
+    from app import replan_preview as rp
+    from app.services.status import Snapshot, _content
+    base = dict(lines=(), failure=None, needs_you=(), ankiweb=None, connect=None, logs=None, taken_at=0)
+    words = "Anki not re-ordered: the deck TheDeck isn't in Anki"
+    assert _content(Snapshot(**base, replan=words)) != _content(Snapshot(**base, replan=rp.Fails(words)))
+    assert _content(Snapshot(**base, replan=words)) == _content(Snapshot(**dict(base, taken_at=9), replan=words))

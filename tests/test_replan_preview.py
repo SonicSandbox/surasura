@@ -1939,6 +1939,31 @@ def test_every_line_the_host_says_is_placed_as_giving_up_or_not():
     assert found == TELL_SITES
 
 
+def test_a7_an_automatic_reorder_refused_on_all_decks_is_the_deck_to_pick_in_junban():
+    """a7: All decks met by the job itself (`one_deck`, the scope changed after the gate) is no fault: the deck to
+    pick in 順's window (InJunban: amber, its press opens the deck list) — told by the report's flag, never its words."""
+    from types import SimpleNamespace
+    from modules.junban import auto
+    host, lines = _host()
+    original = reposition.run, auto.decide_actions
+    words = "An automatic re-order runs for one deck only — choose one in the 順 window."
+    reposition.run = lambda *a, **k: {"ok": False, "one_deck": True, "problems": [words]}
+    auto.decide_actions = lambda settings: None
+    try:
+        host._write({}, SimpleNamespace(front_size=0, kind=None, front_ids=frozenset()), "move")
+    finally:
+        reposition.run, auto.decide_actions = original
+    assert lines[-1] == words and isinstance(lines[-1], replan_preview.InJunban)
+    assert host._retry_at is None
+
+
+def test_a7_the_job_on_all_decks_says_one_deck_in_its_report(monkeypatch):
+    from types import SimpleNamespace
+    report = reposition.run({"junban_scope": "all", "enable_junban": True}, job=SimpleNamespace(
+        automatic=True, actions=None, probe=None))
+    assert report["one_deck"] is True and not report["ok"]
+
+
 def test_anki_not_reordered_says_whether_the_host_tries_again():
     """FP-A2: "Anki not re-ordered: …" is retried in RETRY_S when Anki went away mid-write (or cards failed) — a plain
     line, the window's press keeps turning — and never retried after a refusal only the user can clear: a line that

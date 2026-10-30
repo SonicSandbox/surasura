@@ -213,6 +213,85 @@ def test_junban_with_nothing_to_decide_is_never_amber_and_its_press_opens_its_se
 
 
 # --- the one rule, across every circle -------------------------------------------------------------------------- #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a7_episodes_held_by_any_connect_need_open_its_card_whatever_its_kind(world, language, washed):
+    """a7: a prepare step's need (Anki's known words to sync first, a store it can't read …) holds every episode —
+    Anki Miner amber, *Waiting for you: see Needs you* — and its press finds that card, whatever its kind: every card
+    of Connect's record is Anki Miner's place, never only the kinds the strip knew."""
+    from app.connect import feed
+    seed, win, writer, ny = world(language, looks=Looks())
+    entry = _connect_entry(language, kind="known-sync")
+    _entries(ny, entry)
+    _mirror(win, _item(feed.HELD, "Anki's known words are read first: sync them"),
+            _item(feed.HELD, "Anki's known words are read first: sync them"))
+    assert win.phase.states[P.MINER].needs == "Waiting for you: see Needs you · 2 episodes"
+    win._circle_pressed(P.MINER)
+    _settle()
+    assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
+
+
+def test_a7_amber_waits_for_its_card_and_goes_when_the_card_is_put_away(world, washed, monkeypatch):
+    """a7 (and at startup): a wait on you is amber only while its *Needs you* card is on the
+    page — before the page's first gather it is a plain wait (the press opens the settings), amber once the card lands,
+    and a plain wait again when *Not now* puts the card away (nothing left to land on)."""
+    from app.connect import feed
+    seed, win, writer, ny = world("ja", looks=Looks())
+    opened = []
+    monkeypatch.setattr(win, "open_setting", lambda target, *a, **k: opened.append(target))
+    _entries(ny)
+    _mirror(win, _item(feed.NOT_TIMED, f"{EPISODE['ja']}: Not timed to its video"))
+    st = win.phase.states[P.MINER]
+    assert st.needs is None and st.waiting and win.phase.go(P.MINER) is None
+    win._circle_pressed(P.MINER)
+    assert opened == ["connect_enabled"] and washed == []
+    entry = _connect_entry("ja")
+    _entries(ny, entry)                                                   # the gather lands its card: amber
+    assert win.phase.states[P.MINER].needs and win.phase.go(P.MINER) is not None
+    win._circle_pressed(P.MINER)
+    _settle()
+    assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
+    ny._hidden_now[entry.key] = None                                      # *Not now* (its press's first frame)
+    ny._paint()
+    assert win.phase.states[P.MINER].needs is None and win.phase.go(P.MINER) is None
+
+
+def test_a7_a_junban_fault_looked_at_stays_said_and_the_same_fault_again_is_red_again(junban_world):
+    """a7: a fault the hover has shown stays in the hover (no longer red), and the same fault said again after the
+    host's next run is news again: red, said once."""
+    win = junban_world.win
+    s = win.phase
+    fault = rp.Fails("Anki not re-ordered: the deck's new cards are shown in random order")
+
+    def look_at_it():
+        s._looking = (P.JUNBAN, tuple(s._marks(P.JUNBAN, s.states[P.JUNBAN])))
+        s.tooltips = type("T", (), {"shown": (s, s.rect_of(P.JUNBAN).toAlignedRect()), "hide": lambda self: None,
+                                    "request": lambda self, *a: None, "retext": lambda self, *a: None,
+                                    "hide_part_unless": lambda self, *a: None})()
+        s._leave_hover(None)
+    win.show_status(win.services.status.snapshot()._replace(replan=fault))
+    assert s.states[P.JUNBAN].failed == str(fault) and s.hover_text(P.JUNBAN).count("random order") == 1
+    look_at_it()
+    st = s.states[P.JUNBAN]
+    assert not st.failed and st.lines == (str(fault),) and "random order" in s.hover_text(P.JUNBAN)
+    win.show_status(win.services.status.snapshot()._replace(replan="Anki: placing tomorrow's 20 cards…"))
+    win.show_status(win.services.status.snapshot()._replace(replan=fault))
+    assert s.states[P.JUNBAN].failed == str(fault) and s.hover_text(P.JUNBAN).count("random order") == 1
+
+
+def test_a7_the_keyboard_reaches_every_circle_a_press_can_open(junban_world):
+    """a7: the keyboard's circles are the pointer's — an amber one with a place too."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtCore import QEvent
+    win = junban_world.win
+    s = win.phase
+    s.set_opens({P.ARRIVALS})
+    s.set_extra(P.ANKI, "asks", "needs", "Waiting for Anki's profile", P.Go("needs", ("anki-wait",)))
+    s._focus = P.ARRIVALS
+    s.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Right, Qt.KeyboardModifier.NoModifier))
+    assert s._focus == P.ANKI
+
+
 def test_every_amber_circle_names_where_to_decide_and_none_is_amber_without_one(junban_world):
     """Whatever lights them, no circle is amber without a `go`; every `go` is a place the shell opens."""
     from app.connect import feed

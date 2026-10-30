@@ -800,9 +800,10 @@ class Host:
         finally:
             self._working(False)
         self._sync_at = self._due_sync(settings)
-        if report.get("stands_aside"):
+        if report.get("stands_aside") or report.get("one_deck"):
             # FT C1: a put-back cleared this deck while the job waited for the lock — nothing written; the next job's
-            # gate reads the file and stands aside too. Said, never retried: picking the deck in 順 is the user's.
+            # gate reads the file and stands aside too. Said, never retried: picking the deck in 順 is the user's. So
+            # is All decks met by the job itself (`one_deck`: the scope changed after the gate was asked).
             self._tell((report.get("problems") or [""])[0], in_junban=True)
             return None
         if report.get("busy"):

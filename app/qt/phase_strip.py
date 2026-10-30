@@ -122,6 +122,7 @@ class PhaseStrip(QWidget):
         self._focus = None                     # the circle the keyboard is on
         self._hand = False                     # the pointer shows the hand (over a circle that opens)
         self._asks = None                      # 順's line when it is a part of its own (a decision or a fault), or None
+        self.lands = None                      # Go -> whether its place holds the decision now (the shell's, a7)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.refresh)
@@ -147,6 +148,7 @@ class PhaseStrip(QWidget):
             parts = self._extra.setdefault(phase.JUNBAN, {})
             if asks:
                 parts["asks"] = _junban_part(asks)
+                self._seen.discard(("extra", phase.JUNBAN, "asks", str(asks)))   # said again: news again
             else:
                 parts.pop("asks", None)
             self._entries = tuple(getattr(snap, "needs_you", None) or ())
@@ -222,9 +224,11 @@ class PhaseStrip(QWidget):
         for p in presses:
             if p.live():
                 self._seen.discard(("press", p.key))           # pressed again: its next failure is news
-        extra = {c: [p for key, p in parts.items() if not (p[0] == "failed" and ("extra", c, key, p[1]) in self._seen)]
+        extra = {c: [("info", p[1]) if p[0] == "failed" and ("extra", c, key, p[1]) in self._seen else p
+                     for key, p in parts.items()]          # (a fault looked at: still said, no longer red)
                  for c, parts in self._extra.items() if parts}
         got = phase.read(self._views, presses, self._entries, extra, self._last, self._seen, now)
+        got = {c: self._landed(st) for c, st in got.items()}
         for c in phase.CIRCLES:
             st = got[c]
             lit = st.running or st.waiting
@@ -243,6 +247,13 @@ class PhaseStrip(QWidget):
         self._paint_changed()
         self._wake(now)
         self._retext()
+
+    def _landed(self, st):
+        """a7: amber only while its place holds the decision — a *Needs you* card put away
+        (*Not now*, *Stop asking*) or not gathered yet leaves nothing to land on: a plain wait, its words in the hover."""
+        if not st.needs or st.go is None or self.lands is None or self.lands(st.go):
+            return st
+        return st._replace(needs=None, go=None, waiting=not st.running)
 
     def _marks(self, circle, st):
         """What looking at `circle` (or running it again) marks seen: its ended failure or wait on you, its *Needs
@@ -511,7 +522,7 @@ class PhaseStrip(QWidget):
 
     def keyPressEvent(self, e):
         key = e.key()
-        order = [c for c in phase.CIRCLES if c in self.opens]
+        order = [c for c in phase.CIRCLES if self._pressable(c)]
         if not order or self._focus not in order:
             super().keyPressEvent(e)
             return
@@ -528,7 +539,7 @@ class PhaseStrip(QWidget):
 
     def focusInEvent(self, e):
         super().focusInEvent(e)
-        order = [c for c in phase.CIRCLES if c in self.opens]
+        order = [c for c in phase.CIRCLES if self._pressable(c)]
         if order:
             backwards = e.reason() == Qt.FocusReason.BacktabFocusReason
             asked = e.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason,

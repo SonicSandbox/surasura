@@ -330,8 +330,9 @@ def _placed(placed, view):
 
 
 def _content(snap):
-    """What a snapshot says, its time aside: two that say the same are one to a subscriber."""
-    return snap._replace(taken_at=None)
+    """What a snapshot says, its time aside: two that say the same are one to a subscriber — the re-order host's line
+    with its kind (a7: the same words said as a retry, a fault or a decision paint the strip differently)."""
+    return snap._replace(taken_at=None), type(snap.replan).__name__
 
 
 # --- the window's providers (W3.5 row 7): plain functions, each made once per window and language ---------------- #

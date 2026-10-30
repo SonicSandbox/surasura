@@ -64,10 +64,12 @@ SOURCES = {
 # "junban" (順's window, at its control `at`: "deck" · "restore")
 Go = namedtuple("Go", "place at")
 # The job kinds that wait on you -> where (Connect's mirror, `status.mirror_connect`): its episodes with no video, not
-# timed or held by one of its own entries are each a card on *Needs you*; Anki asking for you (a prompt, another
-# profile — never Anki closed: a plain wait, `status._waits`) is that page's Anki line
+# timed or held by one of its own entries are each a card on *Needs you* — a no-video card, or any card of Connect's
+# record (`CONNECT_CARDS`: its needs, whatever their kind); Anki asking for you (a prompt, another profile —
+# never Anki closed: a plain wait, `status._waits`) is that page's Anki line
+CONNECT_CARDS = "connect"
 NEEDS_GO = {
-    "mine-wait": Go("needs", ("no-video", "not-timed", "no-pairing", "repick", "mine-failed", "error")),
+    "mine-wait": Go("needs", ("no-video", CONNECT_CARDS)),
     "mine-anki": Go("needs", ("anki-wait",)),
 }
 
@@ -192,7 +194,7 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
             continue
         for state, words, *go in parts:
             go = go[0] if go else None
-            if words:
+            if words and state != "failed":     # (a fault's words are its `failed`: said once)
                 g["lines"].append(words)
             if state == "needs" and go is not None:
                 g["needs"].append(words)

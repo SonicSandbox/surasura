@@ -179,7 +179,7 @@ def test_a_wait_on_you_is_amber_at_once_with_where_it_is_decided_and_an_ended_on
                     needs="Not timed to its video")
     got = P.read(_views(registry))                                    # (automatic, but a wait on you shows at once)
     assert got[P.MINER].needs == "Not timed to its video" and not got[P.MINER].waiting
-    assert got[P.MINER].go == P.Go("needs", P.NEEDS_GO["mine-wait"].at) and "not-timed" in got[P.MINER].go.at
+    assert got[P.MINER].go == P.Go("needs", P.NEEDS_GO["mine-wait"].at) and P.CONNECT_CARDS in got[P.MINER].go.at
     asks = registry.record("mine-anki", "Connect", automatic=True, reason="profile", needs="profile")
     asks.finish(needs="Waiting for Anki's profile")                   # ended waiting on you: amber until looked at
     last = P.fold({}, _views(registry))

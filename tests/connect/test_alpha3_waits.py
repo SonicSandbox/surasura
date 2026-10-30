@@ -363,7 +363,7 @@ def test_what_waits_on_you_says_its_kind_and_count_never_one_clause_an_episode()
     says = [f"雲の上の郵便屋さん - {n:02d}: Not timed to its video, so no cards. Mine anyway…" for n in range(1, 13)]
     miner = _strip(_looked(*[_item(feed.NOT_TIMED, say, i) for i, say in enumerate(says)]))[P.MINER]
     assert miner.needs == "Not timed to its video · 12 episodes"
-    assert miner.go.place == "needs" and "not-timed" in miner.go.at          # a7: where to decide, its Needs-you cards
+    assert miner.go.place == "needs" and P.CONNECT_CARDS in miner.go.at         # a7: where to decide, its Needs-you cards
 
 
 def test_an_episode_held_by_another_needs_you_entry_is_amber_with_short_words(running):

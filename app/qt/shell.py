@@ -58,7 +58,8 @@ LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.du
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
 JOURNEY_OLD_LOOK = "old-look"   # ... opened as drawn before a Journey setting changed: a Generate is due (a6 #5)
-GONE_GO = phase_service.Go("needs", ("folder-gone",))   # a7: 届 amber for a gone folder opens its card (needs.FOLDER_GONE)
+GONE_GO = phase_service.Go("needs", ("folder-gone",))   # a7: 届 amber for a gone folder opens its card (`needs.FOLDER_GONE`,
+#                                                         the services' needs module: not imported by the shell at load)
 JOURNEY_DRAW_WAIT = 60.0    # a6 #5: how long *Journey ↗* waits for a re-render (seconds), then opens the journey as it is
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
@@ -1353,6 +1354,11 @@ class ShellWindow(QMainWindow):
             from app.qt import needs as needs_ui
             self.needs_you = needs_ui.NeedsYou(self, needs_page, self.language)
             self.needs_you.changed.connect(self._paint_needs)
+            # a7: a circle's *Needs you* place counts only while its card is on the page; looked at again as
+            # the page's cards move (`changed`: a gather landed, a card put away)
+            ny = self.needs_you
+            self.phase.lands = lambda go: go.place != "needs" or ny.first_of(go.at) is not None
+            self.needs_you.changed.connect(self.phase.refresh)
             needs_page.controller = self.needs_you
             self.needs_you.failures_in(services.status.snapshot().needs_you)
             if needs_page.view_model is not None:

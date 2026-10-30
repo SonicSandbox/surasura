@@ -24,7 +24,8 @@ each of the six pages starts with, what it writes on *Next*, and the reads and j
   as a child (`tools.run`), until W3.2's *+ Add*.
 - **The folders your shows and books are in** (SRC W1a; RUNBOOK §1b S1 + D1): page 3's picks are checked by the store's
   own rule (`folder_refused`), then on *Next* added and given setup's first look (`read_folders`: `Store.add_source`,
-  `sources.scan(first=True)` — Current, quietly), a worker's; anything taken in offers *Needs you*'s one line, *Make
+  `sources.scan(first=library_store.SORT)` — New arrivals, quietly, for setup's sort screen; Mado-O, Sonic 2026-10-30),
+  a worker's; what the sorting put in the mine line offers *Needs you*'s one line (`sorted_offer`), *Make
   cards for your first 20 episodes?*, whose *Make cards* logs them as entering the mine line by the user's choice
   (`first_cards`, after Connect's switch is on). *Skip a folder…* (K6): a folder inside the picked ones checked by the
   store's rule (`skip_refused`), skipped on *Next* before its folder's first look (`read_folders(skips=)`).

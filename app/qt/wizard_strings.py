@@ -308,12 +308,15 @@ SORT_LINE = "Sort the one at the top. The next one comes up by itself."
 SORT_COUNT = "{n:,} left to sort"
 SORT_GROUPS = {"new": "NEW", "watched": "ALREADY WATCHED"}
 # (key, label, tip, the key's name on screen): Soon first, the one key that isn't an arrow (Sonic 2026-10-30)
-SORT_CHOICES = (("soon", "Soon", "Next after Current.", "S"),
+SORT_CHOICES = (("soon", "Soon", "Below Current's Soon line: after what you're on now. It still counts toward your "
+                                 "list.", "S"),
                 ("now", "Current", "Study it now: it goes to the top of Current.", "→"),
-                ("goal", "Goal", "Something to work up to.", "↓"),
-                ("finished", "Finished", "Watched or read already: its words still count as seen.", "↑"),
-                ("ignore", "Ignore", "Never read its folder (a single file: taken out of your library). Your files "
-                                     "stay where they are; Undo brings it back.", "←"))
+                ("goal", "Goal", "Someday, in no order: what you'll get to later. It counts toward your list.", "↓"),
+                ("finished", "Finished", "Watched or read already: a record, and still a source of sentences. Its "
+                                         "words stop pushing your list around.", "↑"),
+                ("ignore", "Ignore", "Never read its folder again, when the folder holds only this; otherwise it's "
+                                     "taken out of your library. Your files stay where they are; Undo brings it "
+                                     "back.", "←"))
 SORT_UNDO = "Undo"
 SORT_UNDO_TIP = "Bring back the last one you sorted.\n• Ctrl+Z"
 SORT_REST = "Put the rest in…"

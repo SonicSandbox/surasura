@@ -2915,7 +2915,7 @@ class SetupWizard(QWidget):
             self.open_door(ADD_DOORS[name])
             return
         if name == "folder" and self.can_read_folders():
-            self.pick_folder()          # SRC W1 fix (Decision 2): as *Choose a folder…*, setup's own: Current (SRC-1)
+            self.pick_folder()          # SRC W1 fix (Decision 2): as *Choose a folder…*, setup's own (to the sort screen)
             return
         adder = self._adder()
         if adder is not None:

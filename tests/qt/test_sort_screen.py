@@ -482,7 +482,9 @@ def test_fifteen_thousand_titles_paint_a_few_rows_and_each_choice_stays_quick(qa
         screen.choose("soon")
         spent.append(time.perf_counter() - t)
     assert len(moves.given) == 200 and screen.top_arrival().key == "k200"
-    assert first < 0.5 and sorted(spent)[len(spent) // 2] < 0.05, (first, sorted(spent)[len(spent) // 2])
+    # the window thread's budget is 4 ms a step on a laptop 2–3× slower than this machine: a press stays under 1 ms
+    assert first < 0.5 and sorted(spent)[len(spent) // 2] < 0.001, (first, sorted(spent)[len(spent) // 2])
+    assert screen.count.text() == S.SORT_COUNT.format(n=15000 - 200)
     screen.deleteLater()
 
 
@@ -613,6 +615,14 @@ def test_stop_asks_once_and_says_it_is_stopping(load):
     QTest.mouseClick(load.btn_stop, Qt.MouseButton.LeftButton)
     load._stop()
     assert heard == [1] and not load.btn_stop.isEnabled() and load.btn_stop.text() == S.LOAD_STOPPING
+
+
+def test_the_gentle_line_fades_by_its_own_paint_never_a_graphics_effect(load):
+    """The do-not list's T6: no QGraphicsOpacityEffect anywhere on the screen; the line's fade is its own level."""
+    from PyQt6.QtWidgets import QWidget
+    assert all(w.graphicsEffect() is None for w in load.findChildren(QWidget))
+    load.line.set_level(0.4)
+    assert load.line.level == pytest.approx(0.4)
 
 
 def test_the_gentle_line_goes_round_its_lines(load):

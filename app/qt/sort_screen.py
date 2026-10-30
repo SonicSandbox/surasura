@@ -22,7 +22,7 @@ import os
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPointF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QPainter, QPainterPath, QPixmap, QPolygonF
-from PyQt6.QtWidgets import (QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
 
 from app import theme
 from app.qt import motion, style
@@ -222,6 +222,34 @@ class Mark(motion.Spinner):
         p.end()
 
 
+class _FadeLine(QLabel):
+    """The load screen's gentle line: its words in the label's own font and colour, drawn at `level` (0–1) — a fade
+    repaints this line alone (the do-not list's T6: never a QGraphicsOpacityEffect)."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self.setObjectName("loadline")
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.level = 1.0
+
+    def set_level(self, level):
+        level = max(0.0, min(1.0, float(level)))
+        if abs(level - self.level) >= 0.01 or level in (0.0, 1.0) and level != self.level:
+            self.level = level
+            self.update()
+
+    def paintEvent(self, _event):
+        if self.level <= 0.0:
+            return
+        p = QPainter(self)
+        p.setOpacity(self.level)
+        p.setFont(self.font())
+        p.setPen(self.palette().color(self.foregroundRole()))
+        p.drawText(self.contentsRect(), int(self.alignment()), self.text())
+        p.end()
+
+
 # --- the load screen ------------------------------------------------------------------------------------------------ #
 class LoadScreen(QWidget):
     """The load's calm cover (module docstring). `set_task(text)`; `stopping()` after *Stop*; `stop` when pressed."""
@@ -244,11 +272,7 @@ class LoadScreen(QWidget):
         self.task.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         box.addWidget(self.task)
         box.addSpacing(_px(14))
-        self.line = _label("loadline", self.lines[0] if self.lines else "", self)
-        self.line.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self._fade = QGraphicsOpacityEffect(self.line)
-        self._fade.setOpacity(1.0)
-        self.line.setGraphicsEffect(self._fade)
+        self.line = _FadeLine(self.lines[0] if self.lines else "", self)
         box.addWidget(self.line)
         box.addStretch(4)
         foot = QHBoxLayout()
@@ -270,8 +294,9 @@ class LoadScreen(QWidget):
         super().hideEvent(event)
 
     def set_task(self, text):
-        _set(self.task, text)
-        self.task.setAccessibleName(text)
+        if self.task.text() != text:
+            self.task.setText(text)
+            self.task.setAccessibleName(text)
 
     def stopping(self):
         self.btn_stop.setEnabled(False)
@@ -292,17 +317,15 @@ class LoadScreen(QWidget):
         if self._anim is not None:
             self._anim.stop()
 
-        def out(v):
-            if not sip.isdeleted(self._fade):
-                self._fade.setOpacity(1.0 - v)
+        line = self.line
 
         def swap():
-            if sip.isdeleted(self.line):
+            if sip.isdeleted(line):
                 return
-            _set(self.line, text)
-            self._anim = motion.clock().animate(FADE_MS, lambda v: not sip.isdeleted(self._fade)
-                                                and self._fade.setOpacity(v), kind="fade", owner=self.line)
-        self._anim = motion.clock().animate(FADE_MS, out, on_done=swap, kind="fade", owner=self.line)
+            _set(line, text)
+            self._anim = motion.clock().animate(FADE_MS, line.set_level, kind="fade", owner=line)
+        self._anim = motion.clock().animate(FADE_MS, lambda v: line.set_level(1.0 - v), on_done=swap, kind="fade",
+                                            owner=line)
 
 
 # --- the sort screen ------------------------------------------------------------------------------------------------ #
@@ -316,9 +339,14 @@ class _Cover(QWidget):
         self.arrival = None
 
     def set_arrival(self, a):
-        if a is not self.arrival:
-            self.arrival = a
+        shown = self._shows(self.arrival)
+        self.arrival = a
+        if self._shows(a) != shown:
             self.update()
+
+    @staticmethod
+    def _shows(a):
+        return None if a is None else (getattr(a, "cover", None), getattr(a, "cover_title", None) or a.title)
 
     def paintEvent(self, _event):
         a = self.arrival
@@ -369,6 +397,7 @@ class SortScreen(QWidget):
         self.setAccessibleName(S.SORT_NAME)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.groups = ()
+        self.all = []               # [(group kind, arrival)] in New arrivals' order (`set_groups`)
         self.hidden = {}            # key -> the action it went with (pending until the view lets it go)
         self.history = []           # [(keys, name, title)] newest last: Undo's order
         self.rows = []
@@ -482,31 +511,44 @@ class SortScreen(QWidget):
         pending mark goes); one still there stays hidden until it does."""
         self.groups = tuple(groups or ())
         self.heard = self.heard or bool(self.groups)
-        present = {a.key for _k, a in _rows_of(self.groups)}
+        self.all = _rows_of(self.groups)
+        present = {a.key for _k, a in self.all}
         for key in [k for k in self.hidden if k not in present]:
             del self.hidden[key]
         self._paint()
 
-    def visible_rows(self):
-        return [(k, a) for k, a in _rows_of(self.groups) if a.key not in self.hidden]
+    def visible_rows(self, most=None):
+        """The titles still to sort, in order — the first `most` only when asked (a press reads the top few: never the
+        whole list, so a press costs the same at 15,000 titles as at 10)."""
+        out = []
+        for row in self.all:
+            if row[1].key not in self.hidden:
+                out.append(row)
+                if most is not None and len(out) >= most:
+                    break
+        return out
+
+    def left(self):
+        """How many are still to sort (every pending key is one of the view's: `set_groups` lets the others go)."""
+        return len(self.all) - len(self.hidden)
 
     def top_arrival(self):
-        rows = self.visible_rows()
+        rows = self.visible_rows(1)
         return rows[0][1] if rows else None
 
     def _paint(self):
-        rows = self.visible_rows()
+        rows, n = self.visible_rows(NEXT_SHOWN + 1), self.left()
         key = tuple((kind, a.key, a.title, getattr(a, "folder", None), len(a.item_ids), getattr(a, "cover", None),
                      getattr(a, "line", None), getattr(a, "media_word", None))
-                    for kind, a in rows[:NEXT_SHOWN + 1]) + (len(rows), bool(self.history), self.heard)
+                    for kind, a in rows) + (n, bool(self.history), self.heard)
         if key == self._shown:
             return                                  # nothing it shows changed (S19)
         self._shown = key
         self.rows = rows
-        _set(self.count, S.SORT_COUNT.format(n=len(rows)) if rows else "")
+        _set(self.count, S.SORT_COUNT.format(n=n) if n else "")
         self.top.setVisible(bool(rows))
         self.empty.setVisible(not rows and self.heard)
-        self.btn_rest.setEnabled(len(rows) > 1)
+        self.btn_rest.setEnabled(n > 1)
         self.btn_undo.setEnabled(bool(self.history))
         if rows:
             kind, a = rows[0]
@@ -520,7 +562,7 @@ class SortScreen(QWidget):
             if r is not None:
                 _set(name, r[1].title)
                 cov.set_arrival(r[1])
-        more = len(rows) - 1 - NEXT_SHOWN
+        more = n - 1 - NEXT_SHOWN
         _set(self.more, S.SORT_MORE.format(n=more) if more > 0 else "")
         self.more.setVisible(more > 0)
 

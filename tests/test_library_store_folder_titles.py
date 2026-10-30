@@ -132,6 +132,22 @@ def test_path_titles_already_in_a_store_are_retitled_once_never_a_users_and_noth
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_retitled_library_costs_the_helpers_run_no_title_reading(language, monkeypatch):
+    """The helper runs about a hundred times a session (S19, update only what changed): once every path title is
+    retitled, a run reads no title through the rule at all — only a title holding a '/' is ever a candidate."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[60]
+    with store:
+        root = store.add_source(src)
+        _take_seasons(store, language, data_dir, root, src, show)
+        read = []
+        real = ls.folder_title
+        monkeypatch.setattr(ls, "folder_title", lambda below: read.append(below) or real(below))
+        assert store.retitle_folder_works() == [] and read == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_title_that_is_not_its_own_folders_path_is_never_retitled(language):
     """Only a title still named by ITS folder's path is the old naming: a work titled by another folder's path (a
     merge kept the other's title, `<show>/Season 1` over the `<show>/S02` folder) or by a record is left as it is."""
@@ -195,6 +211,7 @@ def test_the_helpers_run_retitles_a_store_alpha6_left(language):
         rels = _take_seasons(store, language, data_dir, root, src, show)
         _as_before_alpha7(store, rels)
         ids = {b: _work_of(store, r) for b, r in rels.items()}
+        fed_before = dict(store.conn.execute("SELECT id, feed_in FROM works"))
     user_files_dir = store.user_files_dir
     store.close()
     assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
@@ -204,9 +221,8 @@ def test_the_helpers_run_retitles_a_store_alpha6_left(language):
         assert {b: works[w][0] for b, w in ids.items()} == {
             f"{show}/Season 1": f"{show} Season 1", f"{show}/S02": f"{show} Season 2",
             f"{show}/第3期": f"{show} Season 3", f"{show}/Specials": f"{show} Specials"}
-        fed = {r[0] for r in again.conn.execute("SELECT id FROM works WHERE feed_in = "
-                                                "(SELECT MAX(feed_in) FROM works)")}
-        assert fed == set(ids.values()), "the window reads these works again"
+        fed = {w for w, f in again.conn.execute("SELECT id, feed_in FROM works") if f > fed_before[w]}
+        assert fed == set(ids.values()), "the window reads these works again, and only these"
     finally:
         again.close()
 

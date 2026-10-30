@@ -50,13 +50,15 @@ def _book(language, src, n=30):
 
 
 def _first_look(language, build):
-    """Setup's first look at a source folder `build(src)` fills -> (the open store, the source folder)."""
+    """Setup's first look at a source folder `build(src)` fills -> (the open store, the source folder); the source's
+    root id is `store.a7_root` (a later look's)."""
     store, _data_dir = _empty(language)
     src = _drive("media")
     build(src)
     root = store.add_source(src)
     result = _look(store, language, root, first=True)
     assert result["reachable"] is True and result["added"] > 0
+    store.a7_root = root
     return store, src
 
 
@@ -236,3 +238,86 @@ def test_mark_all_watched_is_not_offered_on_a_title_of_one_file_nor_once_every_f
     one = row._replace(episodes=row.episodes[:1])
     assert "watched-all" not in [e.name for e in win.items.entries(one._replace(
         episodes=(one.episodes[0]._replace(watched=False),)))]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_corrected_original_copied_again_dates_the_copy_by_the_new_original(language):
+    """S5's re-copy keeps the original's date too (`_checked_copy`): the corrected episode's copy is dated by the
+    corrected original (newer than the copy it replaced, so the disk sync still sees it changed); the source folder
+    untouched (`_look` proves it)."""
+    store, src = _first_look(language, lambda s: _show(language, s, [9, 2]))
+    show = _SHOW[language]
+    with store:
+        row = _row(_view(store, language), show)
+        first = row.episodes[0]
+        original = os.path.join(src, show, os.path.basename(first.rel_path))
+        _write(original, _text(language, 1, extra="、修正版"), age=DAY)                  # corrected yesterday
+        assert _look(store, language, store.a7_root, full=True)["recopied"] == 1
+        copy = os.path.join(store.data_dir, first.rel_path)
+        assert os.stat(copy).st_mtime_ns == os.stat(original).st_mtime_ns != first.disk
+
+
+def test_one_files_own_date_known_among_several_reads_by_the_store_clock_alone():
+    """A video still waiting for its subtitle has no date of its own: one date is no evidence (never a crash)."""
+    now = time.time()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime(now - 30 * DAY))
+    blank = view_rows.Episode._make([None] * len(view_rows.Episode._fields))
+    eps = [blank._replace(id=1, added=stamp, disk=int((now - DAY) * 1e9)), blank._replace(id=2, added=stamp)]
+    assert not view_rows.still_arriving(eps, now)
+
+
+# --- done_many on the window seed (the fake writer: what is handed over) -------------------------------------------- #
+from tests.qt.test_drag import SHOW_A, _all_but_one, _show_group, _shown_buttons, calls, world  # noqa: E402,F401
+
+
+def test_done_many_hands_over_only_the_files_not_watched_yet_in_one_command_and_offers_nothing_while_some_are_left(
+        world):
+    seed, win, writer = world()
+    i = next(n for n, r in enumerate(rows_of(win)) if len(r.episodes) >= 6 and not any(e.watched for e in r.episodes))
+    row = rows_of(win)[i]
+    seed.library.commit(items=[{"id": row.episodes[1].id, "watched": 1}])
+    assert wait_until(lambda: rows_of(win)[i].episodes[1].watched, 3)
+    row = rows_of(win)[i]
+    win.moves.done_many(row, row.episodes[:4])                          # a menu's payload, one already watched
+    assert calls(writer, "set_watched") == [("set_watched", [row.episodes[k].id for k in (0, 2, 3)], {"on": True})]
+    assert win.toasts.card.base == strings.DONE_MANY.format(title=row.title, n=3)
+
+
+def test_done_many_of_one_file_is_the_one_done_with_its_own_words(world):
+    seed, win, writer = world()
+    row = rows_of(win)[4]
+    win.moves.done_many(row, row.episodes[:1])
+    assert calls(writer, "set_watched") == [("set_watched", [row.episodes[0].id], {"on": True})]
+    assert win.toasts.card.base != strings.DONE_MANY.format(title=row.title, n=1)
+    assert row.episodes[0].label in win.toasts.card.base
+
+
+def test_done_many_while_another_write_is_on_its_way_only_offers_the_finish(world):
+    """The one Done's rule, `pending` included: a write still waiting (the store busy) — the view may not hold it."""
+    seed, win, writer = world()
+    row = _all_but_one(seed, win, 4)
+    seed.library.commit(items=[{"id": e.id, "watched": 0} for e in row.episodes[:2]])
+    assert wait_until(lambda: sum(e.watched for e in rows_of(win)[4].episodes) == len(row.episodes) - 3, 3)
+    row = rows_of(win)[4]
+    other = rows_of(win)[2]
+    writer.stuck = True
+    win.moves.done(other, other.episodes[other.next_index])
+    assert win.moves.tickets
+    win.moves.done_many(row, row.episodes)
+    assert [c[0] for c in calls(writer)] == ["set_watched", "set_watched"]
+    assert win.toasts.card.base == strings.DONE_ALL.format(n=len(row.episodes))
+    writer.free()
+
+
+def test_done_many_finishing_one_show_of_a_group_offers_that_shows_finish(world):
+    """LM11b G5 through the mark-many: SHOW_A's three episodes marked at once, SHOW_B still waiting — *Move SHOW_A to
+    Finished*, as the last of them done alone would offer."""
+    seed, win, writer = world(apply=False)
+    row = _show_group(win, a_watched=0, b_watched=0)
+    a = [e for e in row.episodes if e.show == SHOW_A]
+    assert len(a) == 3
+    win.moves.done_many(row, a)
+    assert calls(writer, "set_watched") == [("set_watched", [e.id for e in a], {"on": True})]
+    card = win.toasts.card
+    assert card.base == strings.DONE_SHOW_IN_GROUP.format(show=SHOW_A, n=3)
+    assert _shown_buttons(card)[-1] == strings.DONE_MOVE_SHOW_FINISHED.format(show=SHOW_A)

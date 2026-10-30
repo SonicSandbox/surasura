@@ -988,7 +988,8 @@ def test_generate_finishes_setup_runs_generate_and_closes_onto_current_when_it_e
     assert wiz.generating and wiz.say_line.text() == S.MAKING and not wiz.btn_next.isEnabled()
     assert wiz.hairline.value == 0.0
     shell.bridge.generate_changed.emit(GenState("running", "Counting words", 3, 10))
-    assert wiz.say_line.text().startswith(S.MAKING) and seen == []
+    assert wiz.say_line.text().startswith(S.MAKING_PCT.split("{")[0]) and seen == []
+    assert "first time" in wiz.say_line.text()          # a7 (DIAGNOSIS 1): the wait is said where it is watched
     wiz.back()
     wiz.skip()
     assert W.PAGES[wiz.index] == "level" and seen == []           # nothing moves while the list is made

@@ -421,14 +421,18 @@ def _replaceable(language, data_dir, work, ref):
 
 
 # --- the scan -------------------------------------------------------------------------------------------------- #
-def scan(language, works, writer, cancel=None, data_dir=None):
+def scan(language, works, writer, cancel=None, data_dir=None, progress=None):
     """(A worker.) Each work's cover from disk, one work at a time -> how many covers it handed to the writer (new or
-    changed records; one already recorded isn't counted again)."""
+    changed records; one already recorded isn't counted again). `progress(done, total)` after each work (setup's load
+    screen)."""
     if not writer.can_write():
         return 0                                    # E4: nothing read for a store that can't take it
     data_dir = data_dir or path_utils.get_data_path(language)
     found = 0
-    for work in works:
+    works = list(works)
+    for done, work in enumerate(works, 1):
+        if progress is not None and done > 1:
+            progress(done - 1, len(works))
         if cancel is not None and cancel():
             break
         if not _my_turn(writer, cancel):
@@ -437,6 +441,8 @@ def scan(language, works, writer, cancel=None, data_dir=None):
             found += 1 if _scan_one(language, data_dir, work, writer) else 0
         except Exception as e:                      # one title's trouble never stops the rest
             print(f"Covers: work {work.id} skipped: {e!r}")
+    if progress is not None and works:
+        progress(len(works), len(works))
     return found
 
 

@@ -180,6 +180,9 @@ def test_at_text_size_large_no_control_runs_past_the_page_and_narrow_rows_stack(
 
 def test_a_row_stacks_its_words_above_its_control_when_narrow_and_goes_back_when_wide(qapp):
     page, store = make_page(ALL_ON, "ja", size=(1400, 700))
+    page.reveal("known_from_anki")          # a7: under Known words' More options now — opened to be laid out
+    page._settle()
+    QApplication.processEvents()
     view = page.rows["known_from_anki"]
     assert view.stacked is False
     view.arrange(view.side_by_side() - 10)
@@ -478,6 +481,8 @@ def test_no_multi_pick_on_the_page_paints_a_choices_vein(qapp, monkeypatch):
     tablets = {view.row.id: c for view in page.rows.values() for c in view.controls
                if isinstance(c, sc.Tablets) and not c.is_list}
     assert set(tablets) == {"known_from_anki", "junban_only_markers"}
+    page.reveal("known_from_anki")              # a7: under Known words' More options — opened
+    page._settle()
     tablets = {k: c for k, c in tablets.items() if c.isVisibleTo(page)}   # Junban's show only with it installed
     assert "known_from_anki" in tablets
     veins, ticks = [], []
@@ -507,3 +512,48 @@ def test_a_change_settles_through_the_deepest_widget_in_the_same_turn(qapp):
         return levels
     deepest = max(depth(w) for w in page.body.findChildren(QWidget))
     assert depth(page.rows["setup_cards"].help) <= deepest < sp.SETTLE_PASSES
+
+
+# --- a7 (DIAGNOSIS 3): *Count as known in Anki*'s line says the "and" as it is picked ------------------------------ #
+def test_picking_a_second_state_names_both_under_count_as_known_and_taking_it_off_puts_the_rows_line_back(qapp):
+    """His Suspended + Marked caught almost nothing, and nothing said so: picked, the line under the row names every
+    state a card must be in at once — the moment the write lands, and on a page built with it already picked."""
+    page, store = make_page(dict(ALL_ON, connect_enabled=True, known_from_anki=["suspended"]), "ja")
+    page.reveal("known_from_anki")
+    page._settle()
+    view = page.rows["known_from_anki"]
+    assert view.help.text() == catalog.ROW["known_from_anki"].help
+    assert _written(store, view.controls[0], ["suspended", "marked"]) == [{"known_from_anki": ["suspended", "marked"]}]
+    store.land()
+    assert view.help.text() == S.KNOWN_ALL_OF.format(states="Suspended + Marked")
+    assert _written(store, view.controls[0], ["marked"]) == [{"known_from_anki": ["marked"]}]
+    store.land()
+    assert view.help.text() == catalog.ROW["known_from_anki"].help
+    built, _store = make_page(dict(ALL_ON, connect_enabled=True, known_from_anki=["marked", "flag:2"]), "ja")
+    assert built.rows["known_from_anki"].help.text() == S.KNOWN_ALL_OF.format(states="Marked + Flag 2 (Orange)")
+
+
+def test_the_moved_rows_open_where_they_now_live_and_search_finds_them(qapp):
+    """DIAGNOSIS 3 + 5: *Count as known in Anki* in Known words (its *More options*), *More video folders* in Anki &
+    mining's — each reached by a reveal and by a search for its old words."""
+    page, _store = make_page(dict(ALL_ON, connect_enabled=True), "ja")
+    page.reveal("known_from_anki")
+    page._settle()
+    assert page.rows["known_from_anki"].isVisibleTo(page)
+    assert page.rows["known_from_anki"].parent() is page.slabs["known"].adv
+    assert page.rows["connect_video_folders"].parent() is page.slabs["anki"].adv
+    page.search.edit.setText("where videos")
+    page._settle()
+    assert page.rows["connect_video_folders"].isVisibleTo(page)
+
+
+
+def test_every_choice_cards_line_fits_its_card_whole():
+    """a7's shots: *Your list*'s new line ran past its card and was cut mid-word — a card is one line high, never wider
+    than `settings-card-w`. The suite paints offscreen, whose stand-in font measures about twice the window's, so the
+    bound is in characters: 80 is ~460 px of the card's 606 at Medium in the window's own font (measured 2026-10-30;
+    the card and its text scale together)."""
+    for row in catalog.ROWS:
+        if row.kind == "cards":
+            for _v, _label, line in catalog.options(row, dict(ALL_ON), "ja"):
+                assert len(line) <= 80, (row.id, line)

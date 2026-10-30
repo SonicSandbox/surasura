@@ -79,6 +79,8 @@ SITES = {
     "toast.py:ToastHost.show": "a toast's rise",
     "wizard.py:Switch._slide": "the wizard's switch knob",
     "phase_strip.py:PhaseStrip._fade": "a phase circle's done tick fading back",
+    "sort_screen.py:LoadScreen.next_line": "setup's load screen: its gentle line fading out (Mado-O)",
+    "sort_screen.py:LoadScreen.next_line.<locals>.swap": "… and the next line fading in",
 }
 # "file:Class" -> each overlay (a `motion.Overlay` no other overlay builds on) opened at least once
 OVERLAYS = {
@@ -534,6 +536,23 @@ def test_sweep_the_wizards_switch_knob_jumps(sweep):
     assert switch._pos == 1.0
     sweep.still()
     switch.close()
+
+
+@drives("sort_screen.py:LoadScreen.next_line", "sort_screen.py:LoadScreen.next_line.<locals>.swap",
+        "motion.py:Spinner._sync")
+def test_sweep_the_load_screens_line_changes_within_fast_and_its_bird_is_still(sweep):
+    from app.qt import sort_screen
+    load = sort_screen.LoadScreen()
+    load.resize(800, 600)
+    sweep.on()
+    load.show()                                             # the bird's wingbeat asked: never on the clock
+    _settle()
+    first = load.line.text()
+    load.next_line()
+    sweep.still()
+    assert load.line.text() != first and load.line.level == 1.0
+    assert not load.mark.on_clock and load.mark.angle == 0.0
+    load.close()
 
 
 @drives("phase_strip.py:PhaseStrip._fade", "motion.py:Spinner._sync")

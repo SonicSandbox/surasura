@@ -422,7 +422,7 @@ def test_a_gone_files_line_leaves_the_tier_folder_out_never_naming_a_place_it_ma
                      f"Ep 5 · not at {KUSURI}/{KUSURI} - 05.srt",
                      "Ep 1 · not at Library/雪中悍刀行/雪中悍刀行 第01集.srt"]
     assert not any(f in t for t in texts for f in ("HighPriority", "LowPriority", "GoalContent", "NOW", "Soon", "Months"))
-    assert needs.shown("") == "" and needs.shown("HighPriority") == "NOW"
+    assert needs.shown("") == "" and needs.shown("HighPriority") == "Current"
     assert needs.shown("Graduated/x.srt") == "Graduated/x.srt"
 
 

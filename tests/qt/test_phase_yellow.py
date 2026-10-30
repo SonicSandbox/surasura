@@ -274,6 +274,73 @@ def test_a7_amber_waits_for_its_card_and_goes_when_the_card_is_put_away(world, w
     assert win.phase.states[P.MINER].needs is None and win.phase.go(P.MINER) is None
 
 
+# --- A7N-3: Connect's own Generate failing is a fault — ス red with its words, never amber ------------------------ #
+GENERATE_FAILED = ("Generate didn't finish after Connect made its cards: your list catches up at the next one. "
+                   "Generate stopped (exit code 1).")
+
+
+def _look_at(win, circle):
+    """The hover shown on `circle` and left (`_leave_hover`): what it said is looked at."""
+    s = win.phase
+    s._looking = (circle, tuple(s._marks(circle, s.states[circle])))
+    s.tooltips = type("T", (), {"shown": (s, s.rect_of(circle).toAlignedRect()), "hide": lambda self: None,
+                                "request": lambda self, *a: None, "retext": lambda self, *a: None,
+                                "hide_part_unless": lambda self, *a: None})()
+    s._leave_hover(None)
+
+
+@pytest.mark.parametrize("kind, held", [("generate", False), ("known-sync", True)])
+def test_a7n3_an_episode_waiting_on_connects_failed_generate_is_a_plain_wait_never_amber(kind, held):
+    """A7N-3 (Sonic 2026-10-30: red, never yellow): an episode waiting on Connect's own Generate that failed has nothing
+    to decide — a plain wait in Connect's words on Anki Miner, never amber; a need you can act on (Anki's known words to
+    sync) still holds it amber."""
+    from app.connect import feed
+    rec = {"running": True, "languages": {"ja": {"line": "", "state": "working", "skipped": [],
+                                                 "needs": [{"id": 7, "kind": kind, "say": GENERATE_FAILED, "item": 1}],
+                                                 "jobs": [{"item": 1, "job": 101, "state": "waiting", "kind": "mine",
+                                                           "reason": GENERATE_FAILED}]}}}
+    got = feed.build(rec, "ja")
+    assert got.items[1].kind == (feed.HELD if held else feed.WAITING) and got.items[1].tip == GENERATE_FAILED
+    registry = JobRegistry()
+    S.mirror_connect(registry, got)
+    miner = P.read(registry.snapshot(), now=time.time() + 5)[P.MINER]
+    assert bool(miner.needs) is held and miner.waiting is not held
+    assert not held or miner.go == P.Go("needs", ("no-video", P.CONNECT_CARDS))
+
+
+def _generate_need(at):
+    """*Needs you*'s entry for Connect's failed Generate after mining, as the page's gather makes it from Connect's
+    record (`services.needs.entries`: one for the language, no episode)."""
+    record = {"needs": [{"id": 9, "kind": "generate", "say": GENERATE_FAILED, "item": None, "at": at}]}
+    return next(e for e in service.entries(None, connect=record) if e.kind == "generate")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a7n3_connects_generate_failing_after_mining_makes_surasura_red_with_its_words(world, language, washed):
+    """A7N-3: Connect's Generate after mining failed — its *Needs you* card stays, and ス is red with its words as a
+    Generate you start is (nothing amber: there is nothing to decide); looked at, still said in the hover (its tail: the
+    hover shortens long words in the middle) but no longer red; the same failure again (Connect reopens it: a new time)
+    red again; gone with the card. A card you can act on (Anki's known words to sync), or one not Connect's, makes ス
+    nothing."""
+    entry, again = _generate_need("2026-10-30T10:00:00"), _generate_need("2026-10-30T11:00:00")
+    seed, win, writer, ny = world(language, looks=Looks())
+    s = win.phase
+    _entries(ny, _connect_entry(language, kind="known-sync"),
+             entry._replace(key="mine:generate", data={"at": 1}))            # (a kind of the same name, not Connect's)
+    assert not s.states[P.SURASURA].failed
+    _entries(ny, entry)
+    assert s.states[P.SURASURA].failed == GENERATE_FAILED and "(exit code 1)" in s.hover_text(P.SURASURA)
+    assert not s.states[P.SURASURA].needs and not s.states[P.MINER].needs
+    _look_at(win, P.SURASURA)
+    assert not s.states[P.SURASURA].failed and "(exit code 1)" in s.hover_text(P.SURASURA)
+    _entries(ny, again)
+    assert s.states[P.SURASURA].failed == GENERATE_FAILED
+    assert s.hover_text(P.SURASURA).count("(exit code 1)") == 1                 # said once: the one before is gone
+    ny._hidden_now[again.key] = None                                       # *Not now*
+    ny._paint()
+    assert not s.states[P.SURASURA].failed and "(exit code 1)" not in s.hover_text(P.SURASURA)
+
+
 def test_a7_a_junban_fault_looked_at_stays_said_and_the_same_fault_again_is_red_again(junban_world):
     """a7: a fault the hover has shown stays in the hover (no longer red), and the same fault said again after the
     host's next run is news again: red, said once."""

@@ -25,7 +25,6 @@ updates its tiles in place and never animates it again.
 Nothing here reads or writes the store: the tiles come from the reader's view, every command goes through the window's
 writer (`drag.DragController._give`: its toast, Undo and E4's refusal).
 """
-import os
 import time
 
 from PyQt6.QtCore import QEvent, QObject, QRect, QRectF, Qt, QTimer
@@ -743,14 +742,18 @@ class GoalSheet(motion.Overlay):
         """⋯ *Open folder*: a press (`press.open`, round 8 row 45) — the tile's ⋯ turns (IK-2), and the folder opens
         on a worker, never on the window's thread (it stalled it)."""
         from app.qt import press as qpress
+        from app.services import own_folder
         base = path_utils.get_data_path(getattr(self.win, "language", None) or "ja")
-        path = os.path.join(base, *work.folder.split("/")) if work.folder else base
+        opener = own_folder.opener_of(self.win)
 
         def failed(_info):
             say = getattr(self.win, "say", None)
             if say is not None:
                 say(strings.GOAL_FOLDER_FAILED.format(title=work.title))
-        return qpress.open(self.win, path, key=("open-folder", work.key), failed=failed,
+        # a7: the content's own folder (`own_folder`), worked out on the press's worker
+        return qpress.open(self.win, lambda: own_folder.read(opener, base, tuple(work.item_ids or ()),
+                                                             folders=(work.folder or "",)),
+                           key=("open-folder", work.key), failed=failed,
                            at=qpress.widget_mark(tile.more) if tile is not None else None)
 
     # --- a drag ----------------------------------------------------------------------------------------------- #

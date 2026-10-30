@@ -276,7 +276,6 @@ def test_open_its_folder_opens_the_nearest_folder_there_when_its_own_is_gone(fin
     win.finished.menu_pick(row, "folder")
     assert wait_until(lambda: win.bar_line.full() == strings.FIN_NO_FOLDER.format(title=row.title), 3)
     assert opened == []
-    assert opened == []
 
 
 # --- What if I added it back? --------------------------------------------------------------------------------------- #
@@ -784,16 +783,7 @@ def test_LM11b_H_C1_ctrl_or_shift_on_a_finished_rows_part_never_acts(fin, mods):
     assert calls(writer, "put_back")
 
 
-def _own_folder_answers(monkeypatch, tmp_path, name):
-    """a7: `own_folder.read` answering with a real folder (a non-ASCII path, as the user keeps shows) and recording
-    what each press asked it."""
-    from app.services import own_folder
-    there = tmp_path / "ユーザーの棚" / name
-    there.mkdir(parents=True)
-    asked = []
-    monkeypatch.setattr(own_folder, "read", lambda opener, data, ids=(), rels=(), folders=():
-                        asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there))
-    return str(there), asked
+from tests.qt.conftest import own_folder_answers as _own_folder_answers  # noqa: E402 (a7)
 
 
 def test_open_its_folder_opens_the_shows_own_folder_on_a_worker(fin, monkeypatch, tmp_path):

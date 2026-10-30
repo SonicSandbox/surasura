@@ -21,10 +21,11 @@ STAR_URL = "https://github.com/0xzerolight/anki_miner"
 STAR_FILE = "star.json"
 
 # connect_mine_words: (value, label, the line under it) — both Settings read these (`app/qt/settings_strings.py`). a7
-# (Sonic, DIAGNOSIS 4: "it is i+1 AND the other stuff"): *Your list* takes each word's i+1 line first, then the rest;
+# (Sonic, DIAGNOSIS 4: "it is i+1 AND the other stuff"): *Your list* takes every listed word, in the list's order, each
+# on its i+1 line when it has one (A7S-2: i+1 picks the line, never the order);
 # *Only i+1* is another set (`pick.py`: any word with an i+1 line, on the list or not), never a stricter *Your list*
 # (one line each: a choice card is one line high, never wider than `settings-card-w`)
-WORDS = (("list", "Your list", "i+1 first, then the rest: every word on your list you don't know yet."),
+WORDS = (("list", "Your list", "i+1 and more: every unknown word on your list, on an i+1 line if it has one."),
          ("unknown", "Every unknown word", "Every word of the episode you don't know yet."),
          ("i1", "Only i+1", "Only words with an i+1 line, on your list or not. The rest get no card."))
 # anki_sync_delay_min (E1.1 04 §3)

@@ -1038,16 +1038,7 @@ def test_round8_the_turning_hourglass_is_a_little_smaller_than_the_still_one_in_
     assert rows.TURNING_SCALE < 1 and turning < full and turning >= full * 0.75, (turning, full)
 
 
-def _own_folder_answers(monkeypatch, tmp_path, name):
-    """a7: `own_folder.read` answering with a real folder (a non-ASCII path, as the user keeps shows) and recording
-    what each press asked it."""
-    from app.services import own_folder
-    there = tmp_path / "ユーザーの棚" / name
-    there.mkdir(parents=True)
-    asked = []
-    monkeypatch.setattr(own_folder, "read", lambda opener, data, ids=(), rels=(), folders=():
-                        asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there))
-    return str(there), asked
+from tests.qt.conftest import own_folder_answers as _own_folder_answers  # noqa: E402 (a7)
 
 
 def test_link_s_picker_starts_in_the_episodes_own_folder(act, monkeypatch, tmp_path):

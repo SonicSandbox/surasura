@@ -142,19 +142,20 @@ ROWS = {
                        "Off: reading and copying a library uses half your computer's cores, so it stays quick to use. "
                        "On: every core — a first read of thousands of books ends sooner", "cores speed faster cpu"),
     # a7 (DIAGNOSIS 3): this row and *Count as known in Anki* under it answer one question two ways — each says so
-    "anki_sync_include_suspended": ("Count suspended cards as known",
-                                    "Every card you've ever suspended, as if studied",
-                                    "Every card you've suspended in your decks counts as known, whenever you "
-                                    "suspended it. Off by default: an old suspended card is often one you struggled "
-                                    "with. To make suspending say “I know this” from now on, use Count as known in "
-                                    "Anki below", "suspended known"),
+    # (A7S-1: the sync reads studied cards only — `anki_sync.scope_query`'s `-is:new`; the signal reads new ones too)
+    "anki_sync_include_suspended": ("Count suspended cards as known", "Cards you studied, then suspended",
+                                    "Cards you studied and then suspended count as known, whenever you suspended "
+                                    "them. Off by default: a suspended card is often one you struggled with. New cards "
+                                    "you suspend never count here — for those, use Count as known in Anki below",
+                                    "suspended known"),
     "known_from_anki": ("Count as known in Anki",
                         "A card counts only when it is in every state you pick, all at once",
                         "Suspend (or mark, or flag) a card in Anki to say “I know this”: its word turns known at the "
                         "next sync, and you can undo it. A card counts only when it is in every state you pick — "
                         "Suspended + Marked counts only cards both suspended and marked. Cards already suspended are "
-                        "asked about once. None picked: off. Count suspended cards as known, above, counts every "
-                        "suspended card instead", "known from anki suspended marked flag"),
+                        "asked about once. New cards count too. None picked: off. Count suspended cards as known, "
+                        "above, counts every studied card you've suspended, whenever",
+                        "known from anki suspended marked flag"),
 
     # Anki & mining
     "anki_connection": ("Connection", "Through the free AnkiConnect add-on", "Whether Surasura reaches Anki now",
@@ -174,9 +175,11 @@ ROWS = {
                             "Surasura Connect makes your cards with Anki Miner. Once it is installed, this switch "
                             "appears here", "connect make cards mine automatically anki miner needs"),
     "connect_mine_words": ("Words to make cards from",
-                           "“Your list” already takes i+1 lines first. Pick “Only i+1” only to skip the rest",
-                           "Which words of an episode become cards. Your list is i+1 first and then the words without "
-                           "an i+1 line; Only i+1 leaves those out and takes words off your list too",
+                           "“Your list” uses i+1 lines where it can and takes the other words too. “Only i+1” skips "
+                           "them",
+                           "Which words of an episode become cards. Your list: every unknown word on your list, in "
+                           "the list's order, each on an i+1 line when it has one. Only i+1: only words with an i+1 "
+                           "line, on your list or not",
                            "words to make cards from mine mode which words all unknown i+1 list"),
     "mine_line": ("Mine automatically", "The files at the top of Current mine themselves the moment they’re placed",
                   "How many files at the top of Current mine themselves", "auto top mines itself mine line"),
@@ -532,6 +535,7 @@ ROWS = {
 
 # *Count as known in Anki* with two states or more picked: its line names them (`settings_catalog.help_line`)
 KNOWN_ALL_OF = "Counts only cards that are {states}, all at once"
+KNOWN_FLAGS = "A card has one flag at a time: {flags} counts no card"           # two flags picked (A7S-7)
 
 # Backfill's fills by name (`junban_backfill_fills`' values): its two switches, and Your setup's line
 FILLS = {"patterns": "パターン", "sentence": "例文"}

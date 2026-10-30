@@ -541,16 +541,7 @@ def store_rel(store, path):
     return os.path.relpath(path, store.data_dir).replace(os.sep, "/")
 
 
-def _own_folder_answers(monkeypatch, tmp_path, name):
-    """a7: `own_folder.read` answering with a real folder (a non-ASCII path, as the user keeps shows) and recording
-    what each press asked it."""
-    from app.services import own_folder
-    there = tmp_path / "ユーザーの棚" / name
-    there.mkdir(parents=True)
-    asked = []
-    monkeypatch.setattr(own_folder, "read", lambda opener, data, ids=(), rels=(), folders=():
-                        asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there))
-    return str(there), asked
+from tests.qt.conftest import own_folder_answers as _own_folder_answers  # noqa: E402 (a7)
 
 
 def test_open_its_folder_opens_the_titles_own_folder(world, monkeypatch, tmp_path):

@@ -892,7 +892,9 @@ def test_count_as_known_in_anki_sits_in_known_words_beside_count_suspended_cards
     assert "known_from_anki" in _shown(CONNECT_ON, "ja") and "known_from_anki" not in _shown({}, "ja")
     assert "Count as known in Anki" in suspended.tip and "Count suspended cards as known" in row.tip
     assert "every state you pick" in row.help                                   # the "and", in the line itself
-    assert "struggled" in suspended.tip and "whenever you suspended it" in suspended.tip
+    assert "struggled" in suspended.tip and "whenever you suspended them" in suspended.tip
+    # A7S-1: the sync reads studied cards only (`-is:new`); the signal reads new ones too — each row says which
+    assert "New cards you suspend never count here" in suspended.tip and "New cards count too" in row.tip
 
 
 def test_count_as_known_in_ankis_line_names_every_state_picked_so_an_and_is_never_silent():
@@ -901,9 +903,12 @@ def test_count_as_known_in_ankis_line_names_every_state_picked_so_an_and_is_neve
     row = catalog.ROW["known_from_anki"]
     two = dict(CONNECT_ON, known_from_anki=["suspended", "marked"])
     assert catalog.help_line(row, two, "ja") == "Counts only cards that are Suspended + Marked, all at once"
-    three = dict(CONNECT_ON, known_from_anki=["flag:1", "suspended", "flag:3"])
-    assert catalog.help_line(row, three, "zh") == ("Counts only cards that are Suspended + Flag 1 (Red) + Flag 3 "
-                                                   "(Green), all at once")          # in the setting's order
+    flagged = dict(CONNECT_ON, known_from_anki=["flag:4", "marked", "suspended"])
+    assert catalog.help_line(row, flagged, "zh") == ("Counts only cards that are Suspended + Marked + Flag 4 (Blue), "
+                                                     "all at once")                # in the setting's order
+    two_flags = dict(CONNECT_ON, known_from_anki=["flag:3", "suspended", "flag:1"])
+    assert catalog.help_line(row, two_flags, "ja") == ("A card has one flag at a time: Flag 1 (Red) + Flag 3 (Green) "
+                                                       "counts no card")           # A7S-7: never a match
     for one in (["suspended"], [], "marked", ["suspended", "flag:33"]):        # a term it doesn't know is no state
         assert catalog.help_line(row, dict(CONNECT_ON, known_from_anki=one), "ja") == row.help, one
     assert catalog.help_line(catalog.ROW["connect_backlog_cap"], two, "ja") == catalog.ROW["connect_backlog_cap"].help
@@ -915,9 +920,10 @@ def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_
     Both Settings (3.0's and 2.x's Tk panel) read one copy of the words."""
     row = catalog.ROW["connect_mine_words"]
     lines = {v: line for v, _label, line in catalog.options(row, CONNECT_ON, "ja")}
-    assert lines["list"].startswith("i+1 first, then the rest") and "every word on your list" in lines["list"]
+    assert lines["list"].startswith("i+1 and more") and "every unknown word on your list" in lines["list"]
+    assert "the list's order" in row.tip                  # A7S-2: i+1 picks each card's line, never the words' order
     assert "on your list or not" in lines["i1"] and "The rest get no card" in lines["i1"]
-    assert "i+1 lines first" in row.help and "Only i+1" in row.help
+    assert "i+1 lines where it can" in row.help and "Only i+1" in row.help
     assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}
     assert S.OPTIONS[row.id] == {v: label for v, label, _line in settings_values.WORDS}
 

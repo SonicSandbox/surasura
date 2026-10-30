@@ -1062,8 +1062,9 @@ ANKI_RESOLVED_JOIN = "   ·   "
 ANKI_FIELDS_JOIN = " + "
 ANKI_SKIPPED = "{model} → (no such field — skipped)"
 ANKI_SUSPENDED = "Include suspended cards"
-ANKI_SUSPENDED_TIP = ("Count cards you've suspended as known. Off by default — suspended cards are often ones you "
-                      "struggled with")
+ANKI_SUSPENDED_TIP = ("Cards you studied and then suspended count as known. Off by default — a suspended card is "
+                      "often one you struggled with. New cards you suspend count only with Count as known in Anki, in "
+                      "Settings › Known words")                                    # a7 (A7S-1/8): Settings' words
 ANKI_AUTO = "Sync automatically when Anki is running"
 ANKI_AUTO_TIP = "When Anki is open, Surasura adds new known words on its own — at start-up and when you come back to it"
 ANKI_GENERATE = "Generate when Anki adds known words"

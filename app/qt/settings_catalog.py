@@ -477,8 +477,11 @@ def help_line(row, settings, language):
     if row.id == "known_from_anki":
         held = set(value(row, settings, language) or ())
         picked = [t for t in row.options if t in held]                  # in the setting's order (`known_value`)
+        names = S.OPTIONS[row.id]
+        flags = [t for t in picked if t.startswith("flag:")]
+        if len(flags) > 1:                              # a card holds one flag: never two at once (A7S-7)
+            return S.KNOWN_FLAGS.format(flags=" + ".join(names.get(t, t) for t in flags))
         if len(picked) > 1:
-            names = S.OPTIONS[row.id]
             return S.KNOWN_ALL_OF.format(states=" + ".join(names.get(t, t) for t in picked))
     return row.help
 

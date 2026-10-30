@@ -4,9 +4,10 @@ Goal) and the pickers that look for a video (Needs you's *Choose file…*, a row
 (a drive may be slow or gone).
 
 The first of these that exists:
-1. an item's original's folder (the source folder it is read from, an EPUB's for a book's part: `#n` taken off);
+1. an item's original's folder (where it is read from; a book's part `<book>.epub#<n>`: the EPUB's folder);
 2. its paired video's folder;
-3. the nearest existing folder above an original (a show's folder gone: the folder it was in);
+3. the nearest existing folder above an original, never above the source folder it is read from (a show's folder
+   gone: the folder it was in; the source itself gone, or no source — + Add's, Extract's: no climb);
 4. the stored copy's folder in the library, else the nearest existing folder above it inside the library;
 5. the library itself.
 
@@ -16,9 +17,6 @@ file moved on). An item with none (Surasura 2's, a sample) is its stored copy: 4
 (`Store.relink`), so those pickers start at the stored copy's side (`library_side`).
 """
 import os
-import re
-
-_PART = re.compile(r"#\d+$")             # a book's part: `<book>.epub#<n>`
 
 
 def _isdir(path):
@@ -73,17 +71,29 @@ def originals(store, ids):
     return [o for i in dict.fromkeys(ids) for o in by.get(i, ())]
 
 
+def _roots(store, origins):
+    """{root id: its folder} of the sources `origins` are read from (stopped ones too); {} when it can't be read."""
+    if not any(o.root is not None for o in origins) or not hasattr(store, "sources"):
+        return {}
+    try:
+        return {s["id"]: s["path"] for s in store.sources(all=True, counts=False) if s.get("path")}
+    except Exception as e:                          # noqa: BLE001 — no climb then
+        print(f"Open its folder: the sources couldn't be read: {e!r}")
+        return {}
+
+
 def find(store, data_dir, ids=(), rels=(), folders=()):
     """The folder to open for items `ids` (their stored copies: `rels` files, `folders` folders, data-folder relative):
-    the module's rule."""
+    the module's rule. Each folder is looked at once, however many parts share it (a slow or offline share: A7S-4)."""
     origins = originals(store, ids)
-    files = [_PART.sub("", o.origin) for o in origins]
-    for o, path in zip(origins, files):
-        for at in (path, o.video_path):
-            if isinstance(at, str) and at and _isdir(os.path.dirname(at)):
-                return os.path.dirname(at)
-    for path in files:
-        found = _nearest(os.path.dirname(path))
+    own = [os.path.dirname(o.origin) for o in origins]           # `dirname` takes a part's `#<n>` off with its name
+    beside = own + [os.path.dirname(o.video_path) for o in origins if isinstance(o.video_path, str) and o.video_path]
+    for folder in dict.fromkeys(f for f in beside if f):
+        if _isdir(folder):
+            return folder
+    roots = _roots(store, origins)
+    for folder, root in dict.fromkeys((f, roots.get(o.root)) for f, o in zip(own, origins) if f):
+        found = _nearest(os.path.dirname(folder), stop=root) if root else None
         if found:
             return found
     return library_side(data_dir, rels, folders)

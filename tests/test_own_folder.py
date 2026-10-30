@@ -176,3 +176,45 @@ def test_an_unreadable_store_or_no_store_opens_the_librarys_side(tmp_path, capsy
     no_store = Opener(None)
     no_store.mode = "manifest"                                   # Surasura 2's manifest: no store to read
     assert F.read(no_store, data, [1], ["Library/月影/01.srt"]) == copy and no_store.calls == []
+
+
+# --- the review's round (A7S-4, A7S-5, A7S-9) ------------------------------------------------------------------------ #
+def test_a_renamed_source_folder_opens_the_copy_never_the_drive_above_it(shelf):
+    """A7S-9: the climb stays inside the source folder the show is read from — its folder renamed (`D:/Anime` →
+    `D:/アニメ`), the drive above is no more the content's place than the copy is: the copy opens."""
+    title = TITLES[shelf.language][0]
+    source = os.path.join(shelf.drive, "アニメ")
+    episodes(os.path.join(source, title), title, shelf.language)
+    shelf.read(source)
+    ids, rels = _ids_rels(shelf, title)
+    os.rename(source, source + "（旧）")
+    copy = os.path.dirname(os.path.join(shelf.data_dir, *rels[0].split("/")))
+    assert os.path.normcase(F.find(shelf.store, shelf.data_dir, ids, rels)) == os.path.normcase(copy)
+
+
+def test_a_book_of_many_parts_on_a_gone_share_looks_at_each_folder_once(tmp_path, monkeypatch):
+    """A7S-4: 383 parts in one folder on an offline share: each `isdir` there can wait for the network's timeout, so
+    the same folder is never looked at twice."""
+    data, copy = _library(tmp_path, "Library/本/001.txt")
+    gone = tmp_path / "共有" / "本"
+    store = Store(*[_origin(i, os.path.join(str(gone), f"モルモン書.epub#{i}")) for i in range(1, 384)])
+    looked = []
+    real = F._isdir
+    monkeypatch.setattr(F, "_isdir", lambda p: looked.append(p) or real(p))
+    assert F.find(store, data, list(range(1, 384)), ["Library/本/001.txt"]) == copy
+    assert looked.count(str(gone)) == 1 and len(looked) <= 5
+
+
+def test_the_window_reads_through_its_librarys_opener():
+    """A7S-5: every press asks `opener_of(win)`; a wrong path there sends every press back to the copy, silently."""
+    from types import SimpleNamespace as NS
+    opener = object()
+    assert F.opener_of(NS(services=NS(library=NS(opener=opener)))) is opener
+    assert F.opener_of(NS(services=NS(library=None))) is None and F.opener_of(None) is None
+
+
+def test_the_librarys_side_never_climbs_out_of_a_library_folder_that_is_gone(tmp_path):
+    """A7S-5: with the library's own folder gone the climb stops at it — never the folder above the library."""
+    data = str(tmp_path / "データ")
+    assert F.library_side(data, ("Library/月影/01.srt",)) == data and not os.path.isdir(data)
+    assert F._nearest(os.path.join(data, "Library", "月影"), stop=data) is None

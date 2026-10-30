@@ -984,16 +984,7 @@ def test_michi_c_a_new_backlog_offer_asks_needs_you_again_without_a_new_sync(wor
     assert not shell.needs_asked(before._replace(seq=8), before)
 
 
-def _own_folder_answers(monkeypatch, tmp_path, name):
-    """a7: `own_folder.read` answering with a real folder (a non-ASCII path, as the user keeps shows) and recording
-    what each press asked it."""
-    from app.services import own_folder
-    there = tmp_path / "ユーザーの棚" / name
-    there.mkdir(parents=True)
-    asked = []
-    monkeypatch.setattr(own_folder, "read", lambda opener, data, ids=(), rels=(), folders=():
-                        asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there))
-    return str(there), asked
+from tests.qt.conftest import own_folder_answers as _own_folder_answers  # noqa: E402 (a7)
 
 
 def test_choose_file_for_a_video_starts_in_the_shows_own_folder_and_for_a_gone_file_in_the_library(world, monkeypatch,
@@ -1025,3 +1016,39 @@ def test_choose_file_for_a_video_starts_in_the_shows_own_folder_and_for_a_gone_f
     button(ny, gone.key, "choose_file", gone.lines[0]).click()
     assert wait_until(lambda: started, 5)
     assert started == [ny.data_dir] and sides == [(gone.lines[0].rel_path,)] and asked == []
+
+
+def test_a_pickers_start_is_one_press_and_a_language_switch_meanwhile_picks_nothing(world, monkeypatch):
+    """A7S-3: the start is looked for on a worker (an offline share can take seconds): its arc turns from the click, a
+    second click meanwhile opens no second picker, and the window switched to another language before it answers
+    opens none (ids repeat across stores: the link would land in the other library)."""
+    from app.qt import press as qpress
+    from app.services import own_folder
+    seed, win, writer, ny = world()
+    row, eps = no_video_show(win, n=1)
+    ny.read_connect = lambda _lang: jobs(*eps)
+    ny.read_settings = lambda: {"connect_enabled": True, "connect_video_folders": {}}
+    settle(ny)
+    card = next(e for e in ny.entries if e.kind == service.NO_VIDEO)
+    button(ny, card.key, "find_videos").click()
+    assert wait_until(lambda: card.key in ny.found and not ny.looking, 10)
+    gate, started = threading.Event(), []
+    monkeypatch.setattr(own_folder, "read", lambda *_a, **_k: gate.wait(5) and ny.data_dir)
+    ny.pick_file = lambda title, folder: started.append(folder) or ""
+    key = ny._press_key("choose_video", card, card.lines[0].key)
+    button(ny, card.key, "choose_video").click()
+    assert qpress.live(win, key)                            # turning at once
+    button(ny, card.key, "choose_video").click()            # a second click meanwhile: nothing more
+    gate.set()
+    assert wait_until(lambda: started and not qpress.live(win, key), 5)
+    QApplication.processEvents()
+    assert started == [ny.data_dir]
+    gate.clear()
+    del started[:]
+    button(ny, card.key, "choose_video").click()
+    win.language = "zh"                                     # switched before the start came back
+    gate.set()
+    assert wait_until(lambda: not qpress.live(win, key), 5)
+    QApplication.processEvents()
+    assert started == [] and not any(c[0] == "link_video" for c in writer.calls)
+    win.language = seed.language

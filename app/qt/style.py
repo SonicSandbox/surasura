@@ -180,7 +180,7 @@ QListView#rows:focus {{ border: 0; }}
 /* menus, tabs a later screen may use, Qt's own tooltip (the shell shows its own bubble: tooltip.py) */
 QMenu {{ background: {c['overlay']}; color: {c['ink']}; border: 0; border-top: 1px solid {c['overlay-edge-top']};
   border-bottom: 1px solid {c['overlay-edge-bottom']}; padding: 6px; {font('menu-item')} }}
-QMenu::item {{ padding: {px(7)} {px(12)}; border-radius: 7px; }}
+QMenu::item {{ padding: {px(7)} {px(24)} {px(7)} {px(12)}; border-radius: 7px; }}   /* W4.1: room for a submenu's ▸ */
 QMenu::item:selected {{ background: {c['overlay-hover']}; }}
 QMenu::item:disabled {{ color: {c['overlay-ink-faint']}; }}
 QMenu::separator {{ height: 2px; margin: 4px 8px; background: qlineargradient(x1:0, y1:0, x2:0, y2:1,

@@ -1222,8 +1222,9 @@ SOURCES_FROM = "from {name}"
 # `app/services/needs.STRINGS`) ------------------------------------------------------------------------------------- #
 NEEDS_EMPTY_TEXT = "\n".join(NEEDS_EMPTY)
 NEEDS_ACTIONS = {   # action name -> (label, tooltip)
-    "find_videos": ("Find videos", "Look in the show's folder and your video folders for each episode's video, by its "
-                                   "number. Nothing is linked until you say so"),
+    "find_videos": ("Find videos", "Look in the show's folder, then your library's folders, then any more video "
+                                   "folders you added, for each episode's video, by its number. Nothing is linked "
+                                   "until you say so"),
     "link_these": ("Link these · {n}", "Link each video found to its episode, so its cards get their pictures and "
                                        "audio"),
     "find_all": ("Find all missing videos", "Look for every show's missing videos at once, by episode number"),

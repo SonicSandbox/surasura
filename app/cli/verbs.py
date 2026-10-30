@@ -217,6 +217,22 @@ def _int(value):
         return 0
 
 
+# Alpha 6 try #6: results/ hold a list with no run stamp — a Generate that stopped part-way (withdrawn, or killed). A
+# moment's state, as `busy` is (exit 3: try later): the next Generate's stamp ends it. `list: unfinished` tells it from
+# a lock held (Connect waits for a current list, never *Needs you*)
+UNFINISHED = "The last Generate didn't finish, so its list may be cut short. Generate again."
+# A setting of the language's (Connect names it once for the language: `need`)
+JUNBAN_ONE_DECK = "The automatic reorder runs for one deck only: choose one in the 順 window."
+BACKFILL_ONE_DECK = "Backfill runs for one deck only: choose one in the Backfill window."
+
+
+def _finished():
+    """CliError `busy` (`list: unfinished`) unless the list results/ hold was stamped by the Generate that wrote it.
+    Called under the `results` lock."""
+    if read_run_stamp_here() is None and os.path.exists(os.path.join(_results_dir(), PRIORITY_CSV)):
+        raise CliError("busy", UNFINISHED, list="unfinished")
+
+
 def _read_rows(path):
     try:
         with open(path, encoding="utf-8-sig", newline="") as f:
@@ -224,7 +240,8 @@ def _read_rows(path):
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError, csv.Error) as e:
-        raise CliError("bad-data", "Surasura's list (results) can't be read. Generate again.", detail=str(e)) from None
+        raise CliError("bad-data", "Surasura's list (results) can't be read. Generate again.", detail=str(e),
+                       need="list-unreadable") from None
 
 
 def list_words(args):
@@ -240,8 +257,7 @@ def list_words(args):
         holds = _results_language()
         if holds and holds != lang:
             return {"language": lang, "words": [], "skipped": f"results hold {holds}"}
-        if read_run_stamp_here() is None and os.path.exists(os.path.join(_results_dir(), PRIORITY_CSV)):
-            raise CliError("bad-data", "The last Generate didn't finish, so its list may be cut short. Generate again.")
+        _finished()
         if args.file is not None or args.order == "encounter":
             rows = _read_rows(os.path.join(_results_dir(), PROGRESSIVE_CSV))
         else:
@@ -318,8 +334,7 @@ def _file_encounter(args, loaded, lang):
         holds = _results_language()
         if holds and holds != lang:
             return {"language": lang, "file": os.path.abspath(args.file), "words": [], "skipped": f"results hold {holds}"}
-        if read_run_stamp_here() is None and os.path.exists(os.path.join(_results_dir(), PRIORITY_CSV)):
-            raise CliError("bad-data", "The last Generate didn't finish, so its list may be cut short. Generate again.")
+        _finished()
         rows = _read_rows(os.path.join(_results_dir(), PRIORITY_CSV))
         journey = _read_rows(os.path.join(_results_dir(), PROGRESSIVE_CSV))
     listed = {}
@@ -769,8 +784,7 @@ def _junban_auto(args, lang, junban_settings, auto, job=None, current=None, posi
     if not positions_only:
         _record_cards_out(lang, report)     # P4.1 L2: whatever landed, before any answer below (a stop part way too)
     if outcome == "needs-deck":
-        raise CliError("needs-you", "The automatic reorder runs for one deck only: choose one in the 順 window.",
-                       ask="choose a deck in 順")
+        raise CliError("needs-you", JUNBAN_ONE_DECK, ask="choose a deck in 順", need="junban-deck")
     if outcome == "anki-closed":
         raise CliError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed). Open Anki, then try again.")
     if outcome == "reviewing" or (outcome == "busy" and _reviewing(report)):
@@ -995,8 +1009,7 @@ def backfill(args):
     ids = _note_ids(args.notes) if args.notes is not None else None
     fill_settings = _junban_settings(loaded, lang)
     if not filling._deck(fill_settings):
-        raise CliError("needs-you", "Backfill runs for one deck only: choose one in the Backfill window.",
-                       ask="choose a deck in Backfill")
+        raise CliError("needs-you", BACKFILL_ONE_DECK, ask="choose a deck in Backfill", need="backfill-deck")
     from app import anki_connect, locks
     deadline = time.monotonic() + max(0.0, args.wait or 0.0)
     while locks.in_use("backfill-window"):
@@ -1079,7 +1092,9 @@ def pick_args(parser):
 
 def _miner_error(e):
     code = _MINER_CODES.get(e.kind, "failed")
-    return CliError(code, e.message, anki_miner=e.kind, **({"ask": e.message} if code == "needs-you" else {}))
+    # Anki Miner's own state (blocked, too old, its setup): the language's need, never one episode's (alpha 6 #6)
+    return CliError(code, e.message, anki_miner=e.kind,
+                    **({"ask": e.message, "need": f"anki-miner-{e.kind}"} if code == "needs-you" else {}))
 
 
 def _listed(args, lang):
@@ -1090,8 +1105,7 @@ def _listed(args, lang):
         path = os.path.join(_results_dir(), PRIORITY_CSV)
         if (holds and holds != lang) or not os.path.exists(path):
             return None
-        if read_run_stamp_here() is None:
-            raise CliError("bad-data", "The last Generate didn't finish, so its list may be cut short. Generate again.")
+        _finished()
         rows = _read_rows(path)
     out = {}
     for row in rows:
@@ -1110,7 +1124,7 @@ def _known_test(lang, tokenizer, script):
             cached = analyzer.load_known_words(os.path.join(folder, "KnownWord.json"), tokenizer)
         except (ValueError, UnicodeDecodeError) as e:
             raise CliError("bad-data", "Your known words (KnownWord.json) can't be read; nothing was changed.",
-                           detail=str(e)) from None
+                           detail=str(e), need="known-words-unreadable") from None
     tuples, lemmas = cached
     ignore = set()
     for name in ("IgnoreList.txt", "Blacklist.txt", "GraduatedList.txt"):
@@ -1205,7 +1219,7 @@ def _anki_miner_setup(loaded, lang, run_dir, held=None):
         except anki_miner.AnkiMinerError as e:
             raise _miner_error(e) from None
         except fields.NeedsYou as e:
-            raise CliError("needs-you", e.message, ask=e.message) from None
+            raise CliError("needs-you", e.message, ask=e.message, need="anki-miner-setup") from None
     _check_note_type(loaded, mapping, info)
     if held is not None:
         held.update(set=(info, profile, mapping, export), stamp=now,
@@ -1231,7 +1245,7 @@ def _check_note_type(loaded, mapping, info=None):
     try:
         fields.check_note_type(mapping, model_fields, fields.pointer(info))
     except fields.NeedsYou as e:
-        raise CliError("needs-you", e.message, ask=e.message) from None
+        raise CliError("needs-you", e.message, ask=e.message, need="anki-miner-setup") from None
 
 
 def pick(args):
@@ -1246,7 +1260,8 @@ def pick(args):
     require_set_up(lang)
     mode = args.words or loaded.get("connect_mine_words") or "list"
     if mode not in MINE_WORDS:
-        raise CliError("bad-data", f"Surasura's setting connect_mine_words is {mode!r}: it must be list, unknown or i1.")
+        raise CliError("bad-data", f"Surasura's setting connect_mine_words is {mode!r}: it must be list, unknown or "
+                                   "i1.", need="mine-words-setting")
     if not os.path.isfile(args.file):
         raise CliError("bad-data", f"There's no subtitle at {args.file}.")
     if args.video is not None and not os.path.isfile(args.video):

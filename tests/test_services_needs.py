@@ -602,6 +602,129 @@ def test_find_all_lists_each_folder_once_for_every_show(library, monkeypatch):
     assert yuusha[0][0] == "Ep 10" and yuusha[0][1].endswith("ep10.mkv")
 
 
+def test_find_videos_looks_in_the_librarys_own_folders_before_the_folders_you_added(library, monkeypatch):
+    """Alpha 6 try #5: Connect finds a video in the library's own folders (the store's sources), but *Find videos*
+    looked only in the show's folder and *More video folders* — so a learner whose videos sit in the library, with no
+    extra folder set, found nothing. The order now: the show's folder, the library's folders, the folders you added;
+    the first place holding one decides (never a later place's guess). The library's folders hold every show: a video
+    there is this show's only when named like it — another show's Ep 12 is never taken."""
+    data, settings, entry, root = library
+    shelf = os.path.join(root, "Anime library")
+    mine = os.path.join(shelf, FRIEREN)
+    _touch(os.path.join(mine, f"{FRIEREN} - 10 [WEB].mkv"))       # Ep 10: here and in an added folder
+    _touch(os.path.join(mine, "Season 1", "Episode 11.mkv"))      # Ep 11: only here (a folder named like it)
+    _touch(os.path.join(shelf, "misc", f"{FRIEREN} 13.mkv"))      # Ep 13: here by its file name; two strangers added
+    _touch(os.path.join(shelf, "ぼっち・ざ・ろっく！", "Bocchi - 14.mkv"))   # Ep 14: another show's only
+    asked = []
+    monkeypatch.setattr(needs, "_sources", lambda language, data_dir: asked.append(language) or [shelf])
+    by = {label: (path, why) for label, path, why in needs.find_videos("ja", entry, settings, data_dir=data)}
+    assert asked == ["ja"]
+    assert os.path.dirname(by["Ep 9"][0]) == os.path.join(data, "HighPriority", FRIEREN), "its own folder first"
+    assert by["Ep 10"][0] == os.path.join(mine, f"{FRIEREN} - 10 [WEB].mkv"), "the library's folders before yours"
+    assert by["Ep 11"][0] == os.path.join(mine, "Season 1", "Episode 11.mkv"), "found with no folder added"
+    assert by["Ep 12"][1].endswith("the one in a folder named like the show"), "the added folders, as before"
+    assert by["Ep 13"][0] == os.path.join(shelf, "misc", f"{FRIEREN} 13.mkv"), \
+        "one in the library's folders answers: the added folders' two strangers are never weighed"
+    assert by["Ep 14"] == (None, '✗ nothing with "14" in its name'), "another show's episode is never this one's"
+
+
+def test_a_library_folder_that_is_the_show_itself_is_named_by_its_own_name(library, monkeypatch):
+    data, settings, entry, root = library
+    show = os.path.join(root, "S", FRIEREN)                       # the source is the show's own folder
+    _touch(os.path.join(show, "Episode 11.mkv"))
+    monkeypatch.setattr(needs, "_sources", lambda language, data_dir: [show])
+    by = {label: (path, why) for label, path, why in needs.find_videos("ja", entry, settings, data_dir=data)}
+    assert by["Ep 11"][0] == os.path.join(show, "Episode 11.mkv")
+
+
+def test_a_season_folder_never_matches_another_shows_season_folder_in_the_library(tmp_path, monkeypatch):
+    """A subtitle in `<show>/Season 1/` gave "Season 1" as the show's name, so another show's
+    `Season 1/… - 10.mkv` in the library was "found". The show's name skips a season, specials or subtitles folder;
+    a name too short to tell shows apart (`K`) names nothing."""
+    work(7, "ぼっち・ざ・ろっく！")
+    folder = "HighPriority/ぼっち・ざ・ろっく！/Season 1/Subs"
+    view = view_of([(7, folder, ["ぼっち・ざ・ろっく！ - 10.ja.srt", "ぼっち・ざ・ろっく！ - 11.ja.srt"], {})])
+    entry = needs.entries(view, connect=no_video_jobs(1, 2))[0]
+    shelf = tmp_path / "Anime"
+    _touch(str(shelf / FRIEREN / "Season 1" / "Episode 10.mkv"))                      # another show's Season 1
+    _touch(str(shelf / "Bocchi the Rock" / "Season 1" / "Episode 11.mkv"))            # its own, by the title's
+    _touch(str(shelf / "ぼっち・ざ・ろっく！" / "Season 1" / "Episode 11.mkv"))        # Japanese name only
+    monkeypatch.setattr(needs, "_sources", lambda language, data_dir: [str(shelf)])
+    by = {label: (path, why) for label, path, why in needs.find_videos("ja", entry, {}, data_dir=str(tmp_path / "d"))}
+    assert by["Ep 10"] == (None, '✗ nothing with "10" in its name'), "never Frieren's Season 1 episode"
+    assert by["Ep 11"][0] == str(shelf / "ぼっち・ざ・ろっく！" / "Season 1" / "Episode 11.mkv")
+    assert needs._show_name("HighPriority/K/Season 2/K - 01.srt") == "k" and not needs._telling("k")
+    assert needs._telling("蟲師") and not needs._telling("jp")
+
+
+def test_a_trashed_copy_in_a_library_folder_is_never_offered(library, monkeypatch):
+    """The library's folders are walked as Connect's index walks them (the source's skip rule): a copy
+    in `.trash` or a recycle bin is never a video to link."""
+    data, settings, entry, root = library
+    shelf = os.path.join(root, "Anime library")
+    _touch(os.path.join(shelf, ".trash", FRIEREN, "Episode 11.mkv"))
+    _touch(os.path.join(shelf, "$RECYCLE.BIN", FRIEREN, "Episode 11.mkv"))
+    monkeypatch.setattr(needs, "_sources", lambda language, data_dir: [shelf])
+    by = {label: (path, why) for label, path, why in needs.find_videos("ja", entry, settings, data_dir=data)}
+    assert by["Ep 11"] == (None, '✗ nothing with "11" in its name')
+
+
+def test_find_videos_finds_nothing_in_the_librarys_folders_and_goes_on_to_the_ones_you_added(library, monkeypatch):
+    data, settings, entry, root = library
+    empty = os.path.join(root, "Anime library")
+    os.makedirs(empty)
+    monkeypatch.setattr(needs, "_sources", lambda language, data_dir: [empty])
+    by = {label: (path, why) for label, path, why in needs.find_videos("ja", entry, settings, data_dir=data)}
+    assert os.path.basename(by["Ep 10"][0]) == "ep10.mkv", "nothing there: the added folders are looked in"
+    assert by["Ep 13"] == (None, '✗ 2 videos have "13" in their names: choose one')
+
+
+def test_find_videos_never_guesses_between_two_in_the_librarys_folders(library, monkeypatch):
+    data, settings, entry, root = library
+    shelf = os.path.join(root, "Anime library")
+    _touch(os.path.join(shelf, FRIEREN, "BD", "Episode 10.mkv"))       # two releases of Ep 10, both the show's
+    _touch(os.path.join(shelf, FRIEREN, "WEB", "Episode 10.mkv"))
+    monkeypatch.setattr(needs, "_sources", lambda language, data_dir: [shelf])
+    by = {label: (path, why) for label, path, why in needs.find_videos("ja", entry, settings, data_dir=data)}
+    assert by["Ep 10"] == (None, '✗ 2 videos have "10" in their names: choose one'), \
+        "two in the first place that holds any: no answer, never the added folder's one"
+
+
+def test_find_all_reads_the_librarys_folders_once_for_every_card(library, monkeypatch):
+    data, settings, entry, _root = library
+    asked = []
+    monkeypatch.setattr(needs, "_sources", lambda language, data_dir: asked.append(language) or [])
+    needs.find_all("ja", [entry, entry], settings, data_dir=data)
+    assert asked == ["ja"]
+
+
+def test_the_librarys_folders_are_the_sources_the_store_reads(tmp_path):
+    from tests.test_services_moves import Library
+    lib = Library("ja")
+    try:
+        shelf = tmp_path / "アニメ"
+        shelf.mkdir()
+        lib.store.add_source(str(shelf))
+        assert str(shelf) in needs._sources("ja", lib.data_dir)
+    finally:
+        lib.close()
+
+
+def test_the_librarys_folders_are_nothing_with_no_store_to_read(tmp_path, monkeypatch):
+    assert needs._sources("ja", str(tmp_path / "data" / "ja")) == []
+
+    def broken(*_a, **_k):
+        raise OSError("the library file is held by another program")
+    monkeypatch.setattr(needs.library_store, "open_store", broken)
+    assert needs._sources("ja", str(tmp_path / "data" / "ja")) == [], "a store that can't be read: the look goes on"
+
+    def damaged(*_a, **_k):
+        import sqlite3
+        raise sqlite3.DatabaseError("database disk image is malformed")
+    monkeypatch.setattr(needs.library_store, "open_store", damaged)
+    assert needs._sources("ja", str(tmp_path / "data" / "ja")) == [], "a damaged store too"
+
+
 # --- Chinese --------------------------------------------------------------------------------------------------------- #
 def test_chinese_shows_read_the_same_way_and_find_their_videos_by_episode(tmp_path):
     title = "雪中悍刀行"

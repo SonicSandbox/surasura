@@ -708,15 +708,27 @@ class Ledger:
             n += cur.rowcount
         return n
 
-    def need(self, language, kind, say, item_id=None, job_id=None):
+    def need(self, language, kind, say, item_id=None, job_id=None, standing=False):
         """Something Connect needs you for (`kind` + item) -> True when it counts (again) in the badge. Open already:
-        a standing state (`STANDING`) is left as it is, nothing written (S19); a failure you've seen happens again →
-        it counts again with its new words (03 §4); one not seen yet, or dismissed (it stays dismissed until its fix),
-        is left as it is. Fixed earlier → a new entry."""
+        a standing state (`STANDING`, or `standing`: the language's own trouble, alpha 6 try #6) is left as it is,
+        nothing written (S19); a failure you've seen happens again → it counts again with its new words (03 §4); one
+        not seen yet, or dismissed (it stays dismissed until its fix), is left as it is. Fixed earlier → a new entry."""
         cur = self.conn.execute("INSERT OR IGNORE INTO needs (language, item_id, job_id, kind, say, at) "
                                 "VALUES (?, ?, ?, ?, ?, ?)", (language, item_id, job_id, kind, say, _now()))
         if cur.rowcount > 0:
             return True
+        if standing:
+            # the language's own trouble in new words (another deck, another field): its words follow — a new
+            # decision, counted again unless dismissed; the same words write nothing (S19)
+            where = ("WHERE language = ? AND kind = ? AND COALESCE(item_id, -1) = COALESCE(?, -1) AND fixed_at IS NULL "
+                     "AND say != ?")
+            row = self.conn.execute(f"SELECT id, dismissed_at FROM needs {where}",
+                                    (language, kind, item_id, say)).fetchone()
+            if row is None:
+                return False
+            self.conn.execute("UPDATE needs SET say = ?, at = ?, job_id = ?, seen_at = CASE WHEN dismissed_at IS NULL "
+                              "THEN NULL ELSE seen_at END WHERE id = ?", (say, _now(), job_id, row[0]))
+            return row[1] is None
         if kind in STANDING:
             return False
         cur = self.conn.execute("UPDATE needs SET seen_at = NULL, say = ?, at = ?, job_id = ? "
@@ -784,6 +796,26 @@ class Ledger:
             return [r for r in rows if self.conn.execute(update, (now, r["id"], r["say"])).rowcount]
         with self.transaction():
             return [r for r in rows if self.conn.execute(update, (now, r["id"], r["say"])).rowcount]
+
+    def fix_said(self, language, says):
+        """The open needs of one episode each whose words are one of `says` — a trouble of the whole language an
+        earlier Connect recorded once per episode (alpha 6 try #6) — fixed -> the fixed rows. Nothing open → nothing
+        written."""
+        says = tuple(says or ())
+        if not says:
+            return []
+        cur = self.conn.execute(f"SELECT * FROM needs WHERE fixed_at IS NULL AND language = ? AND item_id IS NOT NULL "
+                                f"AND say IN ({','.join('?' * len(says))})", (language,) + says)
+        names = [d[0] for d in cur.description]
+        rows = [dict(zip(names, r)) for r in cur.fetchall()]
+        if not rows:
+            return []
+        now = _now()
+        update = "UPDATE needs SET fixed_at = ? WHERE id = ? AND fixed_at IS NULL"
+        if self.conn.in_transaction:
+            return [r for r in rows if self.conn.execute(update, (now, r["id"])).rowcount]
+        with self.transaction():
+            return [r for r in rows if self.conn.execute(update, (now, r["id"])).rowcount]
 
     # --- P2.5: the run's start, the undos ------------------------------------------------------------------- #
 

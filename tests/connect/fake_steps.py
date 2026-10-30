@@ -12,6 +12,11 @@ import sys
 from app.connect import runner
 
 TAG = "surasura::connect::"
+NO_DECK = "Backfill runs for one deck only: choose one in the Backfill window."     # `verbs.BACKFILL_ONE_DECK`
+FILL_FAILED = "Nothing was filled: the note changed while Backfill read it."
+JUNBAN_NO_DECK = "The automatic reorder runs for one deck only: choose one in the 順 window."    # verbs.JUNBAN_ONE_DECK
+READ_ONLY = "Surasura's library can't be written just now, so Connect can't record the cards it made."
+MINER_SETUP = "Anki Miner isn't set up for Japanese yet. Open Surasura's Connect settings to finish it."
 # Real words, by item: what each episode's pick finds (lemma, reading, its line)
 WORDS = {
     1: [("上層部", "ジョウソウブ"), ("一生懸命", "イッショウケンメイ"), ("走り出す", "ハシリダス")],
@@ -153,6 +158,8 @@ class FakeSteps:
     def record(self, lang, job, made, mined_at, batch):
         if self.plan.get("library_busy"):
             raise runner.Wait(runner.LIBRARY_BUSY)
+        if self.plan.get("library_read_only"):  # `Steps.record`'s StoreReadOnly
+            raise runner.Needs("store-read-only", READ_ONLY, whole=True)
         self.records.append((job["item_id"], dict(made), mined_at is not None))
         self.log.append(("record", job["item_id"]))
 
@@ -207,6 +214,10 @@ class FakeSteps:
         self._kill("pick")
         if job["item_id"] in (self.plan.get("pick_error") or ()):
             raise KeyError("a pairing row this test broke")
+        if self.plan.get("list_unfinished"):    # results/ hold a list with no run stamp: `verbs._finished`'s error
+            from app.cli import verbs
+            from app.cli.contract import CliError
+            raise runner._wait_or_needs(CliError("busy", verbs.UNFINISHED, list="unfinished"), None)
         if job.get("kind") == "level":
             candidates = [tuple(w) for w in job.get("words") or ()]
         else:
@@ -234,6 +245,10 @@ class FakeSteps:
             raise runner.Skip("Anki Miner isn't installed")
         if self.plan.get("miner_busy"):
             raise runner.Wait(runner.ANKI_MINER_OPEN)
+        if self.plan.get("miner_setup"):        # Anki Miner not set up for the language (`fields.NeedsYou`, the verb's)
+            from app.cli.contract import CliError
+            raise runner._wait_or_needs(CliError("needs-you", MINER_SETUP, ask=MINER_SETUP,
+                                                 need="anki-miner-setup"), "mining")
         if self.plan.get("profile_at_mine", "p1") != picked.get("profile"):
             self.plan["profile_at_pick"] = self.plan.get("profile_at_mine", "p1")     # a re-pick sees the new one
             raise runner.Repick()
@@ -277,8 +292,12 @@ class FakeSteps:
     def fill(self, lang, job, note_ids):
         self.log.append(("fill", job["item_id"], list(note_ids)))
         self._kill("fill")
-        if self.plan.get("fill_needs"):
-            raise runner.Needs("needs-you", "Backfill runs for one deck only: choose one in the Backfill window.")
+        if self.plan.get("fill_needs"):         # this episode's own fill failed (`verbs.backfill`'s `failed`)
+            raise runner.Needs("failed", FILL_FAILED)
+        if self.plan.get("fill_no_deck"):       # no Backfill deck: `verbs.backfill`'s error, read as `Steps.fill` does
+            from app.cli.contract import CliError
+            raise runner._wait_or_needs(CliError("needs-you", NO_DECK, ask="choose a deck in Backfill",
+                                                 need="backfill-deck"), "filling")
         if "backfill" in (self.plan.get("absent") or ()):
             raise runner.Skip("backfill absent")
 
@@ -302,6 +321,12 @@ class FakeSteps:
     def order(self, lang, job):
         self.log.append(("order", job["item_id"] if job is not None else None))   # None: F11's follow-up
         self._kill("order")
+        if self.plan.get("order_no_deck"):      # 順 has no deck: `verbs.junban`'s error
+            from app.cli.contract import CliError
+            raise runner._wait_or_needs(CliError("needs-you", JUNBAN_NO_DECK, ask="choose a deck in 順",
+                                                 need="junban-deck"), "ordering")
+        if self.plan.get("order_deferred"):     # the plan waits for the Generate after mining: 順 not asked
+            return runner.DEFERRED
         if "junban" in (self.plan.get("absent") or ()):
             raise runner.Skip("Junban isn't installed")
 

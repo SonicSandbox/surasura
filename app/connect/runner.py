@@ -102,6 +102,9 @@ WAIT_REASONS = {"books": BOOKS_WAIT, "audio": AUDIO_WAIT}       # `library.waits
 # here sends you to Anki Miner (alpha 4 M1); the job is tried again at Connect's next start
 BOOK_UNREADABLE = "{title}: Anki Miner couldn't read this book or text ({why})."
 UNKNOWN = "unknown"         # `Steps.waiting_items`: an audio item whose video can't be looked for now (never moved)
+# Alpha 6 try #6: the list a Generate left unfinished (`verbs.UNFINISHED`) is a wait for the language, never *Needs
+# you*: every episode waits with this line (`holds_every`), the next look prepares again (Connect Generates when no one
+# else has) and a finished list ends it
 NO_LIST = "Waiting for a current list: Generate didn't finish."
 LIBRARY_BUSY = "Surasura's library is busy: tried again shortly."
 STOPPED_FOR_UPDATE = "Surasura is installing an update."
@@ -155,11 +158,13 @@ class Wait(Exception):
 
 
 class Needs(Exception):
-    """Something only you can fix: named once in *Needs you* (`kind`, `say`); the job waits for the next start."""
+    """Something only you can fix: named once in *Needs you* (`kind`, `say`); the job waits for the next start.
+    `whole`: the language's trouble, never the episode's (a setting, Anki Miner's setup, the library): recorded once
+    for the language (no item), whatever the number of episodes it stops (alpha 6 try #6)."""
 
-    def __init__(self, kind, say):
+    def __init__(self, kind, say, whole=False):
         super().__init__(say)
-        self.kind, self.say = kind, say
+        self.kind, self.say, self.whole = kind, say, whole
 
 
 class Skip(Exception):
@@ -510,14 +515,21 @@ def _language(steps, ledger, lang, prepared, parked, out):
         except Wait as w:
             _wait(ledger, job, w, out, parked)
             outside |= w.look
+            if w.reason == NO_LIST and ("again", lang) not in prepared:
+                # the next look prepares again: Connect Generates if no one else has — once a run (a list that stays
+                # unfinished after it waits for the next Generate, never a Generate every look)
+                prepared.discard(lang)
+                prepared.add(("again", lang))
             if holds_every(w.reason):
                 # on battery, or a wait on Anki: every episode keeps its place and the next look starts from the top
                 # (laptop round 5 #24) — never a later one (or the next show) before the one that waited
                 return _waiting_all(ledger, lang, parked, out, w.reason, w.look, tried) or outside
         except Needs as n:
-            if ledger.need(lang, n.kind, n.say, item_id=job["item_id"], job_id=job["id"]):
+            if _need(ledger, lang, n, job):
                 out["needs"].append(n.say)
             _wait(ledger, job, Wait(n.say, look=False, resume=_resume_of(ledger.job_by_id(job["id"]))), out, parked)
+            if n.whole:                     # the language's trouble: every episode waits on it, named once
+                return _waiting_all(ledger, lang, parked, out, n.say, False, tried) or outside
         except Exception as e:              # R15: a fault of one job never ends the run nor hides it
             log.exception("Connect's job %s stopped on an error", job["id"])
             say = f"Connect stopped on an error while making an episode's cards ({type(e).__name__}): {e}"
@@ -601,6 +613,41 @@ def _fixed(ledger, lang, kinds=None, item_id=None, keep=()):
     for row in rows:
         log.info("Connect: fixed by itself (%s, %s): %s", lang, row["kind"], row["say"])
     return len(rows)
+
+
+# The language's needs (`Needs.whole`) each step's going through fixes: a list read, Anki Miner set up, Backfill's
+# and 順's deck chosen (alpha 6 try #6: each named once, gone once it works)
+# (mining: Anki Miner's own needs too, `verbs._MINER_CODES`' — its setup among them, `fields.NeedsYou`'s kind)
+WHOLE_STEPS = {"picking": ("list-unreadable", "no-store", "known-words-unreadable", "mine-words-setting"),
+               "mining": ("anki-refused",), "recording": ("store-read-only",), "filling": ("backfill-deck",),
+               "ordering": ("junban-deck",)}
+# The words an alpha 6 Connect recorded once per episode for these (`verbs`' constants): fixed as the step goes through
+OLD_SAYS = {"picking": ("UNFINISHED",), "filling": ("BACKFILL_ONE_DECK",), "ordering": ("JUNBAN_ONE_DECK",)}
+
+
+def _need(ledger, lang, need, job):
+    """`need` recorded -> True when it counts (`Ledger.need`): the episode's own, or once for the language
+    (`Needs.whole`: no item); the copies an earlier Connect recorded per episode go (`_fixed_said`)."""
+    if not need.whole:
+        return ledger.need(lang, need.kind, need.say, item_id=job["item_id"], job_id=job["id"])
+    _fixed_said(ledger, lang, (need.say,))
+    return ledger.need(lang, need.kind, need.say, standing=True)     # a state: never counted again while it stands
+
+
+def _through(ledger, lang, step):
+    """`step` went through: the language's needs it fixes (WHOLE_STEPS) fixed by themselves, and the per-episode
+    copies an alpha 6 Connect recorded of them (OLD_SAYS: *Generate didn't finish* — a wait now — and the decks)."""
+    from app.cli import verbs
+    kinds = WHOLE_STEPS[step]
+    if step == "mining":
+        kinds += tuple(f"anki-miner-{kind}" for kind, code in verbs._MINER_CODES.items() if code == "needs-you")
+    _fixed(ledger, lang, kinds=kinds)
+    _fixed_said(ledger, lang, tuple(getattr(verbs, name) for name in OLD_SAYS.get(step, ())))
+
+
+def _fixed_said(ledger, lang, says):
+    for row in ledger.fix_said(lang, says):
+        log.info("Connect: fixed by itself (%s, %s, item %s): %s", lang, row["kind"], row["item_id"], row["say"])
 
 
 def _skipped_says(job):
@@ -767,6 +814,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
                     if step in (None, "picking"):
                         _stop_here(steps, ledger, lang, job, step, record)
                         got = _pick(steps, ledger, lang, job, record)
+                        _through(ledger, lang, "picking")
                         if got is None:
                             out["done"].append(item_id)
                             return
@@ -1036,6 +1084,7 @@ def _mine(steps, ledger, lang, job, record=True):
             raise _Finished("skipped") from None
         finally:
             steps.on_progress = steps.should_stop = None
+        _through(ledger, lang, "mining")    # Anki Miner took the batch: its setup, the deck and note type are there
         stopped = bool(got.get("stopped"))
         if got.get("tag_pending"):          # the names' tag Anki didn't take: added before filling (adversary #7)
             pending = sorted(set(_pending(ledger, jid)) | set(got["tag_pending"]))
@@ -1167,6 +1216,7 @@ def _record_made(steps, ledger, lang, job, record):
         steps.record(lang, job, _made(ledger, job["id"]), _now() if job.get("kind") != "level" else None, _tag(job))
     except Wait as w:
         raise Wait(w.reason, w.look, "mining") from None
+    _through(ledger, lang, "recording")
 
 
 def _pending(ledger, jid):
@@ -1301,13 +1351,15 @@ def _fill(steps, ledger, lang, job):
         ledger.set_state(jid, "ordering", skipped=_skipped(ledger, jid, "filling", s.why))
         return
     except Needs as n:
-        ledger.need(lang, n.kind, n.say, item_id=job["item_id"], job_id=jid)
+        _need(ledger, lang, n, job)
         had = json.loads((ledger.job_by_id(jid) or {}).get("skipped") or "{}").get("filling")
         ledger.set_state(jid, "filling", skipped=_skipped(ledger, jid, "filling", n.say))
-        if had is None:                     # Backfill failed: tried again at the next start, once (adversary #13)
+        if had is None and not n.whole:     # Backfill failed: tried again at the next start, once (adversary #13);
+            # a setting of the language's (no deck chosen) waits for you, never the episode: it goes on unfilled
             raise Wait(n.say, look=False, resume="filling") from None
         ledger.set_state(jid, "ordering")
         return
+    _through(ledger, lang, "filling")
     skipped = json.loads((ledger.job_by_id(jid) or {}).get("skipped") or "{}")
     if skipped.pop("filling", None) is not None:        # filled at its second try: nothing left to name
         ledger.set_state(jid, "ordering", skipped=skipped or None)
@@ -1331,9 +1383,11 @@ def _order(steps, ledger, lang, job):
         ledger.set_state(jid, "ordering", skipped=_skipped(ledger, jid, "ordering", s.why))
         return
     except Needs as n:
-        ledger.need(lang, n.kind, n.say, item_id=job["item_id"], job_id=jid)
+        _need(ledger, lang, n, job)
         ledger.set_state(jid, "ordering", skipped=_skipped(ledger, jid, "ordering", n.say))
         return
+    if not deferred:                        # 順 ran (a deferred order never asked it): its deck is there
+        _through(ledger, lang, "ordering")
     with ledger.transaction():
         if deferred:
             ledger.owe_resort(lang)         # the Generate after mining orders Anki from its new list (F11)
@@ -1403,7 +1457,7 @@ class Steps:
         from app.connect import library
         store = library.open_store(lang)
         if store is None:
-            raise Needs("no-store", "Surasura's library isn't ready for Connect: open Surasura once.")
+            raise Needs("no-store", "Surasura's library isn't ready for Connect: open Surasura once.", whole=True)
         return store
 
     def consume(self, lang, ledger):
@@ -1430,7 +1484,7 @@ class Steps:
         if mode == "store" or reason == "busy":
             raise Wait(LIBRARY_BUSY)
         raise Needs("no-store", "Surasura's library can't be written just now, so Connect can't make cards. Open "
-                                "Surasura to see why.")
+                                "Surasura to see why.", whole=True)
 
     def mine_line(self, lang):
         from app.connect import library
@@ -1621,8 +1675,9 @@ class Steps:
             except library_store.StoreBusy:
                 raise Wait(LIBRARY_BUSY) from None
             except library_store.StoreReadOnly:
-                raise Needs("no-store", "Surasura's library can't be written just now, so Connect can't record the "
-                                        "cards it made. Open Surasura to see why.") from None
+                raise Needs("store-read-only", "Surasura's library can't be written just now, so Connect can't "
+                                               "record the cards it made. Open Surasura to see why.",
+                            whole=True) from None
 
     # --- Anki and its tools -------------------------------------------------------------------------------- #
     def blocked(self, lang):
@@ -2268,10 +2323,11 @@ def holds_every(reason):
     """Does a wait with `reason` hold every episode, not only the one it stopped (laptop round 5 #24)? On battery, a
     wait on Anki (never ANKI_SLOW: Anki answers, one request of that episode's failed), Anki Miner's window open, or
     your list in another language: the pass ends there, every episode keeps its place, and the next look starts from
-    the top — a later episode (or the next show) is never mined before the ones that waited."""
+    the top — a later episode (or the next show) is never mined before the ones that waited. A list a Generate left
+    unfinished (NO_LIST) too: it is the language's, never one episode's (alpha 6 try #6)."""
     if not isinstance(reason, str) or reason == ANKI_SLOW:
         return False
-    return (reason in (ON_BATTERY, ANKI_MINER_OPEN, SETTING_UP) or reason.startswith(OTHER_LIST.split("{")[0])
+    return (reason in (ON_BATTERY, ANKI_MINER_OPEN, SETTING_UP, NO_LIST) or reason.startswith(OTHER_LIST.split("{")[0])
             or anki_wait(reason))
 
 
@@ -2280,6 +2336,7 @@ def holds_every(reason):
 LASTING_REFUSALS = ("deck was not found", "deck not found", "model was not found", "model not found",
                     "note type not found", "note was not found", "note not found", "field was not found",
                     "field not found", "field is missing", "cannot create note")
+ONE_NOTE_REFUSALS = ("note was not found", "note not found", "cannot create note")     # one episode's, never all
 
 
 def lasting_refusal(error):
@@ -2299,8 +2356,9 @@ def _anki_wait(url, resume=None, error=None):
     (a profile switching, a sync, Anki closing: "collection is not available") is ANKI_SLOW (IK-r2-2)."""
     from app.connect import anki_session
     if error is not None and getattr(error, "kind", None) in ("action", "protocol"):
-        if lasting_refusal(error):
-            return Needs("anki-refused", f"Anki turned down Connect's request: {error}")
+        if lasting_refusal(error):          # a deck, note type or field gone is the language's; one note, the job's
+            return Needs("anki-refused", f"Anki turned down Connect's request: {error}",
+                         whole=not any(part in str(error).casefold() for part in ONE_NOTE_REFUSALS))
         return Wait(ANKI_SLOW, resume=resume)
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
         return Wait(ANKI_CLOSED, resume=resume)
@@ -2311,9 +2369,16 @@ def _anki_wait(url, resume=None, error=None):
 
 def _wait_or_needs(error, resume, url=None):
     """A verb's CliError as the loop reads it: Anki or another writer busy → Wait (look again), else → Needs. Its
-    `anki-closed` (any failed probe) is named by the session's look (`_anki_wait`)."""
+    `anki-closed` (any failed probe) is named by the session's look (`_anki_wait`). A list a Generate left unfinished
+    (`list: unfinished`) is NO_LIST; a need naming the language's own trouble (`need`: a deck to choose, Anki Miner's
+    setup) is that kind, once for the language (`Needs.whole`, alpha 6 try #6)."""
     if error.code == "anki-closed":
         return _anki_wait(url, resume)
+    context = getattr(error, "context", None) or {}
+    if error.code == "busy" and context.get("list") == "unfinished":
+        return Wait(NO_LIST, resume=resume)
+    if context.get("need"):
+        return Needs(context["need"], error.message, whole=True)
     if error.code in ("anki-busy", "busy", "anki-miner-busy", "settings-unreadable"):
         say = {"anki-busy": REVIEWING, "anki-miner-busy": _miner_busy()}.get(error.code, error.message)
         return Wait(say, resume=resume)
@@ -2337,7 +2402,8 @@ def _miner_wait_or_needs(error, url=None):
         return _anki_wait(url, "mining")
     if error.kind == "absent":
         return Skip("Anki Miner isn't installed")
-    return Needs(f"anki-miner-{error.kind}", error.message)
+    from app.cli.verbs import _MINER_CODES
+    return Needs(f"anki-miner-{error.kind}", error.message, whole=_MINER_CODES.get(error.kind) == "needs-you")
 
 
 def _on_disk(path):

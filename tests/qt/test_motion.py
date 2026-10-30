@@ -1731,3 +1731,31 @@ def test_a_spring_moved_again_from_its_on_rest_is_listed_once(clock):
     assert s.steps - before == 3
     clock.advance(1000)
     assert s.at_rest and s.value == 0.0 and t.rests == 2
+
+
+# --- a7: the one wash a decision is opened with (Sonic 2026-10-29: "a decision that is highlighted") ----------------- #
+def test_a7_wash_covers_its_widget_lets_every_click_through_fades_on_the_clock_and_a_second_takes_its_place(clock, stage):
+    """`motion.wash` (the phase strip's amber opens *Needs you*'s card or 順's control with it): an overlay over the
+    widget, as Settings washes a revealed row — full at once, faded out over `row-wash` on the clock, then gone; a
+    click on the widget still reaches it; a second wash on the same widget replaces the first (never two)."""
+    pressed = []
+    b = QPushButton("選ぶ", stage)
+    b.resize(160, 40)
+    b.clicked.connect(lambda: pressed.append(1))
+    b.show()
+    w = motion.wash(b, 6)
+    assert w.parentWidget() is b and w.geometry() == b.rect() and w.level == 1.0
+    assert w.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    QTest.mouseClick(b, Qt.MouseButton.LeftButton)
+    assert pressed == [1]
+    b.resize(200, 44)
+    assert w.geometry() == b.rect()                    # it follows the widget's size
+    clock.advance(theme.SETTINGS_MOTION["row-wash"] / 2)
+    assert 0.0 < w.level < 1.0
+    again = motion.wash(b)
+    QApplication.processEvents()
+    assert sip.isdeleted(w) or w.isHidden()
+    clock.advance(theme.SETTINGS_MOTION["row-wash"] + 50)
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(again) or again.isHidden()
+    assert not [c for c in b.findChildren(QWidget) if not c.isHidden() and type(c).__name__ == "_Wash"]

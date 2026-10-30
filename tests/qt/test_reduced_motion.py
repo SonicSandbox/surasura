@@ -75,6 +75,7 @@ SITES = {
     "settings_controls.py:LevelSlider._key_to": "the slider's glide by key",
     "settings_page.py:SettingsPage._glide": "Settings' glide to a row (an app-made scroll)",
     "settings_page.py:SettingsPage._wash": "Settings' row wash",
+    "motion.py:wash": "a decision's wash where an amber circle's press lands (a7)",
     "toast.py:ToastHost.show": "a toast's rise",
     "wizard.py:Switch._slide": "the wizard's switch knob",
     "phase_strip.py:PhaseStrip._fade": "a phase circle's done tick fading back",
@@ -773,3 +774,20 @@ def test_full_overrides_windows_off_and_reduced_overrides_windows_on(qapp):
         mode.set_setting(was)
         c.use_real_time()
         freeze.set_frozen(None)
+
+
+@drives("motion.py:wash")
+def test_sweep_a_decisions_wash_is_steady_for_its_second_then_gone(sweep):
+    """a7: the wash an amber circle's press lands with (a Needs-you card, 順's control) — under Reduced motion a steady
+    wash for `row-wash-steady`, nothing on the clock, then gone, as Settings' row wash."""
+    stage = QWidget()
+    stage.resize(400, 200)
+    stage.show()
+    _settle()
+    sweep.on()
+    w = motion.wash(stage, 6)
+    sweep.still()
+    assert w.isVisible() and w.level == 1.0
+    QTest.qWait(theme.SETTINGS_MOTION["row-wash-steady"] + 200)
+    assert sip.isdeleted(w) or not w.isVisible()
+    stage.close()

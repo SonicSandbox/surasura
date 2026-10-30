@@ -279,7 +279,10 @@ def test_in_the_bar_the_strip_is_first_and_the_status_line_keeps_only_what_no_ci
     upd.finish()
 
 
-def test_the_offline_folder_is_arrivals_amber_and_moves_waiting_on_the_store_are_its_still_arc(world):
+def test_the_offline_folder_is_said_in_arrivals_hover_never_amber_and_moves_waiting_on_the_store_are_its_still_arc(
+        world):
+    """a7 (Sonic 2026-10-29: "If no decision it shouldn't be yellow"): a drive away decides nothing — it comes back by
+    itself — so 届 says it in its hover (and the bar's offline line), and stays out of amber; a press opens Sources."""
     win = world.win
     win.moves_saving(True)
     assert win.phase.states[P.ARRIVALS].waiting
@@ -289,10 +292,13 @@ def test_the_offline_folder_is_arrivals_amber_and_moves_waiting_on_the_store_are
     win.offline_text = lambda: "D:\\Anime can't be reached"
     win.sources = [object()]
     win._show_offline()
-    assert win.phase.states[P.ARRIVALS].needs == "D:\\Anime can't be reached"
+    st = win.phase.states[P.ARRIVALS]
+    assert st.needs is None and win.phase.go(P.ARRIVALS) is None and not (st.waiting or st.running or st.failed)
+    assert html.escape("D:\\Anime can't be reached") in win.phase.hover_text(P.ARRIVALS)
+    assert strings.PHASE_PRESS in win.phase.hover_text(P.ARRIVALS)
     win.offline_text = lambda: ""
     win._show_offline()
-    assert win.phase.states[P.ARRIVALS].needs is None
+    assert win.phase.states[P.ARRIVALS].lines == ()
 
 
 @pytest.mark.parametrize("size", ["S", "M", "L"])
@@ -677,22 +683,35 @@ def _snap(**kw):
     return Snapshot(**base)
 
 
-def test_a3_junban_goes_amber_only_while_its_line_asks_for_you_and_its_press_then_opens_its_window(strip):
-    """IKA3-1 (the lead's ruling, Sonic's T1 rule): 順 is amber while the host's line is one only he can clear (said
-    as giving up), never for a wait that clears by itself; one whose fix is in 順's window sends the press there."""
+def test_a7_junban_is_amber_only_while_a_decision_waits_in_its_window_and_its_press_goes_there(strip):
+    """a7 (Sonic 2026-10-29: "If yellow i would expect it to let me go somewhere to make a decision that is
+    highlighted. If no decision it shouldn't be yellow but something else."): 順 is amber only for a line whose decision
+    is in 順's window (`InJunban`: the deck list, or the Undo for the unfinished reorder) and its press goes there; a
+    line that gives up with nothing to decide (Anki closed, a Generate to press, Only i+1 / Coverage) is its hover's
+    words, a wait that clears by itself the same, and a fault (`Fails`) red until looked at."""
     from app import replan_preview as rp
     strip.set_opens({P.JUNBAN})
     strip.set_status(_snap(replan=rp.REVIEWING))                         # a wait that clears by itself
-    assert strip.states[P.JUNBAN].needs is None and not strip.asks_in_window(P.JUNBAN)
-    strip.set_status(_snap(replan=rp.GivesUp(rp.CLOSED)))                # he must act (open Anki), not in 順
-    assert strip.states[P.JUNBAN].needs == rp.CLOSED and not strip.asks_in_window(P.JUNBAN)
-    assert strings.PHASE_PRESS in strip.hover_text(P.JUNBAN)
-    assert strip.hover_text(P.JUNBAN).count("Anki is closed") == 1       # said once, as its now-line
+    assert strip.states[P.JUNBAN].needs is None and strip.go(P.JUNBAN) is None
+    for line in (rp.GivesUp(rp.CLOSED), rp.GivesUp(rp.PRESS_GENERATE), rp.GivesUp(rp.NEW_CONTENT),
+                 rp.GivesUp(rp.AFTER_GENERATE.format(mode="Only i+1 sentences"))):
+        strip.set_status(_snap(replan=line))                             # nothing to decide: words only
+        st = strip.states[P.JUNBAN]
+        assert st.needs is None and not st.failed and strip.go(P.JUNBAN) is None, line
+        assert strip.hover_text(P.JUNBAN).count(html.escape(str(line))) == 1, line   # said once, as its now-line
+        assert strings.PHASE_PRESS in strip.hover_text(P.JUNBAN)
     strip.set_status(_snap(replan=rp.InJunban(rp.RESTORE_FIRST)))
-    assert strip.states[P.JUNBAN].needs == rp.RESTORE_FIRST and strip.asks_in_window(P.JUNBAN)
-    assert html.escape(strings.PHASE_PRESS_WINDOW) in strip.hover_text(P.JUNBAN)
-    strip.set_status(_snap(replan=rp.UP_TO_DATE))                        # cleared: amber off, the settings again
-    assert strip.states[P.JUNBAN].needs is None and not strip.asks_in_window(P.JUNBAN)
+    assert strip.states[P.JUNBAN].needs == rp.RESTORE_FIRST and strip.go(P.JUNBAN) == P.Go("junban", "restore")
+    assert html.escape(strings.PHASE_PRESS_RESTORE) in strip.hover_text(P.JUNBAN)
+    strip.set_status(_snap(replan=rp.InJunban(rp.ONE_DECK)))
+    assert strip.states[P.JUNBAN].needs == rp.ONE_DECK and strip.go(P.JUNBAN) == P.Go("junban", "deck")
+    assert html.escape(strings.PHASE_PRESS_DECK) in strip.hover_text(P.JUNBAN)
+    strip.set_status(_snap(replan=rp.Fails("Re-ordering as you move stopped: disk full")))
+    st = strip.states[P.JUNBAN]
+    assert st.failed == "Re-ordering as you move stopped: disk full" and st.needs is None and strip.go(P.JUNBAN) is None
+    strip.set_status(_snap(replan=rp.UP_TO_DATE))                        # cleared: amber and red off, the settings again
+    st = strip.states[P.JUNBAN]
+    assert st.needs is None and not st.failed and strip.go(P.JUNBAN) is None
     assert html.escape(rp.UP_TO_DATE) in strip.hover_text(P.JUNBAN) and strings.PHASE_PRESS in strip.hover_text(P.JUNBAN)
 
 

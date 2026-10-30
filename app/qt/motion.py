@@ -573,6 +573,65 @@ def fall_into_place(on_value, depth=None, owner=None, on_rest=None):
     return clock().animate(end_ms, frame, on_rest, points="linear", owner=owner)
 
 
+class _Wash(QWidget):
+    """`wash`'s overlay: the target's rect (rounded by `radius`), every click let through, its strength `level`."""
+
+    def __init__(self, target, radius):
+        super().__init__(target)
+        self.level = 1.0
+        self.radius = radius
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setGeometry(target.rect())
+        target.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Resize and not sip.isdeleted(self):
+            self.setGeometry(obj.rect())
+        return False
+
+    def set_level(self, level):
+        if not sip.isdeleted(self):
+            self.level = max(0.0, min(1.0, level))
+            self.update()
+
+    def paintEvent(self, _event):
+        if self.level <= 0:
+            return
+        from PyQt6.QtGui import QPainterPath
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        colour = style.qcolor(style.colours()["settings-row-wash"])
+        colour.setAlphaF(colour.alphaF() * self.level)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), self.radius, self.radius)
+        p.fillPath(path, colour)
+        p.end()
+
+
+def wash(widget, radius=0.0):
+    """a7 (Sonic 2026-10-29: a decision waiting is opened "highlighted"): `widget` washed once, as Settings washes the
+    row it reveals (`SettingsPage._wash`: the same colour; its fade over `row-wash` on the clock, Reduced motion steady
+    for `row-wash-steady`) — an overlay over it that lets every click through and goes when done; a wash still showing
+    on it gives way. -> the overlay."""
+    for old in widget.findChildren(_Wash, options=Qt.FindChildOption.FindDirectChildrenOnly):
+        old.hide()
+        old.deleteLater()
+    w = _Wash(widget, radius)
+    w.raise_()
+    w.show()
+
+    def gone():
+        if not sip.isdeleted(w):
+            w.hide()
+            w.deleteLater()
+    if clock().mode.reduced:
+        QTimer.singleShot(theme.SETTINGS_MOTION["row-wash-steady"], gone)
+    else:
+        clock().animate(theme.SETTINGS_MOTION["row-wash"], lambda v: w.set_level(1.0 - v), gone, kind="fade",
+                        points="linear", owner=w, on_end=gone)
+    return w
+
+
 def install_mode_filter(app=None):
     """Follow Windows' animation switch: read again whenever the app comes back to the front (the switch lives in
     Windows' Settings, so the app is behind when it changes). No native event filter: one saw every Windows message

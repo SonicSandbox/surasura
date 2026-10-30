@@ -77,13 +77,12 @@ def _automation_on(settings, language):
 
 
 def _aside_line(settings, language):
-    """Why the host stands aside, for the bar: `stands_aside`'s line where the user can fix it — D7's one
-    deck, the (language, deck) pair not recorded — else None: D29 off, Junban off or absent are the user's own choices.
-    Asked on the host's worker, beside the gate."""
+    """Why the host stands aside, for the bar (`replan_preview.aside_line`, a7): the deck to pick in 順 (D7's one deck,
+    the (language, deck) pair not recorded), Only i+1 or Coverage as the fact it is (who re-orders Anki instead) —
+    else None: D29 off, Junban off or absent are the user's own choices. Asked on the host's worker, beside the gate."""
     try:
         from app import replan_preview
-        why = replan_preview.stands_aside(settings, language)
-        return None if why is None else (replan_preview.ends_with(why) or None)   # (a line that gives up: the bar's)
+        return replan_preview.aside_line(settings, language) or None   # (a line that gives up: the bar's)
     except Exception as e:
         print(f"Re-order: why it stands aside couldn't be read: {e}")
         return None

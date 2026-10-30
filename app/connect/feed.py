@@ -44,6 +44,10 @@ Item = namedtuple("Item", "kind words tip job made total progress doing stoppabl
 MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED = (
     "mining", "waiting", "anki", "anki_wait", "no_video", "not_timed", "held", "skipped", "battery", "asked")
 KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED)
+# A7N-3 (Sonic 2026-10-30): Connect's needs that are faults, nothing to decide — its own Generate failed. Red, never
+# amber: ス says it as a Generate you start does (the window, `shell._connect_fault`); its card stays on *Needs you*,
+# and an episode it holds is a plain wait (never HELD)
+FAULT_KINDS = ("generate",)
 
 # The status read out — the stone's words on hover and keyboard focus, and what a screen reader says (RS-6)
 WORDS = {
@@ -91,7 +95,7 @@ def build(record, language):
     rec = ((record or {}).get("languages") or {}).get(language) or {}
     running = bool((record or {}).get("running"))
     not_timed = {n.get("item") for n in rec.get("needs") or () if n.get("kind") == "not-timed"}
-    need_says = {n.get("say") for n in rec.get("needs") or () if n.get("say")}
+    need_says = {n.get("say") for n in rec.get("needs") or () if n.get("say") and n.get("kind") not in FAULT_KINDS}
     skipped = set(rec.get("skipped") or ())
     items, mining = {}, set()
     for job in rec.get("jobs") or ():

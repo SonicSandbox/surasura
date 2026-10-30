@@ -123,6 +123,7 @@ class Services:
         # duties (given: a test's); never one of `has_duties`' four
         self.replan = replan
         self._replan_wired = False
+        self._generate_wired = False            # a6: the controller's end heard once (`_generate_ended`)
         self.replan_heard = []                  # finish-pending: told each line the host says (its worker) — the
         #                                         window's drag controller's: a press waiting for its re-order ends
         #                                         with some
@@ -193,7 +194,24 @@ class Services:
                 state = controller.state()
                 return state.message if state.state == generate_module.FAILED else None
             providers.update(update=updates.failure, generate=generate_failure)
+        on_end = getattr(self.controller, "on_end", None)
+        if on_end is not None and not self._generate_wired:
+            self._generate_wired = True
+            on_end(self._generate_ended)
         self._wire_replan()
+
+    def _generate_ended(self, _run, outcome):
+        """(The run's thread.) a6: a Generate that finished wrote a new plan, and nothing else tells the numbers so —
+        they re-read it only when the order moves (`moves.open_library`), and a Generate moves no order: Current's rows
+        kept *not analysed yet* until the next move. Any Generate — the user's, the automatic one, the keeper's."""
+        if outcome != "current" or self.closing.is_set():
+            return
+        resync = getattr(getattr(self.writer, "numbers", None), "resync", None)
+        if resync is not None:
+            try:
+                resync()
+            except Exception as e:
+                applog.log("shell", f"the numbers after a Generate: {e!r}")
 
     # --- W3.5 row 7: the re-order host and the journey keeper (`app/services/replan_host.py`) -------------------- #
     def _wire_replan(self):
@@ -1533,13 +1551,15 @@ class ShellWindow(QMainWindow):
         if self.settings_page is not None:
             return self.settings_page
         from app.qt import settings_connect, settings_page, settings_rules, settings_sources, settings_store
+        from app.qt import settings_io
         holder = self.page_widgets["settings"]
         language = self.services.settings.get().get("target_language") or self.language
         page = settings_page.SettingsPage(self, language, parent=holder)
         holder.layout().insertWidget(0, page, 1)          # above the bottom edge every page carries
         self.settings_page = page
         for attach in (settings_connect.attach, settings_rules.attach, settings_store.attach,
-                       settings_sources.attach):                       # --- SRC W1b: *Library folders*
+                       settings_sources.attach,                        # --- SRC W1b: *Library folders*
+                       settings_io.attach):                            # --- a6: *Your settings*
             try:
                 attach(page)
             except Exception as e:                        # one package's rows never keep the page from opening

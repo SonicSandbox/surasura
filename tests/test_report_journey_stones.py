@@ -205,7 +205,8 @@ def test_the_report_opens_on_the_asked_file_whatever_it_is_and_else_on_the_first
     assert "return (i) =>" in _function(source, "setupInfiniteScroll"), "the paged sidebar renders up to an item"
     first = source[source.index("// Initial Load"):]
     first = first[:first.index("}, 50);")]
-    assert first.index("loadThrough(at)") < first.index("querySelectorAll('.file-tab')"), "rendered before it looks"
+    assert first.index("loadThrough(at)") < first.index("querySelectorAll('.file-tab:not(.fold-head)')"), \
+        "rendered before it looks"
     assert "t.dataset.file === asked" in first and "scrollIntoView" in first and "applyCompletedSectionState()" in first
     assert "localStorage" not in first, "a collapsed section opened for it is not saved"
     assert first.index("fileFromHash()") < first.index("tabs.find(stillToStudy)") < first.index("tabs[0]")

@@ -911,7 +911,7 @@ def _journey_stones(data, file_order, stats_map, language, marks=None):
     if not marks:
         return marks
     place, watched_name = {}, {}
-    for n, (rel, _tier, watched, counted) in enumerate(marks):
+    for n, (rel, _tier, watched, counted, *_show) in enumerate(marks):
         if counted:
             name = report_name(rel)
             place.setdefault(name, n)
@@ -921,7 +921,7 @@ def _journey_stones(data, file_order, stats_map, language, marks=None):
             entry["watched"] = True
     shown = set(stats_map) | {entry["filename"] for entry in data["progressive"]}
     aside = []
-    for n, (rel, tier, watched, counted) in enumerate(marks):
+    for n, (rel, tier, watched, counted, *_show) in enumerate(marks):
         name = report_name(rel)
         if watched and not counted and name not in shown:
             shown.add(name)
@@ -947,6 +947,67 @@ def _journey_stones(data, file_order, stats_map, language, marks=None):
     if file_order:
         file_order[:] = in_place(file_order, lambda name: name, lambda name, _goal: name)
     return marks
+
+
+def _journey_folds(data, file_order, marks, inline=False):
+    """A run of watched parts folded into one row (Sonic 2026-10-29, "fold run of watched into one row"; his rule of
+    2026-10-23 kept: each watched part stays in its place, with its stone). Two or more parts next to each other in the
+    library's order (`marks`, `_journey_stones`'), each watched, of one show or book (`show`: its work, else its folder)
+    and one tier, are one run; where two or more of one run sit next to each other in the journey's sidebar (the
+    template's order: `file_order` with *Show 'Target Met' inline* on, else the counted list), they are one fold: each
+    of their entries gets `"fold": k`, and `data["folds"][k]` its row's words — `{"label": "Ep 1–14 watched", "n": 14}`,
+    the range as the window's rows say it (`view_rows.range_text`: episodes, parts, videos). Rendering only: no word,
+    count or order changes, and an entry of one part alone stays as it is. A name two marks share (`01.srt` in two
+    shows: the report keys a file by its name) is never folded — its entry may be the other, unwatched one. Marks
+    without a show (an older reader) or none: no fold, the report as it was."""
+    if not marks or isinstance(marks, str):
+        return
+    from collections import Counter
+    from app.path_utils import infer_source_type
+    from app.services import view_rows
+    shared = {name for name, n in Counter(report_name(mark[0]) for mark in marks).items() if n > 1}
+    runs, run_of, last = [], {}, None
+    for rel, tier, watched, _counted, *show in marks:
+        key = (tier, tuple(show)) if watched and show else None
+        if key is None:
+            last = None
+            continue
+        if last is None or last[0] != key:
+            last = (key, len(runs))
+            runs.append(show[1] if len(show) > 1 else None)
+        if report_name(rel) not in shared:
+            run_of[report_name(rel)] = (last[1], rel)
+    if not runs:
+        return
+    entries = {entry["filename"]: entry for entry in data["progressive"]}
+    if inline and file_order:
+        done = {entry["filename"]: entry for entry in data.get("completed_files", ())}
+        sidebar = [entries.get(name) or done[name] for name in file_order if name in entries or name in done]
+    else:
+        sidebar = data["progressive"]
+    folds, group = [], []
+
+    def close():
+        if len(group) > 1:
+            rels = [run_of[entry["filename"]][1] for entry in group]
+            media = runs[run_of[group[0]["filename"]][0]] or view_rows.media_type_guess(
+                dict(Counter(infer_source_type(rel) for rel in rels)))
+            numbers = [n for n in (view_rows.episode_number(report_name(rel)) for rel in rels) if n is not None]
+            for entry in group:
+                entry["fold"] = len(folds)
+            folds.append({"label": view_rows.STRINGS["fold_watched"].format(
+                range=view_rows.range_text(media, numbers, len(group))), "n": len(group)})
+        group.clear()
+
+    for entry in sidebar:
+        run = run_of.get(entry["filename"])
+        if group and (run is None or run[0] != run_of[group[0]["filename"]][0]):
+            close()
+        if run is not None:
+            group.append(entry)
+    close()
+    if folds:
+        data["folds"] = folds
 
 
 def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None):
@@ -1076,6 +1137,8 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     drawn = None
     if theme not in ("Zen Mode", "zen-focus"):
         drawn = _journey_stones(data, all_files_order, stats_map, language or target_lang, marks)
+        _logic = settings.get("logic") if isinstance(settings.get("logic"), dict) else {}
+        _journey_folds(data, all_files_order, drawn, bool(_logic.get("inline_completed_files", False)))
 
     # Load Priority
     if os.path.exists(PRIORITY_CSV):
@@ -1210,13 +1273,14 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     # A set-aside watched file's panel: the window's own sentence for the rule (one place: `view_rows.STRINGS`)
     from app.services.view_rows import STRINGS as rows_strings
     watched_leaves_str = json.dumps(rows_strings["watched_leaves"], ensure_ascii=False).replace("</", "<\\/")
+    fold_tip_str = json.dumps(rows_strings["fold_tip"], ensure_ascii=False).replace("</", "<\\/")
     anki_json_str = json.dumps(anki_backlog_keys(target_lang, settings if 'settings' in locals() else {},
                                                  PRIORITY_CSV),
                                ensure_ascii=False).replace("</", "<\\/")
 
     injected = [
         "let globalData = ", json_str,
-        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};"]
+        f";\n        let globalTheme = '{applied_theme}';\n        let globalLogic = {logic_json_str};\n        let globalLanguage = '{target_lang}';\n        let globalWordsPerDay = {words_per_day};\n        let globalShowWordsPerDay = {'true' if show_words_per_day else 'false'};\n        let globalSources = {sources_json_str};\n        let globalSourceDisplay = '{source_display}';\n        let globalWordSearch = {word_search_json_str};\n        let globalKoe = {koe_json_str};\n        let globalAnkiBacklog = {anki_json_str};\n        let globalWatchedLeaves = {watched_leaves_str};\n        let globalFoldTip = {fold_tip_str};"]
     replacements = []
 
     # Embed Icon as Favicon and Header Logo

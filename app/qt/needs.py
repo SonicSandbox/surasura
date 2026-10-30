@@ -55,6 +55,7 @@ from app import path_utils, settings_manager, theme
 from app.qt import bridge, strings, style, toast
 from app.qt import press as qpress
 from app.services import needs as service
+from app.services import settings_io
 from app.services import view_rows
 
 # --- the stone (ref-extract row 115: viewBox 24) ------------------------------------------------------------------- #
@@ -201,6 +202,15 @@ class _More(QToolButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         _paint_square(p, self.rect(), "more", self.underMouse() or self.isDown())
         p.end()
+
+
+def _settings_folders(settings, language):
+    """(A worker.) The imported video folders this PC lacks (`settings_io.missing_folders`); none when unreadable."""
+    try:
+        return settings_io.missing_folders(settings, language)
+    except Exception as e:
+        print(f"Needs you: the imported settings' folders weren't read: {e!r}")
+        return []
 
 
 def _label(text, name, parent, wrap=True):
@@ -677,8 +687,9 @@ class NeedsYou(QObject):
 
     # --- what comes in ------------------------------------------------------------------------------------------- #
     def _settings_written(self, keys):
-        """Connect's switch written (setup's page 5, Settings › Anki): D1's line asks again in its words."""
-        if "connect_enabled" in tuple(keys or ()) and self._alive():
+        """Connect's switch written (setup's page 5, Settings › Anki): D1's line asks again in its words. Connect's video
+        folders written (a6: an imported folder found or taken out): its card goes."""
+        if {"connect_enabled", settings_io.FOLDERS} & set(keys or ()) and self._alive():
             self.refresh()
 
     def _switched(self):
@@ -817,6 +828,7 @@ class NeedsYou(QObject):
                                   hidden=service.read_hidden(lang),           # alpha 4 D2: Not now, Stop asking
                                   settled=gone_judged is not None,            # K1: every folder had its look
                                   emptied=emptied,                            # A5K-2: the folder emptied
+                                  settings_folders=_settings_folders(settings, lang),     # a6: imported, not here
                                   backlog=service.backlog_offer(lang, settings))   # Michi-C: the backlog's shows
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
@@ -900,6 +912,8 @@ class NeedsYou(QObject):
             return getattr(self.win, "moves", None) is not None
         if name == "find_folder":                    # ... and the looks read the folder picked
             return getattr(self.win, "moves", None) is not None and getattr(self.win, "looks", None) is not None
+        if name in ("find_settings_folder", "drop_settings_folder"):     # a6: through the settings service
+            return getattr(getattr(self.win, "services", None), "settings", None) is not None
         if name == "start_fresh":                    # K1: the looks start the fresh library (`SourceLooks.fresh`)
             return callable(getattr(getattr(self.win, "looks", None), "fresh", None))
         return True
@@ -1388,6 +1402,26 @@ class NeedsYou(QObject):
             self._stopping.discard(root)
             return False
         return True
+
+    # a6 settings import (SI-3): a video folder the imported settings name isn't on this PC
+    def _do_find_settings_folder(self, entry, _line):
+        """*Find it…*: the folder picked takes the missing one's place in Connect's video folders (every language
+        naming it); the card goes at once (the service's `get` holds the change before it is written)."""
+        old = entry.data["path"]
+        folder = self.pick_folder(strings.NEEDS_SETTINGS_FOLDER_TITLE, os.path.dirname(os.path.normpath(old)))
+        if folder:
+            self._settings_folder(old, os.path.normpath(folder), strings.NEEDS_SETTINGS_FOLDER_FOUND)
+
+    def _do_drop_settings_folder(self, entry, _line):
+        """*Stop looking there*: the missing folder out of Connect's video folders; nothing on disk is touched."""
+        self._settings_folder(entry.data["path"], None, strings.NEEDS_SETTINGS_FOLDER_DROPPED)
+
+    def _settings_folder(self, old, new, said):
+        from app.services.settings import thaw
+        settings = self.win.services.settings
+        settings.set(settings_io.folder_change(thaw(settings.get()), old, new))
+        self._say(said.format(folder=new or old))
+        self.refresh()
 
     def _do_keep_waiting(self, entry, _line):
         """*Keep waiting*: hidden until the folder is back (the offline line's dismissal, the shell's)."""

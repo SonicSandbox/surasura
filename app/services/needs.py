@@ -111,10 +111,12 @@ AUDIOBOOK_ASK = "audiobook-ask"       # Hon (H-8): is this audiobook that book? 
 AUDIOBOOK_FIND = "audiobook-find"     # Hon (a5-2): after a *No*, find its book — or it has none (never asked again)
 AUDIOBOOK_TRANSCRIPT = "audiobook-transcript"   # Hon (a6, H-13): an audiobook's transcript isn't its book's: not used
 BACKLOG_SHOWS = "backlog-shows"       # Michi-C (A7B-3): the shows behind 順's deck's new cards, on this PC, not listed
+SETTINGS_FOLDER = "settings-folder"   # a6 settings import (SI-3): a video folder the imported settings name isn't here
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
-         FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, BACKLOG_SHOWS)
+         FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
+         BACKLOG_SHOWS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
@@ -125,6 +127,10 @@ SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 
 STRINGS = {
+    # a6 settings import (SI-3, PROVISIONAL)
+    "settings_folder_title": "A video folder in your imported settings isn't on this computer: {path}",
+    "settings_folder_say": "Connect looks there for an episode's video. Find where it is on this computer, or stop "
+                           "looking there.",
     # Hon (H-8 PROVISIONAL): an audiobook Surasura isn't sure reads that book
     "abook_title": "Is this audiobook 「{audio}」 the book 「{book}」?",
     "abook_say": "{files}. Surasura isn't sure they're the same book: your answer is kept, and it never asks about "
@@ -287,7 +293,7 @@ def item_key(item_id):
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
-            hidden=frozenset(), emptied=None, backlog=None):
+            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -299,6 +305,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     read had its look this run (the window's `gone_in(judged=True)`) — a copy a look can put back from its original
     (item 8a) is gone only until then, so the library's card waits for it; `hidden` (alpha 4 D2: `read_hidden`, *Not now* today and *Stop asking*): the cards
     left out, and every count for many with them; `emptied` (A5K-2): the store's `emptied()` note, the first card;
+    `settings_folders` (a6, SI-3): the video folders an imported settings file names that this PC lacks
+    (`settings_io.missing_folders`), one card each beside the gone source folders';
     `backlog` (Michi-C): `backlog_offer`'s record — one card while a show behind 順's deck's new cards waits in New
     arrivals (only the files New arrivals still holds), until *Leave them* (a new show asks again)."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
@@ -367,6 +375,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     lines_at = len(out)                                         # the lines for many other reasons go here
     for row in gone_folders or ():                              # (alpha 4: on top — 届's press opens the page at it)
         out.append(_folder_entry(row, seen))
+    for path in settings_folders or ():
+        out.append(_settings_folder_entry(path, seen))
     out += [e for e in big if e.key not in hidden]
     out += shows
     for ask in asks or ():
@@ -769,6 +779,16 @@ def _folder_entry(row, seen):
                  actions=actions, unseen=key not in seen, say=" ".join(said),
                  data={"root": row["id"], "path": row["path"], "name": name, "items": n, "found_in": tuple(found),
                        "finished": finished, "shows": tuple(row.get("shows") or ()), "language": row.get("language")})
+
+
+def _settings_folder_entry(path, seen):
+    """SI-3: a video folder the imported settings name that this PC lacks — *Find it…* puts the folder picked in its
+    place, *Stop looking there* takes it out of Connect's video folders (`settings_io.folder_change`); either way the
+    card goes, as it does once the folder is there."""
+    key = f"settings-folder:{library_store.path_key(os.path.abspath(path))}"
+    return Entry(key=key, kind=SETTINGS_FOLDER, title=STRINGS["settings_folder_title"].format(path=path), lines=(),
+                 actions=("find_settings_folder", "drop_settings_folder"), unseen=key not in seen,
+                 say=STRINGS["settings_folder_say"], data={"path": path})
 
 
 def _gap_entry(gap, seen):

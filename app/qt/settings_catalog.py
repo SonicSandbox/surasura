@@ -76,6 +76,7 @@ FILLED_BY = {
     "library_folders": "app.qt.settings_sources",          # --- SRC W1b: the folders read where they are
     "fresh_library": "app.qt.settings_sources",            # --- K7: *Start a fresh library…*
     "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
+    "settings_file": "app.qt.settings_io",                 # --- a6: *Export settings…* · *Import settings…*
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
     "remove_downloaded_covers": _LIVE,          # --- W3.2 L3
     "practice_ai": _LIVE,                       # --- A6: the practice server's setup, one Copy per AI app
@@ -363,6 +364,7 @@ ROWS = (
     _row("logs", "app", "custom"),
     _row("data_credits", "app", "custom"),
     _row("version", "app", "custom"),
+    _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
 )
 ROW = {row.id: row for row in ROWS}

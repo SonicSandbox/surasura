@@ -4473,17 +4473,18 @@ def signed_render(args, drawn, written, made=_READ_NOW):
 
 
 def _stones_fingerprint(language, marks=None):
-    """Short hash of the analysed tiers' watched items — each one's place in the library's order, path, tier and
-    whether it counts — `marks` (`journey_marks`'; None: read now, in one read); None with no stone or no store, a
-    part that matches nothing when they can't be read now (never raises)."""
+    """Short hash of the analysed tiers' watched items — each one's place in the library's order, path, tier, whether
+    it counts, and its show and typed media (a6: the journey's folds, `static_html_generator._journey_folds`: a part
+    put in another show, or a show typed anew, re-draws them) — `marks` (`journey_marks`'; None: read now, in one
+    read); None with no stone or no store, a part that matches nothing when they can't be read now (never raises)."""
     if marks is None:
         marks = journey_marks(language)
     if isinstance(marks, str):                           # library_store.UNREAD: never signed as current
         return "stones unread"
     if not marks:
         return None
-    return hashlib.sha1(json.dumps([[n, rel, tier, counted] for n, (rel, tier, watched, counted) in enumerate(marks)
-                                    if watched], ensure_ascii=False).encode("utf-8")).hexdigest()
+    return hashlib.sha1(json.dumps([[n, rel, tier, counted, *show] for n, (rel, tier, watched, counted, *show)
+                                    in enumerate(marks) if watched], ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _backlog_fingerprint(language, name="anki_backlog.json"):

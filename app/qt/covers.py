@@ -320,11 +320,12 @@ def _let_go(keys):
 
 
 # --- the disk scan ---------------------------------------------------------------------------------------------- #
-def start_scan(opener, language, writer):
+def start_scan(opener, language, writer, progress=None, then=None):
     """(GUI thread.) The library's covers from disk (`services.covers.scan`) on a thread of its own, over the store's
     feed read there; the one running is cancelled. A store it can't open (busy) is tried `LOOK_TRIES` times; one not
     there yet (a migration, setup's first library) leaves the scan to the reader's first read (Hon a7: `look(opener,
-    None)`). -> the thread (tests join it), or None (nothing to write with)."""
+    None)`). `progress(done, total)` / `then(found)`: on that thread (setup's load screen). -> the thread (tests join
+    it), or None (nothing to write with)."""
     if opener is None or writer is None:
         return None
     old = _scan["cancel"]
@@ -338,7 +339,7 @@ def start_scan(opener, language, writer):
         found = 0
         try:
             for tries in range(1, LOOK_TRIES + 1):
-                found = _scan_library(opener, language, writer, cancel, data_dir)
+                found = _scan_library(opener, language, writer, cancel, data_dir, progress=progress)
                 if found is not None or tries == LOOK_TRIES or cancel.wait(LOOK_RETRY_S * tries):
                     break
             if found is None and not cancel.is_set():
@@ -347,6 +348,11 @@ def start_scan(opener, language, writer):
         except Exception as e:                  # never in the window's way: the generated covers stay
             print(f"Covers: the scan stopped: {e!r}")
         finally:
+            if then is not None:
+                try:
+                    then(found or 0)
+                except Exception as e:
+                    print(f"Covers: the scan's listener failed: {e!r}")
             try:
                 n.scanned.emit((cancel, found or 0))
             except RuntimeError:
@@ -357,26 +363,26 @@ def start_scan(opener, language, writer):
     return t
 
 
-def _scan_library(opener, language, writer, cancel, data_dir, work_ids=None):
+def _scan_library(opener, language, writer, cancel, data_dir, work_ids=None, progress=None):
     """The library's works (`work_ids` None: the open's scan), else those works only, on this thread's handle -> the
     covers handed on, or None when the store couldn't be opened."""
     h = opener.handle()
     if h is None:
         return None
     try:
-        return _scan_works(h, language, writer, cancel, data_dir, work_ids)
+        return _scan_works(h, language, writer, cancel, data_dir, work_ids, progress)
     finally:
         _close(opener, h)
 
 
-def _scan_works(h, language, writer, cancel, data_dir, work_ids=None):
+def _scan_works(h, language, writer, cancel, data_dir, work_ids=None, progress=None):
     from app.services import covers as disk
     if work_ids is None:
         feed = h.read_feed()
         works = disk.works_from(feed["items"], feed["works"], disk.originals(h))     # Hon a6: beside the originals too
     else:
         works = disk.works_for(h, work_ids)                                         # Hon a7: those titles only
-    return disk.scan(language, works, writer, cancel=cancel.is_set, data_dir=data_dir)
+    return disk.scan(language, works, writer, cancel=cancel.is_set, data_dir=data_dir, progress=progress)
 
 
 def _close(opener, h):

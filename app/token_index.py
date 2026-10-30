@@ -1040,7 +1040,7 @@ class Store:
         return _KeptText(kept_text_path(self.language, data_dir), data_dir)
 
     def reconcile(self, files, tokenize_file, build_signature=None, workers=None, kept=None, elsewhere=None,
-                  data_dir=None, forgotten=None, aside=None, moved=None):
+                  data_dir=None, forgotten=None, aside=None, moved=None, progress=None):
         """Bring the store in sync with the on-disk `files`, re-tokenizing ONLY changed/new files.
 
         tokenize_file(path) -> {"sentences": [...], "counts": Counter} (Japanese: and "names", the file's
@@ -1073,6 +1073,9 @@ class Store:
         name tables' evidence; a file moving to or from it moves its counts (or none, from kept), never re-tokenized.
         An aside row no list names stays aside with `aside` None, and goes, as a counted row does, when the caller
         names the list.
+
+        `progress(done, total)` (Mado-O, setup's load screen): after each file tokenized, of the files that need it —
+        nothing else about the run changes.
 
         Before anything is deleted or wiped, the text of every kept or set-aside file and of every counted file gone
         from the disk is kept (`_KeptText`, its own file, written first): read from its file (or `elsewhere`), else —
@@ -1258,8 +1261,10 @@ class Store:
             tokenized = _tokenized([t[1] for t in todo], tokenize_file, workers)
             keep_read = {}
             try:
-                for (key, realpath, (mtime, size), row, flag), result in zip(todo, tokenized):
+                for done, ((key, realpath, (mtime, size), row, flag), result) in enumerate(zip(todo, tokenized), 1):
                     write(key, mtime, size, result, row, flag)
+                    if progress is not None:
+                        progress(done, len(todo))
                     # A set-aside file, tokenized in the pool as a counted one is: its text kept as a kept file's
                     # (W-1b), read from its file — unless the text kept is already this file's, read from it.
                     if flag == ASIDE and not (key in have and have[key][1:] == (mtime, size) and not have[key][0]):

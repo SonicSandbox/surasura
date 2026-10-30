@@ -134,7 +134,8 @@ def test_path_titles_already_in_a_store_are_retitled_once_never_a_users_and_noth
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_retitled_library_costs_the_helpers_run_no_title_reading(language, monkeypatch):
     """The helper runs about a hundred times a session (S19, update only what changed): once every path title is
-    retitled, a run reads no title through the rule at all — only a title holding a '/' is ever a candidate."""
+    retitled, a run reads no title at all (no path compared, no title read through the rule) — only a title holding a
+    '/' is ever a candidate, and the database picks those."""
     store, data_dir = _empty(language)
     src = _source_root()
     show = names(language)[60]
@@ -142,8 +143,9 @@ def test_a_retitled_library_costs_the_helpers_run_no_title_reading(language, mon
         root = store.add_source(src)
         _take_seasons(store, language, data_dir, root, src, show)
         read = []
-        real = ls.folder_title
+        real, real_key = ls.folder_title, ls.path_key
         monkeypatch.setattr(ls, "folder_title", lambda below: read.append(below) or real(below))
+        monkeypatch.setattr(ls, "path_key", lambda path, *a, **k: read.append(path) or real_key(path, *a, **k))
         assert store.retitle_folder_works() == [] and read == []
 
 

@@ -244,6 +244,53 @@ def test_what_d7_rules_out_is_said_in_its_own_words():
         assert not replan_preview.automation_on(settings, "ja")
 
 
+# --- a7 (Sonic 2026-10-29: "If yellow i would expect it to let me go somewhere to make a decision that is highlighted.
+# If no decision it shouldn't be yellow but something else."): the aside line as the bar and the strip say it -------- #
+@pytest.mark.parametrize("mode, name", [({"only_i_plus_one": True}, "Only i+1 sentences"),
+                                        ({"strategy": "coverage"}, "Coverage %")])
+def test_a7_sonics_case_only_i_plus_one_with_generate_reordering_is_a_fact_never_a_decision(mode, name):
+    """Sonic's alpha 6: Only i+1 on, 順's automatic re-order on, the deck recorded — the host stands aside and
+    Generate's own 順 run re-orders Anki (`automation.reorders`): a plain line that gives up, never `InJunban` (the
+    strip's amber), saying who re-orders Anki now."""
+    from app.services import automation
+    settings = dict(ON_3_0, junban_auto_reorder=True, **mode)
+    assert automation.reorders(settings, "ja")                          # Generate's 順 run does re-order Anki
+    line = replan_preview.aside_line(settings, "ja")
+    assert line == replan_preview.AFTER_GENERATE.format(mode=name) and name in line and "after each Generate" in line
+    assert isinstance(line, replan_preview.GivesUp) and not isinstance(line, replan_preview.InJunban)
+    from app.services import replan_host
+    assert replan_host._aside_line(settings, "ja") == line             # the host's bar line is the same
+
+
+def test_a7_only_i_plus_one_with_no_automatic_reorder_says_junban_does_it_when_run_never_amber():
+    """順's automatic re-order off: nothing re-orders Anki by itself — a fact (its line says 順 does it when run). Whether
+    that hides a decision is asked of Sonic (the report's top), never guessed as amber."""
+    settings = dict(ON_3_0, only_i_plus_one=True)
+    line = replan_preview.aside_line(settings, "ja")
+    assert line == replan_preview.NOT_BY_ITSELF.format(mode="Only i+1 sentences")
+    assert isinstance(line, replan_preview.GivesUp) and not isinstance(line, replan_preview.InJunban)
+
+
+def test_a7_only_i_plus_one_with_automatic_reorder_but_no_deck_recorded_asks_for_the_deck_in_junban():
+    """Generate's 順 run re-orders only the recorded deck: with none recorded, picking it in 順's window is the decision
+    (InJunban: amber, the press opens the deck list)."""
+    settings = dict(ON_3_0, only_i_plus_one=True, junban_auto_reorder=True)
+    del settings["junban_replan_deck"]
+    line = replan_preview.aside_line(settings, "ja")
+    assert isinstance(line, replan_preview.InJunban) and "isn't recorded for Japanese" in line
+
+
+def test_a7_one_deck_and_the_deck_not_recorded_are_decisions_in_junbans_window_the_users_choices_say_nothing():
+    one = replan_preview.aside_line(dict(ON_3_0, junban_scope="all"), "ja")
+    assert one == replan_preview.ONE_DECK and isinstance(one, replan_preview.InJunban)
+    settings = dict(ON_3_0)
+    del settings["junban_replan_language"]
+    assert isinstance(replan_preview.aside_line(settings, "ja"), replan_preview.InJunban)
+    assert replan_preview.aside_line(ON_3_0, "ja") is None                                  # the host runs
+    assert replan_preview.aside_line(dict(ON_3_0, logic={"automation": False}), "ja") == ""   # OFF: nothing said
+    assert replan_preview.aside_line(dict(ON_3_0, enable_junban=False), "ja") == ""
+
+
 def test_with_no_pair_recorded_the_host_stands_aside_and_names_the_deck_and_language():
     """G3: never `preview_language`'s "" → "ja" default. With nothing recorded, `junban_deck` can be a Chinese deck
     last picked in a Chinese 順 window, and a Japanese host would re-order it by the Japanese plan."""
@@ -1842,7 +1889,7 @@ def test_the_done_line_says_tomorrows_cards_were_placed_whenever_any_of_them_mov
 # waiting for a re-order ends only on a line that gives up, so a site left out would leave it turning, or end it while
 # the host still retries.
 TELL_SITES = {
-    "f'Re-ordering as you move stopped: {e}'": True,
+    "f'Re-ordering as you move stopped: {e}'": "fails",   # a7: gives up on a fault (Fails: the strip's red)
     "UP_TO_DATE": False,
     "why": "in_junban",                           # alpha 3: gives up, its fix in 順's window (InJunban)
     "BUSY": False,
@@ -1858,11 +1905,11 @@ TELL_SITES = {
         "asked is False",
     "REPLAN_THEN_GENERATE if self._generate is not None else REPLAN_THEN_GENERATE_CM": False,
     "anki_connect.waiting_line(holder)": False,
-    "(report.get('problems') or [''])[0]": True,
+    "(report.get('problems') or [''])[0]": "in_junban",   # a7: a deck to pick in 順 (FT C1's put-back)
     "REVIEWING if problem == anki_connect.REVIEWING else BUSY": False,
     "RESTORE_FIRST": "in_junban",
     "f'Anki re-ordered {written:,} cards, then stopped: {problems[0]} — the rest at the next re-order' if written else "
-    "f'Anki not re-ordered: {problems[0]}'": "not again",
+    "f'Anki not re-ordered: {problems[0]}'": "fails: not again",   # a7: a refusal never retried, a fault
     "f'Anki: spacing your new cards out once so later moves are quick — {done:,} of {total:,}…'": False,
     "f\"Anki: placing tomorrow's {n} cards…\"": False,
     "f\"Anki: tomorrow's {n} already in place · moving {total - done:,} more…\"": False,
@@ -1884,9 +1931,37 @@ def test_every_line_the_host_says_is_placed_as_giving_up_or_not():
             said = False if kind is None else (kind.value if isinstance(kind, ast.Constant) else ast.unparse(kind))
             if any(k.arg == "in_junban" and isinstance(k.value, ast.Constant) and k.value.value for k in node.keywords):
                 said = "in_junban"                  # alpha 3: an InJunban (a GivesUp whose fix is in 順's window)
+            fails = next((k.value for k in node.keywords if k.arg == "fails"), None)
+            if fails is not None:                   # a7: a Fails (a GivesUp on a fault)
+                said = "fails" if isinstance(fails, ast.Constant) else f"fails: {ast.unparse(fails)}"
             arg = ast.unparse(node.args[0])
             assert found.setdefault(arg, said) == said, arg
     assert found == TELL_SITES
+
+
+def test_a7_an_automatic_reorder_refused_on_all_decks_is_the_deck_to_pick_in_junban():
+    """a7: All decks met by the job itself (`one_deck`, the scope changed after the gate) is no fault: the deck to
+    pick in 順's window (InJunban: amber, its press opens the deck list) — told by the report's flag, never its words."""
+    from types import SimpleNamespace
+    from modules.junban import auto
+    host, lines = _host()
+    original = reposition.run, auto.decide_actions
+    words = "An automatic re-order runs for one deck only — choose one in the 順 window."
+    reposition.run = lambda *a, **k: {"ok": False, "one_deck": True, "problems": [words]}
+    auto.decide_actions = lambda settings: None
+    try:
+        host._write({}, SimpleNamespace(front_size=0, kind=None, front_ids=frozenset()), "move")
+    finally:
+        reposition.run, auto.decide_actions = original
+    assert lines[-1] == words and isinstance(lines[-1], replan_preview.InJunban)
+    assert host._retry_at is None
+
+
+def test_a7_the_job_on_all_decks_says_one_deck_in_its_report(monkeypatch):
+    from types import SimpleNamespace
+    report = reposition.run({"junban_scope": "all", "enable_junban": True}, job=SimpleNamespace(
+        automatic=True, actions=None, probe=None))
+    assert report["one_deck"] is True and not report["ok"]
 
 
 def test_anki_not_reordered_says_whether_the_host_tries_again():
@@ -1909,6 +1984,7 @@ def test_anki_not_reordered_says_whether_the_host_tries_again():
             reposition.run, auto.decide_actions = original
         assert lines[-1] == f"Anki not re-ordered: {report['problems'][0]}"
         assert isinstance(lines[-1], replan_preview.GivesUp) is not again
+        assert isinstance(lines[-1], replan_preview.Fails) is not again     # a7: a refusal never retried is a fault
         assert (host._retry_at is not None) is again
 
 
@@ -1926,3 +2002,6 @@ def test_the_helpers_pipe_keeps_a_line_that_gives_up_as_that_kind():
     # alpha 3: a line whose fix is in 順's window keeps that kind too (the strip's 順 press opens that window for it)
     remote._receive({"say": replan_preview.RESTORE_FIRST, "gives_up": True, "in_junban": True, "seen": 0})
     assert isinstance(heard[2], replan_preview.InJunban) and not isinstance(heard[0], replan_preview.InJunban)
+    # a7: a line that gives up on a fault keeps that kind too (the strip's red, never amber)
+    remote._receive({"say": "Re-ordering as you move stopped: disk full", "gives_up": True, "fails": True, "seen": 0})
+    assert isinstance(heard[3], replan_preview.Fails) and not isinstance(heard[2], replan_preview.Fails)

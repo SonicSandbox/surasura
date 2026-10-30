@@ -909,10 +909,11 @@ def on_bar():
 
 
 def _aside(settings, language):
-    """(A worker.) Why the re-order host does nothing for `language` now (`replan_preview.stands_aside`), or None."""
+    """(A worker.) Why the re-order host does nothing for `language` now, as the bar and the phase strip say it
+    (`replan_preview.aside_line`, a7), or None."""
     from app import replan_preview
     from app.services.settings import thaw
-    return replan_preview.stands_aside(thaw(settings), language)
+    return replan_preview.aside_line(thaw(settings), language)
 
 
 class _Drag:
@@ -2160,7 +2161,8 @@ class DragController(QObject):
             return
         if why is not None:
             from app import replan_preview
-            why = replan_preview.ends_with(why)      # the user's own choice: OFF, quietly; the deck to pick: its words
+            if not isinstance(why, replan_preview.GivesUp):   # (said already: `aside_line`'s, a7)
+                why = replan_preview.ends_with(why)  # the user's own choice: OFF, quietly; the deck to pick: its words
             self._anki_end(p, why)
             if why:
                 self.say(why)

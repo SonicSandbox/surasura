@@ -782,6 +782,8 @@ class SettingsPage(QWidget):
         view = RowView(row, slab.adv if row.adv else slab.main)
         if "{" in row.label or "{" in row.help:                # a live word (the version, the deck): its owner's
             view.set_words(_live(row.label), _live(row.help))
+        elif row.id == "known_from_anki":                      # its line names the states picked (a7, DIAGNOSIS 3)
+            view.set_words(row.label, catalog.help_line(row, settings, self.language))
         if row.kind in PLACEHOLDER_KINDS:
             view.slot.layout().addWidget(self.slots[row.id])
         else:
@@ -906,6 +908,8 @@ class SettingsPage(QWidget):
                 self._show_decks(view, settings)
             return False
         value = self._shown(row, settings)
+        if row.id == "known_from_anki":                  # its line names the states picked (a7, DIAGNOSIS 3)
+            view.set_words(row.label, catalog.help_line(row, settings, self.language))
         values = [value[row.keys[0]], value[row.keys[1]]] if row.kind == "slider" else [value]
         moved = False
         for control, v in zip(view.controls, values):

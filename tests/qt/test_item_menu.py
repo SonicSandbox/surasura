@@ -1324,10 +1324,13 @@ def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):
     monkeypatch.setattr(screens, "open_with_system", opened.append)
     monkeypatch.setattr(win.moves, "say", lambda text: said.append(text))
     row = rows_of(win)[4]
+    from app import path_utils
+    os.makedirs(path_utils.get_data_path(seed.language), exist_ok=True)     # the library's folder (always there)
     win.items.menu_pick(row, "folder")
     assert wait_until(lambda: opened or said, 5)
-    folder = item_menu.finished.folder_of(seed.language, row)
-    assert (opened == [folder]) if os.path.isdir(folder) else said == [strings.FIN_NO_FOLDER.format(title=row.title)]
+    from app.services import own_folder                         # a7: no original (a stand-in's): the copy's side
+    folder = own_folder.library_side(path_utils.get_data_path(seed.language), [e.rel_path for e in row.episodes])
+    assert opened == [folder] and said == []
 
 
 # --- Alt+↑ / Alt+↓ ------------------------------------------------------------------------------------------------- #

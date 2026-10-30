@@ -253,6 +253,68 @@ def test_a_batch_the_store_couldnt_take_is_tried_again_not_dropped(session, shel
     assert session.cover(shelf.work_titled(title).id)[0] == "file" and failed == [1]
 
 
+class BusyOnce(ls.StoreOpener):
+    """A store the open's scan finds busy once (a folder read committing just then), then free."""
+    refused = 0
+
+    def handle(self):
+        if not self.refused:
+            self.refused = 1
+            return None
+        return super().handle()
+
+
+def test_the_opens_scan_tries_a_busy_store_again_and_covers_the_library_itself(shelf, monkeypatch):
+    """The open's own scan tries again after a busy store, so the library's covers come from the open, not from a
+    later read of the reader (nothing is left `missed`)."""
+    monkeypatch.setattr(qcovers, "LOOK_RETRY_S", 0.01)
+    title = TITLES[shelf.language][0]
+    path = book(os.path.join(shelf.drive, *SHELF[shelf.language], f"{title}.epub"), title, shelf.language,
+                cover=jpeg())
+    shelf.read(shelf.drive)
+    qcovers.clear()
+    opener = BusyOnce(shelf.language, shelf.data_dir, shelf.user_files_dir, role="window")
+    opener.check()
+    try:
+        qcovers.start_scan(opener, shelf.language, shelf.writer).join(15)
+        assert opener.refused == 1 and qcovers._look["missed"] is None
+        work = shelf.work_titled(title)
+        assert h.until(lambda: shelf.row(work.id)[:2] == ("file", path), 15), shelf.row(work.id)
+    finally:
+        qcovers.stop_scan()
+        qcovers.clear()
+
+
+def test_a_cancelled_worker_and_one_whose_library_was_left_look_at_nothing(session, shelf, monkeypatch):
+    """The looks' worker checks both before each batch: the window's close (its cancel) and the library it serves (a
+    language switch landing between the two checks). Either way the titles told stay for the library shown, unread
+    through the wrong store and writer."""
+    import threading
+    seen = []
+    monkeypatch.setattr(qcovers, "_scan_works", lambda h, lang, writer, cancel, d, ids=None: seen.append(ids) or 0)
+    qcovers._look["pending"][7] = None
+    closed = threading.Event()
+    closed.set()
+    qcovers._looking(session.opener, shelf.language, shelf.writer, closed)
+    left = ls.StoreOpener(shelf.language, shelf.data_dir, shelf.user_files_dir, role="window")
+    left.check()
+    qcovers._looking(left, shelf.language, object(), threading.Event())
+    assert seen == [] and list(qcovers._look["pending"]) == [7]
+    qcovers._look["pending"].clear()
+
+
+def test_the_read_by_id_gives_a_title_every_one_of_its_files(session, shelf):
+    """`works_for` reads each title's items whole: a poster beside a later episode's folder is found as at the open."""
+    show = TITLES[shelf.language][1]
+    episodes(os.path.join(shelf.drive, *SHELF[shelf.language], show), show, shelf.language, n=3)
+    shelf.read(shelf.drive)
+    session.idle()
+    items = [r for r in shelf.store.read_feed()["items"] if r["rel_path"].endswith(".srt")]
+    (work_id,) = {r["work_id"] for r in items}                          # the show is one title
+    (got,) = C.works_for(shelf.store, [work_id])
+    assert len(items) == 3 and sorted(got.rel_paths) == sorted(r["rel_path"] for r in items)
+
+
 def test_titles_that_arrive_before_the_first_frame_are_looked_at_once_it_is_out(session, shelf):
     """G1: no look starts while a window's first frame is held; what arrived meanwhile is looked at at the release."""
     qcovers.hold("first-frame")

@@ -156,8 +156,8 @@ def test_the_menu_lists_the_moves_then_study_type_split_join_folder_and_remove_l
     _seed, win, _w = world()
     a, _b = split_parts(win)
     row = rows_of(win)[a]
-    assert names(win.items.entries(row)) == ["pin", "type", "split", "join", "same-show", "cover", "folder",
-                                                 "remove"]                       # W3.2 L3; LM11b G3: same-show
+    assert names(win.items.entries(row)) == ["watched-all", "pin", "type", "split", "join", "same-show", "cover",
+                                                 "folder", "remove"]     # W3.2 L3; LM11b G3: same-show; a7
     m = win.items.menu(row, win.mapToGlobal(QPoint(300, 300)))
     acts = m.actions()
     texts = [x.text() for x in acts]
@@ -821,7 +821,7 @@ def test_G3_IK5_a_groups_menu_is_the_moves_study_split_rename_ungroup_then_remov
     skips = []
     monkeypatch.setattr(win.items, "_offer_skip", lambda row, m: skips.append(row.key))
     entries = win.items.entries(group)
-    assert names(entries) == ["pin", "split", "rename", "ungroup", "remove"]
+    assert names(entries) == ["watched-all", "pin", "split", "rename", "ungroup", "remove"]   # a7: its own files
     m = win.items.menu(group, win.mapToGlobal(QPoint(300, 300)))
     acts = m.actions()
     moves = [label for _n, label, _t, _ok in win.moves.menu_entries(group)]

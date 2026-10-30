@@ -737,7 +737,9 @@ SCHEMA_2_SQL = (
 FEED_POLL = 0.1                  # s: a window looks at `PRAGMA data_version` this often (its store worker)
 FEED_ITEM_FIELDS = ("id", "tier", "ord", "rel_path", "title", "parent_folder", "source_type", "availability",
                     "work_id", "piece_id", "watched", "mined_at", "pinned", "mine_asked", "graduated_at",
-                    "in_learning_order", "added_at", "feed_in")
+                    "in_learning_order", "added_at", "feed_in", "mtime_ns")
+#   mtime_ns (a7): the file's own date — a source's copy keeps its original's (`sources._dated`) — what
+#   `view_rows.still_arriving` reads beside `added_at` (a first look takes a whole show in at one time)
 FEED_WORK_FIELDS = ("id", "title", "title_by_user", "titles", "folder_key", "anilist_id", "tmdb_id", "youtube_channel",
                     "media_type", "media_type_by", "cover_source", "cover_ref", "cover_path", "cover_fetched_at",
                     "cover_locked", "feed_in")

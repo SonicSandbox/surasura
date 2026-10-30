@@ -100,6 +100,9 @@ Episode = namedtuple("Episode", Episode._fields + ("text",),
 Episode = namedtuple("Episode", Episode._fields + ("added",),
                      defaults=tuple(Episode._field_defaults.values()) + (None,))
 #   added (L6.3): when the store took it in (`added_at`), what `still_arriving` reads; None in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("disk",), defaults=tuple(Episode._field_defaults.values()) + (None,))
+#   disk (a7): the file's own date in ns (`mtime_ns`: a source's copy keeps its original's), what `still_arriving`
+#   reads beside `added`; None for a video waiting for its subtitle and in a cache from before
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -412,11 +415,25 @@ def _seconds(stamp):
         return None
 
 
-def still_arriving(episodes, now=None):
-    """Whether a title may still be arriving (L6.3 R4, caught up ≠ finished without an airing field): its newest file
-    came in on its own — over `ARRIVING_ALONE_S` after the one before it — within the last `ARRIVING_RECENT_S`. Files
-    that came in together (a setup's first look, a season downloaded at once) never are; nor one file alone. A file
-    with no arrival time (a cache from before) can't tell: True (the offer asks)."""
+def _came_alone(times, now):
+    """On one clock: the newest of `times` (seconds) came over `ARRIVING_ALONE_S` after the one before it, within the
+    last `ARRIVING_RECENT_S`."""
+    before, newest = sorted(times)[-2:]
+    return newest - before > ARRIVING_ALONE_S and now - newest < ARRIVING_RECENT_S
+
+
+def still_arriving(episodes, now=None, airing=None):
+    """Whether a title may still be arriving (L6.3 R4, caught up ≠ finished; a7: it never finishes by itself while it
+    may still be airing): its newest file came on its own — over `ARRIVING_ALONE_S` after the one before it — within
+    the last `ARRIVING_RECENT_S`, by EITHER clock: when the store took each file in (`added`), or the file's own date
+    (`disk`: the original's — a setup's first look takes a whole show in at one time, so only the files' dates show a
+    weekly show as weekly). Files that came in together by both clocks (a season downloaded at once) never are; nor
+    one file alone. A file with no arrival time (a cache from before) can't tell: True (the offer asks).
+    `airing`: what an airing source says of the title — True still airing (it may be arriving, whatever the files
+    say), False done airing (the files' times no longer hold it back), None nothing known: 3.0 asks no airing source
+    (AniList's status waits on Sonic's word for that network use; it would come in here), the files' times decide."""
+    if airing is not None:
+        return bool(airing)
     stamps = [e.added for e in episodes]
     if None in stamps:
         return True
@@ -426,7 +443,10 @@ def still_arriving(episodes, now=None):
     if before is None or newest is None:
         return True
     now = time.time() if now is None else now
-    return newest - before > ARRIVING_ALONE_S and now - newest < ARRIVING_RECENT_S
+    if _came_alone((before, newest), now):
+        return True
+    disk = [e.disk / 1e9 for e in episodes if getattr(e, "disk", None) is not None]
+    return len(disk) >= 2 and _came_alone(disk, now)
 
 
 def numbers_gap(episodes):
@@ -810,7 +830,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
-                 ask=ask, looking=looking, text=_waits_for(item, media), added=item.get("added_at"))
+                 ask=ask, looking=looking, text=_waits_for(item, media), added=item.get("added_at"),
+                 disk=item.get("mtime_ns"))
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)

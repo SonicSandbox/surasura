@@ -1025,6 +1025,7 @@ class DragController(QObject):
         if jobs is not None:
             jobs.connect(self._jobs_in)
         self.page.on_done = self.done
+        self.page.on_done_many = self.done_many      # a7: ⋯'s *Mark watched up to here* / *Mark all watched*
         self.page.on_nudge = self.nudge
         self.page.on_menu = self.menu
         self._settle = QTimer(self)
@@ -2353,6 +2354,55 @@ class DragController(QObject):
         text = strings.DONE_NEXT.format(title=title, ep=ep.label, next=nxt.label) if nxt is not None else \
             strings.DONE_ONE.format(title=title, ep=ep.label)
         self._give(Ticket(text, (row.key,), (ep.id,)), lambda t: self.writer.set_watched([ep.id], True, label=t))
+
+    def done_many(self, row, eps):
+        """a7 (DIAGNOSIS 11): ⋯'s *Mark watched up to here* / *Mark all watched* — `eps` (the row's own, in its order)
+        marked watched in ONE writer command: one ticket, one toast, one Undo for them all. What follows is the one
+        Done's (`done`): when no file of the row is left unwatched, L6.3's rule (`when_done`) — it finishes by itself or
+        joins its next part, or the finish toast offers it; one show of a group all watched offers that show's finish
+        (`show_finished`). One file left to mark is the one Done itself, its own words."""
+        if self.refused() is not None:
+            return
+        eps = [e for e in eps if not e.watched]
+        if len(eps) < 2:
+            if eps:
+                self.done(row, eps[0])
+            return
+        ids = [e.id for e in eps]
+        marked = set(ids)
+
+        def mark(t):
+            return self.writer.set_watched(ids, True, label=t)
+        left = [e for e in view_rows.to_finish(row.episodes) if not e.watched and e.id not in marked]
+        view = self.page.view_model
+        verdict = None if left else when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
+        text = strings.DONE_MANY.format(title=row.title, n=len(ids))
+        if verdict is not None and verdict[0] != "offer":
+            if self._give(Ticket(text, (row.key,), tuple(ids)), mark, toast=False) is None:
+                return
+            self._by_itself(row, verdict)
+            return
+        if verdict is not None:                      # ("offer",): today's *finished with it?*
+            ticket = Ticket(strings.DONE_ALL.format(n=all_n(row)), (row.key,), tuple(ids))
+            if self._give(ticket, mark, toast=False) is None:
+                return
+            self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
+                                          lambda: self.to_finished(row))])
+            return
+        shown = None
+        if getattr(row, "group", False):             # LM11b G5, asked as the last of them is marked: the rest are
+            shown = show_finished(row._replace(episodes=tuple(
+                e._replace(watched=True) if e.id in marked and e.id != ids[-1] else e for e in row.episodes)), eps[-1])
+        if shown is not None:
+            show, show_ids = shown
+            ticket = Ticket(strings.DONE_SHOW_IN_GROUP.format(show=show, n=len(show_ids)), (row.key,), tuple(ids))
+            if self._give(ticket, mark, toast=False) is None:
+                return
+            self._toast(ticket, buttons=[(strings.DONE_MOVE_SHOW_FINISHED.format(show=show),
+                                          strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=len(show_ids)),
+                                          lambda: self.finish_show(row, show, show_ids))])
+            return
+        self._give(Ticket(text, (row.key,), tuple(ids)), mark)
 
     # --- W-1: a hint shown once per library (settings.json's `hints_seen`: hint ids, each with the library's id) -- #
     def _hint_id(self, name):

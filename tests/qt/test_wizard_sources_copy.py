@@ -70,16 +70,19 @@ def test_the_page_says_the_copy_and_warns_once_the_library_is_big(make, empty_li
     assert "big library" in page.reading_line.text()
 
 
-def test_a_big_library_offers_use_every_core_on_page_three_and_saves_it_at_once(make, empty_library):
-    """K5 C4: the warning comes with *Use every core* — a learner reading 20,000 books can let it take every core
-    while the look still lists them (the copy's pools read the key as they open), so the switch is saved the moment it
-    is flipped, never on *Next*; under the warning's size it isn't offered, and it shows the key as saved."""
+def test_page_three_always_offers_use_every_core_and_saves_it_at_once(make, empty_library):
+    """K5 C4, as Mado-O changed it (Sonic 2026-10-30): *Use every core* is on page 3 from the start — decided before
+    the load screen reads the library, whatever its size — and saved the moment it is flipped, never on *Next* (the
+    copy's pools read the key as they open, so a flip while the look lists 20,000 books still counts); it shows the
+    key as saved, and a count — the big library's warning too — never hides it or writes it."""
     wiz, _shell, _api, settings, _m = make(api=SourcesApi())
     go_to(wiz, "shows")
     page = wiz.page
     settings.calls.clear()
+    assert not page.every_core.isHidden() and not page.every_core.switch.isChecked()
+    assert page.every_core.toolTip() or page.every_core.switch.toolTip()
     page.show_reading(setup_wizard.BIG_LIBRARY - 1, 300)
-    assert page.every_core.isHidden()
+    assert not page.every_core.isHidden()
     page.show_reading(setup_wizard.BIG_LIBRARY, 300)
     assert not page.every_core.isHidden() and not page.every_core.switch.isChecked()
     assert settings.calls == []                                       # shown as saved: nothing written by showing it
@@ -92,8 +95,10 @@ def test_a_big_library_offers_use_every_core_on_page_three_and_saves_it_at_once(
 
 
 def test_use_every_core_is_shown_as_saved_when_the_warning_comes(make, empty_library):
-    """The switch reads the saved key (Settings › Content's row is the same key): on there, on here."""
+    """The switch reads the saved key (Settings › Content's row is the same key): on there, on here — from the page's
+    start, and still when the warning comes."""
     wiz, _shell, _api, settings, _m = make(api=SourcesApi(), data={"use_every_core": True})
     go_to(wiz, "shows")
+    assert wiz.page.every_core.switch.isChecked()
     wiz.page.show_reading(setup_wizard.BIG_LIBRARY, 300)
     assert wiz.page.every_core.switch.isChecked()

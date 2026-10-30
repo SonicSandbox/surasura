@@ -24,7 +24,8 @@ each of the six pages starts with, what it writes on *Next*, and the reads and j
   as a child (`tools.run`), until W3.2's *+ Add*.
 - **The folders your shows and books are in** (SRC W1a; RUNBOOK §1b S1 + D1): page 3's picks are checked by the store's
   own rule (`folder_refused`), then on *Next* added and given setup's first look (`read_folders`: `Store.add_source`,
-  `sources.scan(first=True)` — Current, quietly), a worker's; anything taken in offers *Needs you*'s one line, *Make
+  `sources.scan(first=library_store.SORT)` — New arrivals, quietly, for setup's sort screen; Mado-O, Sonic 2026-10-30),
+  a worker's; what the sorting put in the mine line offers *Needs you*'s one line (`sorted_offer`), *Make
   cards for your first 20 episodes?*, whose *Make cards* logs them as entering the mine line by the user's choice
   (`first_cards`, after Connect's switch is on). *Skip a folder…* (K6): a folder inside the picked ones checked by the
   store's rule (`skip_refused`), skipped on *Next* before its folder's first look (`read_folders(skips=)`).
@@ -514,10 +515,11 @@ _STOPPED = object()
 
 def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=None, copying=None):
     """(A worker; SRC W1a.) *Next* on page 3 with folders picked: each one added (`Store.add_source`) and given its first
-    look (`sources.scan(first=True)`: SRC-1 — Current, by show, quietly: no card is made for them by itself, S1) ->
+    look (`sources.scan(first=library_store.SORT)`: SRC-1 as Mado-O changed it — New arrivals, by show, quietly,
+    waiting for setup's sort screen: no card is made for them by itself, S1; a 2.x NOW / Soon folder still Current) ->
     {"ready", "found", "shows", "added", "stopped", "busy", "read" [path], "refused" [(path, why)], "unreachable"
-    [path], "failed" [(path, why)], "offered"}. `read`: the folders this call dealt with (taken in, refused,
-    unreachable, failed); the others — after a Stop, or a look already running — weren't looked at, to read later.
+    [path], "failed" [(path, why)], "offered", "ids" [the items it took in]}. `read`: the folders this call dealt with
+    (taken in, refused, unreachable, failed); the others — after a Stop, or a look already running — weren't looked at, to read later.
     `progress(found, shows)`: every folder's so far; `stop()` is asked between files — a stopped look keeps what it
     took in. `skips` (K6, *Skip a folder…*): folders inside them never read — each skipped (`Store.skip_folder`) as soon
     as the folder holding it is added, before its look; one no folder read holds is refused (`refused`, its reason).
@@ -525,12 +527,10 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
     page 3's *Waiting for your library…*) and the read goes on by itself; *Stop* ends the wait (`stopped`; the folder
     not reached stays listed). `busy` stays False (kept for an older caller). K5: `copying(done, total)` while a
     folder's new files are copied in (`sources.scan`'s, that folder's); page 3 warns once `found` reaches BIG_LIBRARY.
-    `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
-    *Make cards for your first 20 episodes?* (D1); none there (Current was already full: *Set up again*, an upgrade)
-    → no line."""
+    `ready` False: no library yet (nothing done). Episodes taken into the mine line (only a 2.x NOW / Soon folder's
+    now: the rest wait in New arrivals) → the one *Needs you* line, *Make cards for your first 20 episodes?* (D1);
+    none there → no line here — the sort screen's end asks again (`sorted_offer`)."""
     from app import library_store, sources
-    from app.connect import library
-    from app.services import needs
     language = _language(language)
     out = {"ready": True, "found": 0, "shows": 0, "added": 0, "stopped": False, "busy": False, "read": [],
            "refused": [], "unreachable": [], "failed": [], "offered": False}
@@ -577,7 +577,8 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
                 if progress is not None:
                     progress(before[0] + found, before[1] + shows)
             def look(root=root, told=told):
-                got = sources.scan(store, language, root, first=True, progress=told, stop=stop, copying=copying)
+                got = sources.scan(store, language, root, first=library_store.SORT, progress=told, stop=stop,
+                                   copying=copying)
                 if got.get("busy"):
                     raise _Waiting()                     # another look is reading: wait for it, then look
                 return got
@@ -602,18 +603,43 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
                 break
         if not (out["stopped"] or out["busy"]):
             out["refused"] += [(s, store.skip_refused(s) or library_store.SKIP_OUTSIDE) for s in pending]
-        try:
-            in_line = bool(set(taken) & set(library.mine_line(store))) if taken else False
-        except Exception as e:
-            print(f"Setup: the mine line couldn't be read ({e})")
-            in_line = False
+        out["ids"] = taken
+        in_line = _in_line(store, taken)
     if in_line:
-        try:
-            needs.offer(language, needs.FIRST_CARDS)
-            out["offered"] = True
-        except Exception as e:                           # the seen file held or newer: the line isn't offered
-            print(f"Setup: the cards line couldn't be offered ({e})")
+        out["offered"] = _offer_cards(language)
     return out
+
+
+def _in_line(store, ids):
+    """Whether any of `ids` is in the mine line (D1)."""
+    from app.connect import library
+    try:
+        return bool(set(ids) & set(library.mine_line(store))) if ids else False
+    except Exception as e:
+        print(f"Setup: the mine line couldn't be read ({e})")
+        return False
+
+
+def _offer_cards(language):
+    from app.services import needs
+    try:
+        needs.offer(language, needs.FIRST_CARDS)
+        return True
+    except Exception as e:                               # the seen file held or newer: the line isn't offered
+        print(f"Setup: the cards line couldn't be offered ({e})")
+        return False
+
+
+def sorted_offer(language, ids):
+    """(A worker; Mado-O.) The sort screen ended: D1's *Make cards for your first 20 episodes?* line, offered when what
+    setup's scan took in (`ids`, `read_folders`' "ids") reached the mine line through the learner's sorting — the same
+    check `read_folders` makes (its scan lands in New arrivals now, so nothing is in the line there). -> offered."""
+    store = _window_store(language)
+    if store is None or not ids:
+        return False
+    with store:
+        in_line = _in_line(store, ids)
+    return _offer_cards(language) if in_line else False
 
 
 def first_cards(language, settings, data_dir=None):

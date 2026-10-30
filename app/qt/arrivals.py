@@ -154,6 +154,16 @@ REPAINT_ROWS = 40            # picks moved on more rows than this: one repaint o
 HAND_EVERY = 0.25           # s: the numbers go to the reader at most four times a second (A4), the last never lost
 
 
+def give_place(moves, text, ids, where, keys=(), toast=True, ticket=None):
+    """An arrival's place, New arrivals' one call (the tray's icons and ⋯, its picks, the sort screen): `where` one of
+    `moves.PLACES`, through the window's writer (`Writer.place`) by the drag controller's ticket — its toast with Undo
+    unless `toast` is False (the sort screen says it itself; `ticket`: its own, kept for its Undo). -> the writer's
+    number, or None (refused)."""
+    from app.qt import drag
+    ticket = ticket or drag.Ticket(text, tuple(keys), list(ids))
+    return moves._give(ticket, lambda t: moves.writer.place(list(ids), where, label=t), toast=toast)
+
+
 def _later(seconds, fn):
     t = threading.Timer(seconds, fn)
     t.daemon = True
@@ -1366,6 +1376,14 @@ class ArrivalsTray(motion.Overlay):
         self.loading.hide()
         head.addWidget(self.loading)
         head.addStretch(1)
+        self.sort_button = QToolButton(self)                  # --- Mado-O: the sort screen, New arrivals' full view
+        self.sort_button.setText(strings.TRAY_SORT_ALL)
+        self.sort_button.setAccessibleName(strings.TRAY_SORT_ALL)
+        self.sort_button.setToolTip(strings.TRAY_SORT_ALL_TIP)
+        self.sort_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.sort_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sort_button.clicked.connect(lambda _c=False: self.sort_all())
+        head.addWidget(self.sort_button)
         self.close_button = QToolButton(self)
         self.close_button.setText(strings.TRAY_CLOSE)
         self.close_button.setAccessibleName(strings.TRAY_CLOSE_NAME)
@@ -1984,10 +2002,15 @@ class ArrivalsTray(motion.Overlay):
         elif name == "remove":
             self.ask_remove_many(title, ids)
         else:
-            from app.qt import drag
-            ticket = drag.Ticket(strings.TRAY_PLACED[name].format(title=title), ids=ids)
-            moves._give(ticket, lambda t: moves.writer.place(ids, name, label=t))
+            give_place(moves, strings.TRAY_PLACED[name].format(title=title), ids, name)
         self.clear_picks()
+
+    def sort_all(self):
+        """*Sort them all…* (Mado-O, Sonic 2026-10-30): the tray closes and setup's sort screen opens over the window —
+        every arrival large, one at a time from the top, by New arrivals' own placing."""
+        from app.qt import sort_screen
+        self.close()
+        return sort_screen.open_over(self.win)
 
     def all_to(self, kind, where):
         """A group head's *All to Soon* / *All to Goal*: every arrival of the group in one command."""
@@ -2055,9 +2078,7 @@ class ArrivalsTray(motion.Overlay):
         elif name == "remove":
             self.ask_remove(arrival)
         else:
-            from app.qt import drag
-            ticket = drag.Ticket(strings.TRAY_PLACED[name].format(title=arrival.title), ids=ids)
-            moves._give(ticket, lambda t: moves.writer.place(ids, name, label=t))
+            give_place(moves, strings.TRAY_PLACED[name].format(title=arrival.title), ids, name)
 
     def finish(self, title, ids):
         """To Finished (`place(…, "finished")`) and the finish toast's choice, D14 (IK-11): *Keep* or *Take its new
@@ -2112,23 +2133,31 @@ class ArrivalsTray(motion.Overlay):
             default_no=True, danger=True, on_answer=answered)
 
     def folder_of(self, arrival):
+        """(A worker.) The folder *Open its folder* opens: the content's own (`own_folder`, a7)."""
         from app import path_utils
-        rel = (arrival.rel_paths or ("",))[0] or ""
+        from app.services import own_folder
         language = getattr(self.win, "language", "ja")
-        return os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))
+        return own_folder.read(own_folder.opener_of(self.win), path_utils.get_data_path(language),
+                               tuple(arrival.item_ids or ()), tuple(arrival.rel_paths or ()))
 
     def open_folder(self, arrival):
         """*Open its folder*: a press (`press.open`, round 8 row 45) — the row's ⋯ turns (IK-2) from the frame of the
-        press; looked for (a drive may be slow or gone, N4) and opened on a worker — or said."""
+        press; the content's own folder looked for (a drive may be slow or gone, N4) and opened on a worker — or
+        said."""
         from app.qt import press as qpress
-        path = self.folder_of(arrival)
+        looked = []
+
+        def there():
+            path = self.folder_of(arrival)
+            looked.append(path)
+            return path if path and os.path.isdir(path) else None
 
         def nothing(_info=None):
             say = getattr(self.win, "say", None)
             if say is not None:
-                say(strings.TRAY_NO_FOLDER.format(path=path))
+                say(strings.TRAY_NO_FOLDER.format(path=looked[-1] if looked else arrival.title))
         shown = self.view.row_of(arrival.key) >= 0 and self.open_now()
-        return qpress.open(self.win, lambda: path if os.path.isdir(path) else None, key=("open-folder", arrival.key),
+        return qpress.open(self.win, there, key=("open-folder", arrival.key),
                            at=_MoreMark(self.view, arrival.key) if shown else None,
                            then=lambda found: found or nothing(), failed=nothing)
 

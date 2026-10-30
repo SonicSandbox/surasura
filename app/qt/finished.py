@@ -44,23 +44,20 @@ LAND_MS = 50                                         # how often the import toas
 LAND_DEADLINE_S = 300                                # ... and for how long (W3.2 H T2): then a line, never for ever
 
 
-def folder_of(language, row):
-    """The folder a Finished row's first file is in (on disk), or None."""
-    rel = next((e.rel_path for e in row.episodes if e.rel_path), None)
-    if not rel:
-        return None
-    return os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))
-
-
 def open_folder_of(win, language, row, lst, say):
     """*Open its folder* (Current's ⋯ and Finished's), one press (`press.open`, round 8 row 45): the row's ⋯ turns in
-    `lst` (IK-2) from the frame of the press; the folder is looked for (a drive may be slow or gone, N4) and opened on
-    a worker; none there — or it couldn't open — `say` says so. A second press meanwhile does nothing."""
-    path = folder_of(language, row)
-    ids = [row.episodes[0].id] if row.episodes else []
+    `lst` (IK-2) from the frame of the press; the folder — the content's own (`own_folder`, a7: its originals', else the
+    nearest one above, else its stored copy's) — is looked for (a drive may be slow or gone, N4) and opened on a worker;
+    none there — or it couldn't open — `say` says so. A second press meanwhile does nothing."""
+    from app.services import own_folder
+    every = [e.id for e in row.episodes]
+    rels = [e.rel_path for e in row.episodes if e.rel_path]
+    ids = every[:1]
+    data, opener = path_utils.get_data_path(language), own_folder.opener_of(win)
 
     def there():
-        return path if path is not None and os.path.isdir(path) else None
+        path = own_folder.read(opener, data, every, rels)
+        return path if path and os.path.isdir(path) else None
 
     def opened(found):
         if not found:

@@ -304,11 +304,12 @@ class SourceLooks:
             return False
         return self._worker.put(self._removed, root_id, then)
 
-    def skippable(self, item_ids, then):
+    def skippable(self, item_ids, then, own=False):
         """`then([folder path])` on the worker: ⋯'s *Never read this folder* choices for these items, deepest first (K6;
-        [] for items that came from no folder being read)."""
+        [] for items that came from no folder being read). `own`: only folders holding no other item's original (the
+        sort screen's *Ignore*, `Store.skip_choices`)."""
         ids = list(item_ids)
-        return self._worker.put(self._skippable, ids, then) if ids and not self._closing.is_set() else False
+        return self._worker.put(self._skippable, ids, then, own) if ids and not self._closing.is_set() else False
 
     def skip_refused(self, path, then, language=None):
         """Settings' *Skip a folder…* (Q7): `then(why or None)` on the worker — the store's own rule
@@ -625,12 +626,12 @@ class SourceLooks:
             print(f"Sources: the fresh library's counts couldn't be read: {e!r}")
         then(counts)
 
-    def _skippable(self, ids, then):
+    def _skippable(self, ids, then, own=False):
         out = []
         try:
             store = self._store()
             if store is not None:
-                out = store.skip_choices(ids)
+                out = store.skip_choices(ids, own=True) if own else store.skip_choices(ids)
         except Exception as e:
             print(f"Sources: the folders to skip couldn't be read: {e!r}")
         then(out)

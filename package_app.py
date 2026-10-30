@@ -39,6 +39,8 @@ def load_build_config(path=BUILD_CONFIG):
     if not isinstance(release, dict) or not all(_version_tuple(release.get(k)) for k in ("min_from",
                                                                                          "installer_min_from")):
         problems.append("release must give min_from and installer_min_from")
+    elif not _telemetry_url_ok(release.get("telemetry_url")):
+        problems.append("release must give telemetry_url, the receiver's https address (update.json carries it)")
     parts = config.get("parts")
     names = [p.get("name") for p in parts if isinstance(p, dict)] if isinstance(parts, list) else []
     if not isinstance(parts, list) or not parts or len(names) != len(parts) or len(set(names)) != len(names) or \
@@ -49,6 +51,12 @@ def load_build_config(path=BUILD_CONFIG):
     if problems:
         raise ValueError("packaging/build_config.json: " + "; ".join(problems))
     return config
+
+
+def _telemetry_url_ok(value):
+    """The client's own rule (`update_checker.valid_telemetry_url`): what the release writes, every 3.x reads."""
+    from app import update_checker
+    return update_checker.valid_telemetry_url(value) is not None
 
 
 def _version_tuple(text):
@@ -400,6 +408,7 @@ def _build_release(final_dist, version, config, out_dir="dist", installer=None, 
         "critical": False,
         "sha256": "",
         "notes_url": f"https://github.com/SonicSandbox/surasura/releases/tag/v{version}",
+        "telemetry_url": config["release"]["telemetry_url"],    # where 3.x's next heartbeat goes (signed with it)
         "format": 2,
         "package": {"parts": parts, "files": files, "needs_installer": bool(needs_installer),
                     "min_from": config["release"]["min_from"], "install_shape": install_shape()},

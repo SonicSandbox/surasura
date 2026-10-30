@@ -28,6 +28,7 @@ import threading
 import time
 import traceback
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QKeySequence,
                          QLinearGradient, QPainter, QShortcut)
@@ -1665,6 +1666,9 @@ class ShellWindow(QMainWindow):
             return
         self._arrivals_view = view                        # SRC W1b / A4B-8: each arrival names its folder — the
         tray.set_groups(getattr(view, "arrival_groups", ()) or ())     # reader's thread named it (`follow_folders`)
+        sorting = self.__dict__.get("_sort_screen")       # --- Mado-O: the sort screen over the window follows them
+        if sorting is not None and not sip.isdeleted(sorting):
+            sorting.set_groups(getattr(view, "arrival_groups", ()) or ())
         if not arrivals and not tray.kept_out[0] and (tray.isVisible() or motion.opening_of(tray) is not None):
             tray.close()                                  # (alpha 4: its kept-out foot keeps it open)
         if self.arrival_numbers is not None and getattr(view, "language", self.language) == self.language:
@@ -3193,13 +3197,15 @@ class ShellWindow(QMainWindow):
         self.scan_covers()
         self._start_looks()                                    # --- SRC W1b: the first look after start (full)
 
-    def scan_covers(self):
+    def scan_covers(self, progress=None, then=None):
         """W3.2 Q6: the library's covers from disk (`covers.start_scan`), on a thread of its own — after the first
-        frame, and again when another library opens. -> the scan's thread, or None (no library or no writer)."""
+        frame, and again when another library opens (and from setup's load screen: `progress` / `then`, on the scan's
+        thread). -> the scan's thread, or None (no library or no writer)."""
         library, writer = self.services.library, self.services.writer
         if library is None or writer is None:
             return None
-        return qcovers.start_scan(getattr(library, "opener", None), self.language, writer)
+        return qcovers.start_scan(getattr(library, "opener", None), self.language, writer, progress=progress,
+                                  then=then)
         # --- end W3.2 Q6
 
     def showEvent(self, event):

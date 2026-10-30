@@ -309,9 +309,10 @@ def _let_go(keys):
 
 
 # --- the disk scan ---------------------------------------------------------------------------------------------- #
-def start_scan(opener, language, writer):
+def start_scan(opener, language, writer, progress=None, then=None):
     """(GUI thread.) The library's covers from disk (`services.covers.scan`) on a thread of its own, over the store's
-    feed read there; the one running is cancelled. -> the thread (tests join it), or None (nothing to write with)."""
+    feed read there; the one running is cancelled. `progress(done, total)` / `then(found)`: on that thread (setup's
+    load screen). -> the thread (tests join it), or None (nothing to write with)."""
     if opener is None or writer is None:
         return None
     old = _scan["cancel"]
@@ -324,10 +325,15 @@ def start_scan(opener, language, writer):
     def run():
         found = 0
         try:
-            found = _scan_library(opener, language, writer, cancel, data_dir)
+            found = _scan_library(opener, language, writer, cancel, data_dir, progress)
         except Exception as e:                  # never in the window's way: the generated covers stay
             print(f"Covers: the scan stopped: {e!r}")
         finally:
+            if then is not None:
+                try:
+                    then(found)
+                except Exception as e:
+                    print(f"Covers: the scan's listener failed: {e!r}")
             try:
                 n.scanned.emit((cancel, found))
             except RuntimeError:
@@ -338,7 +344,7 @@ def start_scan(opener, language, writer):
     return t
 
 
-def _scan_library(opener, language, writer, cancel, data_dir):
+def _scan_library(opener, language, writer, cancel, data_dir, progress=None):
     from app.services import covers as disk
     h = opener.handle()
     if h is None:
@@ -346,7 +352,7 @@ def _scan_library(opener, language, writer, cancel, data_dir):
     try:
         feed = h.read_feed()
         works = disk.works_from(feed["items"], feed["works"], disk.originals(h))     # Hon a6: beside the originals too
-        return disk.scan(language, works, writer, cancel=cancel.is_set, data_dir=data_dir)
+        return disk.scan(language, works, writer, cancel=cancel.is_set, data_dir=data_dir, progress=progress)
     finally:
         close = getattr(opener, "close", None)       # this thread's handle (a store handle belongs to its thread)
         if close is not None:

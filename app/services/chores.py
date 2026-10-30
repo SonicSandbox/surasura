@@ -128,6 +128,10 @@ class Chores:
         self._indexed = []
 
     # --- reading ------------------------------------------------------------------------------------------------ #
+    def index_log(self):
+        """The indexer's log of its newest run (setup's load screen reads its count there), or None (no log kept)."""
+        return os.path.join(self._log_folder, LOG_NAME) if self._log_folder else None
+
     def state(self):
         with self._lock:
             return self._state

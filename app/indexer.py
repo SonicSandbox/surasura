@@ -106,6 +106,25 @@ def run_lists(language, data_dir, files, store):
     return list(files), {"aside": [p for p in store.counted_files() + store.aside_files() if p not in named]}
 
 
+PROGRESS_LINE = "Indexer: {done} of {total}"     # read back by setup's load screen (`services.setup_load.read_count`)
+PROGRESS_EVERY = 0.5                             # seconds between two progress lines (and the last one, always)
+
+
+def _progress_printer(clock=None):
+    """`reconcile`'s `progress`: a line `PROGRESS_LINE` at most every PROGRESS_EVERY s, and the last, flushed — the
+    window's log of this run (`Chores`' `indexer-window.log`) is where setup's load screen reads its count."""
+    import time
+    clock = clock or time.monotonic
+    last = [float("-inf")]
+
+    def told(done, total):
+        now = clock()
+        if done >= total or now - last[0] >= PROGRESS_EVERY:
+            last[0] = now
+            print(PROGRESS_LINE.format(done=done, total=total), flush=True)
+    return told
+
+
 def _holding_indexer(run):
     """Run `run` holding the `indexer` lock (`app/locks.py`): informative — `surasura-cli status` reports the indexer
     busy while it is held (P0.3 03) — and one index run at a time per install: a second waits for the first, then
@@ -162,7 +181,7 @@ def main():
             # text kept (its own file) and never counted.
             store.reconcile(files, token_index.make_tokenizer(language, reinforce=reinforce, script=script),
                             build_signature=token_index.build_signature(language, reinforce, script),
-                            data_dir=data_dir, **more)
+                            data_dir=data_dir, progress=_progress_printer(), **more)
             if language == "ja":
                 # The library's name tables the reconcile just computed: the known words read with them.
                 from app import names

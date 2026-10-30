@@ -149,6 +149,7 @@ _TIER_OF_FOLDER_FOLDED = {k.casefold(): t for k, t in TIER_OF_FOLDER.items()}   
 TIER_LABELS = {"now": "NOW", "soon": "Soon", "goal": "6+ Months", "graduated": "Graduated",
                "arrivals": "New arrivals"}
 CURRENT = ("now", "soon")        # Current = NOW then Soon; the Soon line is their boundary
+SORT = "sort"                    # `take_in(first=SORT)`: setup's first scan landing in New arrivals for its sort screen
 HATO_FOLDER = "HighPriority/Hato"  # hato's drop folder: its files land at the top of NOW through 2.x
 GRADUATED_FOLDER = "Graduated"
 # 3.0's Sources (SRC): every new text copy goes into one content folder of Surasura's own, `Library/<show>/<file>`,
@@ -9190,10 +9191,11 @@ def _store_items_under(self, path):
     return out
 
 
-def _store_skip_choices(self, item_ids):
+def _store_skip_choices(self, item_ids, own=False):
     """⋯'s *Never read this folder* (K6): for the first of these items' origins inside a source being read, its folder
     and each folder above it up to (never) the innermost such source folder, deepest first — each one `skip_refusal`
-    accepts -> [path]; [] when none of them came from a source being read."""
+    accepts -> [path]; [] when none of them came from a source being read. `own` (the sort screen's *Ignore*, Mado-O):
+    only folders whose files are all these items' — never one that also holds another item's original."""
     ids = [i for i in item_ids if isinstance(i, int)][:500]
     if not ids:
         return []
@@ -9215,6 +9217,8 @@ def _store_skip_choices(self, item_ids):
             continue
         top, out = max(held, key=len), []
         while _under(path_key(folder).rstrip("/"), top):
+            if own and self._holds_others(folder, ids):
+                break                                   # (a folder above it holds those others too)
             if skip_refusal(folder, sources, skipped)[0] is None:
                 out.append(folder)
             up = os.path.dirname(folder)
@@ -9223,6 +9227,18 @@ def _store_skip_choices(self, item_ids):
             folder = up
         return out
     return []
+
+
+def _store_holds_others(self, folder, ids):
+    """Whether an item outside `ids` has a live original under `folder` (`skip_choices(own=True)`)."""
+    prefix = origin_key(folder).rstrip("/") + "/"
+    like = prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
+    with self._reading():
+        row = self.conn.execute(
+            f"SELECT 1 FROM pairings p JOIN items i ON i.id = p.item_id WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} "
+            f"AND p.content_key LIKE ? ESCAPE '!' AND p.item_id NOT IN ({','.join('?' * len(ids))}) LIMIT 1",
+            [like] + list(ids)).fetchone()
+    return row is not None
 
 
 def _store_skip_folder(self, path, trashed_paths=None):
@@ -9539,15 +9555,17 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
         work = self._folder_work(rel, str(audio.get("title") or "") or None, cmd, works)
     else:
         work = self._source_work(rel, record, cmd, works)
-    runs = runs if first and not waiting else None
+    if first == SORT and _tier_2x(record.get("origin")) in CURRENT:
+        first = True                                 # K8: a 2.x library's NOW / Soon folder keeps Current, unsorted
+    runs = runs if first and first != SORT and not waiting else None
     if joined:
         tier, where = joined[1], ("after", joined[2])
     elif first and not waiting and _tier_2x(record.get("origin")) == "goal":
         tier, where = "goal", ("end",)               # K8: a 2.x library's Goal folder read as his library's folder
         runs = None                                  # (no Current run of its show to keep)
     else:
-        tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first and not waiting, waiting, episodes,
-                                        runs)
+        tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first if not waiting else False, waiting,
+                                        episodes, runs)
     item_id = self._add_rows([prepared + (tier,)], cmd.version)[0]
     self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
     if not waiting:
@@ -9649,11 +9667,16 @@ def _run_insert(run, row, where):
 
 def _store_source_spot(self, cmd, work, rel, episode, first, waiting=False, episodes=None, runs=None):
     """(tier, where) for a new copy of `work` (see `take_in`). Setup's scan: its show's run in Current, else Current's
-    end. Later: New arrivals — its show's run there, else the end — and the placing rule takes it on from there
+    end — `first=SORT` (setup's scan since Mado-O): its show's run in New arrivals, else its end, quiet, for the sort
+    screen (no rule takes it on). Later: New arrivals — its show's run there, else the end — and the placing rule takes it on from there
     (`_take_new`, Decision 1); with New arrivals off (no rule runs) its show's run in Current, else the top of it.
     `waiting` (K5, review H3): New arrivals always, whatever its show's rows (nothing to read or mine). `episodes`:
     `_in_run`'s cache of the batch; `runs` (setup's scan): each show's run in Current read once a batch, kept in
     order by `_take_new` (a long show's file is never placed by reading and sorting its whole run again)."""
+    if first == SORT:                                # Mado-O: setup's scan waits for the sort screen, in New arrivals
+        run = [r for r in self.conn.execute("SELECT id, tier, ord, rel_path FROM items WHERE work_id = ? AND tier = "
+                                            "'arrivals'", (work,)).fetchall()]
+        return self._in_run(run, rel, episode, episodes) if run else ("arrivals", ("end",))
     if first and runs is not None and work in runs:
         current = runs[work]
         return self._in_run(current, rel, episode, episodes, ordered=True) if current else \
@@ -11430,6 +11453,7 @@ Store.skipped_folders = _store_skipped_folders
 Store.skip_refused = _store_skip_refused
 Store.items_under = _store_items_under
 Store.skip_choices = _store_skip_choices
+Store._holds_others = _store_holds_others
 Store.skip_folder = _store_skip_folder
 Store._unskip = _store_unskip
 Store._skips_moved = _store_skips_moved

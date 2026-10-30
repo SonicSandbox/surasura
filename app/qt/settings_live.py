@@ -625,6 +625,24 @@ class Live(QObject):
                 slot.addWidget(door)
                 copies[app] = door
             self.parts[row_id] = copies
+            # A7: under the row's help, how to start a round once it's added, and *Copy a starter message*
+            from app.practice import STARTER
+            view = self.page.row(row_id)
+            words = view.layout().itemAt(0).layout()                      # the row's words column
+            then = QLabel(S.PRACTICE_THEN.format(starter=STARTER), view)
+            then.setObjectName("settingshelp")
+            then.setTextFormat(Qt.TextFormat.PlainText)
+            then.setWordWrap(True)
+            then.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)   # the slash line can be copied
+            words.addSpacing(8)                                           # apart from what leaves: the next step
+            words.addWidget(then)
+            starter = sc.Door(S.PRACTICE_STARTER, tooltip=S.PRACTICE_STARTER_TIP, name=S.PRACTICE_STARTER)
+            starter.clicked.connect(lambda _c=False: self.copy_practice("starter"))
+            line = QHBoxLayout()
+            line.addWidget(starter)
+            line.addStretch(1)
+            words.addLayout(line)
+            self.parts["practice_then"] = {"then": then, "starter": starter}
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
             door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
@@ -883,15 +901,22 @@ class Live(QObject):
 
     def copy_practice(self, app):
         """*Practise with your AI*: `app`'s whole setup on the clipboard (app/cli/mcp_server.setup_text: one sentence to
-        paste to the AI and the exact line, this install's path in it). The press shows *Copied* at once, back to the
-        app's name two seconds later; the line in the bar says where to paste it. Writes nothing anywhere else."""
+        paste to the AI and the exact line, this install's path in it), or for "starter" the first message to send
+        once it's added (mcp_server.STARTER). The press shows *Copied* at once, back to its name two seconds later; the
+        line in the bar says where to paste it. Writes nothing anywhere else."""
         from PyQt6 import sip
         from PyQt6.QtCore import QTimer
         from PyQt6.QtWidgets import QApplication
         from app.cli import mcp_server
-        QApplication.clipboard().setText(mcp_server.setup_text(app))
-        name = S.PRACTICE_APPS[app]
-        door = self.parts.get("practice_ai", {}).get(app)
+        if app == "starter":
+            QApplication.clipboard().setText(mcp_server.STARTER)          # app/practice.STARTER
+            name, said = S.PRACTICE_STARTER, S.PRACTICE_STARTER_COPIED_LINE
+            door = self.parts.get("practice_then", {}).get("starter")
+        else:
+            QApplication.clipboard().setText(mcp_server.setup_text(app))
+            name = S.PRACTICE_APPS[app]
+            said = S.PRACTICE_COPIED_LINE.format(app=name)
+            door = self.parts.get("practice_ai", {}).get(app)
         if door is not None:
             door.setText(S.PRACTICE_COPIED)
             self._copies[app] = press = self._copies.get(app, 0) + 1      # a second press restarts the two seconds
@@ -900,7 +925,7 @@ class Live(QObject):
                 if not sip.isdeleted(door) and self._copies.get(app) == press:
                     door.setText(name)
             QTimer.singleShot(2000, back)
-        self.say(S.PRACTICE_COPIED_LINE.format(app=name), "practice_ai")
+        self.say(said, "practice_ai")
 
     def open_logs(self):
         """*Processing log*: its folder found and opened on a worker (`press.open`), the door's arc turning by."""

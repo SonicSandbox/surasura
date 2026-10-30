@@ -413,7 +413,7 @@ ROWS = {
                     "Your AI app runs Surasura on this computer. What Surasura tells it (your known words, your "
                     "list's next words, lines from your library, what you kept from past rounds) goes to that AI's "
                     "company, as anything you type there does. Nothing else leaves.",
-                    "Copy the setup for your AI app, then paste it to your AI",
+                    "Copy the setup for your AI app, then paste it to your AI. A short story is a good first try",
                     "piyo ぴよ practice practise ai claude codex desktop mcp chat tutor copy setup"),
     "practice_keep_rounds": ("Keep practice rounds",
                              "Your rounds stay on this computer so you can do one again, and what you ask your AI to "
@@ -653,6 +653,20 @@ PRACTICE_APPS = {"claude-code": "Claude Code", "codex": "Codex", "claude-desktop
 PRACTICE_COPY_TIP = ("Copies the setup for {app}: paste it to {app} (it runs it for you), or follow it yourself")
 PRACTICE_COPIED = "Copied"
 PRACTICE_COPIED_LINE = "The setup for {app} is copied: paste it to {app}."
+# A7 (Sonic's first try, 2026-10-30: "How do i start piyo conversation?"): under the Copy buttons, both ways to start a
+# round (the slash form, its words and example: app/cli/mcp_server.SLASH_EXAMPLE and the prompt's arguments, a test keeps
+# them equal; the plain request: app/practice.STARTER)
+PRACTICE_THEN = ("Then, to start a round:\n"
+                 "• In Claude Code, type /surasura:practice and four words: how many (1–20) · who's talking (friend, "
+                 "coworker, boss, customer, senpai, kohai, shopkeeper, teacher, child) · what kind (chat, reading: a "
+                 "short story, quiz) · from what (soon: your list's next words, latest: what you watch or read next, "
+                 "mix). Type / and it's listed as /surasura:practice (MCP).\n"
+                 "• For example: /surasura:practice 5 friend reading soon\n"
+                 "• Or, in any of them, just say it: “{starter}”")
+PRACTICE_STARTER = "Copy a starter message"
+PRACTICE_STARTER_TIP = ("Copies a first message for your AI, once Piyo is added: a short story with 5 of your words. "
+                        "A story is a good first try")
+PRACTICE_STARTER_COPIED_LINE = "The starter message is copied: paste it to your AI."
 COPY_PATH = "Copy path"
 COPY_PATH_TIP = "Copy the whitelist file's path, to paste into Anki Miner's file chooser."
 PATH_COPIED = "The whitelist file's path is copied: paste it into Anki Miner's file chooser."

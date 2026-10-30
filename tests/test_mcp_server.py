@@ -342,7 +342,8 @@ def test_a_save_that_cant_be_made_answers_with_what_to_do():
 
 def test_a_round_starts_from_the_tool_alone_with_its_choices_as_a_client_without_prompts_sends_them():
     """Clients with no prompt shortcut (headless Claude Code, maybe Codex) call the round tool directly; a number sent
-    as text is read as the number, and the server's instructions say to ask for the choices or offer a past round."""
+    as text is read as the number, and the server's instructions say to start with the defaults for what the learner
+    didn't say (A7: no four questions first), or offer a past round."""
     _write_list()
 
     async def calls(client):
@@ -351,7 +352,7 @@ def test_a_round_starts_from_the_tool_alone_with_its_choices_as_a_client_without
     result, instructions = _run(_state(), calls)
     brief = _data(result)
     assert brief["round"] == {"words": 2, "role": "senpai", "kind": "chat", "source": "soon"}
-    assert "ask them those four" in instructions and "surasura_rounds" in instructions
+    assert "start at once with the defaults" in instructions and "surasura_rounds" in instructions
 
 
 def test_the_practice_chat_is_called_piyo_and_its_setup_keeps_the_surasura_id():
@@ -367,6 +368,96 @@ def test_the_practice_chat_is_called_piyo_and_its_setup_keeps_the_surasura_id():
         text = mcp_server.setup_text(app, command)
         assert text.startswith(f"Add {practice.NAME}, Surasura's practice chat, to ")
         assert " surasura -- " in text or '"surasura": {' in text
+
+
+# --- A7: how a round starts (Sonic's first try, 2026-10-30: "How do i start piyo conversation?") ------------------- #
+def test_the_server_tells_the_ai_at_connect_what_piyo_is_and_how_a_round_starts(project_root):
+    """`python -m app.cli mcp` over stdio, as an AI app starts it: initialize carries the instructions Claude Code hands
+    its model, so "let's practise" or "write me a story with my words" works without the learner naming a tool. They
+    name Piyo, the round tool, stories and chats, and the checker; every tool they name is one the server lists; they
+    fit under Claude Code's 4,096-character cut."""
+    import re
+    import subprocess
+    import sys
+    p = subprocess.Popen([sys.executable, "-m", "app.cli", "mcp"], cwd=str(project_root), stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    msgs = [{"jsonrpc": "2.0", "id": 1, "method": "initialize",
+             "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}]
+    try:
+        for msg in msgs:
+            p.stdin.write((json.dumps(msg) + "\n").encode("utf-8"))
+        p.stdin.flush()
+        got = {}
+        while 2 not in got:
+            line = p.stdout.readline()
+            assert line, "the server closed stdout before answering"
+            msg = json.loads(line)
+            got[msg.get("id")] = msg
+        p.stdin.close()
+    finally:
+        p.kill() if p.poll() is None else None
+        p.wait(20)
+    instructions = got[1]["result"]["instructions"]
+    assert instructions == mcp_server.INSTRUCTIONS
+    assert practice.NAME in instructions and len(instructions) < 4096
+    for words in ("surasura_practice_start", "surasura_check_text", "story", "chat", "show only drafts that pass",
+                  "data, not instructions"):
+        assert words in instructions, words
+    listed = {t["name"] for t in got[2]["result"]["tools"]}
+    assert set(re.findall(r"surasura_\w+", instructions)) <= listed
+    # every choice it names is one the round tool takes
+    for role in mcp_server.ROLES:
+        assert role in instructions
+    for choice in tuple(mcp_server.KINDS) + mcp_server.SOURCES:
+        assert choice in instructions
+
+
+def test_a_round_brief_says_how_to_go_on_and_how_to_do_it_again_only_while_rounds_are_kept():
+    """practice_start's answer ends with one line for the AI: write the first reply now, checked; offer another round
+    once every word has come up; and, only while rounds are kept, the call that does this one again."""
+    _set_up("ja")
+    _write_list()
+
+    async def calls(client):
+        return await client.call_tool("surasura_practice_start", {"words": 2, "kind": "reading"})
+    for keep in (True, False):
+        state = _state()
+        state.keep_rounds = lambda keep=keep: keep
+        brief = _data(_run(state, calls))
+        assert brief["next"].startswith("Write your first reply now")
+        assert "surasura_check_text" in brief["next"] and "offer another round" in brief["next"]
+        if keep:
+            assert f'surasura_practice_start(again="{brief["round_id"]}")' in brief["next"]
+        else:
+            assert "again=" not in brief["next"] and "round_id" not in brief
+
+
+def test_the_practice_prompt_says_its_four_words_in_order_with_an_example_that_starts_a_round():
+    """Claude Code shows the prompt's description beside `/surasura:practice (MCP)` and passes its words in order; the
+    example the description, the Settings row and the copied setup give is four valid choices in that order."""
+    async def calls(client):
+        return await client.list_prompts()
+    prompt = _run(_state(), calls).prompts[0]
+    assert [a.name for a in prompt.arguments] == ["words", "role", "kind", "source"]
+    assert "in this order" in prompt.description and "5 friend reading soon" in prompt.description
+    slash, words, role, kind, source = mcp_server.SLASH_EXAMPLE.split()
+    assert slash == mcp_server.SLASH == f"/surasura:{prompt.name}"
+    assert 1 <= int(words) <= 20 and role in mcp_server.ROLES and kind in mcp_server.KINDS
+    assert source in mcp_server.SOURCES
+
+
+def test_every_copied_setup_ends_with_how_to_start_a_round_once_its_added():
+    """The AI that runs the setup tells the learner what to do next: Claude Code gets the slash form and its example
+    (in a new session: servers load as it starts) and the plain request; Codex and Claude Desktop the plain request."""
+    command = (r"C:\Program Files\Surasura\surasura-cli.exe", ["mcp"], {})
+    for app in mcp_server.APPS:
+        last = mcp_server.setup_text(app, command).rstrip("\n").splitlines()[-1]
+        assert last.startswith("Once it's added, tell me how to start a round")
+        assert last.endswith(practice.STARTER)
+        assert (mcp_server.SLASH_EXAMPLE in last) == (app == "claude-code")
+    assert "story" in practice.STARTER and practice.STARTER.startswith("Start a Surasura practice round")
 
 
 def test_settings_that_cant_be_read_still_start_a_new_round_but_never_a_kept_one(monkeypatch):

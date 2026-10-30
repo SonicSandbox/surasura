@@ -821,8 +821,8 @@ class DeckChip(QAbstractButton):
 
     def sizeHint(self):
         name_f, count_f = self._parts()
-        w = (_px(36) + QFontMetricsF(name_f).horizontalAdvance(self.name)
-             + QFontMetricsF(count_f).horizontalAdvance(S.DECK_CARDS.format(n=self.count or 0)) + _px(14))
+        w = (_px(12) + _px(20) + QFontMetricsF(name_f).horizontalAdvance(self.name) + _px(8)    # `paintEvent`'s
+             + QFontMetricsF(count_f).horizontalAdvance(S.DECK_CARDS.format(n=self.count or 0)) + _px(14))  # sums
         return QSize(min(math.ceil(w), _px(DECK_CHIP_MAX)), _px(34))   # a long name shortened (`paintEvent`)
 
     def focusInEvent(self, event):

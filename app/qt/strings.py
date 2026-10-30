@@ -653,7 +653,7 @@ DONE_MOVE_SHOW_FINISHED_TIP = "Move {show}'s {n} files to Finished, under its ow
 MENU_NAME = "What you can do with {title}"
 MENU_ITEMS = {
     "up-next": ("Up next", "Make it the next thing you watch or read"),
-    "soon": ("Soon", "Move it to Soon: next in line, after what's in NOW"),
+    "soon": ("Soon", "Move it to Soon: next in line in Current, after what's at its top"),
     "goal": ("Goal", "Move it to Goal: someday, in no order"),
     "finished": ("Finished", "Move it to Finished: you're done with it"),
     "journey": ("See it in your journey", "Open your journey"),                     # JO-2: short

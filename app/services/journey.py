@@ -6,11 +6,15 @@ Generate. `JourneyKeeper` (one per window and language) runs that Generate by it
 - `changed(reason)` after every store command that moved the order or the pins (`Replan.store_moved`: the library
   reader, any writer), a placement from New arrivals (E2.2's provisional numbers), a level or band change, the start's
   and a focus's look (`changed("start")`, when the store or the report says pending) and the host's own Generate asks.
-  A background run already in flight is withdrawn at once (a second burst: cancelled before *Writing your list*, else
-  it finishes) and the settle timer starts again.
+  The settle timer starts again — unless a Generate runs or waits its turn (any asker's): that run is never withdrawn
+  (a7, S19: withdrawing threw away runs a minute or two from done, and on a library written all the time — a first
+  scan, a book folder, an extract — Generate ran without end); the change marks it, and once the last one has ended
+  the keeper looks once. A burst of changes during a run costs at most one more run, and none when the run already
+  read them (the look's check: the run signature). A library changing all the time (a first scan, an extract) still
+  never has Generate running without a break: after a run the next background one waits at least as long as that run
+  took (`REST_MAX_S` at most; SRC-9), and a run the user stopped by hand owes no look (the next change or focus asks).
 - `marked(reason)` after a change only the report shows (a stone or its undo with *Keep studying* on, JS-1:
-  `Replan.stone_marked`): the same look, but a Generate in flight (any asker's) is never withdrawn — the look waits for
-  the last one running or waiting to end, then looks once (S19: the run signs the marks it drew).
+  `Replan.stone_marked`): the same look (S19: the run signs the marks it drew).
 - When nothing has changed for the settle time — `journey_settle_s` (3 s), or `journey_settle_battery_s` (30 s) while
   the computer runs on its battery (Sonic, E3.2-1, 2026-10-08; both in advanced settings) — it asks, on the timer's
   thread, whether the journey is pending (`analyzer.journey_is_current` is not True, or the report isn't current —
@@ -23,9 +27,9 @@ Generate. `JourneyKeeper` (one per window and language) runs that Generate by it
   new, so the window re-baselines its engine from it.
 - `close()` (the window closes, or its language changes) leaves nothing: no timer, its own run withdrawn, no listener.
 
-Nothing here waits on the caller's thread: `changed`, `marked` and `close` only arm or cancel a timer (`marked` reads the
-controller's state); the settings, the battery, the journey check, the request and the shadow compare are read and run
-on the timer's thread or the controller's. The battery is read with the standard library only (unknown: plugged in).
+Nothing here waits on the caller's thread: `changed`, `marked` and `close` only arm or cancel a timer (`changed` and
+`marked` read the controller's state); the settings, the battery, the journey check, the request and the shadow compare
+are read and run on the timer's thread or the controller's. The battery is read with the standard library only (unknown: plugged in).
 """
 import os
 import subprocess
@@ -36,8 +40,10 @@ import time
 SETTLE_S = 3.0              # seconds after the last move (Sonic: "every 3 seconds unless it's on a laptop")
 SETTLE_BATTERY_S = 30.0     # ... and on a laptop's battery, every 30 seconds
 SETTLE_MAX_S = 3600.0       # a hand-edited setting is held to an hour (a Timer can't wait for ever)
+REST_MAX_S = 300.0          # a7: after a Generate, the next background one waits as long as it took, at most 5 min
 FIRST_LOOK_S = 0.5          # a burst's timer looks this soon at most, so a shorter setting is never a burst late
 SHADOW_LOG = "replan_shadow.log"
+IN_FLIGHT = ("queued", "running", "cancelling")   # the controller's states with a Generate on its way (generate.py)
 
 
 def on_battery():
@@ -121,12 +127,14 @@ class JourneyKeeper:
         self._armed = 0             # which arming the timer is: a timer already firing as it was cancelled is stale
         self._last_change = 0.0     # time.monotonic() of the last `changed`
         self._settle = SETTLE_S     # the quiet time as the timer last read it (settings, battery)
-        self._run = None            # the background run this keeper asked for (withdrawn by the next burst)
+        self._run = None            # the background run this keeper asked for (withdrawn only by `close`)
         self._previous = None       # the plan the run in flight will replace (shadow mode)
         self._closed = False
         self._last_plan = None      # the plan the last Generate wrote (shadow mode for a run the keeper didn't ask for)
         self._handed = None         # the run signature of the plan last handed to `on_done` (S19: never twice)
-        self._again = None          # `marked`'s reason while it waits for the Generate in flight to end
+        self._again = None          # the look owed once the Generate in flight ends (a change, a stone, a timer)
+        self._running_since = None  # when the Generate in flight began running (the controller's state)
+        self._rest_until = 0.0      # a7: no background run before then — as long as the last run took (REST_MAX_S)
         self.reasons = []           # why the journey moved since the last request (the window's log; tests)
         self.asked = 0              # background runs asked for
         controller.on_end(self._ended)
@@ -136,26 +144,25 @@ class JourneyKeeper:
 
     # --- the window's calls -------------------------------------------------------------------------------------- #
     def changed(self, reason="move"):
-        """The order, the pins or the level moved (or an arrival was placed): withdraw a background run in flight and
-        start the quiet time again. Reads nothing (no settings, no battery, no journey check): the timer's thread does,
-        and waits the rest of the quiet time they ask for. Withdrawing a run in flight asks it to stop exactly as the
-        controller's `cancel` does (a cancel file written; ≤ 4 ms, safe on a window's thread)."""
+        """The order, the pins or the level moved (or an arrival was placed): the quiet time starts again. A Generate
+        running or waiting its turn (any asker's) is never withdrawn for it (a7, S19): the change marks it, and once the
+        last one has ended the keeper looks once (`_look_again`) — however many changes came meanwhile. Reads nothing
+        but the controller's state (no settings, no battery, no journey check): the timer's thread does, and waits the
+        rest of the quiet time they ask for."""
         with self._lock:
             if self._closed:
                 return
             self.reasons.append(reason)
             self._last_change = time.monotonic()
-            run, self._run = self._run, None
-            self._arm(min(self._settle, FIRST_LOOK_S))
-        if run is not None and not run.done:
-            self.controller.withdraw(run)
+            self._again = reason            # set before the state is read: a run that ends meanwhile still looks
+        if not self.generating():
+            self._settle_now()              # nothing in flight (or it ended as we looked): the quiet time now
 
     def marked(self, reason="stone"):
-        """Only the report moved (a stone, or its undo, with *Keep studying* on: JS-1): one look, as `changed` — but a
-        Generate in flight is never withdrawn for it (S19: a stone moves no count; withdrawing threw away a run nearly
-        done, a Finish's too, and started one from scratch). While one runs or waits (any asker's), the look waits for
-        the last to end, then `changed(reason)` once: that run signs the marks it drew, so a run that drew this one
-        leaves the report current and the look asks nothing. Reads only the controller's state."""
+        """Only the report moved (a stone, or its undo, with *Keep studying* on: JS-1): one look, as `changed` — while a
+        Generate runs or waits (any asker's), the look waits for the last to end, then looks once: that run signs the
+        marks it drew, so a run that drew this one leaves the report current and the look asks nothing. Reads only the
+        controller's state."""
         with self._lock:
             if self._closed:
                 return
@@ -164,10 +171,9 @@ class JourneyKeeper:
             self._look_again()          # nothing in flight (or it ended as we looked): the look now
 
     def generating(self):
-        """Whether a Generate runs or waits its turn (any asker's) — False when the controller can't say."""
+        """Whether a Generate runs, stops or waits its turn (any asker's) — False when the controller can't say."""
         try:
-            from app.services import generate as generate_module
-            return self.controller.state().state in (generate_module.QUEUED, generate_module.RUNNING)
+            return self.controller.state().state in IN_FLIGHT
         except Exception:
             return False
 
@@ -197,21 +203,40 @@ class JourneyKeeper:
         self._timer.start()
 
     def _look_again(self):
-        """`marked`'s look, once: whoever takes the reason first (`marked` itself, or the controller's state leaving a
-        run) calls `changed` with it."""
+        """The look a run's end owes (or `marked`'s, now), once: whoever takes the reason first (`marked` itself, or the
+        controller's state leaving a run) calls `changed` with it."""
         with self._lock:
             reason, self._again = self._again, None
         if reason is not None:
             self.changed(reason)
 
+    def _settle_now(self):
+        """(`changed`, nothing in flight.) The quiet time, from the last change — a change during a run that took
+        longer than it looks at once — unless a run's end took the look first."""
+        with self._lock:
+            reason, self._again = self._again, None
+            if reason is None or self._closed:
+                return
+            self._arm(min(self._settle, FIRST_LOOK_S))
+
     def _state_changed(self, snap):
-        """(The controller's delivery.) No Generate runs or waits any more: a `marked` look that waited for it, now.
-        `marked` sets its reason before it reads the state, and the state is set before it is delivered: never lost."""
-        if self._again is None:
-            return
-        from app.services import generate as generate_module
-        if snap.state not in (generate_module.QUEUED, generate_module.RUNNING):
-            self._look_again()
+        """(The controller's delivery.) A run's start and end timed (the rest after it); and once no Generate runs or
+        waits any more, the look that waited for it (`changed`, `marked`, a timer that fired during it) — unless the
+        user stopped it (`stale`: a stop by hand owes no look; the next change or focus asks again). Each sets its
+        reason before it reads the state, and the state is set before it is delivered: never lost."""
+        state = snap.state
+        with self._lock:
+            if state == "running" and self._running_since is None:
+                self._running_since = time.monotonic()
+            elif state not in IN_FLIGHT and self._running_since is not None:
+                ended = time.monotonic()
+                self._rest_until = ended + min(ended - self._running_since, REST_MAX_S)
+                self._running_since = None
+            if state == "stale":
+                self._again = None
+            if self._again is None or state in IN_FLIGHT:
+                return
+        self._look_again()
 
     def _read_settings(self):
         if self._settings is not None:
@@ -231,7 +256,7 @@ class JourneyKeeper:
 
     def _fire(self, armed):
         """The moves stopped (the timer's thread): one quiet Generate if the journey is pending — once the quiet time
-        the settings and the battery ask for now has passed since the last move."""
+        the settings and the battery ask for now has passed since the last move, and the rest since the last run."""
         try:
             settle = settle_seconds(self._read_settings(), self._battery())
         except Exception as e:              # settings.json unreadable this moment: no run on guessed settings
@@ -242,12 +267,19 @@ class JourneyKeeper:
                 return                      # closed, or a newer move armed another timer
             self._timer = None
             self._settle = settle
-            left = self._last_change + settle - time.monotonic()
+            left = max(self._last_change + settle, self._rest_until) - time.monotonic()
             if left > 0.005:
-                self._arm(left)             # on the battery, or a longer quiet time set: wait the rest
+                self._arm(left)             # on the battery, a longer quiet time set, or the rest after a run
                 return
         if self._enabled is not None and not self._enabled():
             return                          # the background Generate is switched off (D29)
+        with self._lock:
+            self._again = self._again or "settled"   # a run that starts meanwhile: the look after it, not now
+        if self.generating():
+            return                          # one runs or waits (any asker's): its end looks again (`_state_changed`)
+        with self._lock:
+            if self._again == "settled":
+                self._again = None
         try:
             pending = self._is_pending()
         except Exception as e:
@@ -279,11 +311,11 @@ class JourneyKeeper:
         run = self.controller.request(self.language, settings=settings, quiet=True, settle=0, launcher=self._launcher)
         with self._lock:
             mine = run.quiet                # a user's request still settling keeps its place (`request`): not ours
-            late = mine and (self._closed or armed != self._armed)
+            late = mine and self._closed
             if mine and not late:
-                self._run = run
+                self._run = run             # a move while it was asked for: kept (a7); that move's look comes after it
         if late:
-            self.controller.withdraw(run)   # a move (or the window closing) came while it was being asked for
+            self.controller.withdraw(run)   # the window closed while it was being asked for
 
     def _path(self):
         if self._plan_path is not None:
@@ -317,8 +349,8 @@ class JourneyKeeper:
             self._last_plan = plan
             new = signature != self._handed
         try:
-            difference = shadow(previous, plan, _lists(), stamp=True)
-        except Exception as e:              # a list that can't be read (being written again, damaged): said
+            difference = shadow(previous, plan, _lists, stamp=True)   # read only once the stamp says they're the run's
+        except Exception as e:              # a list that can't be read (damaged): said
             difference = f"the comparison failed: {e}"
         if difference:
             _log_shadow(f"{self.language} · {difference}")
@@ -351,10 +383,11 @@ def _load_plan(path):
 
 def shadow(previous, plan, lists, stamp=False):
     """The first difference between the engine — built from `previous`, re-planned to `plan`'s order — and the lists a
-    Generate wrote for that order (`lists`: {"priority": rows, "progressive": rows}), or "". Only when the two plans
-    share the order-free signature (the same library and settings: a re-plan could have served it) and differ in the
-    run's. `stamp`: the lists are `results/`'s now — compared only while the run stamp still names `plan`'s run (a
-    Generate started since may be writing them: nothing compared, nothing logged)."""
+    Generate wrote for that order (`lists`: {"priority": rows, "progressive": rows}, or a call that reads them — read
+    only when the comparison is due), or "". Only when the two plans share the order-free signature (the same library
+    and settings: a re-plan could have served it) and differ in the run's. `stamp`: the lists are `results/`'s now —
+    read only while the run stamp names `plan`'s run, and compared only if it still does once they are read (a7: a
+    Generate started since drops the stamp before it writes: nothing read, nothing compared, nothing logged)."""
     if previous is None or plan is None or previous is plan:
         return ""
     h0, h1 = previous.header, plan.header
@@ -369,8 +402,14 @@ def shadow(previous, plan, lists, stamp=False):
         result = engine.replan([(entry[0], entry[1]) for entry in plan.files])
         if stamp and not _stamped(h1.get("run_signature")):
             return ""
+        if callable(lists):
+            lists = lists()
+        if stamp and not _stamped(h1.get("run_signature")):
+            return ""                       # a Generate started while they were read: they may be its
         return _differs(result, lists)
     except Exception as e:
+        if stamp and not _stamped(h1.get("run_signature")):
+            return ""
         return f"the comparison failed: {e}"
 
 
@@ -382,13 +421,12 @@ def _stamped(run_signature):
 
 
 def _lists():
-    import csv
-    from app.path_utils import get_user_file
+    from app.path_utils import get_user_file, list_reader
     out = {}
     for name, key in (("priority_learning_list.csv", "priority"), ("progressive_learning_list.csv", "progressive")):
         try:
             with open(os.path.join(get_user_file("results"), name), encoding="utf-8-sig", newline="") as f:
-                out[key] = list(csv.DictReader(f))
+                out[key] = list(list_reader(f))
         except OSError:
             out[key] = []
     return out

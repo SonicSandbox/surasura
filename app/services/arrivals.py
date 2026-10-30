@@ -160,9 +160,10 @@ class ArrivalsWorker:
             command = self._command or command_line(self.language, self.args)
             log = _log_file(self.language)
             try:
-                proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
-                                        env=build_subprocess_env(is_frozen()),
-                                        creationflags=0x08000000 if sys.platform == "win32" else 0)  # CREATE_NO_WINDOW
+                from app.connect.power import popen_below_normal        # a7: below the window
+                proc = popen_below_normal(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
+                                          env=build_subprocess_env(is_frozen()),
+                                          creationflags=0x08000000 if sys.platform == "win32" else 0)  # NO_WINDOW
             finally:
                 if log is not subprocess.DEVNULL:
                     log.close()                     # the child holds its own handle

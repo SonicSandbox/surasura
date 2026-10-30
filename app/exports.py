@@ -20,6 +20,8 @@ import os
 import zipfile
 from collections import namedtuple
 
+from app.path_utils import list_reader
+
 Outcome = namedtuple("Outcome", "kind path count message")
 
 FORMATS = ("migaku", "yomitan", "txt")
@@ -95,7 +97,7 @@ def csv_has_data_rows(path):
     """
     try:
         with open(path, 'r', encoding='utf-8-sig', newline='') as f:
-            reader = csv.reader(f)
+            reader = list_reader(f, header=False)
             next(reader, None)                                   # header
             return any(any(cell.strip() for cell in row) for row in reader)
     except (OSError, UnicodeDecodeError, csv.Error):
@@ -192,6 +194,6 @@ def _count(fmt, path):
             with open(path, encoding="utf-8") as f:
                 return sum(1 for line in f if line.strip())
         with open(path, encoding="utf-8-sig", newline="") as f:
-            return sum(1 for _ in csv.DictReader(f))
+            return sum(1 for _ in list_reader(f))
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, csv.Error):
         return None

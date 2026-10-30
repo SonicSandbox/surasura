@@ -462,7 +462,7 @@ def test_a_generate_the_journey_keeper_starts_reads_journey_updating_sentences_i
     """G7 (W1.2 02-state-model: *Plan current, sentences catching up*): the keeper's background Generate is the bar's
     *Journey: updating sentences…*, not *Generating (automatic)*. The window hands the keeper the controller as
     `labelled(JOURNEY_LABEL)` (journey.py untouched); every other quiet request (AutoGenerate's) keeps its label, and
-    the keeper's withdraw and close reach the controller through it."""
+    the keeper's close (its withdraw) reaches the controller through it."""
     from app.services.journey import JourneyKeeper
     from app.services.status import StatusService
     registry = JobRegistry()
@@ -478,14 +478,16 @@ def test_a_generate_the_journey_keeper_starts_reads_journey_updating_sentences_i
         view = registry.snapshot()[-1]
         assert view.kind == "generate" and view.automatic and view.label == "Journey: updating sentences…"
         assert status.snapshot().lines == ("Journey: updating sentences…",)
-        keeper.changed("move")                          # a second burst withdraws it through the labelled controller
-        assert os.path.exists(holder["run"].cancel_file)
-        holder["run"].feed(CANCELLED)
-        holder["run"].ended(76)
-        assert h.until(lambda: holder["launches"] == 2, seconds=10)
+        keeper.changed("move")                          # a second burst: never withdrawn (a7), one look after it
+        assert not os.path.exists(holder["run"].cancel_file)
         holder["run"].ended(0)
+        assert h.until(lambda: holder["launches"] == 2, seconds=10)
+        assert registry.snapshot()[-1].label == "Journey: updating sentences…"
     finally:
-        keeper.close()
+        keeper.close()                                  # its own run withdrawn through the labelled controller
+    assert os.path.exists(holder["run"].cancel_file)
+    holder["run"].feed(CANCELLED)
+    holder["run"].ended(76)
     assert keeper._ended not in controller._end_listeners, "close unsubscribed through the labelled controller"
     holder2, launcher2 = _scripted(controller)
     controller.request("ja", argv=["analyzer.py", "--no-open"], quiet=True, launcher=launcher2)

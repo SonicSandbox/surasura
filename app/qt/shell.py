@@ -58,6 +58,8 @@ LOOK_TICK_MS = 5 * 60 * 1000    # SRC W1b: the source folders' tick (`sources.du
 JOURNEY_FILE = "reading_list_static.html"   # the report's file in `results` (`static_html_generator.OUTPUT_FILE`)
 JOURNEY_LACKS = "lacks"     # `Services.open_journey`: opened, but the asked episode isn't in the journey yet (JO-1)
 JOURNEY_OLD_LOOK = "old-look"   # ... opened as drawn before a Journey setting changed: a Generate is due (a6 #5)
+GONE_GO = phase_service.Go("needs", ("folder-gone",))   # a7: 届 amber for a gone folder opens its card (`needs.FOLDER_GONE`,
+#                                                         the services' needs module: not imported by the shell at load)
 JOURNEY_DRAW_WAIT = 60.0    # a6 #5: how long *Journey ↗* waits for a re-render (seconds), then opens the journey as it is
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
@@ -1352,6 +1354,11 @@ class ShellWindow(QMainWindow):
             from app.qt import needs as needs_ui
             self.needs_you = needs_ui.NeedsYou(self, needs_page, self.language)
             self.needs_you.changed.connect(self._paint_needs)
+            # a7: a circle's *Needs you* place counts only while its card is on the page; looked at again as
+            # the page's cards move (`changed`: a gather landed, a card put away)
+            ny = self.needs_you
+            self.phase.lands = lambda go: go.place != "needs" or ny.first_of(go.at) is not None
+            self.needs_you.changed.connect(self.phase.refresh)
             needs_page.controller = self.needs_you
             self.needs_you.failures_in(services.status.snapshot().needs_you)
             if needs_page.view_model is not None:
@@ -2197,21 +2204,26 @@ class ShellWindow(QMainWindow):
                              failed=lambda info: applog.log("shell", f"a gone folder's Keep waiting: {info[0]!r}"))
 
     def _circle_pressed(self, circle):
-        """A phase circle pressed (alpha 3): its settings — or, for 順 while its line's fix is in 順's window (the
-        unfinished reorder's Undo, a deck to pick), that window (IKA3-1). Both show at once (the press rule's one-frame
-        case: no pending mark)."""
-        if circle == phase_service.ARRIVALS and self.phase.asks_in_window(circle):
-            self.show_tab("needs")                        # T6: a gone folder's card stands — its answers are there
-            if getattr(self, "needs_you", None) is not None:
-                self.needs_you.reveal_gone()              # (finding 4: at its card, not only the page)
+        """A phase circle pressed (alpha 3): its settings — or, while it is amber, where its decision is, that row
+        highlighted (a7, Sonic 2026-10-29: "If yellow i would expect it to let me go somewhere to make a decision that
+        is highlighted"; `PhaseStrip.go`): *Needs you* at the first card of its kinds (a gone folder, Anki Miner's
+        episodes waiting on you, Anki asking for you), or 順's window at its control (a deck to pick, an unfinished
+        reorder's Undo). Each shows at once (the press rule's one-frame case: no pending mark)."""
+        go = self.phase.go(circle)
+        if go is not None and go.place == "needs" and getattr(self, "needs_you", None) is not None:
+            self.show_tab("needs")
+            self.needs_you.reveal_first(go.at)            # (at its card, not only the page)
             return
-        if self.phase.asks_in_window(circle):
+        if go is not None and go.place == "junban":
             from app.qt import windows
             opener = next((op for op in windows.OPENERS if op.name == "junban"), None)
             if opener is not None:
-                windows.launch(self, opener)
+                win = windows.launch(self, opener)
+                if win is not None and hasattr(win, "highlight"):
+                    win.highlight(go.at)
                 return
-        self.open_setting(phase_strip.SETTINGS[circle])
+        if circle in self.phase.opens:
+            self.open_setting(phase_strip.SETTINGS[circle])
 
     def _junban_found(self, here):
         """Alpha 3: 順's circle opens Junban's settings once Junban is found (`_junban_here`, a worker's file look)."""
@@ -3120,13 +3132,16 @@ class ShellWindow(QMainWindow):
         phase strip, Q1: a folder offline waits on you)."""
         text = self.offline_text() if self.sources else ""
         self.offline_line.show_line(text)
-        self.phase.set_extra(phase_service.ARRIVALS, "offline", "needs" if text else None, text)
-        # T6: a folder that is GONE is a *Needs you* card — 届 amber while it stands, and its press opens that page
+        # a7 (Sonic 2026-10-29: amber only with a decision): a folder offline waits for its drive — words in 届's hover
+        self.phase.set_extra(phase_service.ARRIVALS, "offline", "info" if text else None, text)
+        # T6: a folder that is GONE is a *Needs you* card — 届 amber while it stands, and its press opens it there
         gone = self._gone_shown()
         words = (strings.PHASE_FOLDER_GONE.format(name=os.path.basename(os.path.normpath(gone[0]["path"])))
                  if len(gone) == 1 else strings.PHASE_FOLDERS_GONE.format(n=len(gone)))
-        self.phase.set_extra(phase_service.ARRIVALS, "gone", "needs" if gone else None, words)
-        self.phase.set_needs_asks(bool(gone))
+        if gone:
+            self.phase.set_extra(phase_service.ARRIVALS, "gone", "needs", words, GONE_GO)
+        else:
+            self.phase.set_extra(phase_service.ARRIVALS, "gone")
         if getattr(self, "needs_you", None) is not None:      # (judged: every folder being read was looked at —
             judged = self.sources_listed and all(r.get("reachable") is not None   # none read, once listed: K1's
                                                  for r in self.sources if r.get("on", True))   # card waits on no look)

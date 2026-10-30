@@ -52,9 +52,10 @@ from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QScr
                              QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
-from app.qt import bridge, strings, style, toast
+from app.qt import bridge, motion, strings, style, toast
 from app.qt import press as qpress
 from app.services import needs as service
+from app.services import phase
 from app.services import settings_io
 from app.services import view_rows
 
@@ -381,12 +382,16 @@ class NeedsCards(QWidget):
             got = self.cards.get(key)
         return got[1] if got is not None else None
 
-    def reveal(self, key):
-        """Card `key` scrolled into view in the page's scroll area (built first if it was owed)."""
+    def reveal(self, key, wash=False):
+        """Card `key` scrolled into view in the page's scroll area (built first if it was owed) — and, `wash`, washed
+        once (a7: a phase circle's decision opened highlighted, `motion.wash`). -> the card, or None."""
         card = self.card(key)
         area = self._area()
         if card is not None and area is not None:
             area.ensureWidgetVisible(card, 0, round(theme.SPACING["settings-card-gap"]))
+            if wash:
+                motion.wash(card, theme.RADII["r"])
+        return card
 
     def buttons(self, key=None):
         """The shown buttons (of one card, or of every card built) -> [QPushButton]."""
@@ -612,6 +617,7 @@ class NeedsYou(QObject):
         if switched is not None:                 # fix2: the library shown — it kept the one it opened with, so after a
             switched.connect(self._switched)     # switch its cards came from the language left's folder and seen file
         self.entries = ()
+        self.revealed = None                     # a7: the card a phase circle's press opened, washed (`reveal_first`)
         self.found = {}                          # entry key -> find_videos' results
         self.looking = set()
         self.failures = ()
@@ -757,9 +763,24 @@ class NeedsYou(QObject):
 
     def reveal_gone(self):
         """T6 (finding 4): the first gone folder's card scrolled into view — 届's press opens the page at it."""
-        first = next((e for e in self.entries if e.kind == service.FOLDER_GONE), None)
-        if first is not None:
-            self.cards.reveal(first.key)
+        return self.reveal_first((service.FOLDER_GONE,))
+
+    def first_of(self, kinds):
+        """The first card on the page of one of `kinds` (`phase.CONNECT_CARDS`: any card of Connect's record) — never
+        one *Not now* / *Stop asking* hid (`shown_entries`) — or None."""
+        return next((e for e in self.shown_entries() if e.kind in kinds
+                     or (phase.CONNECT_CARDS in kinds and (e.data or {}).get("connect"))), None)
+
+    def reveal_first(self, kinds):
+        """a7 (Sonic 2026-10-29: an amber circle opens its decision, highlighted): the first card shown of one of
+        `kinds` (`first_of`) scrolled into view and washed once. -> its entry's key, or None (none on the page: the
+        circle isn't amber then, `PhaseStrip.lands`)."""
+        first = self.first_of(kinds)
+        if first is None:
+            return None
+        if self.cards.reveal(first.key, wash=True) is not None:
+            self.revealed = first.key
+        return first.key
 
     def shown_entries(self):
         """The entries on the page: the gather's, less those *Not now* / *Stop asking* hid since (alpha 4 D2: off at

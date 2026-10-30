@@ -144,7 +144,25 @@ def test_the_installer_never_creates_the_library_folder_and_the_uninstaller_dele
     assert re.findall(r"(ForceDirectories|CreateDir)\(([^)]*\)?)", code) == [("ForceDirectories",
                                                                              "ExtractFileDir(Note)")]
     assert "DelTree" not in code
-    assert re.findall(r"DeleteFile\((\w+)\)", code) == ["Note"]    # only library.json, replaced by its new copy
+    # library.json (replaced by its new copy) and surasura.json when it names this install (the test below)
+    assert re.findall(r"DeleteFile\((\w+)\)", code) == ["Note", "Entry"]
+
+
+def test_the_uninstall_forgets_the_tools_entry_only_when_it_names_this_installs_command_line():
+    # rc_checks R2 (2026-10-30): after an uninstall, Houseki\tools\surasura.json still named the removed
+    # surasura-cli.exe, so hato would call a missing program. The uninstaller forgets it, silent or not, where
+    # tools_entry writes it, and only when its cli is this install's (JSON-escaped as tools_entry writes it: UTF-8,
+    # backslashes doubled, never \u): an entry another Surasura wrote is left.
+    from app import path_utils, tools_entry
+    code = "\n".join(_sections()["code"])
+    forget = code[code.index("procedure ForgetToolsEntry"):code.index("procedure CurUninstallStepChanged")]
+    tools = os.path.join(r"{localappdata}", path_utils.VENDOR, "tools", tools_entry.TOOL + ".json")
+    assert f"Entry := ExpandConstant('{tools}');" in forget
+    assert r"Cli := ExpandConstant('{app}\surasura-cli.exe');" in forget
+    assert "StringChangeEx(Cli, '\\', '\\\\', True);" in forget
+    assert "Pos('\"' + AnsiLowercase(Cli) + '\"', AnsiLowercase(UTF8Decode(Raw))) > 0" in forget
+    step = code[code.index("procedure CurUninstallStepChanged"):]
+    assert step.index("if CurUninstallStep = usPostUninstall then\nForgetToolsEntry;") < step.index("UninstallSilent")
 
 
 def test_an_upgrade_keeps_library_json_unless_a_library_is_given():

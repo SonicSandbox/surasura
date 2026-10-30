@@ -410,9 +410,7 @@ ROWS = {
     "hato": ("hato", "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),
     "practice_ai": (f"{PRACTICE_NAME} — practise with your AI",
-                    "Your AI app runs Surasura on this computer. What Surasura tells it (your known words, your "
-                    "list's next words, lines from your library, what you kept from past rounds) goes to that AI's "
-                    "company, as anything you type there does. Nothing else leaves.",
+                    "Practise your words with your AI. What it's told goes to that AI's company",
                     "Copy the setup for your AI app, then paste it to your AI. A short story is a good first try",
                     "piyo ぴよ practice practise ai claude codex desktop mcp chat tutor copy setup"),
     "practice_keep_rounds": ("Keep practice rounds",
@@ -663,6 +661,12 @@ PRACTICE_THEN = ("Then, to start a round:\n"
                  "mix). Type / and it's listed as /surasura:practice (MCP).\n"
                  "• For example: /surasura:practice 5 friend reading soon\n"
                  "• Or, in Claude Code, Codex or Claude Desktop, just say it: “{starter}”")
+# A7 (Sonic, 2026-10-30: the row's words no longer than *Download covers*'): what leaves and how to start, behind its ?
+PRACTICE_HELP = "?"
+PRACTICE_HELP_NAME = "About Piyo"
+PRACTICE_LEAVES = ("<b>What leaves:</b> your AI app runs Surasura on this computer. What Surasura tells it (your known "
+                   "words, your list's next words, lines from your library, what you kept from past rounds) goes to "
+                   "that AI's company, as anything you type there does. Nothing else leaves.")
 PRACTICE_STARTER = "Copy a starter message"
 PRACTICE_STARTER_TIP = ("Copies a first message for your AI, once Piyo is added: a short story with 5 of your words. "
                         "A story is a good first try")

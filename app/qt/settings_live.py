@@ -625,22 +625,26 @@ class Live(QObject):
                 slot.addWidget(door)
                 copies[app] = door
             self.parts[row_id] = copies
-            # A7: under the row's help, how to start a round once it's added, and *Copy a starter message*
+            # A7: under the row's help, *Copy a starter message*; what leaves and how to start a round behind its ?
+            # (Sonic: the row's words no longer than *Download covers*')
+            import html
             from app.practice import STARTER
             view = self.page.row(row_id)
             words = view.layout().itemAt(0).layout()                      # the row's words column
-            then = QLabel(S.PRACTICE_THEN.format(starter=STARTER), view)
-            then.setObjectName("settingshelp")
-            then.setTextFormat(Qt.TextFormat.PlainText)
-            then.setWordWrap(True)
-            then.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)   # the slash line can be copied
-            words.addSpacing(8)                                           # apart from what leaves: the next step
-            words.addWidget(then)
             starter = sc.Door(S.PRACTICE_STARTER, tooltip=S.PRACTICE_STARTER_TIP, name=S.PRACTICE_STARTER)
             starter.clicked.connect(lambda _c=False: self.copy_practice("starter"))
+            then = QLabel(S.PRACTICE_HELP, view)
+            then.setObjectName("helpmark")
+            then.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            then.setAccessibleName(S.PRACTICE_HELP_NAME)
+            then.setToolTip(S.PRACTICE_LEAVES + "<br><br>"
+                            + html.escape(S.PRACTICE_THEN.format(starter=STARTER), quote=False).replace("\n", "<br>"))
             line = QHBoxLayout()
             line.addWidget(starter)
+            line.addSpacing(8)
+            line.addWidget(then)
             line.addStretch(1)
+            words.addSpacing(6)                                           # apart from the row's help line
             words.addLayout(line)
             self.parts["practice_then"] = {"then": then, "starter": starter}
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3

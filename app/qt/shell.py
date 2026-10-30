@@ -2247,12 +2247,18 @@ class ShellWindow(QMainWindow):
     def _connect_fault(self):
         """A7N-3 (Sonic 2026-10-30): Connect's own Generate failed — its *Needs you* card (`feed.FAULT_KINDS`) makes ス
         red with its words, as a Generate you start does: looked at, still said in the hover (no longer red); gone with
-        the card (fixed by the next Generate, dismissed, *Not now*)."""
+        the card (fixed at Connect's next run, dismissed, *Not now*). The part is the need's own, at its time: the
+        same failure again (Connect reopens it, a new `at`) is news again, red, whatever its words."""
         from app.connect import feed as connect_feed
         fault = next((e for e in self.needs_you.shown_entries()
                       if (e.data or {}).get("connect") and e.kind in connect_feed.FAULT_KINDS), None)
-        self.phase.set_extra(phase_service.SURASURA, "connect-fault", "failed" if fault is not None else None,
-                             fault.title if fault is not None else None)
+        key = f"connect-fault:{fault.key}:{fault.data.get('at')}" if fault is not None else None
+        before = getattr(self, "_connect_fault_key", None)
+        if before is not None and before != key:
+            self.phase.set_extra(phase_service.SURASURA, before)
+        if key is not None:
+            self.phase.set_extra(phase_service.SURASURA, key, "failed", fault.title)
+        self._connect_fault_key = key
 
     def _paint_needs(self):
         """The Needs you tab: shown while anything is listed, its badge the unseen entries (the bar's failures, the

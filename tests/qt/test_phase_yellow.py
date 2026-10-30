@@ -308,24 +308,35 @@ def test_a7n3_an_episode_waiting_on_connects_failed_generate_is_a_plain_wait_nev
     assert not held or miner.go == P.Go("needs", ("no-video", P.CONNECT_CARDS))
 
 
+def _generate_need(at):
+    """*Needs you*'s entry for Connect's failed Generate after mining, as the page's gather makes it from Connect's
+    record (`services.needs.entries`: one for the language, no episode)."""
+    record = {"needs": [{"id": 9, "kind": "generate", "say": GENERATE_FAILED, "item": None, "at": at}]}
+    return next(e for e in service.entries(None, connect=record) if e.kind == "generate")
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a7n3_connects_generate_failing_after_mining_makes_surasura_red_with_its_words(world, language, washed):
     """A7N-3: Connect's Generate after mining failed — its *Needs you* card stays, and ス is red with its words as a
-    Generate you start is (nothing amber: there is nothing to decide); looked at, still said in the hover (its tail: the hover
-    shortens long words in the middle) but no longer red; gone with the card. A card you can act on (Anki's known words to sync) makes ス nothing."""
+    Generate you start is (nothing amber: there is nothing to decide); looked at, still said in the hover (its tail: the
+    hover shortens long words in the middle) but no longer red; the same failure again (Connect reopens it: a new time)
+    red again; gone with the card. A card you can act on (Anki's known words to sync), or one not Connect's, makes ス
+    nothing."""
+    entry, again = _generate_need("2026-10-30T10:00:00"), _generate_need("2026-10-30T11:00:00")
     seed, win, writer, ny = world(language, looks=Looks())
     s = win.phase
-    entry = service.Entry(key="connect:generate:9", kind="generate", title=GENERATE_FAILED, lines=(),
-                          actions=("dismiss",), unseen=True, say="", data={"need_id": 9, "item_id": None,
-                                                                           "connect": True, "at": 0})
-    _entries(ny, _connect_entry(language, kind="known-sync"))
+    _entries(ny, _connect_entry(language, kind="known-sync"),
+             entry._replace(key="mine:generate", data={"at": 1}))            # (a kind of the same name, not Connect's)
     assert not s.states[P.SURASURA].failed
     _entries(ny, entry)
     assert s.states[P.SURASURA].failed == GENERATE_FAILED and "(exit code 1)" in s.hover_text(P.SURASURA)
     assert not s.states[P.SURASURA].needs and not s.states[P.MINER].needs
     _look_at(win, P.SURASURA)
     assert not s.states[P.SURASURA].failed and "(exit code 1)" in s.hover_text(P.SURASURA)
-    ny._hidden_now[entry.key] = None                                      # *Not now*
+    _entries(ny, again)
+    assert s.states[P.SURASURA].failed == GENERATE_FAILED
+    assert s.hover_text(P.SURASURA).count("(exit code 1)") == 1                 # said once: the one before is gone
+    ny._hidden_now[again.key] = None                                       # *Not now*
     ny._paint()
     assert not s.states[P.SURASURA].failed and "(exit code 1)" not in s.hover_text(P.SURASURA)
 

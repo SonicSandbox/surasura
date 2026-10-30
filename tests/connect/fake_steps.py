@@ -159,7 +159,7 @@ class FakeSteps:
         if self.plan.get("library_busy"):
             raise runner.Wait(runner.LIBRARY_BUSY)
         if self.plan.get("library_read_only"):  # `Steps.record`'s StoreReadOnly
-            raise runner.Needs("store-read-only", READ_ONLY, whole=True)
+            raise runner.Needs("no-store", READ_ONLY, whole=True)
         self.records.append((job["item_id"], dict(made), mined_at is not None))
         self.log.append(("record", job["item_id"]))
 

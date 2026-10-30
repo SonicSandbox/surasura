@@ -240,9 +240,9 @@ def test_a_standing_need_in_new_words_follows_them_and_counts_again(ledger):
 
 
 def test_a_library_that_cant_take_the_record_is_one_entry_gone_once_a_record_goes_through(tmp_path, ledger):
-    # its own kind — never fixed by the next start's prepare or pick and raised again (a badge bump a start)
+    # the language's, once (the old window's *Show me how* keys on `no-store`); a record that goes through ends it
     _run(tmp_path, ledger, {"library_read_only": True}, items=[1, 2])
-    assert _open(ledger) == [("store-read-only", None, READ_ONLY)]
+    assert _open(ledger) == [("no-store", None, READ_ONLY)]
     _run(tmp_path, ledger, {"library_read_only": True}, items=[3])
     assert len(ledger.needs("ja", listed=False)) == 1
     _run(tmp_path, ledger, {}, items=[4])

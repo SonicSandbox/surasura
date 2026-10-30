@@ -619,7 +619,7 @@ def _fixed(ledger, lang, kinds=None, item_id=None, keep=()):
 # and 順's deck chosen (alpha 6 try #6: each named once, gone once it works)
 # (mining: Anki Miner's own needs too, `verbs._MINER_CODES`' — its setup among them, `fields.NeedsYou`'s kind)
 WHOLE_STEPS = {"picking": ("list-unreadable", "no-store", "known-words-unreadable", "mine-words-setting"),
-               "mining": ("anki-refused",), "recording": ("store-read-only",), "filling": ("backfill-deck",),
+               "mining": ("anki-refused",), "recording": ("no-store",), "filling": ("backfill-deck",),
                "ordering": ("junban-deck",)}
 # The words an alpha 6 Connect recorded once per episode for these (`verbs`' constants): fixed as the step goes through
 OLD_SAYS = {"picking": ("UNFINISHED",), "filling": ("BACKFILL_ONE_DECK",), "ordering": ("JUNBAN_ONE_DECK",)}
@@ -1675,9 +1675,8 @@ class Steps:
             except library_store.StoreBusy:
                 raise Wait(LIBRARY_BUSY) from None
             except library_store.StoreReadOnly:
-                raise Needs("store-read-only", "Surasura's library can't be written just now, so Connect can't "
-                                               "record the cards it made. Open Surasura to see why.",
-                            whole=True) from None
+                raise Needs("no-store", "Surasura's library can't be written just now, so Connect can't record the "
+                                        "cards it made. Open Surasura to see why.", whole=True) from None
 
     # --- Anki and its tools -------------------------------------------------------------------------------- #
     def blocked(self, lang):

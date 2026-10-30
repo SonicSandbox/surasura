@@ -982,3 +982,73 @@ def test_michi_c_a_new_backlog_offer_asks_needs_you_again_without_a_new_sync(wor
     assert not shell.needs_asked(before._replace(seq=7, shows="ab12"), before._replace(seq=6, shows="ab12"))
     assert shell.needs_asked(before, before._replace(sync=A.SYNCING))         # a sync that just ended, as before
     assert not shell.needs_asked(before._replace(seq=8), before)
+
+
+from tests.qt.conftest import own_folder_answers as _own_folder_answers  # noqa: E402 (a7)
+
+
+def test_choose_file_for_a_video_starts_in_the_shows_own_folder_and_for_a_gone_file_in_the_library(world, monkeypatch,
+                                                                                                 tmp_path):
+    """a7 (DIAGNOSIS 7, Sonic: "should be opening the location of the content itself"): a video is linked wherever it
+    is, so its picker starts where the show is read from (`own_folder`); a gone copy is pointed only at a file inside
+    the library (`Store.relink`), so that picker starts at the copy's side (`library_side`), never the show's folder."""
+    from app.services import own_folder
+    seed, win, writer, ny = world()
+    row, eps = no_video_show(win, n=2)
+    ny.read_connect = lambda _lang: jobs(*eps)
+    ny.read_settings = lambda: {"connect_enabled": True, "connect_video_folders": {}}
+    settle(ny)
+    card = next(e for e in ny.entries if e.kind == service.NO_VIDEO)
+    button(ny, card.key, "find_videos").click()
+    assert wait_until(lambda: card.key in ny.found and not ny.looking, 10)
+    there, asked = _own_folder_answers(monkeypatch, tmp_path, row.title)
+    started = []
+    ny.pick_file = lambda title, folder: started.append(folder) or ""
+    button(ny, card.key, "choose_video").click()
+    assert wait_until(lambda: started, 5)
+    assert started == [there]
+    assert asked[0][0][0] == card.lines[0].item_id and asked[0][1] == (card.lines[0].rel_path,)
+    gone = next(e for e in ny.entries if e.kind == service.GONE)
+    sides = []
+    monkeypatch.setattr(own_folder, "library_side", lambda data, rels=(), folders=():
+                        sides.append(rels) or data)
+    del started[:], asked[:]
+    button(ny, gone.key, "choose_file", gone.lines[0]).click()
+    assert wait_until(lambda: started, 5)
+    assert started == [ny.data_dir] and sides == [(gone.lines[0].rel_path,)] and asked == []
+
+
+def test_a_pickers_start_is_one_press_and_a_language_switch_meanwhile_picks_nothing(world, monkeypatch):
+    """A7S-3: the start is looked for on a worker (an offline share can take seconds): its arc turns from the click, a
+    second click meanwhile opens no second picker, and the window switched to another language before it answers
+    opens none (ids repeat across stores: the link would land in the other library)."""
+    from app.qt import press as qpress
+    from app.services import own_folder
+    seed, win, writer, ny = world()
+    row, eps = no_video_show(win, n=1)
+    ny.read_connect = lambda _lang: jobs(*eps)
+    ny.read_settings = lambda: {"connect_enabled": True, "connect_video_folders": {}}
+    settle(ny)
+    card = next(e for e in ny.entries if e.kind == service.NO_VIDEO)
+    button(ny, card.key, "find_videos").click()
+    assert wait_until(lambda: card.key in ny.found and not ny.looking, 10)
+    gate, started = threading.Event(), []
+    monkeypatch.setattr(own_folder, "read", lambda *_a, **_k: gate.wait(5) and ny.data_dir)
+    ny.pick_file = lambda title, folder: started.append(folder) or ""
+    key = ny._press_key("choose_video", card, card.lines[0].key)
+    button(ny, card.key, "choose_video").click()
+    assert qpress.live(win, key)                            # turning at once
+    button(ny, card.key, "choose_video").click()            # a second click meanwhile: nothing more
+    gate.set()
+    assert wait_until(lambda: started and not qpress.live(win, key), 5)
+    QApplication.processEvents()
+    assert started == [ny.data_dir]
+    gate.clear()
+    del started[:]
+    button(ny, card.key, "choose_video").click()
+    win.language = "zh"                                     # switched before the start came back
+    gate.set()
+    assert wait_until(lambda: not qpress.live(win, key), 5)
+    QApplication.processEvents()
+    assert started == [] and not any(c[0] == "link_video" for c in writer.calls)
+    win.language = seed.language

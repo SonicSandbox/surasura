@@ -2133,23 +2133,31 @@ class ArrivalsTray(motion.Overlay):
             default_no=True, danger=True, on_answer=answered)
 
     def folder_of(self, arrival):
+        """(A worker.) The folder *Open its folder* opens: the content's own (`own_folder`, a7)."""
         from app import path_utils
-        rel = (arrival.rel_paths or ("",))[0] or ""
+        from app.services import own_folder
         language = getattr(self.win, "language", "ja")
-        return os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))
+        return own_folder.read(own_folder.opener_of(self.win), path_utils.get_data_path(language),
+                               tuple(arrival.item_ids or ()), tuple(arrival.rel_paths or ()))
 
     def open_folder(self, arrival):
         """*Open its folder*: a press (`press.open`, round 8 row 45) — the row's ⋯ turns (IK-2) from the frame of the
-        press; looked for (a drive may be slow or gone, N4) and opened on a worker — or said."""
+        press; the content's own folder looked for (a drive may be slow or gone, N4) and opened on a worker — or
+        said."""
         from app.qt import press as qpress
-        path = self.folder_of(arrival)
+        looked = []
+
+        def there():
+            path = self.folder_of(arrival)
+            looked.append(path)
+            return path if path and os.path.isdir(path) else None
 
         def nothing(_info=None):
             say = getattr(self.win, "say", None)
             if say is not None:
-                say(strings.TRAY_NO_FOLDER.format(path=path))
+                say(strings.TRAY_NO_FOLDER.format(path=looked[-1] if looked else arrival.title))
         shown = self.view.row_of(arrival.key) >= 0 and self.open_now()
-        return qpress.open(self.win, lambda: path if os.path.isdir(path) else None, key=("open-folder", arrival.key),
+        return qpress.open(self.win, there, key=("open-folder", arrival.key),
                            at=_MoreMark(self.view, arrival.key) if shown else None,
                            then=lambda found: found or nothing(), failed=nothing)
 

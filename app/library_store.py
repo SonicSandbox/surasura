@@ -146,8 +146,8 @@ TIER_OF_PHASE = {v[0]: t for t, v in TIERS.items() if v[0]}
 TIER_OF_FOLDER = {v[1]: t for t, v in TIERS.items() if v[1]}
 FOLDER_OF_TIER = {t: v[1] for t, v in TIERS.items() if v[1]}
 _TIER_OF_FOLDER_FOLDED = {k.casefold(): t for k, t in TIER_OF_FOLDER.items()}   # K8: a folder's name as Windows reads it
-TIER_LABELS = {"now": "NOW", "soon": "Soon", "goal": "6+ Months", "graduated": "Graduated",
-               "arrivals": "New arrivals"}
+TIER_LABELS = {"now": "Current", "soon": "Soon", "goal": "Goal", "graduated": "Finished",     # 3.0's names (W4.1:
+               "arrivals": "New arrivals"}                                                    # never 2.x's NOW / 6+ Months)
 CURRENT = ("now", "soon")        # Current = NOW then Soon; the Soon line is their boundary
 HATO_FOLDER = "HighPriority/Hato"  # hato's drop folder: its files land at the top of NOW through 2.x
 GRADUATED_FOLDER = "Graduated"

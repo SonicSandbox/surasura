@@ -12199,14 +12199,14 @@ RESET_TABLES = ("anki_links", "pairings", "placement_log", "trash", "anki_change
 # His library options (W-1's `keep_watched` too), and the log's numbering (+ readers)
 RESET_KEEP_META = ("mine_line", "arrivals_on", "keep_watched", "log_seq")
 # Why a reset is refused (nothing changed), in the window's words
-RESET_UPDATE = "An update is being installed: start a fresh library once it has finished."
-RESET_GENERATE = "A Generate is running: start a fresh library once it has finished."
-RESET_CONNECT = "Connect is making cards: start a fresh library once it has finished."
+RESET_UPDATE = "An update is being installed: sort your library again once it has finished."
+RESET_GENERATE = "A Generate is running: sort your library again once it has finished."
+RESET_CONNECT = "Connect is making cards: sort your library again once it has finished."
 RESET_KNOWN = "Your known words are being updated: try again in a moment."
 RESET_BUSY = "Another Surasura program is saving your library: try again in a moment."
 RESET_DAMAGED = "Your library needs Repair first."
 RESET_LINKED = ("A linked folder in your data folder is in the way ({path}): Surasura never moves or removes what a "
-                "link leads to. Remove the link (never its folder), then start a fresh library.")
+                "link leads to. Remove the link (never its folder), then sort your library again.")
 RESET_NOT_ALL_BACK = "Part of your library couldn't be put back; it is in the backup ({folder})"
 
 
@@ -12427,7 +12427,7 @@ def start_fresh(store, forget_known=False, _step=None):
     held = []
     try:
         try:
-            held.append(locks.take("results", "Starting a fresh library", owner=token))
+            held.append(locks.take("results", "Sorting your library again", owner=token))
         except locks.Busy:
             raise ResetRefused(RESET_GENERATE) from None
         if locks.in_use("connect"):
@@ -12435,7 +12435,7 @@ def start_fresh(store, forget_known=False, _step=None):
         if forget_known:
             from app.anki_sync import known_lock_name
             try:
-                held.append(locks.take(known_lock_name(store.language), "Starting a fresh library", wait=RESET_WAIT,
+                held.append(locks.take(known_lock_name(store.language), "Sorting your library again", wait=RESET_WAIT,
                                        owner=token))
             except locks.Busy:
                 raise ResetRefused(RESET_KNOWN) from None

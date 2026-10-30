@@ -777,7 +777,8 @@ def test_a5k2_the_reader_note_is_the_first_card_its_two_answers_with_tips_and_st
     win.show_tab("needs")
     buttons = ny.cards.buttons(card.key)
     assert [b.property("action") for b in buttons] == ["start_fresh", "keep_old"]
-    assert [b.text() for b in buttons] == ["Start fresh", "Keep my old library"] and all(b.toolTip() for b in buttons)
+    assert [b.text() for b in buttons] == ["Sort my library again…", "Keep my old library"]
+    assert all(b.toolTip() for b in buttons)
     _button(ny, card.key, "start_fresh").click()
     assert wait_until(lambda: getattr(ny, "confirming", None) is not None, 5)
     ny.confirming.yes.click()

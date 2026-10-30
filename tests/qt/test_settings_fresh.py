@@ -1,5 +1,5 @@
-"""Settings › Content › *Start a fresh library…* (K7; `app/qt/settings_sources.py` FreshRow, `SourceLooks.fresh`,
-the store's `start_fresh`): the sheet, what a click does, where the work runs, what the bar says.
+"""Settings › Content › *Sort my library again…* (K7, named so by A7O-6; `app/qt/settings_sources.py` FreshRow,
+`SourceLooks.fresh`, the store's `start_fresh`): the sheet, what a click does, where the work runs, what the bar says.
 
 What a wrong answer would cost a learner: a library emptied by a click he meant as No (Esc, Cancel); his known words
 forgotten when he didn't tick the box; the window frozen while the reset copies his library aside; a reset that leaves
@@ -70,7 +70,7 @@ def test_yes_sets_the_library_aside_reads_the_folders_again_and_says_so(window):
     assert row.ask() is None                                                # the counts first, on the worker
     assert wait_until(lambda: row.card is not None, 10)
     card = row.card
-    assert "master_manifest.json" in card.body.text() and not card.check.isChecked()
+    assert "library-reset-" in card.body.text() and not card.check.isChecked()
     assert card.default is card.no                                          # Enter is Cancel: it empties a library
     QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)          # Esc is No: nothing happens
     assert row.card is None and not row.running
@@ -166,7 +166,7 @@ def test_one_reset_at_a_time_its_arc_turning_while_it_runs(window):
     seed, win = window(looks)
     page, row = _fresh_row(win)
     row.ask().yes.click()
-    # round 8 row 45: never greyed while it runs — its arc turns, *Starting a fresh library…* held in the bar
+    # round 8 row 45: never greyed while it runs — its arc turns, its running line held in the bar
     assert row.running and row.button.isEnabled() and row.button.toolTip() == S.FRESH_RUNNING_TIP
     assert qpress.arc(row.button) is not None                          # the arc now; the words once live 300 ms (IK-1)
     assert wait_until(lambda: win.bar_line.full() == S.FRESH_RUNNING_TIP, 3)

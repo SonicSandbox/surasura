@@ -182,12 +182,13 @@ STRINGS = {
     "files_folder_say": "{shows} were in it. Moved it? Choose its folder… to point them at their files there, or "
                         "remove them from your library (Undo brings them back).",
     "library_title": "Most of your library's files are gone ({n} of {total})",
-    "library_say": "Was Surasura installed again, or its library moved? Start fresh sets this library aside in a backup "
-                   "(nothing is deleted) and reads your folders again; choose a folder… if you moved its files.",
-    "emptied_title": "Your library folder was emptied: start a fresh library?",
-    "emptied_say": "Surasura found this library from before ({n} files), but its folder holds none of them now. Start "
-                   "fresh sets it aside in a backup (nothing is deleted) and reads your folders again. Keep my old "
-                   "library carries on with it: its places, and the files you removed stay out.",
+    "library_say": "Was Surasura installed again, or its library moved? Sort my library again clears its order "
+                   "into a backup (nothing is deleted) and reads your folders again; choose a folder… if you moved "
+                   "its files.",
+    "emptied_title": "Your library folder was emptied: sort your library again?",
+    "emptied_say": "Surasura found this library from before ({n} files), but its folder holds none of them now. "
+                   "Sort my library again clears its order into a backup (nothing is deleted) and reads your folders "
+                   "again. Keep my old library carries on with it: its places, and the files you removed stay out.",
     "offline_say": "Its files keep their places and their words. They come back by themselves once it's connected.",
     "drive": "Drive {d}", "folder": "The folder {p}",
     "gap_title": "Connect lost track of your moves {span}: {n} {noun} in the top 20 {have} no cards",

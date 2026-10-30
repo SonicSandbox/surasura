@@ -403,10 +403,11 @@ ROWS = {
                         "The folders Surasura reads where they are", "library folders source read where they are "
                                                                      "stop reading look again manage skipped "
                                                                      "read again"),
-    "fresh_library": ("Start a fresh library",
-                      "Your library set aside in one backup and your folders read again from scratch",
-                      "Empty your library and read your folders again; the old one is kept in a backup",
-                      "fresh library reset start over empty clear"),
+    # A7O-6 (Sonic 2026-10-30): named for what it does — the same files, the order cleared (was *Start a fresh library*)
+    "fresh_library": ("Sort my library again",
+                      "Clears your order and tiers into a backup and reads every folder again into Current",
+                      "Clear your order and read your folders again; the old order is kept in a backup",
+                      "sort library again order tiers fresh reset start over clear read again"),
     "split_books_by": ("Split books by", "Each book you add: its chapters, each cut into parts; or even parts across "
                                          "the book. Books already in keep their parts",
                        "How a book is cut into parts when you add it", "split books chapters even parts epub"),
@@ -794,19 +795,21 @@ SOURCES_SKIPPED_N = "{n:,} skipped"
 FOLDERS_NAME = "Library folders"
 FOLDERS_LINE = "Surasura reads these folders where they are and looks in them again for new episodes."
 
-# --- K7: *Start a fresh library…* (settings_sources.py: FreshRow; the store's `start_fresh`) ------------------------ #
-FRESH_OPEN = "Start a fresh library…"
-FRESH_TIP = ("Empty your library and read your folders again from scratch\nThe old library is kept in one backup in "
-             "User Files' .trash folder")
-FRESH_RUNNING_TIP = "Starting a fresh library…"
-FRESH_ASK = "Start a fresh library?"
-FRESH_BODY = ("Goes, into one dated backup (User Files › .trash › library-reset-…): your library's order, tiers, "
-              "New arrivals and Needs you, its JSON copy (master_manifest.json) and every copy Surasura keeps in its "
-              "data folder.\n\n"
-              "Comes back: what is in your video and text folders, read again from scratch into Current — episodes "
-              "you removed too. A book's text comes back only when Surasura reads its folder again.\n\n"
-              "Stays: your folders (only ever read) and the list of them, your settings, the cards in Anki (a card "
-              "you deleted is never made again) and, unless you tick the box, your known words.")
+# --- K7: *Sort my library again…* (settings_sources.py: FreshRow; the store's `start_fresh`; A7O-6: wording only) --- #
+FRESH_OPEN = "Sort my library again…"
+FRESH_TIP = ("Kept: your folders, your skipped folders and, unless you choose to forget them, your known words\n"
+             "Cleared into one dated backup in User Files' .trash: your order, tiers, New arrivals and subtitle "
+             "pairings\nThen every folder is read again into Current")
+FRESH_RUNNING_TIP = "Clearing your order into a backup…"
+FRESH_ASK = "Sort your library again?"
+FRESH_BODY = ("Kept: your folders and your skipped folders, your settings, your cards in Anki (a card you deleted "
+              "is never made again) and, unless you tick the box, your known words.\n\n"
+              "Cleared into one dated backup (User Files › .trash › library-reset-…; its reset.json says how to put "
+              "it back): your order, tiers, New arrivals, subtitle pairings and the copies Surasura keeps of your "
+              "files.\n\n"
+              "Then every folder is read again into Current, in name order — episodes you removed too. A video "
+              "still waiting for its subtitles waits in New arrivals; a book's text comes back only when its folder "
+              "is read.")
 # The sheet's counts (the store's `fresh_counts`), each line only when its count isn't 0
 FRESH_GONE = "Only in the backup, never back: {parts}."
 FRESH_GONE_ADDED = "{n} file{s} you added with + Add from outside your folders"
@@ -815,15 +818,15 @@ FRESH_GONE_OTHER = "{n} other text{s} with no folder to read again (pasted, hato
 FRESH_SUSPENDED = ("{n} card{s} Surasura took out of your learning order stay suspended in Anki: unsuspend them "
                    "there if you want them back.")
 FRESH_NOT_ALL_BACK = "Not all of your library could be put back: the rest is in {folder}"
-FRESH_UNFINISHED = ("A fresh library was stopped part way: your old library may be in its backup, {folder} "
+FRESH_UNFINISHED = ("Sorting your library again stopped part way: your old library may be in its backup, {folder} "
                     "(reset.json there says how to put it back)")
-FRESH_YES = "Start fresh"
-FRESH_YES_TIP = "Set this library aside in a backup and read your folders again"
+FRESH_YES = "Sort again"
+FRESH_YES_TIP = "Clear your order into a backup and read your folders again"
 FRESH_KNOWN = "Also forget my known words"
 FRESH_KNOWN_TIP = ("KnownWord.json is kept in the backup and replaced by an empty one\nWords from your Anki cards come "
                    "back at the next Anki sync")
-FRESH_DONE = "Fresh library: reading your folders…"
-FRESH_DONE_KNOWN_KEPT = "Fresh library: reading your folders… Your known words were kept: {why}"
+FRESH_DONE = "Your order is in the backup: reading your folders again…"
+FRESH_DONE_KNOWN_KEPT = "Your order is in the backup: reading your folders again… Your known words were kept: {why}"
 FRESH_REFUSED = "Nothing was changed. {reason}"
 FRESH_FAILED = "Nothing was changed: {reason}"
 FRESH_NOT_WRITABLE = "Your library can't be written now: {reason}"

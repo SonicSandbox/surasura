@@ -2304,7 +2304,8 @@ class ContentImporterApp:
             return False, ""
         note = ""
         if change is not None and change.existing:
-            where = sorted({library_store.TIER_LABELS.get(t, t) for _p, _i, t in change.existing})
+            where = sorted({self.folder_map.get(library_store.FOLDER_OF_TIER.get(t), (library_store.TIER_LABELS.get(
+                t, t),))[0] for _p, _i, t in change.existing})          # this window's own tab names (NOW, Soon, …)
             note = f" {len(change.existing)} already in your library ({', '.join(where)}), left where they are."
         if change is not None and change.added:
             self._store_did(change, label)

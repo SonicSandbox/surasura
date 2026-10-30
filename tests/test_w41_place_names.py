@@ -6,7 +6,7 @@ import re
 import pytest
 
 from app import library_store
-from app.qt import strings
+from app.qt import settings_strings, strings, wizard_strings
 from app.services import needs
 
 OLD = re.compile(r"\bNOW\b|6\+ Months|HighPriority|LowPriority|GoalContent")
@@ -37,6 +37,6 @@ def _words(value):
 
 def test_no_window_string_names_a_2x_place_or_folder():
     """Why: the ⋯ menu's Soon hover said "after what's in NOW" through alpha 6 — a 2.x word a 3.0 learner never sees."""
-    found = [(name, w) for name, value in vars(strings).items() if name.isupper()
-             for w in _words(value) if OLD.search(w)]
+    found = [(module.__name__, name, w) for module in (strings, settings_strings, wizard_strings)
+             for name, value in vars(module).items() if name.isupper() for w in _words(value) if OLD.search(w)]
     assert found == []

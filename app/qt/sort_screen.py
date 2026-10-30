@@ -1,7 +1,8 @@
 """Setup's load screen and the sort screen (Sonic 2026-10-30).
 
-- **`LoadScreen`**: a calm, full cover over the setup wizard after its library step. The Surasura mark (breathing on
-  the one clock; still under Reduced motion and the freeze switch), ONE task line with its live count (`set_task`) and
+- **`LoadScreen`**: a calm, full cover over the setup wizard after its library step. The Surasura mark (its wings
+  beating slowly on the one clock, the bird alone repainted; still under Reduced motion and the freeze switch), ONE
+  task line with its live count (`set_task`) and
   a gentle line that fades out and in every `LINE_MS` (`LOAD_LINES`; Reduced motion: it changes without the fade, as
   the clock's "fade" kind keeps it short). Nothing in it acts but the quiet *Stop* (`stop` signal). The steps, their
   order and their counts are the wizard's (`SetupWizard._load_*`): this widget paints what it is told, and repaints
@@ -19,17 +20,17 @@ import math
 import os
 
 from PyQt6 import sip
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPainter, QPixmap
+from PyQt6.QtCore import QEvent, QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QPainter, QPainterPath, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget)
 
-from app import path_utils, theme
+from app import theme
 from app.qt import motion, style
 from app.qt import wizard_strings as S
 
 LINE_MS = 6500                  # a gentle line stays this long, then fades out and the next fades in
 FADE_MS = 700                   # each half of its fade
-BREATHE_MS = 4200               # the mark's slow breathe, one full cycle
+FLAP_UPPER, FLAP_LOWER = 9.0, 6.0   # degrees each wing turns about its root at a beat's ends (`MOTION` "mark-flap")
 NEXT_SHOWN = 6                  # titles shown under the top one; the rest are "and N more"
 COVER_W, COVER_H = 132, 186     # the top title's cover (× the text size); the next ones' are a third of it
 KEYS = {Qt.Key.Key_Right: "now", Qt.Key.Key_S: "soon", Qt.Key.Key_Down: "goal", Qt.Key.Key_Up: "finished",
@@ -113,64 +114,115 @@ def _set(label, text):
         label.setText(text)
 
 
-# --- the mark -------------------------------------------------------------------------------------------------------- #
-class Mark(QWidget):
-    """The Surasura mark, breathing slowly (its opacity 0.7–1.0) on the one clock while shown; still at full under
-    Reduced motion (the clock never starts a loop then) and the freeze switch."""
+# --- the mark ------------------------------------------------------------------------------------------------------- #
+# The mark's wings, from app_icon.png's own drawing (512 px; each feather is a shard of its own, apart from the body
+# by a clear gap): each feather's outline, 3 px out into its gap, and the point its wing turns about. The upper wing's
+# four feathers and the lower wing's two beat; the body and the head never move.
+ICON = 512
+UPPER_WING = (((44, 18), (49, 17), (177, 88), (243, 179), (243, 182), (238, 183), (91, 94), (73, 74)),
+              ((167, 19), (173, 17), (301, 149), (301, 152), (296, 153), (175, 81)),
+              ((56, 89), (60, 88), (205, 169), (265, 220), (266, 223), (259, 224), (101, 161), (56, 92)),
+              ((106, 179), (114, 177), (213, 210), (267, 244), (263, 248), (152, 233)))
+LOWER_WING = (((91, 421), (258, 283), (262, 283), (251, 340), (192, 457), (103, 496)),
+              ((252, 348), (293, 326), (294, 329), (248, 419), (234, 435), (221, 444), (203, 450)))
+UPPER_ROOT, LOWER_ROOT = (262, 215), (268, 300)
+PAD = 0.12                      # room round the bird (a share of its side) for the wing tips at the top of a beat
+
+
+def _wing_path(shards, scale):
+    path = QPainterPath()
+    path.setFillRule(Qt.FillRule.WindingFill)
+    for shard in shards:
+        path.addPolygon(QPolygonF([QPointF(x * scale, y * scale) for x, y in shard]))
+        path.closeSubpath()
+    return path
+
+
+class Mark(motion.Spinner):
+    """The Surasura mark, its wings beating slowly on a seamless loop (Sonic 2026-10-30): on the one clock only while
+    shown and its window not minimised (`motion.Spinner`'s rule); still, at rest in the mark's own pose, under Reduced
+    motion and the freeze switch. Each frame turns the two wings' own pictures about their roots over the still body —
+    three pictures cut once — and it paints every pixel of its own small square (the screen's ground first), so a beat
+    repaints this widget alone: no layout, no other widget (S19)."""
 
     def __init__(self, size=96, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(_px(size), _px(size))
-        self._pix = None
-        self.level = 1.0
-        self._anim = None
+        side = _px(size)
+        super().__init__("flap", parent, size=side + 2 * round(side * PAD), period="mark-flap")
+        self.bird = side
+        self.angle = 0.0                # the beat now: -1 … 1 (0 = the mark's own pose)
+        self._parts = None
+        self.paints = 0                 # paint events (the tests' frame budget)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setAccessibleName("Surasura")
+        self.set_running(True)
 
-    def _pixmap(self):
-        if self._pix is None:
+    def _cut(self):
+        """(body, upper wing, lower wing) at this size and pixel ratio, cut once from the icon."""
+        if self._parts is None:
             dpr = self.devicePixelRatioF() or 1.0
-            path = os.path.join(path_utils.get_app_root(), "app", "assets", "images", "app_icon.png") \
-                if hasattr(path_utils, "get_app_root") else ""
-            if not path or not os.path.exists(path):
-                path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "images",
-                                    "app_icon.png")
-            pix = QPixmap(path)
-            if not pix.isNull():
-                pix = pix.scaled(round(self.width() * dpr), round(self.height() * dpr), Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
+            path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "images",
+                                "app_icon.png")
+            icon = QPixmap(path)
+            if icon.isNull():
+                self._parts = ()
+                return self._parts
+            side = round(self.bird * dpr)
+            icon = icon.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+            scale = icon.width() / ICON
+            parts = []
+            for shards in (None, UPPER_WING, LOWER_WING):
+                pix = QPixmap(icon.size())
+                pix.fill(Qt.GlobalColor.transparent)
+                p = QPainter(pix)
+                if shards is None:                  # the body: the icon with both wings cleared from it
+                    p.drawPixmap(0, 0, icon)
+                    p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+                    for wing in (UPPER_WING, LOWER_WING):
+                        p.fillPath(_wing_path(wing, scale), Qt.GlobalColor.black)
+                else:
+                    p.setClipPath(_wing_path(shards, scale))
+                    p.drawPixmap(0, 0, icon)
+                p.end()
                 pix.setDevicePixelRatio(dpr)
-            self._pix = pix
-        return self._pix
+                parts.append(pix)
+            self._parts = tuple(parts)
+        return self._parts
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        if self._anim is None or not self._anim.alive:
-            self._anim = motion.clock().animate(BREATHE_MS, self._breathe, kind="loop", repeat=True, owner=self,
-                                                points="linear")
+    def _on_frame(self, phase):
+        angle = math.sin(phase * 2 * math.pi)
+        if abs(angle - self.angle) >= 0.004:        # under a hundredth of a degree's turn of a tip: nothing to paint
+            self.angle = angle
+            self.update()
 
-    def hideEvent(self, event):
-        if self._anim is not None:
-            self._anim.stop()
-            self._anim = None
-        self.level = 1.0
-        super().hideEvent(event)
-
-    def _breathe(self, phase):
-        level = 0.85 + 0.15 * math.cos(phase * 2 * math.pi)
-        if abs(level - self.level) >= 0.01:          # repaint only when it shows (S19)
-            self.level = level
+    def _sync(self, *_args):
+        super()._sync(*_args)
+        if not self.on_clock and self.angle:
+            self.angle = 0.0                        # stopped: at rest in the mark's own pose
             self.update()
 
     def paintEvent(self, _event):
-        pix = self._pixmap()
-        if pix is None or pix.isNull():
-            return
+        self.paints += 1
         p = QPainter(self)
-        p.setOpacity(self.level)
-        p.drawPixmap(0, 0, pix)
+        p.fillRect(self.rect(), _c("bg"))          # the screen's own ground: opaque, so nothing under it repaints
+        parts = self._cut()
+        if not parts:
+            return
+        body, upper, lower = parts
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        o, k = (self.width() - self.bird) / 2, self.bird / ICON
+        p.drawPixmap(QPointF(o, o), body)
+        for pix, (x, y), turn in ((upper, UPPER_ROOT, -FLAP_UPPER), (lower, LOWER_ROOT, FLAP_LOWER)):
+            p.save()
+            p.translate(o + x * k, o + y * k)
+            p.rotate(turn * self.angle)
+            p.translate(-(o + x * k), -(o + y * k))
+            p.drawPixmap(QPointF(o, o), pix)
+            p.restore()
+        p.end()
 
 
-# --- the load screen ------------------------------------------------------------------------------------------------- #
+# --- the load screen ------------------------------------------------------------------------------------------------ #
 class LoadScreen(QWidget):
     """The load's calm cover (module docstring). `set_task(text)`; `stopping()` after *Stop*; `stop` when pressed."""
     stop = pyqtSignal()
@@ -253,7 +305,7 @@ class LoadScreen(QWidget):
         self._anim = motion.clock().animate(FADE_MS, out, on_done=swap, kind="fade", owner=self.line)
 
 
-# --- the sort screen ------------------------------------------------------------------------------------------------- #
+# --- the sort screen ------------------------------------------------------------------------------------------------ #
 class _Cover(QWidget):
     """A title's cover through the window's one door (`covers.pixmap_for`): its own picture once decoded, the
     generated one meanwhile; repainted when its decode lands."""
@@ -472,49 +524,72 @@ class SortScreen(QWidget):
         self.more.setVisible(more > 0)
 
     # --- acting -------------------------------------------------------------------------------------------------- #
+    # Each choice is one entry of `history` (Undo's order): {"keys", "name", "text", "ticket", "undone"} — `ticket` the
+    # window's own (`drag.Ticket`) once its command is given, so Undo takes back that change and never another.
     def _moves(self):
+        """The window's drag controller, or None — when its store can't be written, said here (the bar is under the
+        screen) as the window says it."""
         moves = getattr(self.win, "moves", None)
-        return moves if moves is not None and moves.refused() is None else None
-
-    def choose(self, name, arrival=None):
-        """A choice on the top title (or `arrival`): taken off at once (pending), handed to New arrivals' own call;
-        refused — it comes back and the bar says why (the writer's note)."""
-        a = arrival or self.top_arrival()
-        moves = self._moves()
-        if a is None or moves is None or name not in dict((n, 1) for n, *_r in S.SORT_CHOICES):
+        if moves is None:
             return None
-        text = S.SORT_PLACED[name].format(title=a.title)
-        self.hidden[a.key] = name
-        self.history.append(((a.key,), name, a.title))
+        why = moves.refused()
+        if why is not None:
+            _set(self.said, why)
+            return None
+        return moves
+
+    def _take(self, keys, name, text):
+        """The titles of `keys` off the screen at once (pending until the view lets them go) -> their history entry."""
+        entry = {"keys": tuple(keys), "name": name, "text": text, "ticket": None, "undone": False}
+        for k in entry["keys"]:
+            self.hidden[k] = name
+        self.history.append(entry)
         self._shown = None
         self._paint()
         _set(self.said, text)
+        return entry
+
+    def choose(self, name, arrival=None):
+        """A choice on the top title (or `arrival`): taken off at once (pending), handed to New arrivals' own call;
+        refused — it comes back and the screen says so (the writer's note)."""
+        if name not in PLACE_OF and name != "ignore":
+            return None
+        a = arrival or self.top_arrival()
+        if a is None:
+            return None
+        moves = self._moves()
+        if moves is None:
+            return None
+        entry = self._take((a.key,), name, S.SORT_PLACED[name].format(title=a.title))
         if name == "ignore":
-            self._ignore(a, moves, text)
+            self._ignore(a, moves, entry)
             return True
-        from app.qt import arrivals
-        seq = arrivals.give_place(moves, text, list(a.item_ids), PLACE_OF[name], keys=(a.key,), toast=False)
+        from app.qt import arrivals, drag
+        entry["ticket"] = drag.Ticket(entry["text"], entry["keys"], a.item_ids)
+        seq = arrivals.give_place(moves, entry["text"], list(a.item_ids), PLACE_OF[name], toast=False,
+                                  ticket=entry["ticket"])
         if seq is None:
-            self._refused((a.key,))
+            self._refused(entry)
         return seq
 
-    def _ignore(self, a, moves, text):
+    def _ignore(self, a, moves, entry):
         """← Ignore: the title's own folder never read again (`give_skip`, Q7's) — only a folder holding no other title
         (`looks.skippable(..., own=True)`); else the title taken out of the library (`writer.remove`: its copy to the
-        trash, the original where it is, kept out of every later look). One Undo either way."""
+        trash, the original where it is, kept out of every later look). One Undo either way; an Undo pressed while the
+        folder is still being looked for gives nothing at all."""
         from app.qt import bridge, drag, item_menu
         ids = list(a.item_ids)
 
         def act(folders):
-            if sip.isdeleted(self):
+            if sip.isdeleted(self) or entry["undone"]:
                 return
+            ticket = entry["ticket"] = drag.Ticket(entry["text"], entry["keys"], ids)
             if folders:
-                seq = item_menu.give_skip(moves, folders[0], ids, keys=(a.key,))
+                seq = item_menu.give_skip(moves, folders[0], ids, toast=False, ticket=ticket)
             else:
-                ticket = drag.Ticket(text, (a.key,), ids)
                 seq = moves._give(ticket, lambda t: moves.writer.remove(ids, label=t), toast=False)
             if seq is None:
-                self._refused((a.key,))
+                self._refused(entry)
         looks = getattr(self.win, "looks", None)
         if looks is None or not hasattr(looks, "skippable"):
             act([])
@@ -525,43 +600,39 @@ class SortScreen(QWidget):
             relay.deleteLater()
             act(list(folders or ()))
         relay.said.connect(found)
-        try:
-            asked = looks.skippable(ids, relay.call, own=True)
-        except TypeError:                                   # an older looks: never a folder that may hold others
-            asked = False
-        if not asked:
+        if not looks.skippable(ids, relay.call, own=True):
             relay.deleteLater()
             act([])
 
-    def _refused(self, keys):
-        for k in keys:
+    def _refused(self, entry):
+        """A choice the writer refused: its titles back where they were, and the screen says it wasn't saved."""
+        from app.qt import strings
+        for k in entry["keys"]:
             self.hidden.pop(k, None)
-        if self.history and tuple(self.history[-1][0]) == tuple(keys):
-            self.history.pop()
-        _set(self.said, "")
+        if entry in self.history:
+            self.history.remove(entry)
+        _set(self.said, strings.MOVE_NOT_SAVED)
         self._shown = None
         self._paint()
 
     def rest(self, name):
         """*Put the rest in…* `name`: every title still shown, in one command (one Undo)."""
-        rows = self.visible_rows()
-        moves = self._moves()
-        if not rows or moves is None or name not in PLACE_OF:
+        if name not in PLACE_OF:
             return None
-        keys = tuple(a.key for _k, a in rows)
+        rows = self.visible_rows()
+        if not rows:
+            return None
+        moves = self._moves()
+        if moves is None:
+            return None
         ids = [i for _k, a in rows for i in a.item_ids]
         label = next(lab for n, lab, *_r in S.SORT_CHOICES if n == name)
-        text = S.SORT_REST_PLACED.format(n=len(rows), place=label)
-        for k in keys:
-            self.hidden[k] = name
-        self.history.append((keys, name, text))
-        self._shown = None
-        self._paint()
-        _set(self.said, text)
-        from app.qt import arrivals
-        seq = arrivals.give_place(moves, text, ids, PLACE_OF[name], keys=keys, toast=False)
+        entry = self._take([a.key for _k, a in rows], name, S.SORT_REST_PLACED.format(n=len(rows), place=label))
+        from app.qt import arrivals, drag
+        entry["ticket"] = drag.Ticket(entry["text"], entry["keys"], ids)
+        seq = arrivals.give_place(moves, entry["text"], ids, PLACE_OF[name], toast=False, ticket=entry["ticket"])
         if seq is None:
-            self._refused(keys)
+            self._refused(entry)
         return seq
 
     def _rest_menu(self):
@@ -578,18 +649,52 @@ class SortScreen(QWidget):
         return m
 
     def undo(self):
-        """Undo (Ctrl+Z): the last choice comes back to the top at once, and the window's own Ctrl+Z undoes it as the
-        writer reaches it (`undo_last`)."""
+        """Undo (Ctrl+Z): the last choice comes back to the top at once, and its own change is undone as the writer
+        reaches it (`MovesController.undo`, its toast's Undo) — never another change of the window's."""
         moves = getattr(self.win, "moves", None)
         if not self.history or moves is None:
             return
-        keys, _name, _text = self.history.pop()
-        for k in keys:
+        entry = self.history.pop()
+        entry["undone"] = True
+        for k in entry["keys"]:
             self.hidden.pop(k, None)
-        moves.undo_last()
+        if entry["ticket"] is not None:
+            moves.undo(entry["ticket"])
         _set(self.said, "")
         self._shown = None
         self._paint()
+
+    def _mine(self, event):
+        """What a key press is to this screen: "undo", a choice's name, "close", or None (not its key)."""
+        key, mods = event.key(), event.modifiers()
+        if key == Qt.Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
+            return "undo"
+        if key in KEYS and not mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
+            return KEYS[key]
+        if key == Qt.Key.Key_Escape and self.door != "setup":
+            return "close"
+        return None
+
+    def event(self, event):
+        if event.type() == QEvent.Type.ShortcutOverride and self._mine(event) is not None:
+            event.accept()                                  # its keys are its own: the window's Ctrl+Z (`undo_last`,
+            return True                                     # its newest change) never takes the sort's Undo
+        return super().event(event)
+
+    def keyPressEvent(self, event):
+        what = self._mine(event)
+        if what is None:
+            super().keyPressEvent(event)
+            return
+        event.accept()
+        if event.isAutoRepeat():                            # one action per press: a held key's repeats are none
+            return
+        if what == "undo":
+            self.undo()
+        elif what == "close":
+            self.finish("closed")
+        else:
+            self.choose(what)
 
     def finish(self, how="done"):
         win = self.win
@@ -600,7 +705,7 @@ class SortScreen(QWidget):
 
 def open_over(win):
     """New arrivals' *Sort them all…*: the sort screen over the window's central area (as the setup wizard covers it),
-    following its size; closed by *Done*, Esc or the window's language switch. -> the screen."""
+    following its size; closed by *Done* or Esc. -> the screen."""
     from app.qt import first_run
     old = win.__dict__.get("_sort_screen")
     if old is not None and not sip.isdeleted(old):
@@ -621,19 +726,3 @@ def open_over(win):
     screen.raise_()
     screen.setFocus()
     return screen
-
-    def keyPressEvent(self, event):
-        if event.isAutoRepeat():                            # one action per press: a held key's repeats are none
-            event.accept()
-            return
-        key, mods = event.key(), event.modifiers()
-        if key == Qt.Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
-            self.undo()
-        elif key in KEYS and not mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier):
-            self.choose(KEYS[key])
-        elif key == Qt.Key.Key_Escape and self.door != "setup":
-            self.finish("closed")
-        else:
-            super().keyPressEvent(event)
-            return
-        event.accept()

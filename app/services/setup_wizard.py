@@ -517,8 +517,8 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
     look (`sources.scan(first=library_store.SORT)`: SRC-1 as Mado-O changed it — New arrivals, by show, quietly,
     waiting for setup's sort screen: no card is made for them by itself, S1; a 2.x NOW / Soon folder still Current) ->
     {"ready", "found", "shows", "added", "stopped", "busy", "read" [path], "refused" [(path, why)], "unreachable"
-    [path], "failed" [(path, why)], "offered", "ids" [the items it took in]}. `read`: the folders this call dealt with (taken in, refused,
-    unreachable, failed); the others — after a Stop, or a look already running — weren't looked at, to read later.
+    [path], "failed" [(path, why)], "offered", "ids" [the items it took in]}. `read`: the folders this call dealt with
+    (taken in, refused, unreachable, failed); the others — after a Stop, or a look already running — weren't looked at, to read later.
     `progress(found, shows)`: every folder's so far; `stop()` is asked between files — a stopped look keeps what it
     took in. `skips` (K6, *Skip a folder…*): folders inside them never read — each skipped (`Store.skip_folder`) as soon
     as the folder holding it is added, before its look; one no folder read holds is refused (`refused`, its reason).
@@ -526,9 +526,9 @@ def read_folders(language, paths, progress=None, stop=None, skips=(), waiting=No
     page 3's *Waiting for your library…*) and the read goes on by itself; *Stop* ends the wait (`stopped`; the folder
     not reached stays listed). `busy` stays False (kept for an older caller). K5: `copying(done, total)` while a
     folder's new files are copied in (`sources.scan`'s, that folder's); page 3 warns once `found` reaches BIG_LIBRARY.
-    `ready` False: no library yet (nothing done). Episodes taken into the mine line → the one *Needs you* line,
-    *Make cards for your first 20 episodes?* (D1); none there (Current was already full: *Set up again*, an upgrade)
-    → no line."""
+    `ready` False: no library yet (nothing done). Episodes taken into the mine line (only a 2.x NOW / Soon folder's
+    now: the rest wait in New arrivals) → the one *Needs you* line, *Make cards for your first 20 episodes?* (D1);
+    none there → no line here — the sort screen's end asks again (`sorted_offer`)."""
     from app import library_store, sources
     language = _language(language)
     out = {"ready": True, "found": 0, "shows": 0, "added": 0, "stopped": False, "busy": False, "read": [],

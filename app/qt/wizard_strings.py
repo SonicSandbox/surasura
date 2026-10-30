@@ -283,7 +283,7 @@ MAKING = "Making your list…"
 MAKING_PCT = "Making your list… {pct} %"
 NOT_STARTED = "Your list couldn't start: press Generate at the top when you're ready."
 
-# --- after page 3: the load screen and the sort screen (Sonic 2026-10-30) ------------------------------------------------- #
+# --- after page 3: the load screen and the sort screen (Sonic 2026-10-30) ------------------------------------------- #
 LOAD_NAME = "Getting your library ready"
 LOAD_SCAN = "Reading your library · {episodes} in {shows}"
 LOAD_COPY = "Bringing your files in · {done:,} of {total:,}"
@@ -306,9 +306,9 @@ SORT_TITLE = "Where does each one go?"
 SORT_LINE = "Sort the one at the top. The next one comes up by itself."
 SORT_COUNT = "{n:,} left to sort"
 SORT_GROUPS = {"new": "NEW", "watched": "ALREADY WATCHED"}
-# (key, label, tip, the key's name on screen)
-SORT_CHOICES = (("now", "Current", "Study it now: it goes to the top of Current.", "→"),
-                ("soon", "Soon", "Next after Current.", "S"),
+# (key, label, tip, the key's name on screen): Soon first, the one key that isn't an arrow (Sonic 2026-10-30)
+SORT_CHOICES = (("soon", "Soon", "Next after Current.", "S"),
+                ("now", "Current", "Study it now: it goes to the top of Current.", "→"),
                 ("goal", "Goal", "Something to work up to.", "↓"),
                 ("finished", "Finished", "Watched or read already: its words still count as seen.", "↑"),
                 ("ignore", "Ignore", "Never read its folder (a single file: taken out of your library). Your files "

@@ -60,6 +60,7 @@ ADD_DOORS = {"extract": "extract", "youtube": "youtube-downloader"}
 COUNT_AGAIN_MS = 3000                           # page 6 asks for its numbers again while it says *Counting…* —
 COUNT_MOST_MS = 30000                           # each time twice as long after, up to this (and when the indexer ran)
 ASK_WAIT_S = 600                               # the install's question waits this long for an answer, then is No
+SAVED_WAIT = 10                                 # s: D1's check after sorting waits at most this long for its places
 GLYPH_GEM = {"ja": "sapphire", "zh": "ruby"}    # page 1's wash under each glyph
 # The wizard's type sizes, as multiples of the theme's roles (theme.TYPE has no wizard roles yet: the notes carry the
 # theme.py patch that names them). The title is `first-run-heading` × 1.3; the glyphs and the big numbers are larger.
@@ -3177,7 +3178,7 @@ class SetupWizard(QWidget):
         load["step"] = "index"
         chores = self._chores()
         asked = chores.index(force=True) if chores is not None else "none"
-        if asked not in (None, "busy"):                   # off (a test's switch), closed, no chores: nothing to wait for
+        if asked not in (None, "busy"):           # off (a test's switch), closed, no chores: nothing to wait for
             self._load_covers()
             return
         self._load_task(S.LOAD_INDEX_START)
@@ -3279,8 +3280,19 @@ class SetupWizard(QWidget):
             needs = getattr(shell, "needs_you", None)
             if needs is not None and not sip.isdeleted(needs):
                 needs.refresh()
-        bridge.run_in_worker(self.api.sorted_offer, language, list(load["ids"]), then=offered,
-                             failed=lambda info: applog.log("wizard", f"cards line after sorting: {info[0]}"))
+        offer = getattr(self.api, "sorted_offer", None)
+        writer = getattr(getattr(shell, "services", None), "writer", None)
+
+        def once_saved(language, ids):
+            """(A worker.) D1's check once the sort's last places are saved (the writer idle; at most SAVED_WAIT s) —
+            *Done* pressed straight after a key never checks before its place landed."""
+            end = time.monotonic() + SAVED_WAIT
+            while writer is not None and writer.pending() and time.monotonic() < end:
+                time.sleep(0.05)
+            return offer(language, ids)
+        if callable(offer):
+            bridge.run_in_worker(once_saved, language, list(load["ids"]), then=offered,
+                                 failed=lambda info: applog.log("wizard", f"cards line after sorting: {info[0]}"))
         if self.page.id == "shows":
             self._save("shows", self.page.answers())
             self._advance()

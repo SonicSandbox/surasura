@@ -412,6 +412,7 @@ MOTION = MappingProxyType({
     "mining-spin": 1200, "footer-pulse": 1400, "generate-bar": 300,
     "press-glint": 2400,                 # round 8 row 45: the known count's glint running along its underline once
     "phase-fade": 260,                   # the phase strip: a circle's done tick fading back to dim (after its 2 s)
+    "mark-flap": 2800,                   # setup's load screen: the mark's wings, one slow beat down and up again
     "tooltip-delay": 380, "tooltip-again": 60,
     "tooltip-again-within": 500, "fit-debounce": 80, "drag-start-px": 6, "click-swallow-after-drag": 50,
     "auto-scroll-px-per-frame": 12, "auto-scroll-edge": 50, "auto-scroll-dock": 48,

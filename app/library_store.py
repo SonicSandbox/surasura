@@ -9195,22 +9195,33 @@ def _store_skip_choices(self, item_ids, own=False):
     """⋯'s *Never read this folder* (K6): for the first of these items' origins inside a source being read, its folder
     and each folder above it up to (never) the innermost such source folder, deepest first — each one `skip_refusal`
     accepts -> [path]; [] when none of them came from a source being read. `own` (the sort screen's *Ignore*, Mado-O):
-    only folders whose files are all these items' — never one that also holds another item's original."""
+    from the folder holding ALL these items' originals, and only folders whose files are all theirs — never one that
+    also holds another item's original; [] when one of them came from no folder."""
     ids = [i for i in item_ids if isinstance(i, int)][:500]
     if not ids:
         return []
     with self._reading():
-        origins = [(_json_dict(t) or {}).get("origin") for (t,) in self.conn.execute(
-            f"SELECT p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND p.item_id IN "
+        rows = self.conn.execute(
+            f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND p.item_id IN "
             f"({','.join('?' * len(ids))}) "
-            f"ORDER BY p.content_key", ids)]
+            f"ORDER BY p.content_key", ids).fetchall()
+    starts, came = [], set()
+    for item_id, t in rows:
+        origin = (_json_dict(t) or {}).get("origin")
+        if isinstance(origin, str) and origin:
+            starts.append(folder_path(os.path.dirname(_EPUB_PART.sub(".epub", origin))))
+            came.add(item_id)
+    if own:
+        if not starts or came != set(ids):
+            return []                                   # (one of them from no folder: no folder holds them all)
+        try:
+            starts = [folder_path(os.path.commonpath(starts))]
+        except ValueError:                              # (on two drives)
+            return []
     sources = self._read_sources()
     skipped = [f["key"] for f in self.skipped_folders()]
     keys = [path_key(folder_path(p)).rstrip("/") for _i, p in sources]
-    for origin in origins:
-        if not isinstance(origin, str) or not origin:
-            continue
-        folder = folder_path(os.path.dirname(_EPUB_PART.sub(".epub", origin)))
+    for folder in starts:
         key = path_key(folder).rstrip("/")
         held = [k for k in keys if k == key or _under(key, k)]
         if not held:
@@ -9668,8 +9679,8 @@ def _run_insert(run, row, where):
 def _store_source_spot(self, cmd, work, rel, episode, first, waiting=False, episodes=None, runs=None):
     """(tier, where) for a new copy of `work` (see `take_in`). Setup's scan: its show's run in Current, else Current's
     end — `first=SORT` (setup's scan since Mado-O): its show's run in New arrivals, else its end, quiet, for the sort
-    screen (no rule takes it on). Later: New arrivals — its show's run there, else the end — and the placing rule takes it on from there
-    (`_take_new`, Decision 1); with New arrivals off (no rule runs) its show's run in Current, else the top of it.
+    screen (no rule takes it on). Later: New arrivals — its show's run there, else the end — and the placing rule
+    takes it on from there (`_take_new`, Decision 1); with New arrivals off (no rule runs) its show's run in Current, else the top of it.
     `waiting` (K5, review H3): New arrivals always, whatever its show's rows (nothing to read or mine). `episodes`:
     `_in_run`'s cache of the batch; `runs` (setup's scan): each show's run in Current read once a batch, kept in
     order by `_take_new` (a long show's file is never placed by reading and sorting its whole run again)."""

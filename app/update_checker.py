@@ -35,8 +35,9 @@ SIGNATURE_ASSET = "update.json.sig"
 _SIGNATURE_LIMIT = 1024
 
 # The telemetry receiver's address (2026-10-30): update.json's `telemetry_url`, kept by the telemetry for its next
-# heartbeat, so the receiver can move without a release; the build's .env TELEMETRY_URL is the fallback. A 3.x
-# manifest's is read only when signed.
+# heartbeat, so the receiver can move without a release; the build's .env TELEMETRY_URL is the fallback. Read only
+# from a signed manifest (3.x's: the release kit writes it there, nowhere else) fetched from GitHub, never from a
+# rehearsal's local folder (UPDATE_SOURCE_ENV).
 TELEMETRY_URL_KEY = "telemetry_url"
 _TELEMETRY_URL_LIMIT = 300
 
@@ -234,7 +235,7 @@ def get_update_info(repo: str = "SonicSandbox/surasura", timeout: int = 10) -> O
                     info.assets = urls
                     info.signed = _signature_ok(raw.encode("utf-8"), urls.get(SIGNATURE_ASSET), local, timeout)
                     info.package = _read_package(manifest.get("package"), urls) if info.signed else None
-                if info.format != 2 or info.signed:
+                if info.signed and not local:
                     _keep_telemetry_url(manifest.get(TELEMETRY_URL_KEY))
         except Exception as e:
             # Fail closed: unreadable manifest => manual full update only.
@@ -247,7 +248,8 @@ def get_update_info(repo: str = "SonicSandbox/surasura", timeout: int = 10) -> O
 def valid_telemetry_url(value):
     """`value` when it is a receiver's address the heartbeat may use: an https URL with a host, no user or password,
     no spaces, at most 300 characters -> the str, else None."""
-    if not isinstance(value, str) or not value or len(value) > _TELEMETRY_URL_LIMIT             or any(c.isspace() or ord(c) < 32 for c in value):
+    if not isinstance(value, str) or not value or len(value) > _TELEMETRY_URL_LIMIT \
+            or any(c.isspace() or ord(c) < 32 for c in value):
         return None
     try:
         parts = urllib.parse.urlsplit(value)

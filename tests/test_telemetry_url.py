@@ -30,9 +30,13 @@ _RELEASE = {
 }
 
 
-def _check(monkeypatch, manifest):
-    """One update check against a stubbed GitHub whose update.json is `manifest` (a dict, or raw text)."""
+def _check(monkeypatch, manifest, signed=True):
+    """One update check against a stubbed GitHub whose update.json is `manifest` (raw text, or a dict: a 3.x one,
+    format 2, unless it names its own format) with a signature that checks out when `signed`."""
+    if isinstance(manifest, dict) and "format" not in manifest and not manifest.get("legacy"):
+        manifest = dict(manifest, format=2)
     text = manifest if isinstance(manifest, str) else json.dumps(manifest)
+    monkeypatch.setattr(uc, "_signature_ok", lambda *a, **k: signed)
     monkeypatch.setattr(uc, "_http_json", lambda url, timeout=10: _RELEASE)
     monkeypatch.setattr(uc, "_http_text", lambda url, timeout=10: text)
     return uc.get_update_info()
@@ -133,12 +137,44 @@ def test_a_malformed_update_json_keeps_nothing(monkeypatch, production):
 def test_a_3x_manifest_names_its_receiver_only_when_signed(monkeypatch, production):
     """A format-2 update.json is trusted only with a good signature: an unsigned one's address is not kept."""
     manifest = {"version": "3.0.1", "format": 2, "telemetry_url": MOVED, "package": None}
-    monkeypatch.setattr(uc, "_signature_ok", lambda *a, **k: False)
-    assert _check(monkeypatch, manifest).signed is False
+    assert _check(monkeypatch, manifest, signed=False).signed is False
     assert telemetry.receiver_url() == FALLBACK
-    monkeypatch.setattr(uc, "_signature_ok", lambda *a, **k: True)
     assert _check(monkeypatch, manifest).signed is True
     assert telemetry.receiver_url() == MOVED
+
+
+def test_a_2x_manifest_never_names_the_receiver(monkeypatch, production):
+    """A format-1 update.json (2.x's) has no signature: its address is never kept (the kit writes it only in 3.x's)."""
+    info = _check(monkeypatch, {"version": "2.6", "update_type": "full", "telemetry_url": MOVED, "legacy": True})
+    assert info.version == "2.6" and info.signed is False
+    assert telemetry.receiver_url() == FALLBACK
+
+
+def test_a_rehearsals_local_update_json_never_names_the_receiver(tmp_path, monkeypatch, production):
+    """A test release read from a local folder (a build that isn't a release build) keeps nothing, signed or not."""
+    folder = tmp_path / "rehearsal"
+    folder.mkdir()
+    (folder / "update.json").write_text(json.dumps({"version": "3.0.1", "format": 2, "telemetry_url": MOVED}),
+                                        encoding="utf-8")
+    (folder / "update.json.sig").write_bytes(b"S" * 64)
+    monkeypatch.setattr(uc.build_info, "RELEASE_BUILD", False, raising=False)
+    monkeypatch.setenv(uc.UPDATE_SOURCE_ENV, str(folder))
+    monkeypatch.setattr(uc, "_signature_ok", lambda *a, **k: True)
+    info = uc.get_update_info()
+    assert info.version == "3.0.1" and info.signed is True
+    assert telemetry.receiver_url() == FALLBACK
+
+
+def test_a_write_that_fails_half_way_keeps_the_old_address_and_leaves_no_temporary_file(monkeypatch, production):
+    telemetry.remember_url(RECEIVER)
+
+    def _locked(src, dst):
+        raise PermissionError("the file is open elsewhere")
+    with monkeypatch.context() as patched:
+        patched.setattr(telemetry.os, "replace", _locked)
+        telemetry.remember_url(MOVED)
+    assert telemetry._cached_url() == RECEIVER
+    assert os.listdir(path_utils.persistent_root()) == [telemetry.URL_CACHE]
 
 
 def test_a_cache_that_cannot_be_written_never_fails_the_update_check(monkeypatch, production):

@@ -37,18 +37,26 @@ _OPEN_COUNT_INCREMENTED = False
 
 
 def remember_url(url):
-    """Keep `url` (update_checker checked it) for the next heartbeat; written only when it changed, atomically.
-    Never raises."""
+    """Keep `url` (update_checker checked it) for the next heartbeat; written only when it changed, atomically (a
+    temporary file of this process's own, then replaced). Never raises: a failed write keeps the old file, and the
+    next update check tries again."""
+    tmp = None
     try:
         if _cached_url() == url:
             return
         path = os.path.join(path_utils.get_persistent_user_data_path(), URL_CACHE)
-        tmp = path + ".tmp"
+        tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"url": url}, f)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     except Exception:
-        pass
+        try:
+            if tmp and os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def _cached_url():

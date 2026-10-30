@@ -58,9 +58,9 @@ library store, on a plain thread of its own — never the window's thread.
 - **A drag holds it** (06 E6, `hold()` / `release()`): while held it still reads and merges the feed (its copy stays
   current) but builds and publishes nothing, so nothing moves under the hand; `release()` builds and publishes once. An
   item gone meanwhile is told at once (`subscribe_gone(cb)`: `cb(item_ids)`) — the drag of a removed item is let go.
-- **What arrived** (Hon a7, `subscribe_arrived(cb)`: `cb(work_ids)`): after each read but the first, the works whose
-  files arrived or changed (a look, + Add, Extract, a drop; an item regrouped) — the window's covers look at those
-  titles only (`app/qt/covers.look`), never the library again.
+- **What arrived** (Hon a7, `subscribe_arrived(cb)`: `cb(work_ids)`; None at the first read): after each read, the
+  works whose files arrived or changed (a look, + Add, Extract, a drop; an item regrouped) — the window's covers look
+  at those titles only (`app/qt/covers.look`), never the library again.
 
 Qt-free (the import guard): the window reaches it through `app/qt/bridge.py`.
 """
@@ -273,8 +273,9 @@ class LibraryReader:
             self._gone_subscribers = [cb for cb in self._gone_subscribers if cb is not callback]
 
     def subscribe_arrived(self, callback):
-        """Hon a7: `callback(work_ids)` for the works whose files arrived or changed since the last read (`_arrived`) —
-        on the reader's thread, so it only hands them on (the window's covers look on a worker of their own)."""
+        """Hon a7: `callback(work_ids)` for the works whose files arrived or changed since the last read (`_arrived`;
+        None at the first read: the whole library) — on the reader's thread, so it only hands them on (the window's
+        covers look on a worker of their own)."""
         with self._lock:
             self._arrived_subscribers.append(callback)
 
@@ -575,8 +576,8 @@ class LibraryReader:
         arrived = self._arrived(feed)                   # Hon a7: read against the copy before the merge
         self._merge(feed)
         self._audio_hovers(h, feed)                     # a5-2 (Hon): an audiobook's 🎧 hover, on its own row
-        if arrived:
-            self._tell(self._arrived_subscribers, arrived)
+        if arrived is None or arrived:
+            self._tell("_arrived_subscribers", arrived)
         if held:                                        # E6: the dragged item gone meanwhile lets the drag go
             gone = [i for k, i in feed["gone"] if k == "item"] if before is None else sorted(before - set(self._items))
             if gone:
@@ -816,11 +817,11 @@ class LibraryReader:
                 pass                                # a listener's fault never stops the reader
 
     def _tell_gone(self, ids):
-        self._tell(self._gone_subscribers, ids)
+        self._tell("_gone_subscribers", ids)
 
-    def _tell(self, subscribers, ids):
+    def _tell(self, which, ids):
         with self._lock:
-            subscribers = list(subscribers)
+            subscribers = list(getattr(self, which))
         for cb in subscribers:
             try:
                 cb(ids)
@@ -829,13 +830,14 @@ class LibraryReader:
 
     def _arrived(self, feed):
         """Hon a7: the works (sorted ids) whose files arrived or changed in this read — an item new to the reader's
-        copy, or its file or its work moved — read before the merge. None at the first read (the open's scan looks at
-        every title) and none for a move, a mark or a cover written: only what changed is looked at again (S19)."""
-        if self._seen is None:
-            return []
+        copy, or its file or its work moved — read before the merge; none for a move, a mark or a cover written: only
+        what changed is looked at again (S19). None at the first read: the whole library, the open's scan's (scanned
+        by the look only when the open found no store to read)."""
         with self._lock:
             if not self._arrived_subscribers:
                 return []
+        if self._seen is None:
+            return None
         out = set()
         for r in feed["items"]:
             work, old = r.get("work_id"), self._items.get(r["id"])

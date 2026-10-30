@@ -348,8 +348,9 @@ def test_done_many_reads_the_row_as_it_is_now_a_file_not_in_it_is_left_out(world
     seed, win, writer = world()
     rs = rows_of(win)
     i = next(n for n, r in enumerate(rs) if len(r.episodes) >= 6 and not any(e.watched for e in r.episodes))
-    row, other = rs[i], next(r for r in rs if r.key != rs[i].key and r.episodes)
-    win.moves.done_many(row, list(row.episodes[:3]) + [other.episodes[0]])
+    row = rs[i]
+    gone = next(e for r in rs if r.key != row.key for e in r.episodes if not e.watched)   # still to watch: only the
+    win.moves.done_many(row, list(row.episodes[:3]) + [gone])                           # row as it is now leaves it out
     assert calls(writer, "set_watched") == [("set_watched", [e.id for e in row.episodes[:3]], {"on": True})]
 
 

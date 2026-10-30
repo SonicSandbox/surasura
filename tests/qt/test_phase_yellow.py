@@ -49,19 +49,31 @@ def _settle():
         QApplication.processEvents()
 
 
-def _washed_once(washed, ny, key):
-    """One card washed, the one the press revealed (`key`): the page's own gather may rebuild its cards after the press,
-    so a later `ny.cards.card(key)` can name a new widget or none (the in-file flake seen 2026-10-30) — the card is
-    told by the reveal, never by a lookup made after."""
-    return len(washed) == 1 and ny.revealed == key and type(washed[0]).__name__ == "_Card"
+_HELD = {}          # the entries a test put on *Needs you* (`_entries`): what the page's own gather lands from then on
+
+
+@pytest.fixture(autouse=True)
+def _gathered(monkeypatch):
+    """The page's own gather lands the entries the test put on the page, never the seed's over them: it gathers on a
+    worker as the window opens and again when opening the page marks its cards seen, and a real gather landing after the
+    test's entries took away the card the press had just washed (the in-file flake, 1-2 tests red every run,
+    2026-10-30)."""
+    real = service.entries
+    monkeypatch.setattr(service, "entries", lambda *a, **k: _HELD["entries"] if "entries" in _HELD else real(*a, **k))
+    yield
+    _HELD.clear()
 
 
 def _entries(ny, *entries):
-    """*Needs you* holding `entries` (as its gather lands them) behind a failure card that comes first."""
+    """*Needs you* holding `entries` (as its gather lands them) behind a failure card that comes first — a gather
+    already under way is dropped (`refresh` asks again: its answer is no longer the last asked)."""
     failure = service.Entry(key="failure:1:x", kind=service.FAILURE, title="Generate stopped (exit code 1).",
                             lines=(), actions=("open_logs", "save_logs"), unseen=True, say="", data={"at": 1})
-    ny.entries = (failure,) + tuple(entries)
+    ny.entries = _HELD["entries"] = (failure,) + tuple(entries)
     ny._paint()
+    ny.refresh()
+    assert wait_until(lambda: not ny._running, 10)
+    assert ny.entries == _HELD["entries"]
     _settle()
 
 
@@ -112,7 +124,7 @@ def test_anki_miner_amber_opens_needs_you_at_its_episodes_card_highlighted(world
     win._circle_pressed(P.MINER)
     _settle()
     assert win.current_tab() == "needs" and opened == []
-    assert ny.revealed == entry.key and _washed_once(washed, ny, entry.key)
+    assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
 
 
 # --- Anki: a prompt or another profile waits on you; closed is a plain wait ------------------------------------------- #
@@ -129,7 +141,7 @@ def test_anki_asking_for_you_is_amber_and_opens_needs_yous_anki_line_highlighted
     win._circle_pressed(P.ANKI)
     _settle()
     assert win.current_tab() == "needs" and opened == [] and ny.revealed == entry.key
-    assert _washed_once(washed, ny, entry.key)
+    assert washed == [ny.cards.card(entry.key)]
 
 
 def test_anki_closed_is_a_plain_wait_never_amber_and_its_press_opens_its_settings(world, washed, monkeypatch):
@@ -162,7 +174,7 @@ def test_todoke_amber_for_a_gone_folder_opens_its_card_highlighted_and_offline_a
     win._circle_pressed(P.ARRIVALS)
     _settle()
     gone = next(e.key for e in ny.entries if e.kind == service.FOLDER_GONE)
-    assert win.current_tab() == "needs" and ny.revealed == gone and _washed_once(washed, ny, gone)
+    assert win.current_tab() == "needs" and ny.revealed == gone and washed == [ny.cards.card(gone)]
     _told(win, language, _away_row())                                      # the drive away alone: nothing to decide
     st = win.phase.states[P.ARRIVALS]
     assert st.needs is None and not st.waiting and win.phase.go(P.ARRIVALS) is None
@@ -234,7 +246,7 @@ def test_a7_episodes_held_by_any_connect_need_open_its_card_whatever_its_kind(wo
     assert win.phase.states[P.MINER].needs == "Waiting for you: see Needs you · 2 episodes"
     win._circle_pressed(P.MINER)
     _settle()
-    assert ny.revealed == entry.key and _washed_once(washed, ny, entry.key)
+    assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
 
 
 def test_a7_amber_waits_for_its_card_and_goes_when_the_card_is_put_away(world, washed, monkeypatch):
@@ -256,7 +268,7 @@ def test_a7_amber_waits_for_its_card_and_goes_when_the_card_is_put_away(world, w
     assert win.phase.states[P.MINER].needs and win.phase.go(P.MINER) is not None
     win._circle_pressed(P.MINER)
     _settle()
-    assert ny.revealed == entry.key and _washed_once(washed, ny, entry.key)
+    assert ny.revealed == entry.key and washed == [ny.cards.card(entry.key)]
     ny._hidden_now[entry.key] = None                                      # *Not now* (its press's first frame)
     ny._paint()
     assert win.phase.states[P.MINER].needs is None and win.phase.go(P.MINER) is None

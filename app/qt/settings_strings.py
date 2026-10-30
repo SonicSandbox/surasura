@@ -662,7 +662,7 @@ PRACTICE_THEN = ("Then, to start a round:\n"
                  "short story, quiz) · from what (soon: your list's next words, latest: what you watch or read next, "
                  "mix). Type / and it's listed as /surasura:practice (MCP).\n"
                  "• For example: /surasura:practice 5 friend reading soon\n"
-                 "• Or, in any of them, just say it: “{starter}”")
+                 "• Or, in Claude Code, Codex or Claude Desktop, just say it: “{starter}”")
 PRACTICE_STARTER = "Copy a starter message"
 PRACTICE_STARTER_TIP = ("Copies a first message for your AI, once Piyo is added: a short story with 5 of your words. "
                         "A story is a good first try")

@@ -783,7 +783,7 @@ def test_piyo_says_both_ways_to_start_a_round_and_copies_a_starter_message(qapp,
     assert "/surasura:practice (MCP)" in lines[1] and lines[2] == f"• For example: {mcp_server.SLASH_EXAMPLE}"
     for choice in tuple(mcp_server.ROLES) + tuple(mcp_server.KINDS) + mcp_server.SOURCES:
         assert choice in lines[1], choice
-    assert lines[3] == f"• Or, in any of them, just say it: “{practice.STARTER}”"
+    assert lines[3] == f"• Or, in Claude Code, Codex or Claude Desktop, just say it: “{practice.STARTER}”"
     assert page.row("practice_ai").isAncestorOf(parts["then"])          # the row's own words, under its help
     starter = parts["starter"]
     assert "story is a good first try" in starter.toolTip()

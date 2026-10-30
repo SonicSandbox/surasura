@@ -9544,8 +9544,10 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
     runs = runs if first and not waiting else None
     if joined:
         tier, where = joined[1], ("after", joined[2])
-    elif first and not waiting and _tier_2x(record.get("origin")) == "goal":
-        tier, where = "goal", ("end",)               # K8: a 2.x library's Goal folder read as his library's folder
+    elif first and not waiting and _tier_2x(record.get("origin")) in ("goal", "graduated"):
+        # K8: a 2.x library's Goal folder read as his library's folder; a7: its Graduated one lands in Finished (Sonic
+        # 2026-10-30)
+        tier, where = _tier_2x(record.get("origin")), ("end",)
         runs = None                                  # (no Current run of its show to keep)
     else:
         tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first and not waiting, waiting, episodes,
@@ -9559,6 +9561,8 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
         number = record.get("episode")
         episodes[item_id] = number if isinstance(number, (int, float)) and not isinstance(number, bool) else None
     self._put(tier, [item_id], where, cmd.version)
+    if tier == "graduated" and not joined:           # a7: a 2.x Graduated file, dated and watched as `set_tier`
+        self.conn.execute("UPDATE items SET graduated_at = ?, watched = 1 WHERE id = ?", (_now(), item_id))
     if runs is not None:                             # the batch's copy of its show's run, as it now stands
         _run_insert(runs[work], (item_id, tier, None, rel), where)
     cmd.touch(() if joined else {tier}, availability=prepared[4][2] == "missing")   # (a waiting row moves no count)
@@ -9577,12 +9581,14 @@ def _tier_2x(origin):
     """K8 (alpha 4, Mattias's note 9; A4K-3 PROVISIONAL): the tier a 2.x library's own folders give a file read from
     inside them on setup's first look (and *Start fresh*'s, the same look) — `…/data/<ja|zh>/GoalContent/<show>/…`
     "goal" (`HighPriority` "now",
-    `LowPriority` "soon": Current either way, in the order a look reads them) — or None. No content migration (Sonic
+    `LowPriority` "soon": Current either way, in the order a look reads them; a7, Sonic 2026-10-30: `Graduated`
+    "graduated", Finished, dated and watched as a finish leaves it) — or None. No content migration (Sonic
     2026-10-23): it is still the folder he points setup at; his 2.x Goal stays his Goal — a show he had partly moved up in
     2.x (episodes 1–3 in HighPriority, the rest in GoalContent) keeps that split, whichever folder is picked first."""
     parts = os.path.normpath(origin).split(os.sep) if isinstance(origin, str) else []
     for i in range(len(parts) - 2, 1, -1):
-        tier = _TIER_OF_FOLDER_FOLDED.get(parts[i].casefold())
+        tier = _TIER_OF_FOLDER_FOLDED.get(parts[i].casefold()) or \
+            ("graduated" if parts[i].casefold() == GRADUATED_FOLDER.casefold() else None)
         if tier and parts[i - 1].casefold() in ("ja", "zh") and parts[i - 2].casefold() == "data":
             return tier
     return None

@@ -119,8 +119,9 @@ MENU_MORE = ("More…", "The rest of this list")
 # row 28: an opened row's episode's own ⋯ ({ep}: the episode as ⋯ names it; {action}: its stone's click,
 # `ROWS_STONE_ACTION`) — its *Play* is ▶'s own verb and tip
 ITEM_EP_MARK = ("Mark {action}", "Mark {ep} {action}\n• Undo takes it back")
-# a7 (DIAGNOSIS 11): {ep} and every file before it not watched yet ({n} in all), marked at once
-ITEM_EP_UPTO = ("Mark watched up to here", "Mark {ep} and the files before it watched: {n} at once\n"
+# a7 (DIAGNOSIS 11): {ep} and every file before it not watched yet ({n} in all), marked at once — *Mark watched*'s
+# extension, right under it (Sonic 2026-10-30)
+ITEM_EP_UPTO = ("…and everything before it", "Mark {ep} and the files before it watched: {n} at once\n"
                                             "• One Undo takes them all back")
 ITEM_EP_MENU_NAME = "What you can do with {ep}"
 ITEM_UNGROUPED = "Ungrouped {title}"

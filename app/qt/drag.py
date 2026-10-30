@@ -1026,7 +1026,7 @@ class DragController(QObject):
         if jobs is not None:
             jobs.connect(self._jobs_in)
         self.page.on_done = self.done
-        self.page.on_done_many = self.done_many      # a7: ⋯'s *Mark watched up to here* / *Mark all watched*
+        self.page.on_done_many = self.done_many      # a7: ⋯'s *…and everything before it* / *Mark all watched*
         self.page.on_nudge = self.nudge
         self.page.on_menu = self.menu
         self._settle = QTimer(self)
@@ -2323,7 +2323,7 @@ class DragController(QObject):
         self._marked(row, [ep], text, strings.DONE_LEFT.format(ep=ep.label))
 
     def done_many(self, row, eps):
-        """a7 (DIAGNOSIS 11): ⋯'s *Mark watched up to here* / *Mark all watched* — `eps` (the row's own, in its order)
+        """a7 (DIAGNOSIS 11): ⋯'s *…and everything before it* / *Mark all watched* — `eps` (the row's own, in its order)
         marked watched in ONE writer command: one ticket, one toast, one Undo for them all. Read against the row as the
         view holds it now (a menu left open while the row changed: a file gone is left out, one come in counts as still
         to watch). What follows is the one Done's (`done`): when no file of the row is left unwatched, L6.3's rule

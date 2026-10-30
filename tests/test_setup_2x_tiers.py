@@ -115,3 +115,51 @@ def test_a_show_split_between_2x_tiers_keeps_its_split_whichever_folder_is_picke
             _look(store, language, root, first=True)
         tiers = _tiers(store)
     assert len(tiers["goal"]) == 2 and len(tiers["now"] + tiers["soon"]) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_2x_graduated_folder_read_at_setup_lands_in_finished_dated_and_watched(language):
+    """a7 (Sonic 2026-10-30): a show he finished in 2.x lands in Finished on setup's first look — dated and watched as
+    a finish leaves it, so it never sits in Current to be finished again; the same folder read by a later look (not
+    setup's) is a new arrival like any, never finished by its folder's name (the next test)."""
+    store, _data = _empty(language)
+    data = _old_library(language)
+    done_show = SHOWS[language][0] + "（完）"
+    for n in (1, 2):
+        _write(os.path.join(data, "Graduated", done_show, f"{done_show} - {n:02d}.srt"),
+               _text(language, n + 6, extra=f"「{done_show}」"))
+    with store:
+        for tier_folder in ("Graduated", "HighPriority"):
+            root = store.add_source(os.path.join(data, tier_folder))
+            _look(store, language, root, first=True)
+        finished = [(i, e["title"]) for i, e, _a in store.ordered("graduated")]
+        tiers = _tiers(store)
+        rows = store.conn.execute(
+            f"SELECT graduated_at, watched FROM items WHERE id IN ({','.join('?' * len(finished))})",
+            [i for i, _t in finished]).fetchall()
+    assert len(finished) == 2 and all(done_show in t for _i, t in finished)
+    assert all(at and watched == 1 for at, watched in rows), "dated and watched, as a finish leaves it"
+    assert not any(done_show in t for t in tiers["now"] + tiers["soon"] + tiers["goal"] + tiers["arrivals"])
+    assert len([t for t in tiers["now"] + tiers["soon"] if SHOWS[language][1] in t]) == 3, "its NOW show as before"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_2x_graduated_folder_read_by_a_later_look_is_a_new_arrival_never_finished(language):
+    store, _data = _empty(language)
+    data = _old_library(language)
+    done_show = SHOWS[language][0] + "（完）"
+    for n in (1, 2):
+        _write(os.path.join(data, "Graduated", done_show, f"{done_show} - {n:02d}.srt"),
+               _text(language, n + 6, extra=f"「{done_show}」"))
+    with store:
+        late = store.add_source(os.path.join(data, "Graduated"))
+        _look(store, language, late)                                            # a look after setup: New arrivals
+        assert store.ordered("graduated") == []
+        assert len(_tiers(store)["arrivals"]) == 2
+
+
+def test_the_2x_graduated_folder_is_read_only_inside_a_data_folder_whatever_its_case():
+    sep = os.sep
+    assert ls._tier_2x(sep.join(["D:", "Surasura", "data", "ja", "Graduated", "A", "1.srt"])) == "graduated"
+    assert ls._tier_2x(sep.join(["D:", "Surasura", "data", "zh", "graduated", "A", "1.srt"])) == "graduated"
+    assert ls._tier_2x(sep.join(["D:", "Media", "Graduated", "A", "1.srt"])) is None

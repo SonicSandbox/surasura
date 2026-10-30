@@ -31,7 +31,8 @@ shown in a field: `Writer.rename_piece`, empty = named after its shows again, th
 with…*, *Same show as…*, *Change cover…*, *Never read this folder* or *Open its folder* (each is one show's). Its writes
 toast at the press, with Undo (*· saving…* until the store saved them; IK-2: no mark on the rows).
 **An episode's own ⋯ (row 28):** an opened row's episode line under the hand or the keyboard shows its own ⋯
-(`rows.RowsView.episode_menu_requested`): *Mark watched* / *Mark not watched* (the page's one Done path), *Play* (▶'s
+(`rows.RowsView.episode_menu_requested`): *Mark watched* / *Mark not watched* (the page's one Done path), right under a
+*Mark watched* its extension *…and everything before it* when 2+ files would be marked (a7: `drag.done_many`), *Play* (▶'s
 path, when it can play), *Split here…* after it (when that split is allowed), then each `episode_hooks` entry —
 callables `(row, ep) -> [Entry]`, asked as the menu opens; an entry's `payload`, a callable, runs when it is picked.
 **Group… (LM11b G4):** Ctrl+click picks Current's rows and an opened row's episodes (its stones), Shift+click the rows
@@ -652,9 +653,10 @@ class ItemActions(QObject):
         out = [Entry("ep-unwatched" if ep.watched else "ep-watched", words.format(action=action),
                      tip.format(ep=name, action=action) if reason is None else reason, reason is None)]
         k = next((i for i, e in enumerate(row.episodes) if e.id == ep.id), None)
-        upto = [] if k is None else [e for e in view_rows.to_finish(row.episodes[:k + 1]) if not e.watched]
-        if len(upto) >= 2:                           # a7 (DIAGNOSIS 11): it and every one before it, at once
-            words, tip = strings.ITEM_EP_UPTO
+        upto = [] if k is None or ep.watched else \
+            [e for e in view_rows.to_finish(row.episodes[:k + 1]) if not e.watched]
+        if len(upto) >= 2:                           # a7 (DIAGNOSIS 11): *Mark watched*'s extension (Sonic 10-30), right
+            words, tip = strings.ITEM_EP_UPTO        # under it: it and every one before it, at once
             out.append(Entry("ep-upto", words, tip.format(ep=name, n=len(upto)) if reason is None else reason,
                              reason is None, payload=upto))
         if ep.can_play:                              # IK-2: ▶'s own verb and tip (`view_rows`: the episode's media)

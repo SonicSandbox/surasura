@@ -246,7 +246,7 @@ class CurrentPage(Page):
         self._ask(self.on_done, row, episode)
 
     def done_many(self, row, episodes):
-        """a7: ⋯'s *Mark watched up to here* / *Mark all watched* — `on_done_many(row, episodes)`: one command, one
+        """a7: ⋯'s *…and everything before it* / *Mark all watched* — `on_done_many(row, episodes)`: one command, one
         toast, one Undo, then what the one Done does once nothing is left unwatched."""
         self._ask(self.on_done_many, row, episodes)
 

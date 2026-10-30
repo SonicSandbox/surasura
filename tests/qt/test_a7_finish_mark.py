@@ -7,7 +7,7 @@ What a wrong answer would cost a learner:
   * a finished season — downloaded at once, or weekly long ago — never finishing by itself any more;
   * the copies' dates moving the source's own files (the look never writes there);
   * a book with 30 chapters read needing 30 presses, or a mark of many needing many Undos;
-  * *Mark watched up to here* marking a chapter after the one he chose, or one already watched again;
+  * *Mark watched › …and everything before it* marking a chapter after the one he chose, or one already watched again;
   * marking every file of a title skipping L6.3's one rule (finish by itself, or the offer).
 
 Every scenario runs for Japanese and Chinese on a real store: a library set up by its first look at a source folder
@@ -176,20 +176,24 @@ def test_a_30_chapter_book_marked_up_to_chapter_20_in_one_command_and_one_undo_t
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_up_to_here_skips_a_chapter_already_watched_and_is_not_offered_where_it_would_mark_one(real, monkeypatch,
                                                                                                language):
-    """Chapter 2 already watched: *up to chapter 4* marks 1, 3 and 4; on chapter 1 (nothing before it) the entry isn't
-    there — the plain *Mark watched* is that one press."""
+    """Chapters 2 and 6 already watched: *up to chapter 4* marks 1, 3 and 4; on chapter 1 (nothing before it) the entry
+    isn't there — the plain *Mark watched* is that one press — nor on chapter 6 (its *Mark not watched* has none)."""
     store, win, writer = _open(real, monkeypatch, language, lambda s: _book(language, s, n=6))
     row = _row(win.page_widgets["current"].view_model, _BOOK[language])
     ids = [e.id for e in row.episodes]
-    assert store.set_watched([ids[1]]) is not None
-    assert wait_until(lambda: _row(win.page_widgets["current"].view_model, _BOOK[language]).episodes[1].watched, 10)
+    assert store.set_watched([ids[1], ids[5]]) is not None
+    assert wait_until(lambda: _row(win.page_widgets["current"].view_model, _BOOK[language]).episodes[5].watched, 10)
     row = _row(win.page_widgets["current"].view_model, _BOOK[language])
     assert "ep-upto" not in [e.name for e in win.items.episode_entries(row, row.episodes[0])]
+    # Sonic 10-30: an extension of *Mark watched* — never under *Mark not watched* (chapter 6 watched, 4 before it not)
+    assert "ep-upto" not in [e.name for e in win.items.episode_entries(row, row.episodes[5])]
+    names = [e.name for e in win.items.episode_entries(row, row.episodes[3])]
+    assert names[:2] == ["ep-watched", "ep-upto"], "right under the Mark watched it extends"
     upto = next(e for e in win.items.episode_entries(row, row.episodes[3]) if e.name == "ep-upto")
     assert [e.id for e in upto.payload] == [ids[0], ids[2], ids[3]]
     win.items.episode_pick(row, row.episodes[3], "ep-upto", upto.payload)
-    assert wait_until(lambda: _watched(store, ids) == ids[:4], 10)
-    assert _watched(store, ids[4:]) == []
+    assert wait_until(lambda: _watched(store, ids) == ids[:4] + [ids[5]], 10)
+    assert _watched(store, ids[4:5]) == []
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

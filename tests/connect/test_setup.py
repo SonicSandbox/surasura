@@ -471,7 +471,26 @@ def test_an_item_a_newer_anki_miners_mine_needs_is_named_never_hidden(monkeypatc
 def test_unfinished_keeps_only_what_keeps_a_mine_from_starting(failing, expected):
     check = _check_main(failing, ITEMS_MAIN + ["subtitle_engine"])
     items = {i["name"]: i for i in check["items"]}
-    assert set(anki_miner.unfinished(items)) == expected
+    assert set(anki_miner.unfinished(items, check["ready"])) == expected
+
+
+def test_unfinished_names_what_its_ready_stands_on_even_an_item_mining_never_needed_before():
+    # A later build whose mine reads burned-in text counts video_ocr toward `ready`: unready with only it failing, it
+    # is named (never "without saying what"); while it says ready, nothing is
+    items = {i["name"]: i for i in _check_main({"video_ocr", "ocr"})["items"]}
+    assert set(anki_miner.unfinished(items, False)) == {"video_ocr", "ocr"}
+    assert anki_miner.unfinished(items, True) == {}
+    items = {i["name"]: i for i in _check_main({"dictionary"})["items"]}
+    assert anki_miner.unfinished(items, True) == {}, "its own `ready` is trusted first"
+
+
+def test_a_later_anki_miner_whose_mine_needs_video_ocr_names_it(monkeypatch, ready_37):
+    check = _check_main({"video_ocr"})
+    check["ready"] = False
+    check = _setup_check(monkeypatch, ready_37, check)
+    assert check["state"] == "needs-you" and check["do"] == setup.UPDATE_DO
+    assert "video_ocr: not installed" in check["say"] and "Anki Miner:" not in check["say"], "never its window"
+    assert check["say"] != setup.UNSAID_SAY
 
 
 def test_anki_closed_fails_anki_miners_deck_and_fields_too_and_that_is_one_wait(monkeypatch, ready_37):

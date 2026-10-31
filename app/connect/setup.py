@@ -67,7 +67,8 @@ UPDATE_DO = ("Update Anki Miner from Surasura (Settings → Anki & mining): its 
              "Surasura finishes the rest for you")
 UPDATE_PROFILE_DO = ("Choose a profile Anki Miner has in Surasura's settings (Anki & mining → Anki Miner profile), or "
                      "update Anki Miner from Surasura so Surasura can make it")
-ITEM_WORDS = {"ffmpeg": "not found", "ffprobe": "not found"}
+ITEM_WORDS = {"ffmpeg": "not found", "ffprobe": "not found", "yt_dlp": "not installed", "speech_model": "not installed",
+              "ocr": "not installed", "video_ocr": "not installed"}
 UNSAID_SAY = "Anki Miner says its own setup isn't finished, without saying what."
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
 ANKICONNECT_CODE = "2055492159"     # AnkiConnect's add-on code on AnkiWeb
@@ -357,7 +358,7 @@ def _anki_miner(settings, language, answered):
     except anki_miner.AnkiMinerError as e:
         return out + [_miner_error("anki_miner_setup", e)], found
     items = {item.get("name"): item for item in ready.get("items") or () if isinstance(item, dict)}
-    failed = anki_miner.unfinished(items)
+    failed = anki_miner.unfinished(items, ready.get("ready"))
     anki_down = "anki" in failed
     own = {name_: item for name_, item in failed.items() if not (anki_down and name_ in ANKI_ITEMS)}
     # A5F2: Anki Miner can't reach the Anki Surasura reaches: Surasura sets its address (Z-3), with the rest it sets

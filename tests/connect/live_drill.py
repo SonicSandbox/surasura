@@ -134,8 +134,9 @@ def main():
     # dictionary, ffmpeg); deck and note type are checked here, against DevTest, as the run's config names them.
     # What a mine doesn't need (3.7's yt_dlp and speech_model, main's ocr and video_ocr) never counts: `unfinished`.
     ready = anki_miner.check(miner, "ja", profile)
-    items = {i.get("name"): i for i in ready.get("items") or ()}
-    missing = [name for name in anki_miner.unfinished(items) if name not in ("deck", "note_type", "fields")]
+    skip = anki_miner.SETTINGS_ITEMS | anki_miner.NOT_FOR_MINE
+    items = {i.get("name"): i for i in ready.get("items") or () if i.get("name") not in skip}
+    missing = list(anki_miner.unfinished(items, ready.get("ready")))
     if missing:
         refuse(f"Anki Miner isn't ready: {', '.join(missing)}")
     if a.reading and runfile.READING not in (info.get("features") or ()):

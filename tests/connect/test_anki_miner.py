@@ -336,6 +336,11 @@ def test_an_unfinished_setup_names_only_what_a_mine_needs_never_the_ocr_tools(ba
     assert e.value.kind == "setup" and e.value.message == ("Anki Miner's setup isn't finished — dictionary: No "
                                                            "offline dictionary is installed for Japanese.")
     assert "mine" not in fake_miner.commands()
+    # not ready with nothing failed: the line says so, never a bare dash
+    fake_miner.plan(check={"ready": False, "items": [item("anki"), item("dictionary"), "not an item"]})
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        batch()
+    assert e.value.message == "Anki Miner's setup isn't finished — it doesn't say what"
 
 
 def test_a_program_windows_security_blocked_is_named_never_retried(monkeypatch, fake_miner):

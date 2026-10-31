@@ -2460,11 +2460,15 @@ class Numbers:
 
     def _set(self, eng, table, why, key):
         with self._lock:
+            last = self._table
+        # What changed, worked out before the lock (a read of the numbers never waits on it: U-A6) — so the fade comes
+        # and goes on the rows that show a figure, never a rebuild of every row (U-1, U-A1); a move published meanwhile:
+        # unknown, every row again
+        changed = _faded_ids(last, table)
+        with self._lock:
             said = self._why
             self._engine, self._why, self._plan_key = eng, why, key
-            # a kept table names what it changed (U-1: the fade comes in on the rows that show a figure, never a
-            # rebuild of every row); a new plan's table is new throughout
-            self._publish(table, _faded_ids(self._table, table) if isinstance(table, Kept) else None)
+            self._publish(table, changed if self._table is last else None)
         if why != said:
             self._say(why)
         self._call_change()

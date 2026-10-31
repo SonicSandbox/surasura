@@ -29,9 +29,34 @@ def _shows_figure(entry):
     return entry[0] == rows.ROW and payload.n_new is not None
 
 
-def _publish(seed, table):
-    seed.numbers.table = table
-    seed.numbers.version += 1
+def _publish(seed, table, changed=None):
+    """A new numbers version; `changed` the item ids it changed (None: unknown), as `moves.Numbers.changed` says it —
+    so the reader rebuilds only those rows (U-A2: the partial rebuild run end to end)."""
+    n = seed.numbers
+    n.table = table
+    n.version += 1
+    n.history[n.version] = changed
+
+
+def _tracked(seed):
+    n = seed.numbers
+    n.history = {}
+
+    def changed(since):
+        if since == n.version:
+            return set()
+        out = set()
+        for v in range(since + 1, n.version + 1):
+            ids = n.history.get(v)
+            if ids is None:
+                return None
+            out |= ids
+        return out
+    n.changed = changed
+
+
+def _figured(table):
+    return {i for i, (_k, _c, new) in table.items() if new is not None}
 
 
 def test_the_fade_comes_and_goes_repainting_only_the_rows_that_show_a_figure(world):  # noqa: F811
@@ -39,6 +64,7 @@ def test_the_fade_comes_and_goes_repainting_only_the_rows_that_show_a_figure(wor
     lst = win.page_widgets["current"].list
     model = lst.model()
     _settle()
+    _tracked(seed)
     bare = next(e[1] for i in reversed(_on_screen(lst)) for e in [model.entries[i]] if e[0] == rows.ROW)
     table = dict(seed.numbers.table)                                        # one row on screen with no figure
     for ep in bare.episodes:
@@ -68,26 +94,28 @@ def _the_fade(seed, lst, model, resets, layouts):
     before = {k: [v[1] for key, v in sprites.items() if key[1] == k] for k, sprites in kept_pix.items()}
 
     lst.delegate.renders = 0
-    _publish(seed, moves.Kept(seed.numbers.table))                         # the plan goes stale: figures kept, faded
+    bare_obj = next(e[1] for e in model.entries if e[0] == rows.ROW and e[1].n_new is None)
+    _publish(seed, moves.Kept(seed.numbers.table), _figured(seed.numbers.table))   # stale: figures kept, faded
     assert wait_until(lambda: all(getattr(model.entries[i][1], "new_faded", False) or model.entries[i][0] == rows.HERO
                                   for i in figured), 10)
     _settle()
     lst.viewport().repaint()
     assert resets == [] and layouts == [], "a 'same' refresh: never a reset or a relayout"
     assert 0 < lst.delegate.renders <= len(figured), (lst.delegate.renders, len(figured))
+    assert any(e[1] is bare_obj for e in model.entries), "the bare row never rebuilt: the same object"
     for i in plain:                                                         # a row with no figure: its picture kept
         assert not model.entries[i][1].new_faded
         k = model.entries[i][1].key
         assert [v[1] for key, v in lst.delegate._sprites["row"].items() if key[1] == k] == before[k]
 
     lst.delegate.renders = 0
-    _publish(seed, moves.Kept(seed.numbers.table))                         # still stale, nothing new: nothing drawn
+    _publish(seed, moves.Kept(seed.numbers.table), set())                  # still stale, nothing new: nothing drawn
     _settle()
     lst.viewport().repaint()
     assert lst.delegate.renders == 0
 
     lst.delegate.renders = 0
-    _publish(seed, dict(seed.numbers.table))                               # the fresh plan: the fade goes
+    _publish(seed, dict(seed.numbers.table), _figured(seed.numbers.table))  # the fresh plan: the fade goes
     assert wait_until(lambda: not any(getattr(model.entries[i][1], "new_faded", False) for i in figured), 10)
     _settle()
     lst.viewport().repaint()

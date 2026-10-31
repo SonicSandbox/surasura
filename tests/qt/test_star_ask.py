@@ -15,6 +15,12 @@ from tests.qt.conftest import wait_until
 from tests.qt.test_drag import world  # noqa: F401 (a fixture)
 
 VIEW = object()
+REAL_SEEN = star_ask.StarAsk._seen            # (read at import: the window tests' conftest takes the ask as seen)
+
+
+@pytest.fixture(autouse=True)
+def _the_real_ask(monkeypatch):
+    monkeypatch.setattr(star_ask.StarAsk, "_seen", REAL_SEEN)
 
 
 class Settings:

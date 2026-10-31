@@ -80,6 +80,9 @@ def _per_test_window_state(request, monkeypatch):
         looks(self, *a, **k)
         made.append(self)
     monkeypatch.setattr(source_looks.SourceLooks, "__init__", made_looks)
+    from app.qt import star_ask                   # Surasura's star ask taken as seen (as the first mark's hint is in
+    monkeypatch.setattr(star_ask.StarAsk, "_seen", lambda self: True)   # `test_drag.open_window`): a test's landed
+    #                                               cards show no toast it didn't ask for; test_star_ask.py asks for it
     before = list(app.children())                 # (some children aren't hashable: compared by identity)
     yield
     qt_bridge = sys.modules.get("app.qt.bridge")

@@ -1007,6 +1007,7 @@ _UNSHOWN = {ROW: frozenset(("index", "accessible", "description")),
             FINISHED: frozenset(("index", "episodes", "accessible", "description")),
             "ep": frozenset(("rel_path", "ask"))}         # row 55: ▶'s ask is never painted (`can_play` is)
 _UNSHOWN[FINISHED] = _UNSHOWN[FINISHED] | {"cards_out"}      # --- W3.2 Q4: ⋯'s state, never painted
+_UNSHOWN[FINISHED] = _UNSHOWN[FINISHED] | {"new_faded"}      # --- U-1 (U-A5): a Finished row paints no *N new*
 
 
 def _same_face(old, new, kind):

@@ -1151,8 +1151,10 @@ def test_an_arrival_dropped_into_now_resyncs_quietly_and_every_row_keeps_its_new
     write_plan(path, [arrival["rel_path"]] + [r["rel_path"] for r in analysed], ["now"] + [r["tier"] for r in analysed],
                n_words=400, language="ja")                           # the Generate after the drop
     os.utime(path, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
+    v = numbers.version
     numbers.resync()
     assert numbers.idle(30) and numbers.why() is None and not isinstance(numbers()[1], M.Kept)      # the fade goes
+    assert numbers.changed(v) is not None                     # U-A1: what changed, named — never every row again
     assert all(numbers()[1][i][2] is not None for i in [arrival["id"]] + [r["id"] for r in analysed])
     numbers.close()
 

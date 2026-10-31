@@ -1969,6 +1969,7 @@ def _row_from(data):
                 for ep in (Episode(*e) for e in r.episodes))
     chips = tuple(Chip(*c) for c in r.chips)
     r = r._replace(status=st, mark=mk, episodes=eps, chips=chips,
+                   new_faded=bool(r.new_faded),                    # U-1 (U-A4): a cache from before held None there
                    cover=CoverRef(*r.cover) if r.cover else None,                  # W3.2 Q6
                    works=tuple(r.works or ()))                                     # LM11b G1
     plan = stone_plan.plan(r.episodes, r.next_index, r.media, r.key, r.source == "hato")     # planned again, not kept

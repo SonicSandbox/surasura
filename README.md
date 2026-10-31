@@ -88,7 +88,7 @@ Download the latest release zip file from the [Releases page](https://github.com
 
 > **Quick Start:** Download -> Extract -> Run `Surasura.exe`
 
-> **Coming from a 2.9 test build?** 3.0 sets up once more: your library order, watched / Finished marks and journey don't carry over. Your known words, word lists and settings do: when 3.0 first opens and asks for your old Surasura, press **Choose the old folder…** and pick the folder the test build is in.
+> **Coming from a 2.9 test build?** 3.0 sets up once more: your library order, watched / Finished marks and journey don't carry over. Your known words come back with your first Anki sync. On a PC where Surasura 2.x once ran, 3.0's first screen also offers to bring your word lists and settings from it.
 
 ## Screenshots
 > Dashboard with Migaku extension

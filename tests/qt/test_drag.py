@@ -1996,6 +1996,8 @@ class MarkWriter(FakeWriter):
         self._land(change, label)
 
     def undo(self, change=None, label=None):
+        if not self.writable:                                         # E4: refused as it is handed over
+            return None
         self.calls.append(("undo", [], {"change": change}))
         if self.stuck:
             self._waiting.append((("undo", change), label))
@@ -2356,6 +2358,56 @@ def test_a8_the_title_width_is_asked_again_for_the_painted_rows(world):
     win.moves.done(row, row.episodes[0])
     view = win.page_widgets["current"].view_model
     assert view.worst == view_rows.worst_needs(view.rows[1:])
+
+
+def test_a8_a_mark_stays_on_its_file_when_the_row_holding_it_is_built_under_another_key(world):
+    """The last Done joins a title's next part (L6.3) and a view comes with the row under its new key before the store
+    has the mark: the stone stays lit — the marks follow their files, not the row they were painted on."""
+    seed, win, writer = world(writer=MarkWriter)
+    old = win.page_widgets["current"].view_model
+    row = old.rows[4]
+    writer.stuck = True
+    win.moves.done(row, row.episodes[0])
+    joined = old._replace(rows=tuple(r._replace(key="p-joined") if r.key == row.key else r for r in old.rows))
+    win.show_library(joined)
+    assert rows_of(win)[4].key == "p-joined" and _lit(win, 4)
+
+
+def test_a8_an_undo_the_writer_refuses_at_once_shows_the_stores_own_again(world):
+    """The store turned read-only after the Done was saved (E4): the toast's Undo is refused as it is handed over — the
+    stone goes back to what the store has (lit) with the next view."""
+    seed, win, writer = world(writer=MarkWriter)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert wait_until(lambda: writer.saved, 3) and _gone_quiet(win)
+    writer.writable = False
+    win.toasts.card.buttons[0].click()
+    assert wait_until(lambda: _lit(win, 4) and win.moves.expect_marks == {}, 3)
+
+
+def test_a8_the_title_width_is_asked_again_when_a_mark_moves_the_widest_need(world):
+    """The one title width every row shares comes from the rows' strings: a Done whose row's string changes the
+    widest need below Up Next is painted with the width the store's view then has."""
+    from app.services import view_rows
+    seed, win, writer = world(writer=MarkWriter)
+    view = win.page_widgets["current"].view_model
+    pick = None
+    for k, r in enumerate(view.rows[1:], 1):
+        ep = next((e for e in r.episodes if not e.watched), None)
+        if ep is None or sum(not e.watched for e in r.episodes) < 2:
+            continue
+        rows_ = list(view.rows)
+        rows_[k] = view_rows.marked(r, {ep.id: True})
+        if view_rows.worst_needs(rows_[1:]) != view.worst:
+            pick = (k, r, ep)
+            break
+    if pick is None:
+        pytest.skip("no Done in the seed moves the widest need")
+    k, r, ep = pick
+    writer.stuck = True
+    win.moves.done(r, ep)
+    shown = win.page_widgets["current"].view_model
+    assert shown.worst != view.worst and shown.worst == view_rows.worst_needs(shown.rows[1:])
 
 
 def _all_but_one(seed, win, i):

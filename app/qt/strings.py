@@ -1310,9 +1310,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "stop_all": ("Stop asking for all", "Don't ask about any card below with this reason while it stays so. One "
                                         "that's fixed and happens again later asks again. Their items and words stay "
                                         "in your library"),
-    # alpha 4 K1: most of the library's files gone at once (*Start fresh*: Settings' *Start a fresh library* sheet)
-    "start_fresh": ("Start fresh", "Set this library aside in one backup in the trash, never deleted, and read your "
-                                   "folders again from scratch. It asks first"),
+    # alpha 4 K1: most of the library's files gone at once (Settings' *Sort my library again…* sheet; A7O-6 its name)
+    "start_fresh": ("Sort my library again…", "Clear its order into one backup in User Files' .trash, never "
+                                              "deleted, and read your folders again into Current. It asks first"),
     # A5K-2: the library folder emptied under its record
     "keep_old": ("Keep my old library", "Carry on with this library as it was: its places come back, and the files "
                                         "you removed stay out"),

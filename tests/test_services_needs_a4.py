@@ -237,7 +237,7 @@ def test_a5k2_the_emptied_folder_is_one_card_first_start_fresh_or_keep_my_old_li
     out = needs.entries(view(language, 30), emptied=NOTE, settled=True)
     first = out[0]
     assert first.kind == needs.LIBRARY_EMPTIED and first.actions == ("start_fresh", "keep_old")
-    assert first.title == "Your library folder was emptied: start a fresh library?"
+    assert first.title == "Your library folder was emptied: sort your library again?"
     assert "(3,895 files)" in first.say and first.unseen and first.lines == ()
     assert out[1].kind == needs.LIBRARY_GONE                                  # K1's follows when it holds too
     assert all(e.kind != needs.LIBRARY_EMPTIED for e in needs.entries(view(language, 30), emptied=None))

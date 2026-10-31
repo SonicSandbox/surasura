@@ -872,7 +872,7 @@ def give_stop(shell, root_id, text, language, told=None):
 
 
 class FreshRow(QObject):
-    """*Start a fresh library…* (K7): `button`; `card` while the sheet is open; `running` from Yes until the reset
+    """*Sort my library again…* (K7): `button`; `card` while the sheet is open; `running` from Yes until the reset
     answered."""
 
     def __init__(self, page):
@@ -971,7 +971,7 @@ class FreshRow(QObject):
             return False
         from app.qt import bridge
         relay = bridge.Relay(self)
-        # round 8 row 45: the arc from Yes, and *Starting a fresh library…* held in the bar until the reset answers
+        # round 8 row 45: the arc from Yes, and its running line held in the bar until the reset answers
         p = qpress.begin(self.button if self.alive() else None, "settings:fresh", busy=S.FRESH_RUNNING_TIP,
                          win=self.shell)
 
@@ -997,7 +997,7 @@ class FreshRow(QObject):
 
 
 def fresh_sheet(parent, counts, on_answer):
-    """*Start a fresh library?* — the one sheet (Settings' row, and *Needs you*'s card for a library mostly gone, K1):
+    """*Sort your library again?* — the one sheet (Settings' row, and *Needs you*'s card for a library mostly gone, K1):
     what goes, what comes back, what stays (`fresh_body`), *Also forget my known words* (off); Esc, Back, Enter or a
     click outside is No. `on_answer(yes)`; the card's `checked` is the box. -> the card."""
     from app.qt import confirm

@@ -1990,6 +1990,11 @@ class MarkWriter(FakeWriter):
         out, self._empty = self._empty, []
         return out
 
+    def free_one(self):
+        """The store lets the oldest waiting command through; the rest (and what comes after) still wait."""
+        change, label = self._waiting.pop(0)
+        self._land(change, label)
+
     def undo(self, change=None, label=None):
         self.calls.append(("undo", [], {"change": change}))
         if self.stuck:
@@ -2084,6 +2089,57 @@ def test_a8_the_undo_of_a_waiting_done_darkens_the_stone_at_once_and_stays_dark(
     writer.free()
     assert wait_until(lambda: writer.undone, 3) and _gone_quiet(win)
     assert not _lit(win, 4) and _stored(seed, row.episodes[0]) == 0
+
+
+def test_a8_an_undo_asked_before_the_done_was_saved_stays_dark_while_it_waits_behind_the_saved_done(world):
+    """The Done lands while its Undo still waits for the store: every view meanwhile shows the Done (the store has it),
+    and the stone stays dark — the Undo's — until the Undo lands."""
+    seed, win, writer = world(writer=MarkWriter)
+    reader = win.services.library
+    writer.stuck = True
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    win.toasts.card.buttons[0].click()                                # Undo, before the mark is saved
+    writer.free_one()                                                 # the Done lands; its Undo waits behind it
+    assert wait_until(lambda: _stored(seed, row.episodes[0]) == 1 and writer.pending() == 1, 3)
+    looks = reader.looks
+    assert wait_until(lambda: reader.looks >= looks + 3, 3)          # the reader's views of the Done come and go
+    settle(100)
+    assert not _lit(win, 4) and win.moves.expect_marks
+    writer.free()
+    assert wait_until(lambda: writer.undone, 3) and _gone_quiet(win)
+    assert not _lit(win, 4) and _stored(seed, row.episodes[0]) == 0
+
+
+def test_a8_a_done_landing_as_nothing_with_its_undo_asked_stays_as_the_store_has_it(world):
+    """Undo pressed before the Done was saved, then the Done lands as nothing: nothing to undo, the stone as it was
+    before the Done (dark), never the Done's."""
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck, writer.nothing = True, {"set_watched"}
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    win.toasts.card.buttons[0].click()
+    writer.free()
+    assert wait_until(lambda: win.moves.expect_marks == {}, 3)
+    settle(100)
+    assert not _lit(win, 4) and _stored(seed, row.episodes[0]) == 0
+
+
+def test_a8_up_nexts_own_done_paints_the_row_the_store_builds_and_reads_as_up_next(world):
+    """Current's first row (Up next) reads its next file aloud: painted ahead, it reads the next one at once, as the
+    store's own row then does — every field."""
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck = True
+    row = rows_of(win)[0]
+    ep = next(e for e in row.episodes if not e.watched)
+    win.moves.done(row, ep)
+    now = rows_of(win)[0]
+    assert now.accessible != row.accessible and now.title_ep in now.accessible
+    writer.free()
+    assert _gone_quiet(win)
+    stored = rows_of(win)[0]
+    for f in type(stored)._fields:
+        assert getattr(stored, f) == getattr(now, f), f
 
 
 @pytest.mark.parametrize("how", ["toast", "ctrl_z"])

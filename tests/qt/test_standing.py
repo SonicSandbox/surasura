@@ -13,7 +13,6 @@ it sits beside.
 Real paths in the test's own root, made-up show names; the windows are the existing harnesses' (test_window_sources,
 test_jobs_bar, test_current).
 """
-import json
 import os
 
 import pytest
@@ -45,11 +44,8 @@ def _said(looks, path, reachable, items=5):
 
 
 def _kept_in_seen_file():
-    try:
-        with open(needs.seen_path("ja"), encoding="utf-8") as f:
-            return [k for k in json.load(f)["answered"] if standing.kind_of(k) == standing.OFFLINE]
-    except FileNotFoundError:
-        return []
+    # Read as the window reads it, under the one writer's lock: opened beside its replace, Windows refuses the open.
+    return [k for k in needs.read_answered("ja") if standing.kind_of(k) == standing.OFFLINE]
 
 
 # --- the offline line ---------------------------------------------------------------------------------------------- #

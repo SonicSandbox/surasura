@@ -184,7 +184,8 @@ _PREFERRED_ROW = (f"NOT ({_ORIGIN_ROW} AND EXISTS (SELECT 1 FROM pairings q WHER
 MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window (settled at G2.2)
 SOON_LINE_NEW = 25               # a library 3.0 builds new: the Soon line after 25 rows of Current (Q2-4)
 SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold` the stored keys were made with
-SHOWS_JOINED = "shows_joined"     # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
+SHOWS_JOINED = "shows_joined"    # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
+JOIN_BATCH = 10                  # pairs a `join_same_shows` command joins: ~5 ms of write lock here (20k, a8 timed)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
 
@@ -2104,36 +2105,44 @@ class Store:
         put in one group of his own (his answer: they stay two titles in it) or of two types (a book beside a show).
         No item, order, piece or file touched: only which title the items are; *Not part of this title* takes them
         apart again. Done once a store (`meta.shows_joined`, read again inside the command): a pair made later is
-        *Same title?*'s to ask (one key). One command (the window reads the works). Returns the ids that went."""
+        *Same title?*'s to ask (one key). The candidates are read once, outside the write lock; then commands of
+        `JOIN_BATCH` pairs, each reading its pairs' rows again (the window's writes go between them; the window reads
+        the works); the one that ends the list sets the mark. Returns the ids that went."""
         if self._meta().get(SHOWS_JOINED):
             return []
         from app.episode_names import show_key
+        groups = {}
+        for wid, fk in self.conn.execute("SELECT id, folder_key FROM works WHERE folder_key IS NOT NULL "
+                                         "AND instr(folder_key, '/') = 0 ORDER BY id"):
+            key = show_key(fk)
+            if key:
+                groups.setdefault(key, []).append(wid)
+        todo = [(k, ids) for k, ids in groups.items() if len(ids) > 1]
         gone = []
-        with self._command("join_same_shows", "sync") as cmd:
-            meta = self._meta()
-            if meta.get(SHOWS_JOINED):
-                return []
-            groups = {}
-            for wid, title, fk in self.conn.execute("SELECT id, title, folder_key FROM works WHERE folder_key IS NOT "
-                                                    "NULL AND instr(folder_key, '/') = 0 ORDER BY id"):
-                key = show_key(fk)
-                if key:
-                    groups.setdefault(key, []).append((wid, title))
-            apart = {tuple(p) for p in json.loads(meta.get("kept_apart") or "[]")}
-            change = self._change(cmd, "join_same_shows")
-            for members in (g for g in groups.values() if len(g) > 1):
-                ids = [w for w, _t in members]
-                if self._titles_apart(ids) or any((a, b) in apart for n, a in enumerate(ids) for b in ids[n + 1:]) \
-                        or self._grouped_together(ids) or len({t for t in (self.media_type(w)[0] for w in ids)
-                                                               if t is not None}) > 1:
-                    continue
-                keep = max(members, key=lambda m: (len(unicodedata.normalize("NFKC", m[1] or "")), -m[0]))[0]
-                others = [w for w in ids if w != keep]
-                if self._merge_into(cmd, change, keep, others, users_first=True):
-                    self._carry_apart(keep, others)
-                    gone += others
-            self._set_meta({SHOWS_JOINED: 1})
-            return gone
+        for start in range(0, max(len(todo), 1), JOIN_BATCH):
+            with self._command("join_same_shows", "sync") as cmd:
+                meta = self._meta()
+                if meta.get(SHOWS_JOINED):
+                    return gone
+                apart = {tuple(p) for p in json.loads(meta.get("kept_apart") or "[]")}
+                change = self._change(cmd, "join_same_shows")
+                for key, ids in todo[start:start + JOIN_BATCH]:
+                    members = [(w, t) for w, t, fk in self.conn.execute(    # as they are now (renamed, merged, gone)
+                        f"SELECT id, title, folder_key FROM works WHERE id IN ({','.join('?' * len(ids))}) ORDER BY id",
+                        ids) if fk is not None and "/" not in fk and show_key(fk) == key]
+                    ids = [w for w, _t in members]
+                    if len(ids) < 2 or self._titles_apart(ids) or self._grouped_together(ids) or \
+                            any((a, b) in apart for n, a in enumerate(ids) for b in ids[n + 1:]) or \
+                            len({t for t in (self.media_type(w)[0] for w in ids) if t is not None}) > 1:
+                        continue
+                    keep = max(members, key=lambda m: (len(unicodedata.normalize("NFKC", m[1] or "")), -m[0]))[0]
+                    others = [w for w in ids if w != keep]
+                    if self._merge_into(cmd, change, keep, others, users_first=True):
+                        self._carry_apart(keep, others)
+                        gone += others
+                if start + JOIN_BATCH >= len(todo):
+                    self._set_meta({SHOWS_JOINED: 1})
+                    return gone
 
     def _grouped_together(self, work_ids):
         """Do two of these titles' items share a group (a piece of kind 'group')? The user's own answer."""

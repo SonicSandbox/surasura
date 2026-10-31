@@ -521,3 +521,29 @@ def test_the_kept_titles_own_subtitle_group_stands_when_both_are_the_learners(la
                 str(plain): {"group": ["Gone", "the other's"], "by": "user"}})})
         assert store.join_same_shows() == [plain]
         assert store.group_of(bang)["group"] == ["Kept", "the kept title's"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_long_list_of_pairs_is_joined_in_short_commands_and_marked_by_the_last(language, monkeypatch):
+    """The join gives the write lock back between batches (`JOIN_BATCH` pairs a command, here one): every pair is
+    joined, a pair left apart is asked about once only, and only the command that ends the list sets the mark."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    w = names(language)
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{w[85]}!": (1,), w[85]: (2,), f"{w[86]}!": (1,),
+                                                            w[86]: (2,), f"{w[87]}!": (1,), w[87]: (2,)})
+        apart = [_work_of(store, rels[k][0]) for k in (f"{w[86]}!", w[86])]
+        assert store.keep_apart(apart)
+        commands, real = [], ls.Store._command
+
+        def counted(self, kind, by="user"):
+            if kind == "join_same_shows":
+                commands.append(self._meta().get(ls.SHOWS_JOINED))
+            return real(self, kind, by)
+        monkeypatch.setattr(ls, "JOIN_BATCH", 1)
+        monkeypatch.setattr(ls.Store, "_command", counted)
+        assert len(store.join_same_shows()) == 2
+        assert commands == [None, None, None] and store.meta()[ls.SHOWS_JOINED] == 1
+        assert len({_work_of(store, r[0]) for r in rels.values()}) == 4

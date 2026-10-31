@@ -514,7 +514,8 @@ Fold = namedtuple("Fold", "id start end label ids")
 
 def watched_runs(keys):
     """[(start, end)] (`end` its last place): each run of equal keys next to each other, a run of one too; None is never
-    in one. A watched run's keys: what may not change inside it (its show, its tier), None where a part isn't watched."""
+    in one. A watched run's keys: what may not change inside it (its show, and its tier: the side of the Soon line —
+    in the window, of the top-20 line too), None where a part isn't watched."""
     out, last = [], None
     for k, key in enumerate(keys):
         if key is not None and key == last:
@@ -531,12 +532,14 @@ def fold_label(media, numbers, count):
 
 
 def folds(row, breaks=()):
-    """An opened row's folds: each run of two or more watched parts of one show (`watched_runs`, the journey's rule) —
-    never its next part (Up next stays a line of its own, so the row opens there: its watched parts before it are one
-    line, or one per show), never an audiobook's waiting item, never across a place in `breaks` (the window's: the
-    top-20 line running through the row). -> (Fold, …), first to last."""
+    """An opened row's folds: each run of two or more watched parts of one show and one tier (`watched_runs`, the
+    journey's rule: never across the Soon line running through the row, `soon_from`) — never its next part (Up next
+    stays a line of its own, so the row opens there: its watched parts before it are one line, or one per show; the
+    journey, with no Up next, folds a show watched to its end whole), never an audiobook's waiting item, never across a
+    place in `breaks` (the window's: the top-20 line running through the row). -> (Fold, …), first to last."""
     eps, nxt = row.episodes, row.next_index
-    cuts = sorted(breaks)
+    soon = getattr(row, "soon_from", None)
+    cuts = sorted(set(breaks) | ({soon} if soon is not None else set()))
     keys = [None if not e.watched or k == nxt or _heard(e) else
             (getattr(e, "show_key", None), sum(1 for b in cuts if b <= k)) for k, e in enumerate(eps)]
     out = []

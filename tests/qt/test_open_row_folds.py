@@ -7,8 +7,14 @@ watched*, the journey's fold and words (`view_rows.folds` / `watched_runs` / `fo
 `_journey_folds` reads too) — so the row opens at Up next, never a long scroll above it. One more click on that line
 (or Enter / Space on it) lists its parts after it; another folds them again. Its next part is never folded (Up next
 stays a line of its own), a part watched alone stays as it is, a group folds each show's run under its own show line,
-and the top-20 line running through a row is never folded over. PROVISIONAL (the lane's calls, scenario-tested here):
-the wording is the journey's; a fold shown whole goes back to folded when its row closes; a fold has no ⋯ of its own.
+and neither the Soon line nor the top-20 line running through a row is ever folded over. PROVISIONAL (the lane's calls,
+scenario-tested here): the wording and the tip are the journey's; Up next is never folded (so a show watched to its end
+reads *Parts 1–39 watched* and part 40, where the journey says *Parts 1–40*); an audiobook's waiting item is never in a
+run; a group folds per show; a fold shown whole goes back to folded when its row closes (or another row opens, however
+it opens) and stays shown whole while its run grows or splits; Enter or Space on it folds or shows it, the menu key and
+a right-click open its row's ⋯ (a fold has none of its own); a drop on a group's fold lands after its run's last part;
+no screen-reader words of its own (an opened row's lines are no accessible items today: its tip is read as the keyboard
+lands on it).
 
 What a wrong answer would cost a learner: Up next folded away (he opens the row and can't find what to watch), an
 unwatched part hidden inside a fold, two shows' parts under one line, a click on a fold that marks a part or opens a menu,
@@ -282,3 +288,117 @@ def test_the_hand_on_a_groups_fold_is_on_the_fold_whose_last_part_a_drop_lands_a
     at = lst.delegate.episode_at(lst.model().entries[i], lst.visualRect(lst.model().index(i, 0)), r.center())
     assert at is fold
     assert (fold.start, fold.end) == (0, 1)                     # `item_menu` reads `other.episodes[fold.end]`
+
+
+# --- the review's findings (reviews/a8-fold-register.md), each pinned ------------------------------------------------ #
+def test_the_soon_line_running_through_a_row_cuts_its_run_as_the_journey_does():
+    """The journey keys a run by its tier: the window's row cut by the Soon line (`soon_from`) folds each side apart."""
+    _view, row = _book(n=30, watched=range(20))
+    assert [(f.start, f.end) for f in vr.folds(row._replace(soon_from=12))] == [(0, 11), (12, 19)]
+
+
+def _three(order):
+    """Four rows in `order` of A (2 eps), D (30 eps), B (the book, 60 parts, 40 watched) and C (3 eps), *Keep studying
+    watched episodes* on and a top-20 line of 25 — so where the line runs depends on the order. -> (view, B's row)."""
+    work(5, BOOK, media="book")
+    parts = {"A": ("now", 1, 21, eps("星降る街の小さな工房", 1, 2), {}),
+             "B": ("now", 5, 20, book_parts(60), {k: {"watched": 1} for k in range(40)}),
+             "D": ("now", 2, 22, eps("雲の上の郵便屋さん", 1, 30), {}),
+             "C": ("now", 1, 23, eps("星降る街の小さな工房", 3, 5), {})}
+    pieces = {p: {"id": p, "title": None, "kind": "run"} for p in (20, 21, 22, 23)}
+    view = vr.build(items_of([parts[k] for k in order]), WORKS, {"mine_line": 25, "keep_watched": 1}, pieces=pieces)
+    return view, next(r for r in view.rows if r.piece_id == 20)
+
+
+def test_a_drop_carrying_the_top_20_line_through_the_opened_row_relays_out_never_resets(opened):
+    """R1: the opened row's folds are cut by the top-20 line, so a drop moving that line through it changes its line
+    count — still a "relayout" (the rows kept in place, the keyboard and hand on theirs), never a reset."""
+    view, row = _three("ADBC")
+    lst, _i = opened(view, row.key)
+    moved, _row = _three("ACBD")
+    assert lst.model().set_entries(_entries(moved)) == "relayout"
+
+
+def test_the_keyboard_on_up_next_stays_on_its_line_as_it_folds_into_the_run(opened):
+    """R2: the keyboard on Up next, then it is marked watched (a mark painted ahead, or the store's next view): it joins
+    the fold, and the keyboard is on the fold's line — never thrown back to the row's head."""
+    view, row = _book()
+    lst, i = opened(view, row.key)
+    lst.setFocus()
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    QTest.keyClick(lst, Qt.Key.Key_Down)
+    QTest.keyClick(lst, Qt.Key.Key_Down)
+    assert lst.ep_key == (row.key, row.episodes[280].id)
+    lst.set_entries(_entries(_book(watched=range(281))[0]))
+    _settle()
+    assert lst.ep_key == (row.key, _lines(lst, i)[0][1].id)
+
+
+def test_a_rest_keeps_the_fold_pictures_of_the_rows_it_keeps(opened):
+    """R4 (S19): `keep_only` keeps a kept row's fold picture as it keeps its episodes' — never drawn again each rest."""
+    view, row = _book()
+    lst, _i = opened(view, row.key)
+    lst.viewport().repaint()
+    folds = lambda: [k for k in lst.delegate._sprites["ep"] if isinstance(k[1][0], tuple) and k[1][0][0] == "fold"]
+    assert folds()
+    lst.delegate.keep_only(lst.model().entries)
+    assert folds()
+
+
+def test_another_row_opened_any_way_opens_folded(opened):
+    """R5: a row opened by ⋯'s join or group (`ItemActions._open`: `open_key` set, `opened` sent — not `toggle`) never
+    shows the folds the row before had shown whole."""
+    view, row = _book(n=12, watched=range(10))
+    lst, i = opened(view, row.key)
+    _click(lst, _lines(lst, i)[0][0])
+    assert lst.unfolded
+    model = lst.model()
+    other = model.entries[0][1]
+    model.open_key = other.key
+    lst.relayout()
+    lst.opened.emit(other.key)
+    assert lst.unfolded == frozenset()
+    model.open_key = row.key                         # back to the book: folded, as every opening
+    assert lst.unfolded == frozenset()
+
+
+def test_the_split_seam_beside_a_fold_line_is_the_seams_not_the_folds(opened):
+    """R6: the ✂ seam's band under a fold's line (where its parts' piece would split) answers the seam."""
+    view, row = _book(n=12, watched=range(10))
+    lst, i = opened(view, row.key)
+    entry = lst.model().entries[i]
+    seam = next(p for p in lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0))) if p[0] == "seam")
+    for y in (seam[1].top() + 1, seam[1].bottom() - 1):
+        assert lst.part_at(QPoint(seam[1].left() + 20, y))[1][0] == "seam"
+
+
+def test_the_menu_key_on_a_fold_opens_its_rows_menu_as_a_right_click_does(opened):
+    """#4: a fold has no ⋯ of its own — the menu key on it opens the row's, the same as the hand's right-click."""
+    view, row = _book(n=12, watched=range(10))
+    lst, i = opened(view, row.key)
+    lst.setFocus()
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    got = []
+    lst.menu_requested.connect(lambda r, _at: got.append(r.key))
+    lst.episode_menu_requested.connect(lambda *a: got.append("episode"))
+    QTest.keyClick(lst, Qt.Key.Key_Down)
+    QTest.keyClick(lst, Qt.Key.Key_Menu)
+    assert got == [row.key]
+
+
+def test_a_fold_click_measures_its_row_alone_and_a_repaint_after_draws_nothing_afresh(opened, monkeypatch):
+    """#6 (S19, touch only what changed): a fold's click works out one new height (its row's) — every other row's is a
+    look in the kept list — and once painted, a repaint draws no row or line afresh."""
+    view, row = _book()
+    lst, i = opened(view, row.key)
+    lst.viewport().repaint()
+    measured = []
+    real = rows.RowDelegate._size_hint
+    monkeypatch.setattr(rows.RowDelegate, "_size_hint", lambda self, entry, is_open: (measured.append(entry[1].key),
+                                                                                       real(self, entry, is_open))[1])
+    _click(lst, _lines(lst, i)[0][0])
+    lst.viewport().repaint()
+    assert measured == [row.key]
+    before = lst.delegate.renders
+    lst.viewport().repaint()
+    assert lst.delegate.renders == before

@@ -953,8 +953,9 @@ class RowsModel(QAbstractListModel):
         for i in range(len(entries)):
             a, b = self.shape_of(before[i]), self.shape_of(entries[i])
             if a != b:                              # (kind, lines, open, episodes): only the lines may differ, inside
-                if not lo <= i <= hi or a[0] != b[0] or a[2:] != b[2:]:
-                    return None
+                if not lo <= i <= hi or a[0] != b[0] or a[2] != b[2] or a[4:] != b[4:] or \
+                        a[3] != b[3] and before[i][2] == entries[i][2]:    # a8: an opened row's lines (its folds) move
+                    return None                     # with the top-20 line through it, never on their own here
                 relaid = True
         if relaid and sum(len(e[2]) for e in before[lo:hi + 1]) != sum(len(e[2]) for e in entries[lo:hi + 1]):
             return None                             # a line came or went: not lines moving
@@ -1653,9 +1654,10 @@ class RowDelegate(QStyledItemDelegate):
         out = []
         hot = self.view.hot_eps(row.key)
         for r, ep in self._episode_rows(row, area, hero):
-            if isinstance(ep, view_rows.Fold):       # --- a8: its whole line folds its run or shows it
-                tip = "fold_tip_open" if self.view.fold_open(ep) else "fold_tip"
-                out.append(("fold", r, view_rows.STRINGS[tip], ep))
+            if isinstance(ep, view_rows.Fold):       # --- a8: its whole line folds its run or shows it — but the ✂
+                tip = "fold_tip_open" if self.view.fold_open(ep) else "fold_tip"     # seam's band either side of it
+                half = max(4, round(5 * fz()))                                      # (`_seam_parts`) stays the seam's
+                out.append(("fold", r.adjusted(0, half, 0, -half), view_rows.STRINGS[tip], ep))
                 continue
             cols = self._episode_cols(r)
             if ep.id in hot:                         # --- row 28: the episode's own ⋯ (`episode_menu_requested`)
@@ -2287,6 +2289,7 @@ class RowDelegate(QStyledItemDelegate):
                 keys.add(k)
             if kind in (HERO, ROW):                  # a Needs-you card's episodes are lines, not episodes
                 eps.update(e.id for e in payload.episodes)
+                eps.update(("fold", e.id) for e in payload.episodes)     # a8: a fold's picture, by its first file
                 if getattr(payload, "group", False):     # LM11b: a group's show lines, kept as its episodes are
                     eps.update(("show", e.show) for e in payload.episodes)
         for name in ("row", "ep"):
@@ -2959,6 +2962,7 @@ def show_starts(row):
 # (`view_rows.folds`, the journey's rule); a click on that line lists its parts after it, another folds them again.
 # Which folds are shown whole lives on the view (`RowsView.unfolded`) and goes when its row closes (PROVISIONAL).
 _FOLDS = {}                                         # id(row) -> (row, its top-20 split, its folds): a few rows kept
+NO_IDS = frozenset()                                # no fold shown whole (`RowsView.unfolded`): one object
 
 
 def row_folds(row, lines=()):
@@ -3158,7 +3162,7 @@ class RowsView(QListView):
         self.seam = None                             # --- W3.2 Q8: (row key, episode id) of the ✂ seam under the hand
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.ep_hot = None                           # --- row 28: (row key, episode id) under the hand now
-        self.unfolded = frozenset()                  # --- a8: file ids of the opened row's folds shown whole
+        self._unfolded = (None, NO_IDS)              # --- a8: (the open row's key, its folds' file ids shown whole)
         self.ep_key = None                           # --- row 28: (row key, episode id) the keyboard is on (↓ in an
         #                                              opened row steps into its episodes, ↑ back out)
         self.join_key = None                         # --- W3.2 Q8: the part a drag would join (outlined)
@@ -3332,9 +3336,14 @@ class RowsView(QListView):
                 return False
             k = at - 1 if at > 0 else None
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space, Qt.Key.Key_Menu) and at is not None:
-            if isinstance(eps[at], view_rows.Fold):      # --- a8: Enter or Space folds it or shows its run; no ⋯
-                if key != Qt.Key.Key_Menu:
+            if isinstance(eps[at], view_rows.Fold):      # --- a8: Enter or Space folds it or shows its run; the menu
+                if key != Qt.Key.Key_Menu:               # key, its row's ⋯ (a fold has none: as a right-click on it)
                     self.toggle_fold(eps[at])
+                else:
+                    more = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] == "more"),
+                                None)
+                    rect = more[1] if more is not None else self.visualRect(idx)
+                    self.menu_requested.emit(entry[1], self.viewport().mapToGlobal(rect.bottomLeft()))
                 return True
             self.open_episode_menu(idx, eps[at])
             return True
@@ -3646,7 +3655,8 @@ class RowsView(QListView):
                 self._apply_restore()
                 self._restore = None                     # tried once: a place gone stays gone (W2.2 review A-15)
         if self.ep_key is not None and self._ep_line(self.ep_key) is None:
-            self._set_ep("ep_key", None)                 # --- row 28: its episode, or its row's opening, gone
+            self._set_ep("ep_key", self._ep_home(self.ep_key))    # --- row 28: its episode, or its row's opening, gone
+            #                                              (a8: a part folded away: on its fold's line)
         if self.ep_hot is not None:
             self._hand_again()                           # --- row 28 (AD-3): the hand's episode where it is now
         self._prune_pressed()                            # --- round 8 row 45
@@ -3843,11 +3853,21 @@ class RowsView(QListView):
         key = entry[1].key
         self._set_ep("ep_key", None)                 # --- row 28 (AD-1): opened or closed, the keyboard is on its head
         model.open_key = None if model.open_key == key else key
-        self.unfolded = frozenset()                  # --- a8: a row opens with its watched runs folded
+        self._unfolded = (None, NO_IDS)              # --- a8: a row opens with its watched runs folded
         self.relayout()
         self.opened.emit(model.open_key)
 
     # --- a8: an opened row's folds ------------------------------------------------------------------------------- #
+    @property
+    def unfolded(self):
+        """The file ids of the open row's folds shown whole — none once another row is open, however it opened (a
+        click, ⋯'s join or group, a refresh that closed it), the same object while unchanged (the heights' check)."""
+        key, ids = getattr(self, "_unfolded", (None, NO_IDS))
+        if key is not None and key != self.model().open_key:
+            self._unfolded = (None, NO_IDS)          # its row closed (or another opened): never shown whole again
+            return NO_IDS
+        return ids
+
     def fold_open(self, fold):
         """Whether `fold` (a `view_rows.Fold`) is shown whole: any of its files was shown — so a run grown by a part
         just marked watched (or split by one marked back) stays as the learner left it."""
@@ -3857,9 +3877,28 @@ class RowsView(QListView):
         """A fold's line pressed (a click, Enter or Space): its parts listed after it, or folded again. Its row alone
         changes height: the rows are laid out again as an opening lays them (each height a look in the kept list)."""
         ids = frozenset(fold.ids)
-        self.unfolded = self.unfolded - ids if self.fold_open(fold) else self.unfolded | ids
-        self.relayout()
-        self.viewport().update()
+        self._unfolded = (self.model().open_key, self.unfolded - ids if self.fold_open(fold) else self.unfolded | ids)
+        self.ep_key = self._ep_home(self.ep_key)     # the keyboard on a part folded away: on its fold's line
+        self.relayout()                              # (Qt's layout repaints the screen, each line from its picture)
+
+    def _ep_home(self, what):
+        """(row key, line id) of the line that holds `what` now: itself while it is listed, else the fold its part
+        folded into (a fold's id names its first file: that file's line or fold) — or None (its row closed, its file
+        gone). The keyboard keeps its place as a part folds away (a mark, a click on its fold) or a fold opens."""
+        if what is None or self._ep_line(what) is not None:
+            return what
+        model = self.model()
+        i = self._row_of_key(what[0])
+        if i is None or model.open_key != what[0]:
+            return None
+        kind, row, lines = model.entries[i]
+        if kind not in (HERO, ROW):
+            return None
+        file_id = what[1][1] if isinstance(what[1], tuple) and what[1][:1] == ("fold",) else what[1]
+        items = [item for item, _k in shown_lines(row, row_folds(row, lines), self.unfolded)]
+        home = next((item for item in items if item.id == file_id), None) or \
+            next((item for item in items if isinstance(item, view_rows.Fold) and file_id in item.ids), None)
+        return (what[0], home.id) if home is not None else None
 
     # the hover look in motion (W3.1a §1 *Rows*, §3: springs on the one clock; S7) -------------------------------- #
     def touch(self, row, key):

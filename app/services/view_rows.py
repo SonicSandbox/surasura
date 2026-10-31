@@ -109,7 +109,8 @@ Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb t
 #   cards_out (W3.2 Q4): a piece with an item out of the learning order (`in_learning_order` 0: Finished's *Leave its
 #   new cards out of your order*) — ⋯ shows *Put them back in the order* then; never painted
 #   string: a Current row's (stone plan, its need at its tightest — `stone_plan`, fz 1), planned here, on the reader's
-#   thread, once per row content (W3.1a B2); None on Finished's rows and on the first screen's cached rows
+#   thread, once per row content (W3.1a B2) — the one exception a row a stone's Done marks ahead of the store
+#   (`marked`, on the window's thread: that row alone, a8); None on Finished's rows and on the first screen's cached rows
 Chip = namedtuple("Chip", "text watched next mined tip")
 Line = namedtuple("Line", "kind after tip split")              # drawn after row `after` (0-based in Current);
 #                                                                 `split`: the row's first `split` files are above it
@@ -1012,6 +1013,78 @@ def _status_word(eps):
     return next(iter(words)) if len(words) == 1 else STRINGS["mixed_word"]
 
 
+# --- a8 (Sonic's alpha 7 try: a stone's Done showed a second late while a Generate ran): what a row reads from its
+# files' watched marks — one rule for the reader's build (`_row`) and the window's marks painted ahead of the store
+# (`marked`, `app/qt/drag`)
+def _channel_line(eps):
+    """A channel's line: *N videos · next: <the first not watched>*."""
+    nxt = next((e for e in eps if not e.watched), eps[-1])
+    return STRINGS["channel_n"].format(n=len(eps), title=nxt.title)
+
+
+def _watched_tail(eps):
+    """*· k of n watched* after a row's line while some of the files it finishes are watched, not all; else ''."""
+    finish = to_finish(eps)
+    k = sum(1 for e in finish if e.watched)
+    return " · " + STRINGS["watched"].format(k=k, n=len(finish)) if 0 < k < len(finish) else ""
+
+
+def _next_index(eps):
+    """Up next: the first file not watched (never an audiobook's waiting item), else the last."""
+    return next((i for i, e in enumerate(eps) if not e.watched and not _heard(e)),
+                max((i for i, e in enumerate(eps) if not _heard(e)), default=len(eps) - 1))
+
+
+def _title_ep(eps, next_index, media, group):
+    nxt = eps[next_index]
+    if group:                                            # (each episode carries its show's name: `_episode`'s `show`)
+        return STRINGS["group_ep"].format(show=nxt.show, label=nxt.label)
+    return nxt.label if (len(eps) > 1 or media in EPISODIC) and media != "youtube" else ""
+
+
+def _chips(eps, next_index, audio):
+    """-> (chips, how many more): a row of several files, its first `CHIPS_SHOWN`."""
+    if len(eps) <= 1:
+        return (), 0
+    return tuple(Chip(text=str(e.number) if e.number is not None else "🎧" if _heard(e)
+                      else "•", watched=e.watched, next=(i == next_index), mined=bool(e.cards),
+                      tip=audio if _heard(e) and audio else
+                      e.label + (f" · {e.cards} cards in Anki" if e.cards else ""))
+                 for i, e in enumerate(eps[:CHIPS_SHOWN])), max(0, len(eps) - CHIPS_SHOWN)
+
+
+def _string(eps, next_index, media, key, hato):
+    """A Current row's string: its stones' plan and their need (`stone_plan`)."""
+    plan = stone_plan.plan(eps, next_index, media, key, hato)
+    return plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan))
+
+
+def marked(row, marks, hero=False):
+    """Current's `row` with its files in `marks` ({file id: watched}) marked so — the window's own marks, painted the
+    moment a stone is clicked and kept until the store's views have them (`drag.DragController`) — and everything the
+    row reads from its marks read again by `_row`'s own rules, its string too (`hero`: Current's first row, read as Up
+    Next): the row the store builds next, field for field. `row` itself when no mark changes it."""
+    if not any(e.id in marks and e.watched != marks[e.id] for e in row.episodes):
+        return row
+    eps = tuple(e._replace(watched=marks[e.id]) if e.id in marks and e.watched != marks[e.id] else e
+                for e in row.episodes)
+    group = getattr(row, "group", False)
+    if row.media == "youtube" and not group and len(eps) > 1:
+        line = _channel_line(eps)
+    else:
+        tail = _watched_tail(row.episodes)
+        line = row.line[:-len(tail)] if tail and row.line.endswith(tail) else row.line
+    line += _watched_tail(eps)
+    next_index = _next_index(eps)
+    nxt = eps[next_index]
+    chips, more = _chips(eps, next_index, row.audio)
+    out = row._replace(episodes=eps, n_watched=sum(1 for e in to_finish(eps) if e.watched), next_index=next_index,
+                       line=line, description=line, title_ep=_title_ep(eps, next_index, row.media, group),
+                       chips=chips, more_chips=more, play_tip=nxt.play_tip, can_play=nxt.can_play,
+                       string=_string(eps, next_index, row.media, row.key, row.source == "hato"))
+    return _as_hero(out) if hero else out
+
+
 def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None,
          connect=None, meta=None, playable=None):
     first = piece[0]
@@ -1050,8 +1123,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         line = channel or ""
     elif media == "youtube":
         title = channel or eps[0].title
-        nxt = next((e for e in eps if not e.watched), eps[-1])
-        line = STRINGS["channel_n"].format(n=n, title=nxt.title)
+        line = _channel_line(eps)
     else:
         title = work.get("title") or first.get("parent_folder") or eps[0].title
         nums = [e.number for e in eps if e.number is not None]
@@ -1063,25 +1135,13 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         # whose transcript is its text is no waiting item (`heard_item`): its line is an episode's
         waits = [it for it in heard if heard_item(it)]
         line = STRINGS["audio_only"] if waits and len(waits) == n else range_text(media, nums, n - len(waits))
-    if not finished and 0 < n_watched < len(finish) and not single_video:
-        line = f"{line} · " + STRINGS["watched"].format(k=n_watched, n=len(finish))
-    next_index = next((i for i, e in enumerate(eps) if not e.watched and not _heard(e)),
-                      max((i for i, e in enumerate(eps) if not _heard(e)), default=n - 1))
+    if not finished and not single_video:
+        line += _watched_tail(eps)
+    next_index = _next_index(eps)
     nxt = eps[next_index]
-    if group:
-        title_ep = STRINGS["group_ep"].format(show=names[_show_key(piece[next_index])], label=nxt.label)
-    else:
-        title_ep = nxt.label if (n > 1 or media in EPISODIC) and media != "youtube" else ""
+    title_ep = _title_ep(eps, next_index, media, group)
     audio = "" if group else audio_tip(piece)            # a5-2: the 🎧's hover
-    chips = ()
-    more = 0
-    if n > 1:
-        chips = tuple(Chip(text=str(e.number) if e.number is not None else "🎧" if _heard(e)
-                           else "•", watched=e.watched, next=(i == next_index), mined=bool(e.cards),
-                           tip=audio if _heard(e) and audio else
-                           e.label + (f" · {e.cards} cards in Anki" if e.cards else ""))
-                      for i, e in enumerate(eps[:CHIPS_SHOWN]))
-        more = max(0, n - CHIPS_SHOWN)
+    chips, more = _chips(eps, next_index, audio)
     studying = bool(first.get("pinned")) and any(it.get("pinned") for it in piece)
     stamp = max((it.get("graduated_at") or "" for it in piece), default="") or None
     acc_pct = STRINGS["acc_pct_none"] if pct is None else STRINGS["pct"].format(pct=round(pct))
@@ -1090,10 +1150,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         if not finished \
         else f"{title} · {spoken(st) if st.kind in ('in_anki', 'mining') else line}"
     key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
-    string = None
-    if not finished:                                     # its string planned here, never on the window's thread (B2)
-        plan = stone_plan.plan(eps, next_index, media, key, source_of(first, work) == "hato")
-        string = (plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan)))
+    # its string planned here, never on the window's thread (B2; a mark painted ahead re-plans its own row: `marked`)
+    string = None if finished else _string(eps, next_index, media, key, source_of(first, work) == "hato")
     return Row(key=key, index=index, tier=tier, work_id=first.get("work_id"), piece_id=first.get("piece_id"),
                media=media, media_word=word, verb=VERB[word], title=title, title_ep=title_ep,
                line=line, source=source_of(first, work), n_files=n, n_watched=n_watched, pct=pct,

@@ -12,6 +12,9 @@
   expect?*, the picture(s) with *Leave the picture out*, *Save to my list*; the list (each report: *Open*, *Remove*,
   Undo on the status line; an opened one shows its words, pictures and notes, and takes a note); *Show me what's in
   it*, *Make the zip* into Downloads or a folder picked, *Include my last lists*, and the hint to send it to Sonic.
+  *Send on Discord* (3.0): what's typed saved first, the zip made, shown selected in its folder (Explorer's `/select,`)
+  and Surasura's Discord opened in the browser (`settings_strings.DISCORD_URL`: a link opened, never a call of the
+  app's); one line says where to drop it, *GitHub Issues works too* the quieter way.
   Every read and write of the list, its pictures and the zip runs on a worker; the zip's folder opens once it is
   written. What the tester typed and didn't save is kept while Surasura runs (`DRAFT`): Esc never loses it.
 """
@@ -28,7 +31,8 @@ from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QHBoxLayout, 
 
 from app import report as core
 from app import theme
-from app.qt import bridge, rows, strings, style
+from app.qt import bridge, rows, screens, strings, style
+from app.qt import settings_strings as SS
 from app.qt import press as qpress
 from app.qt import windows
 from app.qt.windows import SecondaryWindow
@@ -274,6 +278,7 @@ class ReportWindow(SecondaryWindow):
         self.list_paints = 0
         self.dest = downloads()
         self.last_removed = None
+        self.sending = False                                      # *Send on Discord* under way (its save, then its zip)
         self._thumbs = None                                       # the form's thumbnails, made once per set of pictures
         f = theme.text_factor(style.current()[1])
         self.pages = QStackedWidget(self)
@@ -293,6 +298,15 @@ class ReportWindow(SecondaryWindow):
         self.body.addLayout(self._send_row())
         self.hint = self._line(strings.REPORT_HINT)
         self.body.addWidget(self.hint)
+        where = QHBoxLayout()
+        self.send_where = self._line(strings.REPORT_SEND_WHERE)
+        where.addWidget(self.send_where, 1)
+        self.issues_button = self._button(strings.REPORT_ISSUES, strings.REPORT_ISSUES_TIP, self.open_issues, where)
+        self.issues_button.setObjectName("windowlink")                # a link: its arc's room at its right end only
+        qpress.room(self.issues_button, end=True)
+        self.issues_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        where.setAlignment(self.issues_button, Qt.AlignmentFlag.AlignBottom)
+        self.body.addLayout(where)
         self.setMinimumWidth(round(560 * f))
         self._show_pictures()
         self._restore_draft()
@@ -422,8 +436,11 @@ class ReportWindow(SecondaryWindow):
         self.show_button = self._button(strings.REPORT_SHOW, strings.REPORT_SHOW_TIP, self.show_contents, row,
                                         presses=True)
         self.zip_button = self._button(strings.REPORT_ZIP, strings.REPORT_ZIP_NONE_TIP, self.make_zip, row,
-                                       "primary", presses=True)
+                                       presses=True)
+        self.discord_button = self._button(strings.REPORT_DISCORD, strings.REPORT_DISCORD_NONE_TIP, self.send_discord,
+                                           row, "primary", presses=True)
         self.zip_button.setEnabled(False)
+        self.discord_button.setEnabled(False)
         self.show_button.setEnabled(False)
         box.addLayout(row)
         self._show_dest()
@@ -533,6 +550,7 @@ class ReportWindow(SecondaryWindow):
         self.zip_button.setEnabled(n > 0)
         self.show_button.setEnabled(n > 0)
         self.zip_button.setToolTip(strings.REPORT_ZIP_TIP if n else strings.REPORT_ZIP_NONE_TIP)
+        self._discord_ready()
         button = getattr(self.shell, "report_button", None)
         if button is not None:
             button.set_count(n)
@@ -564,9 +582,19 @@ class ReportWindow(SecondaryWindow):
 
     def _form_changed(self):
         self.save_button.setEnabled(bool(self.what.toPlainText().strip()))
+        self._discord_ready()
+
+    def _discord_ready(self):
+        """*Send on Discord*: ready with a saved report, or with words typed (saved first)."""
+        if not hasattr(self, "discord_button"):                   # (the form is built before the send row)
+            return
+        ready = bool(self.reports) or self.save_button.isEnabled() or self.sending
+        self.discord_button.setEnabled(ready)
+        self.discord_button.setToolTip(strings.REPORT_DISCORD_TIP if ready else strings.REPORT_DISCORD_NONE_TIP)
 
     # --- the presses ------------------------------------------------------------------------------------------- #
-    def save(self):
+    def save(self, then=None, control=None, broke=None):
+        """`then()`: once it is saved, `broke()` when it couldn't be (*Send on Discord*'s zip, its arc on `control`)."""
         what = self.what.toPlainText().strip()
         if not what or not self.save_button.isEnabled():
             return
@@ -577,8 +605,17 @@ class ReportWindow(SecondaryWindow):
 
         def work():
             return core.save(what, expected, [png_bytes(i) for i in images], where=where)
-        qpress.run(self.save_button, "report:save", work, win=self, then=self.alive(lambda r: self._saved(r, sent)),
-                   failed=self.alive(lambda info: self.say(strings.REPORT_SAVE_FAILED.format(why=info[0]))))
+        def saved(r):
+            self._saved(r, sent)
+            if then is not None:
+                then()
+
+        def failed(info):
+            self.say(strings.REPORT_SAVE_FAILED.format(why=info[0]))
+            if broke is not None:
+                broke()
+        return qpress.run(control or self.save_button, "report:save", work, win=self, then=self.alive(saved),
+                          failed=self.alive(failed))
 
     def _saved(self, _report, sent=None):
         """Saved: the form clears — only what was saved (words typed or a picture taken meanwhile stay)."""
@@ -719,8 +756,33 @@ class ReportWindow(SecondaryWindow):
                    then=self.alive(shown),
                    failed=self.alive(lambda info: self.say(strings.REPORT_ZIP_FAILED.format(why=info[0]))))
 
-    def make_zip(self):
-        if not self.reports:
+    def send_discord(self):
+        """*Send on Discord*: what's typed saved first, then the zip made, shown in its folder, and the invite opened."""
+        if qpress.live(self, "report:zip"):                       # a zip under way: nothing saved, said why
+            self.say(strings.REPORT_ZIP_BUSY)
+            return
+        if self.save_button.isEnabled():
+            self._sending(True)
+            if self.save(then=lambda: self.make_zip(discord=True, saved=True), control=self.discord_button,
+                         broke=lambda: self._sending(False)) is None:
+                self._sending(False)
+        elif self.reports:
+            self.make_zip(discord=True)
+
+    def _sending(self, on):
+        self.sending = on
+        self._discord_ready()
+
+    def open_issues(self):
+        qpress.open(self, SS.ISSUES_URL, control=self.issues_button)
+
+    def make_zip(self, discord=False, saved=False):
+        """`discord`: the zip shown selected in its folder and the invite opened, instead of its folder opened.
+        `saved`: a report was just saved (the list not read back yet)."""
+        if (not self.reports and not saved) or qpress.live(self, "report:zip"):    # (a second press: the first's)
+            if discord:
+                self._sending(False)
+                self.say(strings.REPORT_ZIP_BUSY if self.reports or saved else strings.REPORT_EMPTY)
             return
         language, include, dest = self.language, self.include_results.isChecked(), self.dest
         library = library_summary(self.shell)
@@ -728,13 +790,21 @@ class ReportWindow(SecondaryWindow):
         shell = self.shell
         extra = about_extra(self)
 
+        def show(win, path):
+            if discord:
+                show_and_invite(win, path)
+            else:
+                qpress.open(win, os.path.dirname(path), key="report:open-folder")
+
         def made(path):
-            words = strings.REPORT_ZIPPED.format(name=os.path.basename(path), folder=dest)
+            self.sending = False
+            words = (strings.REPORT_SENT.format(name=os.path.basename(path)) if discord
+                     else strings.REPORT_ZIPPED.format(name=os.path.basename(path), folder=dest))
             if self.gone:                                          # closed while it was made: the main window says it
                 windows.say_in_bar(shell, words)
                 _count_again(shell)
                 try:
-                    qpress.open(shell, os.path.dirname(path), key="report:open-folder")
+                    show(shell, path)
                 except RuntimeError:
                     pass
                 return
@@ -743,20 +813,23 @@ class ReportWindow(SecondaryWindow):
             self.say_undo(False)
             self.back()
             self.read(then_say=words)
-            qpress.open(self, os.path.dirname(path), key="report:open-folder")
+            show(self, path)
 
         def broke(info):
+            self.sending = False
             words = strings.REPORT_ZIP_FAILED.format(why=info[0])
             if self.gone:
                 windows.say_in_bar(shell, words)
                 return
             self._hold(False)
+            self._discord_ready()
             self.say(words)
         self._hold(True)
-        p = qpress.run(self.zip_button, "report:zip", core.make_zip, dest, language, include, library, None, extra,
-                       win=self, then=made, failed=broke)
+        p = qpress.run(self.discord_button if discord else self.zip_button, "report:zip", core.make_zip, dest,
+                       language, include, library, None, extra, win=self, then=made, failed=broke)
         if p is None:
             self._hold(False)
+            self._sending(False)
 
     def _hold(self, on):
         """While the zip is made: the list, a note and Undo wait (a report changed meanwhile would be kept anyway)."""
@@ -764,6 +837,22 @@ class ReportWindow(SecondaryWindow):
         self.note_button.setEnabled(not on)
         if hasattr(self, "undo_button"):
             self.undo_button.setEnabled(not on)
+
+
+def show_and_invite(win, path):
+    """(The window's thread, the zip written.) The zip shown selected in its folder, then Surasura's Discord opened in
+    the browser on top of it, ready for the zip to be dragged in — each on a worker, never the window's thread. A folder
+    that can't be shown still opens the invite."""
+    def invite(_got=None):
+        qpress.open(win, SS.DISCORD_URL, key="report:discord")
+    if qpress.OFF_THREAD:
+        qpress.run(None, "report:show-zip", screens.show_in_folder, path, win=win, then=invite, failed=invite)
+        return
+    try:
+        screens.show_in_folder(path)
+    except Exception:
+        pass
+    invite()
 
 
 def about_extra(win):

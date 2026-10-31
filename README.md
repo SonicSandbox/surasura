@@ -1,5 +1,5 @@
 # <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ) - The Immersion Architect
-![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.10+-blue.svg) [![Discord](https://img.shields.io/badge/Discord-join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/Uy8mHymrRv)
 
 *For Intermediate-Advanced learners. Supports Japanese & Chinese...* 
 
@@ -88,6 +88,8 @@ Download the latest release zip file from the [Releases page](https://github.com
 
 > **Quick Start:** Download -> Extract -> Run `Surasura.exe`
 
+> **Coming from a 2.9 test build?** 3.0 sets up once more: your library order, watched / Finished marks and journey don't carry over. Your known words, word lists and settings do: when 3.0 first opens and asks for your old Surasura, press **Choose the old folder…** and pick the folder the test build is in.
+
 ## Screenshots
 > Dashboard with Migaku extension
 
@@ -170,13 +172,15 @@ This runs the test suite, cleans previous builds, runs PyInstaller with the corr
 
 ## ❓ Q&A / FAQ
 
-If you have any questions or are running into issues, please check out the [Q&A / FAQ Guide](https://github.com/SonicSandbox/surasura/blob/main/docs/Surasura%20FAQ.md).
+If you have any questions or are running into issues, please check out the [Q&A / FAQ Guide](https://github.com/SonicSandbox/surasura/blob/main/docs/Surasura%20FAQ.md). Still stuck, or just want to talk? Join us on [Discord](https://discord.gg/Uy8mHymrRv).
 
 Wondering why a word on your list or your card is cut the way it is? [How Parsing Works](https://github.com/SonicSandbox/surasura/blob/main/docs/How%20Parsing%20Works.md) shows, on one page, what Surasura counts as one word, with examples — it also opens from **Settings → Language & Parsing → How parsing works**.
 
 ## 🤝 Support & Issues
 
 Encountered a bug or have a feature request? Please search the [Issues](https://github.com/SonicSandbox/surasura/issues) page to see if it's already being worked on. If not, feel free to open a new issue.
+
+In the app, the bug at the top right (**Report a problem**) makes a zip of what's needed to look into it; **Send on Discord** shows the zip and opens the server: drop it in the bug-report channel, or attach it to an issue here.
 
 ## 💡 Motivation
 *I was tired of learning words I never see, and I also like reading physical books. Otherwise, mining from physical books is a pain.* Surasura solves that friction.

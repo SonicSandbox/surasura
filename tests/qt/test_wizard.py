@@ -1695,3 +1695,18 @@ def test_michi_c_a_look_that_found_anki_closed_is_asked_again_when_anki_answers(
     api.record = BEHIND
     page.anki_changed()
     assert wait_until(lambda: page.btn_behind.isVisible())
+
+
+def test_the_last_page_offers_the_discord_in_one_tipped_line_opened_in_the_browser(make):
+    """3.0: *Questions? Join us on Discord* — one link on the last page, hover-tipped, the invite opened on a worker
+    (a link the browser opens, never a call of the app's); nothing written."""
+    from app.qt import settings_strings
+    wiz, _shell, _api, settings, _miner = make()
+    go_to(wiz, "level")
+    page = wiz.page
+    assert page.discord.text() == S.DISCORD and page.discord.toolTip() == S.DISCORD_TIP
+    assert page.discord.objectName() == "wizlink" and page.discord.isVisibleTo(page)
+    settings.calls.clear()
+    QTest.mouseClick(page.discord, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: wiz.launched == [settings_strings.DISCORD_URL])
+    assert settings.calls == []

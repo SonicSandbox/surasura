@@ -6,7 +6,9 @@
 ; It installs dist\Surasura as built into %LOCALAPPDATA%\Programs\<folder> (no folder page: the folder is always
 ; ours, so the uninstaller may name what it removes), asks one thing (the library folder) and writes the answer to
 ; %LOCALAPPDATA%\Houseki\<data name>\library.json; it never creates the library folder (Surasura does, at its first
-; start). Uninstalling removes the program only: never the library, the settings or the Houseki folders.
+; start). Uninstalling removes the program only: never the library, the settings or the Houseki folders; it
+; forgets the program's entry in the shared tools folder (Houseki\tools\surasura.json) only when that entry
+; names this install's surasura-cli.exe, so hato never calls a removed program.
 
 #ifndef AppVersion
   #error Pass /DAppVersion=<version> (python package_app.py --installer does)
@@ -322,10 +324,27 @@ begin
     'Remove Surasura now?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
 end;
 
+// surasura.json (app/tools_entry.py: UTF-8, its paths JSON-escaped, never \u) is how hato finds Surasura's command
+// line. The uninstall forgets it when its cli is this install's surasura-cli.exe, silent or not; an entry another
+// Surasura wrote (another folder) is left as it is.
+procedure ForgetToolsEntry;
+var
+  Entry, Cli: String;
+  Raw: AnsiString;
+begin
+  Entry := ExpandConstant('{localappdata}\Houseki\tools\surasura.json');
+  Cli := ExpandConstant('{app}\surasura-cli.exe');
+  StringChangeEx(Cli, '\', '\\', True);
+  if LoadStringFromFile(Entry, Raw) and (Pos('"' + AnsiLowercase(Cli) + '"', AnsiLowercase(UTF8Decode(Raw))) > 0) then
+    DeleteFile(Entry);
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Lib: String;
 begin
+  if CurUninstallStep = usPostUninstall then
+    ForgetToolsEntry;
   if (CurUninstallStep = usPostUninstall) and not UninstallSilent then begin
     Lib := NoteLibrary;
     if Lib = '' then

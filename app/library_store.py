@@ -309,6 +309,13 @@ def folder_key_of(rel):
     return path_key(below) if below else None
 
 
+def folder_title(below):
+    """A folder work's title from its folder below the tier (`_below_tier`): `episode_names.folder_title`'s one rule
+    (a season or specials folder named with the show above it, any other folder as written)."""
+    from app.episode_names import folder_title as title_of
+    return title_of(below)
+
+
 def show_of_name(file_name):
     """A stranded episode's show, read from its file name (SRC-11) by LM1a's one rule (`episode_names.identity`): a
     leading `[group]`, every `[…]` / `(…)` tag, the extension and a language tag (`.ja`), resolution and hash tags, a
@@ -2036,6 +2043,36 @@ class Store:
             cmd.touch()
             return gone
 
+    def retitle_folder_works(self):
+        """In the helper's run: a title still named by its folder's path (`Show/S01`, as a season folder's work was
+        named before alpha 7) gets its folder's title (`folder_title`: `Show Season 1`), the path kept among its other
+        titles (search still finds it). Never a title the user named, one with no folder or one already its folder's;
+        no item, order or folder key touched, so it is done once and every later run finds nothing. One command (the
+        window reads the works). Returns the ids retitled."""
+        found = [(w, folder_title(t), t) for w, t, fk in self.conn.execute(
+            "SELECT id, title, folder_key FROM works WHERE title_by_user = 0 AND folder_key IS NOT NULL "
+            "AND instr(title, '/') > 0")                       # a path title has a '/': the rest is never read again
+            if path_key(t) == fk and folder_title(t) != t]
+        if not found:
+            return []
+        with self._command("retitle_folder_works", "sync") as cmd:
+            done = []
+            for wid, title, old in found:
+                row = self.conn.execute("SELECT title, titles, folder_key, title_by_user FROM works WHERE id = ?",
+                                        (wid,)).fetchone()
+                if row is None or row[0] != old or row[2] != path_key(old) or row[3]:
+                    continue                    # renamed, merged or gone since the read: as it is now, it stands
+                titles = row[1]
+                others = [t for t in json.loads(titles or "[]") + [old] if t != title]
+                self.conn.execute("UPDATE works SET title = ?, titles = ? WHERE id = ?",
+                                  (title, _dumps(list(dict.fromkeys(others))), wid))
+                self._rekey_work(wid)
+                cmd.fed_works.add(wid)
+                done.append(wid)
+            if done:
+                cmd.touch()
+            return done
+
     def place_of(self, item_id):
         """(tier, 1-based position in it) of an item, read at once; (None, None) when it's gone."""
         with self._reading():
@@ -2944,7 +2981,8 @@ class Store:
     def _folder_work(self, rel, title, cmd, cache=None):
         """A new file's work by its folder (05 §5.3 (3)–(4)): the work holding its folder key; else the work of the
         files beside it (a folder whose work was merged into another keeps going there); else a new work, titled by
-        its folder below the tier folder. A loose file's work is its show's, read from its name (`_stranded_work`)."""
+        its folder below the tier folder (`folder_title`: `Show/S01` is `Show Season 1`, the path kept among its other
+        titles). A loose file's work is its show's, read from its name (`_stranded_work`)."""
         fk = folder_key_of(rel)
         if cache is not None and fk is not None and fk in cache:
             return cache[fk]
@@ -2963,7 +3001,8 @@ class Store:
         if wid is None and fk is None:
             return self._stranded_work(rel, title, cmd, cache)
         if wid is None:
-            wid = self._new_work(_below_tier(rel), fk, cmd)
+            below = _below_tier(rel)
+            wid = self._new_work(folder_title(below), fk, cmd, titles=(below,))
         if cache is not None:
             cache[fk] = wid
         return wid
@@ -5858,7 +5897,8 @@ def _seed_schema2(store, version):
     seeding and every build's (`_write_image`). One pass over items:
 
     - **Works:** an item without one joins the work holding its folder key (`folder_key_of`), else a new one titled by
-      its folder below the tier folder; a loose file is a work of its own, titled by its title. A pairing's record
+      its folder below the tier folder (`folder_title`, the path among its other titles); a loose file is a work of its
+      own, titled by its title. A pairing's record
       fills its item's work's AniList / TMDB ids; two works one id names are merged, the lower id kept (G2.2-6).
     - **Pieces:** each tier is read in (ord, id); a piece whose members aren't one run of one work in one tier keeps
       its id on its first run and each later run becomes a piece of its own; an item without a piece joins the piece
@@ -5889,8 +5929,9 @@ def _seed_schema2(store, version):
         if wid is None:
             wid = next_work
             next_work += 1
-            works[wid] = {"title": _below_tier(rel) if fk is not None else (title or rel.rsplit("/", 1)[-1]),
-                          "titles": [], "fk": fk, "anilist_id": None, "tmdb_id": None, "youtube_channel": None,
+            below = _below_tier(rel) if fk is not None else None
+            works[wid] = {"title": folder_title(below) if below else (title or rel.rsplit("/", 1)[-1]),
+                          "titles": [below] if below and folder_title(below) != below else [], "fk": fk, "anilist_id": None, "tmdb_id": None, "youtube_channel": None,
                           "new": True}
             if fk is not None:
                 by_key[fk] = wid
@@ -7088,6 +7129,7 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
             did = bool(store.prune_log()) or did
         did = bool(store.prune_gone()) or did
         did = bool(store.tidy_works()) or did
+        did = bool(store.retitle_folder_works()) or did
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:

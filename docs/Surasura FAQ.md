@@ -21,7 +21,7 @@ As close as your content allows. Surasura scans your whole library and picks the
 **Does Surasura go online? What leaves my computer?**
 Your content, known words and analysis never leave your computer — everything is worked out on your own machine. Surasura only goes online for:
 - a quick check on GitHub for a newer version, each time you open it;
-- an anonymous usage ping when you open it (app version, system, language, how many times you've opened it, and a random install ID — never your words or files). Turn it off with **Settings → 🧮 Data & System → Enable Anonymous Telemetry**; a completed update still sends one "updated" notice, with a throwaway ID instead of yours;
+- an anonymous usage ping when you open it (app version, system, language, how many times you've opened it, and a random install ID — never your words or files). Turn it off with **Settings → 🧮 Data & System → Enable Anonymous Telemetry**; off, nothing is sent, a completed update included;
 - features you start yourself: the Jiten import, YouTube / bilibili.tv transcripts (the downloader fetches its `yt-dlp` helper on first use), and links you click in the report.
 
 Anki sync talks only to the Anki running on your own computer.

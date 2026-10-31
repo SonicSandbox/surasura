@@ -65,6 +65,7 @@ def sheet():
 QWidget#loadscreen, QWidget#sortscreen {{ background: {c['bg']}; }}
 QLabel#loadtask {{ color: {c['ink']}; {font('hero-sub', 500, 1.35)} }}
 QLabel#loadline {{ color: {c['ink-dim']}; {font('hero-sub', 400, 1.2)} }}
+QLabel#loadside {{ color: {c['ink-dim']}; {font('hero-sub')} }}
 QLabel#sorttitle {{ color: {c['ink']}; {font('first-run-heading', 600, 1.3)} }}
 QLabel#sortline, QLabel#sortcount, QLabel#sortmore {{ color: {c['ink-dim']}; {font('hero-sub')} }}
 QLabel#sortgroup {{ color: {c['accent']}; {font('eyebrow')} letter-spacing: 1px; }}
@@ -252,7 +253,8 @@ class _FadeLine(QLabel):
 
 # --- the load screen ------------------------------------------------------------------------------------------------ #
 class LoadScreen(QWidget):
-    """The load's calm cover (module docstring). `set_task(text)`; `stopping()` after *Stop*; `stop` when pressed."""
+    """The load's calm cover (module docstring). `set_task(text)`; `set_side(text)` (alpha 8: what runs beside it —
+    setup's YouTube videos — and how it ended; empty: none); `stopping()` after *Stop*; `stop` when pressed."""
     stop = pyqtSignal()
 
     def __init__(self, parent=None, lines=S.LOAD_LINES):
@@ -271,6 +273,12 @@ class LoadScreen(QWidget):
         self.task = _label("loadtask", "", self)
         self.task.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         box.addWidget(self.task)
+        self.side = _label("loadside", "", self)
+        self.side.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.side.setWordWrap(True)
+        self.side.setVisible(False)
+        box.addSpacing(_px(6))
+        box.addWidget(self.side)
         box.addSpacing(_px(14))
         self.line = _FadeLine(self.lines[0] if self.lines else "", self)
         box.addWidget(self.line)
@@ -297,6 +305,14 @@ class LoadScreen(QWidget):
         if self.task.text() != text:
             self.task.setText(text)
             self.task.setAccessibleName(text)
+
+    def set_side(self, text):
+        text = text or ""
+        if self.side.text() != text:
+            self.side.setText(text)
+            self.side.setAccessibleName(text)
+        if self.side.isHidden() == bool(text):
+            self.side.setVisible(bool(text))
 
     def stopping(self):
         self.btn_stop.setEnabled(False)

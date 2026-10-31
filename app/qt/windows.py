@@ -379,14 +379,15 @@ def arrived_line(waiting, placed, missed=0):
     return line
 
 
-def youtube_arrivals(shell):
+def youtube_arrivals(shell, then=None):
     """The downloader's `on_complete(paths)` (the window's thread): its created files (and the files in the folders it
     made) registered through the window's writer — never the store on this thread — each waiting in New arrivals
     unless the user's `placing_rules` (`youtube`, `youtube:<channel>`) place it; once they land, the downloader's
     status line and the bottom bar say where they went. Always the callable (the downloader's window is kept and
     raised: one opened before the library must still hand its files over; L1 N2). Raises when no library is open, the
     files aren't in the open library's folder (the language switched mid-download; L1 S3) or the store can't be
-    written — the downloader says why; the files wait in Processed."""
+    written — the downloader says why; the files wait in Processed. `then(waiting, placed, missed)` (alpha 8, setup's
+    *YouTube*): told once they landed, on the window's thread."""
 
     def complete(paths):
         writer = getattr(shell.services, "writer", None)  # the library open now (a switch makes another)
@@ -403,7 +404,7 @@ def youtube_arrivals(shell):
         rules = {str(k): v for k, v in rules.items()} if hasattr(rules, "items") else {}
         language = writer.language
         relay = bridge.Relay(parent=shell)
-        relay.said.connect(lambda counts: _arrived(shell, relay, counts))
+        relay.said.connect(lambda counts: _arrived(shell, relay, counts, then))
         seq = writer.register(paths, lambda path: youtube_record(path, language), rules=rules,
                               label=strings.YT_ARRIVED_LABEL,
                               done=lambda waiting, placed, missed: relay.call((waiting, placed, missed)))
@@ -413,11 +414,13 @@ def youtube_arrivals(shell):
     return complete
 
 
-def _arrived(shell, relay, counts):
+def _arrived(shell, relay, counts, then=None):
     try:
         relay.deleteLater()
     except RuntimeError:
         pass
+    if then is not None:
+        then(*counts)
     line = arrived_line(*counts)
     if not line:
         return

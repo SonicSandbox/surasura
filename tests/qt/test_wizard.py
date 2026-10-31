@@ -11,6 +11,8 @@ tests drive it through stand-ins with the contract's names and shapes (`FakeApi`
 are proven here and the services' rules in their own suites. Real words throughout (decks, shows, folders as a learner
 has them).
 """
+import os
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -487,6 +489,7 @@ class FakeAdder(QObject):
         super().__init__()
         self.names = names
         self.ran = []
+        self.added = []
 
     def entries(self, names=()):
         return [(n, n, n) for n in names if n in self.names]
@@ -495,41 +498,182 @@ class FakeAdder(QObject):
         self.ran.append(f"{name}:first" if first else name)        # first: setup's own first look (Current, SRC-1)
         self.given.emit("Added 嵐壁の巨兵 at #1 · analysed on the next Generate")
 
+    def add_files(self, paths, **_kw):
+        self.added.append(list(paths))                             # alpha 8: page 3's files, the drop's path
+        return 1
 
-def test_page_three_takes_add_actions_and_never_opens_the_content_manager(make):
-    """W3.2 Q3 (IK-12): page 3's buttons are + Add's — Files and A folder through the window's adder (the Explorer
-    drop's path), EPUB / Anki deck and YouTube through their doors — and a write handed to the writer reads the rows
-    again. Nothing opens the 2.x Content Manager (no Tk from the 3.0 window)."""
-    wiz, shell, api, *_ = make()
-    adder = shell.adder = FakeAdder()
-    adder.given.connect(wiz._added)                                # (the fixture's shell had no adder when it was made)
+
+def test_page_three_offers_a_file_a_folder_and_youtube_and_nothing_else_to_bring_in(make):
+    """Alpha 8 (Sonic: "You just pick the file or you pick the folder"; "it asks to pick a folder twice"): page 3 has
+    one *Choose a file…*, one *Choose a folder…* and *YouTube…* (while its door is on) — no EPUB button, no second
+    folder button, nothing that opens the 2.x Content Manager. Each is tipped."""
+    wiz, shell, api, *_ = make(data={"enable_youtube_transcripts": True})
+    shell.adder = FakeAdder()
     go_to(wiz, "shows")
     page = wiz.page
-    assert wait_until(lambda: ("library_rows", "ja") in api.calls)
     page.entered()
-    shown = {n for n, b in page.add_buttons.items() if not b.isHidden()}
-    assert shown == {"files", "folder", "extract"}                  # YouTube's door is off (enable_youtube_transcripts)
-    reads = api.calls.count(("library_rows", "ja"))
-    QTest.mouseClick(page.add_buttons["files"], Qt.MouseButton.LeftButton)
-    QTest.mouseClick(page.add_buttons["folder"], Qt.MouseButton.LeftButton)
-    assert adder.ran == ["files", "folder:first"], "page 3's folder: setup's first look (SRC W1 fix, Decision 2)"
-    assert wait_until(lambda: api.calls.count(("library_rows", "ja")) >= reads + 2)
-    QTest.mouseClick(page.add_buttons["extract"], Qt.MouseButton.LeftButton)
-    assert wiz.launched[-1] == "extract"
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    shown = [b.text() for b in page.findChildren(QPushButton) if b.isVisibleTo(page) and b.text()]
+    assert [t for t in shown if t in (S.PICK_FILE, S.PICK_FOLDER, S.YOUTUBE)] == [S.PICK_FILE, S.PICK_FOLDER, S.YOUTUBE]
+    assert not [t for t in shown if "EPUB" in t or t == strings.ADD_ITEMS["folder"][0]], shown
+    assert sum(1 for t in shown if "folder" in t.lower()) == 1, "one folder button, never two"
+    assert all(b.toolTip() for b in (page.btn_file, page.btn_pick, page.btn_youtube))
     assert ("content", "ja") not in api.calls
 
 
-def test_page_three_without_a_library_open_offers_only_the_doors(make):
-    """No writer in the window (no library open yet): Files and A folder aren't shown — a button that can't act is
-    never offered — and the doors still are."""
-    wiz, *_ = make(data={"enable_youtube_transcripts": True})
+def test_page_three_without_a_library_open_hides_what_cant_act(make):
+    """No writer in the window (no library open yet) and no folder reading: *Choose a file…* and *Choose a folder…*
+    aren't shown (a button that can't act is never offered); *YouTube…* still is, its door on."""
+    wiz, *_ = make(data={"enable_youtube_transcripts": True}, api=NoFoldersApi())
     go_to(wiz, "shows")
     page = wiz.page
     page.entered()
-    assert wait_until(lambda: not page.add_buttons["youtube"].isHidden())
-    assert page.add_buttons["files"].isHidden() and page.add_buttons["folder"].isHidden()
-    QTest.mouseClick(page.add_buttons["youtube"], Qt.MouseButton.LeftButton)
-    assert wiz.launched[-1] == "youtube-downloader"
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    assert page.btn_file.isHidden() and page.btn_pick.isHidden()
+
+
+class NoFoldersApi(FakeApi):
+    read_folders = None                                           # (`can_read_folders`: not callable)
+
+
+def test_choose_a_file_lists_what_the_library_reads_and_says_what_it_doesnt(make, tmp_path):
+    """*Choose a file…*: each file picked is read by the one rule (`path_utils.file_kind`) — a subtitle, a text and an
+    EPUB are listed (each with *Remove*), a video is said, never listed; nothing is brought in before *Next*."""
+    wiz, shell, *_ = make()
+    adder = shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    picked = [str(tmp_path / n) for n in ("ぼっち・ざ・ろっく！ 第01話.ja.srt", "夜の図書館.epub", "日記.txt",
+                                          "ぼっち・ざ・ろっく！ 第01話.mkv")]
+    wiz.pick_files_dialog = lambda _title, _start: picked
+    QTest.mouseClick(page.btn_file, Qt.MouseButton.LeftButton)
+    assert page.files == [os.path.normpath(p) for p in picked[:3]]
+    assert not page.refused_line.isHidden() and "第01話.mkv" in page.refused_line.text()
+    assert S.FILE_NOT_READ.format(name="ぼっち・ざ・ろっく！ 第01話.mkv") in page.refused_line.text()
+    QApplication.processEvents()                                   # (a new row is shown by the next turn of the loop)
+    removes = [b for b in page.folders_part.findChildren(QPushButton)
+               if b.text() == S.FOLDER_REMOVE and b.isVisibleTo(page)]
+    assert len(removes) == 3
+    QTest.mouseClick(removes[2], Qt.MouseButton.LeftButton)        # 日記.txt left out
+    assert page.files == [os.path.normpath(p) for p in picked[:2]]
+    assert adder.added == []
+
+
+def test_next_brings_the_texts_in_at_once_and_each_book_through_extract_then_goes_on(make, tmp_path, monkeypatch):
+    """*Next* with files: the subtitles and texts are given to + Add's writer (the top of Current, the drop's path),
+    each EPUB goes to Extract's own child, and setup goes on to page 4 — nothing waits for them."""
+    wiz, shell, *_ = make()
+    adder = shell.adder = FakeAdder()
+    books = []
+    monkeypatch.setattr(wiz, "_extract_book", books.append)
+    go_to(wiz, "shows")
+    page = wiz.page
+    picked = [str(tmp_path / "ぼっち・ざ・ろっく！ 第01話.ja.srt"), str(tmp_path / "夜の図書館.epub")]
+    wiz.pick_files_dialog = lambda _title, _start: picked
+    page.btn_file.click()
+    wiz.next()
+    assert adder.added == [[os.path.normpath(picked[0])]] and books == [os.path.normpath(picked[1])]
+    assert wiz.say_line.text() == S.FILES_ADDED.format(what="1 file")
+    assert W.PAGES[wiz.index] == "order" and page.files == []
+
+
+class FakeFetch:
+    """The YouTube module's `fetch_first(shell, links, language, said, ended)`: each call recorded; `end(...)` answers
+    the last one as the module would, on the window's thread."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, shell, links, language, said, ended):
+        self.calls.append((list(links), language))
+        self.ended = ended
+        return object()
+
+
+def test_youtube_opens_its_links_at_once_and_next_asks_for_the_risk_tick_first(make, monkeypatch):
+    """*YouTube…* opens the links box at once, focused; *Next* with links and the downloader's risk unticked says so
+    and stays (nothing fetched); ticked — saved as the downloader's own key — *Next* fetches each line."""
+    wiz, _shell, _api, settings, _m = make(data={"enable_youtube_transcripts": True})
+    fetch = FakeFetch()
+    monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    assert page.links_part.isHidden()
+    QTest.mouseClick(page.btn_youtube, Qt.MouseButton.LeftButton)
+    assert not page.links_part.isHidden() and page.links.hasFocus()
+    page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI\n\n  "
+                            "https://www.youtube.com/watch?v=7nlUSMQKRKQ&list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn  \n")
+    wiz.next()
+    assert fetch.calls == [] and page.refused_line.text() == S.YOUTUBE_NEEDS_RISK.format(risk=page.yt_risk.name.text()) and W.PAGES[wiz.index] == "shows"
+    page.yt_risk.switch.click()
+    assert settings.calls[-1] == {"youtube_risk_acknowledged": True}
+    wiz.next()
+    assert fetch.calls == [(["https://www.youtube.com/watch?v=eFwn9e8IYsI",
+                             "https://www.youtube.com/watch?v=7nlUSMQKRKQ&list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn"], "ja")]
+    assert wiz.covered is not None, "YouTube alone: the load screen covers while its videos come"
+    assert wiz.covered.side.text() == S.YOUTUBE_FETCHING.format(what="2 videos")
+    assert wiz.covered.task.text() == S.LOAD_YOUTUBE
+
+
+def test_a_youtube_fetch_that_brings_nothing_says_why_on_the_page_and_setup_goes_on(make, monkeypatch):
+    """The fetch's end with nothing (offline, a private video): its plain words on the page and in the bar, the load
+    screen gone (nothing to sort), *Next* free again."""
+    wiz, shell, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
+    fetch = FakeFetch()
+    monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    page.btn_youtube.click()
+    page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI")
+    wiz.next()
+    assert wiz.covered is not None and wiz.fetching is not None
+    fetch.ended([], ["could not read https://www.youtube.com/watch?v=eFwn9e8IYsI: YouTube couldn't be reached: check "
+                     "your internet connection"])
+    line = S.YOUTUBE_FAILED.format(why="could not read https://www.youtube.com/watch?v=eFwn9e8IYsI: YouTube couldn't "
+                                       "be reached: check your internet connection")
+    assert wiz.covered is None and wiz.fetching is None and wiz.say_line.text() == line
+    assert W.PAGES[wiz.index] == "shows" and page.links.toPlainText() == ""
+
+
+def test_youtube_videos_that_came_go_to_new_arrivals_then_the_sort_screen(make, monkeypatch):
+    """The fetch's transcripts go through the downloader's own seam (`windows.youtube_arrivals`: New arrivals); once
+    they landed, the load screen says so beside its task and the sorting comes up."""
+    wiz, shell, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
+    fetch = FakeFetch()
+    monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
+    handed = []
+
+    def arrivals(_shell, then=None):
+        def complete(paths):
+            handed.append(paths)
+            then(len(paths), 0, 0)
+        return complete
+    monkeypatch.setattr(windows, "youtube_arrivals", arrivals)
+    sorted_ = []
+    monkeypatch.setattr(wiz, "_load_sort", lambda: sorted_.append(wiz.covered.side.text()))
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    page.btn_youtube.click()
+    page.links.setPlainText("https://www.youtube.com/watch?v=7nlUSMQKRKQ&list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn")
+    wiz.next()
+    path = os.path.join("Processed", "peko peko vlog - 【Japanese Podcast #43】 [7nlUSMQKRKQ].txt")
+    fetch.ended([path], [])
+    assert handed == [[path]]
+    assert sorted_ == [S.YOUTUBE_DONE.format(what="1 video")]
+
+
+def test_youtube_line_says_what_came_and_what_didnt():
+    assert W.youtube_line(2, 0, "") == "YouTube · 2 videos in New arrivals"
+    assert W.youtube_line(0, 1, "") == "YouTube · 1 video in your library"
+    assert W.youtube_line(1, 0, "the video is private or no longer there") == \
+        "YouTube · 1 video in New arrivals · the video is private or no longer there"
+    assert W.youtube_line(0, 0, "") == S.YOUTUBE_FAILED.format(why=S.YOUTUBE_NONE)
 
 
 def test_samples_are_copied_in_said_and_the_rows_read_again_and_the_line_leaves_with_its_page(make):
@@ -1710,3 +1854,80 @@ def test_the_last_page_offers_the_discord_in_one_tipped_line_opened_in_the_brows
     QTest.mouseClick(page.discord, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: wiz.launched == [settings_strings.DISCORD_URL])
     assert settings.calls == []
+
+
+# --- the review's round (A8B-3, 4, 5, 10) ------------------------------------------------------------------------- #
+def _youtube_page(make, monkeypatch, **data):
+    wiz, shell, *_ = make(data=dict({"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True}, **data))
+    fetch = FakeFetch()
+    monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    page.btn_youtube.click()
+    return wiz, shell, page, fetch
+
+
+def test_a_video_already_in_the_library_says_so_never_paste_a_link(make, monkeypatch):
+    """A8B-3: the fetch wrote nothing new and said nothing (the video was brought in before): the line says it was
+    already in the library — never "Paste a YouTube link first"."""
+    wiz, _shell, page, fetch = _youtube_page(make, monkeypatch)
+    page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI")
+    wiz.next()
+    fetch.ended([], [])
+    assert wiz.say_line.text() == S.YOUTUBE_FAILED.format(why=S.YOUTUBE_HAD)
+
+
+def test_links_pasted_while_the_last_ones_still_come_stay_and_are_said(make, monkeypatch):
+    """A8B-4: Next with new links while the last fetch still runs: nothing fetched twice, the links stay in the box,
+    the page says why."""
+    wiz, _shell, page, fetch = _youtube_page(make, monkeypatch)
+    page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI")
+    wiz.next()
+    wiz._load_stop()                                               # Stop: on to the sorting, the fetch still running
+    wiz._load, wiz.covered = None, None                            # (the sorting done: page 3 again)
+    page.links.setPlainText("https://www.youtube.com/watch?v=7nlUSMQKRKQ")
+    wiz.next()
+    assert len(fetch.calls) == 1 and page.refused_line.text() == S.YOUTUBE_BUSY
+    assert page.links.toPlainText() == "https://www.youtube.com/watch?v=7nlUSMQKRKQ"
+
+
+def test_files_the_writer_refuses_stay_listed_and_the_page_says_why(make, tmp_path):
+    """A8B-5: the library can't be saved now (+ Add's writer refuses): the picked files stay listed, the page says
+    why, and setup stays on page 3 — nothing is dropped unsaid."""
+    wiz, shell, *_ = make()
+    adder = shell.adder = FakeAdder()
+    adder.add_files = lambda paths, **_kw: None
+    go_to(wiz, "shows")
+    page = wiz.page
+    picked = [str(tmp_path / "ぼっち・ざ・ろっく！ 第01話.ja.srt")]
+    wiz.pick_files_dialog = lambda _title, _start: picked
+    page.btn_file.click()
+    wiz.next()
+    assert page.files == [os.path.normpath(picked[0])] and page.refused_line.text() == S.FILES_NOT_ADDED
+    assert W.PAGES[wiz.index] == "shows"
+
+
+def test_videos_that_landed_during_the_scan_are_sorted_though_the_scan_found_nothing(make, monkeypatch):
+    """A8B-10: the fetch landed while the folders were still read, and the folders held nothing: the sorting still
+    comes up for the videos (never the page with them unsorted)."""
+    wiz, _shell, page, fetch = _youtube_page(make, monkeypatch)
+    wiz.youtube_came = 1
+    sorted_ = []
+    monkeypatch.setattr(wiz, "_load_sort", lambda: sorted_.append(True))
+    wiz._load_begin()
+    wiz._load_scanned({"ids": []})
+    assert sorted_ == [True]
+
+
+def test_a_scan_that_found_nothing_waits_for_the_youtube_videos_still_coming(make, monkeypatch):
+    """Mutant M14: folders read and empty while YouTube's videos are still coming — the load screen stays, at its
+    YouTube step (never the page with the videos about to land unsorted)."""
+    wiz, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
+    go_to(wiz, "shows")
+    wiz.fetching = {"links": 1}
+    wiz._load_begin()
+    wiz._load_scanned({"ids": []})
+    assert wiz.covered is not None and wiz._load["step"] == "youtube"
+    assert wiz.covered.task.text() == S.LOAD_YOUTUBE

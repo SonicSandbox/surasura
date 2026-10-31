@@ -453,6 +453,18 @@ SAMPLE_SUBFOLDERS = ["HighPriority", "LowPriority", "GoalContent", "Graduated", 
 # analyzer's parse_ass reads (v1.6 promised ASS / SSA; the scan skipped .ssa until 2026-09).
 CONTENT_EXTENSIONS = (".txt", ".md", ".srt", ".ass", ".ssa")
 SUBTITLE_EXTENSIONS = (".srt", ".ass", ".ssa")
+BOOK_EXTENSIONS = (".epub",)                    # a book: split into parts as it comes in (`sources.book_parts`)
+
+
+def file_kind(name):
+    """What a file is to the library — the one rule (alpha 8: setup's *Choose a file…*, a folder's look, Extract):
+    "book" (an EPUB, split into parts), "text" (a subtitle or a text, read as it is), else None (not read)."""
+    low = str(name or "").lower()
+    if low.endswith(BOOK_EXTENSIONS):
+        return "book"
+    if low.endswith(CONTENT_EXTENSIONS):
+        return "text"
+    return None
 
 
 def report_name(path):

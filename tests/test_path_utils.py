@@ -159,3 +159,16 @@ def test_the_guard_fails_a_test_that_makes_a_houseki_root(tmp_path, monkeypatch)
     root.mkdir(parents=True)
     with pytest.raises(AssertionError, match="made or wrote the Houseki root"):
         next(guard)
+
+
+def test_file_kind_is_the_one_rule_for_what_a_file_is_to_the_library():
+    """Alpha 8: setup's *Choose a file…*, a folder's look and Extract ask one rule — an EPUB is a book (split into
+    parts), a subtitle or a text is read as it is, anything else isn't read (any case, any folder, Japanese names)."""
+    from app import extract, path_utils, sources
+    assert path_utils.file_kind(r"E:\Books\夜の図書館.EPUB") == "book"
+    for name in ("ぼっち・ざ・ろっく！ 第01話.ja.srt", "第02話.ass", "第03話.SSA", "日記.txt", "メモ.md"):
+        assert path_utils.file_kind(name) == "text", name
+    for name in ("ぼっち・ざ・ろっく！ 第01話.mkv", "cover.jpg", "夜の図書館.epub.part", "", None):
+        assert path_utils.file_kind(name) is None, name
+    assert sources.EPUB in path_utils.BOOK_EXTENSIONS
+    assert set(extract.TEXT_EXTENSIONS) == set(path_utils.BOOK_EXTENSIONS + path_utils.CONTENT_EXTENSIONS)

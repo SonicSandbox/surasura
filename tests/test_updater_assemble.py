@@ -418,7 +418,7 @@ def test_installer_mode_stages_the_installer_and_the_swappers_instructions(tmp_p
     info = _info()
     assert classify_update(kit.OLD, info) == "INSTALLER"
     marker = updater.prepare_installer(info)
-    assert fetched == [f"Surasura-{kit.NEW}-setup.exe"], "installer mode downloads no part"
+    assert fetched == [f"in-app-updates-{kit.NEW}.exe"], "installer mode downloads the updater's copy alone"
     assert marker["format"] == 3 and marker["kind"] == "installer"
     assert open(marker["setup"], "rb").read() == STUB_SETUP and marker["path"] == marker["setup"]
     assert os.path.dirname(os.path.dirname(marker["setup"])) == updater.update_dir()
@@ -432,7 +432,7 @@ def test_installer_mode_stages_the_installer_and_the_swappers_instructions(tmp_p
 def test_installer_mode_refuses_a_bad_download_and_an_install_without_updater(tmp_path, monkeypatch):
     root = kit.install(tmp_path, monkeypatch)
     out = kit.build_release(tmp_path, monkeypatch, installer=STUB_SETUP, needs_installer=True)
-    (out / f"Surasura-{kit.NEW}-setup.exe").write_bytes(STUB_SETUP + b"!")
+    (out / f"in-app-updates-{kit.NEW}.exe").write_bytes(STUB_SETUP + b"!")
     with pytest.raises(updater.UpdateError, match="checksum"):
         updater.prepare_installer(_info())
     assert _update_folder_names() == []

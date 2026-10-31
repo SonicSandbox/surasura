@@ -30,6 +30,7 @@ PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEED = hashlib.sha256("スラスラ test signing key (tests only)".encode("utf-8")).digest()
 OTHER_SEED = hashlib.sha256(b"another key").digest()
 INSTALLER = "Surasura-3.0.1-setup.exe"
+FOR_UPDATES = "in-app-updates-3.0.1.exe"     # the same bytes, the updater's own name (update.json's asset)
 STUB_INSTALLER = b"MZ\x90\x00stub-installer-\xe3\x81\x99\xe3\x82\x89" * 8
 
 
@@ -120,8 +121,10 @@ def test_the_manifest_is_canonical_signed_and_lists_every_file(release, tmp_path
     assert ed25519.verify(ed25519.public_key(SEED), data, (out / "update.json.sig").read_bytes())
     # 2.x's keys, written for 2.x readers, then the 3.x block.
     assert manifest["update_type"] == "installer" and manifest["format"] == 2
-    assert manifest["installer"] == {"asset": INSTALLER, "sha256": hashlib.sha256(STUB_INSTALLER).hexdigest(),
+    assert manifest["installer"] == {"asset": FOR_UPDATES, "sha256": hashlib.sha256(STUB_INSTALLER).hexdigest(),
                                      "args": [], "min_from": "2.5"}
+    # Two names, one installer: people download the setup, the updater its own copy (the setup's count is people's).
+    assert (out / INSTALLER).read_bytes() == (out / FOR_UPDATES).read_bytes() == STUB_INSTALLER
     package = manifest["package"]
     assert package["min_from"] == "3.0.0" and package["needs_installer"] is False
     assert package["install_shape"] == package_app.install_shape()          # the .iss the build's installer is from
@@ -220,6 +223,20 @@ def test_2_5_0_hands_a_3x_release_to_its_installer(release, rehearsal, frozen_25
     monkeypatch.setitem(sys.modules, "app.update_checker", old_uc)      # 2.5's prepare_installer asks its own rules
     staged = old_up.prepare_installer(info)
     assert Path(staged["path"]).read_bytes() == STUB_INSTALLER and staged["args"] == []
+    assert Path(staged["path"]).name == FOR_UPDATES, "2.5 takes the asset update.json names, as it is"
+
+
+@pytest.mark.parametrize("gone, expected", [(INSTALLER, "INSTALLER"), (FOR_UPDATES, "FULL")],
+                         ids=["setup gone", "updater's copy gone"])
+def test_2_5_0_hands_over_through_the_updaters_copy_alone(release, rehearsal, frozen_25, monkeypatch, gone, expected):
+    """Why: the setup's GitHub download count should be people, so 2.5's update must never fetch the setup. With the
+    setup left off the release 2.5 still hands over (through its copy); without the copy it falls back to a download."""
+    out, _ = release()
+    os.remove(out / gone)
+    rehearsal(out, trusted=None)
+    old_uc = _old_module("v2.5.0", "app/update_checker.py", "update_checker_v2_5_0", monkeypatch)
+    info = old_uc.get_update_info()
+    assert old_uc.classify_update("2.5.0", info) == expected
 
 
 def test_2_5_0_sees_a_3x_release_without_an_installer_as_a_download(release, rehearsal, frozen_25, monkeypatch):

@@ -340,3 +340,154 @@ def test_a_zip_finished_after_the_window_closed_is_said_in_the_main_bar(main, op
     assert wait_until(lambda: main.bar_line.full().startswith("Made Surasura-problems-"))
     assert wait_until(lambda: opened == [str(tmp_path)]) and core.listed() == []
     assert wait_until(lambda: main.report_button.count == 0)
+
+
+# --- 3.0: where it goes — Surasura's Discord, or GitHub Issues ----------------------------------------------------- #
+@pytest.fixture
+def sent(monkeypatch):
+    """Explorer's `/select,` and the browser stood in for: [("show", zip path) | ("url", link)], in the order asked."""
+    asked = []
+    monkeypatch.setattr(screens, "show_in_folder", lambda path: asked.append(("show", path)))
+    monkeypatch.setattr(windows, "open_url", lambda url: asked.append(("url", url)) or True)
+    return asked
+
+
+def test_send_on_discord_waits_for_words_then_is_tipped_as_what_it_does(main):
+    w = _press(main)
+    assert not w.discord_button.isEnabled() and w.discord_button.toolTip() == strings.REPORT_DISCORD_NONE_TIP
+    w.what.setPlainText(JA_WHAT)                                       # words typed: ready (they're saved first)
+    assert w.discord_button.isEnabled() and w.discord_button.toolTip() == strings.REPORT_DISCORD_TIP
+    w.what.setPlainText("")
+    assert not w.discord_button.isEnabled()
+    _save(w, ZH_WHAT)                                                  # a saved report: ready with the form empty
+    assert w.discord_button.isEnabled() and w.discord_button.property("kind") == "primary"
+
+
+def test_send_on_discord_saves_whats_typed_makes_the_zip_shows_it_selected_then_opens_the_invite(main, sent, tmp_path):
+    from app.qt import settings_strings
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    w.what.setPlainText(JA_WHAT)                                       # typed, not saved: it goes in the zip too
+    w.dest = str(tmp_path)
+    w.include_results.setChecked(False)
+    w.discord_button.click()
+    assert wait_until(lambda: len(sent) == 2)
+    made = [n for n in os.listdir(tmp_path) if n.endswith(".zip")]
+    assert len(made) == 1
+    assert sent == [("show", str(tmp_path / made[0])), ("url", settings_strings.DISCORD_URL)]   # the folder, then on top
+    with zipfile.ZipFile(tmp_path / made[0]) as z:
+        assert sum(n.endswith("/report.txt") for n in z.namelist()) == 2
+    assert wait_until(lambda: w.reports == [] and w.status.text() == strings.REPORT_SENT.format(name=made[0]))
+    assert w.what.toPlainText() == "" and main.report_button.count == 0
+
+
+def test_a_folder_that_cant_be_shown_still_opens_the_invite(main, monkeypatch, tmp_path):
+    from app.qt import settings_strings
+    opened = []
+
+    def no_explorer(path):
+        raise OSError("explorer.exe is missing")
+    monkeypatch.setattr(screens, "show_in_folder", no_explorer)
+    monkeypatch.setattr(windows, "open_url", lambda url: opened.append(url) or True)
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.dest = str(tmp_path)
+    w.discord_button.click()
+    assert wait_until(lambda: opened == [settings_strings.DISCORD_URL])
+
+
+def test_a_discord_zip_finished_after_the_window_closed_still_shows_it_and_opens_the_invite(main, sent, tmp_path,
+                                                                                           monkeypatch):
+    import threading
+    from app.qt import settings_strings
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.dest = str(tmp_path)
+    gate = threading.Event()
+    real = core.make_zip
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return real(*a, **k)
+    monkeypatch.setattr(core, "make_zip", slow)
+    w.discord_button.click()
+    w.close()
+    gate.set()
+    assert wait_until(lambda: main.bar_line.full().startswith("Made Surasura-problems-"))
+    assert wait_until(lambda: [k for k, _v in sent] == ["show", "url"]) and sent[1][1] == settings_strings.DISCORD_URL
+
+
+def test_the_window_says_where_to_send_it_and_what_the_zip_holds(main, sent):
+    from app.qt import settings_strings
+    w = _press(main)
+    assert w.send_where.text() == strings.REPORT_SEND_WHERE and "bug-report channel" in strings.REPORT_SEND_WHERE
+    for said in ("logs", "settings", "titles in your library"):
+        assert said in w.hint.text()
+    assert "Sonic" not in strings.REPORT_ZIPPED and "Discord" in strings.REPORT_ZIPPED
+    assert w.issues_button.toolTip() == strings.REPORT_ISSUES_TIP
+    w.issues_button.click()                                            # the quieter way: GitHub Issues, in the browser
+    assert wait_until(lambda: sent == [("url", settings_strings.ISSUES_URL)])
+
+
+def test_show_in_folder_asks_explorer_to_select_the_zip(monkeypatch, tmp_path):
+    """Explorer's `/select,` with the path quoted (a folder with spaces); off Windows the folder itself."""
+    import subprocess
+    import sys
+    asked = []
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, *a, **k: asked.append(cmd))
+    path = str(tmp_path / "My Downloads" / "Surasura-problems-2026-10-30-120000.zip")
+    monkeypatch.setattr(sys, "platform", "win32")
+    screens.show_in_folder(path)
+    assert asked == [f'explorer /select,"{os.path.normpath(path)}"']
+
+
+def test_the_invite_and_issues_links_are_the_ones_checked():
+    from app.qt import settings_strings
+    assert settings_strings.DISCORD_URL == "https://discord.gg/Uy8mHymrRv"
+    assert settings_strings.ISSUES_URL == "https://github.com/SonicSandbox/surasura/issues"
+
+
+def test_a_first_report_typed_then_sent_keeps_the_button_working_through_its_save_and_zip(main, sent, tmp_path,
+                                                                                          monkeypatch):
+    """Nothing saved yet, words typed, *Send on Discord*: the form clears as it saves, yet the button stays enabled
+    with its arc on until the zip is made (an arc never turns on a greyed button)."""
+    import threading
+    from app.qt import settings_strings
+    w = _press(main)
+    w.dest = str(tmp_path)
+    gate = threading.Event()
+    real = core.make_zip
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return real(*a, **k)
+    monkeypatch.setattr(core, "make_zip", slow)
+    w.what.setPlainText(JA_WHAT)
+    w.discord_button.click()
+    assert wait_until(lambda: w.what.toPlainText() == "")                # saved: the form cleared
+    assert w.sending and w.discord_button.isEnabled()
+    gate.set()
+    assert wait_until(lambda: [k for k, _v in sent] == ["show", "url"]) and sent[1][1] == settings_strings.DISCORD_URL
+    assert wait_until(lambda: w.reports == [] and not w.discord_button.isEnabled() and not w.sending)
+
+
+def test_send_while_a_zip_is_being_made_saves_nothing_and_says_so(main, sent, opened, tmp_path, monkeypatch):
+    import threading
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    w.dest = str(tmp_path)
+    gate = threading.Event()
+    real = core.make_zip
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return real(*a, **k)
+    monkeypatch.setattr(core, "make_zip", slow)
+    w.zip_button.click()
+    w.what.setPlainText(JA_WHAT)
+    w.discord_button.click()
+    assert w.status.text() == strings.REPORT_ZIP_BUSY and w.what.toPlainText() == JA_WHAT   # kept, never saved
+    assert not w.list.isEnabled()                                      # the first zip still holds the list
+    gate.set()
+    assert wait_until(lambda: w.reports == [] and w.list.isEnabled())
+    assert sent == [] and len(core.listed()) == 0 and wait_until(lambda: opened == [str(tmp_path)])

@@ -365,6 +365,7 @@ ROWS = (
     _row("telemetry_enabled", "app", "toggle", ("telemetry_enabled",)),
     _row("logs", "app", "custom"),
     _row("data_credits", "app", "custom"),
+    _row("discord", "app", "link"),                              # 3.0: the server's invite, in the browser
     _row("version", "app", "custom"),
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`

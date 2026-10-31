@@ -74,6 +74,16 @@ def open_with_system(path):
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 
+def show_in_folder(path):
+    """A file shown in its folder, selected (Explorer's `/select,`: the report zip, ready to drag); off Windows its
+    folder opened. Explorer answers 1 even when it showed it, so its answer isn't read."""
+    if sys.platform == "win32":
+        import subprocess
+        subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+    else:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
+
+
 # --- small parts ------------------------------------------------------------------------------------------------- #
 class StateBar(standing_qt.StandingLine):
     """The page's thin state bar: its words across the page, a read-only line's ✕ at its right end."""

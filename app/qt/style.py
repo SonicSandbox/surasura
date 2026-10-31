@@ -262,6 +262,11 @@ QWidget#levelpop QPushButton#popjourney:focus {{ border: 2px solid {c['accent']}
 QLabel#windowstatus {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#windowheading {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#windowline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
+QPushButton#windowlink {{ background: transparent; color: {c['ink-dim']}; border: 2px solid transparent;
+  border-radius: 6px; padding: 0 {2 * room}px 0 2px; min-height: 0; text-decoration: underline; {font('body')}
+  font-weight: 400; }}
+QPushButton#windowlink:hover {{ color: {c['ink']}; }}
+QPushButton#windowlink:focus {{ border-color: {c['accent']}; }}
 QLabel#confirmtitle {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#confirmline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
 QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; border: 0; }}

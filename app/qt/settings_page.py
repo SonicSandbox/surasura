@@ -815,7 +815,7 @@ class SettingsPage(QWidget):
             return
         if kind == "link":
             link = qpress.room(sc.Door(S.LINK_OPEN, tooltip=tip, name=name, parent=view.slot))
-            link.clicked.connect(lambda _c=False, b=link: qpress.open(self.shell, S.HOW_PARSING_URL, control=b))
+            link.clicked.connect(lambda _c=False, b=link, u=S.LINK_URLS[row.id]: qpress.open(self.shell, u, control=b))
             view.slot.layout().addWidget(link)
             return
         value = None

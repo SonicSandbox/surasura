@@ -915,3 +915,23 @@ def test_the_nav_lights_the_section_in_view_and_a_click_goes_there(qapp):
     vp = page.scroll.viewport()
     assert abs(page.slabs["sentences"].mapTo(vp, QPoint(0, 0)).y()) <= round(theme.SPACING["settings-search-gap"] *
                                                                            theme.text_factor("M")) + 1
+
+
+# --- 3.0: the Discord row ---------------------------------------------------------------------------------------------- #
+def test_the_discord_row_sits_by_the_credits_is_found_by_its_words_and_opens_the_invite(qapp, monkeypatch):
+    """App's *Join the Surasura Discord*: after Data credits, found by *discord* / *community* / *help* / *support*,
+    its *Open ↗* tipped and opening the invite in the browser (on a worker), nothing written."""
+    opened = []
+    monkeypatch.setattr(windows, "open_url", lambda url: opened.append(url) or True)
+    ids = [row.id for row in catalog.ROWS if row.section == "app"]
+    assert ids.index("discord") == ids.index("data_credits") + 1
+    page, store = make_page(ALL_ON, "ja")
+    for word in ("discord", "community", "help", "chat", "support"):
+        page.search.edit.setText(word)
+        assert page.rows["discord"].isVisibleTo(page), word
+    page.search.edit.setText("")
+    link = page.rows["discord"].slot.findChildren(QAbstractButton)[0]
+    assert link.text() == S.LINK_OPEN and link.toolTip() == S.ROWS["discord"][2]
+    link.click()
+    assert wait_until(lambda: opened == [S.DISCORD_URL])
+    assert store.calls == []

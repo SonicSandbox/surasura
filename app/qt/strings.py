@@ -1515,9 +1515,23 @@ REPORT_CONTENTS_TIP = "Every file the zip will hold, its size, and what's left o
 REPORT_ZIP = "Make the zip"
 REPORT_ZIP_TIP = "Put every saved report, with what Sonic needs to look into it, in one zip, then open its folder"
 REPORT_ZIP_NONE_TIP = "Make the zip: save a report to your list first"
-REPORT_ZIPPED = "Made {name} in {folder}. Send this zip to Sonic"
+REPORT_ZIPPED = "Made {name} in {folder}. Send it on Discord or GitHub Issues"
 REPORT_ZIP_FAILED = "The zip couldn't be made: {why}. Your list is as it was"
-REPORT_HINT = "Send this zip to Sonic. Nothing is sent by Surasura: the zip stays on this PC until you send it"
+REPORT_HINT = ("The zip holds Surasura's logs and settings (never a key or token), and your last lists if ticked: "
+               "they name the titles in your library. Surasura sends nothing itself: the zip stays on this PC until "
+               "you send it")
+# 3.0: where it goes — Surasura's Discord (the invite opened in the browser, never a call of the app's), or GitHub Issues
+REPORT_DISCORD = "Send on Discord"
+REPORT_DISCORD_TIP = ("Make the zip (what you've typed is saved to your list first), show it in its folder, and open "
+                      "Surasura's Discord in your browser.\n• You drag the zip into the bug-report channel yourself")
+REPORT_DISCORD_NONE_TIP = "Send on Discord: write what happened first"
+REPORT_SENT = "Made {name}. Drag it into the bug-report channel on Surasura's Discord"
+REPORT_SEND_WHERE = ("Send on Discord shows the zip in its folder and opens Surasura's Discord: drag the zip into the "
+                     "bug-report channel.")
+REPORT_ISSUES = "GitHub Issues works too"
+REPORT_ISSUES_TIP = ("Open Surasura's GitHub Issues in your browser, to post the zip there instead (needs a GitHub "
+                     "account)")
+REPORT_ZIP_BUSY = "A zip is being made: press again once it's done"
 # --- end Report a problem
 
 # --- alpha 4 seams (P-seams: K1 / K3 / T6 option 2; app/qt/needs.py) ----------------------------------------------- #

@@ -1964,6 +1964,214 @@ def test_a_watched_stone_turns_back(world):
     assert calls(writer, "set_watched")[0][2] == {"on": False}
 
 
+# --- a8 (Sonic's alpha 7 try, 2026-10-31: "it lagged by at least a second before registering", more while a Generate
+# ran): a stone's Done paints at once, ahead of the store, as a drop's order does — never after the write and the
+# reader's next build. What a wrong answer would cost a learner: a click that seems to do nothing (they click again and
+# turn it back), a stone that lights then goes dark as an older view comes in, an Undo that waits as the mark did, a
+# stone left lit that the store never marked.
+class MarkWriter(FakeWriter):
+    """The recording writer whose Undo of a mark is written back into the stand-in library (as the store's undo does)
+    and waits while the store is busy, as every command does; `refuse_undo` (E21) and `nothing` say so as the store's
+    writer does (`landed_empty`, then a reread)."""
+
+    def __init__(self, library=None, apply=True):
+        super().__init__(library, apply)
+        self.refuse_undo = False
+        self.halted = False
+        self._empty = []
+
+    def newest(self):
+        return self.saved[-1] if self.saved else None
+
+    def stopped(self):
+        return self.halted
+
+    def landed_empty(self):
+        out, self._empty = self._empty, []
+        return out
+
+    def undo(self, change=None, label=None):
+        self.calls.append(("undo", [], {"change": change}))
+        if self.stuck:
+            self._waiting.append((("undo", change), label))
+        else:
+            self._undo_now(change, label)
+        return len(self.calls)
+
+    def _undo_now(self, change, label):
+        done = change if change is not None else self.newest()
+        if self.refuse_undo or done is None:
+            self._empty.append(label)
+            threading.Thread(target=self.on_note, args=(strings.MOVE_WORDS["cant_undo"],), daemon=True).start()
+            threading.Thread(target=self.on_reread, daemon=True).start()
+            return
+        if done.op == "set_watched":
+            self.library.commit(items=[{"id": i, "watched": 0 if done.kw["on"] else 1} for i in done.ids])
+        self.saved.remove(done)
+        self.undone.append(done)
+        threading.Thread(target=self.on_undone, args=(done, label), daemon=True).start()
+
+    def _land(self, change, label):
+        if isinstance(change, tuple):
+            self._undo_now(change[1], label)
+            return
+        if change.op in self.nothing:
+            self._empty.append(label)
+        super()._land(change, label)
+
+
+def _lit(win, i, k=0):
+    return rows_of(win)[i].episodes[k].watched
+
+
+def _stored(seed, ep):
+    return next(r for r in seed.library.items() if r["id"] == ep.id)["watched"]
+
+
+def _gone_quiet(win):
+    """The marks ahead let go, the store's own view on screen."""
+    return wait_until(lambda: win.moves.expect_marks == {} and win.moves.tickets == [], 3)
+
+
+def test_a8_a_done_lights_its_stone_at_once_while_the_store_is_busy_and_an_older_view_never_darkens_it(world):
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck = True                                               # another program holds the store
+    old = win.page_widgets["current"].view_model
+    row = old.rows[4]
+    ep = row.episodes[0]
+    win.moves.done(row, ep)                                           # no event loop turn: painted in the click itself
+    now = rows_of(win)[4]
+    assert now.episodes[0].watched and now.n_watched == row.n_watched + 1
+    assert now.next_index == 1 and now.title_ep == row.episodes[1].label
+    assert now.chips[0].watched and now.chips[1].next and now.string != row.string
+    win.show_library(old)                                             # the reader's view from before the click
+    assert _lit(win, 4)
+    writer.free()
+    assert _gone_quiet(win)
+    stored = rows_of(win)[4]
+    assert stored.episodes[0].watched
+    for f in type(stored)._fields:                                    # one rule, both sides: every field
+        assert getattr(stored, f) == getattr(now, f), f
+
+
+def test_a8_a_view_begun_before_the_write_landed_and_shown_after_it_never_darkens_the_stone(world):
+    """The reader builds one view at a time (0.7 s at 20,000 files): one it began before the write landed comes after
+    it — the stone stays lit through it, and the store's next view takes over."""
+    seed, win, writer = world(writer=MarkWriter)
+    reader = win.services.library
+    old = win.page_widgets["current"].view_model
+    row = old.rows[4]
+    writer.stuck = True
+    win.moves.done(row, row.episodes[0])
+    reader.hold()                                                     # the reader's next view waits
+    writer.free()
+    assert wait_until(lambda: win.moves.tickets == [], 3)             # saved
+    win.show_library(old)                                             # that look's view, built before the write
+    assert _lit(win, 4) and win.moves.expect_marks
+    reader.release()
+    assert _gone_quiet(win) and _lit(win, 4)
+    assert _stored(seed, row.episodes[0]) == 1
+
+
+def test_a8_the_undo_of_a_waiting_done_darkens_the_stone_at_once_and_stays_dark(world):
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck = True
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert _lit(win, 4)
+    win.toasts.card.buttons[0].click()                                # Undo, before the mark is saved
+    assert not _lit(win, 4) and rows_of(win)[4].next_index == row.next_index
+    writer.free()
+    assert wait_until(lambda: writer.undone, 3) and _gone_quiet(win)
+    assert not _lit(win, 4) and _stored(seed, row.episodes[0]) == 0
+
+
+@pytest.mark.parametrize("how", ["toast", "ctrl_z"])
+def test_a8_the_undo_of_a_saved_done_darkens_at_once_while_the_store_is_busy(world, how):
+    """The toast's Undo and Ctrl+Z of a Done already saved: dark in the press, while the Undo waits for the store."""
+    seed, win, writer = world(writer=MarkWriter)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert wait_until(lambda: writer.saved, 3) and _gone_quiet(win) and _lit(win, 4)
+    writer.stuck = True
+    if how == "toast":
+        win.toasts.card.buttons[0].click()
+    else:
+        QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert not _lit(win, 4) and writer.pending() == 1                 # the Undo waits; its stone doesn't
+    writer.free()
+    assert wait_until(lambda: writer.undone, 3) and _gone_quiet(win)
+    assert not _lit(win, 4) and _stored(seed, row.episodes[0]) == 0
+
+
+def test_a8_an_undo_the_store_refuses_lights_the_stone_again(world):
+    """E21: the Undo refused (the file changed since): the stone goes back as the store has it — lit — and the toast
+    says why."""
+    seed, win, writer = world(writer=MarkWriter)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert wait_until(lambda: writer.saved, 3) and _gone_quiet(win)
+    writer.stuck, writer.refuse_undo = True, True
+    win.toasts.card.buttons[0].click()
+    assert not _lit(win, 4)
+    writer.free()
+    assert wait_until(lambda: _lit(win, 4) and win.moves.expect_marks == {}, 3)
+    assert wait_until(lambda: win.toasts.card.base == strings.MOVE_WORDS["cant_undo"], 3)
+
+
+def test_a8_a_done_that_lands_as_nothing_turns_its_stone_back(world):
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck, writer.nothing = True, {"set_watched"}
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert _lit(win, 4)
+    writer.free()
+    assert wait_until(lambda: not _lit(win, 4) and win.moves.expect_marks == {}, 3)
+
+
+def test_a8_a_watched_stone_turned_back_goes_dark_at_once(world):
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck = True
+    row = rows_of(win)[0]
+    i = next(k for k, e in enumerate(row.episodes) if e.watched)
+    win.moves.done(row, row.episodes[i])
+    assert not _lit(win, 0, i) and rows_of(win)[0].n_watched == row.n_watched - 1
+    writer.free()
+    assert _gone_quiet(win) and not _lit(win, 0, i)
+
+
+def test_a8_mark_many_lights_every_stone_at_once(world):
+    """⋯'s *…and everything before it*: one command, every stone it marks lit in the press."""
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck = True
+    i = next(k for k, r in enumerate(rows_of(win)) if len(r.episodes) > 4 and not any(e.watched for e in r.episodes))
+    row = rows_of(win)[i]
+    win.moves.done_many(row, list(row.episodes[:3]))
+    assert [e.watched for e in rows_of(win)[i].episodes[:4]] == [True] * 3 + [False]
+    assert rows_of(win)[i].next_index == 3
+    writer.free()
+    assert _gone_quiet(win) and [e.watched for e in rows_of(win)[i].episodes[:4]] == [True] * 3 + [False]
+
+
+def test_a8_a_refused_done_paints_nothing(world):
+    seed, win, writer = world(writer=MarkWriter)
+    writer.writable = False                                           # a read-only store (E4): nothing is given
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert win.moves.expect_marks == {} and not _lit(win, 4)
+
+
+def test_a8_a_writer_stopped_with_marks_waiting_lets_them_go(world):
+    """A language switch or the quit stops the writer: what waits stays in its journal (it lands at the next start), and
+    the marks ahead go with the window's order — nothing kept for a view that won't come."""
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck = True
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    writer.halted = True
+    assert wait_until(lambda: win.moves.expect_marks == {}, 3)
+
+
 def _all_but_one(seed, win, i):
     row = rows_of(win)[i]
     seed.library.commit(items=[{"id": e.id, "watched": 1} for e in row.episodes[:-1]])
@@ -2500,6 +2708,37 @@ def test_real_store_files_dropped_from_explorer_are_copied_and_placed(real, tmp_
     after = ids_now[ids_now.index(rs[1].episodes[-1].id) + 1]
     assert store.item(after)["rel_path"].endswith(src.name)
     assert os.path.exists(src)                                         # the user's own file stays where it was
+
+
+def test_real_store_a8_a_done_while_another_save_holds_the_store_lights_at_once_and_never_goes_dark(real,
+                                                                                                    short_lock_wait):
+    """a8 with the real writer and reader: another window's save holds the store (as the maintain step and the indexer
+    do through a Generate) — the stone lights in the click, every view the page shows after it keeps it lit, and the
+    row the store then builds is the painted one, field for field."""
+    store, win, writer = real()
+    page = win.page_widgets["current"]
+    i, row = next((k, r) for k, r in enumerate(rows_of(win)) if k and sum(not e.watched for e in r.episodes) > 1)
+    ep = next(e for e in row.episodes if not e.watched)
+    shown, set_view = [], page.set_view
+
+    def recorded(view):
+        mine = next((r for r in view.rows if r.key == row.key), None)
+        shown.append(None if mine is None else next(e.watched for e in mine.episodes if e.id == ep.id))
+        return set_view(view)
+    page.set_view = recorded
+    holder = LockHolder(store.db_path)
+    try:
+        win.moves.done(row, ep)
+        painted = rows_of(win)[i]
+        assert next(e.watched for e in painted.episodes if e.id == ep.id) and writer.pending() == 1
+    finally:
+        holder.release()
+    assert wait_until(lambda: store.item(ep.id)["watched"] == 1, 10)
+    assert wait_until(lambda: win.moves.expect_marks == {} and writer.pending() == 0, 10)
+    assert shown and all(shown), shown
+    built = next(r for r in win.services.library.view().rows if r.key == row.key)
+    for f in type(built)._fields:
+        assert getattr(built, f) == getattr(painted, f), f
 
 
 def test_real_store_the_quit_waits_for_a_queued_move(real, short_lock_wait):

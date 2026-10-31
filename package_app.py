@@ -369,10 +369,11 @@ def read_signing_key(path):
 def _build_release(final_dist, version, config, out_dir="dist", installer=None, needs_installer=False):
     """Write a 3.x release's update artifacts into `out_dir`: one zip per part (surasura_part_<name>_v<ver>.zip),
     update.json and, when a signing key is set, update.json.sig. `installer`: the built installer's path in `out_dir`
-    (its 2.x hand-off block is written only then). `package.install_shape`: the .iss's shape (`install_shape`); a 3.x
-    program stamped with another runs the installer. `needs_installer`: the manual override, for what the shape can't
-    see (`--needs-installer`). -> the manifest dict, or None when SURASURA_SIGNING_KEY_FILE names a key that can't be
-    used: then nothing is written (a release named a key, so it never goes out unsigned)."""
+    (its 2.x hand-off block is written only then, naming the updater's copy). `package.install_shape`: the .iss's
+    shape (`install_shape`); a 3.x program stamped with another runs the installer. `needs_installer`: the manual
+    override, for what the shape can't see (`--needs-installer`). -> the manifest dict, or None when
+    SURASURA_SIGNING_KEY_FILE names a key that can't be used: then nothing is written (a release named a key, so it
+    never goes out unsigned)."""
     import zipfile
     from app import ed25519
 
@@ -416,8 +417,12 @@ def _build_release(final_dist, version, config, out_dir="dist", installer=None, 
     if installer:
         # 2.x's hand-off (S1.3-6): 2.5 runs this installer, its wizard showing (args empty); 2.4.0 and older see a
         # download. A 3.x release without an installer is "full" to every 2.x.
+        # The updater downloads its own copy of the same bytes (`updater_installer_name`), so the setup's download count
+        # on GitHub is people's, never an update's.
+        for_updates = os.path.join(out_dir, updater_installer_name(version))
+        shutil.copyfile(installer, for_updates)
         manifest["update_type"] = "installer"
-        manifest["installer"] = {"asset": os.path.basename(installer), "sha256": _sha256(installer), "args": [],
+        manifest["installer"] = {"asset": os.path.basename(for_updates), "sha256": _sha256(for_updates), "args": [],
                                  "min_from": config["release"]["installer_min_from"]}
 
     data = canonical_json(manifest)
@@ -474,6 +479,12 @@ def install_shape(path=INSTALLER_SCRIPT):
 
 def installer_name(version):
     return f"Surasura-{version}-setup.exe"
+
+
+def updater_installer_name(version):
+    """The installer's second name: the same bytes, published once more for the in-app updater alone (update.json's
+    `installer.asset`), named so nobody downloads it by mistake (Sonic, 2026-10-30)."""
+    return f"in-app-updates-{version}.exe"
 
 
 def installer_defines(version, data_name, program_dir, real_name):
@@ -1041,7 +1052,7 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
             return False
         print("  -> Attach to the GitHub release: the full zip, every surasura_part_*.zip, update.json"
               + (", update.json.sig" if os.path.isfile(os.path.join("dist", SIGNATURE_NAME)) else "")
-              + (", the installer" if built_installer else ""))
+              + (", the installer under both its names" if built_installer else ""))
 
     print("\n---------------------------------------------------")
     print(f"Build Complete! Package located at: {os.path.abspath(final_dist)}")

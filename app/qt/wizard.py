@@ -43,7 +43,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, QRadialGradient
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLayout,
-                             QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
+                             QPlainTextEdit, QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
 from app.qt import applog, bridge, confirm, motion, settings_strings, strings, style, windows
@@ -55,8 +55,7 @@ from app.services import tools_found
 PAGES = ("language", "known", "shows", "order", "cards", "level")      # the contract's ids, in order
 BUSY = ("queued", "running", "cancelling")      # a Generate under way (`generate.QUEUED` / `RUNNING` / `CANCELLING`)
 ROWS_SHOWN = 6                                  # page 3's rows; the rest are "and N more"
-ADD_ACTIONS = ("files", "folder", "extract", "youtube")     # W3.2 Q3: page 3's add actions, + Add's (IK-12)
-ADD_DOORS = {"extract": "extract", "youtube": "youtube-downloader"}
+YOUTUBE_DOOR = "youtube-downloader"             # alpha 8: page 3's *YouTube…* shows while the downloader's door does
 COUNT_AGAIN_MS = 3000                           # page 6 asks for its numbers again while it says *Counting…* —
 COUNT_MOST_MS = 30000                           # each time twice as long after, up to this (and when the indexer ran)
 ASK_WAIT_S = 600                               # the install's question waits this long for an answer, then is No
@@ -1454,6 +1453,7 @@ class ShowsPage(_Page):
         super().__init__(wiz, S.SHOWS_TITLE, S.UPGRADE_SHOWS_LINE if wiz.upgrading else "")
         # --- SRC W1a: the folders your shows and books are in, read where they are (added and looked at on *Next*)
         self.folders = []                   # the folders picked, not read yet (as the dialog gave them)
+        self.files = []                     # alpha 8: the files picked, brought in on *Next* (`Wizard._bring_in`)
         self.folders_part = QWidget(self)
         self.folders_part.setAccessibleName(S.FOLDERS_NAME)
         fbox = QVBoxLayout(self.folders_part)
@@ -1465,9 +1465,14 @@ class ShowsPage(_Page):
         fbox.addLayout(self.folder_list)
         pick = QHBoxLayout()
         pick.setSpacing(_px(14))
+        # alpha 8 (Sonic): a file, a folder or YouTube — what each holds is found, never asked (no EPUB button)
+        self.btn_file = _button(S.PICK_FILE, S.PICK_FILE_TIP, self.wiz.pick_files, self.folders_part)
+        pick.addWidget(self.btn_file)
         self.btn_pick = qpress.room(_button(S.PICK_FOLDER, S.PICK_FOLDER_TIP, self.wiz.pick_folder,
                                             self.folders_part))
         pick.addWidget(self.btn_pick)
+        self.btn_youtube = _button(S.YOUTUBE, S.YOUTUBE_TIP, self.open_links, self.folders_part)
+        pick.addWidget(self.btn_youtube)
         self.skips = []                     # K6: folders inside the picked ones never read (skipped on *Next*)
         self.btn_skip = qpress.room(_button(S.SKIP_FOLDER, S.SKIP_FOLDER_TIP, self.wiz.skip_folder,
                                             self.folders_part, name="wizlink"), end=True)
@@ -1485,6 +1490,23 @@ class ShowsPage(_Page):
         pick.addWidget(self.btn_stop)
         pick.addStretch(1)
         fbox.addLayout(pick)
+        # alpha 8: *YouTube…*'s links, one a line, and the downloader's own risk tick (its setting, its words)
+        self.links_part = QWidget(self.folders_part)
+        lbox = QVBoxLayout(self.links_part)
+        lbox.setContentsMargins(0, 0, 0, 0)
+        lbox.setSpacing(_px(6))
+        self.links = QPlainTextEdit(self.links_part)
+        self.links.setPlaceholderText(S.YOUTUBE_HINT)
+        self.links.setAccessibleName(S.YOUTUBE_NAME)
+        self.links.setToolTip(S.YOUTUBE_TIP)
+        self.links.setTabChangesFocus(True)
+        self.links.setFixedHeight(self.links.fontMetrics().lineSpacing() * 4 + _px(16))
+        lbox.addWidget(self.links)
+        self.yt_risk = SwitchRow(S.YOUTUBE_RISK, S.YOUTUBE_RISK_LINE, S.YOUTUBE_RISK_TIP, self.links_part)
+        self.yt_risk.switch.toggled.connect(self.wiz.youtube_risk)
+        lbox.addWidget(self.yt_risk)
+        self.links_part.setVisible(False)
+        fbox.addWidget(self.links_part)
         self.every_core = SwitchRow(S.EVERY_CORE, S.EVERY_CORE_LINE, S.EVERY_CORE_TIP, self.folders_part)   # K5 C4
         self.every_core.switch.toggled.connect(self.wiz.use_every_core)
         fbox.addWidget(self.every_core)                   # Mado-O (Sonic 2026-10-30): decided before the load
@@ -1492,23 +1514,9 @@ class ShowsPage(_Page):
         self.refused_line.setVisible(False)
         fbox.addWidget(self.refused_line)
         self.box.addWidget(self.folders_part)
-        self.folders_part.setVisible(wiz.can_read_folders())
         self._folders_key = None
         self.folder_paints = 0
         # --- end SRC W1a
-        # --- W3.2 Q3: + Add's own actions (Files / Folder / EPUB / YouTube), each shown while it can act (IK-12)
-        adds = QHBoxLayout()
-        adds.setSpacing(_px(10))
-        self.add_buttons = {}
-        for name in ADD_ACTIONS:
-            label, tip = strings.ADD_ITEMS[name]
-            b = _button(label, tip, lambda n=name: self.wiz.add(n), self)
-            adds.addWidget(b)
-            self.add_buttons[name] = b
-        self.btn_files, self.btn_youtube = self.add_buttons["files"], self.add_buttons["youtube"]
-        adds.addStretch(1)
-        # --- end W3.2 Q3
-        self.box.addLayout(adds)
         self.rows_part = QWidget(self)
         self.rows_part.setAccessibleName(S.ROWS_NAME)
         self.rows = QVBoxLayout(self.rows_part)
@@ -1530,15 +1538,41 @@ class ShowsPage(_Page):
 
     def load(self, answers):
         self.covers.switch.set_quiet(bool((answers or {}).get("covers", True)))
-        self.every_core.switch.set_quiet(bool(self.wiz._settings().get("use_every_core", False)))
+        settings = self.wiz._settings()
+        self.every_core.switch.set_quiet(bool(settings.get("use_every_core", False)))
+        self.yt_risk.switch.set_quiet(bool(settings.get("youtube_risk_acknowledged", False)))
 
     def answers(self):
         return {"covers": self.covers.switch.isChecked()}
 
     def entered(self):
-        for name, b in self.add_buttons.items():          # --- W3.2 Q3: an action that can't act now isn't shown
-            _show(b, self.wiz.can_add(name))
+        for b, name in ((self.btn_file, "files"), (self.btn_pick, "folder"), (self.btn_youtube, "youtube")):
+            _show(b, self.wiz.can_add(name))              # an action that can't act now isn't shown (IK-12)
+        _show(self.links_part, self.links_part.isVisibleTo(self) and self.wiz.can_add("youtube"))
         self.wiz.read_rows()
+
+    # --- alpha 8: *Choose a file…* and *YouTube…* ------------------------------------------------------------------ #
+    def open_links(self):
+        """*YouTube…*: the links box, opened and focused at once (pressed again: focused)."""
+        _show(self.links_part, True)
+        self.links.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def link_lines(self):
+        return [line.strip() for line in self.links.toPlainText().splitlines() if line.strip()]
+
+    def has_file(self, path):
+        key = os.path.normcase(os.path.normpath(path))
+        return any(os.path.normcase(os.path.normpath(p)) == key for p in self.files)
+
+    def add_file(self, path):
+        if not self.has_file(path):
+            self.files.append(path)
+        self.refuse(None)
+        self._paint_folders()
+
+    def remove_file(self, path):
+        self.files = [p for p in self.files if p != path]
+        self._paint_folders()
 
     # --- SRC W1a: the folders picked, and their first look ------------------------------------------------------- #
     def has_folder(self, path):
@@ -1575,7 +1609,7 @@ class ShowsPage(_Page):
 
     def _paint_folders(self):
         """The picked folders, each a row with *Remove* (rebuilt only when the list changed, S19)."""
-        key = (tuple(self.folders), tuple(self.skips), self.wiz.reading is not None)
+        key = (tuple(self.files), tuple(self.folders), tuple(self.skips), self.wiz.reading is not None)
         if key == self._folders_key:
             return
         self._folders_key = key
@@ -1585,7 +1619,8 @@ class ShowsPage(_Page):
             if item.widget() is not None:
                 item.widget().hide()                      # never painted again while its delete waits for the loop
                 item.widget().deleteLater()
-        for path in self.folders:
+        for path in self.files + self.folders:          # alpha 8: the files picked first, each with *Remove* too
+            remove = self.remove_file if path in self.files else self.remove_folder
             w = QWidget(self.folders_part)
             line = QHBoxLayout(w)
             line.setContentsMargins(0, 0, 0, 0)
@@ -1595,7 +1630,7 @@ class ShowsPage(_Page):
             f.setFamilies(list(theme.path_font_families(self.wiz.language)))      # a path's ¥ is a backslash again
             name.setFont(f)
             line.addWidget(name)
-            b = _button(S.FOLDER_REMOVE, S.FOLDER_REMOVE_TIP, lambda p=path: self.remove_folder(p), w, name="wizlink")
+            b = _button(S.FOLDER_REMOVE, S.FOLDER_REMOVE_TIP, lambda p=path, r=remove: r(p), w, name="wizlink")
             b.setAccessibleName(S.FOLDER_REMOVE_NAME.format(folder=path))
             _enable(b, self.wiz.reading is None)
             line.addWidget(b)
@@ -1721,6 +1756,24 @@ class ShowsPage(_Page):
         sub.setFont(f)
         line.addWidget(sub, 1)
         return w
+
+
+def _youtube_fetcher():
+    """The YouTube module's setup fetch (`modules.youtube_downloader.fetch_first`), imported only when it is used."""
+    from modules.youtube_downloader import fetch_first
+    return fetch_first
+
+
+def youtube_line(waiting, placed, why):
+    """(Alpha 8) What setup's YouTube fetch says at its end: the videos in New arrivals (or placed by a rule), and why
+    one didn't come; nothing came -> why (or that there was nothing to bring)."""
+    came = waiting + placed
+    if not came:
+        return S.YOUTUBE_FAILED.format(why=why or S.YOUTUBE_NONE)
+    what = _count(S.YOUTUBE_VIDEOS, came)
+    if why:
+        return S.YOUTUBE_SOME_FAILED.format(what=what, why=why)
+    return (S.YOUTUBE_DONE if waiting else S.YOUTUBE_PLACED).format(what=what)
 
 
 def row_count(row):
@@ -2438,8 +2491,11 @@ class SetupWizard(QWidget):
         self.covered = None                 # Mado-O: the load screen or the sort screen over the wizard, or None
         self._load = None                   # … the load's state: {"step", "ids", "stopped", "indexed", "since"}
         self._sync_running = False          # page 2's first known-words sync under way (the load's last step waits)
-        # the folder picker (the system's own dialog; tests replace it)
+        self.fetching = None                # alpha 8: page 3's YouTube fetch under way (the load waits for it last)
+        self.youtube_said = ""              # … and what its end said
+        # the folder and file pickers (the system's own dialogs; tests replace them)
         self.pick_dialog = lambda title, start: QFileDialog.getExistingDirectory(self, title, start)
+        self.pick_files_dialog = self._pick_files_dialog
         self.upgrading = self._upgrading(settings)      # brought over from 2.x: shown once, its choices picked (WZ-8)
         answers = self._preselect(self.language)
         self._build()
@@ -2666,9 +2722,26 @@ class SetupWizard(QWidget):
         page = self.page
         if not page.next_offered():
             return
-        if page.id == "shows" and page.folders:
-            self._read_folders(list(page.folders))         # SRC W1a: the folders read first; the page stays for the rows
-            return
+        if page.id == "shows":
+            links = page.link_lines() if not page.links_part.isHidden() else []
+            if links and not page.yt_risk.switch.isChecked():
+                page.refuse(S.YOUTUBE_NEEDS_RISK)          # (the downloader's own guard: asked here, never skipped)
+                return
+            if page.files:                                 # alpha 8: brought in now, nothing waits for them
+                files, page.files = list(page.files), []
+                page._paint_folders()
+                self._bring_in_files(files)
+            page.refuse(None)
+            if links and self.fetching is None:
+                page.links.setPlainText("")
+                self._fetch_youtube(links)
+            if page.folders:
+                self._read_folders(list(page.folders))     # SRC W1a: the folders read first; the page stays for the rows
+                return
+            if self.fetching is not None:                  # YouTube alone: the load screen waits for its videos
+                self._load_begin()
+                self._load_youtube()
+                return
         answers = page.answers()
         if page.id == "level":
             self._generate(answers)
@@ -2907,28 +2980,150 @@ class SetupWizard(QWidget):
         return getattr(self.shell, "adder", None)
 
     def can_add(self, name):
-        """Whether page 3's `name` (`ADD_ACTIONS`) acts now: a door while it is available; Files and Folder while the
-        window can copy into its library (+ Add's own rule); Folder also while the page reads folders itself."""
-        if name in ADD_DOORS:
-            return self.door(ADD_DOORS[name]) is not None
+        """Whether page 3's `name` ("files", "folder", "youtube") acts now: Files while the window can copy into its
+        library (+ Add's own rule); Folder while the page reads folders itself, else as + Add's; YouTube while the
+        downloader's door is available (the module there, `enable_youtube_transcripts`)."""
+        if name == "youtube":
+            return self.door(YOUTUBE_DOOR) is not None
         if name == "folder" and self.can_read_folders():
             return True
         adder = self._adder()
         return adder is not None and bool(adder.entries((name,)))
 
-    def add(self, name):
-        if name in ADD_DOORS:
-            self.open_door(ADD_DOORS[name])
+    # --- alpha 8 (Sonic's try): *Choose a file…* — what it is found by `path_utils.file_kind`, brought in on *Next*
+    def pick_files(self):
+        """*Choose a file…*: the system's file dialog (subtitles, texts and EPUBs; one or more); each file read by the
+        one rule (`path_utils.file_kind`) and listed with *Remove*; one Surasura doesn't read is said, never listed."""
+        if self.reading is not None or self._gone:
             return
-        if name == "folder" and self.can_read_folders():
-            self.pick_folder()          # SRC W1 fix (Decision 2): as *Choose a folder…*, setup's own (to the sort screen)
-            return
-        adder = self._adder()
-        if adder is not None:
-            if name == "folder":
-                adder.run(name, first=True)       # no folders part: still setup's first look
+        page = self.pages[2]
+        start = os.path.dirname(page.files[-1]) if page.files else os.path.expanduser("~")
+        refused = []
+        for path in self.pick_files_dialog(S.PICK_FILE_TITLE, start) or ():
+            path = os.path.normpath(path)
+            if path_utils.file_kind(path) is None:
+                refused.append(S.FILE_NOT_READ.format(name=os.path.basename(path)))
             else:
-                adder.run(name)
+                page.add_file(path)
+        if refused:
+            page.refuse("\n".join(refused))
+
+    def _pick_files_dialog(self, title, start):
+        patterns = " ".join("*" + ext for ext in path_utils.BOOK_EXTENSIONS + path_utils.CONTENT_EXTENSIONS)
+        paths, _chosen = QFileDialog.getOpenFileNames(self, title, start, S.PICK_FILE_FILTER.format(patterns=patterns))
+        return paths
+
+    def _bring_in_files(self, paths):
+        """*Next* with files picked: the texts given to + Add's writer at once (the top of Current, its toast and Undo:
+        the Explorer drop's path); each book split by Extract's own child (`app/extract.py`, its default split, into
+        Current) on a job of its own. Nothing waits for them; each book's end is said in the bar and here."""
+        texts = [p for p in paths if path_utils.file_kind(p) == "text"]
+        books = [p for p in paths if path_utils.file_kind(p) == "book"]
+        adder = self._adder()
+        if texts and adder is not None and adder.add_files(texts) is not None:
+            self.say(S.FILES_ADDED.format(what=_count(S.FILES_N, len(texts))))
+        for book in books:
+            self._extract_book(book)
+
+    def _extract_book(self, path):
+        """One EPUB through Extract's child (the name its own, or Extract's proposal when taken), as `extract`'s job."""
+        from app import extract, importers_view
+        from app.services import tools
+        language, name, shell = self.language, importers_view.default_name(path), self.shell
+        relay = bridge.Relay(parent=shell)
+        found = {"result": None, "why": None}
+
+        def said(line):
+            if not self._gone and not sip.isdeleted(self):
+                self.say(line)
+            windows.say_in_bar(shell, line)
+
+        def ended(code):
+            if not sip.isdeleted(relay):
+                relay.deleteLater()
+            key, values = importers_view.extract_outcome(code, found["result"], found["why"])
+            if key in ("done", "already"):
+                said(S.BOOK_ADDED.format(name=values.get("name") or name, parts=values.get("parts") or 0))
+            else:
+                said(S.BOOK_FAILED.format(name=name, why=strings.EXTRACT_EMPTY if key == "empty"
+                                          else found["why"] or strings.IMPORTERS_FAILED_PLAIN))
+        relay.said.connect(ended)
+
+        def line(text):
+            result = extract.parse_result(text)
+            if result is not None:
+                found["result"] = result
+            else:
+                found["why"] = importers_view.error_of(text) or found["why"]
+
+        def start(answer):
+            free = answer.proposal if answer.taken else answer.name
+            if not free:
+                relay.call(extract.EXIT_REFUSED)
+                return
+            length = str(self._settings().get("split_length") or extract.DEFAULT_LENGTH)
+            tools.run(self.services.registry, "extract", strings.EXTRACT_NAME,
+                      ["extract.py", "--language", language, f"--file={path}", f"--name={free}", "--section", "now",
+                       "--split", "length", f"--value={length}", "--parts", "0"],
+                      on_line=line, on_end=relay.call, on_quit="wait")
+        bridge.run_in_worker(extract.check_name, name, language, then=start,
+                             failed=lambda info: said(S.BOOK_FAILED.format(name=name, why=info[0])))
+
+    # --- alpha 8: *YouTube…* — each line's first video, in the background, ending with the load screen ---------------
+    def youtube_risk(self, on):
+        """The links box's risk tick: the downloader's own `youtube_risk_acknowledged`, saved at once (as its window
+        saves it: the user's own tick, never on open)."""
+        try:
+            self.services.settings.set({"youtube_risk_acknowledged": bool(on)})
+        except Exception as e:
+            applog.log("wizard", f"youtube risk: {e}")
+
+    def _fetch_youtube(self, links):
+        """The links' first videos, fetched by the module on a `youtube` job (`fetch_first`); its end hands the
+        transcripts to New arrivals (the downloader's own seam, `windows.youtube_arrivals`) and says what came in or
+        why not — on the load screen's side line, here and in the bar. The load's last step waits for it."""
+        self.fetching = {"links": len(links)}
+        self._youtube_side(S.YOUTUBE_FETCHING.format(what=_count(S.YOUTUBE_VIDEOS, len(links))))
+        try:
+            _youtube_fetcher()(self.shell, links, self.language, lambda _line: None, self._youtube_ended)
+        except Exception as e:                            # the module gone or broken: said, setup goes on
+            self._youtube_ended([], [str(e) or type(e).__name__])
+
+    def _youtube_side(self, text):
+        screen = self._load_screen()
+        if screen is not None:
+            screen.set_side(text)
+
+    def _youtube_ended(self, created, problems):
+        """The fetch ended: its transcripts handed to New arrivals (then the line), or why nothing came."""
+        why = (problems or [""])[0]
+        if not created:
+            self._youtube_landed(0, 0, why)
+            return
+        try:
+            windows.youtube_arrivals(self.shell, then=lambda waiting, placed, _missed:
+                                     self._youtube_landed(waiting, placed, why))(list(created))
+        except Exception as e:                            # no library, another library, read-only: said
+            self._youtube_landed(0, 0, str(e))
+
+    def _youtube_landed(self, waiting, placed, why):
+        line = youtube_line(waiting, placed, why)
+        if self._gone or sip.isdeleted(self):
+            windows.say_in_bar(self.shell, line)
+            return
+        self.fetching = None
+        self.youtube_said = line
+        self._youtube_side(line)
+        self.say(line)
+        if why:
+            self.pages[2].refuse(line)                    # what didn't come, on the page too (it stays said)
+        load = self._load
+        if load is not None and load["step"] == "youtube":
+            if waiting or placed or load["ids"]:
+                self._load_sort()
+            else:                                         # nothing came in at all: the page again, with why
+                self._load = None
+                self._cover(None)
 
     def _added(self, _text=None):
         """+ Add handed something to the writer: the rows read again (now, and as the library's view moves)."""
@@ -3134,6 +3329,8 @@ class SetupWizard(QWidget):
         self._load = {"step": "scan", "ids": [], "stopped": False, "indexed": 0, "since": None}
         self._cover(screen)
         self._load_said((0, 0))
+        if self.fetching is not None:                     # alpha 8: YouTube's line beside the task, from the start
+            screen.set_side(S.YOUTUBE_FETCHING.format(what=_count(S.YOUTUBE_VIDEOS, self.fetching["links"])))
 
     def _load_said(self, said):
         """The scan's progress, as page 3 hears it: the wait, the copy's count, or what it found."""
@@ -3167,6 +3364,9 @@ class SetupWizard(QWidget):
             return
         load["ids"] = list((result or {}).get("ids") or ())
         if not load["ids"]:
+            if self.fetching is not None:                 # alpha 8: nothing read, but videos are coming
+                self._load_youtube()
+                return
             self._load = None
             self._cover(None)
             return
@@ -3254,12 +3454,24 @@ class SetupWizard(QWidget):
         if self._sync_running:
             self._load_task(S.LOAD_ANKI)
             return
-        self._load_sort()
+        self._load_youtube()
 
     def _synced_now(self):
         self._sync_running = False
         if self._load is not None and self._load["step"] == "anki" and not self._gone and not sip.isdeleted(self):
-            self._load_sort()
+            self._load_youtube()
+
+    def _load_youtube(self):
+        """Alpha 8: page 3's YouTube videos, still coming: waited for (their end, `_youtube_landed`, goes on to the
+        sorting; a stalled fetch ends itself, and *Stop* goes on without them); else on to the sorting."""
+        load = self._load
+        if load is None:
+            return
+        load["step"] = "youtube"
+        if self.fetching is not None:
+            self._load_task(S.LOAD_YOUTUBE)
+            return
+        self._load_sort()
 
     def _load_sort(self):
         """The sort screen over the wizard: every title in New arrivals (the window hands it each view)."""

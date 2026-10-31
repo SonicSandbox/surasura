@@ -652,7 +652,7 @@ def test_page_threes_add_row_folder_is_setups_own_and_waits_for_the_sort_screen_
     go_to(wiz, "shows")
     page = wiz.page
     page.entered()
-    button = page.add_buttons["folder"]
+    button = page.btn_pick                                          # alpha 8: page 3's one folder button
     assert not button.isHidden() and button.toolTip()
     wiz.pick_dialog = lambda _title, _start: folder
     QTest.mouseClick(button, Qt.MouseButton.LeftButton)

@@ -79,7 +79,7 @@ from collections import namedtuple
 from app import audiobooks
 from app import episode_names as en
 from app import library_store as ls
-from app.path_utils import decode_text, restart_trash_clock, write_source_marker
+from app.path_utils import BOOK_EXTENSIONS, decode_text, restart_trash_clock, write_source_marker
 from app.unicode_ranges import HAN, KANA_LETTERS
 
 log = logging.getLogger("surasura-cli")
@@ -95,7 +95,7 @@ HOURLY_S = 60 * 60              # else, while a window is in front
 CACHE_VERSION = 4               # 2: a folder's subtitle folders are listed with it; 3: a versions folder by its name;
                                 # 4: a folder link is followed, and each root keeps its folders' notes (`notes`)
                                 # alone (LF-1), never one guessed from what it holds
-EPUB = ".epub"
+EPUB = BOOK_EXTENSIONS[0]                       # (path_utils.file_kind's book)
 MIN_SCRIPT = 20                 # a text holding fewer characters of the language's script is no content (K6)
 BOOK_MIN_CHARS = 1000           # a loose .txt / .md holding fewer of the script's characters is no content (T2-B4)
 HEAD = 1 << 20                  # a text over IN_MEMORY is judged by this much of its start, read with its hash (B4)

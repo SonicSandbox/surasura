@@ -38,14 +38,14 @@ from collections import namedtuple
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_data_path, get_user_files_path, read_text
+from app.path_utils import BOOK_EXTENSIONS, CONTENT_EXTENSIONS, get_data_path, get_user_files_path, read_text
 
 SECTIONS = ("now", "soon", "goal")             # the store's tiers a user may extract into (Current · Soon · Goal)
 DEFAULT_LENGTH = 1500                           # settings' `split_length` when it has none
 DEFAULT_OVERFLOW = 150                          # `logic.importer.split_overflow` when it has none
 DEFAULT_DELIMITER = r"\n\d+\n"
 DEFAULT_PARTS = 5
-TEXT_EXTENSIONS = (".epub", ".txt", ".md", ".srt", ".ass", ".ssa")
+TEXT_EXTENSIONS = BOOK_EXTENSIONS + CONTENT_EXTENSIONS     # (path_utils.file_kind's)
 RESULT_MARK = "RESULT "
 EXIT_DONE, EXIT_FAILED, EXIT_REFUSED, EXIT_PROCESSED_ONLY = 0, 1, 2, 3
 NAME_LIMIT = 60                                 # characters: a folder name, and its parts' names after it (a grouped

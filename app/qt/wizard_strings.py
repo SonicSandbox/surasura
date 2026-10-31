@@ -116,9 +116,31 @@ PICK_FOLDER_TIP = ("Choose a folder your shows and books are in: Surasura reads 
                    "• You sort it show by show next; the rest wait in New arrivals (Surasura 2 tiers are kept)\n"
                    "• Nothing in it is changed; each new episode joins your library by itself")
 PICK_TITLE = "Where are your shows and books?"
+# Alpha 8 (Sonic: "You just pick the file or you pick the folder"): a file, a folder, or YouTube links — each kind found
+PICK_FILE = "Choose a file…"
+PICK_FILE_TIP = ("Choose an episode's subtitles, a text or an EPUB: Surasura sees which it is.\n"
+                 "• It goes at the top of Current; nothing in the file is changed")
+PICK_FILE_TITLE = "Choose a file"
+PICK_FILE_FILTER = "Subtitles, texts and books ({patterns});;All files (*)"
+FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
+FILES_ADDED = "Bringing in {what}: they go at the top of Current."
+FILES_N = ("1 file", "{n:,} files")
+BOOK_ADDED = "{name} is in Current: {parts} parts."
+BOOK_FAILED = "{name} couldn't be brought in: {why}"
+YOUTUBE = "YouTube…"
+YOUTUBE_TIP = ("Paste YouTube links, one a line. Each line's first video comes in while setup finishes.\n"
+               "• A playlist's other videos: the YouTube window, any time")
+YOUTUBE_NAME = "YouTube links, one a line"
+YOUTUBE_HINT = "One link a line: a video, or a playlist (its first video comes in)"
+YOUTUBE_RISK = "I understand the risks"
+YOUTUBE_RISK_LINE = "YouTube can turn requests away for a while; it's for your own study."
+YOUTUBE_RISK_TIP = ("Bringing in YouTube's subtitles is a gray area under its Terms of Service, and YouTube can turn "
+                    "requests away for a while.\n• Use it only for your own study; the YouTube window asks the same")
+YOUTUBE_NEEDS_RISK = "Tick “I understand the risks” to bring in from YouTube, or clear the links."
+YOUTUBE_NONE = "Paste a YouTube link first: one a line."
 FOLDER_REMOVE = "Remove"
 FOLDER_REMOVE_NAME = "Remove {folder}"
-FOLDER_REMOVE_TIP = "Leave this folder out: nothing is read from it."
+FOLDER_REMOVE_TIP = "Leave it out: nothing is read from it."
 FOLDER_REFUSED = "{folder}: {why}"
 # K6: a folder inside the ones picked that is never read (a backup, a game's files), skipped before the first look
 SKIP_FOLDER = "Skip a folder…"
@@ -299,6 +321,13 @@ LOAD_INDEX_START = "Reading the words…"
 LOAD_COVERS = "Finding covers · {done:,} of {total:,}"
 LOAD_COVERS_START = "Finding covers…"
 LOAD_ANKI = "Bringing in your known words from Anki…"
+LOAD_YOUTUBE = "Bringing in your videos from YouTube…"                        # alpha 8: the load waits for it last
+YOUTUBE_FETCHING = "YouTube · bringing in {what}…"
+YOUTUBE_VIDEOS = ("1 video", "{n:,} videos")
+YOUTUBE_DONE = "YouTube · {what} in New arrivals"
+YOUTUBE_PLACED = "YouTube · {what} in your library"
+YOUTUBE_FAILED = "YouTube · {why}"
+YOUTUBE_SOME_FAILED = "YouTube · {what} in New arrivals · {why}"
 LOAD_STOP = "Stop"
 LOAD_STOP_TIP = ("Stop here and sort what was read so far. Nothing read is lost; a folder not reached yet stays on "
                  "the page to read again.")

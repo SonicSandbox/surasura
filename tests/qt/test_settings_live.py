@@ -347,7 +347,72 @@ def test_check_refreshes_the_status_and_shows_ankis_word_beside_the_emerald(qapp
     assert wait_until(lambda: not mark.value()) and mark.words() == S.ANKI_WORDS["closed"]
 
 
+def test_ankiconnect_missing_shows_copy_code_and_the_steps_and_a_closed_anki_shows_neither(qapp, fakes):
+    # Mado-A: an Anki seen without AnkiConnect answering (or a look that can't tell) says so in the wizard's words,
+    # with *Copy code* and the three steps under the row; a plainly closed Anki keeps its one line
+    from app import ankiconnect_addon as A
+    page, store, shell = make(fakes)
+    parts = page.live.parts["anki_connection"]
+    mark, steps = parts["mark"], parts["steps"]
+    assert steps.isHidden() and steps.copy.toolTip() and isinstance(steps.copy, sc.Door)
+    fakes.probe = {"ok": False, "version": None, "missing": [], "error": "refused", "running": True}
+    page.live.check()
+    assert wait_until(lambda: mark.words() == A.NO_CONNECT) and not mark.value()
+    assert not steps.isHidden() and steps.line.text() == A.steps_line()
+    assert help_of(page, "setup_anki") == A.NO_CONNECT
+    fakes.probe = dict(fakes.probe, running=None)
+    page.live.check()
+    assert wait_until(lambda: mark.words() == A.UNSURE)
+    assert not steps.isHidden() and steps.line.text() == A.steps_line(unsure=True)
+    QApplication.clipboard().setText("")
+    steps.copy.click()
+    assert QApplication.clipboard().text() == A.CODE and steps.copy.text() == A.COPIED
+    assert shell.bar_line.lines[-1] == A.COPIED_LINE
+    fakes.probe = dict(fakes.probe, running=False)
+    page.live.check()
+    assert wait_until(lambda: mark.words() == S.ANKI_WORDS["closed"]) and steps.isHidden()
+
+
+def test_check_runs_by_itself_once_anki_answers_while_the_row_is_on_screen(qapp, fakes, monkeypatch):
+    # Mado-A: the row's watch rides the shell's poll; armed while Anki is closed or AnkiConnect missing, it takes the
+    # light look on a worker and, once AnkiConnect answers, runs *Check* itself; connected, it asks nothing more
+    from PyQt6.QtCore import QTimer
+    from app import ankiconnect_addon as A
+    from app.qt import addon_steps
+    tick = QTimer()
+    monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    asked = []
+    monkeypatch.setattr(A, "answers", lambda url: asked.append(url) or fakes.probe.get("ok"))
+    fakes.probe = {"ok": False, "version": None, "missing": [], "error": "refused", "running": True}
+    page, store, shell = make(fakes)
+    mark = page.live.parts["anki_connection"]["mark"]
+    tick.timeout.emit()
+    QApplication.processEvents()
+    assert asked == []                                    # not checked yet: nothing armed
+    page.live.check()
+    assert wait_until(lambda: mark.words() == A.NO_CONNECT)
+    checks = fakes.names().count("probe_anki")
+    tick.timeout.emit()
+    assert wait_until(lambda: asked == ["http://127.0.0.1:8765"])
+    assert wait_until(lambda: not page.live.parts["anki_connection"]["watch"].looking)
+    assert fakes.names().count("probe_anki") == checks    # still no answer: no Check
+    fakes.probe = {"ok": True, "version": 6, "missing": [], "error": ""}
+    tick.timeout.emit()
+    assert wait_until(lambda: mark.value()) and mark.words() == "connected"
+    assert fakes.names().count("probe_anki") == checks + 1
+    assert page.live.parts["anki_connection"]["steps"].isHidden()
+    n = len(asked)
+    tick.timeout.emit()
+    QApplication.processEvents()
+    assert len(asked) == n
+
+
 def test_ankis_words_from_a_look():
+    assert live.connection({"ok": False, "error": "refused", "running": True}) == (False, "no_addon")
+    assert live.connection({"ok": False, "error": "refused", "running": None}) == (False, "unsure")
+    assert live.connection({"ok": False, "error": "refused", "running": False}) == (False, "closed")
+    assert live.connection({"ok": False, "error": "refused"}) == (False, "closed")      # an older look: no process seen
     assert live.connection({"ok": False, "timed_out": True}) == (False, "busy")
     assert live.connection({"ok": False, "version": 6, "error": "Anki did not grant access"}) == (False, "denied")
     assert live.connection(None, "synced") == (True, "connected")

@@ -37,8 +37,8 @@ from PyQt6.QtCore import QObject, QPoint, QRectF, Qt
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout
 
-from app import settings_manager, theme
-from app.qt import applog, bridge, confirm, motion, shadow, strings, style, windows
+from app import ankiconnect_addon, settings_manager, theme
+from app.qt import addon_steps, applog, bridge, confirm, motion, shadow, strings, style, windows
 from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
@@ -111,9 +111,13 @@ def read_level(settings, language):
 
 
 def probe_anki(settings):
-    """*Check*: AnkiConnect asked once at the one address every Anki caller reads (loopback only) -> `probe`'s dict."""
-    from app import anki_connect
-    return anki_connect.probe(anki_connect.address(settings_service.thaw(settings)), timeout=PROBE_TIMEOUT)
+    """*Check*: AnkiConnect asked once at the one address every Anki caller reads (loopback only) -> `probe`'s dict;
+    when nothing answered, its `running` too (an Anki process seen: AnkiConnect may be missing — the wizard's look)."""
+    from app import ankiconnect_addon, anki_connect
+    report = anki_connect.probe(anki_connect.address(settings_service.thaw(settings)), timeout=PROBE_TIMEOUT)
+    if not report.get("ok") and report.get("version") is None and not report.get("timed_out"):
+        report["running"] = ankiconnect_addon.running()
+    return report
 
 
 def read_hato():
@@ -184,6 +188,8 @@ def connection(report=None, sync=None):
             return False, "busy"
         if report.get("version") is not None:
             return False, "denied"                       # Anki answered, and kept Surasura out
+        if ankiconnect_addon.needs_addon(report):        # the wizard's rule: an Anki seen (or can't tell), no answer
+            return False, "unsure" if report.get("running") is None else "no_addon"
         return False, "closed"
     return {"synced": (True, "connected"), "anki-closed": (False, "closed"), "failed": (False, "failed"),
             "syncing": (False, "syncing")}.get(sync, (False, "unknown"))
@@ -560,7 +566,16 @@ class Live(QObject):
             slot = self._slot(row_id).layout()
             slot.addWidget(mark)
             slot.addWidget(check)
-            self.parts[row_id] = {"mark": mark, "check": check}
+            # AnkiConnect may be missing: *Copy code* + the three steps under the row's help (the wizard's same part),
+            # and *Check* by itself once Anki answers (the shell's poll; armed by `_paint_anki`)
+            view = self.page.row(row_id)
+            steps = addon_steps.AddonSteps(lambda text, tip: qpress.room(sc.Door(text, tooltip=tip)), "settingshelp",
+                                           lambda text: self.say(text, row_id), view)
+            steps.setVisible(False)
+            (view.words if view.words is not None else view.layout()).addWidget(steps)    # under the row's help
+            watch = addon_steps.Watch(view, addon_steps.ticker(self.shell), self._anki_url, self.check)
+            self.parts[row_id] = {"mark": mark, "check": check, "steps": steps, "watch": watch}
+            self._paint_anki()
         elif row_id == "connect_needs_miner":           # row 13: Anki Miner not found — the way to its card
             door = sc.Door(S.SET_UP_MINER, tooltip=S.SET_UP_MINER_TIP, name=f"{row.label}: {S.SET_UP_MINER}")
             door.clicked.connect(lambda _c=False: self.page.reveal("anki_miner"))
@@ -783,12 +798,26 @@ class Live(QObject):
         return connection(self.facts.get("report"), self.facts.get("sync"))
 
     def _paint_anki(self):
-        mark = self.parts.get("anki_connection", {}).get("mark")
+        parts = self.parts.get("anki_connection", {})
+        mark = parts.get("mark")
         if mark is None:
             return
         lit, key = self._anki_now()
         if mark.value() != lit or mark.words() != S.ANKI_WORDS[key]:
             mark.set_value(lit, S.ANKI_WORDS[key])
+        steps, watch = parts.get("steps"), parts.get("watch")
+        if steps is not None:
+            shown = key in ("no_addon", "unsure")
+            if shown:
+                steps.set_unsure(key == "unsure")
+            if steps.isHidden() == shown:
+                steps.setVisible(shown)
+        if watch is not None and key != "checking":
+            watch.arm(key in ("closed", "no_addon", "unsure"))
+
+    def _anki_url(self):
+        from app import anki_connect
+        return anki_connect.address(settings_service.thaw(self._settings()))
 
     def check(self):
         """*Check*: the status service refreshed, and AnkiConnect asked once on a worker (its word shown when it comes)."""

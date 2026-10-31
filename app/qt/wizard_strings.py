@@ -4,6 +4,7 @@ One table, so the wizard can be translated with the rest of the window (`app/qt/
 keeps its own, as a module keeps its `qt_strings.py`). RS-7: the title says the benefit, at most one short line under
 it, nothing about what's under the hood; anything longer is a tooltip, with its action on a "• " line of its own.
 """
+from app import ankiconnect_addon as _addon
 
 # --- the frame -------------------------------------------------------------------------------------------------------- #
 NAME = "Setting up Surasura"
@@ -27,17 +28,17 @@ STEPS = {"language": "Your language", "known": "What you know", "shows": "Your s
 RECOMMENDED = "RECOMMENDED"
 SWITCH_TIP = "{name}\n{tip}"                # a switch has no words of its own: its tip names it first
 ANKI_CLOSED = "Anki isn't open"
-# §C11: Anki open, AnkiConnect not answering (an Anki process seen) — or a look that can't tell the two apart
-ANKI_NO_CONNECT = "Anki is open, but AnkiConnect isn't answering"
-ANKI_NO_CONNECT_HOW = ("In Anki, install the AnkiConnect add-on (Tools › Add-ons › Get Add-ons…, code 2055492159), "
-                       "then restart Anki and press Check again.")
+# §C11: Anki open, AnkiConnect not answering (an Anki process seen) — or a look that can't tell the two apart. The
+# words and the steps beside *Copy code* are the one set Settings' row and Connect's check show (`app/ankiconnect_addon`)
+ANKI_NO_CONNECT = _addon.NO_CONNECT
+ANKI_NO_CONNECT_HOW = _addon.steps_line()
 ANKI_NO_CONNECT_CARD = "AnkiConnect isn't answering"          # the From Anki card's short line
-ANKI_UNSURE = "Anki isn't open, or AnkiConnect isn't answering"
+ANKI_UNSURE = _addon.UNSURE
 ANKI_UNSURE_CARD = "Anki closed, or no AnkiConnect"
-ANKI_UNSURE_HOW = ("Open Anki. If it's open already, install the AnkiConnect add-on (Tools › Add-ons › Get Add-ons…, "
-                   "code 2055492159), then restart Anki and press Check again.")
+ANKI_UNSURE_HOW = _addon.steps_line(unsure=True)
 CHECK_AGAIN = "Check again"
-CHECK_AGAIN_TIP = "Look for Anki again, once it's open."
+CHECK_AGAIN_TIP = ("Look for Anki again now.\n"
+                   "• Surasura also looks by itself every few seconds, and goes on once Anki answers")
 CHECKING = "Looking for Anki…"
 # Brought over from Surasura 2 (WZ-8): the whole setup once, each page showing the choices already made there
 UPGRADE_LINE = ("Welcome to Surasura 3. Your choices from Surasura 2 are already picked; "

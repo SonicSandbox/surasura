@@ -45,8 +45,8 @@ from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, Q
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLayout,
                              QPlainTextEdit, QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
-from app import path_utils, settings_manager, theme
-from app.qt import applog, bridge, confirm, motion, settings_strings, strings, style, windows
+from app import ankiconnect_addon, path_utils, settings_manager, theme
+from app.qt import addon_steps, applog, bridge, confirm, motion, settings_strings, strings, style, windows
 from app.qt import press as qpress
 from app.qt import wizard_strings as S
 from app.services import press as press_service
@@ -692,17 +692,18 @@ def closed_words(look):
     """(line, what to do or "", the From Anki card's short line) for an Anki that didn't answer (§C11): open without
     AnkiConnect answering, closed, or can't tell which (`setup_wizard.anki_look`'s `running`: an Anki process seen,
     none, or None)."""
-    running = (look or {}).get("running", False)
-    if running is True:
-        return S.ANKI_NO_CONNECT, S.ANKI_NO_CONNECT_HOW, S.ANKI_NO_CONNECT_CARD
-    if running is None:
+    if not ankiconnect_addon.needs_addon(look):          # the one rule Settings' row and Connect's check read
+        return S.ANKI_CLOSED, "", S.ANKI_CLOSED
+    if look.get("running") is None:
         return S.ANKI_UNSURE, S.ANKI_UNSURE_HOW, S.ANKI_UNSURE_CARD
-    return S.ANKI_CLOSED, "", S.ANKI_CLOSED
+    return S.ANKI_NO_CONNECT, S.ANKI_NO_CONNECT_HOW, S.ANKI_NO_CONNECT_CARD
 
 
 def _closed_part(wiz, parent):
-    """*Anki isn't open* (or why it didn't answer) + *Check again*, the line of what to do under them. -> (the part,
-    its line, its how, the button)."""
+    """*Anki isn't open* (or why it didn't answer) + *Check again*; under them, while AnkiConnect may be missing, *Copy
+    code* and the three steps (`addon_steps.AddonSteps`, Settings' row shows the same). *Check again* also runs by
+    itself once Anki answers (`addon_steps.Watch`, armed by `_say_closed`). -> (the part, its line, the steps, the
+    button)."""
     part = QWidget(parent)
     col = QVBoxLayout(part)
     col.setContentsMargins(0, 0, 0, 0)
@@ -715,17 +716,23 @@ def _closed_part(wiz, parent):
     row.addWidget(button)
     row.addStretch(1)
     col.addLayout(row)
-    how = _label("wizsub", "", part, wrap=True)
-    how.setVisible(False)
-    col.addWidget(how)
-    return part, line, how, button
+    steps = addon_steps.AddonSteps(lambda text, tip: _button(text, tip, lambda: None, part), "wizsub", wiz.say, part)
+    steps.setVisible(False)
+    col.addWidget(steps)
+    part.watch = addon_steps.Watch(part, addon_steps.ticker(wiz.shell), wiz.anki_url, wiz.look_anki)
+    return part, line, steps, button
 
 
-def _say_closed(line, how, look):
+def _say_closed(line, steps, look, watch=None):
+    """The closed part's words for `look`; its watch armed while Anki said nothing the learner must answer (a
+    permission prompt is theirs, in Anki)."""
     words, todo, _card = closed_words(look)
     _set_text(line, words)
-    _set_text(how, todo)
-    _show(how, bool(todo))
+    if todo:
+        steps.set_unsure((look or {}).get("running") is None)
+    _show(steps, bool(todo))
+    if watch is not None:
+        watch.arm(not (look or {}).get("say"))
 
 
 def _tabular(font):
@@ -1326,7 +1333,7 @@ class KnownPage(_Page):
         self.no_decks = _label("wizsub", S.NO_DECKS, self.decks_part)
         decks.addWidget(self.no_decks)
         self.box.addWidget(self.decks_part)
-        self.closed_part, self.closed_line, self.closed_how, self.btn_check = _closed_part(self.wiz, self)
+        self.closed_part, self.closed_line, self.closed_steps, self.btn_check = _closed_part(self.wiz, self)
         self.box.addWidget(self.closed_part)
         self.import_part = QWidget(self)
         doors = QHBoxLayout(self.import_part)
@@ -1381,7 +1388,7 @@ class KnownPage(_Page):
             self.anki.set_parts(line=S.FROM_ANKI_OPEN, recommended=True, dot="ok")
         else:
             self.anki.set_parts(line=look.get("say") or closed_words(look)[2], recommended=False, dot="off")
-            _say_closed(self.closed_line, self.closed_how, look)
+            _say_closed(self.closed_line, self.closed_steps, look, self.closed_part.watch)
         how = self._effective()
         self.channel.choose(how)
         self.sentence.set_language(self.wiz.language)
@@ -1855,7 +1862,7 @@ class OrderPage(_Page):
         super().__init__(wiz, S.ORDER_TITLE)
         self.picture = CardsPicture(wiz.language, self)
         self.box.addWidget(self.picture)
-        self.closed_part, self.closed_line, self.closed_how, self.btn_check = _closed_part(self.wiz, self)
+        self.closed_part, self.closed_line, self.closed_steps, self.btn_check = _closed_part(self.wiz, self)
         self.box.addWidget(self.closed_part)
         # 順 switched off or not in this Surasura: no control that does nothing (the intent keeper's IK-14)
         self.off_line = _label("wizclosed", S.ORDER_OFF, self, wrap=True)
@@ -1991,7 +1998,7 @@ class OrderPage(_Page):
         is_open = bool(look and look.get("open")) and not off
         _show(self.closed_part, not off and look is not None and not is_open)
         if look is not None and not look.get("open"):
-            _say_closed(self.closed_line, self.closed_how, look)
+            _say_closed(self.closed_line, self.closed_steps, look, self.closed_part.watch)
         _show(self.controls, is_open)
         _show(self.automation_line, is_open and not settings_manager.automation(self.wiz._settings()))
         self.picture.set_language(self.wiz.language)
@@ -2889,6 +2896,11 @@ class SetupWizard(QWidget):
         setattr(self, name, None)
         if p is not None:
             qpress.end(p, self, failed=failed)
+
+    def anki_url(self):
+        """The one AnkiConnect address every Anki caller reads (the closed part's watch asks it on each look)."""
+        from app import anki_connect
+        return anki_connect.address(thaw(self._settings()))
 
     def look_anki(self, control=None):
         """`anki_look` on a worker; pages 2 and 4 repaint from its answer. `control`: *Check again*, pressed (its arc

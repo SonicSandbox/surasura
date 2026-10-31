@@ -6,6 +6,7 @@ mock's words carry a meaning 2.4 changed (A5: the one-kanji words, Junban's unli
 voice. A tooltip is 2.4's own where 2.4 had one, else the help line. Help is one line, never an essay; no fixed seed
 numbers (N5). `app/qt/settings_catalog.py` names each row's strings by its row id.
 """
+from app import ankiconnect_addon as _addon         # AnkiConnect missing: the one set of words (alpha 8)
 from app.connect.settings_values import WORDS as MINE_WORDS   # *Words to make cards from*: Connect's own words
 from app.practice import NAME as PRACTICE_NAME       # the practice chat's name (A6): one place, app/practice.py
 
@@ -616,6 +617,7 @@ READOUT_NO_TIME = "≈{words} words · {coverage}% of your content"
 # Connection (Anki): the emerald's words (S6: never colour alone)
 ANKI_WORDS = {
     "connected": "connected", "closed": "Anki is closed", "busy": "Anki is open but isn’t answering",
+    "no_addon": _addon.NO_CONNECT, "unsure": _addon.UNSURE,               # AnkiConnect may be missing: the wizard's
     "denied": "Anki hasn’t let Surasura in yet", "failed": "the last sync from Anki didn’t finish",
     "syncing": "reading Anki…", "checking": "checking…", "unknown": "not checked yet",
 }

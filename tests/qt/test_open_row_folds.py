@@ -402,3 +402,23 @@ def test_a_fold_click_measures_its_row_alone_and_a_repaint_after_draws_nothing_a
     before = lst.delegate.renders
     lst.viewport().repaint()
     assert lst.delegate.renders == before
+
+
+def test_a_stone_painted_ahead_in_the_opened_row_joins_its_fold_at_once(opened):
+    """Mado-S's mark painted ahead of the store (`view_rows.marked`, the row the store builds next): Up next's stone
+    clicked inside the opened row — the fold reads *Parts 1–281 watched* in that same refresh, part 282 is Up next, the
+    row still open; the Undo painted back unfolds it the same way."""
+    view, row = _book()
+    lst, i = opened(view, row.key)
+
+    def paint(marks):
+        entries = list(lst.model().entries)
+        entries[i] = (entries[i][0], vr.marked(row, marks), entries[i][2])
+        lst.set_entries(entries)
+        return [item for _r, item in _lines(lst, i)]
+
+    items = paint({row.episodes[280].id: True})
+    assert lst.model().open_key == row.key
+    assert items[0].label == "Parts 1–281 watched" and items[1].id == row.episodes[281].id and len(items) == 20
+    items = paint({row.episodes[280].id: False})
+    assert items[0].label == "Parts 1–280 watched" and items[1].id == row.episodes[280].id and len(items) == 21

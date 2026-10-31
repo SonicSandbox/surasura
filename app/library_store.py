@@ -8623,30 +8623,23 @@ def _store_sources(self, all=False, counts=True):
     episodes are kept*; item 8b: a show's folder added inside a folder read before counts the episodes that one took
     in) — by the origin keys' path, `/`-ended (`…\\Show` never counts `…\\Show S2`); an origin whose original
     moved to another folder (D5's `moved_to`) counts in its new place only. `counts=False` (a look,
-    Connect's video index): the roots' rows alone, no origin read; the counts are gathered here from one read of the
-    keys in order (each folder's by its prefix), never in a GROUP BY (its temporary B-tree went to disk: 14 MB written
-    per call at 20k origins)."""
+    Connect's video index): the roots' rows alone, no origin read. Each folder's count is SQLite's, one row a folder,
+    over its keys' range in the table's own key (`<folder>/` up to `<folder>0`): no origin key comes into Python (W4.1:
+    at 20k origins every look's summary read them all, ~1 s while the window scrolled, its thread waiting for the
+    interpreter row after row), and never a GROUP BY (its temporary B-tree went to disk: 14 MB written per call)."""
     kinds = ("source", "source-off") if all else ("source",)
-    keys, ids = [], []
+    out = []
     with self._reading():
         rows = self.conn.execute(f"SELECT id, path, kind FROM roots WHERE kind IN ({','.join('?' * len(kinds))}) "
                                  "ORDER BY id", kinds).fetchall()
-        if counts and rows:
-            for key, item_id in self.conn.execute(f"SELECT substr(p.content_key, {len(SOURCE_KEY) + 1}), p.item_id "
-                                                  f"FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} "
-                                                  f"AND NOT {_MOVED_ROW} ORDER BY p.content_key"):
-                keys.append(key)
-                ids.append(item_id)
-    out = []
-    for i, p, k in rows:
-        held = set()
-        if keys and p:
-            prefix = path_key(os.path.abspath(p)).rstrip("/") + "/"
-            at = bisect.bisect_left(keys, prefix)
-            while at < len(keys) and keys[at].startswith(prefix):
-                held.add(ids[at])
-                at += 1
-        out.append({"id": i, "path": p, "on": k == "source", "items": len(held)})
+        for i, p, k in rows:
+            held = 0
+            if counts and p:
+                prefix = SOURCE_KEY + path_key(os.path.abspath(p)).rstrip("/") + "/"
+                held = self.conn.execute(f"SELECT COUNT(DISTINCT p.item_id) FROM pairings p WHERE p.content_key >= ? "
+                                         f"AND p.content_key < ? AND NOT {_VERSION_ROW} AND NOT {_MOVED_ROW}",
+                                         (prefix, prefix[:-1] + "0")).fetchone()[0]
+            out.append({"id": i, "path": p, "on": k == "source", "items": held})
     return out
 
 

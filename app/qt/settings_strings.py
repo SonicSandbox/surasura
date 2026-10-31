@@ -59,9 +59,11 @@ MORE_TIP = "Shows this section's other settings, the ones most people never chan
 FEWER_TIP = "Hides this section's other settings again"
 LINK_OPEN = "Open ↗"
 HOW_PARSING_URL = "https://github.com/SonicSandbox/surasura/blob/main/docs/How%20Parsing%20Works.md"
-DISCORD_URL = "https://discord.gg/Uy8mHymrRv"          # the Surasura server's invite (never expires; opened in the browser)
+DISCORD_URL = "https://surasura.dev/app/discord"      # the server's invite, by redirect (in the browser, never an app call)
+WEBSITE_URL = "https://surasura.dev"                  # Surasura's website (in the browser, never an app call)
 ISSUES_URL = "https://github.com/SonicSandbox/surasura/issues"
-LINK_URLS = {"how_parsing_works": HOW_PARSING_URL, "discord": DISCORD_URL}   # a link row's page, by its id
+LINK_URLS = {"how_parsing_works": HOW_PARSING_URL, "discord": DISCORD_URL,   # a link row's page, by its id
+             "website": WEBSITE_URL}
 FOLDER_PICK_TITLE = "Where videos are looked for"
 
 # --- the controls' own words (settings_controls.py; moved here from its top, W3.3 P3) ------------------------------ #
@@ -523,6 +525,8 @@ ROWS = {
                      "data credits licence license jmdict jmnedict unidic cedict jpdb jiten"),
     "discord": ("Join the Surasura Discord", "Questions, help, and a place to report a problem",
                 "Opens Surasura's Discord server in your browser", "discord community help chat support join server"),
+    "website": ("Surasura website", "Surasura's home page, surasura.dev", "Opens surasura.dev in your browser",
+                "website homepage home page site web download surasura.dev"),
     "version": ("Version {version}", "", "Opens the data folder", "version data folder"),
     "set_up_again": ("Set up again", "Walks through the first steps again", "Opens the setup again",
                      "set up again wizard setup"),

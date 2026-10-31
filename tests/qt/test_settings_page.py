@@ -935,3 +935,23 @@ def test_the_discord_row_sits_by_the_credits_is_found_by_its_words_and_opens_the
     link.click()
     assert wait_until(lambda: opened == [S.DISCORD_URL])
     assert store.calls == []
+
+
+def test_the_website_row_sits_beside_the_discord_is_found_by_its_words_and_opens_the_site(qapp, monkeypatch):
+    """3.0.0: App's *Surasura website*, right after the Discord row, found by *website* / *homepage* / *site* /
+    *download*, its *Open ↗* tipped and opening surasura.dev in the browser, nothing written."""
+    opened = []
+    monkeypatch.setattr(windows, "open_url", lambda url: opened.append(url) or True)
+    ids = [row.id for row in catalog.ROWS if row.section == "app"]
+    assert ids.index("website") == ids.index("discord") + 1
+    page, store = make_page(ALL_ON, "ja")
+    assert page.rows["website"].isVisibleTo(page)
+    for word in ("website", "homepage", "site", "download", "surasura.dev"):
+        page.search.edit.setText(word)
+        assert page.rows["website"].isVisibleTo(page), word
+    page.search.edit.setText("")
+    link = page.rows["website"].slot.findChildren(QAbstractButton)[0]
+    assert link.text() == S.LINK_OPEN and link.toolTip() == S.ROWS["website"][2]
+    link.click()
+    assert wait_until(lambda: opened == ["https://surasura.dev"])
+    assert store.calls == []

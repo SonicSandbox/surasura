@@ -443,7 +443,10 @@ def test_show_in_folder_asks_explorer_to_select_the_zip(monkeypatch, tmp_path):
 
 def test_the_invite_and_issues_links_are_the_ones_checked():
     from app.qt import settings_strings
-    assert settings_strings.DISCORD_URL == "https://discord.gg/Uy8mHymrRv"
+    assert settings_strings.DISCORD_URL == "https://surasura.dev/app/discord"     # 3.0.0: redirects to the invite
+    assert settings_strings.WEBSITE_URL == "https://surasura.dev"
+    assert settings_strings.LINK_URLS["discord"] == settings_strings.DISCORD_URL
+    assert settings_strings.LINK_URLS["website"] == settings_strings.WEBSITE_URL
     assert settings_strings.ISSUES_URL == "https://github.com/SonicSandbox/surasura/issues"
 
 

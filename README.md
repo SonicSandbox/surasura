@@ -170,6 +170,29 @@ This runs the test suite, cleans previous builds, runs PyInstaller with the corr
 - `results/`: Generated CSVs and HTML reports.
 
 
+## 🗺️ Roadmap
+
+**Next**
+- Start over or sort again, with Put back
+- One-press private bug reports
+- Airing shows stay open until the season ends
+- Faster with huge libraries
+
+**Soon**
+- Anki cards made only when you need them
+- The journey: replay a line where it was said, swap sentences, mark words from the page
+- Manga support
+- A guided setup for the automation
+
+**Later**
+- 34+ languages to learn
+- Surasura in your language
+- Mac and Linux
+- Profiles, one per language
+- Full themes
+
+Ideas? Tell us on [Discord](https://discord.gg/Uy8mHymrRv).
+
 ## ❓ Q&A / FAQ
 
 If you have any questions or are running into issues, please check out the [Q&A / FAQ Guide](https://github.com/SonicSandbox/surasura/blob/main/docs/Surasura%20FAQ.md). Still stuck, or just want to talk? Join us on [Discord](https://discord.gg/Uy8mHymrRv).

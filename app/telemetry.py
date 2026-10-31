@@ -126,7 +126,7 @@ def _send_heartbeat_thread(status, respect_optout=True):
     Executes the network request in a background thread.
 
     respect_optout=True (normal heartbeats): if the user disabled telemetry, send nothing.
-    respect_optout=False (forced events, e.g. an auto-update): the event is still sent, but
+    respect_optout=False (a forced event; unused since 3.0.0): the event is still sent, but
     when telemetry is OFF it carries a throwaway gibberish id instead of the persistent one —
     so the ping can't be tied back to the user and their stored id/open_count are untouched.
     """
@@ -194,14 +194,14 @@ def init(status='Multilingual-beta'):
 def send_update_event(from_version):
     """Record a successful in-place auto-update, from->to, in the heartbeat's status field.
 
-    Sent regardless of the telemetry opt-out (we always want to know an update landed), but
-    when the user has telemetry OFF it goes out anonymized — a throwaway id, no persistent
-    state — via respect_optout=False. Still honors the dev-env skip and fails silently. The
-    'to' version is the running __version__ (the code is already the new build when this fires).
+    Honors the telemetry opt-out like any heartbeat (3.0.0): with telemetry OFF nothing is sent
+    (updates are still counted by GitHub's in-app update downloads). Also honors the dev-env skip
+    and fails silently. The 'to' version is the running __version__ (the code is already the new
+    build when this fires).
     """
     if TELEMETRY_ENV != "dev":
         status = f"Updated {from_version} -> {__version__}"
         thread = threading.Thread(
             target=_send_heartbeat_thread, args=(status,),
-            kwargs={"respect_optout": False}, daemon=True)
+            kwargs={"respect_optout": True}, daemon=True)
         thread.start()

@@ -2,7 +2,8 @@
 
 The update check the app already makes reads update.json's `telemetry_url`; the telemetry keeps the last valid one in
 the persistent data folder and the next heartbeat goes there, the build's .env TELEMETRY_URL being the fallback. The
-opt-out, the dev-env skip and the forced event's anonymised id are unchanged. No network: GitHub's answers and
+opt-out, the dev-env skip and the forced event's anonymised id are unchanged (since 3.0.0 the update event honours the
+opt-out: no forced event is sent). No network: GitHub's answers and
 requests.get are stubbed, and every file lives under the test root (conftest's SURASURA_TEST_ROOT).
 """
 import json
@@ -211,14 +212,45 @@ def test_opted_out_a_heartbeat_sends_nothing_even_with_a_kept_address(monkeypatc
     assert sent == []
 
 
-def test_opted_out_the_forced_update_event_goes_to_the_kept_address_anonymised(monkeypatch, production):
-    """The forced event is unchanged (a throwaway id, open_count 0); it only follows the receiver."""
+def test_opted_out_a_forced_event_goes_to_the_kept_address_anonymised(monkeypatch, production):
+    """A forced event is unchanged (a throwaway id, open_count 0); it only follows the receiver."""
     settings, sent = production
     _check(monkeypatch, {"version": "3.0.1", "telemetry_url": RECEIVER})
     settings["telemetry_enabled"] = False
     telemetry._send_heartbeat_thread("Updated 2.9.0.6 -> 2.9.0.7", respect_optout=False)
     assert [url for url, _ in sent] == [RECEIVER]
     assert sent[0][1]["uid"].startswith("anon-") and sent[0][1]["open_count"] == 0
+
+
+class _Inline:
+    """threading.Thread run at once on start(): the update event's ping is checked in the test's own thread."""
+
+    def __init__(self, target, args=(), kwargs=None, daemon=None):
+        self.run = lambda: target(*args, **(kwargs or {}))
+
+    def start(self):
+        self.run()
+
+
+def test_opted_out_the_update_event_sends_nothing(monkeypatch, production):
+    """3.0.0: the update ping honours the opt-out like any heartbeat. Telemetry off: nothing goes out at all."""
+    settings, sent = production
+    _check(monkeypatch, {"version": "3.0.1", "telemetry_url": RECEIVER})
+    settings["telemetry_enabled"] = False
+    monkeypatch.setattr(telemetry.threading, "Thread", _Inline)
+    telemetry.send_update_event("2.9.0.6")
+    assert sent == []
+
+
+def test_opted_in_the_update_event_goes_as_before(monkeypatch, production):
+    """Telemetry on: the update ping goes to the kept address with the real id and its from -> to status."""
+    _settings, sent = production
+    _check(monkeypatch, {"version": "3.0.1", "telemetry_url": RECEIVER})
+    monkeypatch.setattr(telemetry, "get_telemetry_state", lambda: {"uid": "kept-id", "open_count": 4})
+    monkeypatch.setattr(telemetry.threading, "Thread", _Inline)
+    telemetry.send_update_event("2.9.0.6")
+    assert [url for url, _ in sent] == [RECEIVER]
+    assert sent[0][1]["uid"] == "kept-id" and sent[0][1]["status"] == f"Updated 2.9.0.6 -> {telemetry.__version__}"
 
 
 def test_a_dev_build_sends_nothing_and_starts_no_heartbeat(monkeypatch, production):

@@ -45,6 +45,12 @@ SETUP_ITEMS = frozenset(("dictionary", "resources", "language_pack"))
 # What Surasura sets itself through Anki Miner's `settings-import` (Z-3, A4M1-2b): these of its `check` items — the
 # deck, note type and fields a language's cards go to (`connect.miner_settings`)
 SETTINGS_ITEMS = frozenset(("deck", "note_type", "fields"))
+# Its `check` items a mine needs (the same nine in every build from 3.5.0 to its 2026-10-31 main), and those only its
+# fetch, speech and OCR commands use, which its own `ready` leaves out (3.7's yt_dlp and speech_model; main's
+# `_NOT_FOR_MINE` adds ocr and video_ocr): `unfinished`
+MINE_ITEMS = frozenset(("anki", "deck", "note_type", "fields", "dictionary", "resources", "language_pack", "ffmpeg",
+                        "ffprobe"))
+NOT_FOR_MINE = frozenset(("yt_dlp", "speech_model", "ocr", "video_ocr"))
 LINE_TOLERANCE = 0.05           # seconds: a returned line_start further off is another line (sim.py, IS:311)
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{15B09250-AC39-4792-A15A-B73BD8E218A1}_is1"
 EXE = "AnkiMiner.exe"
@@ -406,6 +412,16 @@ def can_set_up(info, items):
     return bool(set(items or ()) & ours(info))
 
 
+def unfinished(items):
+    """The failed `check` items ({name: item}) that keep a mine from starting (Michi-K, PROVISIONAL): only those a mine
+    needs (`MINE_ITEMS`), so an item a newer Anki Miner adds for another command (main's ocr, video_ocr) is never named
+    as missing nor sent to an update; when none of them failed though its `ready` is false, every failed item but
+    NOT_FOR_MINE — one a newer build's mine needs is named, never hidden."""
+    failed = {name: item for name, item in items.items() if not item.get("ok")}
+    needed = {name: item for name, item in failed.items() if name in MINE_ITEMS}
+    return needed or {name: item for name, item in failed.items() if name not in NOT_FOR_MINE}
+
+
 def ours(info):
     """The `check` items Surasura sets right itself with this Anki Miner (`can_set_up`)."""
     named = features(info or {})
@@ -697,9 +713,9 @@ def preflight(path, language, profile_name, known=None):
     if items.get("anki") and not items["anki"].get("ok"):
         raise AnkiMinerError("anki-closed", "Anki isn't open (or AnkiConnect isn't installed).")
     if not ready.get("ready"):
-        missing = [f"{name}: {item.get('message') or 'not ready'}" for name, item in items.items()
-                   if not item.get("ok")]
-        raise AnkiMinerError("setup", "Anki Miner's setup isn't finished — " + "; ".join(missing))
+        missing = [f"{name}: {item.get('message') or 'not ready'}" for name, item in unfinished(items).items()]
+        raise AnkiMinerError("setup", "Anki Miner's setup isn't finished — " + ("; ".join(missing)
+                                                                               or "it doesn't say what"))
     return info, profile
 
 

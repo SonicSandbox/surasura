@@ -43,10 +43,9 @@ RECORD_VERSION = 1
 # sync, the note type's fields, a batch checked by its tag): a fork on port 8765 missing one is named (E5)
 ANKI_ACTIONS = ("guiReviewActive", "getActiveProfile", "findNotes", "notesInfo", "addTags", "modelFieldNames",
                 "sync")
-# Anki Miner's `check` items (3.7.0 `cli/api/commands.py`): those it can't look at while Anki is closed, and those
-# only its YouTube fetch needs (a video-only caller is ready without them: its own `ready` leaves them out)
+# Anki Miner's `check` items (3.7.0 `cli/api/commands.py`) it can't look at while Anki is closed; which items count
+# at all is `anki_miner.unfinished`
 ANKI_ITEMS = frozenset({"anki", "deck", "note_type", "fields"})
-FETCH_ONLY = frozenset({"yt_dlp", "speech_model"})
 RELEASES = "https://github.com/0xzerolight/anki_miner/releases"
 # A4M1-2: the `do` of a setup Surasura finishes itself (`check["setup"]`: the wizard's *Finish its setup*)
 SETUP_DO = "Surasura finishes it for you: Anki Miner downloads them by itself, nothing to open"
@@ -358,12 +357,12 @@ def _anki_miner(settings, language, answered):
     except anki_miner.AnkiMinerError as e:
         return out + [_miner_error("anki_miner_setup", e)], found
     items = {item.get("name"): item for item in ready.get("items") or () if isinstance(item, dict)}
-    failed = {name_: item for name_, item in items.items() if not item.get("ok") and name_ not in FETCH_ONLY}
+    failed = anki_miner.unfinished(items)
     anki_down = "anki" in failed
     own = {name_: item for name_, item in failed.items() if not (anki_down and name_ in ANKI_ITEMS)}
     # A5F2: Anki Miner can't reach the Anki Surasura reaches: Surasura sets its address (Z-3), with the rest it sets
     address = anki_down and answered and "Z-3" in anki_miner.features(info)
-    if ready.get("ready") is True:          # its own verdict; what only its YouTube fetch needs never counts
+    if ready.get("ready") is True:          # its own verdict; what a mine doesn't need never counts
         out.append(_check("anki_miner_setup", OK, "Anki Miner's own setup is finished."))
     elif own and anki_miner.can_set_up(info, own):
         # A4M1-2 / A4M1-2b (leans taken, PROVISIONAL): what Anki Miner's own `setup` installs and what its

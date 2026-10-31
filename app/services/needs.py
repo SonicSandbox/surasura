@@ -69,10 +69,12 @@ key falls off by age or count: `prune` takes out those whose trouble is gone (a 
 again — asked again the next time it goes offline).
 
 `find_videos(language, need, settings)` (a worker; never writes, never opens a video, never a cloud placeholder): for each
-line of a *no video* card, the show's own folder, then Connect's video folders (`connect_video_folders`, their
-subfolders `videos.DEPTH` deep) for a video whose episode number (`view_rows.episode_number`) is the line's ->
-[(label, path or None, why)]. The show's folder wins over the video folders; two in one place is no answer (Connect
-never guesses), unless one of them sits in a folder named like the show. `find_all` does every card with one listing.
+line of a *no video* card, the show's own folder, then the library's own folders (the sources the store reads, as
+Connect's video index reads them; alpha 6 try #5 — they hold every show, so only a video named like this one: a folder
+on its path, the source's own or its file name), then the video folders you added (`connect_video_folders`) — each
+with its subfolders `videos.DEPTH` deep — for a video whose episode number (`view_rows.episode_number`) is the line's
+-> [(label, path or None, why)]. The first place with one wins; two in one place is no answer (Connect never
+guesses), unless one of them sits in a folder named like the show. `find_all` does every card with one listing.
 """
 import hashlib
 import json
@@ -1384,15 +1386,18 @@ class _Lister:
     def __init__(self):
         self._got = {}
 
-    def videos(self, folder, deep):
-        key = (os.path.normcase(os.path.abspath(folder)), deep)
+    def videos(self, folder, deep, skip=False):
+        """`skip`: a library folder's (a source's) own walk — the subfolders its look skips are never listed
+        (`library_store.skip_dir`: dot folders, the recycle bins, a folder link), as Connect's index walks it."""
+        key = (os.path.normcase(os.path.abspath(folder)), deep, skip)
         if key not in self._got:
-            self._got[key] = self._list(folder, deep)
+            self._got[key] = self._list(folder, deep, skip) if skip else self._list(folder, deep)
         return self._got[key]
 
     @staticmethod
-    def _list(folder, deep):
+    def _list(folder, deep, skip=False):
         from app.connect import runner, videos
+        from app.library_store import skip_dir
         out, todo = [], [(folder, 0)]
         while todo:
             where, depth = todo.pop()
@@ -1401,7 +1406,7 @@ class _Lister:
                     for entry in found:
                         try:
                             if entry.is_dir(follow_symlinks=False):
-                                if deep and depth < videos.DEPTH:
+                                if deep and depth < videos.DEPTH and not (skip and skip_dir(entry.name, entry)):
                                     todo.append((entry.path, depth + 1))
                             elif runner.video_file(entry.name, entry.stat(follow_symlinks=False).st_size):
                                 # Connect's one rule for a video file: never a Mac `._` copy or a small `.ts`
@@ -1417,25 +1422,62 @@ def _fold(text):
     return re.sub(r"[\W_]+", "", (text or "").casefold())
 
 
-def find_videos(language, need, settings, data_dir=None, _lister=None):
-    """A *no video* card's lines looked for (see the module's doc) -> [(label, path or None, why)], in its order."""
+_SUBS_FOLDER = re.compile(r"subs?|subtitles?|字幕", re.I)
+
+
+def _show_name(rel_path):
+    """The show's own name for the look: the nearest folder of `rel_path` that names something — never a tier, a
+    season or the specials (`episode_names.season_folder`), nor a subtitles folder — folded; '' when none does."""
+    from app import episode_names
+    for part in reversed([p for p in _norm(rel_path).split("/")[:-1] if p]):
+        if (part in library_store.TIER_OF_FOLDER or episode_names.season_folder(part) is not None
+                or _SUBS_FOLDER.fullmatch(part.strip())):
+            continue
+        return _fold(part)
+    return ""
+
+
+def _telling(name):
+    """Is a folded name long enough to tell one show from another (`K`, `JP` never)?"""
+    return len(name) >= 3 or (len(name) == 2 and not name.isascii())
+
+
+def find_videos(language, need, settings, data_dir=None, _lister=None, _sources_=None):
+    """A *no video* card's lines looked for (see the module's doc) -> [(label, path or None, why)], in its order.
+    `_sources_`: the library's folders read once already (`find_all`)."""
     if need.kind != NO_VIDEO:
         raise ValueError("find_videos serves the no-video card only: a gone file is relinked, never given a video")
     from app.connect import videos
     data_dir = data_dir or path_utils.get_data_path(language)
     lister = _lister or _Lister()
-    folders = videos.configured(settings, language)
+    sources = _sources(language, data_dir) if _sources_ is None else _sources_
+    places = (sources, videos.configured(settings, language))     # the library's folders first, then the ones you add
     title = (need.data or {}).get("title")
-    return [_find_one(line, data_dir, folders, title, lister) for line in need.lines]
+    return [_find_one(line, data_dir, places, title, lister) for line in need.lines]
 
 
 def find_all(language, entries_, settings, data_dir=None):
     """*Find all missing videos*: every *no video* card's lines, one listing per folder -> {entry key: results}."""
     lister = _Lister()
-    return {e.key: find_videos(language, e, settings, data_dir, lister) for e in entries_ if e.kind == NO_VIDEO}
+    sources = _sources(language, data_dir or path_utils.get_data_path(language))
+    return {e.key: find_videos(language, e, settings, data_dir, lister, sources) for e in entries_
+            if e.kind == NO_VIDEO}
 
 
-def _find_one(line, data_dir, folders, title, lister):
+def _sources(language, data_dir):
+    """The library's own folders (the sources the store reads: the ones on) — [] with no store to read (JSON mode, not
+    built, busy, damaged): the other places are still looked in."""
+    try:
+        store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language))
+        if store is None:
+            return []
+        with store:
+            return [s["path"] for s in store.sources(counts=False) if s.get("path")]
+    except Exception:                               # busy, damaged: the look goes on without them
+        return []
+
+
+def _find_one(line, data_dir, places, title, lister):
     from app.connect import runner
     if line.number is None:
         return line.label, None, STRINGS["why_no_number"]
@@ -1445,31 +1487,44 @@ def _find_one(line, data_dir, folders, title, lister):
     def matching(paths):
         return [p for p in paths if view_rows.episode_number(os.path.basename(p)) == line.number]
 
+    names = [n for n in (_fold(title), _show_name(line.rel_path)) if _telling(n)]
+
+    def named(path, top):
+        return any(n and n in _fold(os.path.relpath(path, top)) for n in names)
+
     own = matching(lister.videos(show, False))
-    own_keys = {os.path.normcase(p) for p in own}
-    others, seen_keys = [], set(own_keys)
-    for folder in folders:
-        for p in matching(lister.videos(folder, True)):
-            k = os.path.normcase(p)
-            if k not in seen_keys:
-                seen_keys.add(k)
+    seen_keys = {os.path.normcase(p) for p in own}
+    cloud = any(not runner._on_disk(p) for p in own)
+    tiers = []                                      # each place's matches, in its order (a video in two: its first)
+    for at, folders in enumerate(places):
+        others = []
+        for folder in folders:
+            for p in matching(lister.videos(folder, True, skip=at == 0)):
+                k = os.path.normcase(p)
+                if k in seen_keys:
+                    continue
+                if at == 0 and not named(p, os.path.dirname(os.path.abspath(folder))):
+                    continue                        # the library's folders hold every show: only one named like
+                seen_keys.add(k)                    # this one (a folder on its path, the source's own, or its name)
                 others.append((p, folder))
+        cloud = cloud or any(not runner._on_disk(p) for p, _f in others)
+        tiers.append([(p, f) for p, f in others if runner._on_disk(p)])
     here = [p for p in own if runner._on_disk(p)]
-    there = [(p, f) for p, f in others if runner._on_disk(p)]
     if len(here) == 1:
-        why = STRINGS["why_found_own"].format(name=os.path.basename(here[0]), k=len(there)) if there else \
+        more = sum(len(there) for there in tiers)
+        why = STRINGS["why_found_own"].format(name=os.path.basename(here[0]), k=more) if more else \
             STRINGS["why_found"].format(name=os.path.basename(here[0]))
         return line.label, here[0], why
     if len(here) > 1:
         return line.label, None, STRINGS["why_many"].format(k=len(here), n=shown)
-    if len(there) == 1:
-        return line.label, there[0][0], STRINGS["why_found"].format(name=os.path.basename(there[0][0]))
-    if len(there) > 1:
-        names = [_fold(title), _fold(os.path.basename(show))]
-        named = [p for p, f in there if any(n and n in _fold(os.path.relpath(os.path.dirname(p), f)) for n in names)]
-        if len(named) == 1:
-            return line.label, named[0], STRINGS["why_found_named"].format(name=os.path.basename(named[0]))
-        return line.label, None, STRINGS["why_many"].format(k=len(there), n=shown)
-    if own or others:                               # every match a cloud placeholder: never opened, never taken
+    for there in tiers:                             # the first place holding any decides: never a later one's guess
+        if len(there) == 1:
+            return line.label, there[0][0], STRINGS["why_found"].format(name=os.path.basename(there[0][0]))
+        if len(there) > 1:
+            close = [p for p, f in there if named(os.path.dirname(p), f)]
+            if len(close) == 1:
+                return line.label, close[0], STRINGS["why_found_named"].format(name=os.path.basename(close[0]))
+            return line.label, None, STRINGS["why_many"].format(k=len(there), n=shown)
+    if cloud:                                       # every match a cloud placeholder: never opened, never taken
         return line.label, None, STRINGS["why_cloud"].format(n=shown)
     return line.label, None, STRINGS["why_none"].format(n=shown)

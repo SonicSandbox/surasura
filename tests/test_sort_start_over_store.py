@@ -115,15 +115,15 @@ def test_an_already_watched_title_finished_on_the_screen_comes_back_watched(lang
     """An arrival he had watched (*Already watched*), then Finished on the screen: back in New arrivals still watched
     and with no Finished date; an unwatched one Finished comes back unwatched."""
     store, shows = library(language)
-    a, b, _c = shows.values()
+    a, b, c = shows.values()
     store.set_watched(a, True)
     before = _state(store)[1]
-    placed = [store.place(a, "finished"), store.place(b, "finished")]
+    placed = [store.place(a, "finished"), store.place(b, "finished"), store.place(c, "finished")]
     after_sort = _state(store)
-    assert all(after_sort[1][i][0] for i in a + b), "dated Finished"
+    assert all(after_sort[1][i][0] for i in a + b + c), "dated Finished"
     change = store.unsort(placed)
     values = _state(store)[1]
-    for i in a + b:
+    for i in a + b + c:                                    # (b and c each a placement whose values come back)
         assert values[i][:-1] == before[i][:-1]
     store.undo(change)
     assert _state(store) == after_sort

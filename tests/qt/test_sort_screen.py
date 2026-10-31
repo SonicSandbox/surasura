@@ -582,6 +582,24 @@ def test_a_start_over_waiting_on_a_save_is_still_given_when_the_screen_closes(wo
     assert wait_until(lambda: calls(writer, "start_over"), 5)
 
 
+def test_a_choice_that_ended_unsaved_while_start_over_waited_stays_shown_after_its_undo(world):
+    """Adversary #8 (a8): a choice still saving lands as nothing while Start over waits for it — the title never left
+    New arrivals, so undoing the Start over never hides it again."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    top = screen.top_arrival()
+    writer.stuck = True
+    writer.nothing.add("place")
+    screen.choose("soon")
+    screen.start_over()
+    writer.free()
+    assert wait_until(lambda: screen._over_flight is None, 5)
+    settle()
+    press(screen, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    settle()
+    assert top.key in keys_shown(screen) and top.key not in screen.hidden
+
+
 def test_start_over_the_writer_refuses_keeps_the_sorting_and_says_so(world, monkeypatch):
     _seed, win, writer = world()
     screen = open_sort(win)

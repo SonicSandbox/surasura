@@ -195,5 +195,20 @@ def test_a_record_of_anything_but_a_placement_is_left_alone(language, library):
     store, shows = library(language)
     a, b, _c = shows.values()
     placed = store.place(a, "goal")
-    record = dict(ls.change_record(placed), kind="remove")
+    record = dict(ls.change_record(placed), kind="nudge")   # (undone from its fields, it would move the title)
     assert store.unsort([record]) is None and set(a) <= set(_state(store)[0]["goal"])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_watched_mark_changed_after_the_sort_is_left_and_the_resets_undo_never_writes_it(language, library):
+    """The value check: Finished on the screen (watched), then marked unwatched by hand — the reset leaves the mark, and
+    its Undo never marks it watched again."""
+    store, shows = library(language)
+    _a, b, _c = shows.values()
+    placed = store.place(b, "finished")
+    store.set_watched(b[:1], False)
+    change = store.unsort([placed])
+    assert store.conn.execute("SELECT watched FROM items WHERE id = ?", (b[0],)).fetchone()[0] == 0
+    assert all(st[0] != b[0] for st in change.status)
+    store.undo(change)
+    assert store.conn.execute("SELECT watched FROM items WHERE id = ?", (b[0],)).fetchone()[0] == 0

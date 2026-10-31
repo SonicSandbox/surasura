@@ -774,7 +774,7 @@ class SortScreen(QWidget):
 
     def _can_start_over(self):
         """Something to put back, and no Start over (or its Undo) still on its way to the writer."""
-        return (self._over_waiting is None and self._over_flight is None and self._over_undoing is None and
+        return (self._over_flight is None and self._over_undoing is None and       # (a waiting one is in flight)
                 any(e["name"] in PLACE_OF for e in self.history))
 
     def ask_over(self):

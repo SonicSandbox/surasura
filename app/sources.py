@@ -502,9 +502,10 @@ def _show_of(root, parts, name, folders=()):
     else the source folder's name. a8 (Sonic 2026-10-31; PROVISIONAL): a loose EPISODE (its name holds an episode
     number: never a book, whose show is its name) whose show is one of the source's own top folders by the one "same
     show?" key (`folders`: `_show_folders`' (name, key) pairs; `episode_names.show_key`: `Show!/` and `Show - 02.mkv`)
-    is that folder's show, so its copy lands in that folder's `Library/<show>` (one folder key, one title): the folder
-    named exactly, else the one folder of that key — two or more (`Gintama'/`, `Gintama°/`) and none is it: its own
-    show, as before. New copies only: nothing already copied moves."""
+    is that folder's show, so its copy lands in that folder's `Library/<show>` (one folder key, one title): the one
+    folder of that key — two or more (`Show!/`, `Show~/`): its own show, as before (a folder named exactly as it is
+    its own show's folder key already). A title of `episode_names.SHOW_KEY_EXCEPTIONS` (`Gintama'`) has a key of its
+    own. New copies only: nothing already copied moves."""
     from app.extract import clean_name
     root_name = clean_name(os.path.basename(os.path.normpath(root))) or "Source"
     if parts:
@@ -514,9 +515,8 @@ def _show_of(root, parts, name, folders=()):
     show = clean_name(ls.show_of_name(name) or "")
     key = en.show_key(show) if folders and en.identity(name).key[2] is not None else ""
     same = [f for f, k in folders if k == key] if key else []
-    exact = [f for f in same if ls.path_key(f) == ls.path_key(show)]
-    if exact or len(same) == 1:
-        return (exact or same)[0]
+    if len(same) == 1:
+        return same[0]
     return show or root_name
 
 

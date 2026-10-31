@@ -72,9 +72,9 @@ def test_the_same_show_key_ignores_punctuation_and_keeps_letters_and_digits():
 
 def test_a_loose_episodes_show_is_the_one_source_folder_of_the_same_show():
     """Where a loose file at a source's top is copied (`sources._show_of`, its folders from `_show_folders`): a loose
-    EPISODE of the one top folder of its show by the key goes there — the folder named exactly first; two of that key
-    and none named exactly (`Gintama'/`, `Gintama°/`): its own show, as before; never a season folder (no show of its
-    own); never a book (no episode number: a book's show is its name); with no such folder, as before (its name's
+    EPISODE of the one top folder of its show by the key goes there; two of that key (`Show!/`, `Show~/`): its own
+    show, as before (one of them named exactly as it is that show's folder already); never a season folder (no show
+    of its own); never a book (no episode number: a book's show is its name); with no such folder, as before (its name's
     show, else the source's name — `86 - 01` names no show); a file inside a folder is that folder's."""
     from app.sources import _show_folders, _show_of
     root = os.path.join("D:", os.sep, "Anime")
@@ -399,3 +399,125 @@ def test_a_join_that_fails_leaves_the_store_as_it_was_and_the_helpers_run_goes_o
         assert len(_works(again)) == len(before) - 1
     finally:
         again.close()
+
+
+# --- the exceptions (Sonic 2026-10-31: "file the excepts as we go like gintama") ------------------------------- #
+
+def test_every_exception_names_why_and_is_a_show_of_its_own():
+    """Each entry of `SHOW_KEY_EXCEPTIONS` says why, keys apart from the title its punctuation leaves and from every
+    other entry, and is found whatever its case or width (`ＧＩＮＴＡＭＡ'` is `Gintama'`); the title it leaves is
+    the punctuation rule's as before."""
+    from app.episode_names import SHOW_KEY_EXCEPTIONS
+    keys = [show_key(title) for title, _why in SHOW_KEY_EXCEPTIONS]
+    assert all(why.strip() for _t, why in SHOW_KEY_EXCEPTIONS)
+    assert len(set(keys)) == len(keys)
+    for title, _why in SHOW_KEY_EXCEPTIONS:
+        bare = "".join(c for c in title if c.isalnum())
+        assert show_key(title) != show_key(bare), title
+    assert show_key("ＧＩＮＴＡＭＡ'") == show_key("Gintama'") != show_key("Gintama")
+    assert show_key("Gintama!") == show_key("Gintama"), "a mark no entry names: the rule as before"
+
+
+def test_a_loose_episode_beside_seasons_named_by_punctuation_goes_to_its_own_season():
+    """`Gintama/`, `Gintama'/` and `Gintama°/` at a source's top: a loose `Gintama' - 04` is copied for `Gintama'`, a
+    loose `Gintama - 05` for `Gintama` — never one season's episode in another's folder."""
+    from app.sources import _show_folders, _show_of
+    root = os.path.join("D:", os.sep, "Anime")
+    top = _show_folders([os.path.join(root, n) for n in ("Gintama", "Gintama'", "Gintama°")])
+    assert _show_of(root, [], "[Grp] Gintama' - 04 (1080p).ja.srt", top) == "Gintama'"
+    assert _show_of(root, [], "[Grp] Gintama° - 02 (1080p).ja.srt", top) == "Gintama°"
+    assert _show_of(root, [], "[Grp] Gintama - 05 (1080p).ja.srt", top) == "Gintama"
+    assert _show_of(root, [], "[Grp] Gintama - 05 (1080p).ja.srt", top[1:]) == "Gintama", "no season 1 folder: its own"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_seasons_named_by_punctuation_are_never_joined_nor_asked_about(language):
+    """A store holding `Gintama`, `Gintama'`, `Gintama°` and `銀魂'` beside a real pair (`<show>!` / `<show>`): the
+    one-time join joins only the pair, and *Same title?* never asks about the seasons."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[80]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {"Gintama": (1,), "Gintama'": (2,), "Gintama°": (3,),
+                                                            "銀魂'": (4,), "銀魂": (5,), f"{show}!": (1,), show: (2,)})
+        seasons = {k: _work_of(store, r[0]) for k, r in rels.items() if k not in (show, f"{show}!")}
+        plain = _work_of(store, rels[show][0])
+        assert store.join_same_shows() == [plain]
+        assert {k: _work_of(store, r[0]) for k, r in rels.items() if k in seasons} == seasons
+        assert len(set(seasons.values())) == 5
+        assert not any(set(g) & set(seasons.values()) for g in store.same_titles())
+
+
+# --- the mutant pass's gaps ------------------------------------------------------------------------------------ #
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_join_reads_its_once_mark_again_inside_its_command(language, monkeypatch):
+    """Another process (a second helper, the window's import) may mark the store between the join's first read and
+    its write lock: the mark read inside the command decides, so the join never runs twice."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[81]
+    with store:
+        root = store.add_source(src)
+        _take(store, language, data_dir, root, src, {f"{show}!": (1,), show: (2,)})
+        with store._writing():
+            store._set_meta({ls.SHOWS_JOINED: 1})
+        real, calls = ls.Store._meta, []
+
+        def first_read_stale(self):                      # the first read comes before the other process's mark
+            calls.append(1)
+            meta = real(self)
+            return {k: v for k, v in meta.items() if k != ls.SHOWS_JOINED} if len(calls) == 1 else meta
+        monkeypatch.setattr(ls.Store, "_meta", first_read_stale)
+        before = _works(store)
+        assert store.join_same_shows() == [] and _works(store) == before
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_loose_drops_of_one_show_in_one_sync_are_one_title(language):
+    """Two loose drops in one disk sync, `<show>!! - 01` (a new title) and `<show> - 02`: the second finds the title
+    the first made in the same command (one key), never a second title."""
+    store, data_dir = _empty(language)
+    show = names(language)[82]
+    with store:
+        touch(data_dir, f"{ls.HATO_FOLDER}/[SubsPlease] {show}!! - 01 (1080p) [ABCD1234].srt")
+        touch(data_dir, f"{ls.HATO_FOLDER}/[SubsPlease] {show} - 02 (1080p) [1A2B3C4D].srt")
+        added = store.sync_disk()["added"]
+        assert len(added) == 2
+        assert len({store.item(i)["work_id"] for i in added}) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_same_title_still_asks_about_two_titles_of_marks_alone(language):
+    """Titles with no letter or digit (`♪♪`) have no show key: *Same title?* keys them as folded, so two of them are
+    asked about as before a8."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[83]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {show: (1, 2, 3)})
+        store.split_work([store.item_id(rels[show][1])], "♪♪")
+        store.split_work([store.item_id(rels[show][2])], "♪♪")
+        two = sorted({_work_of(store, r) for r in rels[show][1:]})
+        assert len(two) == 2 and two in store.same_titles()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_kept_titles_own_subtitle_group_stands_when_both_are_the_learners(language):
+    """Both titles' subtitle groups switched by the learner: the kept title's own stays (only a group that isn't the
+    learner's gives way to the learner's)."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[84]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{show}!": (1,), show: (2,)})
+        bang, plain = _work_of(store, rels[f"{show}!"][0]), _work_of(store, rels[show][0])
+        with store._writing():
+            store._set_meta({ls.SHOW_GROUPS: json.dumps({
+                str(bang): {"group": ["Kept", "the kept title's"], "by": "user"},
+                str(plain): {"group": ["Gone", "the other's"], "by": "user"}})})
+        assert store.join_same_shows() == [plain]
+        assert store.group_of(bang)["group"] == ["Kept", "the kept title's"]

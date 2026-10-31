@@ -187,12 +187,40 @@ def fold(text):
     return _SPACES.sub(" ", folded).strip()
 
 
+# a8 (Sonic 2026-10-31: "file the excepts as we go like gintama"; PROVISIONAL): titles whose punctuation names another
+# season or show, never folded to the title the punctuation leaves (`show_key`). One entry a title, as a release or a
+# folder writes it, with why; a title is one when `fold`ed it is the entry `fold`ed (case, width and kana aside), whole.
+# To add one: a line here — romaji and Japanese each, when both are written, and a Chinese title in Simplified too (a
+# Chinese library folds titles to Simplified) — and tests/test_library_store_same_show.py's exception test runs it.
+SHOW_KEY_EXCEPTIONS = (
+    ("Gintama'", "Gintama's 2nd season (2011): `Gintama` is the 1st, `Gintama°` the 4th"),
+    ("Gintama°", "Gintama's 4th season (2015)"),
+    ("Gintama.", "Gintama's 5th season (2017)"),
+    ("銀魂'", "銀魂's 2nd season (2011): `銀魂` is the 1st"),
+    ("銀魂°", "銀魂's 4th season (2015)"),
+    ("銀魂.", "銀魂's 5th season (2017)"),
+    ("银魂'", "银魂 (Simplified, as a Chinese library folds titles): the 2nd season"),
+    ("银魂°", "银魂 (Simplified): the 4th season"),
+    ("银魂.", "银魂 (Simplified): the 5th season"),
+    ("Working'!!", "WORKING!!'s 2nd season (2011): `Working!!` is the 1st"),
+    ("Working!!!", "WORKING!!'s 3rd season (2015)"),
+    ("Hidamari Sketch×☆☆☆", "Hidamari Sketch's 3rd season (2010): `×` and the stars are its name"),
+    ("ひだまりスケッチ×☆☆☆", "ひだまりスケッチ's 3rd season (2010)"),
+)
+_EXCEPTION_KEYS = frozenset(fold(title) for title, _why in SHOW_KEY_EXCEPTIONS)
+
+
 def show_key(text):
     """The one "same show?" key (a8, Sonic 2026-10-31: punctuation ignored): `fold`, then letters and digits only —
     `Show!` and `Show`, `Re:Zero` and `Re Zero` are one show (two shows apart only by punctuation count as one,
-    accepted). Asked by the covers' title check, where a loose file's copy lands (`sources._show_of`), the store's
-    loose-file title and the one-time join of such pairs. "" when no letter or digit is left."""
-    return "".join(c for c in fold(text) if unicodedata.category(c)[0] in "LN")
+    accepted) — except a title of `SHOW_KEY_EXCEPTIONS` (`Gintama'`), keyed as folded, marks kept: a show of its own.
+    Asked by the covers' title check, where a loose file's copy lands (`sources._show_of`), the store's loose-file
+    title, *Same title?*, a removed episode's key and the one-time join of such pairs. "" when no letter or digit is
+    left."""
+    folded = fold(text)
+    if folded in _EXCEPTION_KEYS:
+        return folded
+    return "".join(c for c in folded if unicodedata.category(c)[0] in "LN")
 
 
 def language_of(tag):

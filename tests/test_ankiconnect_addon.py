@@ -49,6 +49,22 @@ def test_the_light_look_asks_once_with_a_short_wait_and_counts_any_answer(monkey
     assert asked == [("http://127.0.0.1:8765", (), A.LOOK_TIMEOUT)] * 3
 
 
+def test_the_light_look_watches_for_an_anki_opened_only_where_none_was_seen(monkeypatch):
+    # A8A-1: Anki closed, then opened without AnkiConnect — the refusals look the same, the process list doesn't
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC")
+    looked = []
+    monkeypatch.setattr(A, "running", lambda: looked.append(1) or True)
+    refused = {"ok": False, "version": None, "error": "refused"}
+    monkeypatch.setattr(anki_connect, "probe", lambda url, timeout=5: dict(refused))
+    assert A.answers("u", seen=False) is True and looked == [1]
+    assert A.answers("u", seen=True) is False and A.answers("u", seen=None) is False and looked == [1]
+    monkeypatch.setattr(anki_connect, "probe", lambda url, timeout=5: dict(refused, timed_out=True))
+    assert A.answers("u", seen=False) is False and looked == [1]          # open but busy: the probe's answer waits
+    monkeypatch.setattr(A, "running", lambda: False)
+    monkeypatch.setattr(anki_connect, "probe", lambda url, timeout=5: dict(refused))
+    assert A.answers("u", seen=False) is False
+
+
 def test_running_is_none_when_the_process_list_cant_be_read(monkeypatch):
     from app.connect import open_anki
 

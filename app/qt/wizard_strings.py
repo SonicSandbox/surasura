@@ -38,7 +38,7 @@ ANKI_UNSURE_CARD = "Anki closed, or no AnkiConnect"
 ANKI_UNSURE_HOW = _addon.steps_line(unsure=True)
 CHECK_AGAIN = "Check again"
 CHECK_AGAIN_TIP = ("Look for Anki again now.\n"
-                   "• Surasura also looks by itself every few seconds, and goes on once Anki answers")
+                   "• Surasura also looks by itself every few seconds while this shows")
 CHECKING = "Looking for Anki…"
 # Brought over from Surasura 2 (WZ-8): the whole setup once, each page showing the choices already made there
 UPGRADE_LINE = ("Welcome to Surasura 3. Your choices from Surasura 2 are already picked; "

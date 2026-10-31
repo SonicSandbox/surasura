@@ -795,6 +795,8 @@ def test_copy_code_puts_ankiconnects_code_on_the_clipboard_and_says_copied_at_on
     assert steps.copy.text() == "Copied" and steps.copy.width() >= width
     assert wiz.say_line.accessibleName() == A.COPIED_LINE        # the wizard's own line says where to paste it
     assert wait_until(lambda: steps.copy.text() == "Copy code", 2)
+    wiz.next()                                            # A8A-4: another page — the line goes
+    assert wiz.say_line.accessibleName() != A.COPIED_LINE and wiz.say_line.isHidden()
 
 
 def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_is_away(make, monkeypatch):
@@ -809,7 +811,7 @@ def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_i
     asked = []
     answer = {"now": False}
 
-    def answers(url):
+    def answers(url, seen=None):
         asked.append((url, threading.current_thread() is threading.main_thread()))
         return answer["now"]
     monkeypatch.setattr(A, "answers", answers)
@@ -836,6 +838,32 @@ def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_i
     tick.timeout.emit()
     QApplication.processEvents()
     assert len(asked) == n                                # Anki is in: the part is gone, the watch asks nothing
+
+
+def test_anki_opened_without_ankiconnect_shows_the_steps_by_itself(make, monkeypatch):
+    # A8A-1: the commonest first run — Anki closed (no steps), then opened without AnkiConnect: the light look sees the
+    # Anki process (the last look saw none) and the full look shows Copy code and the steps, no press
+    from PyQt6.QtCore import QTimer
+    from app import ankiconnect_addon as A
+    from app.qt import addon_steps
+    tick = QTimer()
+    monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    seen = []
+    monkeypatch.setattr(A, "answers", lambda url, last=None: seen.append(last) or last is False)
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": [], "running": False})
+    wiz, _shell, api, _settings, _m = make(api=api)
+    wiz.next()
+    page = wiz.page
+    assert wait_until(lambda: page.closed_part.isVisible() and not wiz._anki_looking)
+    assert page.closed_line.text() == S.ANKI_CLOSED and page.closed_steps.isHidden()
+    api.anki = dict(api.anki, running=True)               # Anki opened; AnkiConnect still missing
+    tick.timeout.emit()
+    assert wait_until(lambda: page.closed_steps.isVisible())
+    assert page.closed_line.text() == S.ANKI_NO_CONNECT and seen[0] is False
+    tick.timeout.emit()
+    assert wait_until(lambda: len(seen) == 2 and not page.closed_part.watch.looking)
+    assert seen[1] is True                                # Anki seen now: only AnkiConnect's answer is news
 
 
 # --- 5 · cards made for you -------------------------------------------------------------------------------------------------- #

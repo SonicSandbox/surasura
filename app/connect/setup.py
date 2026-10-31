@@ -73,7 +73,6 @@ ITEM_WORDS = {"ffmpeg": "not found", "ffprobe": "not found", "yt_dlp": "not inst
               "ocr": "not installed", "video_ocr": "not installed"}
 UNSAID_SAY = "Anki Miner says its own setup isn't finished, without saying what."
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
-ANKICONNECT_CODE = ankiconnect_addon.CODE     # AnkiConnect's add-on code on AnkiWeb (the one place: app/ankiconnect_addon)
 
 OK, WAITING, NEEDS_YOU, NOT_CHECKED, SKIPPED = "ok", "waiting", "needs-you", "not-checked", "skipped"
 

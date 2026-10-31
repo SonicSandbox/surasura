@@ -569,7 +569,7 @@ class Live(QObject):
             # AnkiConnect may be missing: *Copy code* + the three steps under the row's help (the wizard's same part),
             # and *Check* by itself once Anki answers (the shell's poll; armed by `_paint_anki`)
             view = self.page.row(row_id)
-            steps = addon_steps.AddonSteps(lambda text, tip: qpress.room(sc.Door(text, tooltip=tip)), "settingshelp",
+            steps = addon_steps.AddonSteps(lambda text, tip: sc.Door(text, tooltip=tip), "settingshelp",
                                            lambda text: self.say(text, row_id), view)
             steps.setVisible(False)
             (view.words if view.words is not None else view.layout()).addWidget(steps)    # under the row's help
@@ -806,14 +806,16 @@ class Live(QObject):
         if mark.value() != lit or mark.words() != S.ANKI_WORDS[key]:
             mark.set_value(lit, S.ANKI_WORDS[key])
         steps, watch = parts.get("steps"), parts.get("watch")
-        if steps is not None:
+        if steps is not None and key != "checking":       # while a Check runs the row keeps its steps: no jump
             shown = key in ("no_addon", "unsure")
             if shown:
                 steps.set_unsure(key == "unsure")
             if steps.isHidden() == shown:
                 steps.setVisible(shown)
         if watch is not None and key != "checking":
-            watch.arm(key in ("closed", "no_addon", "unsure"))
+            report = self.facts.get("report") or {}
+            # a sync's "closed" took no process look: as none seen, so an Anki opened without AnkiConnect is noticed
+            watch.arm(key in ("closed", "no_addon", "unsure"), report.get("running", False))
 
     def _anki_url(self):
         from app import anki_connect

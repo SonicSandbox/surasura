@@ -5,10 +5,12 @@ mining's *Connection* row (`app/qt/settings_live.py`) and Connect's setup check 
 - the add-on's code (`CODE`), for *Copy code* and for the places that can only say it (`steps_line(code=True)`);
 - the three steps: *In Anki: Tools › Add-ons › Get Add-ons… → paste the code → restart Anki*;
 - `needs_addon(look)`: whether a look that didn't reach Anki may be AnkiConnect missing (an Anki process seen, or it
-  can't tell) — the screens show the steps then, never for an Anki seen closed;
+  can't tell) — setup and Settings show the steps then, never for an Anki seen closed. Connect's check takes no
+  process look and has no button: it writes the steps, the code in them, under every closed answer;
 - `running()`: is an Anki process running (the process list, `open_anki.running`; True / False / None);
-- `answers(url)`: the light look *Check again* runs by itself on (`app/qt/addon_steps.py`) — AnkiConnect asked once,
-  a short wait, nothing else read.
+- `answers(url, seen)`: the light look *Check again* runs by itself on (`app/qt/addon_steps.py`) — AnkiConnect asked
+  once, a short wait; and, while the last look saw no Anki running, the process list too (Anki opened without
+  AnkiConnect is news: the steps show).
 
 Qt-free; nothing here writes anything.
 """
@@ -58,13 +60,17 @@ def running():
         return None
 
 
-def answers(url):
-    """(A worker.) The light look: does AnkiConnect answer at `url` now? One ask, `LOOK_TIMEOUT` s at most; an Anki
-    that answers but keeps Surasura out (a permission prompt) counts as answering — the full look says what to do.
+def answers(url, seen=None):
+    """(A worker.) The light look: is there news for the full look? AnkiConnect answering at `url` (one ask,
+    `LOOK_TIMEOUT` s at most; an Anki that answers but keeps Surasura out — a permission prompt — counts: the full look
+    says what to do), or, `seen` False (the last look saw no Anki running), an Anki running now (AnkiConnect missing:
+    the full look shows the steps). `seen` True or None: AnkiConnect alone is asked.
     Never asked under `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run): a window a test leaves open
     never reaches a live Anki by itself."""
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
         return False
     from app import anki_connect
     report = anki_connect.probe(url, timeout=LOOK_TIMEOUT)
-    return bool(report.get("ok") or report.get("version") is not None)
+    if report.get("ok") or report.get("version") is not None:
+        return True
+    return seen is False and not report.get("timed_out") and running() is True

@@ -4,10 +4,11 @@ when AnkiConnect may be missing (`ankiconnect_addon.needs_addon`), and the one w
 - **`AddonSteps`**: *Copy code* (2055492159 on the clipboard; its press says *Copied* at once, its name again
   `COPIED_MS` later, the button never narrower meanwhile) beside the three steps on one line. The host hands its own
   button maker, so the part wears the host's look (the wizard's buttons, Settings' doors).
-- **`Watch`**: while armed and its widget is on screen, every `EVERY` s on the shell's status poll (the window's one
-  existing timer, `ShellWindow._poll`; none, no watch) it takes the light look (`ankiconnect_addon.answers`, on a
-  worker, one at a time) and, the first time AnkiConnect answers, calls the host's *Check again*. Nothing loops: a
-  tick off screen, unarmed or with a look out is a flag read; it stops with its widget.
+- **`Watch`**: while armed and its widget is on screen and live (not under the setup wizard, which disables the
+  window's parts), every `EVERY` s on the shell's status poll (the window's one existing timer, `ShellWindow._poll`;
+  none, no watch) it takes the light look (`ankiconnect_addon.answers`, on a worker, one at a time) and, the first
+  time it has news (AnkiConnect answers; an Anki opened where the last look saw none), calls the host's *Check again*.
+  Nothing loops: a tick off screen, unarmed or with a look out is a flag read; it stops with its widget.
 """
 import time
 
@@ -74,6 +75,7 @@ class Watch(QObject):
         super().__init__(widget)
         self.widget, self.url, self.answered = widget, url, answered
         self.armed = False
+        self.seen = None                  # the host's last look: an Anki process seen True, none False, can't tell None
         self.looking = False
         self._last = 0.0
         self._timer = timer
@@ -81,31 +83,38 @@ class Watch(QObject):
             timer.timeout.connect(self._tick)
             self.destroyed.connect(lambda _o=None, t=timer: _disconnect(t, self._tick))
 
-    def arm(self, on):
-        """On: the first light look `EVERY` s from now (the host has just looked); off: none."""
+    def arm(self, on, seen=None):
+        """On: the first light look `EVERY` s from now (the host has just looked); off: none. `seen`: the host's look's
+        `running` (False: the light look watches for an Anki opened too)."""
         on = bool(on)
         if on and not self.armed:
             self._last = time.monotonic()
-        self.armed = on
+        self.armed, self.seen = on, seen
 
     def _tick(self):
-        if not self.armed or self.looking or sip.isdeleted(self.widget) or not self.widget.isVisible():
+        if not self.armed or self.looking or not self._live():
             return
         now = time.monotonic()
         if now - self._last < A.EVERY:
             return
         self._last = now
         self.looking = True
-        bridge.run_in_worker(A.answers, self.url(), then=self._looked, failed=lambda _info: self._looked(False))
+        bridge.run_in_worker(A.answers, self.url(), self.seen, then=self._looked,
+                             failed=lambda _info: self._looked(False))
 
     def _looked(self, ok):
         if sip.isdeleted(self):
             return
         self.looking = False
         self._last = time.monotonic()
-        if ok and self.armed and not sip.isdeleted(self.widget) and self.widget.isVisible():
+        if ok and self.armed and self._live():
             self.armed = False                            # once: the host's look arms it again if Anki still isn't in
             self.answered()
+
+
+    def _live(self):
+        """Its part on screen and taking input (the setup wizard over the window disables the parts under it)."""
+        return not sip.isdeleted(self.widget) and self.widget.isVisible() and self.widget.isEnabled()
 
 
 def _disconnect(timer, slot):

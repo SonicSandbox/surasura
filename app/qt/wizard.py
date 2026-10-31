@@ -692,7 +692,7 @@ def closed_words(look):
     """(line, what to do or "", the From Anki card's short line) for an Anki that didn't answer (§C11): open without
     AnkiConnect answering, closed, or can't tell which (`setup_wizard.anki_look`'s `running`: an Anki process seen,
     none, or None)."""
-    if not ankiconnect_addon.needs_addon(look):          # the one rule Settings' row and Connect's check read
+    if not ankiconnect_addon.needs_addon(look):          # the one rule Settings' row reads too
         return S.ANKI_CLOSED, "", S.ANKI_CLOSED
     if look.get("running") is None:
         return S.ANKI_UNSURE, S.ANKI_UNSURE_HOW, S.ANKI_UNSURE_CARD
@@ -732,7 +732,7 @@ def _say_closed(line, steps, look, watch=None):
         steps.set_unsure((look or {}).get("running") is None)
     _show(steps, bool(todo))
     if watch is not None:
-        watch.arm(not (look or {}).get("say"))
+        watch.arm(not (look or {}).get("say"), (look or {}).get("running"))
 
 
 def _tabular(font):
@@ -2711,7 +2711,8 @@ class SetupWizard(QWidget):
         self._fresh.clear()
         if self.say_line.text() and self.say_line.text() == getattr(self, "samples_said", None):
             self.say("")                                  # the samples' line is page 3's (AD-12)
-        self.stack.setCurrentIndex(self.index)              # instant: no page light-up to borrow (module docstring)
+        self._unsay_copied()
+        self.stack.setCurrentIndex(self.index)             # instant: no page light-up to borrow (module docstring)
         self.steps.set_state(self.index, self.passed)
         self.page.entered()
         self.paint_footer()
@@ -2897,6 +2898,11 @@ class SetupWizard(QWidget):
         if p is not None:
             qpress.end(p, self, failed=failed)
 
+    def _unsay_copied(self):
+        """*Copy code*'s line ("paste it into Anki…") goes once Anki is in or another page shows (A8A-4)."""
+        if self.say_line.accessibleName() == ankiconnect_addon.COPIED_LINE:
+            self.say("")
+
     def anki_url(self):
         """The one AnkiConnect address every Anki caller reads (the closed part's watch asks it on each look)."""
         from app import anki_connect
@@ -2925,8 +2931,10 @@ class SetupWizard(QWidget):
         self._anki_looking = False
         self._unpress("_anki_press")
         self.anki = dict(look or {})
+        if self.anki.get("open"):
+            self._unsay_copied()
         if self.page.id in ("known", "order"):
-            self._rearm()                                 # its controls change now: never a press aimed before (R2-1)
+            self._rearm()                               # its controls change now: never a press aimed before (R2-1)
         for page in self.pages:
             if hasattr(page, "anki_changed"):
                 page.anki_changed()

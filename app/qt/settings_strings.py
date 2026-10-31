@@ -622,7 +622,8 @@ ANKI_WORDS = {
     "syncing": "reading Anki…", "checking": "checking…", "unknown": "not checked yet",
 }
 ANKI_TIP = "Whether Surasura reaches Anki now, through AnkiConnect"
-CHECK_LIVE_TIP = "Asks Anki now whether AnkiConnect answers"
+CHECK_LIVE_TIP = ("Asks Anki now whether AnkiConnect answers\n"
+                  "• While Anki isn’t in, Surasura also looks by itself every few seconds")
 INSTALLED_PLAIN = "installed"
 # App's rows
 LOGS_OPEN = "View"

@@ -368,6 +368,10 @@ def test_ankiconnect_missing_shows_copy_code_and_the_steps_and_a_closed_anki_sho
     steps.copy.click()
     assert QApplication.clipboard().text() == A.CODE and steps.copy.text() == A.COPIED
     assert shell.bar_line.lines[-1] == A.COPIED_LINE
+    page.live._checking = True                            # A8A-2: while a Check runs the steps stay (no jump)
+    page.live._paint_anki()
+    assert mark.words() == S.ANKI_WORDS["checking"] and not steps.isHidden()
+    page.live._checking = False
     fakes.probe = dict(fakes.probe, running=False)
     page.live.check()
     assert wait_until(lambda: mark.words() == S.ANKI_WORDS["closed"]) and steps.isHidden()
@@ -383,15 +387,18 @@ def test_check_runs_by_itself_once_anki_answers_while_the_row_is_on_screen(qapp,
     monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
     monkeypatch.setattr(A, "EVERY", 0.0)
     asked = []
-    monkeypatch.setattr(A, "answers", lambda url: asked.append(url) or fakes.probe.get("ok"))
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(url) or fakes.probe.get("ok"))
     fakes.probe = {"ok": False, "version": None, "missing": [], "error": "refused", "running": True}
     page, store, shell = make(fakes)
     mark = page.live.parts["anki_connection"]["mark"]
     tick.timeout.emit()
     QApplication.processEvents()
     assert asked == []                                    # not checked yet: nothing armed
+    watch = page.live.parts["anki_connection"]["watch"]
+    page.bridge.automation_changed.emit(automation_module.State("anki-closed", "ja", 0, None, "Anki is closed", None, 3))
+    assert wait_until(lambda: watch.armed) and watch.seen is False    # a sync's "closed": no process looked for yet
     page.live.check()
-    assert wait_until(lambda: mark.words() == A.NO_CONNECT)
+    assert wait_until(lambda: mark.words() == A.NO_CONNECT) and watch.seen is True
     checks = fakes.names().count("probe_anki")
     tick.timeout.emit()
     assert wait_until(lambda: asked == ["http://127.0.0.1:8765"])

@@ -17,18 +17,26 @@ def _button(text, tip, parent):
 
 
 def test_a_second_copy_press_restarts_the_wait_and_the_name_comes_back_once(qapp, monkeypatch):
-    monkeypatch.setattr(A, "COPIED_MS", 300)
+    # the waits driven by hand (A8A-5: no timing margin to lose on a loaded machine)
+    waits = []
+
+    class Timer:
+        @staticmethod
+        def singleShot(ms, fn):
+            waits.append((ms, fn))
+    monkeypatch.setattr(addon_steps, "QTimer", Timer)
     said = []
     host = QWidget()
     steps = addon_steps.AddonSteps(lambda text, tip: _button(text, tip, host), "wizsub", said.append, host)
     host.show()
     steps.copy.click()
     assert steps.copy.text() == A.COPIED and QApplication.clipboard().text() == A.CODE
-    wait_until(lambda: False, 0.2)
     steps.copy.click()                                    # pressed again before the first wait ends
-    wait_until(lambda: False, 0.2)                        # the first wait has ended by now
+    assert [ms for ms, _fn in waits] == [A.COPIED_MS] * 2
+    waits[0][1]()                                         # the first wait ends
     assert steps.copy.text() == A.COPIED                  # ... and the second press keeps *Copied*
-    assert wait_until(lambda: steps.copy.text() == A.COPY, 1)
+    waits[1][1]()
+    assert steps.copy.text() == A.COPY
     assert said == [A.COPIED_LINE] * 2
     host.close()
 
@@ -38,7 +46,7 @@ def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, 
     gate = threading.Event()
     asked, answered = [], []
 
-    def answers(url):
+    def answers(url, seen=None):
         asked.append((url, threading.current_thread() is threading.main_thread()))
         gate.wait(5)
         return True
@@ -66,10 +74,33 @@ def test_the_watch_asks_only_while_armed_and_on_screen_one_look_at_a_time(qapp, 
     host.close()
 
 
+def test_the_watch_hands_the_hosts_last_look_on_and_asks_nothing_under_the_setup_wizard(qapp, monkeypatch):
+    # A8A-1: `seen` (the host's look's `running`) goes to the light look, so an Anki opened where none was seen is
+    # news; A8A-3: the setup wizard over the window disables the parts under it — their watch asks nothing
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    asked = []
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(seen) or False)
+    host = QWidget()
+    host.show()
+    tick = QTimer()
+    watch = addon_steps.Watch(host, tick, lambda: "u", lambda: None)
+    watch.arm(True, False)
+    tick.timeout.emit()
+    assert wait_until(lambda: asked == [False] and not watch.looking)
+    watch.arm(True, True)
+    tick.timeout.emit()
+    assert wait_until(lambda: asked == [False, True] and not watch.looking)
+    host.setEnabled(False)                                # first_run._hold: the window's parts under the wizard
+    tick.timeout.emit()
+    QApplication.processEvents()
+    assert asked == [False, True]
+    host.close()
+
+
 def test_the_watch_waits_every_seconds_between_looks(qapp, monkeypatch):
     monkeypatch.setattr(A, "EVERY", 60.0)
     asked = []
-    monkeypatch.setattr(A, "answers", lambda url: asked.append(url) or False)
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(url) or False)
     host = QWidget()
     host.show()
     tick = QTimer()
@@ -85,7 +116,7 @@ def test_the_watch_waits_every_seconds_between_looks(qapp, monkeypatch):
 def test_the_watch_stops_with_its_part_and_a_shell_without_a_poll_has_none(qapp, monkeypatch):
     monkeypatch.setattr(A, "EVERY", 0.0)
     asked = []
-    monkeypatch.setattr(A, "answers", lambda url: asked.append(url) or True)
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(url) or True)
     host = QWidget()
     host.show()
     tick = QTimer()

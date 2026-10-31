@@ -662,7 +662,17 @@ def test_download_covers_is_a_connections_toggle_writing_only_its_key_and_remove
                         "Nothing else.")                                                # what is sent, in one line
 
 
-# --- find() ------------------------------------------------------------------------------------------------------------ #
+def test_anki_miner_card_credits_zero_in_sonics_words_on_two_lines():
+    """Sonic's words for Zero, whole (2026-10-30): the line breaks before *He's*, so the card never wraps mid-sentence,
+    and Settings search still finds the card by either line."""
+    row = catalog.ROW["anki_miner"]
+    assert row.help == ("Makes your cards from your own videos. Free, made by Zero.\n"
+                        "He's awesome. Please give him some love :)")
+    assert "anki_miner" in catalog.find("made by zero", {}, "ja", EVERYTHING)
+    assert "anki_miner" in catalog.find("give him some love", {}, "ja", EVERYTHING)
+
+
+# --- find()------------------------------------------------------------------------------------------------------------ #
 def test_find_matches_labels_help_search_words_and_choice_labels():
     assert "ignore_names" in catalog.find("ignore names", {}, "ja", EVERYTHING)
     assert "paren_readings" in catalog.find("ruby", {}, "ja", EVERYTHING)                 # its help line
@@ -703,7 +713,9 @@ def test_every_row_section_choice_and_door_has_its_words():
     """Tooltips on every button and toggle (D17); a help line is one line; the readout never says "% known" (S4)."""
     for row in catalog.ROWS:
         assert row.id in S.ROWS and row.tip, row.id
-        assert "\n" not in row.help and "\n" not in row.label, row.id
+        assert "\n" not in row.label, row.id
+        # Anki Miner's card alone: Sonic's two lines for Zero, broken before "He's" (2026-10-30)
+        assert "\n" not in row.help or row.id == "anki_miner", row.id
         if row.options and row.kind != "slider":
             labels = S.OPTIONS[row.id]
             assert all(v in labels for v in row.options), row.id

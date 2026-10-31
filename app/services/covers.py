@@ -35,8 +35,10 @@ decodes an image for the screen (Q6 does, off the window's thread).
   no other work's file sits (a library folder's loose files, a shared *OVA* folder, have no one cover). An original under a source stopped (*Stop reading*)
   or not there (an unplugged drive: one check per source) gives nothing, and a cover already recorded beside it is
   kept until it is back (`away`). Nothing is ever written there.
-- **`keep_epub_cover(language, work_id, epub_path, writer)`**: the same for a book at its import (Extract's door: the
-  EPUB is read where the user keeps it; the library holds only its parts), a background cover too.
+- **`works_for(store, work_ids)`** (a worker's read) -> [Work] for those works only: the titles whose files arrived
+  or changed while the window is open (Hon a7: `LibraryReader.subscribe_arrived` → the window's `qt.covers.look`),
+  scanned as the open's scan scans the library. One path for every door — a folder read, + Add, Extract (its parts'
+  `<epub>#<n>` origins name its EPUB wherever the user keeps it), a drop — and for books as for shows.
 - **`keep_user_image(language, work_id, source_path, writer, current=None)`** (IK-7: *Choose an image…*): the user's image
   copied into `User Files/<lang>/covers/` (user data: travels with the library, never emptied with the cache), named by
   the work and the image's own hash, so a new pick is a new file and an Undo still finds the old one; the cover it
@@ -86,6 +88,31 @@ def works_from(items, works, own=None):
             out.append(Work(w["id"], tuple(rels.get(w["id"], ())), w.get("cover_source"), w.get("cover_ref"),
                             w.get("cover_path"), bool(w.get("cover_locked")), *own.get(w["id"], ((), (), False))))
     return out
+
+
+def rows_for(store, work_ids, chunk=500):
+    """(items, works) — the feed's rows (dicts) of these works only, never the library's, read through `store` (this
+    thread's handle) in one read transaction."""
+    from app.library_store import FEED_ITEM_FIELDS, FEED_WORK_FIELDS
+    ids = sorted({int(w) for w in work_ids if w is not None})
+    items, works = [], []
+    item_cols, work_cols = ", ".join(FEED_ITEM_FIELDS), ", ".join(FEED_WORK_FIELDS)
+    with store._reading():
+        for at in range(0, len(ids), chunk):
+            part = ids[at:at + chunk]
+            marks = ", ".join("?" * len(part))
+            works += [dict(zip(FEED_WORK_FIELDS, r)) for r in
+                      store.conn.execute(f"SELECT {work_cols} FROM works WHERE id IN ({marks})", part)]
+            items += [dict(zip(FEED_ITEM_FIELDS, r)) for r in
+                      store.conn.execute(f"SELECT {item_cols} FROM items WHERE work_id IN ({marks})", part)]
+    return items, works
+
+
+def works_for(store, work_ids):
+    """[Work] for these works only (Hon a7: the titles whose files arrived or changed mid-session), with their own
+    folders and books (`originals`)."""
+    items, works = rows_for(store, work_ids)
+    return works_from(items, works, originals(store, work_ids))
 
 
 # --- a work's originals (Hon a6: a folder read where it is) ------------------------------------------------------- #
@@ -495,21 +522,6 @@ def _epub_record(language, data_dir, work, ref, path=None):
         if not _write_whole(os.path.join(path_utils.get_covers_cache_path(), have), got[0]):
             return None
     return "cache:" + have
-
-
-def keep_epub_cover(language, work_id, epub_path, writer, data_dir=None):
-    """A book's own cover at its import (Extract's door, once its parts are in the library as `work_id`): copied into
-    the cache once and recorded as the scan records it (the store refuses it over the user's lock). The EPUB may be
-    anywhere: its record's ref is its path in the data folder when it is there, else its own path (as the scan records
-    an original EPUB: one record for one book). -> True when handed to the writer."""
-    if not writer.can_write():
-        return False
-    from app.library_store import library_rel
-    data_dir = data_dir or path_utils.get_data_path(language)
-    ref = library_rel(data_dir, os.path.abspath(epub_path)) or os.path.abspath(epub_path)
-    work = Work(work_id, (), None, None, None, False)
-    path = _epub_record(language, data_dir, work, ref, path=epub_path)
-    return bool(path) and writer.set_cover(work_id, "file", ref=ref, path=path, auto=True) is not None
 
 
 # --- the user's own image (IK-7) ---------------------------------------------------------------------------------- #

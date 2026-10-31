@@ -495,8 +495,10 @@ def video_for(name, vids, language, keyed=None):
 def subtitles_for_video(path, language):
     """(A worker; alpha 8, setup's *Choose a file…* given a video.) The subtitles beside the video `path` that the one
     pairing rule (`video_for`) gives to it, best first (`subtitle_rank`: named like it, our language, plain…); a
-    loose text or one tagged for another language is never one. Only the video's own folder is read (its `Subs/`
-    folder: *Choose its folder*). -> [paths]; [] when none (or the folder can't be read)."""
+    loose text or one tagged for another language is never one. None given to it, but its episode's subtitles given
+    to another release of the same episode (A5: the plain one, never a Dual / Dub copy) -> those (the learner picked
+    the copy they watch). Only the video's own folder is read (its `Subs/` folder: *Choose its folder*). -> [paths];
+    [] when none (or the folder can't be read)."""
     folder = os.path.dirname(os.path.abspath(path))
     listed = _listing(folder)
     if listed is None:
@@ -509,14 +511,19 @@ def subtitles_for_video(path, language):
         except OSError:
             return []
     stem = os.path.splitext(os.path.basename(path))[0]
-    found = []
+    keys = video_keys(vids, language)                    # read once for the folder (as the look keeps them)
+    mine = episode_key(me, language)
+    found, episode = [], []
     for name, full, _st in texts:
         if name.lower().endswith(_LOOSE) or _tag(name)[1] not in (None, language):
             continue
-        v, _by = video_for(name, vids, language)
+        v, _by = video_for(name, vids, language, keyed=lambda: keys)
+        rank = (subtitle_rank(name, language, named=_tag(name)[0] == stem), full)
         if v == me:
-            found.append((subtitle_rank(name, language, named=_tag(name)[0] == stem), full))
-    return [full for _rank, full in sorted(found)]
+            found.append(rank)
+        elif v is not None and mine is not None and episode_key(v, language) == mine:
+            episode.append(rank)
+    return [full for _rank, full in sorted(found or episode)]
 
 
 def _group(name):

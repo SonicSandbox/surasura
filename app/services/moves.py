@@ -310,12 +310,15 @@ class Writer:
         # (a show's folder, so the file joins its show; a folder added, its own folders kept).
         # --- K21 (laptop fixes): each file copied in from outside the data folder gets an origin record on its new item,
         # in the same command (`Store._add_origins`: where it came from, the video beside it); `origin=False` (a pasted
-        # text: its temporary file is removed once it lands) records none."""
+        # text: its temporary file is removed once it lands) records none; a dict {a file: its video} (alpha 8, setup's
+        # *Choose a file…* given a video: the one the user picked, paired by the library's rule) names the video."""
         if not self._writable():
             return None                             # E4
         cmd = {"op": "insert_at", "ids": [], "files": [os.fspath(p) for p in paths], "tier": tier,
                "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()], "label": label,
                "origin": bool(origin)}
+        if isinstance(origin, dict) and origin:
+            cmd["videos"] = {os.fspath(k): os.fspath(v) for k, v in origin.items()}
         if into is not None:                        # --- W3.2 Q3
             cmd["into"] = [into] * len(cmd["files"]) if isinstance(into, str) else list(into)
             if len(cmd["into"]) != len(cmd["files"]):
@@ -1300,7 +1303,8 @@ class Writer:
                     out.append(dest)
                 if st is not None:
                     try:
-                        origins[dest] = _origin_of(path, st, dest, parts, lib, listings)
+                        origins[dest] = _origin_of(path, st, dest, parts, lib, listings,
+                                                   video=(cmd.get("videos") or {}).get(path))
                     except OSError as e:            # H16: recording where it came from never stops the add
                         print(f"+ Add: where {os.path.basename(path)} came from isn't kept ({e!r})")
         finally:
@@ -2012,16 +2016,17 @@ def _into(sub, folder, walked, lib):
     return parts
 
 
-def _origin_of(path, st, copy, parts, lib, listings=None):
+def _origin_of(path, st, copy, parts, lib, listings=None, video=None):
     """(K21) Where a file + Add or a drop copied in came from, for its origin record (`Store._add_origins`): the
     original's absolute path, its size and time (`st`, taken before it was read), the sha256 of the bytes copied (the
     copy's), the show its `Library` folder names, and the video beside the original with its name, found as Connect's
     `runner.beside` finds it (a listing and a stat: the video is never opened; `listings`: the add's own, so each
-    folder is listed once per add, H6). An OSError is the caller's: no origin, the add goes on (H16)."""
+    folder is listed once per add, H6). `video`: the one the user picked for it (alpha 8), when it is still there.
+    An OSError is the caller's: no origin, the add goes on (H16)."""
     from app.connect import runner
     f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
          "sha256": lib.sha256_of(copy), "show": "/".join(parts[1:])}
-    video = runner.beside(path, listings=listings)
+    video = video if video and os.path.isfile(video) else runner.beside(path, listings=listings)
     if video:
         f.update(video_path=os.path.abspath(video), video_size=os.path.getsize(video))
     return f

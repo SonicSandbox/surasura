@@ -442,10 +442,10 @@ def resume_youtube(shell):
 
 def _rest_waiting(language):
     try:
-        from modules.youtube_downloader import downloader_view
+        from modules.youtube_downloader import rest_waiting
     except ImportError:
         return False
-    return os.path.exists(downloader_view.rest_path(language))
+    return rest_waiting(language)
 
 
 def _arrived(shell, relay, counts, then=None, quiet=False):

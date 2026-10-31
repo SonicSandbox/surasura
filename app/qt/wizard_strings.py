@@ -123,12 +123,15 @@ PICK_FILE_TIP = ("Choose an episode's subtitles or its video, a text or an EPUB:
 PICK_FILE_TITLE = "Choose a file"
 PICK_FILE_FILTER = "Subtitles, videos, texts and books ({patterns});;All files (*)"
 FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
-# alpha 8 (A8B-L2, Sonic "Yes do that"): a video chosen as a file — its subtitle found beside it by the library's rule
+# alpha 8 (A8P-L6, Sonic "Yes do that"): a video chosen as a file — its subtitle found beside it by the library's rule
 VIDEO_LOOKING = "Looking beside {name} for its subtitle…"
 VIDEO_SUBTITLE = "{name}: its subtitle {subtitle} comes in."
 VIDEO_SUBTITLE_BEST = "{name}: {subtitle} comes in (the best of {n} subtitles beside it)."
 VIDEO_NO_SUBTITLE = ("{name}: no subtitle beside it, and Surasura reads a video's subtitle file, not the video. "
                      "Choose its folder to look through it, its Subs folder too.")
+VIDEO_NO_SUBTITLE_PLAIN = ("{name}: no subtitle beside it, and Surasura reads a video's subtitle file, not the video. "
+                           "Choose its subtitle file instead.")
+VIDEO_STILL_LOOKING = "Still looking for your video's subtitle: Next again in a moment."
 VIDEO_ITS_FOLDER = "Choose its folder"
 VIDEO_ITS_FOLDER_NAME = "Choose the folder {folder}"
 VIDEO_ITS_FOLDER_TIP = ("Read the video's whole folder instead, as Choose a folder… does:\n"
@@ -339,8 +342,9 @@ YOUTUBE_DONE = "YouTube · {what} in New arrivals"
 YOUTUBE_PLACED = "YouTube · {what} in your library"
 YOUTUBE_FAILED = "YouTube · {why}"
 YOUTUBE_SOME_FAILED = "YouTube · {what} in New arrivals · {why}"
-YOUTUBE_REST = ("the first of its playlist: the rest comes in in the background",          # alpha 8: a playlist's
-                "the first of {n:,} playlists: the rest come in in the background")        # rest, after setup
+YOUTUBE_REST = ("the first of its playlist: the rest follows in the background",           # alpha 8: a playlist's
+                "the first of {n:,} playlists: the rest follows in the background")         # rest, after setup
+YOUTUBE_REST_ONLY = ("its playlist follows in the background", "their {n:,} playlists follow in the background")
 LOAD_STOP = "Stop"
 LOAD_STOP_TIP = ("Stop here and sort what was read so far. Nothing read is lost; a folder not reached yet stays on "
                  "the page to read again.")

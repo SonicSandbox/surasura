@@ -56,6 +56,8 @@ class SortWriter(SkipWriter):
         self.before = {}
 
     def _write(self, change):
+        if change.op == "start_over":
+            return self._write_start_over(change)
         if change.op in ("place", "remove"):
             self.before[id(change)] = [dict(r) for r in self.library.items() if r["id"] in change.ids]
         super()._write(change)
@@ -65,6 +67,18 @@ class SortWriter(SkipWriter):
         if rows:
             self.library.commit(items=rows, order=True)
         return super().undo(change, label)
+
+    def start_over(self, changes, label=None):
+        """Mado-O: `Writer.start_over` as the store lands it — each placement's rows back as they were before it."""
+        changes = list(changes)
+        return self._put("start_over", [i for c in changes for i in c.ids], label, changes=changes)
+
+    def _write_start_over(self, change):
+        self.before[id(change)] = [dict(r) for r in self.library.items() if r["id"] in change.ids]
+        for c in reversed(change.kw["changes"]):
+            rows = self.before.get(id(c))
+            if rows:
+                self.library.commit(items=rows, order=True)
 
 
 class OwnLooks:
@@ -411,6 +425,119 @@ def test_an_ignore_pressed_just_before_done_still_lands(world):
     assert sip.isdeleted(screen)
     win.looks.release()
     assert wait_until(lambda: calls(writer, "skip_folder"), 5)
+
+
+# --- Start sorting over (Mado-O, alpha 8) ----------------------------------------------------------------------------- #
+def _sort_some(screen, writer, names=("now", "soon", "finished")):
+    """Each of `names` on the top title in turn, saved. -> the titles placed, in order."""
+    placed = []
+    for name in names:
+        placed.append(screen.top_arrival())
+        screen.choose(name)
+    assert _saved(writer, len(names))
+    settle()
+    return placed
+
+
+def _answer(screen, yes):
+    card = screen.question
+    assert card is not None and wait_until(card.isVisible, 3)
+    (card.yes if yes else card.no).click()
+    settle()
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_start_over_asks_first_then_puts_every_sorted_title_back_in_one_command_from_the_top(world, language):
+    """Sonic 2026-10-31: *Start sorting over* — asked first (No by default); Yes: every title this screen placed (a
+    *Put the rest in…* too) back to sort in ONE writer command, the screen from the top as New arrivals has them."""
+    _seed, win, writer = world(language)
+    screen = open_sort(win)
+    first = keys_shown(screen)
+    assert not screen.btn_over.isEnabled(), "nothing sorted: nothing to start over"
+    placed = _sort_some(screen, writer, ("now", "soon"))
+    screen.rest("goal")
+    assert _saved(writer, 3)
+    settle()
+    assert screen.btn_over.isEnabled() and screen.btn_over.toolTip()
+    QTest.mouseClick(screen.btn_over, Qt.MouseButton.LeftButton)
+    _answer(screen, False)
+    assert calls(writer, "start_over") == [], "No: nothing written"
+    QTest.mouseClick(screen.btn_over, Qt.MouseButton.LeftButton)
+    _answer(screen, True)
+    over = calls(writer, "start_over")
+    assert len(over) == 1 and over[0][2]["changes"] == writer.saved[:3], "one command: the screen's three placements"
+    assert screen.said.text() == S.SORT_OVER_SAID.format(n=len(first))
+    assert wait_until(lambda: keys_shown(screen) == first, 5), "every title back, from the top"
+    assert screen.top_arrival().key == placed[0].key
+    assert [e["name"] for e in screen.history] == ["over"] and not screen.btn_over.isEnabled()
+
+
+def test_undo_after_start_over_puts_the_sorting_back_and_then_each_choice_undoes_on_its_own(world):
+    """One Undo (Ctrl+Z) takes the reset back — its own change, the titles off the screen at once; the next Undo is
+    the last choice again, by its own change."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    placed = _sort_some(screen, writer)
+    left = keys_shown(screen)
+    screen.start_over()
+    assert wait_until(lambda: len(writer.saved) == 4, 5)
+    reset = writer.saved[-1]
+    assert wait_until(lambda: keys_shown(screen)[:3] == [a.key for a in placed], 5)
+    settle()
+    press(screen, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert keys_shown(screen) == left, "the sorting back at once"
+    assert wait_until(lambda: calls(writer, "undo"), 5)
+    assert calls(writer, "undo") == [("undo", [], {"change": reset})]
+    assert [e["name"] for e in screen.history] == ["now", "soon", "finished"]
+    settle()
+    press(screen, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert wait_until(lambda: len(calls(writer, "undo")) == 2, 5)
+    assert calls(writer, "undo")[1][2]["change"] is writer.saved[2], "then the last choice, by its own change"
+    assert wait_until(lambda: screen.top_arrival().key == placed[2].key, 5)
+
+
+def test_an_ignored_title_stays_ignored_and_its_undo_still_works_after_start_over(world):
+    """PROVISIONAL: Ignore isn't put back (its folder stays unread); after the reset, its own Undo is still on Undo."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    win.looks = OwnLooks([])
+    ignored = screen.top_arrival()
+    press(screen, Qt.Key.Key_Left)
+    assert wait_until(lambda: calls(writer, "remove"), 5) and _saved(writer, 1)
+    _sort_some(screen, writer, ("goal",))
+    screen.start_over()
+    assert wait_until(lambda: calls(writer, "start_over"), 5)
+    assert [c.op for c in calls(writer, "start_over")[0][2]["changes"]] == ["place"], "never the Ignore"
+    assert ignored.key not in keys_shown(screen)
+    assert [e["name"] for e in screen.history] == ["ignore", "over"]
+
+
+def test_start_over_waits_for_a_choice_still_being_saved_and_puts_it_back_too(world):
+    """A busy store: the press shows at once (the titles back to sort), the one command waits for the choice's save —
+    it is put back with the rest, never left in Current."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    first = keys_shown(screen)
+    _sort_some(screen, writer, ("soon",))
+    writer.stuck = True
+    screen.choose("now")
+    screen.start_over()
+    assert calls(writer, "start_over") == [] and screen.said.text() == S.SORT_OVER_SAID.format(n=2)
+    writer.free()
+    assert wait_until(lambda: calls(writer, "start_over"), 5)
+    assert calls(writer, "start_over")[0][2]["changes"] == writer.saved[:2]
+    assert wait_until(lambda: keys_shown(screen) == first, 5)
+
+
+def test_start_over_the_writer_refuses_keeps_the_sorting_and_says_so(world, monkeypatch):
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    _sort_some(screen, writer, ("soon", "goal"))
+    left = keys_shown(screen)
+    monkeypatch.setattr(writer, "start_over", lambda *a, **kw: None)
+    screen.start_over()
+    assert screen.said.text() == strings.MOVE_NOT_SAVED
+    assert keys_shown(screen) == left and [e["name"] for e in screen.history] == ["soon", "goal"]
 
 
 # --- closing --------------------------------------------------------------------------------------------------------- #

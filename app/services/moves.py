@@ -119,6 +119,9 @@ JOURNALLED += ("relink_many",)
 KEPT += ("pairs",)
 # --- a5-2 (Hon): an audiobook's *Find its book…* (its book's EPUB `path`) and *It has no book*
 JOURNALLED += ("audiobook_pick", "audiobook_no_book")
+# --- Mado-O (alpha 8): the sort screen's *Start sorting over* (`placed`: its placements' records)
+JOURNALLED += ("start_over",)
+KEPT += ("placed",)
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -362,6 +365,16 @@ class Writer:
         if where not in PLACES:
             raise ValueError(f"unknown place {where!r}")
         return self._put({"op": "place", "ids": list(ids), "where": where, "label": label})
+
+    def start_over(self, changes, label=None):
+        """Mado-O (alpha 8): the sort screen's *Start sorting over* — `Store.unsort` of the placements it made
+        (`changes`, saved), one command: every title still where the screen put it back in New arrivals; undone as one
+        move. Journalled with the placements' records (`library_store.change_record`): a crash before it lands replays
+        it; one that landed before the crash is let go quietly."""
+        from app import library_store
+        placed = [library_store.change_record(c) for c in changes if c is not None]
+        ids = list(dict.fromkeys(it["id"] for rec in placed for it in rec["items"]))
+        return self._put({"op": "start_over", "ids": ids, "placed": placed, "label": label})
 
     def put_back(self, ids, label=None):
         """`Store.put_back_finished`: Finished's *Put back* — the top of Current and its cards back in the order, one
@@ -995,6 +1008,8 @@ class Writer:
             return store.place(ids, cmd["where"])
         if op == "put_back":
             return store.put_back_finished(ids)
+        if op == "start_over":                      # Mado-O (alpha 8)
+            return store.unsort(cmd["placed"])
         if op == "import_finished":
             return store.import_finished(cmd["paths"])
         if op == "relink":
@@ -1660,6 +1675,10 @@ class Writer:
                 return True
         if cmd["op"] == "remove" and _removed(store, cmd["ids"]):
             return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
+        if cmd["op"] == "start_over":               # Mado-O: none still where the screen put it (as it leaves them)
+            now = store.check(cmd["ids"]).items
+            if not any(now.get(it["id"]) == rec["version"] for rec in cmd.get("placed") or () for it in rec["items"]):
+                return "done"
         if cmd["op"] == "skip_folder" and store.skip_refused(cmd["path"]) == _ls().SKIP_ALREADY:
             return "done"                           # K6: the folder (or one holding it) skipped already, as it leaves
         seen = cmd.get("seen")

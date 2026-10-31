@@ -2448,6 +2448,68 @@ def test_S2_each_arrival_lands_where_its_icon_or_menu_says_and_its_undo_puts_it_
         w.place([a], "the top")                          # a window's slip: refused at the call, never queued
 
 
+def _tiers_and_values(lib, placed=()):
+    """Every item's tier, place and values — and `changed_in` for the `placed` (a neighbour the Soon line moved across
+    gets the line's own version, as any move's Undo gives it)."""
+    return [r[:-1] + ((r[-1],) if r[0] in placed else ()) for r in lib.store.conn.execute(
+        "SELECT id, tier, ord, graduated_at, watched, changed_in FROM items ORDER BY id")]
+
+
+def test_mado_o_start_over_is_one_saved_change_and_its_undo_puts_the_sort_back(lib, make_writer):
+    """The sort screen's *Start sorting over* (alpha 8): the placements it made, given back as one `start_over` — every
+    title in New arrivals, one change on the Undo stack; Ctrl+Z takes the reset back exactly, and the next Ctrl+Z the
+    newest placement (the stack under it intact)."""
+    w, heard = make_writer()
+    a, b, c = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("goal")[3], lib.ids("soon")[1]))
+    w.place([a], "top")
+    w.place([b], "goal")
+    w.place([c], "finished")
+    assert h.until(lambda: len(heard.saved) == 3)
+    placed = [ch for ch, _l in heard.saved]
+    sorted_ = _tiers_and_values(lib, (a, b, c))
+    w.start_over(placed, label="over")
+    assert h.until(lambda: len(heard.saved) == 4)
+    change, label = heard.saved[-1]
+    assert label == "over" and change.kind == "move" and {it["id"] for it in change.items} == {a, b, c}
+    assert set(lib.ids("arrivals")) >= {a, b, c} and not lib.store.item(c)["graduated_at"]
+    assert journal(lib.language) is None, "landed: out of the journal"
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 1)
+    assert _tiers_and_values(lib, (a, b, c)) == sorted_
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert lib.store.place_of(c)[0] == "arrivals" and lib.store.place_of(b)[0] == "goal"
+
+
+def test_mado_o_a_start_over_queued_at_a_crash_is_replayed_and_one_that_landed_is_let_go_quietly(
+        lib, make_writer, short_lock_wait):
+    """Journalled like any move: the placements' records replay it at the next start; a journal still naming one that
+    landed before the crash puts back nothing and lists nothing."""
+    w, heard = make_writer()
+    a, b = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("soon")[1]))
+    w.place([a], "top")
+    w.place([b], "finished")
+    assert h.until(lambda: len(heard.saved) == 2)
+    placed = [ch for ch, _l in heard.saved]
+    holder = LockHolder(lib.db)
+    w.start_over(placed)
+    assert h.until(lambda: journalled(lib.language) == [("start_over", [a, b])])
+    kept = journal(lib.language)
+    w._abandon()                                        # the crash
+    holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert lib.store.place_of(a)[0] == "arrivals" and lib.store.place_of(b)[0] == "arrivals"
+    assert heard2.notes == [] and heard2.saved == []
+    with open(M.journal_path(lib.language), "w", encoding="utf-8") as f:
+        json.dump(kept, f)                              # a journal left by a crash just after it landed
+    w3, heard3 = make_writer()
+    assert w3.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert heard3.notes == [] and lib.store.place_of(a)[0] == "arrivals"
+
+
 def test_S2_after_show_with_no_show_to_follow_writes_nothing_and_rereads(lib, make_writer):
     w, heard = make_writer()
     loose = [i for i in lib.ids("goal") if lib.store.item(i)["rel_path"].count("/") == 1][0]   # a loose file

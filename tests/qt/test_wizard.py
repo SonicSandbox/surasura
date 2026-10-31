@@ -1919,3 +1919,15 @@ def test_videos_that_landed_during_the_scan_are_sorted_though_the_scan_found_not
     wiz._load_begin()
     wiz._load_scanned({"ids": []})
     assert sorted_ == [True]
+
+
+def test_a_scan_that_found_nothing_waits_for_the_youtube_videos_still_coming(make, monkeypatch):
+    """Mutant M14: folders read and empty while YouTube's videos are still coming — the load screen stays, at its
+    YouTube step (never the page with the videos about to land unsorted)."""
+    wiz, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
+    go_to(wiz, "shows")
+    wiz.fetching = {"links": 1}
+    wiz._load_begin()
+    wiz._load_scanned({"ids": []})
+    assert wiz.covered is not None and wiz._load["step"] == "youtube"
+    assert wiz.covered.task.text() == S.LOAD_YOUTUBE

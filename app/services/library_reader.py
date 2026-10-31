@@ -417,6 +417,12 @@ class LibraryReader:
         with self._lock:
             return self._view
 
+    def cards(self):
+        """{item_id: cards in Anki} as the rows last built show them (Current, Soon, Finished): a new dict whenever a
+        count moves, never changed in place — the same object until then (the star ask's look, `app/qt/star_ask.py`).
+        Any thread."""
+        return self._cards
+
     def store_id(self):
         """The library's own id (its meta's `store_id`) once a read found it, else None (W-1: a hint shown once per
         library). Any thread."""

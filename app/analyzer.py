@@ -4238,7 +4238,7 @@ def settings_signature(settings, language):
         # The app's own and the importers': telemetry, automatic updates, the welcome guide, the
         # EPUB importer's part size and how a book is split, the Content Manager's "Add Words on 'Graduate'". No run
         # reads them.
-        "telemetry_enabled", "auto_update_enabled", "onboarding_completed", "split_length", "split_books_by",
+        "telemetry_enabled", "auto_update_enabled", "update_check_enabled", "onboarding_completed", "split_length", "split_books_by",
         "add_graduated_words",
         # Rarity or coverage: a run reads neither key, only the --target-coverage the dashboard
         # passes in coverage mode — in the args below.

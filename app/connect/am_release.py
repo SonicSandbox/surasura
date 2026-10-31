@@ -129,9 +129,11 @@ def _page(url):
 
 def _allowed(settings, fetch):
     """May a check read or write anything: Connect on (`settings_manager.connect_on`: its switch and D29's automation
-    — the daily check is unattended, P4.1 row 4.1.1), and the real fetch not gated (NO_CHECK_ENV)."""
+    — the daily check is unattended, P4.1 row 4.1.1), *Check for updates* on (`update_check_on`: off, Surasura asks
+    GitHub nothing), and the real fetch not gated (NO_CHECK_ENV)."""
     from app import settings_manager
-    return settings_manager.connect_on(settings) and not (fetch is None and os.environ.get(NO_CHECK_ENV))
+    return (settings_manager.connect_on(settings) and settings_manager.update_check_on(settings)
+            and not (fetch is None and os.environ.get(NO_CHECK_ENV)))
 
 
 def _claim(now):

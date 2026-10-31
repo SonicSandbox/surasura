@@ -1508,8 +1508,9 @@ def test_100k_moves_touch_only_the_moved_rows(language):
         times.append(time.perf_counter() - t0)
         log_rows = _last_log(store) - logs
         # the item, its log rows, 2 versions — and its piece (schema 2, 05 §5.2): it leaves its show's piece and takes
-        # a piece row of its own (3 writes); a show it lands inside splits at it (a piece row, at most 11 episodes)
-        assert store.conn.total_changes - before <= 1 + log_rows + 2 + 3 + 1 + 11
+        # a piece row of its own (3 writes); a show it lands inside splits at it (a piece row, and at most its 12
+        # episodes: `big_store`'s shows hold 12 — R6 at 100k drew a move that split one, 20 writes against "11")
+        assert store.conn.total_changes - before <= 1 + log_rows + 2 + 3 + 1 + 12
     if BENCH:
         work = statistics.median(t - f for t, f in zip(times, probe.times))
         _record(f"13 {language} 100k: move median {statistics.median(times) * 1000:.2f} ms, flush beside it "

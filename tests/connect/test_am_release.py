@@ -150,6 +150,21 @@ def test_the_update_check_gate_keeps_the_real_fetch_off_and_writes_nothing(monke
     assert not os.path.exists(am_release.path())
 
 
+def test_check_for_updates_off_asks_github_nothing_and_writes_nothing(tmp_path, ledger, monkeypatch):
+    """*Check for updates* off (Settings → App, `update_check_enabled`): Surasura asks GitHub nothing — Anki Miner's
+    release included, a test's own fetch too — and a Connect run starts no thread. On again, the day's check runs."""
+    monkeypatch.delenv("SURASURA_NO_UPDATE_CHECK", raising=False)
+    off = dict(ON, update_check_enabled=False)
+    fetch = Fetch(release())
+    assert am_release.check(off, now=NOON, fetch=fetch) is None and fetch.calls == 0
+    assert am_release.start(off) is None and am_release._thread is None
+    steps = FakeSteps(str(tmp_path), {"line": {"ja": [1]}, "queue": {"ja": [1]}})
+    runner.run(off, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
+    assert am_release._thread is None and not os.path.exists(am_release.path())
+    assert am_release.check(dict(ON, update_check_enabled=True), now=NOON, fetch=fetch)["latest"] == "3.8.0"
+    assert fetch.calls == 1
+
+
 def test_the_real_fetch_asks_anki_miners_latest_release_with_a_five_second_bound(monkeypatch):
     """The HTTP helper is Surasura's own (`update_checker._http_json`), stood in for: the URL and the timeout."""
     from app import update_checker

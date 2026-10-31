@@ -46,6 +46,7 @@ from app.qt import screens                                # W2.2: the pages a li
 from app.qt import press as qpress                        # round 8 row 45: a press reacts at once
 from app.qt import standing as standing_qt                # round 8 row 54: every standing line's ✕
 from app.qt import phase_strip                            # the phase strip: five circles at the bar's bottom left
+from app.qt import star_ask                               # Surasura's star ask (2026-10-31)
 from app.services import phase as phase_service
 from app.services import standing as standing_service
 from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
@@ -1331,6 +1332,7 @@ class ShellWindow(QMainWindow):
         motion.install_mode_filter(QApplication.instance())
         self.bridge.settings_written.connect(self._settings_written)
         self.toasts = toast.ToastHost(central)
+        self.star_ask = star_ask.StarAsk(self)            # Surasura's star ask (once, when your own cards first land)
 
         # app-wide behaviour
         app = QApplication.instance()
@@ -1627,6 +1629,9 @@ class ShellWindow(QMainWindow):
             sheet.view_shown(view)                  # --- end W3.2 Q2
         if moved:                                   # a view that changed no list paints nothing ahead
             self._warm_hidden_pages()
+        star = getattr(self, "star_ask", None)      # Surasura's star ask: once, when your own cards first land
+        if star is not None:
+            star.view_shown(view, self.services.library)
 
     def _show_dock(self, view):
         """The Goal dock takes the reader's `view.goal`, repainted only when it changed; shown while there is a Goal and

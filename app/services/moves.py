@@ -2276,6 +2276,9 @@ class Numbers:
             block = [i for i in ids if i not in dropped]
             if not block:
                 return {}                           # nothing that counts moved: every row keeps its figures
+            if not all(_holds(eng, i) for i in block):
+                self.worker.put(self._resync)       # an item the plan never counted (New arrivals, Finished, a file
+                return {}                           # added since): it will count, so worked out again — never a move
             if seq is not None and not _holds(eng, anchor):
                 at = _nearest_held(eng, seq, anchor, before_id is not None, set(ids), tier)
                 if at is not None:
@@ -2283,7 +2286,7 @@ class Numbers:
             before = list(eng._n_new)
             try:
                 _words, moved = eng.move(block, tier, before_id=before_id, after_id=after_id)
-            except plan_engine.PlanError as e:
+            except plan_engine.PlanError as e:      # the engine's own refusal (an anchor gone meanwhile)
                 self.worker.put(self._resync)
                 print(f"Window numbers: the move couldn't be followed: {e}")
                 return {}
@@ -2346,7 +2349,7 @@ class Numbers:
         order = self._order(store)                  # read once a load: the staleness check and the engine share it
         why = self._stale(plan, store, ids, order)
         if why is not None:
-            self._set(None, counts, why, key)
+            self._set(None, self._kept(counts), why, key)
             return
         try:
             eng = plan_engine.Engine(plan, ids, numbers_only=True)  # an i+1 plan: its numbers (row 36)
@@ -2414,8 +2417,9 @@ class Numbers:
                 eng._numbers(order)
             except plan_engine.PlanError as e:      # an item the plan doesn't hold came in: Generate first
                 self._engine, self._why = None, f"stale: {e}"
-                self._publish({i: (k, c, None) for i, (k, c, _n) in counts.items()}, None)
                 said = self._why                    # logged after the lock (a file write: never while a read waits)
+                # The rows keep the last plan's *N new* until the next one is read (the Generate it waits for): never
+                # a blank between the drop and that Generate. Nothing changed, nothing published.
             else:
                 self.renumbered += 1
                 table = self._figures(eng, counts)
@@ -2426,6 +2430,15 @@ class Numbers:
         if said is not None:
             self._say(said)
         self._call_change()
+
+    def _kept(self, counts):
+        """A plan that can't be followed (stale): each row's last *N new* kept until a plan that can be is read — a
+        Generate that ends while the library moved on (known words from cards that landed meanwhile) is followed by
+        the next one, and the rows never blink blank between the two. A row the last table never numbered has none."""
+        with self._lock:
+            last = self._table
+        return {item: (known, counted, (last.get(item) or (0, 0, None))[2])
+                for item, (known, counted, _n) in counts.items()}
 
     def _figures(self, eng, counts):
         n_new = eng._n_new

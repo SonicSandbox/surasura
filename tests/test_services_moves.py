@@ -1124,6 +1124,60 @@ def test_the_numbers_log_why_after_their_lock_when_a_move_cant_be_followed(tmp_p
     numbers.close()
 
 
+def test_an_arrival_dropped_into_now_resyncs_quietly_and_every_row_keeps_its_new_count(tmp_path, capsys):
+    """RC captures (Minato, 2026-10-31): a drop from New arrivals into Current printed "the move couldn't be followed:
+    item N isn't in the order" — the numbers knew before the move that the plan never counted the arrival, yet asked the
+    engine to move it and printed its refusal — and every row lost its *N new* until the Generate after it (the resync
+    published None for each). Now: no move asked, no such line, a resync; the plan is stale (said once in the log) and
+    every row keeps the last plan's figure until a plan that can be followed is read."""
+    seed, analysed, path = _small(tmp_path)
+    said = []
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, log=said.append)
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    before = dict(numbers()[1])
+    assert all(before[r["id"]][2] is not None for r in analysed)
+    arrival = dict(analysed[0], id=10 ** 6, rel_path="ja/HighPriority/新しい回.srt", tier="now",
+                   ord=analysed[0]["ord"] - 1)
+    seed.library.commit(items=[arrival], order=True)                  # the drop, as the store has it
+    v = numbers.version
+    assert numbers.after_move([arrival["id"]], "now", before_id=analysed[0]["id"]) == {}
+    assert numbers.idle(30) and numbers.why().startswith("stale:")
+    assert "isn't in the order" not in capsys.readouterr().out
+    assert numbers()[1] == before and numbers.version == v           # nothing blanked, nothing re-published
+    assert said == ["N new (ja): follows the order", f"N new (ja): {numbers.why()}"]
+    write_plan(path, [arrival["rel_path"]] + [r["rel_path"] for r in analysed], ["now"] + [r["tier"] for r in analysed],
+               n_words=400, language="ja")                           # the Generate after the drop
+    os.utime(path, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why() is None
+    assert all(numbers()[1][i][2] is not None for i in [arrival["id"]] + [r["id"] for r in analysed])
+    numbers.close()
+
+
+def test_a_new_plan_read_stale_keeps_the_last_new_counts_until_one_can_be_followed(tmp_path):
+    """The other road to the blink (after Mine): a Generate ends while the library moved on (cards landed, known
+    words changed: the caller's check says stale), so its plan can't be followed; the rows keep the last figures —
+    never blank between that Generate and the next. A first plan read stale still has none to keep."""
+    seed, analysed, path = _small(tmp_path)
+    verdict = [None]
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, check=lambda plan, store: verdict[0])
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    before = {i: n for i, (_k, _c, n) in numbers()[1].items()}
+    verdict[0] = "known words changed"
+    write_plan(path, [r["rel_path"] for r in analysed], [r["tier"] for r in analysed], n_words=300, seed=9)
+    os.utime(path, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why() == "stale: known words changed"
+    assert {i: n for i, (_k, _c, n) in numbers()[1].items()} == before
+    numbers.close()
+    fresh = M.Numbers(seed.opener, "ja", plan_file=path, check=lambda plan, store: "known words changed")
+    fresh.load()
+    assert fresh.idle(30) and all(n is None for _k, _c, n in fresh()[1].values())
+    fresh.close()
+
+
 def test_a_plan_missing_a_file_the_library_counts_is_stale(tmp_path):
     seed, analysed, path = _small(tmp_path, drop=1)
     numbers = M.Numbers(seed.opener, "ja", plan_file=path)

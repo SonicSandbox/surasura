@@ -220,8 +220,12 @@ class UpdateService:
     # --- the check ---------------------------------------------------------------------------------------------- #
     def check(self, now=False):
         """Ask whether a newer release is on offer: on a worker (`now`: on this thread — a worker's). False when the
-        test switch is on or a check is already running."""
+        test switch is on, *Check for updates* is off (no request at all) or a check is already running."""
         if os.environ.get("SURASURA_NO_UPDATE_CHECK"):
+            return False
+        from app import settings_manager
+        from app.services.settings import thaw
+        if not settings_manager.update_check_on(thaw(self.settings.get())):
             return False
         with self._lock:
             if self._checking:

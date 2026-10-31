@@ -208,8 +208,9 @@ class Worker:
         order = arrivals.Order(plan)
         # The plan's tables only from here on: its per-file lines (most of its memory) are read into `order`.
         view.plan = plan_engine.Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None, plan.spell)
-        warm = {"view": view, "gates": gates, "order": order, "ids": frozenset(order.ids), "listed": self._listed(),
-                "signature": plan.header.get("run_signature"), "parts": parts, "evidence": evidence}
+        signature = plan.header.get("run_signature")
+        warm = {"view": view, "gates": gates, "order": order, "ids": frozenset(order.ids),
+                "listed": self._listed(signature), "signature": signature, "parts": parts, "evidence": evidence}
         try:
             self._warm_up(warm)
         except Exception as e:                      # only a head start: the first arrival loads what this didn't
@@ -227,23 +228,37 @@ class Worker:
         if warm["gates"] is not None:
             warm["gates"].check([rec])
         arrivals.estimate(view, warm["gates"], warm["order"], rec)
-        arrivals.pick_cues(view, cues.Cues([cues.Cue(0, 0, 3000, text, 0, False, True)]), warm["listed"],
+        arrivals.pick_cues(view, cues.Cues([cues.Cue(0, 0, 3000, text, 0, False, True)]), self._list_of(warm),
                            self.send_grammar)
 
-    def _listed(self):
-        """{(Word, Reading): its place} on the last Generate's list (its priority CSV, as Connect's pick reads it)."""
+    def _listed(self, signature=None):
+        """{(Word, Reading): its place} on the last Generate's list (its priority CSV, as Connect's pick reads it), or
+        None while a Generate is writing a new one: `results/`'s run stamp doesn't name the plan's run (`signature`)
+        and the `results` lock is held (a7: the lists are written whole, temp + replace, so outside a run the last one
+        is read — a run that was stopped or failed left the last good list). None is never kept: the next pick asks
+        again (`_list_of`). {} when it can't be read: the pick ranks by nothing listed."""
         import csv
-        from app import analyzer
+        from app import analyzer, locks
+        from app.path_utils import list_reader
+        if signature is not None and analyzer.read_run_stamp(analyzer.RESULTS_DIR) != signature \
+                and locks.in_use("results"):
+            return None
         out = {}
         try:
             with open(os.path.join(analyzer.RESULTS_DIR, "priority_learning_list.csv"), encoding="utf-8-sig",
                       newline="") as f:
-                for row in csv.DictReader(f):
+                for row in list_reader(f):
                     out.setdefault((row.get("Word", ""), row.get("Reading", "")), len(out))
         except (OSError, ValueError, csv.Error) as e:   # unreadable or damaged: the pick ranks by nothing listed
             print(f"arrivals worker: the list couldn't be read: {e}", file=sys.stderr)
             out = {}
         return out
+
+    def _list_of(self, warm):
+        """The warm view's list: read once a Generate isn't writing it (`_listed`), kept from then on; {} meanwhile."""
+        if warm["listed"] is None:
+            warm["listed"] = self._listed(warm["signature"])
+        return warm["listed"] or {}
 
     # --- the answers --------------------------------------------------------------------------------------------- #
     def _key(self, path, warm):
@@ -267,10 +282,12 @@ class Worker:
         picked = None
         if warm["order"]:
             try:
-                picked = arrivals.pick_words(view, path, warm["listed"], self.send_grammar)
+                picked = arrivals.pick_words(view, path, self._list_of(warm), self.send_grammar)
             except Exception as e:                  # a subtitle the pick can't read: the estimate still answers
                 print(f"arrivals worker: no pick for {os.path.basename(path)}: {e}", file=sys.stderr)
         self.counts["reads"] += 1
+        if warm["listed"] is None and warm["order"]:
+            return key, (rec, picked)               # picked with no list (a Generate writing it): never kept (a7)
         self.reads[key] = (rec, picked)
         while len(self.reads) > KEEP:
             self.reads.popitem(last=False)
@@ -318,6 +335,8 @@ class Worker:
             out["pick"] = picked
         out["plan"] = warm["signature"]
         self.counts["estimates"] += 1
+        if warm["listed"] is None and warm["order"] is not None:
+            return dict(out, cached=False)          # its pick had no list (a Generate writing it): never kept (a7)
         self.answers[answer_key] = out
         while len(self.answers) > KEEP:
             self.answers.popitem(last=False)
@@ -339,10 +358,11 @@ class Worker:
         return out
 
 
-def main(argv=None):
+def main(argv=None, before_exit=None):
     """The worker: its loop, then the process ends — exit 0 when its input closed, on "quit", or idle. Ended with
     `os._exit`: the thread reading stdin is blocked in a read nothing can interrupt, and an interpreter shutting down
-    around it aborts (the store is closed and every answer flushed by then: nothing is left to tidy)."""
+    around it aborts (the store is closed and every answer flushed by then: nothing is left to tidy). `before_exit(code)`
+    is called first (app_entry's end line in the app's log, which `os._exit` would skip)."""
     code = 1
     try:
         code = _loop(argv)
@@ -351,8 +371,10 @@ def main(argv=None):
         traceback.print_exc()                       # to stderr (the client's log), then exit 1
     finally:
         try:
+            if before_exit is not None:
+                before_exit(code)
             sys.stderr.flush()
-        except (OSError, ValueError):
+        except Exception:
             pass
         os._exit(code)
 

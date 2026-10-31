@@ -6,6 +6,10 @@ below-normal priority, so a laptop on battery or in use never pays for it.
   machines) → it goes on. Off Windows there is no check: it runs (ORDER's fallback).
 - **Below normal** (`lower_priority`): Connect's own process at `BELOW_NORMAL_PRIORITY_CLASS`; the programs it starts
   (Anki Miner, the analyzer) inherit it (Windows hands a below-normal class down). Off Windows: `os.nice`.
+- **The window's background work below normal too** (`popen_below_normal`, a7: alpha 6's Generates beside the window):
+  each Generate, the indexer, New arrivals' worker and the store's helper start below normal, and what they start in
+  turn inherits it (the indexer's and a look's pools). *Use every core* still means how many cores, never priority:
+  a below-normal run takes every idle cycle, and the window — at normal priority — comes first when it needs them.
 
 A machine asleep runs nothing, so there is nothing to check. Never raises: a call that fails leaves things as they were.
 """
@@ -60,3 +64,22 @@ def lower_priority(platform=None, set_class=None, nice=None):
         return True
     except Exception:
         return False
+
+
+def popen_below_normal(args, popen=None, platform=None, **kwargs):
+    """`popen(args, **kwargs)` (default `subprocess.Popen`) started below normal priority: on Windows its creation flags
+    gain `BELOW_NORMAL_PRIORITY_CLASS` (set before it runs a line: its own children inherit it); off Windows the
+    child's niceness is raised by `NICE` once it runs. A priority that can't be set leaves the child at normal, never
+    unstarted. -> the Popen."""
+    if (platform or sys.platform) == "win32":
+        kwargs["creationflags"] = (kwargs.get("creationflags") or 0) | BELOW_NORMAL_PRIORITY_CLASS
+    if popen is None:
+        import subprocess
+        popen = subprocess.Popen
+    proc = popen(args, **kwargs)
+    if (platform or sys.platform) != "win32":
+        try:
+            os.setpriority(os.PRIO_PROCESS, proc.pid, os.getpriority(os.PRIO_PROCESS, proc.pid) + NICE)
+        except Exception:
+            pass
+    return proc

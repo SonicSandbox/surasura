@@ -54,8 +54,8 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   that aren't in your list yet?* · *Add them* (the window's writer, `place(ids, "soon")`: one Undo) · *Leave them*
   (answered; a show placed since, or a new one waiting, asks again).
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
-  logs nothing, so Connect makes no card for them by itself; once it took something in, it offers ONE line (`offer`,
-  kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
+  logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
+  (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
 
 An entry's `actions` are names only; the window maps each to its call and hides the names in `WIRED_LATER` until a
 callable is set. `badge(entries)` counts the unseen ones (P1.2-1: seen ones stay listed and stop counting).
@@ -196,8 +196,8 @@ STRINGS = {
     "first_say": "Your shows came in from your folders without cards: Surasura asks before it makes any.",
     "known_title": "You'd already {states} {n} cards in Anki: mark their words known?",
     "known_title_one": "You'd already {states} a card in Anki: mark its word known?",
-    "known_say": "Count as known in Anki (Settings › Anki) found them there when it first looked, so it asks once. "
-                 "Every card you {states} from now on counts by itself.",
+    "known_say": "Count as known in Anki (Settings › Known words) found them there when it first looked, so it asks "
+                 "once. Every card you {states} from now on counts by itself.",
     # Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the backlog
     "behind_cards": "Your {n:,} new cards", "behind_cards_one": "Your new card",
     "behind_cards_some": "{n:,} of your new cards",

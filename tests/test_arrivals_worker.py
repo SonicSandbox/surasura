@@ -365,13 +365,24 @@ def test_a_language_with_no_plan_answers_no_plan(library):
 
 
 def test_the_worker_ends_when_its_input_closes(library):
-    """Its parent died (stdin closed): it ends, exit 0, with or without a request answered."""
+    """Its parent died (stdin closed): it ends, exit 0, with or without a request answered — and says so in the app's
+    log, though it ends by `os._exit` (a7: each command's end line, with how long it ran)."""
     root = library["rp2-ja"]["root"]
+    ended = _ended_lines(root)
     worker = _Worker(root, "ja")
     worker.ask({"id": 1, "op": "stats"})
     assert worker.close(timeout=60) == 0
     silent = _Worker(root, "ja")
     assert silent.close(timeout=60) == 0
+    assert _ended_lines(root) == ended + 2
+
+
+def _ended_lines(root):
+    try:
+        with open(os.path.join(root, LOG), encoding="utf-8") as f:
+            return sum(1 for line in f if "] Ended arrivals-worker after " in line and line.rstrip().endswith("(exit 0)"))
+    except OSError:
+        return 0
 
 
 def test_the_worker_ends_when_idle(library):

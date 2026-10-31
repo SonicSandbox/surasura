@@ -102,6 +102,9 @@ ITEM_MENU = {
     "cover": ("Change cover…", "Choose the picture it shows"),
     "folder": ("Open its folder", "Open the folder its files are in"),
     "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
+    # a7 (DIAGNOSIS 11): every file not watched yet, marked at once ({n}: how many)
+    "watched-all": ("Mark all watched", "Mark every file of it watched: {n} not watched yet\n"
+                                        "• One Undo takes them all back"),
     # LM11b G4: on what Ctrl+click picked ({n}: the rows and episodes picked)
     "group": ("Group…", "Put these {n} into one row in Current\n• Undo takes them apart again"),
     # LM11b G3: on a group's ⋯ (IK-5), and *Same show as…* on a show's own row (IK-6)
@@ -116,6 +119,10 @@ MENU_MORE = ("More…", "The rest of this list")
 # row 28: an opened row's episode's own ⋯ ({ep}: the episode as ⋯ names it; {action}: its stone's click,
 # `ROWS_STONE_ACTION`) — its *Play* is ▶'s own verb and tip
 ITEM_EP_MARK = ("Mark {action}", "Mark {ep} {action}\n• Undo takes it back")
+# a7 (DIAGNOSIS 11): {ep} and every file before it not watched yet ({n} in all), marked at once — *Mark watched*'s
+# extension, right under it (Sonic 2026-10-30)
+ITEM_EP_UPTO = ("…and everything before it", "Mark {ep} and the files before it watched: {n} at once\n"
+                                            "• One Undo takes them all back")
 ITEM_EP_MENU_NAME = "What you can do with {ep}"
 ITEM_UNGROUPED = "Ungrouped {title}"
 ITEM_RENAME_ASK = "Rename this group"
@@ -628,6 +635,8 @@ MOVE_NOT_SAVED = "That change wasn't saved: try it again"
 LIBRARY_NOT_OPENED = "Your library couldn't be opened. Open the logs folder (the bar) and send it in"
 DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
 DONE_ONE = "✓ {title} {ep} watched"
+DONE_MANY = "✓ {title}: {n} marked watched"        # a7: ⋯'s mark-many, one toast, one Undo
+DONE_MANY_LEFT = "✓ {title}: {n} marked watched — their words left your list."   # ... W-1's first mark (DONE_LEFT)
 DONE_UNDONE = "{title} {ep} marked not watched"
 # --- W-1 (Sonic 2026-10-22, Q4): while *Keep studying watched episodes* is off — the first mark (once per library), the
 # un-mark
@@ -653,7 +662,7 @@ DONE_MOVE_SHOW_FINISHED_TIP = "Move {show}'s {n} files to Finished, under its ow
 MENU_NAME = "What you can do with {title}"
 MENU_ITEMS = {
     "up-next": ("Up next", "Make it the next thing you watch or read"),
-    "soon": ("Soon", "Move it to Soon: next in line, after what's in NOW"),
+    "soon": ("Soon", "Move it to Soon: next in line in Current, after what's at its top"),
     "goal": ("Goal", "Move it to Goal: someday, in no order"),
     "finished": ("Finished", "Move it to Finished: you're done with it"),
     "journey": ("See it in your journey", "Open your journey"),                     # JO-2: short
@@ -704,6 +713,9 @@ TRAY_MENU = {
     "folder": ("Open its folder", "Show its files in Explorer"),
     "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
+TRAY_SORT_ALL = "Sort them all…"            # Mado-O: the sort screen, New arrivals' full view
+TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Ignore, by a key each.\n"
+                     "• Anything you don't sort stays here")
 TRAY_PLACED = {
     "top": "{title} is at the top of Current",
     "after-show": "{title} placed after its show",
@@ -1001,6 +1013,7 @@ EXTRACT_UNDERSTAND = "I understand"
 EXTRACT_UNDERSTAND_TIP = ("Only use an Anki deck if it is 100 % immersion content: otherwise your list's frequencies "
                           "go wrong\n• It's an alternative to adding subtitles or a visual novel's text")
 EXTRACT_SECTION_NAME = "The section the parts go to"
+EXTRACT_SECTION_LINE = "The parts go into Current unless you pick another section"     # a7 (DIAGNOSIS 2)
 EXTRACT_SECTIONS = {"now": "Current", "soon": "Soon", "goal": "Goal"}
 EXTRACT_GO = "Extract"
 EXTRACT_GO_TIP = "Split the file into parts and add them to the chosen section"
@@ -1061,8 +1074,9 @@ ANKI_RESOLVED_JOIN = "   ·   "
 ANKI_FIELDS_JOIN = " + "
 ANKI_SKIPPED = "{model} → (no such field — skipped)"
 ANKI_SUSPENDED = "Include suspended cards"
-ANKI_SUSPENDED_TIP = ("Count cards you've suspended as known. Off by default — suspended cards are often ones you "
-                      "struggled with")
+ANKI_SUSPENDED_TIP = ("Cards you studied and then suspended count as known. Off by default — a suspended card is "
+                      "often one you struggled with. New cards you suspend count only with Count as known in Anki, in "
+                      "Settings › Known words")                                    # a7 (A7S-1/8): Settings' words
 ANKI_AUTO = "Sync automatically when Anki is running"
 ANKI_AUTO_TIP = "When Anki is open, Surasura adds new known words on its own — at start-up and when you come back to it"
 ANKI_GENERATE = "Generate when Anki adds known words"

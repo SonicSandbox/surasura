@@ -60,6 +60,7 @@ ADD_DOORS = {"extract": "extract", "youtube": "youtube-downloader"}
 COUNT_AGAIN_MS = 3000                           # page 6 asks for its numbers again while it says *Counting…* —
 COUNT_MOST_MS = 30000                           # each time twice as long after, up to this (and when the indexer ran)
 ASK_WAIT_S = 600                               # the install's question waits this long for an answer, then is No
+SAVED_WAIT = 10                                 # s: D1's check after sorting waits at most this long for its places
 GLYPH_GEM = {"ja": "sapphire", "zh": "ruby"}    # page 1's wash under each glyph
 # The wizard's type sizes, as multiples of the theme's roles (theme.TYPE has no wizard roles yet: the notes carry the
 # theme.py patch that names them). The title is `first-run-heading` × 1.3; the glyphs and the big numbers are larger.
@@ -821,8 +822,8 @@ class DeckChip(QAbstractButton):
 
     def sizeHint(self):
         name_f, count_f = self._parts()
-        w = (_px(36) + QFontMetricsF(name_f).horizontalAdvance(self.name)
-             + QFontMetricsF(count_f).horizontalAdvance(S.DECK_CARDS.format(n=self.count or 0)) + _px(14))
+        w = (_px(12) + _px(20) + QFontMetricsF(name_f).horizontalAdvance(self.name) + _px(8)    # `paintEvent`'s
+             + QFontMetricsF(count_f).horizontalAdvance(S.DECK_CARDS.format(n=self.count or 0)) + _px(14))  # sums
         return QSize(min(math.ceil(w), _px(DECK_CHIP_MAX)), _px(34))   # a long name shortened (`paintEvent`)
 
     def focusInEvent(self, event):
@@ -1486,8 +1487,7 @@ class ShowsPage(_Page):
         fbox.addLayout(pick)
         self.every_core = SwitchRow(S.EVERY_CORE, S.EVERY_CORE_LINE, S.EVERY_CORE_TIP, self.folders_part)   # K5 C4
         self.every_core.switch.toggled.connect(self.wiz.use_every_core)
-        self.every_core.setVisible(False)                 # with the big library's warning (`show_reading`)
-        fbox.addWidget(self.every_core)
+        fbox.addWidget(self.every_core)                   # Mado-O (Sonic 2026-10-30): decided before the load
         self.refused_line = _label("wizclosed", "", self.folders_part, wrap=True)
         self.refused_line.setVisible(False)
         fbox.addWidget(self.refused_line)
@@ -1530,6 +1530,7 @@ class ShowsPage(_Page):
 
     def load(self, answers):
         self.covers.switch.set_quiet(bool((answers or {}).get("covers", True)))
+        self.every_core.switch.set_quiet(bool(self.wiz._settings().get("use_every_core", False)))
 
     def answers(self):
         return {"covers": self.covers.switch.isChecked()}
@@ -1630,9 +1631,6 @@ class ShowsPage(_Page):
         line = S.READING.format(episodes=_count(S.EPISODES, found), shows=_count(S.SHOWS_N, shows))
         from app.services.setup_wizard import BIG_LIBRARY
         _set_text(self.reading_line, S.READ_BIG.format(line=line) if found >= BIG_LIBRARY else line)   # K5
-        if found >= BIG_LIBRARY and self.every_core.isHidden():          # K5 C4: offered with the warning, kept shown
-            self.every_core.switch.set_quiet(bool(self.wiz._settings().get("use_every_core", False)))
-            _show(self.every_core, True)
         _show(self.reading_line, True)
         _show(self.btn_stop, True)
         self._paint_folders()
@@ -2431,6 +2429,9 @@ class SetupWizard(QWidget):
         self._finished = False              # `finish` written (Generate, or *Skip* on the last page)
         self.reading = None                 # SRC W1a: page 3's first look running (its Stop: a threading.Event)
         self._read_seq = 0
+        self.covered = None                 # Mado-O: the load screen or the sort screen over the wizard, or None
+        self._load = None                   # … the load's state: {"step", "ids", "stopped", "indexed", "since"}
+        self._sync_running = False          # page 2's first known-words sync under way (the load's last step waits)
         # the folder picker (the system's own dialog; tests replace it)
         self.pick_dialog = lambda title, start: QFileDialog.getExistingDirectory(self, title, start)
         self.upgrading = self._upgrading(settings)      # brought over from 2.x: shown once, its choices picked (WZ-8)
@@ -2645,7 +2646,8 @@ class SetupWizard(QWidget):
     def enter(self):
         """Enter: *Next* (or **Generate**); *Skip* on a page that can't go on (never while Anki is being looked
         for: the answer may yet let it go on)."""
-        if self.generating or self.reading is not None or (self._anki_looking and self.page.id in ("known", "order")):
+        if self.generating or self.reading is not None or self.covered is not None or (
+                self._anki_looking and self.page.id in ("known", "order")):
             return
         if self.page.next_offered():
             self.next()
@@ -2653,7 +2655,7 @@ class SetupWizard(QWidget):
             self.skip()
 
     def next(self):
-        if self.generating or self._gone or self.reading is not None:
+        if self.generating or self._gone or self.reading is not None or self.covered is not None:
             return
         page = self.page
         if not page.next_offered():
@@ -2681,7 +2683,7 @@ class SetupWizard(QWidget):
 
     def skip(self):
         """Nothing written; on the last page, setup finishes without Generate."""
-        if self.generating or self.reading is not None or self.index == 0:
+        if self.generating or self.reading is not None or self.covered is not None or self.index == 0:
             return
         if self.index == len(PAGES) - 1:
             self._finish()
@@ -2690,7 +2692,7 @@ class SetupWizard(QWidget):
         self._advance()
 
     def back(self):
-        if self.generating or self.reading is not None or self.index == 0:
+        if self.generating or self.reading is not None or self.covered is not None or self.index == 0:
             return
         self._go(self.index - 1)                          # the pages keep their choices
 
@@ -2834,6 +2836,7 @@ class SetupWizard(QWidget):
         def ended(result):
             if not sip.isdeleted(relay):
                 relay.deleteLater()
+            self._synced_now()
             line = sync_line(result)
             if line:
                 windows.say_in_bar(self.shell, line)
@@ -2849,6 +2852,7 @@ class SetupWizard(QWidget):
             self._synced = None                           # Next again may try again
             if not sip.isdeleted(relay):
                 relay.deleteLater()
+            self._synced_now()
             windows.say_in_bar(self.shell, why)
             if not self._gone and not sip.isdeleted(self):
                 self.say(why)                             # the bar is under the wizard (AD-11)
@@ -2857,6 +2861,7 @@ class SetupWizard(QWidget):
             if job is None:
                 not_started(strings.ANKI_UPDATE_WAITS)
         self.say(S.SYNC_STARTED)
+        self._sync_running = True
         bridge.run_in_worker(start, then=started, failed=lambda info: not_started(str(info[0])))
 
     # --- the doors and the library (page 2's importers, page 3) ------------------------------------------------------ #
@@ -2910,7 +2915,7 @@ class SetupWizard(QWidget):
             self.open_door(ADD_DOORS[name])
             return
         if name == "folder" and self.can_read_folders():
-            self.pick_folder()          # SRC W1 fix (Decision 2): as *Choose a folder…*, setup's own: Current (SRC-1)
+            self.pick_folder()          # SRC W1 fix (Decision 2): as *Choose a folder…*, setup's own (to the sort screen)
             return
         adder = self._adder()
         if adder is not None:
@@ -3018,10 +3023,12 @@ class SetupWizard(QWidget):
                 page.show_copying(*said[1:])
             else:
                 page.show_reading(*said)
+            self._load_said(said)
         progress.said.connect(lambda said: self.alive(heard)(said))
         page.refuse(None)
         page.show_reading(0, 0)
         self.paint_footer()
+        self._load_begin()                                    # Mado-O: the calm cover while setup reads
 
         def ended(result):
             if not sip.isdeleted(progress):
@@ -3037,6 +3044,7 @@ class SetupWizard(QWidget):
             page.show_read(result)
             self.paint_footer()
             self.read_rows()
+            self._load_scanned(result)
         shell = self.shell
 
         def needs_look():
@@ -3079,6 +3087,216 @@ class SetupWizard(QWidget):
                              then=self.alive(lambda rows: seq == self._rows_seq and language == self.language
                                              and self.pages[2].show_rows(rows)),
                              failed=lambda info: applog.log("wizard", f"library rows: {info[0]}"))
+
+    # --- Mado-O: the load screen, then the sort screen (Sonic 2026-10-30) ------------------------------------------ #
+    # After page 3's *Next* with folders: a calm cover runs the first scan, the indexing, the covers from disk and waits
+    # for page 2's sync, each with its count (`sort_screen.LoadScreen`); then every title in New arrivals is sorted
+    # (`sort_screen.SortScreen`, New arrivals' own placing); then page 4. Each step is the service that owns it; *Stop*
+    # keeps what is done and goes to the sorting; a step with nothing to do is passed by.
+    def _cover(self, widget):
+        """`widget` over the whole wizard (None: nothing), the one before it gone."""
+        old, self.covered = self.covered, widget
+        if widget is not None:
+            widget.setParent(self)
+            widget.setGeometry(self.rect())
+            widget.show()
+            widget.raise_()
+            widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        if old is not None and old is not widget and not sip.isdeleted(old):
+            old.hide()
+            old.deleteLater()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.covered is not None and not sip.isdeleted(self.covered):
+            self.covered.setGeometry(self.rect())
+
+    def _load_screen(self):
+        from app.qt import sort_screen
+        screen = self.covered
+        return screen if isinstance(screen, sort_screen.LoadScreen) and not sip.isdeleted(screen) else None
+
+    def _load_task(self, text):
+        screen = self._load_screen()
+        if screen is not None:
+            screen.set_task(text)
+
+    def _load_begin(self):
+        from app.qt import sort_screen
+        screen = sort_screen.LoadScreen()
+        screen.stop.connect(self.alive(self._load_stop))
+        self._load = {"step": "scan", "ids": [], "stopped": False, "indexed": 0, "since": None}
+        self._cover(screen)
+        self._load_said((0, 0))
+
+    def _load_said(self, said):
+        """The scan's progress, as page 3 hears it: the wait, the copy's count, or what it found."""
+        if self._load is None or self._load["step"] != "scan":
+            return
+        if len(said) == 1:
+            if said[0]:
+                self._load_task(S.LOAD_WAIT)
+        elif said[0] == "copy":
+            self._load_task(S.LOAD_COPY.format(done=said[1], total=said[2]))
+        else:
+            self._load_task(S.LOAD_SCAN.format(episodes=_count(S.EPISODES, said[0]), shows=_count(S.SHOWS_N, said[1])))
+
+    def _load_stop(self):
+        """*Stop*: the step under way keeps what it did (the scan stops between files; the indexer and the covers go
+        on by themselves behind the screen) and the sorting comes up."""
+        load = self._load
+        if load is None:
+            return
+        load["stopped"] = True
+        if load["step"] == "scan":
+            self.stop_reading()                           # its end goes on to the sorting (`_load_scanned`)
+        else:
+            self._load_sort()
+
+    def _load_scanned(self, result):
+        """The scan ended: nothing taken in — the page again, with what it says (a refusal, nothing found); else the
+        next step (the sorting at once after *Stop*)."""
+        load = self._load
+        if load is None:
+            return
+        load["ids"] = list((result or {}).get("ids") or ())
+        if not load["ids"]:
+            self._load = None
+            self._cover(None)
+            return
+        if load["stopped"]:
+            self._load_sort()
+        else:
+            self._load_index()
+
+    def _chores(self):
+        return getattr(self.shell, "chores", None)
+
+    def _load_index(self):
+        """The token store's indexing, the window's own (`Chores.index(force=True)`), its count read from its log (only
+        once this run wrote it)."""
+        load = self._load
+        load["step"] = "index"
+        load["since"] = time.time()
+        chores = self._chores()
+        asked = chores.index(force=True) if chores is not None else "none"
+        if asked not in (None, "busy"):           # off (a test's switch), closed, no chores: nothing to wait for
+            self._load_covers()
+            return
+        self._load_task(S.LOAD_INDEX_START)
+        self._load_tick()
+
+    def _load_tick(self):
+        """Every half second while the words are read: the count from the log; and the step ends as soon as the
+        window's chores have no index ask left — its run ended, or none came (nothing to read, an update waiting, a
+        run that couldn't start): never a cover waiting for a run that won't come."""
+        load, chores = self._load, self._chores()
+        if load is None or load["step"] != "index" or chores is None:
+            return
+        idle = getattr(chores, "indexing", None)
+        if callable(idle) and not idle():
+            self._load_covers()
+            return
+        from app.services import setup_load
+
+        def shown(count):
+            if count is not None and self._load is load and load["step"] == "index":
+                self._load_task(S.LOAD_INDEX.format(done=count[0], total=count[1]))
+        bridge.run_in_worker(setup_load.read_count, chores.index_log(), load["since"], then=self.alive(shown),
+                             failed=lambda info: applog.log("wizard", f"indexer count: {info[0]}"))
+        self.later(500, self.alive(self._load_tick))
+
+    def _load_indexed(self, language):
+        """An indexer run ended: after three runs (the library changing all along) the step ends whatever they left —
+        the indexer finishes it behind the window; before that, the tick sees the chores idle."""
+        load = self._load
+        if load is None or load["step"] != "index" or language != self.language:
+            return
+        load["indexed"] += 1
+        if load["indexed"] >= 3:
+            self._load_covers()
+
+    def _load_covers(self):
+        """The covers beside the files and in the EPUBs (`shell.scan_covers`, the window's own disk scan)."""
+        load = self._load
+        load["step"] = "covers"
+        scan = getattr(self.shell, "scan_covers", None)
+        relay = bridge.Relay(self)
+
+        def heard(said):
+            if said[0] == "end" and not sip.isdeleted(relay):
+                relay.deleteLater()                       # (after a Stop too: never left under the wizard)
+            if self._load is not load or load["step"] != "covers":
+                return
+            if said[0] == "end":
+                self._load_anki()
+            else:
+                self._load_task(S.LOAD_COVERS.format(done=said[1], total=said[2]))
+        relay.said.connect(self.alive(heard))
+        thread = scan(progress=lambda done, total: relay.call(("count", done, total)),
+                      then=lambda _found: relay.call(("end",))) if scan is not None else None
+        if thread is None:
+            relay.deleteLater()
+            self._load_anki()
+            return
+        self._load_task(S.LOAD_COVERS_START)
+
+    def _load_anki(self):
+        """Page 2's known-words sync, still running: waited for (its end, `_synced_now`); else on to the sorting."""
+        load = self._load
+        load["step"] = "anki"
+        if self._sync_running:
+            self._load_task(S.LOAD_ANKI)
+            return
+        self._load_sort()
+
+    def _synced_now(self):
+        self._sync_running = False
+        if self._load is not None and self._load["step"] == "anki" and not self._gone and not sip.isdeleted(self):
+            self._load_sort()
+
+    def _load_sort(self):
+        """The sort screen over the wizard: every title in New arrivals (the window hands it each view)."""
+        from app.qt import sort_screen
+        load = self._load
+        if load is None or load["step"] == "sort":
+            return
+        load["step"] = "sort"
+        screen = sort_screen.SortScreen(self.shell, door="setup")
+        screen.closed.connect(self.alive(self._load_sorted))
+        self._cover(screen)
+
+    def _load_sorted(self, _how=None):
+        """*Done*: what is left waits in New arrivals; D1's cards line offered for what reached the mine line; page 3
+        saved and page 4 shown."""
+        load, self._load = self._load, None
+        self._cover(None)
+        if load is None:
+            return
+        language, shell = self.language, self.shell
+
+        def offered(_yes):
+            needs = getattr(shell, "needs_you", None)
+            if needs is not None and not sip.isdeleted(needs):
+                needs.refresh()
+        offer = getattr(self.api, "sorted_offer", None)
+        writer = getattr(getattr(shell, "services", None), "writer", None)
+
+        def once_saved(language, ids):
+            """(A worker.) D1's check once the sort's last places are saved (the writer idle; at most SAVED_WAIT s) —
+            *Done* pressed straight after a key never checks before its place landed."""
+            end = time.monotonic() + SAVED_WAIT
+            while writer is not None and writer.pending() and time.monotonic() < end:
+                time.sleep(0.05)
+            return offer(language, ids)
+        if callable(offer):
+            bridge.run_in_worker(once_saved, language, list(load["ids"]), then=offered,
+                                 failed=lambda info: applog.log("wizard", f"cards line after sorting: {info[0]}"))
+        page = self.page
+        if page.id == "shows" and not page.folders and page.refused_line.isHidden():
+            self._save("shows", page.answers())
+            self._advance()                               # else page 3 stays: what it says, the folders not read yet
+    # --- end Mado-O
 
     # --- Anki Miner (page 5) -------------------------------------------------------------------------------------------- #
     def look_miner(self, control=None):
@@ -3242,7 +3460,10 @@ class SetupWizard(QWidget):
         self.read_numbers()
 
     def _indexed(self, language):
-        """(`bridge.indexed`) The indexer ran: page 6, still counting for that language, asks at once (IK-18)."""
+        """(`bridge.indexed`) The indexer ran: page 6, still counting for that language, asks at once (IK-18); the
+        load screen's indexing step looks whether its work is done."""
+        if not self._gone and not sip.isdeleted(self):
+            self._load_indexed(language)
         if (not self._gone and not sip.isdeleted(self) and self.page.id == "level" and language == self.language
                 and self.pages[5].numbers is None):
             self.read_numbers()

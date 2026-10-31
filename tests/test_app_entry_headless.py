@@ -2,7 +2,7 @@
 window. A crash is logged and exits 1 with no Critical Error box; an unknown or missing command exits 2 and never opens
 the dashboard; the log is in the local data folder, not the folder the program was started from.
 
-Each case runs app_entry.main() in a fresh process with tkinter and the dashboard blocked at import, so a regression
+Each case runs app_entry.run() in a fresh process with tkinter and the dashboard blocked at import, so a regression
 records the attempt instead of opening a real dialog that would hang the run.
 """
 import json
@@ -15,7 +15,8 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _run_entry(root, argv, analyzer_main="raise"):
-    """app_entry.main() with `argv`. Returns (exit code, the GUI imports it attempted, the argv the analyzer saw)."""
+    """app_entry.run() (the program as it starts: the dispatch, its end logged) with `argv`. Returns (exit code, the GUI
+    imports it attempted, the argv the analyzer saw)."""
     script = textwrap.dedent(f"""
         import json, sys
 
@@ -40,7 +41,7 @@ def _run_entry(root, argv, analyzer_main="raise"):
 
         sys.argv = ["Surasura.exe"] + {argv!r}
         try:
-            app_entry.main()
+            app_entry.run()
             code = 0
         except SystemExit as e:
             code = e.code
@@ -94,3 +95,31 @@ def test_the_log_is_never_written_where_the_program_was_started(tmp_path):
     _run_entry(tmp_path, ["analyzer", "--headless"])
     assert not os.path.exists(os.path.join(str(tmp_path), "debug"))
     assert "App starting" in _app_log(tmp_path)
+
+
+def test_every_log_line_is_stamped_and_each_command_logs_its_end_with_its_length(tmp_path):
+    # a7 (an alpha's setup): the log had no times, so how long a Generate ran, or how many ran in a burst, could only
+    # be guessed. Each line now starts with the time and the process; each command's end says how long and how.
+    import re
+    _run_entry(tmp_path, ["analyzer", "--headless", "--lang", "ja"], analyzer_main="ok")
+    _run_entry(tmp_path, ["analyzer", "--headless"])                        # a crash: exit 1
+    _run_entry(tmp_path, ["nope", "--headless"])                            # an unknown command: exit 2
+    lines = [line for line in _app_log(tmp_path).splitlines()                      # a traceback's lines aside
+             if "App starting" in line or "Ended " in line or "CRITICAL ERROR" in line or "Unknown command" in line]
+    stamp = r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} \[\d+\] "
+    assert lines and all(re.match(stamp, line) for line in lines), lines
+    ends = [msg for msg in (re.sub(stamp, "", line) for line in lines) if msg.startswith("Ended ")]
+    assert [re.sub(r"after \d+\.\d s", "after N s", end) for end in ends] == [
+        "Ended analyzer after N s (exit 0)", "Ended analyzer after N s (exit 1)", "Ended nope after N s (exit 2)"]
+    starts = [line.split(" ", 3)[2] for line in lines if "App starting" in line]
+    assert len(set(starts)) == 3, "three processes, each named on its lines"
+
+
+def test_the_windows_log_lines_are_stamped_too(monkeypatch, tmp_path):
+    from app import path_utils
+    from app.qt import applog
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(tmp_path))
+    applog.log("wizard", "the setup wizard didn't open: 例のエラー")
+    line = _app_log(tmp_path).splitlines()[-1]
+    assert line.endswith(f"[{os.getpid()}] window (wizard): the setup wizard didn't open: 例のエラー")
+    assert path_utils.get_local_data_path().startswith(str(tmp_path))

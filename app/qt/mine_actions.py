@@ -344,11 +344,15 @@ class MineActions(QObject):
         row's status turns from the press (`lst`'s, IK-2; none: the bar's arc) until the picker shows."""
         if self.win.moves is None:
             return
-        folder = os.path.dirname(os.path.join(path_utils.get_data_path(self.win.language),
-                                              *(ep.rel_path or "").split("/")))
+        from app.services import own_folder
+        data, opener = path_utils.get_data_path(self.win.language), own_folder.opener_of(self.win)
         at = qpress.row_mark(lst, [ep.id], "no-media") if lst is not None else None
 
-        def pick(patterns):
+        def look():                                 # (the worker) the types, and where the picker starts: a7, the
+            return _video_patterns(), own_folder.read(opener, data, (ep.id,), (ep.rel_path,))   # content's own
+
+        def pick(found):
+            patterns, folder = found
             moves = self.win.moves
             path = self.pick_file(strings.LINK_TITLE.format(label=ep.label), folder, patterns)
             if not path or moves is None or moves.refused() is not None:
@@ -356,7 +360,7 @@ class MineActions(QObject):
             writer = moves.writer
             moves._give(drag.Ticket(strings.LINKING_ONE.format(label=ep.label), (row.key,), (ep.id,)),
                         lambda t: writer.link_video(ep.id, path, label=t))
-        qpress.run(None, ("link", ep.id), _video_patterns, then=pick, failed=lambda info: self.win.say(str(info[1])),
+        qpress.run(None, ("link", ep.id), look, then=pick, failed=lambda info: self.win.say(str(info[1])),
                    win=self.win, at=at)
 
     # --- MV-2: Find its folder… ------------------------------------------------------------------------------ #

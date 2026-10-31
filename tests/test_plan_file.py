@@ -13,7 +13,6 @@ of the same files. These tests prove:
 
 `replay` is a reference for the engine (E1.3), kept small: the analyzer's own sort keys, nothing else.
 """
-import csv
 import gzip
 import json
 import os
@@ -22,10 +21,8 @@ from unittest.mock import patch
 import pytest
 
 from app import analyzer
+from app.path_utils import list_reader
 from tests import plan_file_cases as cases
-
-csv.field_size_limit(1 << 30)
-
 
 # --------------------------------------------------------------------------------------------------------------- #
 # Reading a run
@@ -49,7 +46,7 @@ def read_csv(path):
     if not os.path.exists(path):
         return []
     with open(path, encoding="utf-8-sig", newline="") as f:
-        return list(csv.DictReader(f))
+        return list(list_reader(f))
 
 
 def read_run(root):

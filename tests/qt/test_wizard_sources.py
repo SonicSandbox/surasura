@@ -1,7 +1,8 @@
 """Setup's page 3 asks where the shows and books are (SRC W1a; the RUNBOOK's §1b S1 + D1, W1): one or more folders
 picked (the store's own rule refuses Surasura's folders in plain words; one removed before going on), then on *Next*
-each added and given setup's first look on a worker — its progress line, *Stop*, the rows — and *Needs you*'s one line
-after it, *Make cards for your first 20 episodes? · Not now* (D1, Sonic ✅). Tier: one write path (K1a's) — the
+each added and given setup's first look on a worker — its progress line, *Stop*, the rows — landing in New arrivals
+under the load screen, then sorted on the sort screen (Mado-O, Sonic 2026-10-30); *Needs you*'s one line after the
+sorting, *Make cards for your first 20 episodes? · Not now* (D1, Sonic ✅), when the sorting put some in the line. Tier: one write path (K1a's) — the
 writes are proven on a real store in a temp library.
 
 What a wrong answer would cost a learner:
@@ -112,6 +113,19 @@ class SourcesApi(FakeApi):
         self.calls.append(("library_rows", language))
         return setup_wizard.library_rows(settings, language)
 
+    def sorted_offer(self, language, ids):
+        self.calls.append(("sorted_offer", language, list(ids)))
+        return setup_wizard.sorted_offer(language, ids)
+
+
+def _sorted(wiz):
+    """The load screen's steps pass by (the stand-in window has no indexer, covers or sync to wait for) and the sort
+    screen covers the wizard; its *Done* goes on."""
+    from app.qt import sort_screen
+    assert wait_until(lambda: isinstance(wiz.covered, sort_screen.SortScreen), 10)
+    QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
+    assert wiz.covered is None
+
 
 def _pick(wiz, *paths):
     """*Choose a folder…* clicked once per path, the dialog answering it; each waits for the store's check."""
@@ -158,10 +172,12 @@ def test_page_three_lists_two_folders_refuses_the_data_folder_and_one_is_removed
     assert page.folders == [os.path.normpath(second)]
 
 
-def test_next_reads_the_folders_on_a_worker_with_progress_and_they_land_in_current(make, empty_library, monkeypatch):
+def test_next_reads_the_folders_on_a_worker_under_the_load_screen_and_they_wait_in_new_arrivals(make, empty_library,
+                                                                                                 monkeypatch):
     """*Next* adds each folder and gives it setup's first look — on a worker, never the window's thread — with the
-    progress line; the shows land in Current (SRC-1), the page stays and shows them as rows, Needs you's line is
-    offered; the next *Next* goes on as before (the covers saved)."""
+    progress line, under the load screen; the shows land in New arrivals for the sort screen (SRC-1 as Mado-O changed
+    it), the page under it shows them as rows, and no cards line is offered yet (nothing is in the line). The sort
+    screen's *Done* saves page 3 (the covers) and goes on to page 4."""
     first, second = _folder("anime", SHOWS), _folder("dramas", LOOSE, start=100)
     looks = []
     real_scan = sources.scan
@@ -180,6 +196,8 @@ def test_next_reads_the_folders_on_a_worker_with_progress_and_they_land_in_curre
     monkeypatch.setattr(page, "show_reading", lambda f, s: (lines.append((f, s)), show_reading(f, s)))
     settings.calls.clear()
     wiz.next()
+    from app.qt import sort_screen
+    assert isinstance(wiz.covered, sort_screen.LoadScreen) and wiz.covered.isVisible()        # the calm cover, at once
     assert wiz.reading is not None and not page.btn_stop.isHidden()
     assert not wiz.btn_next.isEnabled() and not wiz.btn_back.isEnabled() and not wiz.btn_skip.isEnabled()
     assert page.reading_line.text() == S.READING.format(episodes="0 episodes", shows="0 shows")
@@ -191,20 +209,25 @@ def test_next_reads_the_folders_on_a_worker_with_progress_and_they_land_in_curre
     assert page.reading_line.text() == S.READ_DONE.format(episodes="7 episodes", shows="3 shows")
     assert page.btn_stop.isHidden() and page.folders == [] and page.refused_line.isHidden()
     items = _items()
-    assert len(items) == 7 and {tier for _i, tier, _o, _r in items} <= {"now", "soon"}          # Current
+    assert len(items) == 7 and {tier for _i, tier, _o, _r in items} == {"arrivals"}           # New arrivals, to sort
     assert all(rel.startswith(ls.CONTENT_FOLDER + "/") for *_x, rel in items)
     assert wait_until(lambda: len(page.rows_part.findChildren(W.QLabel)) >= 3 and not page.rows_part.isHidden())
     names = {w.text() for w in page.rows_part.findChildren(W.QLabel)}
     assert set(SHOWS) | set(LOOSE) <= names
-    assert service.FIRST_CARDS in service.read_offers("ja")       # D1's line, offered by the look
+    assert service.read_offers("ja") == frozenset()               # nothing in the line yet: no cards line
     assert _log() == []                                            # the first look logs nothing (S1)
-    assert wiz.index == 2 and settings.calls == []                 # the page stayed; nothing saved yet
+    assert wiz.index == 2 and settings.calls == []                 # under the cover; nothing saved yet
     wiz.next()
+    assert wiz.index == 2, "Next does nothing while the wizard is covered"
+    _sorted(wiz)
     assert wiz.index == 3 and settings.calls == [{"covers_download": True}]
+    assert wait_until(lambda: any(c[0] == "sorted_offer" for c in api.calls), 10)
+    assert sorted(next(c for c in api.calls if c[0] == "sorted_offer")[2]) == [i for i, *_r in items]
+    assert service.read_offers("ja") == frozenset()               # nothing sorted into Current: still no line
 
 
 def test_stop_keeps_what_came_in_whole(make, empty_library, monkeypatch):
-    """*Stop* mid-look: the show already taken in stays, whole, in Current; the look ends at the next file; the line
+    """*Stop* mid-look: the show already taken in stays, whole, in New arrivals; the look ends at the next file; the line
     says it stopped and kept them. The folder it never reached stays listed (never dropped unsaid), and so does one
     picked while it ran (the store's check landing mid-look)."""
     first, second = _folder("anime", SHOWS), _folder("dramas", LOOSE, start=100)
@@ -247,14 +270,25 @@ def test_stop_keeps_what_came_in_whole(make, empty_library, monkeypatch):
         store.close()
 
 
-def test_a_look_into_a_full_current_offers_no_line(monkeypatch):
-    """*Set up again* or a library brought over: Current already holds its top 20, so setup's look puts the new
-    episodes after them, outside the mine line — no line offers cards for episodes it wouldn't make them for."""
+@pytest.mark.parametrize("where, offered", [("soon", False), ("goal", False), ("top", True)])
+def test_a_look_into_a_full_current_offers_the_line_only_for_what_was_sorted_into_it(where, offered):
+    """*Set up again* or a library brought over: Current already holds its top 20. Setup's look puts the new episodes
+    in New arrivals (never the line); the sorting decides: sent to Soon or Goal they stay outside the mine line — no
+    line offers cards for episodes it wouldn't make them for — sent to *Current* (its top) they are in it, and the line
+    is offered for them."""
     data_dir, user_files_dir, doc = library("ja", shows=3, episodes=8, loose=0, tiers=("now",))
     write_manifest(user_files_dir, doc)
     assert ls.maintain("ja", data_dir, user_files_dir) == ls.EXIT_DONE
     got = setup_wizard.read_folders("ja", [_folder("anime", SHOWS)])
     assert got["added"] == 5 and not got["offered"] and service.read_offers("ja") == frozenset()
+    assert len(got["ids"]) == 5 and {t for i, t, _o, _r in _items() if i in got["ids"]} == {"arrivals"}
+    store = _store()
+    try:
+        assert store.place(got["ids"], where) is not None
+    finally:
+        store.close()
+    assert setup_wizard.sorted_offer("ja", got["ids"]) is offered
+    assert service.read_offers("ja") == (frozenset({service.FIRST_CARDS}) if offered else frozenset())
 
 
 def test_going_on_refuses_surasuras_own_folder_and_an_empty_folder_offers_no_line(empty_library):
@@ -381,10 +415,19 @@ def _answer(ny, action):
 
 
 def _first_scan(n_shows=2, episodes=12):
-    """Setup's first look over one folder of `n_shows` × `episodes` -> the store's items afterwards."""
+    """Setup's first look over one folder of `n_shows` × `episodes` (New arrivals), then the sort screen's *Current*
+    for all of them (the store's own `place(…, "top")`, as `Writer.place` calls it) and its end (`sorted_offer`: D1's
+    line offered) -> the store's items afterwards."""
     root = _folder("anime", {f"夜空の灯 {k}": episodes for k in range(1, n_shows + 1)})
     got = setup_wizard.read_folders("ja", [root])
-    assert got["added"] == n_shows * episodes and got["offered"]
+    assert got["added"] == n_shows * episodes and not got["offered"]
+    assert {tier for _i, tier, _o, _r in _items()} == {"arrivals"}
+    store = _store()
+    try:
+        assert store.place(got["ids"], "top") is not None
+    finally:
+        store.close()
+    assert setup_wizard.sorted_offer("ja", got["ids"]) is True
     return _items()
 
 
@@ -581,11 +624,11 @@ def test_the_line_follows_connects_switch_as_page_five_writes_it(line, empty_lib
 
 
 # --- SRC W1 fix: page 3's two folder buttons land alike (Decision 2) -------------------------------------------- #
-def test_page_threes_add_row_folder_is_setups_own_and_lands_in_current_on_set_up_again(make, monkeypatch):
+def test_page_threes_add_row_folder_is_setups_own_and_waits_for_the_sort_screen_on_set_up_again(make, monkeypatch):
     """*Set up again* over a library already in use (New arrivals on): page 3's add row *A folder…* is setup's own
-    picker, as *Choose a folder…* — listed, then read on *Next* by setup's first look — so its shows land at the end of
-    Current, grouped by show (SRC-1), never in New arrivals (+ Add's later look outside setup, D6). + Add's own
-    folder action is never asked."""
+    picker, as *Choose a folder…* — listed, then read on *Next* by setup's first look — so its shows land in New
+    arrivals, grouped by show, quietly (no placing rule takes them: the sort screen comes up for them), and Current is
+    untouched (+ Add's later look outside setup, D6, is never asked)."""
     data_dir, user_files_dir, doc = library("ja", shows=2, episodes=3, loose=0, tiers=("now",))
     write_manifest(user_files_dir, doc)
     assert ls.maintain("ja", data_dir, user_files_dir) == ls.EXIT_DONE
@@ -617,18 +660,17 @@ def test_page_threes_add_row_folder_is_setups_own_and_lands_in_current_on_set_up
     assert adder.ran == [], "setup's own picker, never + Add's later look"
     wiz.next()
     assert wait_until(lambda: wiz.reading is None, 30)
-    assert looks == [True]                                          # setup's first look
+    assert looks == [ls.SORT]                                       # setup's first look, for the sort screen
     items = _items()
     new = [(tier, ord_, rel) for _i, tier, ord_, rel in items if rel not in had]
     assert len(new) == sum(SHOWS.values())
-    assert {tier for tier, _o, _r in new} <= {"now", "soon"}, "Current, never New arrivals"
-    rank = {"now": 0, "soon": 1}
-    current = [rel for tier, _o, rel in sorted(((t, o, r) for _i, t, o, r in items if t in rank),
-                                               key=lambda n: (rank[n[0]], n[1]))]
-    assert set(current[-len(new):]) == {rel for _t, _o, rel in new}, "at the end of Current"
-    shows = [rel.split("/")[1] for rel in current[-len(new):]]
+    assert {tier for tier, _o, _r in new} == {"arrivals"}, "New arrivals, waiting to be sorted"
+    assert sorted(rel for _i, t, _o, rel in items if t in ("now", "soon")) == sorted(had), "Current untouched"
+    shows = [rel.split("/")[1] for _t, _o, rel in sorted(new, key=lambda n: n[1])]
     runs = [s for i, s in enumerate(shows) if i == 0 or shows[i - 1] != s]
     assert sorted(runs) == sorted(SHOWS), "grouped by show: one run each"
+    assert _log() == []                                             # quiet: no placing rule took them on (S1)
+    _sorted(wiz)
 
 
 def test_the_folders_and_the_cards_line_never_touch_the_network(empty_library, monkeypatch):
@@ -644,7 +686,14 @@ def test_the_folders_and_the_cards_line_never_touch_the_network(empty_library, m
     monkeypatch.setattr(socket, "create_connection", refuse)
     first = _folder("anime", SHOWS)
     assert setup_wizard.folder_refused("ja", first) is None
-    assert setup_wizard.read_folders("ja", [first])["added"] == 5
+    got = setup_wizard.read_folders("ja", [first])
+    assert got["added"] == 5
+    store = _store()
+    try:
+        store.place(got["ids"], "top")                              # the sort screen's *Current*
+    finally:
+        store.close()
+    assert setup_wizard.sorted_offer("ja", got["ids"]) is True
     assert len(setup_wizard.first_cards("ja", {"connect_enabled": True})) == 5     # its own watermark, then the 5
     assert opened == []
 

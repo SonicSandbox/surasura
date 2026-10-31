@@ -6,6 +6,7 @@ mock's words carry a meaning 2.4 changed (A5: the one-kanji words, Junban's unli
 voice. A tooltip is 2.4's own where 2.4 had one, else the help line. Help is one line, never an essay; no fixed seed
 numbers (N5). `app/qt/settings_catalog.py` names each row's strings by its row id.
 """
+from app.connect.settings_values import WORDS as MINE_WORDS   # *Words to make cards from*: Connect's own words
 from app.practice import NAME as PRACTICE_NAME       # the practice chat's name (A6): one place, app/practice.py
 
 # --- the page ----------------------------------------------------------------------------------------------------- #
@@ -106,6 +107,8 @@ DOORS = {
 # A row whose door says something else than the opener's own words: row id -> {opener: (label, tooltip)}
 ROW_DOORS = {
     "junban_scope": {"junban": ("Choose the deck…", "Opens Junban’s window, where the deck is chosen")},   # a6 #9
+    "junban_backfill_cards": {"backfill": ("Choose the deck…", "Opens Backfill’s window, where the deck is "
+                                                               "chosen")},                                # W4.1
     "backfill_fields": {"backfill": ("Fields…", "Opens Backfill, where each fill's field and each note type's "
                                                 "language are set")},
 }
@@ -140,9 +143,21 @@ ROWS = {
     "use_every_core": ("Use every core", "Reads a big library faster; the computer is busier meanwhile",
                        "Off: reading and copying a library uses half your computer's cores, so it stays quick to use. "
                        "On: every core — a first read of thousands of books ends sooner", "cores speed faster cpu"),
-    "anki_sync_include_suspended": ("Count suspended cards as known", "",
-                                    "Count cards you've suspended as known. Off by default — suspended cards are often "
-                                    "ones you struggled with", "suspended known"),
+    # a7 (DIAGNOSIS 3): this row and *Count as known in Anki* under it answer one question two ways — each says so
+    # (A7S-1: the sync reads studied cards only — `anki_sync.scope_query`'s `-is:new`; the signal reads new ones too)
+    "anki_sync_include_suspended": ("Count suspended cards as known", "Cards you studied, then suspended",
+                                    "Cards you studied and then suspended count as known, whenever you suspended "
+                                    "them. Off by default: a suspended card is often one you struggled with. New cards "
+                                    "you suspend never count here — for those, use Count as known in Anki below",
+                                    "suspended known"),
+    "known_from_anki": ("Count as known in Anki",
+                        "A card counts only when it is in every state you pick, all at once",
+                        "Suspend (or mark, or flag) a card in Anki to say “I know this”: its word turns known at the "
+                        "next sync, and you can undo it. A card counts only when it is in every state you pick — "
+                        "Suspended + Marked counts only cards both suspended and marked. Cards already suspended are "
+                        "asked about once. New cards count too. None picked: off. Count suspended cards as known, "
+                        "above, counts every studied card you've suspended, whenever",
+                        "known from anki suspended marked flag"),
 
     # Anki & mining
     "anki_connection": ("Connection", "Through the free AnkiConnect add-on", "Whether Surasura reaches Anki now",
@@ -161,7 +176,12 @@ ROWS = {
     "connect_needs_miner": ("Make cards for me", "Needs Anki Miner: set it up in Connections",
                             "Surasura Connect makes your cards with Anki Miner. Once it is installed, this switch "
                             "appears here", "connect make cards mine automatically anki miner needs"),
-    "connect_mine_words": ("Words to make cards from", "", "Which words of an episode become cards",
+    "connect_mine_words": ("Words to make cards from",
+                           "“Your list” uses i+1 lines where it can and takes the other words too. “Only i+1” skips "
+                           "them",
+                           "Which words of an episode become cards. Your list: every unknown word on your list, in "
+                           "the list's order, each on an i+1 line when it has one. Only i+1: only words with an i+1 "
+                           "line, on your list or not",
                            "words to make cards from mine mode which words all unknown i+1 list"),
     "mine_line": ("Mine automatically", "The files at the top of Current mine themselves the moment they’re placed",
                   "How many files at the top of Current mine themselves", "auto top mines itself mine line"),
@@ -175,12 +195,13 @@ ROWS = {
                             "Surasura makes cards while fewer new cards wait in Anki for this language: yours and "
                             "Surasura's. Suspended cards never count. 0: no limit",
                             "cap backlog waiting keep up to limit"),
-    "known_from_anki": ("Count as known in Anki", "A card in every state you pick marks its word known",
-                        "A card in every state you pick here marks its word known (all must hold: Suspended + Marked "
-                        "is both). None picked: off", "known from anki suspended marked flag"),
-    "connect_video_folders": ("Where videos are looked for", "Surasura pairs a subtitle with its video by name",
-                              "The folders (and their subfolders) where Connect looks for a moved video, for this "
-                              "language", "video folders pair moved"),
+    # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
+    "connect_video_folders": ("More video folders",
+                              "Your library’s own folders are always searched. Add one only if your videos live "
+                              "somewhere else",
+                              "Videos are found beside their subtitles and in your library’s folders, with their "
+                              "subfolders. Add a folder here (for this language) only for videos kept outside them",
+                              "video folders pair moved where videos looked for more"),
     "connect_trust_timing": ("Trust my subtitles’ timing",
                              "When nothing on this PC can check them, mine at the subtitles’ own times",
                              "Surasura mines an episode by itself only once hato or tsubasa has checked its subtitles "
@@ -410,10 +431,8 @@ ROWS = {
     "hato": ("hato", "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),
     "practice_ai": (f"{PRACTICE_NAME} — practise with your AI",
-                    "Your AI app runs Surasura on this computer. What Surasura tells it (your known words, your "
-                    "list's next words, lines from your library, what you kept from past rounds) goes to that AI's "
-                    "company, as anything you type there does. Nothing else leaves.",
-                    "Copy the setup for your AI app, then paste it to your AI",
+                    "Practise your words with your AI. What it's told goes to that AI's company",
+                    "Copy the setup for your AI app, then paste it to your AI. A short story is a good first try",
                     "piyo ぴよ practice practise ai claude codex desktop mcp chat tutor copy setup"),
     "practice_keep_rounds": ("Keep practice rounds",
                              "Your rounds stay on this computer so you can do one again, and what you ask your AI to "
@@ -514,13 +533,17 @@ ROWS = {
     # --- end W3.2 L3
 }
 
+# *Count as known in Anki* with two states or more picked: its line names them (`settings_catalog.help_line`)
+KNOWN_ALL_OF = "Counts only cards that are {states}, all at once"
+KNOWN_FLAGS = "A card has one flag at a time: {flags} counts no card"           # two flags picked (A7S-7)
+
 # Backfill's fills by name (`junban_backfill_fills`' values): its two switches, and Your setup's line
 FILLS = {"patterns": "パターン", "sentence": "例文"}
 
 # --- the choices: row id -> {value: label}; choice cards also have a line under each -------------------------------- #
 OPTIONS = {
     "known_road": {"anki": "Anki", "import": "Import a list"},
-    "connect_mine_words": {"list": "Your list", "unknown": "Every unknown word", "i1": "Only i+1"},
+    "connect_mine_words": {value: label for value, label, _line in MINE_WORDS},
     "connect_open_anki": {False: "Wait for me", True: "Open Anki for me"},
     "junban_order_all": {False: "First, in the order you made them", True: "In your list’s order"},
     "known_from_anki": {"suspended": "Suspended", "marked": "Marked", "flag:1": "Flag 1 (Red)",
@@ -548,9 +571,7 @@ OPTIONS = {
 }
 # The line under each choice card (Connect's own words, P3.1)
 OPTION_LINES = {
-    "connect_mine_words": {"list": "Words on your list that you don't know and have no card yet.",
-                           "unknown": "Every word of the episode you don't know yet.",
-                           "i1": "Only words with a line whose other words you know."},
+    "connect_mine_words": {value: line for value, _label, line in MINE_WORDS},
 }
 # An option's own tooltip (a choice's or a tablet's), where its label alone doesn't say it
 OPTION_TIPS = {
@@ -653,6 +674,26 @@ PRACTICE_APPS = {"claude-code": "Claude Code", "codex": "Codex", "claude-desktop
 PRACTICE_COPY_TIP = ("Copies the setup for {app}: paste it to {app} (it runs it for you), or follow it yourself")
 PRACTICE_COPIED = "Copied"
 PRACTICE_COPIED_LINE = "The setup for {app} is copied: paste it to {app}."
+# A7 (Sonic's first try, 2026-10-30: "How do i start piyo conversation?"): under the Copy buttons, both ways to start a
+# round (the slash form, its words and example: app/cli/mcp_server.SLASH_EXAMPLE and the prompt's arguments, a test keeps
+# them equal; the plain request: app/practice.STARTER)
+PRACTICE_THEN = ("Then, to start a round:\n"
+                 "• In Claude Code, type /surasura:practice and four words: how many (1–20) · who's talking (friend, "
+                 "coworker, boss, customer, senpai, kohai, shopkeeper, teacher, child) · what kind (chat, reading: a "
+                 "short story, quiz) · from what (soon: your list's next words, latest: what you watch or read next, "
+                 "mix). Type / and it's listed as /surasura:practice (MCP).\n"
+                 "• For example: /surasura:practice 5 friend reading soon\n"
+                 "• Or, in Claude Code, Codex or Claude Desktop, just say it: “{starter}”")
+# A7 (Sonic, 2026-10-30: the row's words no longer than *Download covers*'): what leaves and how to start, behind its ?
+PRACTICE_HELP = "?"
+PRACTICE_HELP_NAME = "About Piyo"
+PRACTICE_LEAVES = ("<b>What leaves:</b> your AI app runs Surasura on this computer. What Surasura tells it (your known "
+                   "words, your list's next words, lines from your library, what you kept from past rounds) goes to "
+                   "that AI's company, as anything you type there does. Nothing else leaves.")
+PRACTICE_STARTER = "Copy a starter message"
+PRACTICE_STARTER_TIP = ("Copies a first message for your AI, once Piyo is added: a short story with 5 of your words. "
+                        "A story is a good first try")
+PRACTICE_STARTER_COPIED_LINE = "The starter message is copied: paste it to your AI."
 COPY_PATH = "Copy path"
 COPY_PATH_TIP = "Copy the whitelist file's path, to paste into Anki Miner's file chooser."
 PATH_COPIED = "The whitelist file's path is copied: paste it into Anki Miner's file chooser."

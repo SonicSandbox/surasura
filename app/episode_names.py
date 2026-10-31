@@ -171,8 +171,9 @@ NEVER_WAIT = frozenset({"NCOP", "NCED", "PV", "CM", "MENU", "PREVIEW"})
 _SEASON_FOLDER = re.compile(r"s[\s._-]?(\d{1,3})|(?:(?:season|series)[\s._-]*(\d{1,3})|"
                             r"(\d{1,2})(?:st|nd|rd|th)[\s._-]*season|"
                             r"第\s*(\d{1,3}|[一二三四五六七八九十])\s*[期季部]|シーズン\s*(\d{1,3}))"
-                            r"(?:[\s._\-–~:(\[].*)?|(\d{1,3})\s*期", re.I)
+                            r"(?P<tail>[\s._\-–~:(\[].*)?|(\d{1,3})\s*期", re.I)
 _SPECIALS_FOLDER = re.compile(r"specials?|sps?|extras?|ova|oad", re.I)
+_SPECIALS_WORD = {"ova": "OVA", "oad": "OAD", "extra": "Extras", "extras": "Extras"}   # the rest: `Specials`
 _KATAKANA_FOLD = {c: c - 0x60 for c in range(0x30A1, 0x30F7)}     # ァ…ヶ → ぁ…ゖ (as `library_store.search_fold`)
 
 
@@ -298,8 +299,35 @@ def season_folder(name):
     m = _SEASON_FOLDER.fullmatch(text)
     if not m:
         return None
-    value = next(g for g in m.groups() if g is not None)
+    tail = m.re.groupindex["tail"]
+    value = next(g for n, g in enumerate(m.groups(), 1) if g is not None and n != tail)
     return _KANJI_NUMBER.get(value) or int(value)
+
+
+def folder_title(path):
+    """A title named by its folder below the tier (L2.2 05 §5.3 (4)), read by `season_folder`: a season folder is the
+    folder above it and its season, written out (`Frieren/S01` → `Frieren Season 1`, `Frieren/第2期` → `Frieren
+    Season 2`; a season the folder above already says is said once: `Show S01/Season 01`, `Show.S01/S01` → `Show
+    Season 1`; an arc after it stays:
+    `Season 2 - Arc` → `… Season 2 - Arc`); a specials folder the folder above and `Specials` (`OVA`, `OAD`, `Extras`
+    keep their word). Any other path is as written (one folder: its name; nothing above it). Pure."""
+    parts = (path or "").split("/")
+    kind = season_folder(parts[-1]) if len(parts) > 1 else None
+    if kind is None:
+        return path or ""
+    above = folder_title("/".join(parts[:-1]))
+    if not above.strip():
+        return path                                     # no show above it to name it with
+    text = unicodedata.normalize("NFKC", parts[-1]).strip()
+    if kind == "special":
+        return f"{above} {_SPECIALS_WORD.get(text.casefold(), 'Specials')}"
+    show, said = _season(above)
+    if said is None:                                    # `Show.S01`, `Show_Season_1`: a release's dots or underscores
+        show, said = _season(re.sub(r"[._]+", " ", above).strip())
+    if said == kind and show.strip():
+        above = show.rstrip(" -–~._")
+    tail = (_SEASON_FOLDER.fullmatch(text).group("tail") or "").strip(" ._")
+    return f"{above} Season {kind}" + (f" {tail}" if tail else "")
 
 
 def _special(text, whole=False):

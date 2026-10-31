@@ -156,8 +156,8 @@ def test_the_menu_lists_the_moves_then_study_type_split_join_folder_and_remove_l
     _seed, win, _w = world()
     a, _b = split_parts(win)
     row = rows_of(win)[a]
-    assert names(win.items.entries(row)) == ["pin", "type", "split", "join", "same-show", "cover", "folder",
-                                                 "remove"]                       # W3.2 L3; LM11b G3: same-show
+    assert names(win.items.entries(row)) == ["watched-all", "pin", "type", "split", "join", "same-show", "cover",
+                                                 "folder", "remove"]     # W3.2 L3; LM11b G3: same-show; a7
     m = win.items.menu(row, win.mapToGlobal(QPoint(300, 300)))
     acts = m.actions()
     texts = [x.text() for x in acts]
@@ -821,7 +821,7 @@ def test_G3_IK5_a_groups_menu_is_the_moves_study_split_rename_ungroup_then_remov
     skips = []
     monkeypatch.setattr(win.items, "_offer_skip", lambda row, m: skips.append(row.key))
     entries = win.items.entries(group)
-    assert names(entries) == ["pin", "split", "rename", "ungroup", "remove"]
+    assert names(entries) == ["watched-all", "pin", "split", "rename", "ungroup", "remove"]   # a7: its own files
     m = win.items.menu(group, win.mapToGlobal(QPoint(300, 300)))
     acts = m.actions()
     moves = [label for _n, label, _t, _ok in win.moves.menu_entries(group)]
@@ -1324,10 +1324,13 @@ def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):
     monkeypatch.setattr(screens, "open_with_system", opened.append)
     monkeypatch.setattr(win.moves, "say", lambda text: said.append(text))
     row = rows_of(win)[4]
+    from app import path_utils
+    os.makedirs(path_utils.get_data_path(seed.language), exist_ok=True)     # the library's folder (always there)
     win.items.menu_pick(row, "folder")
     assert wait_until(lambda: opened or said, 5)
-    folder = item_menu.finished.folder_of(seed.language, row)
-    assert (opened == [folder]) if os.path.isdir(folder) else said == [strings.FIN_NO_FOLDER.format(title=row.title)]
+    from app.services import own_folder                         # a7: no original (a stand-in's): the copy's side
+    folder = own_folder.library_side(path_utils.get_data_path(seed.language), [e.rel_path for e in row.episodes])
+    assert opened == [folder] and said == []
 
 
 # --- Alt+↑ / Alt+↓ ------------------------------------------------------------------------------------------------- #

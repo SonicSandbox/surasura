@@ -20,6 +20,10 @@ and records them) — painted wherever the window shows a cover, the generated c
 - **The disk scan** (`start_scan(opener, language, writer)`): `services.covers.scan` on a thread of its own after the
   first frame (and when another library opens), over the store's feed read on that thread — once per open; a new start
   cancels the one running. It records through the writer.
+- **A title that arrives or changes while the window is open** (Hon a7, `follow(reader, language, writer)`): the
+  reader names the works whose files arrived or changed (`LibraryReader.subscribe_arrived`: a folder read, + Add,
+  Extract, a drop — books as shows, whatever the download switch says) and `look(opener, work_ids)` scans those
+  titles only (`services.covers.works_for`), on a worker of its own, after the first frame — the same scan, one path.
 - **Change cover…** (`cover_menu_entries(row)` → [(name, label, tip, callable)], for the ⋯ menu): *Choose an image…*
   (a file picker → `services.covers.keep_user_image` on a worker: copied into `User Files/<lang>/covers/`, the image it
   replaces kept dated — then recorded, locked, with its toast's Undo) and *Use a generated cover* (locked, Undo).
@@ -51,6 +55,11 @@ _DEFERRED = []                  # keys asked for meanwhile, (key, job) — start
 _where = {"language": "ja", "data_dir": None}
 _library = {"writer": None, "window": None, "moves": None}
 _scan = {"cancel": None, "thread": None}
+_look = {"opener": None, "language": None, "writer": None, "pending": {}, "every": False, "missed": None,
+         "thread": None, "cancel": threading.Event()}   # Hon a7: the titles that arrived mid-session, in the order told
+LOOK_TRIES = 3                  # a scan or a look the store couldn't take (busy, not open) is tried this often ...
+LOOK_RETRY_S = 0.5              # ... after this long, then twice that
+_look_lock = threading.Lock()
 _notifier = []
 decodes = [0]                   # pictures decoded (tests: one per key)
 
@@ -96,6 +105,8 @@ def release(token):
         key, job = _DEFERRED.pop(0)
         if key in _running:
             _start(key, job)
+    if _look["pending"] or _look["every"]:      # Hon a7: the titles that arrived meanwhile
+        look(_look["opener"], ())
     if _online["pending"]:                      # --- W3.2 L3: the online asks held back meanwhile
         _flush_soon()
 
@@ -311,8 +322,10 @@ def _let_go(keys):
 # --- the disk scan ---------------------------------------------------------------------------------------------- #
 def start_scan(opener, language, writer, progress=None, then=None):
     """(GUI thread.) The library's covers from disk (`services.covers.scan`) on a thread of its own, over the store's
-    feed read there; the one running is cancelled. `progress(done, total)` / `then(found)`: on that thread (setup's
-    load screen). -> the thread (tests join it), or None (nothing to write with)."""
+    feed read there; the one running is cancelled. A store it can't open (busy) is tried `LOOK_TRIES` times; one not
+    there yet (a migration, setup's first library) leaves the scan to the reader's first read (Hon a7: `look(opener,
+    None)`). `progress(done, total)` / `then(found)`: on that thread (setup's load screen). -> the thread (tests join
+    it), or None (nothing to write with)."""
     if opener is None or writer is None:
         return None
     old = _scan["cancel"]
@@ -325,17 +338,23 @@ def start_scan(opener, language, writer, progress=None, then=None):
     def run():
         found = 0
         try:
-            found = _scan_library(opener, language, writer, cancel, data_dir, progress)
+            for tries in range(1, LOOK_TRIES + 1):
+                found = _scan_library(opener, language, writer, cancel, data_dir, progress=progress)
+                if found is not None or tries == LOOK_TRIES or cancel.wait(LOOK_RETRY_S * tries):
+                    break
+            if found is None and not cancel.is_set():
+                with _look_lock:
+                    _look["missed"] = opener        # the reader's first read of it scans it (`look`)
         except Exception as e:                  # never in the window's way: the generated covers stay
             print(f"Covers: the scan stopped: {e!r}")
         finally:
             if then is not None:
                 try:
-                    then(found)
+                    then(found or 0)
                 except Exception as e:
                     print(f"Covers: the scan's listener failed: {e!r}")
             try:
-                n.scanned.emit((cancel, found))
+                n.scanned.emit((cancel, found or 0))
             except RuntimeError:
                 pass
     t = threading.Thread(target=run, name=f"window-covers-scan-{language}", daemon=True)
@@ -344,26 +363,127 @@ def start_scan(opener, language, writer, progress=None, then=None):
     return t
 
 
-def _scan_library(opener, language, writer, cancel, data_dir, progress=None):
-    from app.services import covers as disk
+def _scan_library(opener, language, writer, cancel, data_dir, work_ids=None, progress=None):
+    """The library's works (`work_ids` None: the open's scan), else those works only, on this thread's handle -> the
+    covers handed on, or None when the store couldn't be opened."""
     h = opener.handle()
     if h is None:
-        return 0
+        return None
     try:
+        return _scan_works(h, language, writer, cancel, data_dir, work_ids, progress)
+    finally:
+        _close(opener, h)
+
+
+def _scan_works(h, language, writer, cancel, data_dir, work_ids=None, progress=None):
+    from app.services import covers as disk
+    if work_ids is None:
         feed = h.read_feed()
         works = disk.works_from(feed["items"], feed["works"], disk.originals(h))     # Hon a6: beside the originals too
-        return disk.scan(language, works, writer, cancel=cancel.is_set, data_dir=data_dir, progress=progress)
-    finally:
-        close = getattr(opener, "close", None)       # this thread's handle (a store handle belongs to its thread)
-        if close is not None:
-            close()
-        elif hasattr(h, "close"):
-            h.close()
+    else:
+        works = disk.works_for(h, work_ids)                                         # Hon a7: those titles only
+    return disk.scan(language, works, writer, cancel=cancel.is_set, data_dir=data_dir, progress=progress)
+
+
+def _close(opener, h):
+    close = getattr(opener, "close", None)       # this thread's handle (a store handle belongs to its thread)
+    if close is not None:
+        close()
+    elif hasattr(h, "close"):
+        h.close()
 
 
 def stop_scan():
     if _scan["cancel"] is not None:
         _scan["cancel"].set()
+    _look["cancel"].set()                       # Hon a7: and the arrivals' look, between titles
+
+
+# --- Hon a7: a title that arrives or changes while the window is open ---------------------------------------------- #
+def follow(reader, language, writer):
+    """(GUI thread.) The covers of the titles whose files arrive or change from now on in `reader`'s library
+    (`subscribe_arrived`), recorded through `writer`; the library left's looks are let go (a `stop_scan` ended its
+    worker). A reader without the call (a test's) follows nothing."""
+    opener = getattr(reader, "opener", None)
+    with _look_lock:
+        _look.update(opener=opener, language=language, writer=writer, pending={}, every=False, missed=None,
+                     thread=None, cancel=threading.Event())     # (the library left's worker ends by its own cancel)
+    subscribe = getattr(reader, "subscribe_arrived", None)
+    if subscribe is not None and opener is not None and writer is not None:
+        subscribe(lambda work_ids: look(opener, work_ids))
+
+
+def look(opener, work_ids):
+    """(Any thread: the reader's.) These titles' covers from disk (`_scan_works(..., work_ids)`) on the looks' worker —
+    started now unless one runs (it takes them next) or no first frame is out yet (`release` starts it). `work_ids`
+    None: the reader's first read — the whole library, only when the open's scan found no store to read (`missed`).
+    Nothing for another library than the one followed, nor after `stop_scan`. -> the worker started, or None."""
+    with _look_lock:
+        if opener is None or opener is not _look["opener"] or _look["writer"] is None or _look["cancel"].is_set():
+            return None
+        if work_ids is None:
+            if _look["missed"] is opener:
+                _look["missed"], _look["every"] = None, True
+        else:
+            for w in work_ids:
+                _look["pending"][w] = None
+        if not (_look["pending"] or _look["every"]) or _look["thread"] is not None or _HELD:
+            return None
+        t = _look["thread"] = threading.Thread(target=_looking, args=(opener, _look["language"], _look["writer"],
+                                                                      _look["cancel"]),
+                                               name=f"window-covers-look-{_look['language']}", daemon=True)
+    t.start()
+    return t
+
+
+def _looking(opener, language, writer, cancel):
+    """(The looks' worker.) What was told, a batch at a time on one handle, until nothing is left (or `cancel`): each
+    title once however often it was told meanwhile. A batch the store couldn't take (busy, not open) is put back and
+    tried again, `LOOK_TRIES` times in all, then left for the title's next change or the next open."""
+    me = threading.current_thread()
+    data_dir = getattr(opener, "data_dir", None)
+    h, tries = None, 0
+    try:
+        while not cancel.is_set():
+            with _look_lock:
+                mine = _look["opener"] is opener
+                every = mine and _look["every"]
+                ids = list(_look["pending"]) if mine else []
+                if not ids and not every:       # let go under the lock: a title told from now on starts a worker
+                    if _look["thread"] is me:
+                        _look["thread"] = None
+                    return
+                _look["pending"].clear()
+                _look["every"] = False
+            try:
+                if h is None:
+                    h = opener.handle()
+                if h is None:
+                    raise LookupError("the store couldn't be opened")
+                _scan_works(h, language, writer, cancel, data_dir, None if every else ids)
+                tries = 0
+            except Exception as e:              # never in the window's way: the generated covers stay meanwhile
+                if h is not None:
+                    _close(opener, h)
+                    h = None
+                tries += 1
+                if tries >= LOOK_TRIES:
+                    what = "the library" if every else f"{len(ids)} titles"
+                    print(f"Covers: the look at {what} stopped: {e!r}")
+                    tries = 0
+                    continue
+                with _look_lock:
+                    if _look["opener"] is opener:
+                        for w in ids:
+                            _look["pending"].setdefault(w, None)
+                        _look["every"] = _look["every"] or every
+                cancel.wait(LOOK_RETRY_S * tries)
+    finally:
+        if h is not None:
+            _close(opener, h)
+        with _look_lock:
+            if _look["thread"] is me:
+                _look["thread"] = None
 
 
 def _scanned(result):

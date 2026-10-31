@@ -1428,6 +1428,7 @@ class ShellWindow(QMainWindow):
         if services.library is not None:
             qcovers.use_library(self.language, getattr(getattr(services.library, "opener", None), "data_dir", None),
                                 services.writer, self, self.moves)
+            qcovers.follow(services.library, self.language, services.writer)     # Hon a7: what arrives from now on
         # --- end W3.2 Q6
         # --- W3.2 L3: online covers — Q7's fetcher made with the library (`cover_fetcher`), asked for what shows
         self._fetcher = None
@@ -1817,10 +1818,12 @@ class ShellWindow(QMainWindow):
     def _follow_covers(self, reader, writer):
         """W3.2 L3: the covers follow the library shown — its data folder, its writer and its drag controller (never the
         language left's: held there, they kept its reader and writer alive past the switch), its own fetcher (the old
-        one stopped) and its disk scan (once the first frame is out: until then the frame's own scan runs)."""
+        one stopped), its disk scan (once the first frame is out: until then the frame's own scan runs) and the look
+        at each title that arrives or changes from now on (Hon a7)."""
         qcovers.stop_scan()
         qcovers.use_library(self.language, getattr(getattr(reader, "opener", None), "data_dir", None), writer, self,
                             self.moves)
+        qcovers.follow(reader, self.language, writer)                   # Hon a7: what arrives from now on
         if self._fetcher_for(reader, writer) is None and self._fetcher is not None:
             self._fetcher.stop(timeout=0)           # (no writer: nothing to record with, so no fetcher)
             if qcovers.fetcher() is self._fetcher:

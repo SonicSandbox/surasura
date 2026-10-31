@@ -378,5 +378,7 @@ SORT_OVER_BODY_ONE = ("The title you sorted here goes back to New arrivals, and 
 SORT_OVER_YES = "Start over"
 SORT_OVER_YES_TIP = "Put them back to sort, and start from the top."
 SORT_OVER_SAID = "{n:,} titles back to sort"
+SORT_OVER_SAYING = "Putting {n:,} titles back to sort…"
+SORT_OVER_SAYING_ONE = "Putting 1 title back to sort…"
 SORT_OVER_SAID_ONE = "1 title back to sort"
 SORT_KEYS_NAME = "Keys"

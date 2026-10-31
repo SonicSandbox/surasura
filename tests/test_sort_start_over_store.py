@@ -156,3 +156,44 @@ def test_the_journals_record_of_the_placements_puts_back_the_same_as_the_changes
     store.undo(change)
     assert store.unsort(placed) is not None and set(_state(store)[0]) == {"arrivals"}
     assert store.unsort(records) is None, "landed already: a second replay puts back nothing"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_titles_the_soon_line_moved_as_others_were_placed_still_go_back(language, library):
+    """Adversary #1 (a8): more than the Soon line's worth placed in Current — each placement pushes the earlier ones'
+    rows over the line (the crossing takes the pushing placement's version). Still where the screen put them (Current
+    is one place): every one goes back, and the reset's Undo puts the sort back exactly."""
+    store, shows = library(language)
+    a, b, c = shows.values()
+    store.set_soon_line(2)
+    unsorted = _no_versions(_state(store))
+    placed = [store.place(a, "top"), store.place(b, "top"), store.place(c, "soon")]
+    sorted_ = _state(store)
+    change = store.unsort(placed)
+    assert _no_versions(_state(store)) == unsorted
+    store.undo(change)
+    assert _no_versions(_state(store)) == _no_versions(sorted_)
+    assert {i: v[-1] for i, v in _state(store)[1].items()} == {i: v[-1] for i, v in sorted_[1].items()}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_in_two_placements_goes_back_by_the_newest_alone(language, library):
+    """Adversary #5 (a8): finished, then put on top (not a screen path today, a store caller's): the reset undoes the
+    newest placement only — the title back in Finished, watched, as that one placement's own Undo leaves it."""
+    store, shows = library(language)
+    a, _b, _c = shows.values()
+    p1 = store.place(a, "finished")
+    p2 = store.place(a, "top")
+    store.unsort([p1, p2])
+    rows = [store.conn.execute("SELECT watched, tier FROM items WHERE id = ?", (i,)).fetchone() for i in a]
+    assert rows == [(1, "graduated")] * len(a)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_record_of_anything_but_a_placement_is_left_alone(language, library):
+    """A journal record holds a placement's fields only: a record of another kind (a Remove) is never undone from it."""
+    store, shows = library(language)
+    a, b, _c = shows.values()
+    placed = store.place(a, "goal")
+    record = dict(ls.change_record(placed), kind="remove")
+    assert store.unsort([record]) is None and set(a) <= set(_state(store)[0]["goal"])

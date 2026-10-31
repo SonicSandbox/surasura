@@ -1443,6 +1443,7 @@ class Change:
         self.piece_fields = []  # LM11: (piece, "kind" | "title", old, new) written, put back by the value check
         self.dropped = []     # LM11: the pieces' rows the command emptied and deleted (an undo brings them back)
         self.roots = []       # T6: [(root_id, old kind, new kind)] a *Stop reading* wrote (the value check puts it back)
+        self.to = None        # Mado-O: the tier a `place` put its items in (`Store.unsort` reads it)
 
     def __repr__(self):
         return f"<Change {self.kind} v{self.version} e{self.epoch} items={len(self.items)}>"
@@ -1451,7 +1452,7 @@ class Change:
 def change_record(change):
     """Mado-O (alpha 8): a placement's `Change` as JSON-able values — what `Store.unsort` needs of it (the window's
     journal keeps it); `change_from_record` reads it back."""
-    return {"kind": change.kind, "epoch": change.epoch, "version": change.version,
+    return {"kind": change.kind, "epoch": change.epoch, "version": change.version, "to": change.to,
             "items": [dict(it) for it in change.items], "status": [list(s) for s in change.status],
             "repieced": [list(r) for r in change.repieced], "piece_fields": [list(f) for f in change.piece_fields],
             "dropped": [list(d) for d in change.dropped]}
@@ -1459,12 +1460,27 @@ def change_record(change):
 
 def change_from_record(rec):
     change = Change(rec["kind"], rec["epoch"], rec["version"])
+    change.to = rec.get("to") if rec.get("to") in TIERS else None
     change.items = [dict(it) for it in rec.get("items") or ()]
     change.status = [tuple(s) for s in rec.get("status") or ()]
     change.repieced = [tuple(r) for r in rec.get("repieced") or ()]
-    change.piece_fields = [tuple(f) for f in rec.get("piece_fields") or ()]
+    change.piece_fields = [tuple(f) for f in rec.get("piece_fields") or () if len(f) == 4 and f[1] in ("kind", "title")]
     change.dropped = [tuple(d) for d in rec.get("dropped") or ()]
+    change.from_record = True
     return change
+
+
+def _placed_to(change, tier):
+    """`Store.place`'s change, told the tier it put its items in (Mado-O: `Store.unsort`'s "still where it was put")."""
+    if change is not None:
+        change.to = tier
+    return change
+
+
+def _same_place(tier, to):
+    """Mado-O: is an item in `tier` still in the place `to` put it? Current is one place: the Soon line moves its
+    titles between NOW and Soon (a crossing takes the crossing command's version, never the learner's move)."""
+    return tier == to or (tier in CURRENT and to in CURRENT)
 
 
 class _Command:
@@ -4420,13 +4436,14 @@ class Store:
                 if spot is None:
                     return None
                 tier, before_id, after_id = spot
-                return self.move(ids, tier, before_id=before_id, after_id=after_id, by=by, explicit=explicit)
+                return _placed_to(self.move(ids, tier, before_id=before_id, after_id=after_id, by=by,
+                                            explicit=explicit), tier)
             if where == "finished":
-                return self.finish(ids, by=by, explicit=explicit)
+                return _placed_to(self.finish(ids, by=by, explicit=explicit), "graduated")
             tier = {"top": "now", "now": "now", "soon": "soon", "goal": "goal", "later": "goal"}.get(where)
             if tier is None:
                 raise ValueError(f"unknown place {where!r}")
-            return self.move(ids, tier, by=by, explicit=explicit)
+            return _placed_to(self.move(ids, tier, by=by, explicit=explicit), tier)
 
     def _after_show(self, item_id, record, excl=()):
         """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).
@@ -4499,22 +4516,27 @@ class Store:
         or its `change_record`) undone in ONE command, newest first, each as its own Undo would — every title back in
         New arrivals where it stood, its values (watched, the cards' place, the Finished date) put back — and recorded
         as one move whose own Undo puts every title back where the sort had it (tier, order, date, piece, values; the
-        placements' own Undo works again after it). The conflict rule per item: one moved since (dragged in Current,
-        finished later) stays where it is; the value check per value. A placement of another epoch is left. A plain
+        placements' own Undo works again after it). Still placed (PROVISIONAL): a title in the
+        place its placement put it (`Change.to`; Current is one place — the Soon line moves titles across it as others
+        are placed); one moved to another place since (Goal, finished later, taken out) stays where it is; a change
+        without `to` keeps the version rule. The value check per value. A placement of another epoch is left. A plain
         placement (a move or a finish) is walked back over ONE load of the tiers (`_walk_back`: a 20k library's reset
         holds the write lock briefly); anything else by its own nested Undo. -> the change, or None (nothing left to
         put back)."""
         changes = [c if isinstance(c, Change) else change_from_record(c) for c in placed if c is not None]
-        with self._command("unsort", by) as cmd:
+        changes = [c for c in changes if c.kind in UNSORT_KINDS or not getattr(c, "from_record", False)]
+        with self._command("unsort", by) as cmd:            # (a record holds a placement's fields only)
             changes = sorted((c for c in changes if c.epoch == cmd.epoch and c.items), key=lambda c: c.version,
                              reverse=True)
             rows = self._rows({it["id"] for c in changes for it in c.items})
-            mine = {}                                           # item -> the placement it still stands by
+            mine = {}                                           # item -> the placement it still stands by (newest)
             for c in changes:
                 for it in c.items:
                     r = rows.get(it["id"])
-                    if r is not None and r[3] == c.version:
-                        mine.setdefault(it["id"], c.version)
+                    if r is None or it["id"] in mine:
+                        continue
+                    if r[3] == c.version or (c.to is not None and r[3] > c.version and _same_place(r[1], c.to)):
+                        mine[it["id"]] = c.version
             if not mine:
                 return None
             change = self._change(cmd, "move")
@@ -4561,18 +4583,23 @@ class Store:
                 cmd.hints[it["id"]] = it["piece"]               # back in the piece it came from (05 §5.2)
             cmd.event(it["id"], "placed", it.get("explicit", 1))
         cmd.touch(tiers, within=all(it["tier"] == rows[it["id"]][1] for _c, it in items))
+        columns = {r[1] for r in self.conn.execute("PRAGMA table_info(items)")}
+        wanted = sorted({s[1] for c in plain for s in c.status if s[1] in columns})
+        held = {}                                               # (id, column) -> its value now, read once
+        for col in wanted:
+            for part in _chunks(sorted(okset), 500):
+                for i, v in self.conn.execute(f"SELECT id, {col} FROM items WHERE id IN ({','.join('?' * len(part))})",
+                                              part):
+                    held[(i, col)] = v
         for c in plain:
+            own = {i for i, v in mine.items() if v == c.version}   # its own items (an item placed twice: the newest)
             one = Change(c.kind, c.epoch, c.version)
-            one.status = [s for s in c.status if s[0] in okset]
-            one.repieced = [r for r in c.repieced if r[0] in okset]
+            one.status = [s for s in c.status if s[0] in own and s[1] in columns]
+            one.repieced = [r for r in c.repieced if r[0] in own]
             one.piece_fields, one.dropped = c.piece_fields, c.dropped
             if one.status:
-                columns = {r[1] for r in self.conn.execute("PRAGMA table_info(items)")}
-                one.status = [s for s in one.status if s[1] in columns]
-                held = [self.conn.execute(f"SELECT {col} FROM items WHERE id = ?", (i,)).fetchone()
-                        for i, col, _o, _n in one.status]
-                reset.status += [(i, col, new, old) for (i, col, old, new), h in zip(one.status, held)
-                                 if h is not None and h[0] == new]    # what the value check puts back
+                reset.status += [(i, col, new, old) for i, col, old, new in one.status
+                                 if (i, col) in held and held[(i, col)] == new]    # what the value check puts back
                 self._undo_status(cmd, one)
             self._unpiece(cmd, one)
         return okset

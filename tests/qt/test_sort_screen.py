@@ -466,8 +466,8 @@ def test_start_over_asks_first_then_puts_every_sorted_title_back_in_one_command_
     _answer(screen, True)
     over = calls(writer, "start_over")
     assert len(over) == 1 and over[0][2]["changes"] == writer.saved[:3], "one command: the screen's three placements"
-    assert screen.said.text() == S.SORT_OVER_SAID.format(n=len(first))
     assert wait_until(lambda: keys_shown(screen) == first, 5), "every title back, from the top"
+    assert wait_until(lambda: screen.said.text() == S.SORT_OVER_SAID.format(n=len(first)), 5), "saved: said so"
     assert screen.top_arrival().key == placed[0].key
     assert [e["name"] for e in screen.history] == ["over"] and not screen.btn_over.isEnabled()
 
@@ -522,11 +522,64 @@ def test_start_over_waits_for_a_choice_still_being_saved_and_puts_it_back_too(wo
     writer.stuck = True
     screen.choose("now")
     screen.start_over()
-    assert calls(writer, "start_over") == [] and screen.said.text() == S.SORT_OVER_SAID.format(n=2)
+    assert calls(writer, "start_over") == [] and screen.said.text() == S.SORT_OVER_SAYING.format(n=2)
+    assert not screen.btn_over.isEnabled() and screen.start_over() is None, "one Start over at a time"
     writer.free()
     assert wait_until(lambda: calls(writer, "start_over"), 5)
     assert calls(writer, "start_over")[0][2]["changes"] == writer.saved[:2]
     assert wait_until(lambda: keys_shown(screen) == first, 5)
+
+
+def test_start_over_is_pending_at_once_and_never_says_all_sorted_while_the_titles_come_back(world):
+    """Intent #2 (a8): a busy store — the press shows *Putting N back…* at once, never "All sorted." beside it; saved,
+    it says they're back."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    first = keys_shown(screen)
+    screen.rest("soon")
+    assert _saved(writer, 1) and wait_until(lambda: not screen.empty.isHidden(), 5)
+    writer.stuck = True
+    screen.start_over()
+    assert screen.said.text() == S.SORT_OVER_SAYING.format(n=len(first)) and screen.empty.isHidden()
+    writer.free()
+    assert wait_until(lambda: keys_shown(screen) == first, 5)
+    assert wait_until(lambda: screen.said.text() == S.SORT_OVER_SAID.format(n=len(first)), 5)
+
+
+def test_an_undo_after_an_unsaved_start_over_waits_for_it_never_goes_ahead_of_it(world):
+    """Adversary #2 (a8): Start over, then Ctrl+Z twice before the store saved it — the second press waits (says
+    *Undoing…*): the writer gets the reset, its Undo, and only then the next choice's Undo."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    _sort_some(screen, writer, ("soon", "goal"))
+    writer.stuck = True
+    screen.start_over()
+    press(screen, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    press(screen, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    from app.qt import strings as qs
+    assert screen.said.text() == qs.UNDOING and [e["name"] for e in screen.history] == ["soon", "goal"]
+    writer.free()
+    assert wait_until(lambda: calls(writer, "undo"), 5)
+    settle()
+    assert [c[0] for c in writer.calls] == ["place", "place", "start_over", "undo"]
+    press(screen, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert wait_until(lambda: len(calls(writer, "undo")) == 2, 5)
+    assert calls(writer, "undo")[1][2]["change"] is writer.saved[1]
+
+
+def test_a_start_over_waiting_on_a_save_is_still_given_when_the_screen_closes(world):
+    """Adversary #4 (a8): Start over waits for a choice still being saved, and *Done* closes the screen: it is still
+    given (Done is no No)."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    writer.stuck = True
+    screen.choose("soon")
+    screen.start_over()
+    QTest.mouseClick(screen.btn_done, Qt.MouseButton.LeftButton)
+    from PyQt6.QtCore import QCoreApplication, QEvent as E
+    QCoreApplication.sendPostedEvents(None, E.Type.DeferredDelete.value)
+    writer.free()
+    assert wait_until(lambda: calls(writer, "start_over"), 5)
 
 
 def test_start_over_the_writer_refuses_keeps_the_sorting_and_says_so(world, monkeypatch):

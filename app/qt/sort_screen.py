@@ -421,6 +421,8 @@ class SortScreen(QWidget):
         self.heard = False          # a view with titles came (until then an empty list says nothing: not "All sorted")
         self.question = None        # *Start sorting over*'s confirmation, while it is open
         self._over_waiting = None   # a *Start sorting over* waiting for a placement still being saved
+        self._over_flight = None    # ... one given and not saved yet (the screen says *Putting N back…* meanwhile)
+        self._over_undoing = None   # ... one whose Undo was pressed before it was saved (no other Undo goes ahead)
         self._build()
         if win is not None:
             win.__dict__["_sort_screen"] = self     # the window hands it each view's groups (`_show_arrivals`)
@@ -561,17 +563,18 @@ class SortScreen(QWidget):
         rows, n = self.visible_rows(NEXT_SHOWN + 1), self.left()
         key = tuple((kind, a.key, a.title, getattr(a, "folder", None), len(a.item_ids), getattr(a, "cover", None),
                      getattr(a, "line", None), getattr(a, "media_word", None))
-                    for kind, a in rows) + (n, bool(self.history), self.heard, bool(self._placed()))
+                    for kind, a in rows) + (n, bool(self.history), self.heard, self._can_start_over(),
+                                            self._over_flight is not None)
         if key == self._shown:
             return                                  # nothing it shows changed (S19)
         self._shown = key
         self.rows = rows
         _set(self.count, S.SORT_COUNT.format(n=n) if n else "")
         self.top.setVisible(bool(rows))
-        self.empty.setVisible(not rows and self.heard)
+        self.empty.setVisible(not rows and self.heard and self._over_flight is None)   # (not while titles come back)
         self.btn_rest.setEnabled(n > 1)
         self.btn_undo.setEnabled(bool(self.history))
-        self.btn_over.setEnabled(bool(self._placed()))
+        self.btn_over.setEnabled(self._can_start_over())
         if rows:
             kind, a = rows[0]
             _set(self.top_group, S.SORT_GROUPS.get(kind, ""))
@@ -643,13 +646,11 @@ class SortScreen(QWidget):
         ticket = entry["ticket"] = drag.Ticket(entry["text"], entry["keys"], ids)
 
         def told(event):
-            if sip.isdeleted(self):
-                return
             if event in ("saved", "refused", "ended"):
                 entry["settled"] = True
-            if event == "ended" and ticket.change is None and not entry["undone"]:
+            if event == "ended" and ticket.change is None and not entry["undone"] and not sip.isdeleted(self):
                 self._refused(entry)
-            over = self._over_waiting
+            over = self._over_waiting                       # (a screen closed meanwhile still gives it: Done is no No)
             if over is not None and _among(entry, over["entries"]):
                 self._give_over(over)                       # Start over waited for this one's save
         ticket.told = told
@@ -690,6 +691,7 @@ class SortScreen(QWidget):
     def _refused(self, entry):
         """A choice the writer refused: its titles back where they were, and the screen says it wasn't saved."""
         from app.qt import strings
+        entry["gone"] = True                                # (a Start over's Undo never brings it back)
         if not _among(entry, self.history):
             return                                          # (taken into a Start over, or undone: nothing shown)
         for k in entry["keys"]:
@@ -738,6 +740,10 @@ class SortScreen(QWidget):
         moves = getattr(self.win, "moves", None)
         if not self.history or moves is None:
             return
+        if self._over_undoing is not None:                  # a Start over's Undo waits for it to be saved: an Undo
+            from app.qt import strings                      # now would reach the writer before it (adversary #2)
+            _set(self.said, strings.UNDOING)
+            return
         entry = self.history.pop()
         entry["undone"] = True
         for k in entry["keys"]:
@@ -745,10 +751,15 @@ class SortScreen(QWidget):
         if entry["name"] == "over":                         # the sorting it put back is placed again: hidden at once
             if self._over_waiting is entry:
                 self._over_waiting = None
-            self.history = list(entry["before"])
+            if self._over_flight is entry:
+                self._over_flight = None
+                if entry["ticket"] is not None:
+                    self._over_undoing = entry
+            self.history = [e for e in entry["before"] if not e.get("gone")]
             for e in entry["entries"]:
-                for k in e["keys"]:
-                    self.hidden[k] = e["name"]
+                if not e.get("gone"):
+                    for k in e["keys"]:
+                        self.hidden[k] = e["name"]
         if entry["ticket"] is not None:
             moves.undo(entry["ticket"])
         _set(self.said, "")
@@ -761,10 +772,15 @@ class SortScreen(QWidget):
         rest in…* among them) — never an Ignore (PROVISIONAL: the folder stays unread, the title out)."""
         return [e for e in self.history if e["name"] in PLACE_OF]
 
+    def _can_start_over(self):
+        """Something to put back, and no Start over (or its Undo) still on its way to the writer."""
+        return (self._over_waiting is None and self._over_flight is None and self._over_undoing is None and
+                any(e["name"] in PLACE_OF for e in self.history))
+
     def ask_over(self):
         """*Start sorting over*: asked first (the one confirmation; No by default — it puts back), then `start_over`."""
         n = sum(len(e["keys"]) for e in self._placed())
-        if not n or self.question is not None:
+        if not n or self.question is not None or not self._can_start_over():
             return None
         from app.qt import confirm
 
@@ -783,7 +799,7 @@ class SortScreen(QWidget):
         (Ctrl+Z) puts the sorting back. The press shows at once; a placement still being saved is waited for (its
         change is what is put back). -> the history entry, or None."""
         entries = self._placed()
-        if not entries:
+        if not entries or not self._can_start_over():
             return None
         moves = self._moves()
         if moves is None:
@@ -792,13 +808,15 @@ class SortScreen(QWidget):
         text = S.SORT_OVER_SAID_ONE if n == 1 else S.SORT_OVER_SAID.format(n=n)
         entry = {"keys": (), "name": "over", "text": text, "ticket": None, "undone": False, "entries": entries,
                  "before": list(self.history)}
-        self.history = [e for e in self.history if not _among(e, entries)] + [entry]
+        taken = {id(e) for e in entries}
+        self.history = [e for e in self.history if id(e) not in taken] + [entry]
         for e in entries:
             for k in e["keys"]:
                 self.hidden.pop(k, None)
+        self._over_flight = entry                           # pending at once: *Putting N back…* until it is saved
         self._shown = None
         self._paint()
-        _set(self.said, text)
+        _set(self.said, S.SORT_OVER_SAYING_ONE if n == 1 else S.SORT_OVER_SAYING.format(n=n))
         self._give_over(entry)
         return entry
 
@@ -815,29 +833,51 @@ class SortScreen(QWidget):
                    e["ticket"].change is not None and not e["ticket"].undo_asked]
         moves = getattr(self.win, "moves", None)
         if not changes or moves is None:
-            return                                          # (none saved: they're back in New arrivals as they were)
+            self._over_landed(entry, quiet=True)            # (none saved: they're back in New arrivals as they were)
+            return
         from app.qt import drag
         ids = [i for e in entry["entries"] if e["ticket"] is not None for i in e["ticket"].ids]
         ticket = entry["ticket"] = drag.Ticket(entry["text"], (), ids)
 
         def told(event):
-            if event == "ended" and ticket.change is None and not entry["undone"] and not sip.isdeleted(self):
+            if event in ("saved", "refused", "ended") and self._over_undoing is entry:
+                self._over_undoing = None                   # its Undo is the writer's now: other Undos go after it
+            if event == "saved":
+                self._over_landed(entry)
+            elif event == "ended" and ticket.change is None and not entry["undone"]:
                 self._over_refused(entry, quiet=True)       # every title moved since: nothing to put back
         ticket.told = told
         if moves._give(ticket, lambda t: moves.writer.start_over(changes, label=t), toast=False) is None:
             self._over_refused(entry)
 
+    def _over_landed(self, entry, quiet=False):
+        """The reset saved (or there was nothing to give): the screen says so, no longer pending."""
+        if self._over_flight is not entry:
+            return
+        self._over_flight = None
+        if sip.isdeleted(self):
+            return
+        if not entry["undone"]:
+            _set(self.said, "" if quiet else entry["text"])
+        self._shown = None
+        self._paint()
+
     def _over_refused(self, entry, quiet=False):
         """A Start over the writer refused (or that put back nothing): the sorting stands, its choices back on Undo."""
-        if not _among(entry, self.history):
+        if self._over_flight is entry:
+            self._over_flight = None
+        if sip.isdeleted(self) or not _among(entry, self.history):
             return
         at = next(n for n, e in enumerate(self.history) if e is entry)
-        self.history = list(entry["before"]) + self.history[at + 1:]
-        if not quiet:
+        self.history = [e for e in entry["before"] if not e.get("gone")] + self.history[at + 1:]
+        if quiet:
+            _set(self.said, "")
+        else:
             from app.qt import strings
             for e in entry["entries"]:
-                for k in e["keys"]:
-                    self.hidden[k] = e["name"]
+                if not e.get("gone"):
+                    for k in e["keys"]:
+                        self.hidden[k] = e["name"]
             _set(self.said, strings.MOVE_NOT_SAVED)
         self._shown = None
         self._paint()

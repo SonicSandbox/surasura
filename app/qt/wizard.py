@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDial
                              QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
-from app.qt import applog, bridge, confirm, motion, strings, style, windows
+from app.qt import applog, bridge, confirm, motion, settings_strings, strings, style, windows
 from app.qt import press as qpress
 from app.qt import wizard_strings as S
 from app.services import press as press_service
@@ -2288,6 +2288,12 @@ class LevelPage(_Page):
         self.counting = _label("wizsub", S.COUNTING, self, wrap=True)
         self.box.addWidget(self.counting)
         self.box.addStretch(1)
+        discord = QHBoxLayout()                           # 3.0: one small line, the last page's (a link)
+        self.discord = qpress.room(_button(S.DISCORD, S.DISCORD_TIP, lambda: wiz.open_discord(self.discord), self,
+                                           name="wizlink"), end=True)
+        discord.addWidget(self.discord)
+        discord.addStretch(1)
+        self.box.addLayout(discord)
         self.numbers = None
         self._band = None                   # the band the user moved to (None: Automatic's)
         self._shown = None
@@ -3424,6 +3430,10 @@ class SetupWizard(QWidget):
         """The ⭐ page in the browser, opened on a worker (`press.open`: never the window's thread), `control`'s arc
         turning meanwhile."""
         qpress.open(self, self.miner.STAR_URL, control=control)
+
+    def open_discord(self, control=None):
+        """Surasura's Discord in the browser (the last page's line), as `open_star` opens its page."""
+        qpress.open(self, settings_strings.DISCORD_URL, control=control)
 
     # --- the level and Generate (page 6) ----------------------------------------------------------------------------- #
     def read_numbers(self, fresh=False):

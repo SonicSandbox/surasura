@@ -280,6 +280,8 @@ EVERY_N = "{h:.0f} h"
 EVERY_MIN = "{m:.0f} min"
 NONE_YET = "—"
 COUNTING = "Counting your shows…"
+DISCORD = "Questions? Join us on Discord"                     # 3.0: the last page's one line (a link, in the browser)
+DISCORD_TIP = "Surasura's Discord: ask anything, or tell us what went wrong.\n• Opens it in your browser"
 NO_SHOWS = "Add a show first, and the numbers show here."
 # a7 (DIAGNOSIS 1, Sonic): the first Generate reads the whole library — said in the line he watches
 MAKING = "Making your list… The first time reads every show and book, so it can take a few minutes."

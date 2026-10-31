@@ -1674,3 +1674,73 @@ def test_A4M1_3_an_audio_titles_parts_wait_quietly_like_a_book_with_audios_words
     assert all(e.text == "audio" for e in audio.episodes)
     anime = rows["星降る街の小さな工房"]
     assert anime.status.kind != "books" and not anime.episodes[0].text
+
+
+# --- a8: a stone's Done painted ahead of the store (`marked`, the window's `drag.DragController`) ----------------------- #
+def _a8_items():
+    """A row of each kind a stone sits on: a show part-watched with more files than its chips, a light novel's parts, a
+    YouTube channel's videos, a single video, a book with its audiobook (waiting for its text: never one to finish),
+    and a group of two shows (piece 20)."""
+    work(5, "Kotoba Lab", media="youtube", channel="Kotoba Lab")
+    work(6, "海辺の図書室")
+    vids = ["雨の日の散歩で見つけた小さな発見 [0a1b2c].srt", "朝ごはんを五分で作る [1b2c3d].srt", "古本屋めぐり [2c3d4e].srt"]
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 14), {0: {"watched": 1}, 1: {"watched": 1}}),
+                      ("now", 3, 3, ["白銀の書庫番 第1巻.epub", "白銀の書庫番 第2巻.epub"],
+                       {0: {"source_type": "epub"}, 1: {"source_type": "epub"}}),
+                      ("now", 5, 5, vids, {k: {"source_type": "youtube"} for k in range(3)}),
+                      ("now", 4, 4, ["【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"], {0: {"source_type": "youtube"}}),
+                      ("now", 3, 13, ["白銀の書庫番 第3巻.epub", "白銀の書庫番 第3巻.m4b"],
+                       {0: {"source_type": "epub"}, 1: {"source_type": "audio", "availability": "waiting"}}),
+                      ("soon", 2, 20, eps("雲の上の郵便屋さん", 7, 8), {0: {"watched": 1}}),
+                      ("soon", 6, 20, eps("海辺の図書室", 1, 2), {})])
+    pieces = {20: {"id": 20, "title": None, "kind": "group"}}
+    return items, pieces
+
+
+def _a8_build(items, pieces):
+    return vr.build(items, dict(WORKS), {"mine_line": 20}, pieces=pieces)
+
+
+def test_a8_a_rows_marks_painted_ahead_are_the_row_the_store_builds_next_field_for_field():
+    """Sonic's alpha 7 try: a stone's Done lagged a second, so the window paints the mark itself (`marked`) before the
+    store has it. What a wrong answer would cost a learner: a row that flickers as the store's own view replaces the
+    painted one — another *k of n watched*, another Up next, other chips. So every row kind, every file of it marked
+    (and two at once, ⋯'s mark-many), equals the row the store builds with that mark — every field, its string too.
+    One thing waits for the store, as after a drop: which files are *in the top* (a watched file stops counting, so the
+    top-20 line moves one file) — a file's `in_top` and what it decides (its status, its stone's dimming, the row's
+    status and spoken text), and only in a row the line runs through (the window moves the line itself:
+    `drag.lines_for`)."""
+    top = ("in_top", "status", "mark")
+    items, pieces = _a8_items()
+    view = _a8_build(items, pieces)
+    kinds = {r.media for r in view.rows} | {"group" for r in view.rows if r.group}
+    assert {"anime", "youtube", "group"} <= kinds and any(len(r.episodes) > vr.CHIPS_SHOWN for r in view.rows)
+    tried, crossed = 0, set()
+    for row in view.rows:
+        sets = [[e] for e in row.episodes] + [list(row.episodes[:2])] * (len(row.episodes) > 1)
+        for eps_ in sets:
+            marks = {e.id: not e.watched for e in eps_}
+            again = dict(items)
+            for i, on in marks.items():
+                again[i] = dict(items[i], watched=int(on))
+            stored = next(r for r in _a8_build(again, pieces).rows if r.key == row.key)
+            painted = vr.marked(row, marks, hero=row is view.rows[0])
+            assert painted is not row
+            moved = [a.id for a, b in zip(painted.episodes, stored.episodes) if a.in_top != b.in_top]
+            if moved:                                    # the line runs through this row: the files it moves, alone
+                crossed.add(row.key)
+                assert len(moved) <= len(marks)          # the line moves a file per mark
+                assert [a._replace(**dict.fromkeys(top)) for a in painted.episodes] ==                     [b._replace(**dict.fromkeys(top)) for b in stored.episodes]
+            for f in vr.Row._fields:
+                if not (moved and f in ("episodes", "status", "mark", "accessible", "string")):
+                    assert getattr(painted, f) == getattr(stored, f), (row.title, f, marks)
+            tried += 1
+    assert tried > 20 and len(crossed) == 1
+
+
+def test_a8_marked_leaves_a_row_its_marks_dont_change_as_it_is():
+    """No mark of this row, or one the row already has: the same object (the window repaints nothing for it)."""
+    items, pieces = _a8_items()
+    row = _a8_build(items, pieces).rows[0]
+    assert vr.marked(row, {}) is row
+    assert vr.marked(row, {row.episodes[0].id: True, 10 ** 6: False}) is row

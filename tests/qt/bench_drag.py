@@ -31,6 +31,12 @@ each (>= 10 for a timed run), the moments run through the window's own paths:
     the sheet rises on its spring with its shadow (its tiles made at the first opening), closed after the repetition;
   - **the arrival moment** (`arrival`): a show never shown before lands in New arrivals (the store write the reader
     feeds as an arrival); the inset's covers part, the new one drops in, the count lifts (no toast exists: none added);
+  - **a stone's Done while the store is held** (`stone-held`, a8: Sonic's alpha 7 try, "it lagged by at least a second
+    before registering"): another program holds the store (the stand-in writer's `gate`: every command waits, as the
+    maintain step and the indexer make it wait through a Generate) and a stone's Done (`done_requested`) on a visible
+    row with files left to watch — noted: `lit_in_click` (1: the page's row is lit when the click returns, before any
+    event, so the next frame paints it), `click_ms` (the click's own time on the GUI thread); then the store let go,
+    the write saved, the row given back unwatched;
   - **the finish toasts**: `toast-done-all` — the last unwatched episode's Done (`done_requested`, drag.py's
     `DONE_ALL`); `toast-finished` — New arrivals' *Finished* (the tray's `act`: the Finished choice toast,
     arrivals.py); `toast-connect` — Connect's notice toast (`ShellWindow._show_chores`, its one line; Connect not run).
@@ -62,7 +68,7 @@ if ROOT not in sys.path:
 from tests.qt import bench_moments                                    # noqa: E402
 
 DRAG = ("pickup", "slide", "autoscroll", "drop")
-GROUPS = ("drag", "lines", "menu", "keys", "hover", "goal-sheet", "arrival", "done", "finished", "connect")
+GROUPS = ("drag", "lines", "menu", "keys", "hover", "goal-sheet", "arrival", "done", "finished", "connect", "stone")
 
 
 def selected(only):
@@ -136,6 +142,7 @@ class StandinWriter:
         self.library, self.numbers, self.moments = library, numbers, None
         self.on_saved = self.on_saving = self.on_reread = self.on_note = self.on_undone = None
         self._pending = 0
+        self.gate = None                                  # a8: another program holds the store until it is set
         if cover_scan:
             self.idle = self._idle
 
@@ -180,6 +187,9 @@ class StandinWriter:
         name = moments.reps[-1][0] if moments is not None and moments.reps else None
 
         def run():
+            gate = self.gate
+            if gate is not None:
+                gate.wait(30)
             write()
             self._pending -= 1
             if name is not None:
@@ -821,6 +831,71 @@ def main_child(a):
         at(0, lambda: until(unwatched_again, 4000, "toast-done-all: never given back"))
         at(150, lambda: None)
 
+    used_stones = set()
+
+    def stone_cycle(c):
+        def prep():
+            v = page.view_model
+            by = {r.key: r for r in (v.rows if v is not None else ())}
+            shown = [lst.model().entries[i][1].key for i in visible_rows()]
+            for again in (False, True):                  # once every row was used, the used ones again (given back)
+                if again:
+                    used_stones.clear()
+                row = next((by[k] for k in shown if k in by and k not in used_stones
+                            and sum(not e.watched for e in by[k].episodes) > 1), None)
+                if row is not None:
+                    break
+            state["stone"] = None
+            if row is None:
+                result["skipped"]["stone-held: no row"] = result["skipped"].get("stone-held: no row", 0) + 1
+                return
+            used_stones.add(row.key)
+            state["stone"] = (row.key, next(e.id for e in row.episodes if not e.watched))
+            writer.gate = threading.Event()              # another program holds the store
+
+        def click():
+            if state["stone"] is None:
+                return
+            key, eid = state["stone"]
+            window.toasts.close()
+            row = next(r for r in page.view_model.rows if r.key == key)
+            t0 = time.perf_counter()
+            lst.done_requested.emit(row, next(e for e in row.episodes if e.id == eid))
+            ms = (time.perf_counter() - t0) * 1000
+            now = next((r for r in page.view_model.rows if r.key == key), None)
+            lit = now is not None and any(e.id == eid and e.watched for e in now.episodes)
+            moments.note("stone-held", "click_ms", round(ms, 2))
+            moments.note("stone-held", "lit_in_click", int(lit))
+
+        def let_go():
+            gate, writer.gate = writer.gate, None
+            if gate is not None:
+                gate.set()
+        at(0, prep)
+        at(200, lambda: None)
+        at(0, begin("stone-held"))
+        at(0, click)
+        at(0, end_after(400))
+        at(0, window.toasts.close)
+        at(0, let_go)
+        at(0, lambda: until(lambda: writer.pending() == 0, 4000, "stone-held: Done never saved"))
+
+        def give_back():
+            if state["stone"] is not None:
+                opener.pending.append({"items": [{"id": state["stone"][1], "watched": 0}]})
+
+        def unwatched_again():
+            if state["stone"] is None:
+                return True
+            key, eid = state["stone"]
+            row = next((r for r in page.view_model.rows if r.key == key), None)
+            return row is None or not any(e.id == eid and e.watched for e in row.episodes)
+        at(0, lambda: until(lambda: not getattr(window.moves, "expect_marks", None), 4000,
+                           "stone-held: marks never let go"))
+        at(0, give_back)
+        at(0, lambda: until(unwatched_again, 4000, "stone-held: never given back"))
+        at(150, lambda: None)
+
     def finished_cycle(c):
         def choose():
             tray = getattr(window, "arrivals_tray", None)
@@ -988,6 +1063,11 @@ def main_child(a):
             for c in range(n):
                 done_cycle(c)
             at(0, still("toast-done-all"))
+        if "stone" in groups:
+            at(0, lambda: lst.verticalScrollBar().setValue(0))
+            for c in range(n):
+                stone_cycle(c)
+            at(0, still("stone-held"))
         if "finished" in groups:
             for c in range(n):
                 finished_cycle(c)

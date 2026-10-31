@@ -727,8 +727,12 @@ def paint_mark(p, mark, right, y_mid, dpr=1.0, audio=False):
 PCT_INK = {"ok": "ok", "warn": "warn", "plain": "ink"}  # `view_rows.pct_tone` -> its ink (the brief's bands, ✅)
 
 
-def paint_diff(p, pct, tone, n_new, right, y_mid, dpr=1.0):
-    """*94% · 138 new* in fixed tabular slots, right-aligned at `right` (G1.6 #3: the numbers line up row to row)."""
+FADED_ALPHA = 0.45                                       # U-1: a kept *N new* (the last plan's), drawn at this much
+
+
+def paint_diff(p, pct, tone, n_new, right, y_mid, dpr=1.0, new_faded=False):
+    """*94% · 138 new* in fixed tabular slots, right-aligned at `right` (G1.6 #3: the numbers line up row to row).
+    `new_faded` (U-1): the figure and its word faded — the last plan's, kept while the plan can't be followed."""
     f = fz()
     col = style.colours()
     fm = TEXT.metrics("diff", dpr=dpr)
@@ -742,9 +746,10 @@ def paint_diff(p, pct, tone, n_new, right, y_mid, dpr=1.0):
     # Laptop row 36: a number or nothing — never a placeholder that sits ("— new" never filled on an i+1 plan). The %
     # keeps its slot either way, so the column still lines up row to row.
     if n_new is not None:
-        TEXT.draw(p, x, y_mid, " " + new_txt, "diff", new_w + 2, dim, dpr=dpr)
-        TEXT.draw(p, x - cnt_w, y_mid, str(n_new), "diff", cnt_w, style.qcolor(col["ink"]), weight=600, align="right",
-                  dpr=dpr)
+        word = faded("ink-dim", FADED_ALPHA) if new_faded else dim
+        ink = faded("ink", FADED_ALPHA) if new_faded else style.qcolor(col["ink"])
+        TEXT.draw(p, x, y_mid, " " + new_txt, "diff", new_w + 2, word, dpr=dpr)
+        TEXT.draw(p, x - cnt_w, y_mid, str(n_new), "diff", cnt_w, ink, weight=600, align="right", dpr=dpr)
         if pct is not None:                             # (no % beside it: no dot hanging)
             TEXT.draw(p, x - cnt_w - dot_w, y_mid, strings.ROWS_DOT, "diff", dot_w, dim, align="centre", dpr=dpr)
     x -= cnt_w + dot_w
@@ -2052,7 +2057,7 @@ class RowDelegate(QStyledItemDelegate):
         if not opened and not alone:
             self._paint_string(p, self._info(row)[0], g["gstr"], mid, sheet, ring=active)
         self._paint_stat(p, row.status, g["stat"], mid, dpr)
-        paint_diff(p, row.pct, row.pct_tone, row.n_new, g["diff"].right(), mid, dpr)
+        paint_diff(p, row.pct, row.pct_tone, row.n_new, g["diff"].right(), mid, dpr, row.new_faded)
         if active:
             self._paint_hover_group(p, g, ground, opened)
 
@@ -2616,7 +2621,7 @@ class RowDelegate(QStyledItemDelegate):
         text_w = cols["text_right"] - cols["text_left"]
         TEXT.draw(p, cols["text_left"], r.center().y(), ep.label, "episode-label", text_w * 0.6,
                   c("ink-dim" if ep.watched else "ink"), dpr=dpr)
-        paint_diff(p, ep.pct, view_tone(ep.pct), ep.n_new, cols["diff"].right(), r.center().y(), dpr)
+        paint_diff(p, ep.pct, view_tone(ep.pct), ep.n_new, cols["diff"].right(), r.center().y(), dpr, ep.new_faded)
         right = cols["stat"].right()
         if ep.status is not None:
             sr = self._ep_pill(r, ep, dpr)
@@ -2687,7 +2692,7 @@ class RowDelegate(QStyledItemDelegate):
             TEXT.draw(p, st.left(), st.center().y(), known, "hero-sub", st.width(), c("ink-dim"), dpr=dpr)
             if j is not None:
                 TEXT.draw(p, j.left(), st.center().y(), strings.ROWS_HERO_NEW_LINK.format(n=nxt.n_new), "hero-sub",
-                          j.width(), c("accent"), dpr=dpr)
+                          j.width(), faded("accent", FADED_ALPHA) if nxt.new_faded else c("accent"), dpr=dpr)
         if self.view.model().open_key != row.key and not view_rows.audio_only(row):   # G16; a5-2: none alone
             s = g["string"]
             self._paint_string(p, self._info(row)[0], s, s.top() + s.height() / 2, sheet, ring=True, big=True)

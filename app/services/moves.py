@@ -181,6 +181,13 @@ def open_library(language, check=None, log=None, **reader_kw):
     return opener, numbers, reader
 
 
+class Kept(dict):
+    """The numbers' table while the plan can't be followed (stale): each row's *N new* is the last plan's, kept until a
+    plan that can be is read — the rows paint it faded (Sonic, 2026-10-31: "only faded, that's all"). The table and its
+    state travel as one object, so a reader never pairs a fresh table with a stale mark."""
+    kept = True
+
+
 def _nothing(*_args):
     pass
 
@@ -2419,7 +2426,9 @@ class Numbers:
                 self._engine, self._why = None, f"stale: {e}"
                 said = self._why                    # logged after the lock (a file write: never while a read waits)
                 # The rows keep the last plan's *N new* until the next one is read (the Generate it waits for): never
-                # a blank between the drop and that Generate. Nothing changed, nothing published.
+                # a blank between the drop and that Generate — faded (`Kept`), only the rows that show one rebuilt.
+                kept = Kept(counts)
+                self._publish(kept, _faded_ids(counts, kept))
             else:
                 self.renumbered += 1
                 table = self._figures(eng, counts)
@@ -2434,11 +2443,12 @@ class Numbers:
     def _kept(self, counts):
         """A plan that can't be followed (stale): each row's last *N new* kept until a plan that can be is read — a
         Generate that ends while the library moved on (known words from cards that landed meanwhile) is followed by
-        the next one, and the rows never blink blank between the two. A row the last table never numbered has none."""
+        the next one, and the rows never blink blank between the two; faded (`Kept`). A row the last table never
+        numbered has none."""
         with self._lock:
             last = self._table
-        return {item: (known, counted, (last.get(item) or (0, 0, None))[2])
-                for item, (known, counted, _n) in counts.items()}
+        return Kept({item: (known, counted, (last.get(item) or (0, 0, None))[2])
+                     for item, (known, counted, _n) in counts.items()})
 
     def _figures(self, eng, counts):
         n_new = eng._n_new
@@ -2452,7 +2462,9 @@ class Numbers:
         with self._lock:
             said = self._why
             self._engine, self._why, self._plan_key = eng, why, key
-            self._publish(table, None)
+            # a kept table names what it changed (U-1: the fade comes in on the rows that show a figure, never a
+            # rebuild of every row); a new plan's table is new throughout
+            self._publish(table, _faded_ids(self._table, table) if isinstance(table, Kept) else None)
         if why != said:
             self._say(why)
         self._call_change()
@@ -2486,6 +2498,15 @@ class Numbers:
 def _plan_engine():
     from app import plan_engine
     return plan_engine
+
+
+def _faded_ids(old, new):
+    """The items whose figures look different from `old` to `new`: another value, gone, or a figure shown whose fade
+    changed (one table kept, the other not)."""
+    flip = isinstance(old, Kept) != isinstance(new, Kept)
+    out = {i for i, v in new.items() if old.get(i) != v or (flip and v[2] is not None)}
+    out.update(i for i in old if i not in new)
+    return out
 
 
 def _set_aside(store, ids):

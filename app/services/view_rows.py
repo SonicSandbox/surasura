@@ -196,6 +196,11 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("group", "w
 # Before `string`, which stays last
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("audio", "string"),
                  defaults=tuple(Row._field_defaults.values())[:-1] + ("", None))
+# --- U-1 (Sonic, 2026-10-31): `new_faded`, its *N new* is the last plan's, kept while the plan can't be followed
+# (`moves.Kept`) — painted faded, nothing else; False with no figure. Episode's the same. Before `string`
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("new_faded", "string"),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + (False, None))
+Episode = namedtuple("Episode", Episode._fields + ("new_faded",), defaults=tuple(Episode._field_defaults.values()) + (False,))
 Arrival = namedtuple("Arrival", Arrival._fields + ("audio",), defaults=tuple(Arrival._field_defaults.values()) + ("",))
 
 
@@ -831,6 +836,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  watched=bool(item.get("watched")),
                  cards=c, mining=item["id"] in mining, missing=missing, removed=missing and mined,
                  in_top=in_top, pct=pct_of(known, counted), n_new=n_new, status=None, mark=None,
+                 new_faded=n_new is not None and getattr(numbers, "kept", False),
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
                  ask=ask, looking=looking, text=_waits_for(item, media), added=item.get("added_at"),
@@ -1098,6 +1104,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                media=media, media_word=word, verb=VERB[word], title=title, title_ep=title_ep,
                line=line, source=source_of(first, work), n_files=n, n_watched=n_watched, pct=pct,
                pct_tone=pct_tone(pct), n_new=n_new, status=st, mark=mark, episodes=tuple(eps), next_index=next_index,
+               new_faded=n_new is not None and getattr(numbers, "kept", False),
                studying=studying, date=day_label(stamp) if finished else "",
                cover_title=(names[_show_key(first)] if group else work.get("title") or title),
                accessible=accessible, description=line, chips=chips, more_chips=more, play_tip=nxt.play_tip,

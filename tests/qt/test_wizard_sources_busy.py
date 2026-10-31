@@ -12,6 +12,7 @@ helpers); the library made busy by another handle holding its write lock (anothe
 """
 import os
 import threading
+import time
 
 from app import library_store as ls
 from app import sources
@@ -25,10 +26,21 @@ def _db():
     return ls.library_db_path("ja", path_utils.get_data_path("ja"))
 
 
-def _released_after(seconds, release):
-    t = threading.Timer(seconds, release)
-    t.start()
-    return t
+def _released_once_waiting(told, release):
+    """The page's `waiting`: what it is told, and the library let go once it says it waits (never on a clock: a read
+    started late on a loaded machine would find it free already and never wait)."""
+    def waiting(on):
+        told.append(on)
+        if on:
+            release()
+    return waiting
+
+
+def _gives_up_after(seconds):
+    """*Stop* pressed after `seconds`: a read that never says it waits (so is never let go) ends as stopped and fails
+    the checks, never hangs the suite."""
+    deadline = time.monotonic() + seconds
+    return lambda: time.monotonic() > deadline
 
 
 def test_a_save_holding_the_library_is_waited_for_and_the_folder_is_read(empty_library, short_lock_wait,
@@ -36,11 +48,11 @@ def test_a_save_holding_the_library_is_waited_for_and_the_folder_is_read(empty_l
     monkeypatch.setattr(setup_wizard, "BUSY_WAIT_S", 0.05)
     told = []
     holder = LockHolder(_db())
-    timer = _released_after(1.0, holder.release)
     try:
-        got = setup_wizard.read_folders("ja", [_folder("anime", SHOWS)], waiting=told.append)
+        got = setup_wizard.read_folders("ja", [_folder("anime", SHOWS)], stop=_gives_up_after(10),
+                                        waiting=_released_once_waiting(told, holder.release))
     finally:
-        timer.join(5)
+        holder.release()
     assert got["failed"] == [] and not got["busy"] and got["added"] == 5
     assert told[0] is True and told[-1] is False                      # the page said it waited, then went on
 
@@ -50,12 +62,16 @@ def test_another_look_reading_the_library_is_waited_for_then_the_folder_is_read(
     key = ls.path_key(os.path.abspath(_db()))
     with sources._GUARD:
         sources._RUNNING.add(key)                                     # the window's own look, running
-    timer = _released_after(0.5, lambda: sources._RUNNING.discard(key))
     told = []
+
+    def let_go():
+        with sources._GUARD:
+            sources._RUNNING.discard(key)
     try:
-        got = setup_wizard.read_folders("ja", [_folder("anime", SHOWS)], waiting=told.append)
+        got = setup_wizard.read_folders("ja", [_folder("anime", SHOWS)], stop=_gives_up_after(10),
+                                        waiting=_released_once_waiting(told, let_go))
     finally:
-        timer.join(5)
+        let_go()
     assert got["added"] == 5 and got["failed"] == [] and not got["stopped"]
     assert told == [True, False]
 

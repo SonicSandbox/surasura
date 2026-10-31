@@ -243,7 +243,9 @@ def test_a_wizard_that_breaks_while_it_is_hooked_up_leaves_no_hold(window, monke
     monkeypatch.setattr(first_run, "_Cover", lambda wiz, area: (_ for _ in ()).throw(RuntimeError("broke")))
     assert first_run.host(window, api=FakeApi(), miner=FakeMiner(miner_look("missing"))) is None
     assert first_run.opened(window) is None
-    assert not window.services.setup_open.is_set() and window.header.isEnabled() and window.pages.isEnabled()
+    assert window.header.isEnabled() and window.pages.isEnabled()
+    # The hold is let go as at any close: `setup_ended` clears it on a worker (under the quit lock), so wait for it.
+    assert wait_until(lambda: not window.services.setup_open.is_set())
 
 
 def test_set_up_again_from_settings_closes_back_onto_settings(window):

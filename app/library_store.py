@@ -2092,6 +2092,41 @@ class Store:
                 cmd.touch()
             return done
 
+    def join_same_shows(self):
+        """In the helper's run (a8, Sonic 2026-10-31: "the existing pairs joined once"; PROVISIONAL): the titles of
+        show folders one show apart only by punctuation (`episode_names.show_key`: `Library/Show!` and `Library/Show`,
+        as a source's folder and a loose file of it were copied before a8) become one title — `merge_works`' body,
+        nobody's ask (`users_first`): the title with the longest name kept (`Show!`; a tie, the oldest), the others'
+        names kept among its titles (search finds them). Only a show folder's own titles (a folder key with no `/`);
+        never titles the ids say are two shows (`TITLES_APART`) or the user kept apart. No item, order or file touched:
+        only which title the items are; *Not part of this title* takes them apart again (that title has no folder key,
+        so no later run joins it back). A joined pair is one title from then on: every later run finds nothing. One
+        command (the window reads the works). Returns the ids that went."""
+        from app.episode_names import show_key
+        groups = {}
+        for wid, title, fk in self.conn.execute("SELECT id, title, folder_key FROM works WHERE folder_key IS NOT NULL "
+                                                "AND instr(folder_key, '/') = 0 ORDER BY id"):
+            key = show_key(fk)
+            if key:
+                groups.setdefault(key, []).append((wid, title))
+        groups = [g for g in groups.values() if len(g) > 1]
+        if not groups:
+            return []
+        apart = {tuple(p) for p in json.loads(self._meta().get("kept_apart") or "[]")}
+        gone = []
+        with self._command("join_same_shows", "sync") as cmd:
+            change = self._change(cmd, "join_same_shows")
+            for members in groups:
+                ids = [w for w, _t in members]
+                if self._titles_apart(ids) or any((a, b) in apart for n, a in enumerate(ids) for b in ids[n + 1:]):
+                    continue
+                keep = max(members, key=lambda m: (len(unicodedata.normalize("NFKC", m[1] or "")), -m[0]))[0]
+                others = [w for w in ids if w != keep]
+                if self._merge_into(cmd, change, keep, others, users_first=True):
+                    self._drop_apart(keep, others)
+                    gone += others
+            return gone
+
     def place_of(self, item_id):
         """(tier, 1-based position in it) of an item, read at once; (None, None) when it's gone."""
         with self._reading():
@@ -3028,9 +3063,10 @@ class Store:
 
     def _stranded_work(self, rel, title, cmd, cache=None):
         """A loose file's work (SRC-11): one in hato's drop folder or directly in a tier folder has no show folder, so
-        its show is read from its file name (`show_of_name`): the work whose title (or another title) folds the same,
-        else a new work titled by that show; a name no show is read from stays a title of its own, by its title. Only a
-        new item comes here (`_settle_works`): an existing work is never regrouped and never renamed."""
+        its show is read from its file name (`show_of_name`): the work whose title (or another title) folds the
+        same (else, a8, is the same show by `episode_names.show_key`), else a new work titled by that show; a name no
+        show is read from stays a title of its own, by its title. Only a new item comes here (`_settle_works`): an
+        existing work is never regrouped and never renamed."""
         show = show_of_name(rel.rsplit("/", 1)[-1])
         if show is None:
             return self._new_work(title or rel.rsplit("/", 1)[-1], None, cmd)
@@ -3039,6 +3075,11 @@ class Store:
             return cache[("show", key)]
         row = self.conn.execute("SELECT id FROM works WHERE instr(char(10) || search_key || char(10), ?) > 0 "
                                 "ORDER BY id LIMIT 1", ("\n" + key + "\n",)).fetchone()
+        if row is None:                     # a8: else one show apart only by punctuation (`Show - 14` of `Show!`)
+            from app.episode_names import show_key
+            want = show_key(key)
+            row = next(((w,) for w, keys in self.conn.execute("SELECT id, search_key FROM works ORDER BY id")
+                        if want and any(show_key(k) == want for k in keys.split("\n"))), None)
         wid = row[0] if row else self._new_work(show, None, cmd)
         if cache is not None:
             cache[("show", key)] = wid
@@ -3335,13 +3376,15 @@ class Store:
             self._set_meta({"kept_apart": _dumps(kept)})
 
     def same_titles(self):
-        """*Same title?* (05 §5.3, G2.2-6): groups of works whose folded titles are equal and whose ids don't already
-        say they're different, never joined automatically; minus the pairs the user kept apart. Derived on read."""
+        """*Same title?* (05 §5.3, G2.2-6): groups of works whose folded titles are one show (a8: `show_key`, so `Show`
+        and `Show!` too) and whose ids don't already say they're different, never joined automatically; minus the
+        pairs the user kept apart. Derived on read."""
+        from app.episode_names import show_key
         apart = {tuple(p) for p in json.loads(self._meta().get("kept_apart") or "[]")}
         groups = {}
         for work_id, key, anilist, tmdb in self.conn.execute("SELECT id, search_key, anilist_id, tmdb_id FROM works "
                                                              "ORDER BY id"):
-            title = key.split("\n", 1)[0]
+            title = show_key(key.split("\n", 1)[0])
             if title:
                 groups.setdefault(title, []).append((work_id, anilist, tmdb))
         out = []
@@ -7149,6 +7192,7 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
         did = bool(store.prune_gone()) or did
         did = bool(store.tidy_works()) or did
         did = bool(store.retitle_folder_works()) or did
+        did = bool(store.join_same_shows()) or did
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:

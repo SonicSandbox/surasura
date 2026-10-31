@@ -496,17 +496,26 @@ def _folder_language(name):
     return en.language_of(name)
 
 
-def _show_of(root, parts, name):
+def _show_of(root, parts, name, folders=()):
     """`Library/<show>`'s show (§1, S12): the folder below the source as written (`Frieren/Season 1`); a season or
     specials folder alone gets the source folder's name in front; a loose file's show is K4's reading of its name,
-    else the source folder's name."""
+    else the source folder's name. a8 (Sonic 2026-10-31; PROVISIONAL): a loose file whose show is one of the source's
+    own top folders (`folders`, their names) by the one "same show?" key (`episode_names.show_key`: `Show!/` and
+    `Show - 02.mkv`) is that folder's show, so its copy lands in that folder's `Library/<show>` (one folder key, one
+    title): the folder named exactly first, else the first by name. New copies only: nothing already copied moves."""
     from app.extract import clean_name
     root_name = clean_name(os.path.basename(os.path.normpath(root))) or "Source"
     if parts:
         if en.season_folder(parts[0]) is not None:
             parts = [root_name] + list(parts)
         return "/".join(parts)
-    return clean_name(ls.show_of_name(name) or "") or root_name
+    show = clean_name(ls.show_of_name(name) or "")
+    key = en.show_key(show)
+    if key:
+        same = [f for f in folders if en.show_key(f) == key and en.season_folder(f) is None]
+        if same:
+            return min(same, key=lambda f: (ls.path_key(f) != ls.path_key(show), f))
+    return show or root_name
 
 
 def _library_show(rel):
@@ -1289,7 +1298,8 @@ class _Look:
             self.out["skipped"] += ghosts
             rel = os.path.relpath(folder, self.base)
             parts = [] if rel == "." else rel.replace("\\", "/").split("/")
-            show_of = self._shows_of(parts, texts, vids)    # D3: a moved show's files are its show's
+            folders = () if parts else [os.path.basename(os.path.normpath(f)) for f in subs]   # a8: the top's
+            show_of = self._shows_of(parts, texts, vids, folders)    # D3: a moved show's files are its show's
             episodes = self._episodes(self.base, parts, texts, epubs, langs, vids, self.versions.get(fkey, ()),
                                       show_of)
             for name, path, st, show, kind, *item in episodes:
@@ -1785,12 +1795,13 @@ class _Look:
         if keys:
             self._note(folder, ls.path_key(os.path.abspath(path)), "kept_out", keys)
 
-    def _shows_of(self, parts, texts, vids):
+    def _shows_of(self, parts, texts, vids, folders=()):
         """D3 (PROVISIONAL; Sonic's MV-1: a moved show found where Surasura reads joins the show it is, never a
         duplicate) -> show_of(a file's name): the show of a folder's files. A folder below the source (`parts`) is one
         show; at the source's top each name's show is its own (S12) — a show folder picked as the source itself (MV-2's
         *Find its folder*) reads its files' names. Each is `_show_of`'s, unless that show has no items yet and its files
-        are already items of ONE show (`_joined`) -> that show: `Downloads/Show` -> `NAS/2024 Fall/Show` stays `Show`."""
+        are already items of ONE show (`_joined`) -> that show: `Downloads/Show` -> `NAS/2024 Fall/Show` stays `Show`.
+        `folders`: the source's top folders' names (a8: a loose file of one of their shows is that folder's)."""
         if parts:
             show = self._joined(_show_of(self.base, parts, ""), texts, list(vids.values()))
             return lambda _name: show
@@ -1798,7 +1809,7 @@ class _Look:
 
         def own(name):
             if name not in names:
-                names[name] = _show_of(self.base, parts, name)
+                names[name] = _show_of(self.base, parts, name, folders)
             return names[name]
         for t in texts:
             groups.setdefault(own(t[0]), ([], []))[0].append(t)

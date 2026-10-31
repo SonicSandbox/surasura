@@ -698,6 +698,43 @@ def _rows():
                  {**{f"{{S}}/{ep(n)}.{{T}}.srt": _ep(f"{{S}}/{ep(n)}.{{T}}.srt", f"{{S}}/{ep(n)}.mkv") for n in (1, 2)},
                   **{f"{{S}}/Part 2/{ep(n)}.{{T}}.srt": f"{{S}}/Part 2/{ep(n)}.{{T}}.srt" for n in (1, 2)}},
                  "part 1's items keep their text; Part 2 its own show"))
+
+    # (h) a8 (alpha 7's try; Sonic 2026-10-31, PROVISIONAL): a loose episode at the source's top whose show is a folder
+    # beside it, apart only by punctuation (`episode_names.show_key`), is that folder's show: one folder, one title
+    loose = lambda n, s="{S}": [(f"{ep(n, s)}.mkv", "V"), (f"{ep(n, s)}.{{T}}.srt", "J")]     # noqa: E731
+    at_top = lambda n, s="{S}": _ep(f"{ep(n, s)}.{{T}}.srt", f"{ep(n, s)}.mkv")              # noqa: E731
+    bang = {f"{{S}}!/{ep(1)}.{{T}}.srt": _ep(f"{{S}}!/{ep(1)}.{{T}}.srt", f"{{S}}!/{ep(1)}.mkv"),
+            f"{{S}}!/{ep(2)}.{{T}}.srt": at_top(2)}
+    rows.append(("`<Show>!/` beside a loose episode of `<Show>`", "laptop try (a8)",
+                 "`<Show>!/` holding 01 and, at the source's top, `[Grp] <Show> - 02 (1080p).mkv` + `.ja.srt`", "",
+                 _pairs("{S}!", [ep(1)], ".{T}.srt") + loose(2), None, bang,
+                 "one show: the loose episode's copy goes into the folder's show"))
+    rows.append(("a loose episode of `<Show>!/` arriving later", "laptop try (a8)",
+                 "`<Show>!/` holding 01; later `[Grp] <Show> - 02 (1080p)` at the source's top", "",
+                 _pairs("{S}!", [ep(1)], ".{T}.srt"), loose(2), bang,
+                 "the next episode joins the show already in, never a second title"))
+    rows.append(("`Re：Zero/` beside a loose `Re Zero - 03`", "convention (a8)",
+                 "`Re：Zero/` (a full-width colon, as a Windows folder writes `:`) holding 01 and a loose "
+                 "`[Grp] Re Zero - 03 (1080p)`", "",
+                 _pairs("Re：Zero", [ep(1, "Re Zero")], ".{T}.srt") + loose(3, "Re Zero"), None,
+                 {f"Re：Zero/{ep(1, 'Re Zero')}.{{T}}.srt": _ep(f"Re：Zero/{ep(1, 'Re Zero')}.{{T}}.srt",
+                                                              f"Re：Zero/{ep(1, 'Re Zero')}.mkv"),
+                  f"Re：Zero/{ep(3, 'Re Zero')}.{{T}}.srt": at_top(3, "Re Zero")},
+                 "one show"))
+    rows.append(("`<Show>/` and `<Show>!/` beside a loose `<Show>`", "convention (a8)",
+                 "two folders apart only by punctuation, and a loose `[Grp] <Show> - 03 (1080p)` at the top", "",
+                 _pairs("{S}", [ep(1)], ".{T}.srt") + _pairs("{S}!", [ep(2)], ".{T}.srt") + loose(3), None,
+                 {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv"),
+                  f"{{S}}!/{ep(2)}.{{T}}.srt": _ep(f"{{S}}!/{ep(2)}.{{T}}.srt", f"{{S}}!/{ep(2)}.mkv"),
+                  f"{{S}}/{ep(3)}.{{T}}.srt": at_top(3)},
+                 "the loose one goes to the folder named exactly (the helper's run joins the two titles later)"))
+    rows.append(("a loose episode beside `<Show> 2/`", "convention (a8)",
+                 "`<Show> 2/` holding 01 and a loose `[Grp] <Show> - 05 (1080p)`", "",
+                 _pairs("{S} 2", [ep(1, "{S} 2")], ".{T}.srt") + loose(5), None,
+                 {f"{{S}} 2/{ep(1, '{S} 2')}.{{T}}.srt": _ep(f"{{S}} 2/{ep(1, '{S} 2')}.{{T}}.srt",
+                                                            f"{{S}} 2/{ep(1, '{S} 2')}.mkv"),
+                  f"{{S}}/{ep(5)}.{{T}}.srt": at_top(5)},
+                 "a number is part of a show's name: two shows"))
     return rows
 
 

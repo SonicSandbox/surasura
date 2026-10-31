@@ -187,6 +187,14 @@ def fold(text):
     return _SPACES.sub(" ", folded).strip()
 
 
+def show_key(text):
+    """The one "same show?" key (a8, Sonic 2026-10-31: punctuation ignored): `fold`, then letters and digits only —
+    `Show!` and `Show`, `Re:Zero` and `Re Zero` are one show (two shows apart only by punctuation count as one,
+    accepted). Asked by the covers' title check, where a loose file's copy lands (`sources._show_of`), the store's
+    loose-file title and the one-time join of such pairs. "" when no letter or digit is left."""
+    return "".join(c for c in fold(text) if unicodedata.category(c)[0] in "LN")
+
+
 def language_of(tag):
     """A dot tag's or a language folder's language (`ja`, `zh-Hans`, `English`): 'ja', 'zh', 'other' or None."""
     tag = unicodedata.normalize("NFKC", tag or "").strip().casefold()

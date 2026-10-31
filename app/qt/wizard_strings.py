@@ -118,20 +118,30 @@ PICK_FOLDER_TIP = ("Choose a folder your shows and books are in: Surasura reads 
 PICK_TITLE = "Where are your shows and books?"
 # Alpha 8 (Sonic: "You just pick the file or you pick the folder"): a file, a folder, or YouTube links — each kind found
 PICK_FILE = "Choose a file…"
-PICK_FILE_TIP = ("Choose an episode's subtitles, a text or an EPUB: Surasura sees which it is.\n"
+PICK_FILE_TIP = ("Choose an episode's subtitles or its video, a text or an EPUB: Surasura sees which it is.\n"
                  "• It goes at the top of Current; nothing in the file is changed")
 PICK_FILE_TITLE = "Choose a file"
-PICK_FILE_FILTER = "Subtitles, texts and books ({patterns});;All files (*)"
+PICK_FILE_FILTER = "Subtitles, videos, texts and books ({patterns});;All files (*)"
 FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
+# alpha 8 (A8B-L2, Sonic "Yes do that"): a video chosen as a file — its subtitle found beside it by the library's rule
+VIDEO_LOOKING = "Looking beside {name} for its subtitle…"
+VIDEO_SUBTITLE = "{name}: its subtitle {subtitle} comes in."
+VIDEO_SUBTITLE_BEST = "{name}: {subtitle} comes in (the best of {n} subtitles beside it)."
+VIDEO_NO_SUBTITLE = ("{name}: no subtitle beside it, and Surasura reads a video's subtitle file, not the video. "
+                     "Choose its folder to look through it, its Subs folder too.")
+VIDEO_ITS_FOLDER = "Choose its folder"
+VIDEO_ITS_FOLDER_NAME = "Choose the folder {folder}"
+VIDEO_ITS_FOLDER_TIP = ("Read the video's whole folder instead, as Choose a folder… does:\n"
+                        "• Each video's subtitle is found by its name, a Subs folder too")
 FILES_ADDED = "Bringing in {what}: they go at the top of Current."
 FILES_N = ("1 file", "{n:,} files")
 BOOK_ADDED = "{name} is in Current: {parts} parts."
 BOOK_FAILED = "{name} couldn't be brought in: {why}"
 YOUTUBE = "YouTube…"
 YOUTUBE_TIP = ("Paste YouTube links, one a line. Each line's first video comes in while setup finishes.\n"
-               "• A playlist's other videos: the YouTube window, any time")
+               "• A playlist: its other videos come in after, in the background (the bottom bar shows them)")
 YOUTUBE_NAME = "YouTube links, one a line"
-YOUTUBE_HINT = "One link a line: a video, or a playlist (its first video comes in)"
+YOUTUBE_HINT = "One link a line: a video, or a playlist (its first video now, the rest after)"
 YOUTUBE_RISK_LINE = "YouTube can turn requests away for a while; it's for your own study."
 YOUTUBE_NEEDS_RISK = "Tick “{risk}” to bring in from YouTube, or clear the links."
 YOUTUBE_NONE = "Paste a YouTube link first: one a line."
@@ -329,6 +339,8 @@ YOUTUBE_DONE = "YouTube · {what} in New arrivals"
 YOUTUBE_PLACED = "YouTube · {what} in your library"
 YOUTUBE_FAILED = "YouTube · {why}"
 YOUTUBE_SOME_FAILED = "YouTube · {what} in New arrivals · {why}"
+YOUTUBE_REST = ("the first of its playlist: the rest comes in in the background",          # alpha 8: a playlist's
+                "the first of {n:,} playlists: the rest come in in the background")        # rest, after setup
 LOAD_STOP = "Stop"
 LOAD_STOP_TIP = ("Stop here and sort what was read so far. Nothing read is lost; a folder not reached yet stays on "
                  "the page to read again.")

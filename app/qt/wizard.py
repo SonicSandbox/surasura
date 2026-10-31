@@ -1514,6 +1514,16 @@ class ShowsPage(_Page):
         self.refused_line = _label("wizclosed", "", self.folders_part, wrap=True)
         self.refused_line.setVisible(False)
         fbox.addWidget(self.refused_line)
+        # alpha 8 (A8B-L2): a video with no subtitle beside it — its folder offered (read as *Choose a folder…* reads)
+        self._its_folder = None
+        self.btn_its_folder = _button(S.VIDEO_ITS_FOLDER, S.VIDEO_ITS_FOLDER_TIP,
+                                      lambda: self._its_folder and self.wiz.choose_folder(self._its_folder),
+                                      self.folders_part, name="wizlink")
+        self.btn_its_folder.setVisible(False)
+        its = QHBoxLayout()
+        its.addWidget(self.btn_its_folder)
+        its.addStretch(1)
+        fbox.addLayout(its)
         self.box.addWidget(self.folders_part)
         self._folders_key = None
         self.folder_paints = 0
@@ -1607,6 +1617,15 @@ class ShowsPage(_Page):
     def refuse(self, text):
         _set_text(self.refused_line, text or "")
         _show(self.refused_line, bool(text))
+        if not text:
+            self.offer_folder(None)
+
+    def offer_folder(self, folder):
+        """(Alpha 8) *Choose its folder* beside the line saying a video's subtitle wasn't found (None: hidden)."""
+        self._its_folder = folder
+        if folder:
+            self.btn_its_folder.setAccessibleName(S.VIDEO_ITS_FOLDER_NAME.format(folder=folder))
+        _show(self.btn_its_folder, bool(folder))
 
     def _paint_folders(self):
         """The picked folders, each a row with *Remove* (rebuilt only when the list changed, S19)."""
@@ -1759,6 +1778,18 @@ class ShowsPage(_Page):
         return w
 
 
+def _is_video(path):
+    """A video file by its name (Connect's one rule, `runner.video_name`): setup finds its subtitle beside it."""
+    from app.connect import runner
+    return runner.video_name(os.path.basename(path))
+
+
+def _youtube_rest():
+    """(Alpha 8) The YouTube module's `(playlist_link, bring_in_rest)`: a playlist's rest in the background."""
+    from modules.youtube_downloader import bring_in_rest, playlist_link
+    return playlist_link, bring_in_rest
+
+
 def _youtube_fetcher():
     """The YouTube module's setup fetch (`modules.youtube_downloader.fetch_first`), imported only when it is used."""
     from modules.youtube_downloader import fetch_first
@@ -1775,16 +1806,18 @@ def _youtube_risk_words():
         return "I understand the risks", ""
 
 
-def youtube_line(waiting, placed, why):
+def youtube_line(waiting, placed, why, playlists=0):
     """(Alpha 8) What setup's YouTube fetch says at its end: the videos in New arrivals (or placed by a rule), and why
-    one didn't come; nothing came -> why (or that there was nothing to bring)."""
+    one didn't come; nothing came -> why (or that there was nothing to bring). `playlists`: the links that are
+    playlists — their first video now, the rest coming in the background (`_youtube_rest`), said too."""
     came = waiting + placed
     if not came:
-        return S.YOUTUBE_FAILED.format(why=why or S.YOUTUBE_NONE)
-    what = _count(S.YOUTUBE_VIDEOS, came)
-    if why:
-        return S.YOUTUBE_SOME_FAILED.format(what=what, why=why)
-    return (S.YOUTUBE_DONE if waiting else S.YOUTUBE_PLACED).format(what=what)
+        line = S.YOUTUBE_FAILED.format(why=why or S.YOUTUBE_NONE)
+    elif why:
+        line = S.YOUTUBE_SOME_FAILED.format(what=_count(S.YOUTUBE_VIDEOS, came), why=why)
+    else:
+        line = (S.YOUTUBE_DONE if waiting else S.YOUTUBE_PLACED).format(what=_count(S.YOUTUBE_VIDEOS, came))
+    return f"{line} · {_count(S.YOUTUBE_REST, playlists)}" if playlists else line
 
 
 def row_count(row):
@@ -2505,6 +2538,7 @@ class SetupWizard(QWidget):
         self.fetching = None                # alpha 8: page 3's YouTube fetch under way (the load waits for it last)
         self.youtube_said = ""              # … and what its end said
         self.youtube_came = 0               # … and how many videos it brought (the sort screen offers them)
+        self.youtube_playlists = 0          # … and how many of its links were playlists (their rest comes after)
         # the folder and file pickers (the system's own dialogs; tests replace them)
         self.pick_dialog = lambda title, start: QFileDialog.getExistingDirectory(self, title, start)
         self.pick_files_dialog = self._pick_files_dialog
@@ -3015,18 +3049,53 @@ class SetupWizard(QWidget):
             return
         page = self.pages[2]
         start = os.path.dirname(page.files[-1]) if page.files else os.path.expanduser("~")
-        refused = []
+        refused, videos = [], []
         for path in self.pick_files_dialog(S.PICK_FILE_TITLE, start) or ():
             path = os.path.normpath(path)
-            if path_utils.file_kind(path) is None:
-                refused.append(S.FILE_NOT_READ.format(name=os.path.basename(path)))
-            else:
+            if path_utils.file_kind(path) is not None:
                 page.add_file(path)
+            elif _is_video(path):
+                videos.append(path)                       # alpha 8 (A8B-L2): its subtitle looked for beside it
+            else:
+                refused.append(S.FILE_NOT_READ.format(name=os.path.basename(path)))
         if refused:
             page.refuse("\n".join(refused))
+        if videos:
+            self._subtitles_of(videos, refused)
+
+    def _subtitles_of(self, videos, refused):
+        """(Alpha 8, Sonic's "Yes do that" to A8B-L2) Videos chosen as files: each one's subtitle found beside it by the
+        library's one pairing rule (`sources.subtitles_for_video`, on a worker; the best when several) and listed as
+        the file brought in; none found -> said, with *Choose its folder* (the first such video's). Said at once."""
+        from app import sources
+        page, language = self.pages[2], self.language
+        page.refuse("\n".join(refused + [S.VIDEO_LOOKING.format(name=os.path.basename(videos[0]))]))
+
+        def found(answers):
+            if self._gone or sip.isdeleted(self) or language != self.language:
+                return
+            lines, offer = list(refused), None
+            for video, subs in answers:
+                name = os.path.basename(video)
+                if not subs:
+                    lines.append(S.VIDEO_NO_SUBTITLE.format(name=name))
+                    offer = offer or os.path.dirname(video)
+                    continue
+                page.add_file(subs[0])
+                said = S.VIDEO_SUBTITLE if len(subs) == 1 else S.VIDEO_SUBTITLE_BEST
+                lines.append(said.format(name=name, subtitle=os.path.basename(subs[0]), n=len(subs)))
+            page.refuse("\n".join(lines))
+            if offer is not None and self.can_add("folder") and self.can_read_folders():
+                page.offer_folder(offer)
+        bridge.run_in_worker(lambda: [(v, sources.subtitles_for_video(v, language)) for v in videos],
+                             then=self.alive(found),
+                             failed=self.alive(lambda info: page.refuse(S.VIDEO_NO_SUBTITLE.format(
+                                 name=os.path.basename(videos[0])))))
 
     def _pick_files_dialog(self, title, start):
-        patterns = " ".join("*" + ext for ext in path_utils.BOOK_EXTENSIONS + path_utils.CONTENT_EXTENSIONS)
+        from app.connect import runner
+        patterns = " ".join("*" + ext for ext in path_utils.BOOK_EXTENSIONS + path_utils.CONTENT_EXTENSIONS
+                            + runner.VIDEO_EXTENSIONS)
         paths, _chosen = QFileDialog.getOpenFileNames(self, title, start, S.PICK_FILE_FILTER.format(patterns=patterns))
         return paths
 
@@ -3102,13 +3171,28 @@ class SetupWizard(QWidget):
     def _fetch_youtube(self, links):
         """The links' first videos, fetched by the module on a `youtube` job (`fetch_first`); its end hands the
         transcripts to New arrivals (the downloader's own seam, `windows.youtube_arrivals`) and says what came in or
-        why not — on the load screen's side line, here and in the bar. The load's last step waits for it."""
+        why not — on the load screen's side line, here and in the bar. The load's last step waits for it. A link that
+        is a playlist (Sonic: "it should still get the whole playlist"): its rest comes in after, in the background
+        (`bring_in_rest`: a job of its own, behind this one; never waited for), and the end line says so."""
+        try:
+            link_of, rest = _youtube_rest()
+            playlists = list(dict.fromkeys(p for p in map(link_of, links) if p))
+        except Exception as e:                            # the module gone or broken: the first videos alone
+            applog.log("wizard", f"youtube playlists: {e}")
+            playlists, rest = [], None
+        self.youtube_playlists = len(playlists)
         self.fetching = {"links": len(links)}
         self._youtube_side(S.YOUTUBE_FETCHING.format(what=_count(S.YOUTUBE_VIDEOS, len(links))))
         try:
             _youtube_fetcher()(self.shell, links, self.language, lambda _line: None, self._youtube_ended)
         except Exception as e:                            # the module gone or broken: said, setup goes on
             self._youtube_ended([], [str(e) or type(e).__name__])
+            return
+        if playlists:
+            try:
+                rest(self.shell, self.language, playlists)
+            except Exception as e:
+                applog.log("wizard", f"youtube rest: {e}")
 
     def _youtube_side(self, text):
         screen = self._load_screen()
@@ -3128,7 +3212,7 @@ class SetupWizard(QWidget):
             self._youtube_landed(0, 0, str(e))
 
     def _youtube_landed(self, waiting, placed, why):
-        line = youtube_line(waiting, placed, why)
+        line = youtube_line(waiting, placed, why, self.youtube_playlists)
         if self._gone or sip.isdeleted(self):
             windows.say_in_bar(self.shell, line)
             return
@@ -3179,9 +3263,17 @@ class SetupWizard(QWidget):
         page = self.pages[2]
         start = page.folders[-1] if page.folders else os.path.expanduser("~")
         path = self.pick_dialog(S.PICK_TITLE, start)
-        if not path:
+        if path:
+            self.choose_folder(path)
+
+    def choose_folder(self, path):
+        """A folder chosen (the dialog's, or alpha 8's *Choose its folder* beside a video with no subtitle): checked by
+        the store's own rule on a worker (`folder_refused`) — refused, its reason in plain words; else listed."""
+        if self.reading is not None or self._gone or qpress.live(self, "wizard:pick"):
             return
+        page = self.pages[2]
         path = os.path.normpath(path)
+        page.offer_folder(None)
         if page.has_folder(path):
             return
         refused = getattr(self.api, "folder_refused", None)

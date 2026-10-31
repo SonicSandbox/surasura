@@ -441,6 +441,84 @@ def _video_rank(low, vids):
     return en.dubbed(low), -vids[low][1].st_size, low
 
 
+def episode_key(name, language, years=None):
+    """LM1a: the episode a file name reads (`episode_names.identity`'s key: show without its season, season, episode,
+    part, special), its show folded for the library's language (`search_fold`: Chinese Traditional as Simplified too)
+    — two releases of one episode have the same; None when it reads no episode. A3 (PROVISIONAL): a year the name
+    writes keeps it apart only in a show whose names write two years or more (`years()`: those years — the look's,
+    `_Look._years`) — two remakes; else, and with no `years`, `Show (2019) - 05` is `Show - 05`."""
+    n = en.identity(name)
+    if n.episode is None:
+        return None
+    k = n.key
+    if n.year and years is not None and len(years()) < 2:
+        k = (k[0][:-len(f" ({n.year})")],) + k[1:]
+    return (ls.search_fold(k[0], language),) + k[1:]
+
+
+def video_keys(vids, language):
+    """A4: [(video, its episode key)] of a folder's videos (`vids`: {listing key: (path, stat)}) — never a special's
+    nor an extra's (`episode_names.extra`)."""
+    return [(v, vk) for v, vk in ((v, episode_key(v, language)) for v in sorted(vids))
+            if vk and not vk[4] and not en.extra(v)]
+
+
+def video_for(name, vids, language, keyed=None):
+    """LM1b, the ONE pairing rule: the video a text found in a folder goes with -> (its key in `vids` — {listing key:
+    (path, stat)}, `_listing`'s —, 'name' | 'number') or (None, None). A loose `.txt` / `.md` only by its exact stem
+    (T2-B3); a subtitle by its name — its stem, then the names Connect pairs (`videos.names_for`) — else by its
+    episode's key among the folder's videos (A4: never a special's, and only where the names' shows agree or the
+    folder's videos carry one show). Of several videos of one episode (A5, their keys alike; never an extra's,
+    `episode_names.extra`): one not marked Dual / Dub / Multi, then the largest, then the first by name
+    (`_video_rank`). `keyed()`: the folder's `video_keys` (the look reads them once). The look's rule (`_Look`, which
+    also reads `Subs/<video>/`, A11) and setup's video file (`subtitles_for_video`). PROVISIONAL (Sonic 2026-10-21:
+    accepted for building, to be checked in use)."""
+    from app.connect import runner, videos
+    if not vids:
+        return None, None
+    if name.lower().endswith(_LOOSE):
+        stem = os.path.splitext(name)[0]
+        v = next((c.lower() for c in (stem + e for e in runner.VIDEO_EXTENSIONS) if c.lower() in vids), None)
+        return (v, "name") if v else (None, None)
+    for candidate in [_tag(name)[0] + e for e in runner.VIDEO_EXTENSIONS] + videos.names_for(name):
+        if candidate.lower() in vids:
+            return candidate.lower(), "name"
+    k = episode_key(name, language)
+    if k is None or k[4]:
+        return None, None
+    keyed = keyed() if keyed is not None else video_keys(vids, language)
+    one = len({vk[0] for _v, vk in keyed}) == 1
+    same = [v for v, vk in keyed if vk[1:] == k[1:] and (one or vk[0] == k[0])]
+    return (min(same, key=lambda v: _video_rank(v, vids)), "number") if same else (None, None)
+
+
+def subtitles_for_video(path, language):
+    """(A worker; alpha 8, setup's *Choose a file…* given a video.) The subtitles beside the video `path` that the one
+    pairing rule (`video_for`) gives to it, best first (`subtitle_rank`: named like it, our language, plain…); a
+    loose text or one tagged for another language is never one. Only the video's own folder is read (its `Subs/`
+    folder: *Choose its folder*). -> [paths]; [] when none (or the folder can't be read)."""
+    folder = os.path.dirname(os.path.abspath(path))
+    listed = _listing(folder)
+    if listed is None:
+        return []
+    texts, _epubs, vids, _subs, _ghosts, _unread = listed
+    me = os.path.basename(path).lower()
+    if me not in vids:
+        try:
+            vids = dict(vids, **{me: (path, os.stat(path))})     # a small file Connect's rule passes over: still it
+        except OSError:
+            return []
+    stem = os.path.splitext(os.path.basename(path))[0]
+    found = []
+    for name, full, _st in texts:
+        if name.lower().endswith(_LOOSE) or _tag(name)[1] not in (None, language):
+            continue
+        v, _by = video_for(name, vids, language)
+        if v == me:
+            found.append((subtitle_rank(name, language, named=_tag(name)[0] == stem), full))
+    return [full for _rank, full in sorted(found)]
+
+
 def _group(name):
     """A8 (LM1a's `group`): a file's release group — its leading `[tag]` and the name before its episode marker,
     folded: a later release follows the pick of its own group only."""
@@ -2146,18 +2224,8 @@ class _Look:
             self.groups[fk] = _group(name)
 
     def _episode_key(self, name, show=None):
-        """LM1a: the episode a file name reads (`episode_names.identity`'s key: show without its season, season,
-        episode, part, special), its show folded for the library's language (`search_fold`: Chinese Traditional as
-        Simplified too) — two releases of one episode have the same; None when it reads no episode. A3 (PROVISIONAL):
-        a year the name writes keeps it apart only in a show (`show`, its `Library` folder) whose names
-        write two years or more — two remakes; else `Show (2019) - 05` is `Show - 05`."""
-        n = en.identity(name)
-        if n.episode is None:
-            return None
-        k = n.key
-        if n.year and show is not None and len(self._years(show)) < 2:
-            k = (k[0][:-len(f" ({n.year})")],) + k[1:]
-        return (ls.search_fold(k[0], self.language),) + k[1:]
+        """LM1a: `episode_key`, with A3's years read from the show (`show`: its `Library` folder) the name is in."""
+        return episode_key(name, self.language, years=None if show is None else lambda: self._years(show))
 
     def _years(self, show):
         """A3: the years the names of a show's files write — its new ones this look and its origins'."""
@@ -2655,39 +2723,20 @@ class _Look:
         return dialogue_lines(decode_text(head, self.language, head=data is None)) or None
 
     def _video_for(self, path, name, vids):
-        """LM1b, the ONE pairing rule of a look: the video a text found in a folder goes with -> (its key in `vids`,
-        'name' | 'number') or (None, None). A text in `Subs/<video>/` is that video's (A11); a loose `.txt` / `.md`
-        only by its exact stem (T2-B3); a subtitle by its name — its stem, then the names Connect pairs
-        (`videos.names_for`) — else by its episode's key among the folder's videos (A4: never a special's, and only
-        where the names' shows agree or the folder's videos carry one show). Of several videos of one episode (A5,
-        their keys alike; never an extra's, `episode_names.extra`): one not marked Dual / Dub / Multi, then the
-        largest, then the first by name (`_video_rank`). PROVISIONAL (Sonic 2026-10-21: accepted for building,
-        to be checked in use)."""
-        from app.connect import runner, videos
+        """LM1b, the ONE pairing rule of a look (`video_for`): a text in `Subs/<video>/` is that video's (A11); else
+        `video_for`, the folder's videos' keys read once a look."""
         if not vids:
             return None, None
         if path in self.video_of:
             v = self.video_of[path]
             return (v, "name") if v in vids else (None, None)
-        if name.lower().endswith(_LOOSE):
-            stem = os.path.splitext(name)[0]
-            v = next((c.lower() for c in (stem + e for e in runner.VIDEO_EXTENSIONS) if c.lower() in vids), None)
-            return (v, "name") if v else (None, None)
-        for candidate in [_tag(name)[0] + e for e in runner.VIDEO_EXTENSIONS] + videos.names_for(name):
-            if candidate.lower() in vids:
-                return candidate.lower(), "name"
-        k = self._episode_key(name)
-        if k is None or k[4]:
-            return None, None
+        return video_for(name, vids, self.language, keyed=lambda: self._video_keys(vids))
+
+    def _video_keys(self, vids):
         held = self.vkeys.get(id(vids))                      # the folder's videos' keys, read once a look
         if held is None or held[0] is not vids or held[1] != len(vids):
-            keyed = [(v, vk) for v, vk in ((v, self._episode_key(v)) for v in sorted(vids))
-                     if vk and not vk[4] and not en.extra(v)]   # an extra's video is no episode's
-            held = self.vkeys[id(vids)] = (vids, len(vids), keyed)
-        keyed = held[2]
-        one = len({vk[0] for _v, vk in keyed}) == 1
-        same = [v for v, vk in keyed if vk[1:] == k[1:] and (one or vk[0] == k[0])]
-        return (min(same, key=lambda v: _video_rank(v, vids)), "number") if same else (None, None)
+            held = self.vkeys[id(vids)] = (vids, len(vids), video_keys(vids, self.language))
+        return held[2]
 
     def _keys(self, name, video=None, show=None):
         """LM1b: the episode keys a text answers to in its show (`show`: `_episode_key`'s years) — its video's first

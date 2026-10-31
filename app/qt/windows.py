@@ -379,7 +379,7 @@ def arrived_line(waiting, placed, missed=0):
     return line
 
 
-def youtube_arrivals(shell, then=None):
+def youtube_arrivals(shell, then=None, quiet=False):
     """The downloader's `on_complete(paths)` (the window's thread): its created files (and the files in the folders it
     made) registered through the window's writer — never the store on this thread — each waiting in New arrivals
     unless the user's `placing_rules` (`youtube`, `youtube:<channel>`) place it; once they land, the downloader's
@@ -387,7 +387,8 @@ def youtube_arrivals(shell, then=None):
     raised: one opened before the library must still hand its files over; L1 N2). Raises when no library is open, the
     files aren't in the open library's folder (the language switched mid-download; L1 S3) or the store can't be
     written — the downloader says why; the files wait in Processed. `then(waiting, placed, missed)` (alpha 8, setup's
-    *YouTube*): told once they landed, on the window's thread."""
+    *YouTube*): told once they landed, on the window's thread; `quiet` (a playlist's rest, which says its own line):
+    the bar and the downloader's line say nothing."""
 
     def complete(paths):
         writer = getattr(shell.services, "writer", None)  # the library open now (a switch makes another)
@@ -404,7 +405,7 @@ def youtube_arrivals(shell, then=None):
         rules = {str(k): v for k, v in rules.items()} if hasattr(rules, "items") else {}
         language = writer.language
         relay = bridge.Relay(parent=shell)
-        relay.said.connect(lambda counts: _arrived(shell, relay, counts, then))
+        relay.said.connect(lambda counts: _arrived(shell, relay, counts, then, quiet))
         seq = writer.register(paths, lambda path: youtube_record(path, language), rules=rules,
                               label=strings.YT_ARRIVED_LABEL,
                               done=lambda waiting, placed, missed: relay.call((waiting, placed, missed)))
@@ -414,7 +415,40 @@ def youtube_arrivals(shell, then=None):
     return complete
 
 
-def _arrived(shell, relay, counts, then=None):
+def resume_youtube(shell):
+    """(Alpha 8, at each start) The rest of a playlist setup began — or what a run stopped by a quit, an outage or a
+    stall left — goes on in the background while the downloader is on (`enable_youtube_transcripts`) and its risk was
+    acknowledged; the module's record is looked for on a worker. Nothing without the module."""
+    try:
+        settings = shell.services.settings.get()
+        if not (settings.get("enable_youtube_transcripts") and settings.get("youtube_risk_acknowledged")):
+            return
+        language = settings.get("target_language") or "ja"
+    except Exception as e:
+        applog.log("windows", f"youtube rest at start: {e}")
+        return
+
+    def waiting(found):
+        if not found:
+            return
+        try:
+            from modules.youtube_downloader import bring_in_rest
+            bring_in_rest(shell, language)
+        except Exception as e:                            # the module gone or broken: the app goes on
+            applog.log("windows", f"youtube rest at start: {e}")
+    bridge.run_in_worker(_rest_waiting, language, then=waiting,
+                         failed=lambda info: applog.log("windows", f"youtube rest at start: {info[0]}"))
+
+
+def _rest_waiting(language):
+    try:
+        from modules.youtube_downloader import downloader_view
+    except ImportError:
+        return False
+    return os.path.exists(downloader_view.rest_path(language))
+
+
+def _arrived(shell, relay, counts, then=None, quiet=False):
     try:
         relay.deleteLater()
     except RuntimeError:
@@ -422,7 +456,7 @@ def _arrived(shell, relay, counts, then=None):
     if then is not None:
         then(*counts)
     line = arrived_line(*counts)
-    if not line:
+    if not line or quiet:
         return
     say_in_bar(shell, line)
     win = shell.__dict__.get("_secondary_windows", {}).get("youtube-downloader")

@@ -433,7 +433,7 @@ ROWS = {
 
     # Connections
     "anki_miner": ("Anki Miner", "Makes your cards from your own videos. Free, made by Zero.\n"
-                                 "He's awesome. Please give him some love :)",
+                                 "He's awesome. Please give him some love :)",     # (a no-break space: ":)" never alone)
                    "Anki Miner's state, and what it still needs", "anki miner install setup"),
     "hato": ("hato", "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),

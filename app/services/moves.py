@@ -2466,10 +2466,10 @@ class Numbers:
     def _set(self, eng, table, why, key):
         with self._lock:
             last = self._table
-        # What changed, worked out before the lock (a read of the numbers never waits on it: U-A6) — so the fade comes
-        # and goes on the rows that show a figure, never a rebuild of every row (U-1, U-A1); a move published meanwhile:
-        # unknown, every row again
-        changed = _faded_ids(last, table)
+        # The fade coming or going (either table kept): what changed, worked out before the lock (a read of the numbers
+        # never waits on it: U-A6), so only those rows rebuild (U-1, U-A1); a move published meanwhile: unknown. Any
+        # other load replaces every figure: unknown, as ever (M47)
+        changed = _faded_ids(last, table) if isinstance(last, Kept) or isinstance(table, Kept) else None
         with self._lock:
             said = self._why
             self._engine, self._why, self._plan_key = eng, why, key

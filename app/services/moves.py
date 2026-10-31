@@ -2336,24 +2336,21 @@ class Numbers:
         if store is None:                           # asked again at the next resync (no key kept)
             self._set(None, {}, f"no store: {getattr(self.opener, 'reason', None) or self.opener.mode}", None)
             return
-        by_path = {}
-        for tier in library_store.TIERS:
-            for item_id, entry, _availability in store.ordered(tier):
-                by_path[library_store.path_key(entry.get("physical_path") or "")] = item_id
-        ids = [by_path.get(library_store.path_key(entry[0])) for entry in plan.files]
+        by_key = store.item_keys()
+        ids = [by_key.get(library_store.path_key(entry[0])) for entry in plan.files]
         counts = {}
         for f, item in enumerate(ids):
             if item is not None:
                 total, baseline = plan.per_file[f]["prog"][0], plan.per_file[f]["prog"][1]
                 counts[item] = (baseline, total, None)
-        why = self._stale(plan, store, ids)
+        order = self._order(store)                  # read once a load: the staleness check and the engine share it
+        why = self._stale(plan, store, ids, order)
         if why is not None:
             self._set(None, counts, why, key)
             return
         try:
             eng = plan_engine.Engine(plan, ids, numbers_only=True)  # an i+1 plan: its numbers (row 36)
             del plan                                # the per-file lines go: the engine keeps its own tables
-            order = self._order(store)
             eng._numbers(order)
         except plan_engine.PlanError as e:
             self._set(None, counts, f"stale: {e}", key)
@@ -2361,7 +2358,7 @@ class Numbers:
         self.renumbered += 1
         self._set(eng, self._figures(eng, counts), None, key)
 
-    def _stale(self, plan, store, ids):
+    def _stale(self, plan, store, ids, order):
         aside = _plan_engine().stands_aside(plan)
         if aside and not all(r in _plan_engine().NUMBERS_EXACT for r in _plan_engine().aside_reasons(plan)):
             return f"stands aside: {aside}"                               # (i+1 alone: *N new* follows it, row 36)
@@ -2369,7 +2366,7 @@ class Numbers:
         if epoch is not None and epoch != store.versions().get("epoch"):
             return "stale: the library was rebuilt since the last Generate"
         held = {i for i in ids if i is not None}
-        if any(item not in held for item, _tier in self._order(store)):
+        if any(item not in held for item, _tier in order):
             return "stale: files came in since the last Generate"
         if self._check is not None:
             try:
@@ -2383,15 +2380,9 @@ class Numbers:
     def _order(self, store):
         """The analysed tiers' items as a Generate counts them — the store's one rule, read through `Store.schedule`:
         a video waiting for its subtitle (K5) is in none, so it never makes the numbers stale (round 7 review A-3);
-        nor (W-1) an item that doesn't count, a watched episode while *Keep studying watched episodes* is off."""
-        from app.library_store import TIERS, path_key
-        schedule = store.schedule()
-        out = []
-        for tier in ANALYSED:
-            counted = {path_key(e["physical_path"]) for e in schedule.get(TIERS[tier][0], ())}
-            out += [(item, tier) for item, entry, _availability in store.ordered(tier)
-                    if path_key(entry.get("physical_path") or "") in counted]
-        return out
+        nor (W-1) an item that doesn't count, a watched episode while *Keep studying watched episodes* is off. Its ids
+        alone (`Store.scheduled_ids`), no entry read: this runs after every arrival and move (W4.1)."""
+        return store.scheduled_ids()
 
     def _resync(self):
         path = self._plan_path()

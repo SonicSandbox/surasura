@@ -968,10 +968,11 @@ class DragController(QObject):
         self.expect_tiers = {}
         self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
         self.expect_off = {}                         # LM11b G5: key -> ids taken off its row (the reader builds it so)
-        # a8: file id -> [watched, its write, views since it landed (None: waiting), as the store had it before] —
+        # a8: file id -> [watched, its write, views since it landed (None: waiting), the row it was painted on] —
         # painted ahead of the store (`_marks_ahead`) until the reader's views have it (`_marks_seen`)
         self.expect_marks = {}
-        self._marks_of = weakref.WeakKeyDictionary()  # a8: a saved change -> its marks (Ctrl+Z's undo painted ahead)
+        self._mark_undos = []                        # a8: the Undos painted ahead whose word is still to come
+        self._marks_of = weakref.WeakKeyDictionary()  # a8: a saved change -> (its marks, its row's key) (Ctrl+Z)
         self._reader_off = None                      # ... the ticket whose landing lets the reader's build go (H-C3)
         self._closed = False                         # H-T1: let go by the window (its close, a language switch)
         self.held = None                             # the reader's newest view, not shown yet
@@ -1113,54 +1114,75 @@ class DragController(QObject):
 
     # --- a8: a stone's Done painted ahead of the store ----------------------------------------------------------- #
     # Sonic's alpha 7 try ("it lagged by at least a second before registering", more while a Generate ran): a Done's
-    # marks are painted in the click itself, as a drop's order is (`_ahead`), whatever holds the store meanwhile (G3) —
-    # and stand on every view shown until the reader's views have them: a mark whose write landed goes at the first
-    # view that shows it so, or at the second view since, whatever that shows (the reader builds one view at a time, so
-    # the first may have begun before the write landed — never the second). A write that lands as nothing turns its
-    # stones back at once, as the store still has them.
+    # marks are painted in the click itself, as a drop's order is (`_ahead`), whatever holds the store meanwhile — and
+    # stand on every view shown until the reader's views have them: a mark whose write landed goes at the first view
+    # that shows it so, or at the second view since, whatever that shows (the reader builds one view at a time, and its
+    # views reach this thread in order with the writer's word: the first may have begun before the write landed, never
+    # the second). A write that lands as nothing (already so, refused, failed) or an Undo the store refuses: the next
+    # view is the store's, whatever it shows (nothing was written for it to begin before). The row's own fields come
+    # from `view_rows.marked` (one rule with the reader's); the top-20 line and the one title width as `reordered`
+    # draws them for a drop; which files are *in the top* (a stone's dimming, *Waiting*) follow the store's view, as
+    # after a drop.
+    def _holding(self, view):
+        """The places of `view`'s rows that hold a marked file: the rows they were painted on (by key) — every row
+        holding one only when a marked file isn't there (its row joined, split or gone): never a walk over every file
+        while the rows are where they were."""
+        marks, rows_ = self.expect_marks, view.rows
+        keys = {m[3] for m in marks.values()}
+        at = [k for k, r in enumerate(rows_) if r.key in keys]
+        if len({e.id for k in at for e in rows_[k].episodes if e.id in marks}) < len(marks):
+            at = [k for k, r in enumerate(rows_) if any(e.id in marks for e in r.episodes)]
+        return at
+
     def _with_marks(self, view):
-        """`view` with the window's own marks on its rows (`view_rows.marked`) — `view` itself when they change none."""
+        """`view` with the window's own marks on its rows — `view` itself when they change none."""
         if not self.expect_marks or view is None or not getattr(view, "rows", None):
             return view
         marks = {i: m[0] for i, m in self.expect_marks.items()}
-        rows_ = tuple(view_rows.marked(r, marks, hero=not i) for i, r in enumerate(view.rows))   # (Up Next first)
-        return view if all(a is b for a, b in zip(rows_, view.rows)) else view._replace(rows=rows_)
+        rows_ = list(view.rows)
+        changed = []
+        for k in self._holding(view):
+            row = view_rows.marked(rows_[k], marks, hero=not k)          # (Current's first row reads as Up Next)
+            if row is not rows_[k]:
+                rows_[k] = row
+                changed.append(k)
+        if not changed:
+            return view
+        worst = view.worst if changed == [0] else view_rows.worst_needs(rows_[1:])
+        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_), worst=worst)
 
-    def _marks_ahead(self, write, marks):
-        """`marks` ({file id: watched}) painted now, kept for `write` (the ticket the writer hands back as it lands). As
-        the store has it before: what the window painted (an Undo asked of a write not saved yet, the same ticket: as
-        the store had it before that write)."""
+    def _marks_ahead(self, write, marks, key):
+        """`marks` ({file id: watched}) of the row `key` painted now, kept for `write` (the ticket the writer hands
+        back as it lands)."""
         for i, on in marks.items():
-            old = self.expect_marks.get(i)
-            was = not on if old is None else old[3] if old[1] is write else old[0]
-            self.expect_marks[i] = [on, write, None, was]
+            self.expect_marks[i] = [on, write, None, key]
         view = self.page.view_model
         if view is not None:
             self._show(view)
         self._settle.start()
 
+    def _awaited(self, write):
+        """Whether the writer's word for `write` is still to come (its ticket waits, or its Undo does)."""
+        return any(write is t for t in self.tickets) or any(write is u for u in self._mark_undos)
+
     def _marks_landed(self, write=None, empty=False):
-        """`write`'s marks (None: every one) landed: they stand until the views have them. `empty`: it landed as
-        nothing (refused, failed, an Undo refused) — its stones turn back now, as the store still has them."""
-        back = False
+        """`write`'s marks landed (None: every one whose word isn't awaited — the writer idle): they stand until the
+        views have them. `empty`: it landed as nothing — the next view decides."""
         for m in self.expect_marks.values():
-            if m[2] is None and (write is None or m[1] is write):
-                m[2] = 0
-                if empty and m[0] != m[3]:
-                    m[0], back = m[3], True
-        view = self.page.view_model
-        if back and view is not None:
-            self._show(view)
+            if m[2] is None and (m[1] is write if write is not None else not self._awaited(m[1])):
+                m[2] = 1 if empty else 0
+        if write is not None:
+            self._mark_undos = [u for u in self._mark_undos if u is not write]
 
     def _marks_seen(self, view):
         """A view from the reader: the marks whose write landed counted against it (a busy store's last view again,
         or the first screen's cache, is no view of it)."""
-        if getattr(view, "busy", False) or getattr(view, "cached", False):
+        if getattr(view, "busy", False) or getattr(view, "cached", False) or not getattr(view, "rows", None):
             return
         landed = [i for i, m in self.expect_marks.items() if m[2] is not None]
         if not landed:
             return
-        shown = {e.id: e.watched for r in getattr(view, "rows", None) or () for e in r.episodes
+        shown = {e.id: e.watched for k in self._holding(view) for e in view.rows[k].episodes
                  if e.id in self.expect_marks}
         for i in landed:
             m = self.expect_marks[i]
@@ -1220,7 +1242,7 @@ class DragController(QObject):
             # switch, the quit) lands nothing more here: what is left stays in its journal, and the order is let go
             self._settle.start()
             return
-        self._marks_landed()                         # a8: every write landed (one with no word back included)
+        self._marks_landed()                         # a8: the writer idle: every mark no word is awaited for
         self._let_go(idle=True)
         self._undo_answered(idle=True)               # (an undo that found nothing to undo answers nothing)
         republish = getattr(self.reader, "republish", None)
@@ -1241,7 +1263,7 @@ class DragController(QObject):
             self._reader_expects(None)
         self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
         if self._writer_stopped():                   # a8: nothing more lands here: the marks ahead let go too
-            self.expect_marks = {}
+            self.expect_marks, self._mark_undos = {}, []
         held, self.held = self.held, None
         if held is not None and self.running is None:
             self._show(held)
@@ -1924,7 +1946,7 @@ class DragController(QObject):
         self._settle.start()
         if marks:
             ticket.marks = dict(marks)
-            self._marks_ahead(ticket, marks)
+            self._marks_ahead(ticket, marks, ticket.keys[0] if ticket.keys else None)
         if toast:
             self._toast(ticket)
         return seq
@@ -2026,7 +2048,8 @@ class DragController(QObject):
             label = anki
             if back and anki is None:                # a8: painted now, kept for the Undo's own word
                 label = Ticket(None)
-                self._marks_ahead(label, back)
+                self._mark_undos.append(label)
+                self._marks_ahead(label, back, ticket.keys[0] if ticket.keys else None)
             self._undo_pressed()
             if self._undo_to_writer(ticket.change, label=label) is None:
                 if anki is not None:
@@ -2036,7 +2059,7 @@ class DragController(QObject):
             self._let_go()
         else:
             if back:                                 # a8: painted now, on its own ticket (`_saved` hands them on)
-                self._marks_ahead(ticket, back)
+                self._marks_ahead(ticket, back, ticket.keys[0] if ticket.keys else None)
             ticket.undo_asked = True
             if any(ticket is t for t in self.tickets):   # (one that landed as nothing has nothing to wait for)
                 self._undo_pressed()
@@ -2058,9 +2081,10 @@ class DragController(QObject):
             label = Ticket(None)                     # finish-pending: its undo waits for Anki if its change did (`_undone`)
             newest = getattr(self.writer, "newest", None)
             change = newest() if newest is not None and not self.writer.pending() else None
-            marks = self._marks_of.get(change) if change is not None else None
+            marks, key = self._marks_of.get(change, (None, None)) if change is not None else (None, None)
             if marks:                                # a8: a Done's undo, the next the writer takes: its stones now
-                self._marks_ahead(label, {i: not on for i, on in marks.items()})
+                self._mark_undos.append(label)
+                self._marks_ahead(label, {i: not on for i, on in marks.items()}, key)
             if self._undo_to_writer(label=label) is None and marks:
                 self._marks_landed(label, empty=True)
             self._let_go()
@@ -2072,8 +2096,8 @@ class DragController(QObject):
             then, label.then = label.then, None
             if label.anki is not None:
                 self._anki_of[change] = label.anki   # finish-pending: Ctrl+Z's undo of it waits for Anki too
-            if label.marks:
-                self._marks_of[change] = label.marks     # a8: Ctrl+Z's undo of it painted ahead too
+            if label.marks:                          # a8: Ctrl+Z's undo of it painted ahead too
+                self._marks_of[change] = (label.marks, label.keys[0] if label.keys else None)
             if label.undo_asked:
                 label.undo_asked = False
                 if then is not None:                 # the drop taken back: its waiting choice with it
@@ -2082,11 +2106,12 @@ class DragController(QObject):
                 p = self._landing.pop(label, None)   # finish-pending: its press waits for the Undo's re-order now
                 back = self._anki_back(label, p) if p is not None else None
                 undo = back
-                if label.marks and back is None:     # a8: its stones turned back, kept for the Undo's own word now —
-                    undo = Ticket(None)              # the store has the mark it takes back
+                if label.marks and back is None:     # a8: its stones turned back, kept for the Undo's own word now
+                    undo = Ticket(None)
+                    self._mark_undos.append(undo)
                     for m in self.expect_marks.values():
                         if m[1] is label:
-                            m[1], m[3] = undo, not m[0]
+                            m[1] = undo
                 if self._undo_to_writer(change, label=undo) is None:
                     if back is not None:
                         self._anki_landed(back)
@@ -2363,6 +2388,7 @@ class DragController(QObject):
             for t in settled:
                 if isinstance(t, Ticket) and t.change is None:
                     _tell(t, "ended")
+                    self._marks_landed(t, empty=True)    # a8: nothing written: the next view decides
                 self._ended(t)
             self._undo_answered(idle=True)
         else:
@@ -2810,7 +2836,7 @@ class DragController(QObject):
             self.cancel()
         self._closed = True
         self._settle.stop()
-        self.expect_marks = {}
+        self.expect_marks, self._mark_undos = {}, []
         self._anki_let_go()
         self._filter(False)
         for t in self.tickets:                       # round 8 row 45: nothing of this controller's left turning

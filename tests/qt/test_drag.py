@@ -2095,16 +2095,16 @@ def test_a8_an_undo_asked_before_the_done_was_saved_stays_dark_while_it_waits_be
     """The Done lands while its Undo still waits for the store: every view meanwhile shows the Done (the store has it),
     and the stone stays dark — the Undo's — until the Undo lands."""
     seed, win, writer = world(writer=MarkWriter)
-    reader = win.services.library
     writer.stuck = True
     row = rows_of(win)[4]
     win.moves.done(row, row.episodes[0])
     win.toasts.card.buttons[0].click()                                # Undo, before the mark is saved
     writer.free_one()                                                 # the Done lands; its Undo waits behind it
     assert wait_until(lambda: _stored(seed, row.episodes[0]) == 1 and writer.pending() == 1, 3)
-    looks = reader.looks
-    assert wait_until(lambda: reader.looks >= looks + 3, 3)          # the reader's views of the Done come and go
-    settle(100)
+    other = rows_of(win)[2].episodes[0].id
+    for on in (1, 0):                                                 # another program's changes: the store's views
+        seed.library.commit(items=[{"id": other, "watched": on}])     # of the Done come, one after another
+        assert wait_until(lambda: _lit(win, 2) == bool(on), 3)
     assert not _lit(win, 4) and win.moves.expect_marks
     writer.free()
     assert wait_until(lambda: writer.undone, 3) and _gone_quiet(win)
@@ -2226,6 +2226,136 @@ def test_a8_a_writer_stopped_with_marks_waiting_lets_them_go(world):
     win.moves.done(row, row.episodes[0])
     writer.halted = True
     assert wait_until(lambda: win.moves.expect_marks == {}, 3)
+
+
+def test_a8_the_top_20_line_moves_with_the_mark_as_the_store_then_draws_it(world):
+    """*Keep studying watched episodes* off (the default): a watched file stops counting, so a Done above the top-20
+    line moves the line one file down — at the click, where the store's own view then draws it."""
+    seed, win, writer = world(writer=MarkWriter)
+    page = win.page_widgets["current"]
+    top = next(ln for ln in page.view_model.lines if ln.kind == "top")
+    assert not page.view_model.keep_watched and top.split is not None and top.after > 3
+    writer.stuck = True
+    row = rows_of(win)[3]
+    win.moves.done(row, row.episodes[0])
+    painted = next(ln for ln in page.view_model.lines if ln.kind == "top")
+    assert (painted.after, painted.split) == (top.after, top.split + 1)
+    writer.free()
+    assert _gone_quiet(win)
+    assert next(ln for ln in page.view_model.lines if ln.kind == "top") == painted
+
+
+def test_a8_a_busy_stores_last_view_again_is_no_view_of_the_mark(world):
+    """A read that fails publishes the last view again, marked busy (the reader's `_busy`): it was built before the
+    write landed, so it never counts as the store's word — the stone stays lit through it."""
+    seed, win, writer = world(writer=MarkWriter)
+    reader = win.services.library
+    old = win.page_widgets["current"].view_model
+    row = old.rows[4]
+    writer.stuck = True
+    win.moves.done(row, row.episodes[0])
+    reader.hold()
+    writer.free()
+    assert wait_until(lambda: win.moves.tickets == [], 3)
+    win.show_library(old)                                             # the look begun before the write
+    win.show_library(old._replace(busy=True))                         # then the store's read fails: the last again
+    assert _lit(win, 4) and win.moves.expect_marks
+    reader.release()
+    assert _gone_quiet(win) and _lit(win, 4)
+
+
+def test_a8_a_mark_lets_go_at_its_own_view_while_another_write_still_waits(world):
+    """Each mark goes once the store's view has it — never kept until every write has landed (a mark kept on views that
+    already show it costs a walk on every view)."""
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck = True
+    a, b, c = rows_of(win)[2], rows_of(win)[3], rows_of(win)[4]
+    win.moves.done(a, a.episodes[0])
+    first = writer._waiting[0][1]                                     # a's ticket
+    win.moves.done(b, b.episodes[0])
+    writer.free_one()                                                 # a's Done lands; b's still waits
+    assert wait_until(lambda: a.episodes[0].id not in win.moves.expect_marks, 3)
+    assert b.episodes[0].id in win.moves.expect_marks and _lit(win, 2) and _lit(win, 3)
+    win.moves.undo(first)                                             # a's Undo (saved: its own word), queued after b
+    assert not _lit(win, 2)
+    win.moves.done(c, c.episodes[0])                                  # and c's Done after that
+    writer.free_one()                                                 # b lands
+    writer.free_one()                                                 # a's Undo lands; c's Done still waits
+    assert wait_until(lambda: a.episodes[0].id not in win.moves.expect_marks and _stored(seed, a.episodes[0]) == 0, 3)
+    assert not _lit(win, 2) and c.episodes[0].id in win.moves.expect_marks
+    writer.free()
+    assert _gone_quiet(win) and not _lit(win, 2) and _lit(win, 3) and _lit(win, 4)
+
+
+def test_a8_a_done_another_program_already_made_lands_as_nothing_and_stays_lit(world):
+    """The store's writer lands a Done as nothing when the file is already watched (another program marked it
+    meanwhile): the stone stays lit — the store has it — never turned back on a guess."""
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck, writer.nothing = True, {"set_watched"}
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    seed.library.commit(items=[{"id": row.episodes[0].id, "watched": 1}])   # another program, meanwhile
+    writer.free()
+    assert wait_until(lambda: win.moves.expect_marks == {}, 3)
+    settle(100)
+    assert _lit(win, 4)
+
+
+def test_a8_an_undo_refused_after_another_program_changed_the_file_shows_the_stores_own(world):
+    """E21 with the file changed since by another program (un-watched): the Undo is refused and the stone shows what the
+    store has (dark), never the Done's mark painted again."""
+    seed, win, writer = world(writer=MarkWriter)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert wait_until(lambda: writer.saved, 3) and _gone_quiet(win) and _lit(win, 4)
+    writer.stuck, writer.refuse_undo = True, True
+    seed.library.commit(items=[{"id": row.episodes[0].id, "watched": 0}])   # another program un-watches it
+    win.toasts.card.buttons[0].click()
+    writer.free()
+    assert wait_until(lambda: win.moves.expect_marks == {}, 3)
+    settle(100)
+    assert not _lit(win, 4) and _stored(seed, row.episodes[0]) == 0
+
+
+@pytest.mark.parametrize("what", ["done", "undo"])
+def test_a8_the_writer_idle_before_its_word_comes_lands_no_mark_early(world, what):
+    """The writer is idle (nothing queued) a moment before its word reaches this thread: the settle's catch-all then
+    lands no mark whose word is still to come — else two views built before the write, still on their way, would let
+    the stone go dark and light again."""
+    seed, win, writer = world(writer=MarkWriter)
+    reader = win.services.library
+    old = win.page_widgets["current"].view_model
+    row = old.rows[4]
+    if what == "undo":
+        win.moves.done(row, row.episodes[0])
+        assert wait_until(lambda: writer.saved, 3) and _gone_quiet(win)
+        old = win.page_widgets["current"].view_model
+        writer.stuck = True
+        win.toasts.card.buttons[0].click()                            # the saved Done's Undo, waiting
+    else:
+        writer.stuck = True
+        win.moves.done(row, row.episodes[0])
+    painted = _lit(win, 4)
+    reader.hold()
+    writer.free()                                                     # landed; its word queued, not yet here
+    win.moves._settled()                                              # the settle runs first
+    win.show_library(old)                                             # two views built before the write
+    win.show_library(old)
+    assert _lit(win, 4) == painted
+    reader.release()
+    assert _gone_quiet(win) and _lit(win, 4) == painted
+
+
+def test_a8_the_title_width_is_asked_again_for_the_painted_rows(world):
+    """The one title width every row shares is worked out from the rows' strings: a mark below Up Next changes its
+    row's string, so the painted view's width is that of the painted rows."""
+    from app.services import view_rows
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck = True
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    view = win.page_widgets["current"].view_model
+    assert view.worst == view_rows.worst_needs(view.rows[1:])
 
 
 def _all_but_one(seed, win, i):

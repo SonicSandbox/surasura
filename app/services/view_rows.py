@@ -109,7 +109,8 @@ Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb t
 #   cards_out (W3.2 Q4): a piece with an item out of the learning order (`in_learning_order` 0: Finished's *Leave its
 #   new cards out of your order*) — ⋯ shows *Put them back in the order* then; never painted
 #   string: a Current row's (stone plan, its need at its tightest — `stone_plan`, fz 1), planned here, on the reader's
-#   thread, once per row content (W3.1a B2); None on Finished's rows and on the first screen's cached rows
+#   thread, once per row content (W3.1a B2) — the one exception a row a stone's Done marks ahead of the store
+#   (`marked`, on the window's thread: that row alone, a8); None on Finished's rows and on the first screen's cached rows
 Chip = namedtuple("Chip", "text watched next mined tip")
 Line = namedtuple("Line", "kind after tip split")              # drawn after row `after` (0-based in Current);
 #                                                                 `split`: the row's first `split` files are above it
@@ -1149,7 +1150,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         if not finished \
         else f"{title} · {spoken(st) if st.kind in ('in_anki', 'mining') else line}"
     key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
-    # its string planned here, never on the window's thread (B2)
+    # its string planned here, never on the window's thread (B2; a mark painted ahead re-plans its own row: `marked`)
     string = None if finished else _string(eps, next_index, media, key, source_of(first, work) == "hato")
     return Row(key=key, index=index, tier=tier, work_id=first.get("work_id"), piece_id=first.get("piece_id"),
                media=media, media_word=word, verb=VERB[word], title=title, title_ep=title_ep,

@@ -12,14 +12,14 @@ TMDB is skipped in 3.0's first cut (no key in source, CI or tests: the seam is `
 - **`Fetcher(language, writer)`**: `want(wants)` — the titles that arrived or first show (never a sweep of the
   library: the window asks for what it paints) — returns at once; its own thread (never the window's) fetches them:
   ids first, batched, then a title search behind the confidence gate (`gate`: one candidate's romaji, English, native
-  or synonym title, normalised, equals the cleaned name, and the season — and the year, when the name holds one —
-  agrees; else nothing: the generated cover stays and *Change cover…* offers `candidates`). AniList's API is asked at
-  most `PER_MINUTE` times a minute (its degraded limit), its images `IMAGES_PER_MINUTE`. Each image is written into the
-  covers cache (`.part`, then renamed) and recorded `writer.set_cover(work, "anilist" | "youtube", ref=<id>,
-  path="cache:<name>", auto=True)` — a background cover: never on the user's Undo stack — and only over no cover or an
-  unlocked generated one (or its own source's after *Remove downloaded covers*): never over a locked, user or disk
-  cover (the S5 rules; the store refuses a lock too). Offline or failed: nothing changes, a quiet retry `RETRY_S`
-  later; never an error, never a dialog.
+  or synonym title, folded as one show (`episode_names.show_key`), equals the cleaned name's, and the season — and the
+  year, when the name holds one — agrees; else nothing: the generated cover stays and *Change cover…* offers
+  `candidates`). AniList's API is asked at most `PER_MINUTE` times a minute (its degraded limit), its images
+  `IMAGES_PER_MINUTE`. Each image is written into the covers cache (`.part`, then renamed) and recorded
+  `writer.set_cover(work, "anilist" | "youtube", ref=<id>, path="cache:<name>", auto=True)` — a background cover:
+  never on the user's Undo stack — and only over no cover or an unlocked generated one (or its own source's after
+  *Remove downloaded covers*): never over a locked, user or disk cover (the S5 rules; the store refuses a lock too).
+  Offline or failed: nothing changes, a quiet retry `RETRY_S` later; never an error, never a dialog.
 - **`candidates(want)`** (a worker's call): the top `CANDIDATES` for *Change cover…* (`Candidate`: id, cover url,
   title, year, format); **`pick(want, candidate)`** fetches it and keeps it as the user's (`covers.keep_user_bytes`:
   `User Files/<lang>/covers/`, a dated backup of the user image it replaces, locked, on the Undo stack);
@@ -40,6 +40,7 @@ from collections import OrderedDict, deque, namedtuple
 from urllib.parse import parse_qs, urlsplit
 
 from app import path_utils
+from app.episode_names import show_key
 from app.services import covers
 
 ANILIST_API = "https://graphql.anilist.co"
@@ -160,12 +161,6 @@ def _season(title):
     return t, None
 
 
-def normalise(text):
-    """A title compared: NFKC, case-folded, letters and digits only (`Re:Zero` and `re zero` are one)."""
-    return "".join(c for c in unicodedata.normalize("NFKC", text or "").casefold()
-                   if unicodedata.category(c)[0] in "LN")
-
-
 def _titles(media):
     t = media.get("title") or {}
     return [x for x in (t.get("romaji"), t.get("english"), t.get("native"), *(media.get("synonyms") or ())) if x]
@@ -177,16 +172,16 @@ def _year_of(media):
 
 def gate(name, media, year=None):
     """The one AniList answer (`media`: the search's) that is this title, or None: a candidate passes when one of its
-    titles, its season taken off and normalised, equals the cleaned name's, their seasons agree (none said is the
-    first), and — when the name holds a year — its year is that year. Two or more passing: none (a wrong cover is
-    worse than the generated one)."""
+    titles, its season taken off and folded as one show (`show_key`), equals the cleaned name's, their seasons agree
+    (none said is the first), and — when the name holds a year — its year is that year. Two or more passing: none (a
+    wrong cover is worse than the generated one)."""
     base, season = _season(name)
-    key = normalise(base)
+    key = show_key(base)
     if not key:
         return None
     hits = []
     for m in media or ():
-        ok = any(normalise(b) == key and (s or 1) == (season or 1) for b, s in map(_season, _titles(m)))
+        ok = any(show_key(b) == key and (s or 1) == (season or 1) for b, s in map(_season, _titles(m)))
         if ok and (year is None or _year_of(m) == year):
             hits.append(m)
     return hits[0] if len(hits) == 1 else None

@@ -728,6 +728,14 @@ def _rows():
                   f"{{S}}!/{ep(2)}.{{T}}.srt": _ep(f"{{S}}!/{ep(2)}.{{T}}.srt", f"{{S}}!/{ep(2)}.mkv"),
                   f"{{S}}/{ep(3)}.{{T}}.srt": at_top(3)},
                  "the loose one goes to the folder named exactly (the helper's run joins the two titles later)"))
+    rows.append(("`<Show>'/` and `<Show>°/` beside a loose `<Show>`", "convention (a8)",
+                 "two seasons named apart only by punctuation (`Gintama'`, `Gintama°`) and a loose "
+                 "`[Grp] <Show> - 03 (1080p)` at the top, no folder named exactly `<Show>`", "",
+                 _pairs("{S}'", [ep(1)], ".{T}.srt") + _pairs("{S}°", [ep(2)], ".{T}.srt") + loose(3), None,
+                 {f"{{S}}'/{ep(1)}.{{T}}.srt": _ep(f"{{S}}'/{ep(1)}.{{T}}.srt", f"{{S}}'/{ep(1)}.mkv"),
+                  f"{{S}}°/{ep(2)}.{{T}}.srt": _ep(f"{{S}}°/{ep(2)}.{{T}}.srt", f"{{S}}°/{ep(2)}.mkv"),
+                  f"{{S}}/{ep(3)}.{{T}}.srt": at_top(3)},
+                 "two folders of one show and neither is it: the loose episode keeps its own show, as before"))
     rows.append(("a loose episode beside `<Show> 2/`", "convention (a8)",
                  "`<Show> 2/` holding 01 and a loose `[Grp] <Show> - 05 (1080p)`", "",
                  _pairs("{S} 2", [ep(1, "{S} 2")], ".{T}.srt") + loose(5), None,

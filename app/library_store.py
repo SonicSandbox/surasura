@@ -184,6 +184,7 @@ _PREFERRED_ROW = (f"NOT ({_ORIGIN_ROW} AND EXISTS (SELECT 1 FROM pairings q WHER
 MINE_LINE_DEFAULT = 20           # a lean owned by Connect's spec and the window (settled at G2.2)
 SOON_LINE_NEW = 25               # a library 3.0 builds new: the Soon line after 25 rows of Current (Q2-4)
 SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold` the stored keys were made with
+SHOWS_JOINED = "shows_joined"     # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
 
@@ -213,7 +214,7 @@ TWIN_HASHES = 8                  # hato's file is checked by its bytes against t
 INT_META = ("epoch", "state_version", "order_version", "availability_version", "pins_version",
             "analysed_order_version", "planned_order_version", "planned_pins_version",
             "last_export_version", "copy_dirty", "log_seq", "mine_line", "arrivals_on", "soon_line",
-            "feed_floor", "search_fold", "keep_watched")
+            "feed_floor", "search_fold", "keep_watched", "shows_joined")
 
 
 class StoreError(Exception):
@@ -2093,39 +2094,63 @@ class Store:
             return done
 
     def join_same_shows(self):
-        """In the helper's run (a8, Sonic 2026-10-31: "the existing pairs joined once"; PROVISIONAL): the titles of
-        show folders one show apart only by punctuation (`episode_names.show_key`: `Library/Show!` and `Library/Show`,
-        as a source's folder and a loose file of it were copied before a8) become one title — `merge_works`' body,
-        nobody's ask (`users_first`): the title with the longest name kept (`Show!`; a tie, the oldest), the others'
-        names kept among its titles (search finds them). Only a show folder's own titles (a folder key with no `/`);
-        never titles the ids say are two shows (`TITLES_APART`) or the user kept apart. No item, order or file touched:
-        only which title the items are; *Not part of this title* takes them apart again (that title has no folder key,
-        so no later run joins it back). A joined pair is one title from then on: every later run finds nothing. One
-        command (the window reads the works). Returns the ids that went."""
-        from app.episode_names import show_key
-        groups = {}
-        for wid, title, fk in self.conn.execute("SELECT id, title, folder_key FROM works WHERE folder_key IS NOT NULL "
-                                                "AND instr(folder_key, '/') = 0 ORDER BY id"):
-            key = show_key(fk)
-            if key:
-                groups.setdefault(key, []).append((wid, title))
-        groups = [g for g in groups.values() if len(g) > 1]
-        if not groups:
+        """Once, in the helper's run (a8, Sonic 2026-10-31: "the existing pairs joined once"; PROVISIONAL): the titles
+        of show folders one show apart only by punctuation (`episode_names.show_key`: `Library/Show!` and
+        `Library/Show`, as a source's folder and a loose file of it were copied before a8) become one title —
+        `merge_works`' body, nobody's ask (`users_first`): the title with the longest name kept (`Show!`; a tie, the
+        oldest), the others' names kept among its titles (search finds them) — a name, type, cover or subtitle group
+        the user gave the other wins. Only a show folder's own titles (a folder key with no `/`); never titles the ids
+        say are two shows (`TITLES_APART`), the user kept apart (their answers about the others go to the kept title),
+        put in one group of his own (his answer: they stay two titles in it) or of two types (a book beside a show).
+        No item, order, piece or file touched: only which title the items are; *Not part of this title* takes them
+        apart again. Done once a store (`meta.shows_joined`, read again inside the command): a pair made later is
+        *Same title?*'s to ask (one key). One command (the window reads the works). Returns the ids that went."""
+        if self._meta().get(SHOWS_JOINED):
             return []
-        apart = {tuple(p) for p in json.loads(self._meta().get("kept_apart") or "[]")}
+        from app.episode_names import show_key
         gone = []
         with self._command("join_same_shows", "sync") as cmd:
+            meta = self._meta()
+            if meta.get(SHOWS_JOINED):
+                return []
+            groups = {}
+            for wid, title, fk in self.conn.execute("SELECT id, title, folder_key FROM works WHERE folder_key IS NOT "
+                                                    "NULL AND instr(folder_key, '/') = 0 ORDER BY id"):
+                key = show_key(fk)
+                if key:
+                    groups.setdefault(key, []).append((wid, title))
+            apart = {tuple(p) for p in json.loads(meta.get("kept_apart") or "[]")}
             change = self._change(cmd, "join_same_shows")
-            for members in groups:
+            for members in (g for g in groups.values() if len(g) > 1):
                 ids = [w for w, _t in members]
-                if self._titles_apart(ids) or any((a, b) in apart for n, a in enumerate(ids) for b in ids[n + 1:]):
+                if self._titles_apart(ids) or any((a, b) in apart for n, a in enumerate(ids) for b in ids[n + 1:]) \
+                        or self._grouped_together(ids) or len({t for t in (self.media_type(w)[0] for w in ids)
+                                                               if t is not None}) > 1:
                     continue
                 keep = max(members, key=lambda m: (len(unicodedata.normalize("NFKC", m[1] or "")), -m[0]))[0]
                 others = [w for w in ids if w != keep]
                 if self._merge_into(cmd, change, keep, others, users_first=True):
-                    self._drop_apart(keep, others)
+                    self._carry_apart(keep, others)
                     gone += others
+            self._set_meta({SHOWS_JOINED: 1})
             return gone
+
+    def _grouped_together(self, work_ids):
+        """Do two of these titles' items share a group (a piece of kind 'group')? The user's own answer."""
+        marks = ",".join("?" * len(work_ids))
+        return self.conn.execute(f"SELECT 1 FROM items i JOIN pieces p ON p.id = i.piece_id WHERE p.kind = 'group' "
+                                 f"AND i.work_id IN ({marks}) GROUP BY p.id HAVING COUNT(DISTINCT i.work_id) > 1 "
+                                 f"LIMIT 1", list(work_ids)).fetchone() is not None
+
+    def _carry_apart(self, keep_id, other_ids):
+        """The user's *Keep apart* answers about titles joined into `keep_id` are answers about it now (a pair inside
+        the join goes)."""
+        pairs = json.loads(self._meta().get("kept_apart") or "[]")
+        gone = set(other_ids)
+        moved = [sorted({keep_id if w in gone else w for w in p}) for p in pairs]
+        kept = [p for n, p in enumerate(moved) if len(p) == 2 and p not in moved[:n]]
+        if kept != pairs:
+            self._set_meta({"kept_apart": _dumps(kept)})
 
     def place_of(self, item_id):
         """(tier, 1-based position in it) of an item, read at once; (None, None) when it's gone."""
@@ -3075,14 +3100,23 @@ class Store:
             return cache[("show", key)]
         row = self.conn.execute("SELECT id FROM works WHERE instr(char(10) || search_key || char(10), ?) > 0 "
                                 "ORDER BY id LIMIT 1", ("\n" + key + "\n",)).fetchone()
-        if row is None:                     # a8: else one show apart only by punctuation (`Show - 14` of `Show!`)
-            from app.episode_names import show_key
-            want = show_key(key)
-            row = next(((w,) for w, keys in self.conn.execute("SELECT id, search_key FROM works ORDER BY id")
-                        if want and any(show_key(k) == want for k in keys.split("\n"))), None)
+        from app.episode_names import show_key
+        want = show_key(key)
+        index = cache.get(("show_keys",)) if cache is not None else None
+        if row is None and want:            # a8: else one show apart only by punctuation (`Show - 14` of `Show!`)
+            if index is None:               # every title's keys folded once a command (its new titles added below)
+                index = {}
+                for w, keys in self.conn.execute("SELECT id, search_key FROM works ORDER BY id"):
+                    for k in keys.split("\n"):
+                        index.setdefault(show_key(k), w)
+                if cache is not None:
+                    cache[("show_keys",)] = index
+            row = (index[want],) if want in index else None
         wid = row[0] if row else self._new_work(show, None, cmd)
         if cache is not None:
             cache[("show", key)] = wid
+        if index is not None and want:
+            index.setdefault(want, wid)
         return wid
 
     def _work_by_record(self, record):
@@ -3249,7 +3283,7 @@ class Store:
         self.conn.executemany("UPDATE works SET anilist_id = NULL, tmdb_id = NULL, youtube_channel = NULL WHERE id = ?",
                               [(o["id"],) for o in others])           # the unique ids free before the kept takes them
         self._set_work_fields(cmd, change, keep_id, fields)
-        self._carry_group(keep_id, [o["id"] for o in others])      # LM2: the show's group goes with it
+        self._carry_group(keep_id, [o["id"] for o in others], users_first)   # LM2: the show's group goes with it
         self.conn.executemany("DELETE FROM works WHERE id = ?", [(o["id"],) for o in others])
         cmd.gone += [("work", o["id"]) for o in others]
         cmd.fed_works.add(keep_id)
@@ -3384,7 +3418,8 @@ class Store:
         groups = {}
         for work_id, key, anilist, tmdb in self.conn.execute("SELECT id, search_key, anilist_id, tmdb_id FROM works "
                                                              "ORDER BY id"):
-            title = show_key(key.split("\n", 1)[0])
+            title = key.split("\n", 1)[0]
+            title = show_key(title) or title                 # a title of marks alone (`♪♪`): as folded
             if title:
                 groups.setdefault(title, []).append((work_id, anilist, tmdb))
         out = []
@@ -7192,7 +7227,10 @@ def _maintain_locked(db_path, language, data_dir, user_files_dir, from_folders, 
         did = bool(store.prune_gone()) or did
         did = bool(store.tidy_works()) or did
         did = bool(store.retitle_folder_works()) or did
-        did = bool(store.join_same_shows()) or did
+        try:
+            did = bool(store.join_same_shows()) or did
+        except Exception as exc:                # its command rolled back: the run goes on, the next one tries again
+            _log(db_path, f"join_same_shows failed: {type(exc).__name__}: {exc}")
         store.checkpoint()
         return EXIT_DONE if did else EXIT_NOTHING
     finally:
@@ -9943,14 +9981,22 @@ def _store_note_groups(self, found, change):
         self._set_meta({SHOW_GROUPS: _dumps(groups)})
 
 
-def _carry_group(self, keep_id, other_ids):
+def _carry_group(self, keep_id, other_ids, users_first=False):
     """(Inside `merge_works`.) A merged title's group record goes to the title kept when that one has none, or only a
-    look's: a show Connect or the learner switched keeps its group as *Same title as…* joins it."""
+    look's: a show Connect or the learner switched keeps its group as *Same title as…* joins it. `users_first` (a
+    merge nobody asked for, `_merge_into`'s): the learner's own switch on a merged title wins over the kept title's
+    that isn't the learner's (G4)."""
     groups = _groups_read(self)
     kept = groups.get(str(keep_id)) or {}
+    chosen = [groups[str(o)] for o in other_ids if _group_value((groups.get(str(o)) or {}).get("group"))]
+    mine = users_first and kept.get("by") != "user"
+    users = next((r for r in chosen if r.get("by") == "user"), None) if mine else None
+    if users is not None:
+        groups[str(keep_id)] = dict(users)
+        self._set_meta({SHOW_GROUPS: _dumps(groups)})
+        return
     if _group_value(kept.get("group")) is not None and kept.get("by") != "look":
         return
-    chosen = [groups[str(o)] for o in other_ids if _group_value((groups.get(str(o)) or {}).get("group"))]
     record = next((r for r in chosen if r.get("by") != "look"), None) or         (next(iter(chosen), None) if _group_value(kept.get("group")) is None else None)
     if record is not None:
         groups[str(keep_id)] = dict(record)

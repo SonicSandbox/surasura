@@ -39,9 +39,10 @@ def _place(store):
 _TEXTS = []
 
 
-def _take(store, language, data_dir, root, src, folders):
+def _take(store, language, data_dir, root, src, folders, before_a8=True):
     """Each `{folder below the source: [episode numbers]}` copied as the look did before a8 (`Library/<folder>/…`), one
-    take-in -> {folder: [its files' rels]}."""
+    take-in -> {folder: [its files' rels]}. `before_a8`: the store as alpha 7 left it — its first helper run (the
+    test's empty library's) made no one-time join yet, so the mark is taken off."""
     found, out = [], {}
     for folder, eps in folders.items():
         for n in eps:
@@ -51,6 +52,9 @@ def _take(store, language, data_dir, root, src, folders):
             found.append(f)
             out.setdefault(folder, []).append(f["rel"])
     store.take_in(root, found, first=True)
+    if before_a8:
+        with store._writing():
+            store.conn.execute("DELETE FROM meta WHERE key = ?", (ls.SHOWS_JOINED,))
     return out
 
 
@@ -66,22 +70,42 @@ def test_the_same_show_key_ignores_punctuation_and_keeps_letters_and_digits():
     assert show_key("!!") == show_key("") == show_key(None) == ""
 
 
-def test_a_loose_files_show_is_the_source_folder_of_the_same_show_named_exactly_first():
-    """Where a loose file at a source's top is copied (`sources._show_of`): the top folder of its show by the key —
-    the folder named exactly when there is one, else the first by name; never a season folder (it is no show of its
-    own); with no such folder, as before (its name's show, else the source's name — `86 - 01` names no show)."""
-    from app.sources import _show_of
+def test_a_loose_episodes_show_is_the_one_source_folder_of_the_same_show():
+    """Where a loose file at a source's top is copied (`sources._show_of`, its folders from `_show_folders`): a loose
+    EPISODE of the one top folder of its show by the key goes there — the folder named exactly first; two of that key
+    and none named exactly (`Gintama'/`, `Gintama°/`): its own show, as before; never a season folder (no show of its
+    own); never a book (no episode number: a book's show is its name); with no such folder, as before (its name's
+    show, else the source's name — `86 - 01` names no show); a file inside a folder is that folder's."""
+    from app.sources import _show_folders, _show_of
     root = os.path.join("D:", os.sep, "Anime")
     name = "[Grp] Tetsunabe no Jan - 02 (1080p).ja.srt"
-    assert _show_of(root, [], name, ["Other", "Tetsunabe no Jan!"]) == "Tetsunabe no Jan!"
-    assert _show_of(root, [], name, ["Tetsunabe no Jan~", "tetsunabe no jan", "Tetsunabe no Jan!"]) == \
-        "tetsunabe no jan"
-    assert _show_of(root, [], name, ["Tetsunabe no Jan~", "Tetsunabe no Jan!"]) == "Tetsunabe no Jan!"
-    assert _show_of(root, [], name, ["Tetsunabe no Jan 2", "Other"]) == "Tetsunabe no Jan"
+    top = lambda *names: _show_folders([os.path.join(root, n) for n in names])     # noqa: E731
+    assert _show_of(root, [], name, top("Other", "Tetsunabe no Jan!")) == "Tetsunabe no Jan!"
+    assert _show_of(root, [], name, top("Tetsunabe no Jan~", "Tetsunabe no Jan", "Tetsunabe no Jan!")) == \
+        "Tetsunabe no Jan"
+    assert _show_of(root, [], name, top("Tetsunabe no Jan~", "Tetsunabe no Jan!")) == "Tetsunabe no Jan"
+    assert _show_of(root, [], name, top("Tetsunabe no Jan 2", "Other")) == "Tetsunabe no Jan"
     assert _show_of(root, [], name) == "Tetsunabe no Jan"
-    assert _show_of(root, [], "[Grp] S2 - 01.ja.srt", ["S2"]) == "S2", "a show named like a season: by its name"
-    assert _show_of(root, [], "86 - 01.ja.srt", ["86"]) == "Anime"
-    assert _show_of(root, ["Tetsunabe no Jan!"], name, ["Tetsunabe no Jan"]) == "Tetsunabe no Jan!", "a folder's own"
+    assert _show_of(root, [], "Toradora.epub", top("Toradora!")) == "Toradora", "a book: its own name"
+    assert _show_of(root, [], "[Grp] Toradora - 03.mkv", top("Toradora!")) == "Toradora!"
+    assert top("S2", "Season 3", "Specials", "!!", "Toradora!") == [("Toradora!", "toradora")]
+    assert _show_of(root, [], "86 - 01.ja.srt", top("86")) == "Anime"
+    assert _show_of(root, ["Tetsunabe no Jan!"], name, top("Tetsunabe no Jan")) == "Tetsunabe no Jan!", "its folder's"
+
+
+def test_a_removed_loose_episodes_rerelease_copied_for_the_folder_stays_out():
+    """A loose `Show - 03` removed before a8 is remembered under its show `Show`; its re-release, now copied for the
+    folder `Show!/`, has the show `Show!`: one key, so it stays out (`_Look._removed`); another show never matches."""
+    from types import SimpleNamespace
+
+    from app.sources import _Look
+    for language in LANGUAGES:
+        look = SimpleNamespace(language=language)
+        old = _Look._removed(look, "Tetsunabe no Jan", 3, "[Grp] Tetsunabe no Jan - 03 (1080p).ja.srt")
+        new = _Look._removed(look, "Tetsunabe no Jan!", 3, "[Grp] Tetsunabe no Jan - 03v2 (1080p).ja.srt")
+        assert old == new
+        assert _Look._removed(look, "Tetsunabe no Jan 2", 3, "[Grp] Tetsunabe no Jan 2 - 03.ja.srt") != old
+        assert _Look._removed(look, "♪♪", 3, "♪♪ - 03.srt") != _Look._removed(look, "★", 3, "★ - 03.srt")
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -265,3 +289,113 @@ def test_a_loose_episode_dropped_later_joins_the_show_apart_only_by_punctuation(
         drop = store.sync_disk()["added"][0]
         assert _work_of(store, store.item(drop)["rel_path"]) == bang
         assert pieces_ok(store) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_join_runs_once_a_store_and_a_pair_made_later_is_asked_about(language):
+    """"The existing pairs joined once": the first helper run joins them and marks the store; a pair made after it
+    (another source's loose episode, a drop) is never joined without a word — *Same title?* asks about it (one key)."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    a, b = names(language)[73], names(language)[74]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{a}!": (1,), a: (2,)})
+        assert len(store.join_same_shows()) == 1
+        assert store.meta()[ls.SHOWS_JOINED] == 1
+        later = _take(store, language, data_dir, root, src, {f"{b}!": (1,), b: (2,)}, before_a8=False)
+        ids = sorted({_work_of(store, r[0]) for r in later.values()})
+        assert store.join_same_shows() == [] and len(ids) == 2
+        assert ids in store.same_titles()
+        assert len({_work_of(store, r) for rs in rels.values() for r in rs}) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_titles_the_user_grouped_together_or_of_two_types_stay_two(language):
+    """A group of the two made by the user is his answer (they stay two titles in it; joined, the group would turn
+    into a run across the Soon line), and a book beside a show (`Toradora/` an EPUB's, `Toradora!/` the anime's) is
+    two titles of two types: neither pair is joined."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    a, b = names(language)[75], names(language)[76]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{a}!": (1,), a: (2,), f"{b}!": (1,), b: (2,)})
+        ids = {k: _work_of(store, r[0]) for k, r in rels.items()}
+        pieces = [store.item(store.item_id(rels[k][0]))["piece_id"] for k in (f"{a}!", a)]
+        assert store.join(pieces, how="group") is not None
+        store.set_media_type([ids[b]], "book")
+        store.set_media_type([ids[f"{b}!"]], "anime")
+        before = _works(store)
+        assert store.join_same_shows() == []
+        assert _works(store) == before
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_keep_apart_answer_about_the_title_that_goes_is_kept_for_the_title_kept(language):
+    """The user kept `<show>` apart from another title outside the join (no folder): after `<show>` is joined into
+    `<show>!`, that answer is about `<show>!`, so *Same title?* never asks about it again."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[77]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{show}!": (1,), show: (2, 3)})
+        bang, plain = _work_of(store, rels[f"{show}!"][0]), _work_of(store, rels[show][0])
+        store.split_work([store.item_id(rels[show][1])], f"{show}~")
+        other = _work_of(store, rels[show][1])
+        assert store.keep_apart([plain, other])
+        assert store.join_same_shows() == [plain]
+        assert json.loads(store.meta()["kept_apart"]) == [sorted([bang, other])]
+        assert not any(other in g for g in store.same_titles())
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_users_own_subtitle_group_on_the_title_that_goes_wins(language):
+    """Nobody asked for the join (G4): a subtitle group the learner switched on the shorter title wins over one
+    Connect chose for the kept title."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[78]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{show}!": (1,), show: (2,)})
+        bang, plain = _work_of(store, rels[f"{show}!"][0]), _work_of(store, rels[show][0])
+        with store._writing():
+            store._set_meta({ls.SHOW_GROUPS: json.dumps({
+                str(bang): {"group": ["Grp", "Connect's"], "by": "connect"},
+                str(plain): {"group": ["Mine", "the learner's"], "by": "user"}})})
+        assert store.join_same_shows() == [plain]
+        assert store.group_of(bang)["group"] == ["Mine", "the learner's"]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_join_that_fails_leaves_the_store_as_it_was_and_the_helpers_run_goes_on(language, monkeypatch):
+    """An unforeseen error inside the join rolls its command back (both titles, no mark) and the helper's run still
+    ends well; the next run tries again."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[79]
+    with store:
+        root = store.add_source(src)
+        _take(store, language, data_dir, root, src, {f"{show}!": (1,), show: (2,)})
+        before = _works(store)
+    user_files_dir = store.user_files_dir
+    store.close()
+
+    def broken(self, *a, **k):
+        raise RuntimeError("a planted failure")
+    with monkeypatch.context() as patched:
+        patched.setattr(ls.Store, "_carry_apart", broken)
+        assert ls.maintain(language, data_dir, user_files_dir) in (ls.EXIT_DONE, ls.EXIT_NOTHING)
+    again = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        assert _works(again) == before and not again.meta().get(ls.SHOWS_JOINED)
+    finally:
+        again.close()
+    assert ls.maintain(language, data_dir, user_files_dir) == ls.EXIT_DONE
+    again = ls.open_store(language, data_dir, user_files_dir)
+    try:
+        assert len(_works(again)) == len(before) - 1
+    finally:
+        again.close()

@@ -132,12 +132,13 @@ YOUTUBE_TIP = ("Paste YouTube links, one a line. Each line's first video comes i
                "• A playlist's other videos: the YouTube window, any time")
 YOUTUBE_NAME = "YouTube links, one a line"
 YOUTUBE_HINT = "One link a line: a video, or a playlist (its first video comes in)"
-YOUTUBE_RISK = "I understand the risks"
 YOUTUBE_RISK_LINE = "YouTube can turn requests away for a while; it's for your own study."
-YOUTUBE_RISK_TIP = ("Bringing in YouTube's subtitles is a gray area under its Terms of Service, and YouTube can turn "
-                    "requests away for a while.\n• Use it only for your own study; the YouTube window asks the same")
-YOUTUBE_NEEDS_RISK = "Tick “I understand the risks” to bring in from YouTube, or clear the links."
+YOUTUBE_NEEDS_RISK = "Tick “{risk}” to bring in from YouTube, or clear the links."
 YOUTUBE_NONE = "Paste a YouTube link first: one a line."
+YOUTUBE_BUSY = "Your last links are still coming in: press Next again once they're in, or add these later."
+YOUTUBE_HAD = "already in your library: nothing new came in"
+YOUTUBE_NOT_ADDED = "couldn't be added to your library: they wait in Processed"
+FILES_NOT_ADDED = "Your files couldn't be added just now: your library can't be saved. Try Next again in a moment."
 FOLDER_REMOVE = "Remove"
 FOLDER_REMOVE_NAME = "Remove {folder}"
 FOLDER_REMOVE_TIP = "Leave it out: nothing is read from it."

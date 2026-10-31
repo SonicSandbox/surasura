@@ -606,7 +606,7 @@ def test_youtube_opens_its_links_at_once_and_next_asks_for_the_risk_tick_first(m
     page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI\n\n  "
                             "https://www.youtube.com/watch?v=7nlUSMQKRKQ&list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn  \n")
     wiz.next()
-    assert fetch.calls == [] and page.refused_line.text() == S.YOUTUBE_NEEDS_RISK and W.PAGES[wiz.index] == "shows"
+    assert fetch.calls == [] and page.refused_line.text() == S.YOUTUBE_NEEDS_RISK.format(risk=page.yt_risk.name.text()) and W.PAGES[wiz.index] == "shows"
     page.yt_risk.switch.click()
     assert settings.calls[-1] == {"youtube_risk_acknowledged": True}
     wiz.next()
@@ -1854,3 +1854,68 @@ def test_the_last_page_offers_the_discord_in_one_tipped_line_opened_in_the_brows
     QTest.mouseClick(page.discord, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: wiz.launched == [settings_strings.DISCORD_URL])
     assert settings.calls == []
+
+
+# --- the review's round (A8B-3, 4, 5, 10) ------------------------------------------------------------------------- #
+def _youtube_page(make, monkeypatch, **data):
+    wiz, shell, *_ = make(data=dict({"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True}, **data))
+    fetch = FakeFetch()
+    monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    page.btn_youtube.click()
+    return wiz, shell, page, fetch
+
+
+def test_a_video_already_in_the_library_says_so_never_paste_a_link(make, monkeypatch):
+    """A8B-3: the fetch wrote nothing new and said nothing (the video was brought in before): the line says it was
+    already in the library — never "Paste a YouTube link first"."""
+    wiz, _shell, page, fetch = _youtube_page(make, monkeypatch)
+    page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI")
+    wiz.next()
+    fetch.ended([], [])
+    assert wiz.say_line.text() == S.YOUTUBE_FAILED.format(why=S.YOUTUBE_HAD)
+
+
+def test_links_pasted_while_the_last_ones_still_come_stay_and_are_said(make, monkeypatch):
+    """A8B-4: Next with new links while the last fetch still runs: nothing fetched twice, the links stay in the box,
+    the page says why."""
+    wiz, _shell, page, fetch = _youtube_page(make, monkeypatch)
+    page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI")
+    wiz.next()
+    wiz._load_stop()                                               # Stop: on to the sorting, the fetch still running
+    wiz._load, wiz.covered = None, None                            # (the sorting done: page 3 again)
+    page.links.setPlainText("https://www.youtube.com/watch?v=7nlUSMQKRKQ")
+    wiz.next()
+    assert len(fetch.calls) == 1 and page.refused_line.text() == S.YOUTUBE_BUSY
+    assert page.links.toPlainText() == "https://www.youtube.com/watch?v=7nlUSMQKRKQ"
+
+
+def test_files_the_writer_refuses_stay_listed_and_the_page_says_why(make, tmp_path):
+    """A8B-5: the library can't be saved now (+ Add's writer refuses): the picked files stay listed, the page says
+    why, and setup stays on page 3 — nothing is dropped unsaid."""
+    wiz, shell, *_ = make()
+    adder = shell.adder = FakeAdder()
+    adder.add_files = lambda paths, **_kw: None
+    go_to(wiz, "shows")
+    page = wiz.page
+    picked = [str(tmp_path / "ぼっち・ざ・ろっく！ 第01話.ja.srt")]
+    wiz.pick_files_dialog = lambda _title, _start: picked
+    page.btn_file.click()
+    wiz.next()
+    assert page.files == [os.path.normpath(picked[0])] and page.refused_line.text() == S.FILES_NOT_ADDED
+    assert W.PAGES[wiz.index] == "shows"
+
+
+def test_videos_that_landed_during_the_scan_are_sorted_though_the_scan_found_nothing(make, monkeypatch):
+    """A8B-10: the fetch landed while the folders were still read, and the folders held nothing: the sorting still
+    comes up for the videos (never the page with them unsorted)."""
+    wiz, _shell, page, fetch = _youtube_page(make, monkeypatch)
+    wiz.youtube_came = 1
+    sorted_ = []
+    monkeypatch.setattr(wiz, "_load_sort", lambda: sorted_.append(True))
+    wiz._load_begin()
+    wiz._load_scanned({"ids": []})
+    assert sorted_ == [True]

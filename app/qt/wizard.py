@@ -1502,7 +1502,8 @@ class ShowsPage(_Page):
         self.links.setTabChangesFocus(True)
         self.links.setFixedHeight(self.links.fontMetrics().lineSpacing() * 4 + _px(16))
         lbox.addWidget(self.links)
-        self.yt_risk = SwitchRow(S.YOUTUBE_RISK, S.YOUTUBE_RISK_LINE, S.YOUTUBE_RISK_TIP, self.links_part)
+        risk, risk_tip = _youtube_risk_words()        # the downloader's own words (one copy, the module's)
+        self.yt_risk = SwitchRow(risk, S.YOUTUBE_RISK_LINE, risk_tip, self.links_part)
         self.yt_risk.switch.toggled.connect(self.wiz.youtube_risk)
         lbox.addWidget(self.yt_risk)
         self.links_part.setVisible(False)
@@ -1762,6 +1763,16 @@ def _youtube_fetcher():
     """The YouTube module's setup fetch (`modules.youtube_downloader.fetch_first`), imported only when it is used."""
     from modules.youtube_downloader import fetch_first
     return fetch_first
+
+
+def _youtube_risk_words():
+    """(label, tip) of the downloader's risk tick, from the module; without it (the links box is never shown then),
+    the label alone."""
+    try:
+        from modules.youtube_downloader import risk_words
+        return risk_words()
+    except Exception:
+        return "I understand the risks", ""
 
 
 def youtube_line(waiting, placed, why):
@@ -2493,6 +2504,7 @@ class SetupWizard(QWidget):
         self._sync_running = False          # page 2's first known-words sync under way (the load's last step waits)
         self.fetching = None                # alpha 8: page 3's YouTube fetch under way (the load waits for it last)
         self.youtube_said = ""              # … and what its end said
+        self.youtube_came = 0               # … and how many videos it brought (the sort screen offers them)
         # the folder and file pickers (the system's own dialogs; tests replace them)
         self.pick_dialog = lambda title, start: QFileDialog.getExistingDirectory(self, title, start)
         self.pick_files_dialog = self._pick_files_dialog
@@ -2725,14 +2737,19 @@ class SetupWizard(QWidget):
         if page.id == "shows":
             links = page.link_lines() if not page.links_part.isHidden() else []
             if links and not page.yt_risk.switch.isChecked():
-                page.refuse(S.YOUTUBE_NEEDS_RISK)          # (the downloader's own guard: asked here, never skipped)
+                page.refuse(S.YOUTUBE_NEEDS_RISK.format(risk=page.yt_risk.name.text()))          # (the downloader's own guard: asked here, never skipped)
                 return
             if page.files:                                 # alpha 8: brought in now, nothing waits for them
-                files, page.files = list(page.files), []
+                if not self._bring_in_files(list(page.files)):
+                    page.refuse(S.FILES_NOT_ADDED)        # (the writer refused: they stay listed, nothing lost)
+                    return
+                page.files = []
                 page._paint_folders()
-                self._bring_in_files(files)
+            if links and self.fetching is not None:
+                page.refuse(S.YOUTUBE_BUSY)                # (the last links still coming: these stay in the box)
+                return
             page.refuse(None)
-            if links and self.fetching is None:
+            if links:
                 page.links.setPlainText("")
                 self._fetch_youtube(links)
             if page.folders:
@@ -3016,14 +3033,18 @@ class SetupWizard(QWidget):
     def _bring_in_files(self, paths):
         """*Next* with files picked: the texts given to + Add's writer at once (the top of Current, its toast and Undo:
         the Explorer drop's path); each book split by Extract's own child (`app/extract.py`, its default split, into
-        Current) on a job of its own. Nothing waits for them; each book's end is said in the bar and here."""
+        Current) on a job of its own. Nothing waits for them; each book's end is said in the bar and here. -> False when
+        the writer took none of the texts (a library that can't be saved now: nothing is lost)."""
         texts = [p for p in paths if path_utils.file_kind(p) == "text"]
         books = [p for p in paths if path_utils.file_kind(p) == "book"]
         adder = self._adder()
-        if texts and adder is not None and adder.add_files(texts) is not None:
+        if texts:
+            if adder is None or adder.add_files(texts) is None:
+                return False
             self.say(S.FILES_ADDED.format(what=_count(S.FILES_N, len(texts))))
         for book in books:
             self._extract_book(book)
+        return True
 
     def _extract_book(self, path):
         """One EPUB through Extract's child (the name its own, or Extract's proposal when taken), as `extract`'s job."""
@@ -3098,11 +3119,11 @@ class SetupWizard(QWidget):
         """The fetch ended: its transcripts handed to New arrivals (then the line), or why nothing came."""
         why = (problems or [""])[0]
         if not created:
-            self._youtube_landed(0, 0, why)
+            self._youtube_landed(0, 0, why or S.YOUTUBE_HAD)
             return
         try:
-            windows.youtube_arrivals(self.shell, then=lambda waiting, placed, _missed:
-                                     self._youtube_landed(waiting, placed, why))(list(created))
+            windows.youtube_arrivals(self.shell, then=lambda waiting, placed, missed: self._youtube_landed(
+                waiting, placed, why or (S.YOUTUBE_NOT_ADDED if missed else "")))(list(created))
         except Exception as e:                            # no library, another library, read-only: said
             self._youtube_landed(0, 0, str(e))
 
@@ -3112,6 +3133,7 @@ class SetupWizard(QWidget):
             windows.say_in_bar(self.shell, line)
             return
         self.fetching = None
+        self.youtube_came += waiting + placed
         self.youtube_said = line
         self._youtube_side(line)
         self.say(line)
@@ -3119,7 +3141,7 @@ class SetupWizard(QWidget):
             self.pages[2].refuse(line)                    # what didn't come, on the page too (it stays said)
         load = self._load
         if load is not None and load["step"] == "youtube":
-            if waiting or placed or load["ids"]:
+            if self.youtube_came or load["ids"]:
                 self._load_sort()
             else:                                         # nothing came in at all: the page again, with why
                 self._load = None
@@ -3364,7 +3386,7 @@ class SetupWizard(QWidget):
             return
         load["ids"] = list((result or {}).get("ids") or ())
         if not load["ids"]:
-            if self.fetching is not None:                 # alpha 8: nothing read, but videos are coming
+            if self.fetching is not None or self.youtube_came:     # alpha 8: nothing read, but videos came
                 self._load_youtube()
                 return
             self._load = None

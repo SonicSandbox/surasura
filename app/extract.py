@@ -38,7 +38,7 @@ from collections import namedtuple
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import BOOK_EXTENSIONS, CONTENT_EXTENSIONS, get_data_path, get_user_files_path, read_text
+from app.path_utils import BOOK_EXTENSIONS, CONTENT_EXTENSIONS, file_kind, get_data_path, get_user_files_path, read_text
 
 SECTIONS = ("now", "soon", "goal")             # the store's tiers a user may extract into (Current · Soon · Goal)
 DEFAULT_LENGTH = 1500                           # settings' `split_length` when it has none
@@ -163,7 +163,7 @@ def check_options(method, value, group=False, parts=None):
 def extract_text_from_file(file_path, language):
     """(text, None) or (None, why)."""
     ext = os.path.splitext(file_path)[1].lower()
-    if ext == ".epub":
+    if file_kind(file_path) == "book":
         return convert_epub_to_text(file_path)
     elif ext in [".srt", ".ass", ".ssa"]:
         return extract_text_from_subtitle(file_path, language)
@@ -647,7 +647,7 @@ def part_label(chapter):
 def _mark(directory, source):
     """Record that this output came from an EPUB (the report's source badge says 'book'); the marker travels with
     the folder."""
-    if not (source or "").lower().endswith(".epub"):
+    if file_kind(source) != "book":
         return
     from app.path_utils import write_source_marker
     write_source_marker(directory, "epub", origin=os.path.basename(source))
@@ -740,7 +740,7 @@ def parts_of(file_path, language, method="length", value=DEFAULT_LENGTH, field=N
         text = deck_text(file_path, field)
         return ([Part(text, None)] if text.strip() else []), None
     overflow = DEFAULT_OVERFLOW if overflow is None else overflow
-    if file_path.lower().endswith(".epub") and method != "delimiter":
+    if file_kind(file_path) == "book" and method != "delimiter":
         docs, error = epub_documents(file_path)
         if error:
             return None, error
@@ -813,7 +813,7 @@ def _book_origins(file_path, name, rels, pieces):
     """An EPUB's parts' origins, as a folder's look records a book's (`<epub>#<n>`, the EPUB's stats and sha256, each
     part's place in the book): {rel: origin}, so Anki Miner's results can be placed on an extracted book's parts too
     and a folder read later knows the book (SRC-7); None for anything else, or an EPUB that can't be read again."""
-    if not file_path.lower().endswith(".epub") or len(rels) != len(pieces):
+    if file_kind(file_path) != "book" or len(rels) != len(pieces):
         return None
     from app import library_store
     try:

@@ -664,12 +664,14 @@ def test_download_covers_is_a_connections_toggle_writing_only_its_key_and_remove
 
 def test_anki_miner_card_credits_zero_in_sonics_words_on_two_lines():
     """Sonic's words for Zero, whole (2026-10-30): the line breaks before *He's*, so the card never wraps mid-sentence,
-    and Settings search still finds the card by either line."""
+    and Settings search still finds the card by either line. A no-break space keeps ":)" with *love* (an RC capture
+    wrapped it onto a line of its own); search folds it to a plain space, so "love :)" typed still finds the card."""
     row = catalog.ROW["anki_miner"]
     assert row.help == ("Makes your cards from your own videos. Free, made by Zero.\n"
-                        "He's awesome. Please give him some love :)")
+                        "He's awesome. Please give him some love :)")
     assert "anki_miner" in catalog.find("made by zero", {}, "ja", EVERYTHING)
     assert "anki_miner" in catalog.find("give him some love", {}, "ja", EVERYTHING)
+    assert "anki_miner" in catalog.find("some love :)", {}, "ja", EVERYTHING)
 
 
 # --- find()------------------------------------------------------------------------------------------------------------ #

@@ -5,11 +5,12 @@ opened, the app makes no call of its own) and **Not now**. Shown is never again,
 `hints_seen` holds `SEEN`, the window's one-time hints' list; once per install, never per library: a fresh library
 never asks again). Settings › App keeps a quiet *Star Surasura on GitHub* row, never prompted.
 
-- **Landed** (`view_shown`): an item's card count above the one it had in the first whole view this reader built (a
-  store read, not the first screen's cache, not loading: `LibraryReader.cards()` — the counts the rows show, the same
-  dict until one moves, so a view with no new cards costs one identity check). Cards already there when the window
-  opened never ask; a language switch (another reader) starts again from its own first view.
-- **Never while setup or a drag is on screen**: owed then, asked at the first view after both are gone.
+- **Landed** (`view_shown`): the reader counts an item that came back with more cards than when it last asked
+  (`LibraryReader.cards_rose`, Current, Soon and Finished) — never an item's first count, so cards already there at the
+  open never ask, nor does a show with old cards that comes back into Current (from 6+ Months, New arrivals, a Put
+  back: review A-1). One number read per view. A language switch (another reader) starts from its own.
+- **Never over anything**: setup, the sort screen, a drag, another toast (it would take that one's Undo, or be
+  replaced by the next: review A-2) or a minimized window — owed then, asked at the first view after.
 """
 from app.qt import press as qpress
 from app.qt import settings_strings
@@ -25,28 +26,16 @@ class StarAsk:
         self.win = win
         self.done = None                    # None: settings.json not asked yet; True: seen (or can't be kept)
         self.owed = False
-        self._reader = self._base = self._cards = None
 
     def view_shown(self, view, reader):
-        """(Each view the window shows.) Cards landed since this reader's first whole view: the ask, once."""
+        """(Each view the window shows.) Cards landed while this window looked: the ask, once."""
         if self.done is None:
             self.done = self._seen()        # asked once a window: settings.json read at its first view
         if self.done:
             return
         if not self.owed:
-            cards = getattr(reader, "cards", None)
-            cards = cards() if cards is not None else None
-            if cards is None or cards is self._cards and reader is self._reader:
-                return
-            if reader is not self._reader:
-                self._reader, self._base = reader, None
-            if self._base is None:
-                if getattr(view, "cached", False) or getattr(view, "loading", False) or view.mode != "store":
-                    return                  # (the first screen's cache, a loading view: no counts to start from)
-                self._base = cards
-            self._cards = cards
-            base = self._base
-            if not any(n > base.get(item, 0) for item, n in cards.items()):
+            rose = getattr(reader, "cards_rose", None)
+            if rose is None or not rose():
                 return
             self.owed = True
         self.ask()
@@ -73,7 +62,11 @@ class StarAsk:
         services = getattr(self.win, "services", None)
         setup = getattr(services, "setup_open", None)
         toasts = getattr(self.win, "toasts", None)
-        return toasts is None or bool(getattr(toasts, "dragging", False)) or (setup is not None and setup.is_set())
+        sorting = self.win.__dict__.get("_sort_screen") if hasattr(self.win, "__dict__") else None
+        minimized = getattr(self.win, "isMinimized", None)
+        return (toasts is None or bool(getattr(toasts, "dragging", False)) or bool(getattr(toasts, "alive", False))
+                or (setup is not None and setup.is_set()) or sorting is not None
+                or (minimized is not None and minimized()))
 
     def _list(self):
         value = self.win.services.settings.get().get("hints_seen")

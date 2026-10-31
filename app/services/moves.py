@@ -2356,7 +2356,7 @@ class Numbers:
             del plan                                # the per-file lines go: the engine keeps its own tables
             eng._numbers(order)
         except plan_engine.PlanError as e:
-            self._set(None, counts, f"stale: {e}", key)
+            self._set(None, self._kept(counts), f"stale: {e}", key)
             return
         self.renumbered += 1
         self._set(eng, self._figures(eng, counts), None, key)

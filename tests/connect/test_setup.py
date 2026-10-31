@@ -380,6 +380,119 @@ def test_what_only_anki_miners_youtube_fetch_needs_never_stops_connect(monkeypat
     assert _by_id(result)["anki_miner_setup"]["state"] == "ok" and result["ready"]
 
 
+# Anki Miner main's (2026-10-31, unreleased; still 3.10.1) `check`, as its `check_result` builds it: every item in its
+# order, `message` None when ok, and `ready` every item but `_NOT_FOR_MINE` (yt_dlp, speech_model, ocr, video_ocr)
+ITEMS_MAIN = ITEMS_37 + ["ocr", "video_ocr"]
+NOT_FOR_MINE_MAIN = {"yt_dlp", "speech_model", "ocr", "video_ocr"}
+MAIN_MESSAGES = {
+    "dictionary": "No offline dictionary is installed for Japanese.",
+    "speech_model": "The speech model large-v3 is not installed. Install it with setup --speech-model, or in Anki "
+                    "Miner: Settings -> Transcription & Alignment.",
+    "ocr": "mokuro is not installed. Install it with setup --ocr, or in Anki Miner: Utilities -> Manga OCR.",
+    "video_ocr": "Video OCR's engine or models are not installed. Install them with setup --ocr, or in Anki Miner: "
+                 "Utilities -> Video OCR.",
+    "ffmpeg": "ffmpeg was not found. Install ffmpeg, or set its location in Anki Miner's settings.",
+    "language_pack": "The Japanese language pack is not installed.",
+}
+
+
+def _check_main(failing, names=ITEMS_MAIN):
+    items = [{"name": n, "ok": n not in failing, "message": MAIN_MESSAGES.get(n, "not ready") if n in failing else None}
+             for n in names]
+    return {"ready": all(i["ok"] for i in items if i["name"] not in NOT_FOR_MINE_MAIN), "items": items}
+
+
+def _setup_check(monkeypatch, miner, check):
+    StandInAnki(monkeypatch)
+    miner.plan(app="3.10.1", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+               check=check)
+    return _by_id(setup.checks(_settings(miner), "ja"))["anki_miner_setup"]
+
+
+def test_main_shaped_check_with_no_ocr_tools_is_still_ready(monkeypatch, ready_37):
+    # Almost nobody has mokuro or Video OCR's engine: main's own `ready` leaves them out, and so does Connect
+    check = _check_main({"yt_dlp", "speech_model", "ocr", "video_ocr"})
+    assert check["ready"] is True
+    assert _setup_check(monkeypatch, ready_37, check)["state"] == "ok"
+
+
+@pytest.mark.parametrize("failing, named, rest", [
+    # M1: a dictionary missing, and the OCR tools too: Surasura finishes the dictionary, and never says "update Anki
+    # Miner" for what only its OCR commands use
+    ({"dictionary", "ocr", "video_ocr", "speech_model"}, "dictionary: No offline dictionary is installed", None),
+    ({"language_pack", "ocr", "video_ocr"}, "language_pack: The Japanese language pack", None),
+    # ffmpeg still comes with its installer, named alone
+    ({"dictionary", "ffmpeg", "ocr", "video_ocr", "yt_dlp"}, "ffmpeg: not found", "ffmpeg"),
+])
+def test_main_shaped_check_names_only_what_a_mine_needs(monkeypatch, ready_37, failing, named, rest):
+    check = _setup_check(monkeypatch, ready_37, _check_main(failing))
+    assert check["state"] == "needs-you" and check["setup"] is True and named in check["say"]
+    for word in ("ocr", "video_ocr", "speech_model", "yt_dlp", "mokuro", "Video OCR"):
+        assert word not in check["say"] and word not in check["do"], word
+    assert check["items"] == sorted(failing & anki_miner.MINE_ITEMS)
+    if rest:
+        assert check["do"] == setup.SETUP_DO_SOME.format(rest=rest)
+    else:
+        assert check["do"] == setup.SETUP_DO and not check.get("update")
+
+
+def test_main_shaped_check_with_only_the_deck_unset_is_surasuras_to_set(monkeypatch, ready_37):
+    check = _setup_check(monkeypatch, ready_37, _check_main({"deck", "ocr", "video_ocr"}))
+    assert check["say"] == setup.SETTINGS_SAY.format(language="Japanese", named="deck: not ready")
+    assert check["do"] == setup.SETTINGS_DO and check["items"] == ["deck"]
+
+
+def test_anki_closed_with_main_shaped_ocr_items_failing_is_only_a_wait(monkeypatch, ready_37):
+    StandInAnki(monkeypatch, open_=False)
+    ready_37.plan(app="3.10.1", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],
+                  check=_check_main({"anki", "deck", "note_type", "fields", "ocr", "video_ocr"}))
+    check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki_miner_setup"]
+    assert check["state"] == "waiting" and check["do"] == "Open Anki"
+
+
+def test_an_item_a_newer_anki_miners_mine_needs_is_named_never_hidden(monkeypatch, ready_37):
+    # The rule's other half: `ready` false and nothing Surasura knows a mine needs failed — what failed (but the
+    # items a mine never needs) is named, with Surasura's update: an Anki Miner past what Surasura was built for
+    names = ITEMS_MAIN + ["subtitle_engine"]
+    check = _setup_check(monkeypatch, ready_37, _check_main({"subtitle_engine", "ocr", "video_ocr"}, names))
+    assert check["state"] == "needs-you" and check["say"] == ("Anki Miner's own setup isn't finished "
+                                                              "(subtitle_engine: not ready).")
+    assert check["do"] == setup.UPDATE_DO and check["update"] is True
+
+
+@pytest.mark.parametrize("failing, expected", [
+    (set(), set()),
+    ({"ocr", "video_ocr", "yt_dlp", "speech_model"}, set()),
+    ({"dictionary", "ocr"}, {"dictionary"}),
+    ({"anki", "deck", "note_type", "fields", "video_ocr"}, {"anki", "deck", "note_type", "fields"}),
+    ({"subtitle_engine", "ocr"}, {"subtitle_engine"}),                 # an item Surasura doesn't know, alone
+    ({"subtitle_engine", "ffprobe"}, {"ffprobe"}),                     # ... beside one it knows: the known one
+])
+def test_unfinished_keeps_only_what_keeps_a_mine_from_starting(failing, expected):
+    check = _check_main(failing, ITEMS_MAIN + ["subtitle_engine"])
+    items = {i["name"]: i for i in check["items"]}
+    assert set(anki_miner.unfinished(items, check["ready"])) == expected
+
+
+def test_unfinished_names_what_its_ready_stands_on_even_an_item_mining_never_needed_before():
+    # A later build whose mine reads burned-in text counts video_ocr toward `ready`: unready with only it failing, it
+    # is named (never "without saying what"); while it says ready, nothing is
+    items = {i["name"]: i for i in _check_main({"video_ocr", "ocr"})["items"]}
+    assert set(anki_miner.unfinished(items, False)) == {"video_ocr", "ocr"}
+    assert anki_miner.unfinished(items, True) == {}
+    items = {i["name"]: i for i in _check_main({"dictionary"})["items"]}
+    assert anki_miner.unfinished(items, True) == {}, "its own `ready` is trusted first"
+
+
+def test_a_later_anki_miner_whose_mine_needs_video_ocr_names_it(monkeypatch, ready_37):
+    check = _check_main({"video_ocr"})
+    check["ready"] = False
+    check = _setup_check(monkeypatch, ready_37, check)
+    assert check["state"] == "needs-you" and check["do"] == setup.UPDATE_DO
+    assert "video_ocr: not installed" in check["say"] and "Anki Miner:" not in check["say"], "never its window"
+    assert check["say"] != setup.UNSAID_SAY
+
+
 def test_anki_closed_fails_anki_miners_deck_and_fields_too_and_that_is_one_wait(monkeypatch, ready_37):
     StandInAnki(monkeypatch, open_=False)
     ready_37.plan(app="3.7.0", features=FEATURES_37, profiles=[{"id": "p-main", "name": "メイン", "active": True}],

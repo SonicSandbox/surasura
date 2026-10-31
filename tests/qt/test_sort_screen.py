@@ -523,11 +523,14 @@ def test_start_over_waits_for_a_choice_still_being_saved_and_puts_it_back_too(wo
     screen.choose("now")
     screen.start_over()
     assert calls(writer, "start_over") == [] and screen.said.text() == S.SORT_OVER_SAYING.format(n=2)
+    later = screen.visible_rows()[-1][1]                          # (a title the reset isn't putting back)
+    screen.choose("goal", arrival=later)                          # a choice while it is on its way …
     assert not screen.btn_over.isEnabled() and screen.start_over() is None, "one Start over at a time"
     writer.free()
     assert wait_until(lambda: calls(writer, "start_over"), 5)
     assert calls(writer, "start_over")[0][2]["changes"] == writer.saved[:2]
-    assert wait_until(lambda: keys_shown(screen) == first, 5)
+    assert wait_until(lambda: keys_shown(screen) == [k for k in first if k != later.key], 5)
+    assert wait_until(screen.btn_over.isEnabled, 5), "… and once it is saved, that choice can be started over"
 
 
 def test_start_over_is_pending_at_once_and_never_says_all_sorted_while_the_titles_come_back(world):

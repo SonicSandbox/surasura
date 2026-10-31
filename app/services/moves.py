@@ -658,6 +658,11 @@ class Writer:
         with self._cond:
             return bool(self._undo)
 
+    def newest(self):
+        """The change Ctrl+Z's undo takes back if nothing is queued before it (the newest saved), or None. Any thread."""
+        with self._cond:
+            return self._undo[-1] if self._undo else None
+
     def pending(self):
         with self._cond:
             return len(self._pending) + self._copying

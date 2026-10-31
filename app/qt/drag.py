@@ -836,7 +836,8 @@ class Ticket:
     refused, undone or ends unsaved, and asks Connect's feed again once saved; Q7's *Skip a folder…* turns until saved.
     `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
     `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
-    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left")
+    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left",
+                 "marks")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -848,6 +849,7 @@ class Ticket:
         self.told = None
         self.anki = None
         self.left = None
+        self.marks = None                            # a8: {file id: watched} its command marks (painted ahead)
 
 
 def _tell(ticket, event):
@@ -966,6 +968,11 @@ class DragController(QObject):
         self.expect_tiers = {}
         self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
         self.expect_off = {}                         # LM11b G5: key -> ids taken off its row (the reader builds it so)
+        # a8: file id -> [watched, its write, views since it landed (None: waiting), the row it was painted on] —
+        # painted ahead of the store (`_marks_ahead`) until the reader's views have it (`_marks_seen`)
+        self.expect_marks = {}
+        self._mark_undos = []                        # a8: the Undos painted ahead whose word is still to come
+        self._marks_of = weakref.WeakKeyDictionary()  # a8: a saved change -> (its marks, its row's key) (Ctrl+Z)
         self._reader_off = None                      # ... the ticket whose landing lets the reader's build go (H-C3)
         self._closed = False                         # H-T1: let go by the window (its close, a language switch)
         self.held = None                             # the reader's newest view, not shown yet
@@ -1090,18 +1097,99 @@ class DragController(QObject):
             return view
         if self._replay_owed and getattr(view, "mode", None) == "store":
             self._replay_owed = not self.writer.replay()
+        if self.expect_marks:
+            self._marks_seen(view)
         if self.running is not None:
             self.held = view
             return None
         if self.expect is None:
             self.held = None
-            return view
+            return self._with_marks(view)
         out = self._conform(view)
         if out is None:
             self.held = view
             return None
         self.held = None
-        return out
+        return self._with_marks(out)
+
+    # --- a8: a stone's Done painted ahead of the store ----------------------------------------------------------- #
+    # Sonic's alpha 7 try ("it lagged by at least a second before registering", more while a Generate ran): a Done's
+    # marks are painted in the click itself, as a drop's order is (`_ahead`), whatever holds the store meanwhile — and
+    # stand on every view shown until the reader's views have them: a mark whose write landed goes at the first view
+    # that shows it so, or at the second view since, whatever that shows (the reader builds one view at a time, and its
+    # views reach this thread in order with the writer's word: the first may have begun before the write landed, never
+    # the second). A write that lands as nothing (already so, refused, failed) or an Undo the store refuses: the next
+    # view is the store's, whatever it shows (nothing was written for it to begin before). The row's own fields come
+    # from `view_rows.marked` (one rule with the reader's); the top-20 line and the one title width as `reordered`
+    # draws them for a drop; which files are *in the top* (a stone's dimming, *Waiting*) follow the store's view, as
+    # after a drop.
+    def _holding(self, view):
+        """The places of `view`'s rows that hold a marked file: the rows they were painted on (by key) — every row
+        holding one only when a marked file isn't there (its row joined, split or gone): never a walk over every file
+        while the rows are where they were."""
+        marks, rows_ = self.expect_marks, view.rows
+        keys = {m[3] for m in marks.values()}
+        at = [k for k, r in enumerate(rows_) if r.key in keys]
+        if len({e.id for k in at for e in rows_[k].episodes if e.id in marks}) < len(marks):
+            at = [k for k, r in enumerate(rows_) if any(e.id in marks for e in r.episodes)]
+        return at
+
+    def _with_marks(self, view):
+        """`view` with the window's own marks on its rows — `view` itself when they change none."""
+        if not self.expect_marks or view is None or not getattr(view, "rows", None):
+            return view
+        marks = {i: m[0] for i, m in self.expect_marks.items()}
+        rows_ = list(view.rows)
+        changed = []
+        for k in self._holding(view):
+            row = view_rows.marked(rows_[k], marks, hero=not k)          # (Current's first row reads as Up Next)
+            if row is not rows_[k]:
+                rows_[k] = row
+                changed.append(k)
+        if not changed:
+            return view
+        worst = view.worst if changed == [0] else view_rows.worst_needs(rows_[1:])
+        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_), worst=worst)
+
+    def _marks_ahead(self, write, marks, key):
+        """`marks` ({file id: watched}) of the row `key` painted now, kept for `write` (the ticket the writer hands
+        back as it lands)."""
+        for i, on in marks.items():
+            self.expect_marks[i] = [on, write, None, key]
+        view = self.page.view_model
+        if view is not None:
+            self._show(view)
+        self._settle.start()
+
+    def _awaited(self, write):
+        """Whether the writer's word for `write` is still to come (its ticket waits, or its Undo does)."""
+        return any(write is t for t in self.tickets) or any(write is u for u in self._mark_undos)
+
+    def _marks_landed(self, write=None, empty=False):
+        """`write`'s marks landed (None: every one whose word isn't awaited — the writer idle): they stand until the
+        views have them. `empty`: it landed as nothing — the next view decides."""
+        for m in self.expect_marks.values():
+            if m[2] is None and (m[1] is write if write is not None else not self._awaited(m[1])):
+                m[2] = 1 if empty else 0
+        if write is not None:
+            self._mark_undos = [u for u in self._mark_undos if u is not write]
+
+    def _marks_seen(self, view):
+        """A view from the reader: the marks whose write landed counted against it (a busy store's last view again,
+        or the first screen's cache, is no view of it)."""
+        if getattr(view, "busy", False) or getattr(view, "cached", False) or not getattr(view, "rows", None):
+            return
+        landed = [i for i, m in self.expect_marks.items() if m[2] is not None]
+        if not landed:
+            return
+        shown = {e.id: e.watched for k in self._holding(view) for e in view.rows[k].episodes
+                 if e.id in self.expect_marks}
+        for i in landed:
+            m = self.expect_marks[i]
+            if m[2] or shown.get(i, m[0]) == m[0]:
+                del self.expect_marks[i]
+            else:
+                m[2] = 1
 
     def _conform(self, view):
         if any(r.key in self.expect_off and not self.expect_off[r.key].isdisjoint(e.id for e in r.episodes)
@@ -1126,10 +1214,10 @@ class DragController(QObject):
         return reordered(v, list(self.expect), self.expect_tiers)
 
     def _show(self, view):
-        """Show a view of the window's own making (the drop's order), past the filter."""
+        """Show a view of the window's own making (the drop's order, the marks ahead), past the filter."""
         self._own = True
         try:
-            self.win.show_library(view)
+            self.win.show_library(self._with_marks(view))
         finally:
             self._own = False
 
@@ -1154,6 +1242,7 @@ class DragController(QObject):
             # switch, the quit) lands nothing more here: what is left stays in its journal, and the order is let go
             self._settle.start()
             return
+        self._marks_landed()                         # a8: the writer idle: every mark no word is awaited for
         self._let_go(idle=True)
         self._undo_answered(idle=True)               # (an undo that found nothing to undo answers nothing)
         republish = getattr(self.reader, "republish", None)
@@ -1173,6 +1262,8 @@ class DragController(QObject):
             self._reader_off = None
             self._reader_expects(None)
         self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
+        if self._writer_stopped():                   # a8: nothing more lands here: the marks ahead let go too
+            self.expect_marks, self._mark_undos = {}, []
         held, self.held = self.held, None
         if held is not None and self.running is None:
             self._show(held)
@@ -1824,10 +1915,11 @@ class DragController(QObject):
             on_done=ghost.hide, kind="fade", owner=ghost, on_end=ghost.hide)
 
     # --- commands, toasts, Undo ------------------------------------------------------------------------------------ #
-    def _give(self, ticket, command, toast=True, anki=None):
+    def _give(self, ticket, command, toast=True, anki=None, marks=None):
         """Hand a command to the writer (`command(label)` -> its number, or None when refused); its toast with Undo.
         `anki` (finish-pending): the command's Anki half waits for the Generate it starts — `anki()` makes what its
-        press marks (None: the bar's arc), painted before the hand-over (`_anki_begin`)."""
+        press marks (None: the bar's arc), painted before the hand-over (`_anki_begin`). `marks` (a8): {file id: watched}
+        the command marks, painted as it is handed over (`_marks_ahead`)."""
         if anki is not None:
             ticket.anki = anki
             self._anki_begin(ticket)
@@ -1852,6 +1944,9 @@ class DragController(QObject):
             QTimer.singleShot(0, self._fresh.clear)
         self._fresh.append(ticket)
         self._settle.start()
+        if marks:
+            ticket.marks = dict(marks)
+            self._marks_ahead(ticket, marks, ticket.keys[0] if ticket.keys else None)
         if toast:
             self._toast(ticket)
         return seq
@@ -1946,14 +2041,25 @@ class DragController(QObject):
         finish-pending: a change whose Anki half waits — its press lets go, and the Undo's own waits the same way back;
         asked before the change was saved, its press stays and waits for the Undo's re-order (`_saved`)."""
         _tell(ticket, "undone")
+        back = {i: not on for i, on in ticket.marks.items()} if ticket.marks else None   # a8: its stones, turned back
         if ticket.change is not None:
             self._anki_drop(lambda t: t is ticket or t.follows is ticket)     # (a drop's choice with it)
-            back = self._anki_back(ticket) if ticket.anki is not None else None
+            anki = self._anki_back(ticket) if ticket.anki is not None else None
+            label = anki
+            if back and anki is None:                # a8: painted now, kept for the Undo's own word
+                label = Ticket(None)
+                self._mark_undos.append(label)
+                self._marks_ahead(label, back, ticket.keys[0] if ticket.keys else None)
             self._undo_pressed()
-            if self._undo_to_writer(ticket.change, label=back) is None and back is not None:
-                self._anki_landed(back)
+            if self._undo_to_writer(ticket.change, label=label) is None:
+                if anki is not None:
+                    self._anki_landed(anki)
+                elif label is not None:
+                    self._marks_landed(label, empty=True)
             self._let_go()
         else:
+            if back:                                 # a8: painted now, on its own ticket (`_saved` hands them on)
+                self._marks_ahead(ticket, back, ticket.keys[0] if ticket.keys else None)
             ticket.undo_asked = True
             if any(ticket is t for t in self.tickets):   # (one that landed as nothing has nothing to wait for)
                 self._undo_pressed()
@@ -1972,7 +2078,15 @@ class DragController(QObject):
             return
         if self.writer.can_undo() or self.writer.pending():
             self._undo_pressed()
-            self._undo_to_writer(label=Ticket(None))  # finish-pending: its undo waits for Anki if its change did (`_undone`)
+            label = Ticket(None)                     # finish-pending: its undo waits for Anki if its change did (`_undone`)
+            newest = getattr(self.writer, "newest", None)
+            change = newest() if newest is not None and not self.writer.pending() else None
+            marks, key = self._marks_of.get(change, (None, None)) if change is not None else (None, None)
+            if marks:                                # a8: a Done's undo, the next the writer takes: its stones now
+                self._mark_undos.append(label)
+                self._marks_ahead(label, {i: not on for i, on in marks.items()}, key)
+            if self._undo_to_writer(label=label) is None and marks:
+                self._marks_landed(label, empty=True)
             self._let_go()
 
     def _saved(self, change, label):
@@ -1982,6 +2096,8 @@ class DragController(QObject):
             then, label.then = label.then, None
             if label.anki is not None:
                 self._anki_of[change] = label.anki   # finish-pending: Ctrl+Z's undo of it waits for Anki too
+            if label.marks:                          # a8: Ctrl+Z's undo of it painted ahead too
+                self._marks_of[change] = (label.marks, label.keys[0] if label.keys else None)
             if label.undo_asked:
                 label.undo_asked = False
                 if then is not None:                 # the drop taken back: its waiting choice with it
@@ -1989,11 +2105,22 @@ class DragController(QObject):
                     self._drop_waiting(label)
                 p = self._landing.pop(label, None)   # finish-pending: its press waits for the Undo's re-order now
                 back = self._anki_back(label, p) if p is not None else None
-                if self._undo_to_writer(change, label=back) is None and back is not None:
-                    self._anki_landed(back)
+                undo = back
+                if label.marks and back is None:     # a8: its stones turned back, kept for the Undo's own word now
+                    undo = Ticket(None)
+                    self._mark_undos.append(undo)
+                    for m in self.expect_marks.values():
+                        if m[1] is label:
+                            m[1] = undo
+                if self._undo_to_writer(change, label=undo) is None:
+                    if back is not None:
+                        self._anki_landed(back)
+                    elif undo is not None:
+                        self._marks_landed(undo, empty=True)
                 self._let_go()
             if then is not None:
                 then()
+            self._marks_landed(label)
         self._settle_ticket(label)
         if self.reader is not None:
             self.reader.refresh()
@@ -2006,7 +2133,10 @@ class DragController(QObject):
         _sources_stopped(self.win, change, undone=True, language=getattr(self.writer, "language", None))
         _trash_moved(self.win, change)
         mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
+        if change is not None:
+            self._marks_of.pop(change, None)
         if isinstance(label, Ticket):
+            self._marks_landed(label)                # a8: its stones stand until the views have them
             _tell(label, "undone")
             if label not in self._landing and mark is not None and label.anki is None:
                 # finish-pending (intent finding 2): Ctrl+Z of a change whose Anki half waited — the change's press
@@ -2246,6 +2376,8 @@ class DragController(QObject):
         command landed as nothing settle (Ctrl+Z never picks one that has nothing to undo)."""
         landed = getattr(self.writer, "landed_empty", None)
         empty = landed() if landed is not None else ()
+        for e in empty:                              # a8: a mark that landed as nothing: its stone as the store has it
+            self._marks_landed(e, empty=True)
         if not self.writer.pending():
             for t in list(self.tickets):
                 then, t.then = t.then, None
@@ -2256,6 +2388,7 @@ class DragController(QObject):
             for t in settled:
                 if isinstance(t, Ticket) and t.change is None:
                     _tell(t, "ended")
+                    self._marks_landed(t, empty=True)    # a8: nothing written: the next view decides
                 self._ended(t)
             self._undo_answered(idle=True)
         else:
@@ -2313,7 +2446,7 @@ class DragController(QObject):
             text = strings.DONE_UNDONE_BACK.format(ep=ep.label) if moves_list else \
                 strings.DONE_UNDONE.format(title=title, ep=ep.label)
             ticket = Ticket(text, (row.key,), (ep.id,))
-            self._give(ticket, lambda t: self.writer.set_watched([ep.id], False, label=t))
+            self._give(ticket, lambda t: self.writer.set_watched([ep.id], False, label=t), marks={ep.id: False})
             return
         after = [e for e in row.episodes[row.episodes.index(ep) + 1:] if not e.watched] if ep in row.episodes else []
         left = [e for e in view_rows.to_finish(row.episodes) if not e.watched and e.id != ep.id]   # H-6: never its audio
@@ -2351,6 +2484,7 @@ class DragController(QObject):
         the list, its hint once per library (`left_text`); else the toast `text`."""
         ids = [e.id for e in eps]
         marked = set(ids)
+        on = dict.fromkeys(ids, True)                # a8: painted as it is handed over
 
         def mark(t):
             return self.writer.set_watched(ids, True, label=t)
@@ -2358,13 +2492,13 @@ class DragController(QObject):
         view = self.page.view_model
         verdict = None if left else when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
         if verdict is not None and verdict[0] != "offer":
-            if self._give(Ticket(text, (row.key,), tuple(ids)), mark, toast=False) is None:
+            if self._give(Ticket(text, (row.key,), tuple(ids)), mark, toast=False, marks=on) is None:
                 return
             self._by_itself(row, verdict)
             return
         if verdict is not None:                      # ("offer",): today's *finished with it?*
             ticket = Ticket(strings.DONE_ALL.format(n=all_n(row)), (row.key,), tuple(ids))
-            if self._give(ticket, mark, toast=False) is None:
+            if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
             self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
                                           lambda: self.to_finished(row))])
@@ -2379,7 +2513,7 @@ class DragController(QObject):
         if shown is not None:
             show, show_ids = shown
             ticket = Ticket(strings.DONE_SHOW_IN_GROUP.format(show=show, n=len(show_ids)), (row.key,), tuple(ids))
-            if self._give(ticket, mark, toast=False) is None:
+            if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
             self._toast(ticket, buttons=[(strings.DONE_MOVE_SHOW_FINISHED.format(show=show),
                                           strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=len(show_ids)),
@@ -2389,14 +2523,14 @@ class DragController(QObject):
         hint = self._unseen(HINT_LEFT) if any(view_rows.mark_moves_list(row.tier, e, keep) for e in eps) else None
         if hint is not None:
             ticket = Ticket(left_text, (row.key,), tuple(ids))
-            if self._give(ticket, mark, toast=False) is None:
+            if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
             self._seen(hint)
             self._toast(ticket, buttons=[(strings.DONE_KEEP, strings.DONE_KEEP_TIP,
                                           lambda: self.win.open_setting("keep_watched")),
                                          (strings.DONE_OK, strings.DONE_OK_TIP, lambda: None)])
             return
-        self._give(Ticket(text, (row.key,), tuple(ids)), mark)
+        self._give(Ticket(text, (row.key,), tuple(ids)), mark, marks=on)
 
     # --- W-1: a hint shown once per library (settings.json's `hints_seen`: hint ids, each with the library's id) -- #
     def _hint_id(self, name):
@@ -2702,6 +2836,7 @@ class DragController(QObject):
             self.cancel()
         self._closed = True
         self._settle.stop()
+        self.expect_marks, self._mark_undos = {}, []
         self._anki_let_go()
         self._filter(False)
         for t in self.tickets:                       # round 8 row 45: nothing of this controller's left turning

@@ -79,7 +79,7 @@ from collections import namedtuple
 from app import audiobooks
 from app import episode_names as en
 from app import library_store as ls
-from app.path_utils import decode_text, restart_trash_clock, write_source_marker
+from app.path_utils import BOOK_EXTENSIONS, decode_text, restart_trash_clock, write_source_marker
 from app.unicode_ranges import HAN, KANA_LETTERS
 
 log = logging.getLogger("surasura-cli")
@@ -95,7 +95,7 @@ HOURLY_S = 60 * 60              # else, while a window is in front
 CACHE_VERSION = 4               # 2: a folder's subtitle folders are listed with it; 3: a versions folder by its name;
                                 # 4: a folder link is followed, and each root keeps its folders' notes (`notes`)
                                 # alone (LF-1), never one guessed from what it holds
-EPUB = ".epub"
+EPUB = BOOK_EXTENSIONS[0]                       # (path_utils.file_kind's book)
 MIN_SCRIPT = 20                 # a text holding fewer characters of the language's script is no content (K6)
 BOOK_MIN_CHARS = 1000           # a loose .txt / .md holding fewer of the script's characters is no content (T2-B4)
 HEAD = 1 << 20                  # a text over IN_MEMORY is judged by this much of its start, read with its hash (B4)
@@ -496,17 +496,40 @@ def _folder_language(name):
     return en.language_of(name)
 
 
-def _show_of(root, parts, name):
+def _show_of(root, parts, name, folders=()):
     """`Library/<show>`'s show (§1, S12): the folder below the source as written (`Frieren/Season 1`); a season or
     specials folder alone gets the source folder's name in front; a loose file's show is K4's reading of its name,
-    else the source folder's name."""
+    else the source folder's name. a8 (Sonic 2026-10-31; PROVISIONAL): a loose EPISODE (its name holds an episode
+    number: never a book, whose show is its name) whose show is one of the source's own top folders by the one "same
+    show?" key (`folders`: `_show_folders`' (name, key) pairs; `episode_names.show_key`: `Show!/` and `Show - 02.mkv`)
+    is that folder's show, so its copy lands in that folder's `Library/<show>` (one folder key, one title): the one
+    folder of that key — two or more (`Show!/`, `Show~/`): its own show, as before (a folder named exactly as it is
+    its own show's folder key already). A title of `episode_names.SHOW_KEY_EXCEPTIONS` (`Gintama'`) has a key of its
+    own. New copies only: nothing already copied moves."""
     from app.extract import clean_name
     root_name = clean_name(os.path.basename(os.path.normpath(root))) or "Source"
     if parts:
         if en.season_folder(parts[0]) is not None:
             parts = [root_name] + list(parts)
         return "/".join(parts)
-    return clean_name(ls.show_of_name(name) or "") or root_name
+    show = clean_name(ls.show_of_name(name) or "")
+    key = en.show_key(show) if folders and en.identity(name).key[2] is not None else ""
+    same = [f for f, k in folders if k == key] if key else []
+    if len(same) == 1:
+        return same[0]
+    return show or root_name
+
+
+def _show_folders(subs):
+    """a8: a source's top folders a loose episode may be the show of (`_show_of`) -> [(name, `show_key`)], each folded
+    once a look: never a season or specials folder (no show of its own), never one with no letter or digit."""
+    out = []
+    for path in subs:
+        name = os.path.basename(os.path.normpath(path))
+        key = en.show_key(name) if en.season_folder(name) is None else ""
+        if key:
+            out.append((name, key))
+    return out
 
 
 def _library_show(rel):
@@ -1289,7 +1312,8 @@ class _Look:
             self.out["skipped"] += ghosts
             rel = os.path.relpath(folder, self.base)
             parts = [] if rel == "." else rel.replace("\\", "/").split("/")
-            show_of = self._shows_of(parts, texts, vids)    # D3: a moved show's files are its show's
+            folders = () if parts else _show_folders(subs)   # a8: the top's folders, folded once
+            show_of = self._shows_of(parts, texts, vids, folders)    # D3: a moved show's files are its show's
             episodes = self._episodes(self.base, parts, texts, epubs, langs, vids, self.versions.get(fkey, ()),
                                       show_of)
             for name, path, st, show, kind, *item in episodes:
@@ -1785,12 +1809,14 @@ class _Look:
         if keys:
             self._note(folder, ls.path_key(os.path.abspath(path)), "kept_out", keys)
 
-    def _shows_of(self, parts, texts, vids):
+    def _shows_of(self, parts, texts, vids, folders=()):
         """D3 (PROVISIONAL; Sonic's MV-1: a moved show found where Surasura reads joins the show it is, never a
         duplicate) -> show_of(a file's name): the show of a folder's files. A folder below the source (`parts`) is one
         show; at the source's top each name's show is its own (S12) — a show folder picked as the source itself (MV-2's
         *Find its folder*) reads its files' names. Each is `_show_of`'s, unless that show has no items yet and its files
-        are already items of ONE show (`_joined`) -> that show: `Downloads/Show` -> `NAS/2024 Fall/Show` stays `Show`."""
+        are already items of ONE show (`_joined`) -> that show: `Downloads/Show` -> `NAS/2024 Fall/Show` stays `Show`.
+        `folders`: the source's top folders (`_show_folders`; a8: a loose episode of one of their shows is that
+        folder's)."""
         if parts:
             show = self._joined(_show_of(self.base, parts, ""), texts, list(vids.values()))
             return lambda _name: show
@@ -1798,7 +1824,7 @@ class _Look:
 
         def own(name):
             if name not in names:
-                names[name] = _show_of(self.base, parts, name)
+                names[name] = _show_of(self.base, parts, name, folders)
             return names[name]
         for t in texts:
             groups.setdefault(own(t[0]), ([], []))[0].append(t)
@@ -2169,10 +2195,11 @@ class _Look:
 
     def _removed(self, show, episode, name):
         """K2 (S6): a removed episode's key — its show and number as recorded (the exclusion's note) or read from the
-        new file's place, the rest of the key (show of the name, season, part, special) from its name."""
+        new file's place, the rest of the key (show of the name, season, part, special) from its name. Each show by
+        the one "same show?" key (a8: a removed `Show - 03`'s re-release copied for the folder `Show!/` stays out)."""
         _show, season, _episode, part, special = en.identity(name).key
-        return (ls.search_fold(show, self.language), episode, ls.search_fold(_show, self.language), season, part,
-                special)
+        same = lambda s: en.show_key(ls.search_fold(s, self.language)) or ls.search_fold(s, self.language)  # noqa: E731
+        return (same(show), episode, same(_show), season, part, special)
 
     def _book_keys(self):
         """The EPUBs already in or kept out (their parts' origins, `<epub>#<n>`): gathered once a look (H20), kept by

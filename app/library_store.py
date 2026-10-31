@@ -142,6 +142,12 @@ def sets_aside_sql(keep_watched=False, alias=""):
 # --- end W-1
 
 
+def _scheduled_sql(keep_watched=False):
+    """What `Store.schedule` lists of one tier (its `?`): the items that count, a video still waiting for its subtitle
+    (K5) never — one condition for the schedule and the ids the window's numbers read (`Store.scheduled_ids`)."""
+    return f"tier = ? AND {counts_sql(keep_watched)} AND availability != 'waiting'"
+
+
 TIER_OF_PHASE = {v[0]: t for t, v in TIERS.items() if v[0]}
 TIER_OF_FOLDER = {v[1]: t for t, v in TIERS.items() if v[1]}
 FOLDER_OF_TIER = {t: v[1] for t, v in TIERS.items() if v[1]}
@@ -1896,13 +1902,13 @@ class Store:
         out = {}
         with self._reading():
             keep = self._keep_watched()
-            rule = counts_sql(keep)
+            scheduled = _scheduled_sql(keep)
             for tier in ANALYSED:
                 out[TIERS[tier][0]] = [
                     {"physical_path": p, "source_type": s, "title": t, "parent_folder": f}
                     for p, s, t, f in self.conn.execute(
-                        f"SELECT rel_path, source_type, title, parent_folder FROM items WHERE tier = ? AND {rule} "
-                        "AND availability != 'waiting' ORDER BY ord, id", (tier,))]
+                        f"SELECT rel_path, source_type, title, parent_folder FROM items WHERE {scheduled} "
+                        "ORDER BY ord, id", (tier,))]
             if with_aside:
                 out[ASIDE] = [{"physical_path": p, "source_type": s} for p, s in self.conn.execute(
                     f"SELECT rel_path, source_type FROM items WHERE {sets_aside_sql(keep)} "
@@ -1919,6 +1925,19 @@ class Store:
     def versions(self):
         with self._reading():
             return self._versions()
+
+    def scheduled_ids(self):
+        """[(item_id, tier)] of what `schedule` lists, in its order (NOW, Soon, 6+ Months; each tier by ord, id): its
+        rows' ids alone, no entry read — the window's numbers read the order with it after every arrival (W4.1)."""
+        with self._reading():
+            scheduled = _scheduled_sql(self._keep_watched())
+            return [(i, tier) for tier in ANALYSED for (i,) in self.conn.execute(
+                f"SELECT id FROM items WHERE {scheduled} ORDER BY ord, id", (tier,))]
+
+    def item_keys(self):
+        """{rel_key: item_id} of every item, no entry read: a file's `path_key` is its item's `rel_key` (a plan's files
+        to items, W4.1)."""
+        return dict(self.conn.execute("SELECT rel_key, id FROM items"))
 
     def ordered(self, tier):
         """[(item_id, entry, availability)] of a tier in order, for a view."""

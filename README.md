@@ -190,7 +190,9 @@ licence.
 
 With *Download covers* on (off until you say yes), the 3.0 window shows each show's cover from
 [AniList](https://anilist.co) (asked by the show's AniList id, or its cleaned name), and a video's own thumbnail from
-[YouTube](https://www.youtube.com); nothing is shipped, and *Remove downloaded covers* deletes them.
+[YouTube](https://www.youtube.com); nothing is shipped, and *Remove downloaded covers* deletes them. The same switch
+asks AniList, by the show's id, whether a show near its last episode is still airing, so it isn't finished while new
+episodes are coming; *Remove downloaded covers* deletes those answers too.
 
 The same credits, with the frequency lists and the tokenizers' dictionaries (UniDic, jieba, OpenCC), are in the app:
 Settings → App → Data credits.

@@ -654,6 +654,10 @@ STAR_ASK_STAR_TIP = "Opens Surasura's GitHub page in your browser"
 STAR_ASK_NOT_NOW = "Not now"
 STAR_ASK_NOT_NOW_TIP = "Closes this; it isn't asked again"
 DONE_ALL = "✓ All {n} watched — finished with it?"
+# 3.0.1 item 5 (AA-3, PROVISIONAL): why AniList held a show back from finishing by itself
+DONE_ALL_WHY = "✓ All {n} watched · {why} — finished with it?"
+DONE_WHY_AIRING = "Still airing (AniList)"
+DONE_WHY_MORE = "AniList lists {n} episodes; you have up to {m}"
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
 # L6.3: what the last file's Done does by itself (its toast's Undo takes it back; the ✓ stays)

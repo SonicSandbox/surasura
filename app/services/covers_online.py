@@ -41,7 +41,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from app import path_utils
 from app.episode_names import show_key
-from app.services import covers
+from app.services import airing, covers
 
 ANILIST_API = "https://graphql.anilist.co"
 YTIMG = "https://i.ytimg.com"
@@ -333,6 +333,9 @@ class Fetcher:
         self._done = set()                  # asked this session: fetched, no match, nothing to ask
         self._stop = False
         self._thread = None
+        # 3.0.1 item 5: whether a show near its end is still airing — asked through this fetcher's own `_post` (its
+        # throttle: one AniList budget; its headers; its switch), made and stopped with it (`app/services/airing.py`)
+        self.airing = airing.Airing(language, self._post, self.on, background=background)
 
     # --- the window's side (any thread; returns at once) ----------------------------------------------------------- #
     def on(self):
@@ -370,15 +373,18 @@ class Fetcher:
             self._stop = True
             self._cond.notify_all()
         self._wake.set()
+        self.airing.stop(timeout=0)
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout)
 
     def remove_downloaded(self):
         """*Remove downloaded covers*: the writer clears the fetched records and deletes their files (`forget_covers`);
-        what this session fetched may be fetched again (the switch still on). -> the command's number, or None."""
+        what this session fetched may be fetched again (the switch still on); AniList's kept airing answers go too
+        (3.0.1 item 5, A7). -> the command's number, or None."""
         with self._cond:
             self._done.clear()
             self._later.clear()
+        self.airing.clear()
         return self.writer.forget_covers()
 
     def _start(self):

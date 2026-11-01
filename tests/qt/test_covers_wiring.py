@@ -270,6 +270,21 @@ def test_the_fetcher_is_made_with_the_library_again_for_another_writer_and_stopp
     assert h._stop and qcovers.fetcher() is None
 
 
+def test_the_reader_asks_airing_through_the_fetcher_shown_and_it_stops_with_it(real, anilist):
+    """3.0.1 item 5: AniList's airing asker is the covers fetcher's own (its switch, its throttle): the library reader
+    follows the fetcher made for the writer shown, never the one a switch let go, and closing stops it."""
+    store, win, writer, _switch = real("ja", anilist, on=False)
+    reader = win.services.library
+    f = win.cover_fetcher()
+    assert reader._airing is f.airing and f.airing.on_change is not None
+    other = SimpleNamespace(can_write=lambda: True)
+    win.services.writer = other                                       # another library's writer (a switch)
+    g = win.cover_fetcher()
+    assert reader._airing is g.airing and f.airing._stop and not g.airing._stop
+    win.close()
+    assert g.airing._stop
+
+
 # --- the tray, the inset and Goal's sheet paint Q6's pictures (the seed) ------------------------------------------- #
 def open_seed(qapp, seed, writer):
     """The seed's window in the seed's own language (its settings say so: the covers' data folder is that language's)."""

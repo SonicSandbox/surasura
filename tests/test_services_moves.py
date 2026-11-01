@@ -2537,6 +2537,26 @@ def test_so1_start_over_brings_an_ignored_titles_file_back_and_its_undo_ignores_
     assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and heard.notes == []
 
 
+def test_so1_a_start_over_of_an_ignore_queued_at_a_crash_brings_it_back_at_the_next_start(lib, make_writer,
+                                                                                            short_lock_wait):
+    """A reset holding only an Ignore, journalled, the app gone before it landed: its title is still in the trash, so
+    the replay brings it back (file and row) — never taken for one that landed."""
+    w, heard = make_writer()
+    b = _arrival(lib, lib.ids("soon")[1])
+    path = _file(lib, b)
+    w.remove([b])
+    assert h.until(lambda: len(heard.saved) == 1)
+    holder = LockHolder(lib.db)
+    w.start_over([heard.saved[0][0]])
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["start_over"])
+    w._abandon()
+    holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and heard2.notes == []
+
+
 def test_S2_after_show_with_no_show_to_follow_writes_nothing_and_rereads(lib, make_writer):
     w, heard = make_writer()
     loose = [i for i in lib.ids("goal") if lib.store.item(i)["rel_path"].count("/") == 1][0]   # a loose file

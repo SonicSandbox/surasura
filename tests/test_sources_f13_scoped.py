@@ -232,9 +232,11 @@ def test_a_refresh_keeps_the_shows_asked_and_leaves_the_tables_not_grouped_yet_t
                "/src/本.epub#1": _origin(4, f"{d}/本.epub#1", "Library/本/1.txt", 50, "e1")}
     look = _bare_look(dict(origins))
     look.book_keys = look.editions = None
+    look.ex_paths = set()
     a, b, book = (ls.folder_key_of(f"Library/{x}/x") for x in ("A", "B", "本"))
     assert [o.item_id for o in look._show_origins(a)] == [1, 2]
     look._members("item")
+    assert look._book_keys() == {"/src/本.epub"}             # the EPUBs known (the head table), the book table not yet
     now = {"/src/a/02.srt": _origin(2, f"{d}/a/02.srt", "Library/B/02.srt", 50, "s2"),     # item 2 moved to B
            "/src/本.epub#1": _origin(4, f"{d}/本.epub#1", "Library/本/1.txt", 50, "e2"),     # the book's new bytes
            "/src/本.epub#2": _origin(5, f"{d}/本.epub#2", "Library/本/2.txt", 50, "e2")}     # and a new part
@@ -242,7 +244,8 @@ def test_a_refresh_keeps_the_shows_asked_and_leaves_the_tables_not_grouped_yet_t
     look._refresh({2, 4}, SimpleNamespace(added=[5]))
     after = dict(origins, **now)
     assert look.origins == after
-    assert set(look.members) == {"show", "item"}, "a table not grouped yet was grouped by the refresh"
+    assert set(look.members) == {"show", "item", "head"}, "a table not grouped yet was grouped by the refresh"
+    assert look.book_keys == {"/src/本.epub"}                 # kept by the refresh, from the head table
     shows = _old_show_origins(after)
     assert [o.item_id for o in look._show_origins(a)] == [1]                  # asked before: followed
     for fk in (a, b, book):

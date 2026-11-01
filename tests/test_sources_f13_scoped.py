@@ -295,3 +295,31 @@ def test_the_emptied_check_reads_the_top_folders_the_python_rule_read(monkeypatc
     want = {(rel[2:] if rel.startswith("./") else rel).split("/", 1)[0] for rel in rels if rel}
     assert sorted(asked) == sorted(os.path.normpath(t) if t else "." for t in want)
     assert files == len(rels)                               # every item but the waiting video
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_moved_show_folder_whose_only_recorded_file_is_a_video_joins_that_show_by_its_video_key(language):
+    """Why (D3, FIX1 MV-A1): a show's folder found elsewhere (`Moved/<show>`) holding one of its recorded videos and a
+    new episode's subtitle joins the show by that video (its size, then its content key: the evidence's video side),
+    so the new episode's copy lands in the show's own `Library/<show>` — never in a second title `Moved/<show>`. Read
+    by the text side instead, the video wouldn't vote and the new episode would start a title of its own."""
+    store, data_dir = _empty(language)
+    src = _drive("driveA")
+    show = "月影の旅人" if language == "ja" else "夜市小记"
+    bodies = [b"\x1a\x45\xdf\xa3 " + f"{show} {n} ".encode() * (n + 3) for n in (1, 2, 3)]
+    for n, body in zip((1, 2, 3), bodies):
+        stem = os.path.join(src, show, f"[Grp] {show} - {n:02d}")
+        _write(stem + f".{language}.srt", _text(language, n))
+        _video(stem + ".mkv", body=body)
+    _settle(src)
+    with store:
+        root = store.add_source(src)
+        assert _look(store, language, root, first=True)["added"] == 3
+        assert len([o for o in store.origins().values() if o.video_key]) == 3, "no video recorded: proves nothing"
+        moved = os.path.join(src, "Moved", show)
+        _video(os.path.join(moved, f"[Grp] {show} - 01.mkv"), body=bodies[0])
+        _write(os.path.join(moved, f"[Grp] {show} - 04.{language}.srt"), _text(language, 4, extra=" new"))
+        _settle(src)
+        assert _look(store, language, root)["added"] == 1
+        rels = [r[0] for r in store.conn.execute("SELECT rel_path FROM items WHERE rel_path LIKE '%- 04%'")]
+        assert len(rels) == 1 and sources._library_show(rels[0]) == show, rels

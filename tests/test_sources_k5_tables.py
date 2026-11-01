@@ -35,8 +35,9 @@ def _built(look):
     kept = {t: getattr(look, t, None) for t in _TABLES}
     kept["by_show"], kept["members"] = look.by_show, look.members
     kept["edition_of"] = getattr(look, "edition_of", None)
+    kept["shows_asked"] = look.shows_asked                 # F13: a show's origins are built when that show is asked
     look.books_in = look.book_origins = look.book_keys = look.by_item = look.editions = look.by_show = None
-    look.members = None
+    look.members, look.shows_asked = None, set()
     fresh = {}
     if kept["books_in"] is not None:
         fresh["books_in"] = look._books()
@@ -51,11 +52,13 @@ def _built(look):
         look._edition_of(os.path.join(os.sep, "nowhere", "x (第2版).epub"))   # builds the editions table
         fresh["editions"] = look.editions
     if kept["by_show"] is not None:
-        look._show_origins("")
+        for fk in kept["shows_asked"]:
+            look._show_origins(fk)
         fresh["show_origins"] = look.show_origins
     for t in _TABLES:                                      # put the look's own back: the look goes on with them
         setattr(look, t, kept[t])
     look.by_show, look.members, look.edition_of = kept["by_show"], kept["members"], kept["edition_of"]
+    look.shows_asked = kept["shows_asked"]
     return copy.deepcopy({t: kept[t] for t in fresh}), fresh      # as they were now: the look goes on changing them
 
 
@@ -77,10 +80,10 @@ def test_each_refresh_of_a_first_look_leaves_the_tables_a_build_from_scratch_mak
         real_refresh(self, item_ids, change)
         compared.append(_built(self))
 
-    def members(self):
+    def members(self, table):
         if self.members is None:
             rebuilt.append(1)
-        return real_members(self)
+        return real_members(self, table)
     monkeypatch.setattr(sources._Look, "_refresh", refresh)
     monkeypatch.setattr(sources._Look, "_members", members)
     with store:

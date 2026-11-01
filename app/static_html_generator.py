@@ -966,17 +966,14 @@ def _journey_folds(data, file_order, marks, inline=False):
     from app.path_utils import infer_source_type
     from app.services import view_rows
     shared = {name for name, n in Counter(report_name(mark[0]) for mark in marks).items() if n > 1}
-    runs, run_of, last = [], {}, None
-    for rel, tier, watched, _counted, *show in marks:
-        key = (tier, tuple(show)) if watched and show else None
-        if key is None:
-            last = None
-            continue
-        if last is None or last[0] != key:
-            last = (key, len(runs))
-            runs.append(show[1] if len(show) > 1 else None)
-        if report_name(rel) not in shared:
-            run_of[report_name(rel)] = (last[1], rel)
+    runs, run_of = [], {}                            # a8: the window's opened rows fold by the same rule (`watched_runs`)
+    for a, b in view_rows.watched_runs([(tier, tuple(show)) if watched and show else None
+                                        for _rel, tier, watched, _counted, *show in marks]):
+        show = marks[a][4:]
+        for rel in (mark[0] for mark in marks[a:b + 1]):
+            if report_name(rel) not in shared:
+                run_of[report_name(rel)] = (len(runs), rel)
+        runs.append(show[1] if len(show) > 1 else None)
     if not runs:
         return
     entries = {entry["filename"]: entry for entry in data["progressive"]}
@@ -995,8 +992,7 @@ def _journey_folds(data, file_order, marks, inline=False):
             numbers = [n for n in (view_rows.episode_number(report_name(rel)) for rel in rels) if n is not None]
             for entry in group:
                 entry["fold"] = len(folds)
-            folds.append({"label": view_rows.STRINGS["fold_watched"].format(
-                range=view_rows.range_text(media, numbers, len(group))), "n": len(group)})
+            folds.append({"label": view_rows.fold_label(media, numbers, len(group)), "n": len(group)})
         group.clear()
 
     for entry in sidebar:

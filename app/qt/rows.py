@@ -412,6 +412,11 @@ def icon(p, kind, rect, colour, width=1.6):
         path.lineTo(QPointF(x + w * 0.5, y + h * b))
         path.lineTo(QPointF(x + w * 0.76, y + h * a))
         p.drawPath(path)
+    elif kind == "chev-right":                       # a8: a fold's, folded (shown whole: `chev-down`)
+        path = QPainterPath(QPointF(x + w * 0.38, y + h * 0.24))
+        path.lineTo(QPointF(x + w * 0.64, y + h * 0.5))
+        path.lineTo(QPointF(x + w * 0.38, y + h * 0.76))
+        p.drawPath(path)
     p.restore()
 
 
@@ -836,7 +841,8 @@ class RowsModel(QAbstractListModel):
         it is a "same" refresh (review D-3) — and since its stones show (W3.1a B3), that row alone is painted again
         (`looks_different`), never a relayout of every row."""
         return RowDelegate._shape(entry, self.open_key is not None and
-                                  self.open_key == getattr(entry[1], "key", None))
+                                  self.open_key == getattr(entry[1], "key", None),
+                                  getattr(self.parent(), "unfolded", frozenset()))
 
     def looks_different(self, i):
         """Whether changed row `i` paints differently from before the last "same" refresh: a closed row rebuilt with
@@ -947,8 +953,9 @@ class RowsModel(QAbstractListModel):
         for i in range(len(entries)):
             a, b = self.shape_of(before[i]), self.shape_of(entries[i])
             if a != b:                              # (kind, lines, open, episodes): only the lines may differ, inside
-                if not lo <= i <= hi or a[0] != b[0] or a[2:] != b[2:]:
-                    return None
+                if not lo <= i <= hi or a[0] != b[0] or a[2] != b[2] or a[4:] != b[4:] or \
+                        a[3] != b[3] and before[i][2] == entries[i][2]:    # a8: an opened row's lines (its folds) move
+                    return None                     # with the top-20 line through it, never on their own here
                 relaid = True
         if relaid and sum(len(e[2]) for e in before[lo:hi + 1]) != sum(len(e[2]) for e in entries[lo:hi + 1]):
             return None                             # a line came or went: not lines moving
@@ -1026,6 +1033,7 @@ class RowDelegate(QStyledItemDelegate):
         self._hints_look = None
         self._model = view.model()                   # the list's own model, set before its delegate (`RowsView`)
         self._heights, self._h_entries, self._h_open, self._h_look = [], None, None, None
+        self._h_unfolded = None                      # a8: the view's folds shown whole the heights were made for
         self._bytes = {"row": 0, "ep": 0}
         self._infos, self._infos_look = {}, None     # a Current row's key -> its string's plan and needs (`_info`)
         self._eps_at = None                          # LM11b H-W2: `episode_at`'s (row, rect, lines, its lines, look)
@@ -1106,7 +1114,8 @@ class RowDelegate(QStyledItemDelegate):
         answer is one look in a list made once per entries, open row and look (`_heights_now`); a call that does any
         more is paid a few hundred times (W2.2 speed round 5: 1.4 ms of an opening's ~3.5)."""
         model = self._model
-        if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look:
+        if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look \
+                or self.view.unfolded is not self._h_unfolded:
             self._heights_now(model)
         row = index.row()
         heights = self._heights
@@ -1126,23 +1135,28 @@ class RowDelegate(QStyledItemDelegate):
         if look != self._hints_look:                 # a new look: every height again
             self._hints.clear()
             self._hints_look = look
-        open_key, hints, shape = model.open_key, self._hints, self._shape
+        open_key, hints, shape, unfolded = model.open_key, self._hints, self._shape, self.view.unfolded
         out = []
         for entry in model.entries:
             is_open = open_key is not None and open_key == getattr(entry[1], "key", None)
-            key = shape(entry, is_open)
+            key = shape(entry, is_open, unfolded)
             size = hints.get(key)
             if size is None:
                 size = hints[key] = self._size_hint(entry, is_open)
             out.append(size)
         self._heights, self._h_entries, self._h_open, self._h_look = out, model.entries, open_key, look
+        self._h_unfolded = unfolded
 
     @staticmethod
-    def _shape(entry, is_open):
+    def _shape(entry, is_open, unfolded=frozenset()):
         """What an entry's height is made of (`_size_hint` reads nothing else): its kind, its lines, open or not, and,
-        open or a Needs-you item, how many episodes it lists. Closed rows with as many lines under them are as tall."""
+        open or a Needs-you item, how many episodes it lists (a8: opened, its lines — a fold one, its parts after it
+        while shown whole: `unfolded`, the view's). Closed rows with as many lines under them are as tall."""
         kind, payload, lines = entry
-        n = len(payload.episodes) if (is_open and kind in (HERO, ROW)) or kind == NEED else 0
+        if is_open and kind in (HERO, ROW):
+            n = len(shown_lines(payload, row_folds(payload, lines), unfolded))
+        else:
+            n = len(payload.episodes) if kind == NEED else 0
         shows = len(show_starts(payload)) if is_open and kind in (HERO, ROW) else 0     # LM11b: its show lines
         return kind, len(lines), is_open and kind in (HERO, ROW), n, shows
 
@@ -1153,12 +1167,12 @@ class RowDelegate(QStyledItemDelegate):
         if kind == HERO:
             h = self._hero_head_h()
             if is_open:
-                h += self._episodes_h(payload) + 14
+                h += self._episodes_h(payload, lines) + 14
             return QSize(100, h + rl("hero-below") + self._lines_h(lines))
         if kind == ROW:                              # one line at every size, its gap half above, half below
             h = self._line_h()
             if is_open:                              # W3.2 Q6: its standing cover's height at least
-                h += max(self._episodes_h(payload), self.stand_h()) + rl("open-pad")
+                h += max(self._episodes_h(payload, lines), self.stand_h()) + rl("open-pad")
             return QSize(100, h + rl("gap") + self._lines_h(lines))
         if kind == FINISHED:                         # today's layout (C-scope §2.3)
             return QSize(100, round(theme.SIZES["row"] * f) + gap + self._lines_h(lines))
@@ -1172,11 +1186,12 @@ class RowDelegate(QStyledItemDelegate):
             return QSize(100, round(17 * f * 1.45 + 13 * f * 1.45 + 80))
         return QSize(100, round(theme.SIZES["row"] * f))
 
-    def _episodes_h(self, row):
-        """An open row's episode list: 4 px, then one `episode-row` per episode and, in a group, one `show-line` above
-        each show's episodes (as `_episode_rows` lays them)."""
+    def _episodes_h(self, row, lines=()):
+        """An open row's episode list: 4 px, then one `episode-row` per line (an episode, a8: a fold) and, in a group,
+        one `show-line` above each show's episodes (as `_episode_layout` lays them)."""
         f = fz()
-        return 4 + len(row.episodes) * round(theme.SIZES["episode-row"] * f) + \
+        n = len(shown_lines(row, row_folds(row, lines), self.view.unfolded))
+        return 4 + n * round(theme.SIZES["episode-row"] * f) + \
             len(show_starts(row)) * round(rl("show-line") * f)
 
     def _hero_text_h(self):
@@ -1502,11 +1517,12 @@ class RowDelegate(QStyledItemDelegate):
 
     def episode_at(self, entry, rect, pos):
         """The episode of an opened Current row (or Up Next) whose line `pos` (the viewport's) is on, else None (LM11b
-        G2: a drop on an opened group's episode lands after it)."""
+        G2: a drop on an opened group's episode lands after it); a8: on a fold's line, the fold (`view_rows.Fold`)."""
         kind, payload, lines = entry
         if kind not in (HERO, ROW) or self.view.model().open_key != payload.key:
             return None
-        hit, look = self._eps_at, style.current()    # H-W2 (S19): asked on every move of a drag's hand — the row's
+        hit, look = self._eps_at, (style.current(), self.view.unfolded)    # H-W2 (S19): asked on every move of a
+        #                                            drag's hand (a8: and its folds as shown) — the row's
         if hit is not None and hit[0] is payload and hit[1] == rect and hit[2] is lines and hit[4] == look:
             eps = hit[3]                             # lines kept while the same row stands in the same rect
         else:
@@ -1518,11 +1534,16 @@ class RowDelegate(QStyledItemDelegate):
         return next((ep for r, ep in eps if r.top() <= pos.y() <= r.bottom()), None)
 
     def episode_lines(self, entry, rect):
-        """An opened Current row's (or Up Next's) episode lines where `rect` lays them: [(QRect, Episode)]."""
+        """An opened Current row's (or Up Next's) episode lines where `rect` lays them: [(QRect, Episode or a8's
+        Fold)]."""
+        return [(r, item) for r, item, _k in self.episode_layout(entry, rect)]
+
+    def episode_layout(self, entry, rect):
+        """An opened row's lines where `rect` lays them, each with its place in the row (`_episode_layout`)."""
         kind, payload, lines = entry
         if kind == HERO:
-            return self._episode_rows(payload, self._hero_geometry(payload, rect, lines)["eps"], hero=True)
-        return self._episode_rows(payload, self._open_area(rect, self.slab_of(rect)))
+            return self._episode_layout(payload, self._hero_geometry(payload, rect, lines)["eps"], hero=True)
+        return self._episode_layout(payload, self._open_area(rect, self.slab_of(rect)))
 
     def _sheet_there(self):
         """Whether the stones' sheet is there to draw a string from (L4: until it lands — or all session, if its build
@@ -1564,9 +1585,21 @@ class RowDelegate(QStyledItemDelegate):
         return left + round(rl("pos") * fz()) + self._art_w(width) + rl("gap-x")
 
     def _episode_rows(self, row, area, hero=False):
-        """An open row's episodes, one rect each: from its stone's column (a gap, the stone, a gap before the label) to
+        """An open row's lines, one rect each: [(QRect, Episode or a8's Fold)] (`_episode_layout`)."""
+        return [(r, item) for r, item, _k in self._episode_layout(row, area, hero)]
+
+    def _row_lines(self, row):
+        """The lines after `row` in the list now (its entry's: the top-20 line running through it parts its folds)."""
+        i = self.view._row_of_key(row.key)
+        entries = self.view.model().entries
+        return entries[i][2] if i is not None and i < len(entries) and entries[i][1] is row else ()
+
+    def _episode_layout(self, row, area, hero=False):
+        """An open row's lines, one rect each: from its stone's column (a gap, the stone, a gap before the label) to
         the row's own right edge, so an episode's label starts where its show's title does and its numbers and status
-        stand in the list's columns (G2.3 A1, A2; `_episode_cols`)."""
+        stand in the list's columns (G2.3 A1, A2; `_episode_cols`). a8: a run of watched parts is one line, its fold
+        (`shown_lines`), its parts after it only while it is shown whole. -> [(QRect, Episode or Fold, k)]: k the
+        episode's place in the row (a fold's, its first's)."""
         f = fz()
         if hero:
             title_x = area.left() + rl("hero-pad-x") + theme.SIZES["hero-cover-w"] - 1 + rl("hero-gap")  # its main column
@@ -1579,26 +1612,33 @@ class RowDelegate(QStyledItemDelegate):
         out = []
         starts = show_starts(row)                    # LM11b: a group's show lines take their room (`_show_lines`)
         sh = round(rl("show-line") * f)
-        for k, ep in enumerate(row.episodes):
-            if k in starts:
+        last = None
+        for item, k in shown_lines(row, row_folds(row, self._row_lines(row)), self.view.unfolded):
+            if k in starts and k != last:            # (a fold shown whole: its line and its first part share k)
                 y += sh
-            out.append((QRect(left, y, right - left + 1, h), ep))     # its right is the row's (haiku-code G1: 1 px)
+            out.append((QRect(left, y, right - left + 1, h), item, k))     # its right is the row's (haiku-code G1)
             y += h
+            last = k
         return out
 
-    def _show_lines(self, row, eps):
-        """LM11b: an opened group's show lines over `eps` (`_episode_rows`' lines): [(QRect, show)], each in the room
-        left right above its show's first episode — so `_episode_rows` lists episodes only, as its callers expect."""
+    def _show_lines(self, row, layout):
+        """LM11b: an opened group's show lines over `layout` (`_episode_layout`'s lines): [(QRect, show)], each in the
+        room left right above its show's first line — so `_episode_rows` lists episodes (and a8's folds) only, as its
+        callers expect."""
         starts = show_starts(row)
         if not starts:
             return []
         sh = round(rl("show-line") * fz())
-        return [(QRect(r.left(), r.top() - sh, r.width(), sh), starts[k]) for k, (r, _ep) in enumerate(eps)
-                if k in starts]
+        out, seen = [], set()
+        for r, _item, k in layout:
+            if k in starts and k not in seen:
+                seen.add(k)
+                out.append((QRect(r.left(), r.top() - sh, r.width(), sh), starts[k]))
+        return out
 
     def show_lines(self, entry, rect):
         """An opened group's (or Up Next's) show lines where `rect` lays them: [(QRect, show)] (LM11b)."""
-        return self._show_lines(entry[1], self.episode_lines(entry, rect))
+        return self._show_lines(entry[1], self.episode_layout(entry, rect))
 
     def _status_part(self, item, episodes, rect, word):
         """A status as a part (P4.1 L2): its button (`action_of`) at `rect`, or itself. Pressed, its hover says so: a
@@ -1614,6 +1654,11 @@ class RowDelegate(QStyledItemDelegate):
         out = []
         hot = self.view.hot_eps(row.key)
         for r, ep in self._episode_rows(row, area, hero):
+            if isinstance(ep, view_rows.Fold):       # --- a8: its whole line folds its run or shows it — but the ✂
+                tip = "fold_tip_open" if self.view.fold_open(ep) else "fold_tip"     # seam's band either side of it
+                half = max(4, round(5 * fz()))                                      # (`_seam_parts`) stays the seam's
+                out.append(("fold", r.adjusted(0, half, 0, -half), view_rows.STRINGS[tip], ep))
+                continue
             cols = self._episode_cols(r)
             if ep.id in hot:                         # --- row 28: the episode's own ⋯ (`episode_menu_requested`)
                 out.append(("more-ep", cols["more"], strings.ROWS_EP_MORE_TIP, ep))
@@ -1637,17 +1682,18 @@ class RowDelegate(QStyledItemDelegate):
         part."""
         if row.piece_id is None or row.source == "hato" or len(row.episodes) < 2:
             return []
-        eps = self._episode_rows(row, area, hero)
+        eps = self._episode_layout(row, area, hero)
         out = []
         half = max(4, round(5 * fz()))
         starts = show_starts(row)
-        for k in range(1, len(eps)):
-            if view_rows.split_piece(row, k) is None:     # B2-2: the Soon line parts the show there already
-                continue
-            r, ep = eps[k]
+        for j in range(1, len(eps)):
+            r, _item, k = eps[j]
+            if k == eps[j - 1][2] or view_rows.split_piece(row, k) is None:    # a8: a fold shown whole and its first
+                continue                             # part are one place; B2-2: the Soon line parts the show there
+            ep = row.episodes[k]                     # a8: above a fold's line, its first part starts the new part
             cols = self._episode_cols(r)
             left = r.left() + EP_LABEL_IN
-            y = eps[k - 1][0].bottom() + 1           # LM11b: under the run before, above a show line where one stands —
+            y = eps[j - 1][0].bottom() + 1           # LM11b: under the run before, above a show line where one stands —
             if k in starts:                          # there wholly above it, so its ✂ chip never covers the show's name
                 y -= half                            # and its hover takes none of the show line (AD-5)
             out.append(("seam", QRect(left, y - half, max(1, cols["more"].left() - 8 - left), 2 * half),
@@ -2243,6 +2289,7 @@ class RowDelegate(QStyledItemDelegate):
                 keys.add(k)
             if kind in (HERO, ROW):                  # a Needs-you card's episodes are lines, not episodes
                 eps.update(e.id for e in payload.episodes)
+                eps.update(("fold", e.id) for e in payload.episodes)     # a8: a fold's picture, by its first file
                 if getattr(payload, "group", False):     # LM11b: a group's show lines, kept as its episodes are
                     eps.update(("show", e.show) for e in payload.episodes)
         for name in ("row", "ep"):
@@ -2494,11 +2541,18 @@ class RowDelegate(QStyledItemDelegate):
         sheet = stones.get(dpr, style.current()[1])
         plan = self._info(row)[0]
         out = []
-        for i, (r, ep) in enumerate(self._episode_rows(row, area, hero)):
+        for r, ep, i in self._episode_layout(row, area, hero):
+            w, h = r.width(), r.height()
+            if isinstance(ep, view_rows.Fold):       # --- a8: its line wears its run's last stone (cut)
+                item = stone_plan._stone(row.episodes[ep.end], ep.end, row.key, False)
+                what, shown = self._stone_what(item, plan.gem), self.view.fold_open(ep)
+                out.append((r, ep, lambda q, fold=ep, w=w, h=h, stone=(what, item.dim, False), shown=shown:
+                            self._paint_fold(q, QRect(0, 0, w, h), fold, shown, dpr, stone, sheet),
+                            (ep.id, hero, "fold", what, shown), (sheet is not None,)))
+                continue
             big = i == plan.next
             item = stone_plan._stone(ep, i, row.key, big)
             what = self._stone_what(item, plan.gem)
-            w, h = r.width(), r.height()
             stone = (what, item.dim, big)
             out.append((r, ep, lambda q, ep=ep, w=w, h=h, stone=stone: self._paint_episode(
                 q, QRect(0, 0, w, h), ep, dpr, audio, stone, sheet), (ep.id, hero, audio, what, item.dim),
@@ -2509,9 +2563,13 @@ class RowDelegate(QStyledItemDelegate):
         pictures = self._episode_pictures(row, area, hero, dpr)
         if not pictures:
             return
-        rows_ = [(r, ep) for r, ep, *_rest in pictures]
+        layout = self._episode_layout(row, area, hero)
+        rows_ = [(r, ep) for r, ep, _k in layout]
         stone_x = rows_[0][0].left() + 22             # the episodes' stones on a hairline, the string stood upright —
-        cuts = sorted(show_starts(row)) or [0]        # LM11b: in a group, one per show, never through its show line
+        at = {}                                       # LM11b: in a group, one per show, never through its show line
+        for j, (_r, _ep, k) in enumerate(layout):     # (a8: by line, a fold's line one)
+            at.setdefault(k, j)
+        cuts = sorted(at[k] for k in show_starts(row) if k in at) or [0]
         for a, b in zip(cuts, cuts[1:] + [len(rows_)]):
             p.fillRect(QRectF(stone_x - 0.5, rows_[a][0].top() + 8, 1, rows_[b - 1][0].bottom() - rows_[a][0].top() -
                               16), c("string"))
@@ -2519,13 +2577,27 @@ class RowDelegate(QStyledItemDelegate):
         split = next((ln.split for ln in (lines or ()) if ln.kind == "top" and ln.split), None)
         split_at = None
         hot = self.view.hot_eps(row.key) if clip is not None else ()     # row 28: as a row's line, its hover look
-        shows = self._show_lines(row, rows_)          # LM11b: a group's show lines
+        shows = self._show_lines(row, layout)         # LM11b: a group's show lines
         above = {r.bottom() + 1: r.top() for r, _show in shows}
         for i, (r, ep, draw, ident, extra) in enumerate(pictures):
-            if split is not None and i == split:       # the top-20 line runs through this row (A-12): drawn here too,
-                top = above.get(r.top(), r.top())      # above its show's line where one stands (LM11b)
+            if split is not None and i == at.get(split):    # the top-20 line runs through this row (A-12): drawn here
+                top = above.get(r.top(), r.top())      # too, above its show's line where one stands (LM11b)
                 split_at = QRect(r.left() - 8, top - 2, r.width() + 8, 4)
             if clip is not None and not clip.intersects(QRectF(r)):
+                continue
+            if isinstance(ep, view_rows.Fold):         # --- a8: a fold's line, its picture alone (a line's hover look)
+                if clip is not None:
+                    on = ep.id in hot
+                    pix = self._sprite("ep", ep, r.size(), dpr, on, draw, ident=ident,
+                                       ground="row-hover" if on else "surface" if hero else "open-row",
+                                       to=(p, r.topLeft()), extra=extra)
+                    if pix is not None:
+                        p.drawPixmap(r.topLeft(), pix)
+                else:
+                    p.save()
+                    p.translate(r.topLeft())
+                    draw(p)
+                    p.restore()
                 continue
             if clip is not None:                       # on screen: painted once into a pixmap, reused while unchanged
                 on = ep.id in hot
@@ -2589,11 +2661,20 @@ class RowDelegate(QStyledItemDelegate):
         return QRect(self._episode_cols(r)["stat"].right() - size.width(), r.center().y() - size.height() // 2,
                      size.width(), size.height())
 
-    def _paint_episode(self, p, r, ep, dpr, audio=False, stone=None, sheet=None):
-        """One episode line (an open row's): its stone (the tick until the stones' sheet is there), its label, its
-        numbers, status, mark and ▶ (`audio`: its show's media)."""
+    def _paint_fold(self, p, r, fold, shown, dpr, stone=None, sheet=None):
+        """a8: a fold's line — its run's last stone (cut), its words dim as a watched part's label (*Parts 1–40
+        watched*) and a chevron after them: pointing right folded, down shown whole (`shown`). The journey's fold."""
         cols = self._episode_cols(r)
-        tick = QRectF(cols["tick"])
+        self._paint_tick(p, QRectF(cols["tick"]), True, stone, sheet)
+        text_w = (cols["text_right"] - cols["text_left"]) * 0.6
+        TEXT.draw(p, cols["text_left"], r.center().y(), fold.label, "episode-label", text_w, c("ink-dim"), dpr=dpr)
+        w = min(text_w, TEXT.metrics("episode-label", dpr=dpr).horizontalAdvance(fold.label))
+        side = rl("anki-icon")
+        icon(p, "chev-down" if shown else "chev-right", QRectF(cols["text_left"] + w + 6, r.center().y() - side / 2,
+                                                                side, side), c("ink-dim"))
+
+    def _paint_tick(self, p, tick, watched, stone=None, sheet=None):
+        """An episode line's stone (`stone`: what, dim, big — the sheet's), or until the sheet is there its tick."""
         if stone is not None and sheet is not None:
             what, dim, big = stone
             at = QPointF(tick.center())
@@ -2604,7 +2685,7 @@ class RowDelegate(QStyledItemDelegate):
             p.restore()
             if big:
                 sheet.draw(p, at, ("ring", what[4]))
-        elif ep.watched:
+        elif watched:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(c("accent"))
             p.drawEllipse(tick)
@@ -2613,6 +2694,12 @@ class RowDelegate(QStyledItemDelegate):
             p.setPen(QPen(c("line-hi"), 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(tick.adjusted(0.75, 0.75, -0.75, -0.75))
+
+    def _paint_episode(self, p, r, ep, dpr, audio=False, stone=None, sheet=None):
+        """One episode line (an open row's): its stone (the tick until the stones' sheet is there), its label, its
+        numbers, status, mark and ▶ (`audio`: its show's media)."""
+        cols = self._episode_cols(r)
+        self._paint_tick(p, QRectF(cols["tick"]), ep.watched, stone, sheet)
         text_w = cols["text_right"] - cols["text_left"]
         TEXT.draw(p, cols["text_left"], r.center().y(), ep.label, "episode-label", text_w * 0.6,
                   c("ink-dim" if ep.watched else "ink"), dpr=dpr)
@@ -2832,7 +2919,7 @@ def whole_step(dpr):
     return 1
 
 
-NO_DRAG = frozenset(("play", "more", "more-ep", "up", "down", "done", "journey", "put-back")) | ACTION_NAMES   # buttons (W3.2 Q4:
+NO_DRAG = frozenset(("play", "more", "more-ep", "up", "down", "done", "journey", "put-back", "fold")) | ACTION_NAMES   # buttons (W3.2 Q4:
 #                                                                                       put-back; P4.1 L2: the statuses')
 # row 55, R55-B: Up Next's *No video* / *Online* / *Looking…* in ▶'s place is plain words on the card, a tip-only part
 # ("no-play"): never a button's place — a press there is the card's (it drags it, Ctrl+click picks it), and `_act`
@@ -2868,6 +2955,45 @@ def show_starts(row):
             out[k], last = ep.show, here
     return out if len(out) > 1 else {}
 # --- end LM11b show lines
+
+
+# --- a8 (Sonic 2026-10-31: "even after opening up, it keeps the ones together … you can still expand those too but only
+# after an additional motion"): an opened row lists each run of its watched parts as one line, its fold
+# (`view_rows.folds`, the journey's rule); a click on that line lists its parts after it, another folds them again.
+# Which folds are shown whole lives on the view (`RowsView.unfolded`) and goes when its row closes (PROVISIONAL).
+_FOLDS = {}                                         # id(row) -> (row, its top-20 split, its folds): a few rows kept
+NO_IDS = frozenset()                                # no fold shown whole (`RowsView.unfolded`): one object
+
+
+def row_folds(row, lines=()):
+    """`row`'s folds (`view_rows.folds`), never across the top-20 line running through it (`lines`, its entry's)."""
+    split = next((ln.split for ln in lines or () if ln.kind == "top" and ln.split), None)
+    hit = _FOLDS.get(id(row))
+    if hit is not None and hit[0] is row and hit[1] == split:
+        return hit[2]
+    out = view_rows.folds(row, () if split is None else (split,))
+    if len(_FOLDS) >= 8:                            # the open row, Up Next, a hovered row warmed ahead: never many
+        _FOLDS.clear()
+    _FOLDS[id(row)] = (row, split, out)
+    return out
+
+
+def shown_lines(row, folds, unfolded):
+    """[(item, k)]: what an opened row lists, top to bottom — each episode (k its place), a fold's line in place of its
+    run (k its first's), and after that line its parts while it is shown whole (any of its files in `unfolded`)."""
+    at = {f.start: f for f in folds}
+    out, k, n = [], 0, len(row.episodes)
+    while k < n:
+        f = at.get(k)
+        if f is not None:
+            out.append((f, k))
+            if unfolded.isdisjoint(f.ids):
+                k = f.end + 1
+                continue
+        out.append((row.episodes[k], k))
+        k += 1
+    return out
+# --- end a8
 
 
 def _same_payload(a, b):
@@ -3036,6 +3162,7 @@ class RowsView(QListView):
         self.seam = None                             # --- W3.2 Q8: (row key, episode id) of the ✂ seam under the hand
         self.ep_hover = None                         # --- W3.2 Q8: (row key, episode id) the hand was last on
         self.ep_hot = None                           # --- row 28: (row key, episode id) under the hand now
+        self._unfolded = (None, NO_IDS)              # --- a8: (the open row's key, its folds' file ids shown whole)
         self.ep_key = None                           # --- row 28: (row key, episode id) the keyboard is on (↓ in an
         #                                              opened row steps into its episodes, ↑ back out)
         self.join_key = None                         # --- W3.2 Q8: the part a drag would join (outlined)
@@ -3193,7 +3320,8 @@ class RowsView(QListView):
         if entry is None or entry[0] not in (HERO, ROW) or self.model().open_key != entry[1].key or \
                 event.modifiers() & ~Qt.KeyboardModifier.KeypadModifier:
             return False
-        eps, key = entry[1].episodes, event.key()
+        eps = [item for item, _k in shown_lines(entry[1], row_folds(entry[1], entry[2]), self.unfolded)]   # a8: a
+        key = event.key()                            # fold's line is one step, its parts after it while shown whole
         at = next((k for k, e in enumerate(eps) if self.ep_key == (entry[1].key, e.id)), None)
         if key == Qt.Key.Key_Down:
             if at is not None and at + 1 >= len(eps):
@@ -3208,6 +3336,15 @@ class RowsView(QListView):
                 return False
             k = at - 1 if at > 0 else None
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space, Qt.Key.Key_Menu) and at is not None:
+            if isinstance(eps[at], view_rows.Fold):      # --- a8: Enter or Space folds it or shows its run; the menu
+                if key != Qt.Key.Key_Menu:               # key, its row's ⋯ (a fold has none: as a right-click on it)
+                    self.toggle_fold(eps[at])
+                else:
+                    more = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] == "more"),
+                                None)
+                    rect = more[1] if more is not None else self.visualRect(idx)
+                    self.menu_requested.emit(entry[1], self.viewport().mapToGlobal(rect.bottomLeft()))
+                return True
             self.open_episode_menu(idx, eps[at])
             return True
         else:
@@ -3221,7 +3358,8 @@ class RowsView(QListView):
                 bar.setValue(bar.value() + r.bottom() - vp.bottom())
             elif r.top() < vp.top():
                 bar.setValue(bar.value() - (vp.top() - r.top()))
-            more = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] == "more-ep"), None)
+            more = next((pt for pt in self.delegate.parts(entry, self.visualRect(idx)) if pt[0] == "more-ep" or
+                         pt[0] == "fold" and pt[3].id == self.ep_key[1]), None)     # a8: a fold's line, its tip
             if more is not None and self.tooltips is not None:
                 self.tooltips.request(self.viewport(), more[1], more[2])
         return True
@@ -3517,7 +3655,8 @@ class RowsView(QListView):
                 self._apply_restore()
                 self._restore = None                     # tried once: a place gone stays gone (W2.2 review A-15)
         if self.ep_key is not None and self._ep_line(self.ep_key) is None:
-            self._set_ep("ep_key", None)                 # --- row 28: its episode, or its row's opening, gone
+            self._set_ep("ep_key", self._ep_home(self.ep_key))    # --- row 28: its episode, or its row's opening, gone
+            #                                              (a8: a part folded away: on its fold's line)
         if self.ep_hot is not None:
             self._hand_again()                           # --- row 28 (AD-3): the hand's episode where it is now
         self._prune_pressed()                            # --- round 8 row 45
@@ -3714,8 +3853,52 @@ class RowsView(QListView):
         key = entry[1].key
         self._set_ep("ep_key", None)                 # --- row 28 (AD-1): opened or closed, the keyboard is on its head
         model.open_key = None if model.open_key == key else key
+        self._unfolded = (None, NO_IDS)              # --- a8: a row opens with its watched runs folded
         self.relayout()
         self.opened.emit(model.open_key)
+
+    # --- a8: an opened row's folds ------------------------------------------------------------------------------- #
+    @property
+    def unfolded(self):
+        """The file ids of the open row's folds shown whole — none once another row is open, however it opened (a
+        click, ⋯'s join or group, a refresh that closed it), the same object while unchanged (the heights' check)."""
+        key, ids = getattr(self, "_unfolded", (None, NO_IDS))
+        if key is not None and key != self.model().open_key:
+            self._unfolded = (None, NO_IDS)          # its row closed (or another opened): never shown whole again
+            return NO_IDS
+        return ids
+
+    def fold_open(self, fold):
+        """Whether `fold` (a `view_rows.Fold`) is shown whole: any of its files was shown — so a run grown by a part
+        just marked watched (or split by one marked back) stays as the learner left it."""
+        return not self.unfolded.isdisjoint(fold.ids)
+
+    def toggle_fold(self, fold):
+        """A fold's line pressed (a click, Enter or Space): its parts listed after it, or folded again. Its row alone
+        changes height: the rows are laid out again as an opening lays them (each height a look in the kept list)."""
+        ids = frozenset(fold.ids)
+        self._unfolded = (self.model().open_key, self.unfolded - ids if self.fold_open(fold) else self.unfolded | ids)
+        self.ep_key = self._ep_home(self.ep_key)     # the keyboard on a part folded away: on its fold's line
+        self.relayout()                              # (Qt's layout repaints the screen, each line from its picture)
+
+    def _ep_home(self, what):
+        """(row key, line id) of the line that holds `what` now: itself while it is listed, else the fold its part
+        folded into (a fold's id names its first file: that file's line or fold) — or None (its row closed, its file
+        gone). The keyboard keeps its place as a part folds away (a mark, a click on its fold) or a fold opens."""
+        if what is None or self._ep_line(what) is not None:
+            return what
+        model = self.model()
+        i = self._row_of_key(what[0])
+        if i is None or model.open_key != what[0]:
+            return None
+        kind, row, lines = model.entries[i]
+        if kind not in (HERO, ROW):
+            return None
+        file_id = what[1][1] if isinstance(what[1], tuple) and what[1][:1] == ("fold",) else what[1]
+        items = [item for item, _k in shown_lines(row, row_folds(row, lines), self.unfolded)]
+        home = next((item for item in items if item.id == file_id), None) or \
+            next((item for item in items if isinstance(item, view_rows.Fold) and file_id in item.ids), None)
+        return (what[0], home.id) if home is not None else None
 
     # the hover look in motion (W3.1a §1 *Rows*, §3: springs on the one clock; S7) -------------------------------- #
     def touch(self, row, key):
@@ -3958,6 +4141,8 @@ class RowsView(QListView):
         entry = self.model().entries[idx.row()]
         if mouse:                                    # --- row 28 (IK-7): the hand's episode, as the menu key's
             ep = self.delegate.episode_at(entry, self.visualRect(idx), event.pos())
+            if isinstance(ep, view_rows.Fold):       # --- a8: a fold's line has no ⋯ of its own: its row's
+                ep = None
         else:
             ep = next((e for e in getattr(entry[1], "episodes", ()) if self.ep_key == (entry[1].key, e.id)), None)
         if ep is not None and self.model().open_key == entry[1].key:      # --- row 28: an opened row's episode
@@ -4204,6 +4389,8 @@ class RowsView(QListView):
             self.line_requested.emit("top")
         elif name == "put-back":                     # --- W3.2 Q4
             self.put_back_requested.emit(row)
+        elif name == "fold" and payload is not None:     # --- a8: a fold's line folds its run or shows it
+            self.toggle_fold(payload)
         elif name == "seam" and payload is not None:     # --- W3.2 Q8: ✂ Split here
             self.set_seam(None)
             self.split_requested.emit(row, payload)

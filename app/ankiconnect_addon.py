@@ -1,16 +1,19 @@
 """AnkiConnect missing (alpha 8, Mado-A; Sonic's lean, QUESTIONS.md 2026-10-31): the one rule and the one set of words
 every place that says AnkiConnect isn't answering shows — setup's Anki step (`app/qt/wizard.py`), Settings › Anki &
-mining's *Connection* row (`app/qt/settings_live.py`) and Connect's setup check (`app/connect/setup.py`).
+mining's *Connection* row (`app/qt/settings_live.py`), *Needs you*'s Anki line (`app/services/needs.py`,
+`app/qt/needs.py`; Mado-N) and Connect's setup check (`app/connect/setup.py`).
 
 - the add-on's code (`CODE`), for *Copy code* and for the places that can only say it (`steps_line(code=True)`);
 - the three steps: *In Anki: Tools › Add-ons › Get Add-ons… → paste the code → restart Anki*;
 - `needs_addon(look)`: whether a look that didn't reach Anki may be AnkiConnect missing (an Anki process seen, or it
-  can't tell) — setup and Settings show the steps then, never for an Anki seen closed. Connect's check takes no
-  process look and has no button: it writes the steps, the code in them, under every closed answer;
+  can't tell) — setup, Settings and *Needs you* show the steps then, never for an Anki seen closed. Connect's check
+  takes no process look and has no button: it writes the steps, the code in them, under every closed answer;
 - `running()`: is an Anki process running (the process list, `open_anki.running`; True / False / None);
+- `look(url)`: the full look `needs_addon` reads — AnkiConnect asked once and, when nothing answered, the process list
+  (Settings' *Check*, *Needs you*'s read: the two halves taken together, never a stale answer beside a fresh list);
 - `answers(url, seen)`: the light look *Check again* runs by itself on (`app/qt/addon_steps.py`) — AnkiConnect asked
-  once, a short wait; and, while the last look saw no Anki running, the process list too (Anki opened without
-  AnkiConnect is news: the steps show).
+  once, a short wait; and the process list too while the last look saw no Anki running (`OPENED`: Anki opened without
+  AnkiConnect, news once it has gone `SETTLE` s unanswered — the watch's count) or saw one (`GONE`: Anki closed).
 
 Qt-free; nothing here writes anything.
 """
@@ -32,6 +35,10 @@ COPY_TIP = (f"Puts AnkiConnect's code, {CODE}, on the clipboard.\n"
 COPIED = "Copied"
 COPIED_LINE = "AnkiConnect's code is copied: paste it into Anki's Get Add-ons… box, then restart Anki."
 COPIED_MS = 2000                          # *Copied* shows this long, then the button's name again
+OPENED, GONE = "opened", "gone"           # `answers`' news besides AnkiConnect answering (True)
+SETTLE = 10.0                             # s an Anki opened goes on not answering before it counts as AnkiConnect
+                                          # missing (Mado-N A8N-1: a starting Anki loads its profile, and AnkiConnect
+                                          # with it, first — *Open Anki* never flashes the steps)
 
 
 def steps_line(code=False, unsure=False):
@@ -60,11 +67,22 @@ def running():
         return None
 
 
+def look(url, timeout=LOOK_TIMEOUT):
+    """(A worker.) The full look -> `anki_connect.probe`'s dict at `url` and, when nothing answered (refused, not
+    busy), its `running` (`running()`): what `needs_addon` reads."""
+    from app import anki_connect
+    report = anki_connect.probe(url, timeout=timeout)
+    if not report.get("ok") and report.get("version") is None and not report.get("timed_out"):
+        report["running"] = running()
+    return report
+
+
 def answers(url, seen=None):
-    """(A worker.) The light look: is there news for the full look? AnkiConnect answering at `url` (one ask,
+    """(A worker.) The light look: is there news for the full look? -> True: AnkiConnect answering at `url` (one ask,
     `LOOK_TIMEOUT` s at most; an Anki that answers but keeps Surasura out — a permission prompt — counts: the full look
-    says what to do), or, `seen` False (the last look saw no Anki running), an Anki running now (AnkiConnect missing:
-    the full look shows the steps). `seen` True or None: AnkiConnect alone is asked.
+    says what to do); `OPENED`: `seen` False (the last look saw no Anki running) and an Anki running now (AnkiConnect
+    missing — or still loading: the watch waits `SETTLE` s); `GONE`: `seen` True and no Anki running now (closed: the
+    steps go); else False. `seen` None: AnkiConnect alone is asked.
     Never asked under `SURASURA_NO_ANKI_SYNC` (the test suites, a developer's run): a window a test leaves open
     never reaches a live Anki by itself."""
     if os.environ.get("SURASURA_NO_ANKI_SYNC"):
@@ -73,4 +91,9 @@ def answers(url, seen=None):
     report = anki_connect.probe(url, timeout=LOOK_TIMEOUT)
     if report.get("ok") or report.get("version") is not None:
         return True
-    return seen is False and not report.get("timed_out") and running() is True
+    if seen is None or report.get("timed_out"):
+        return False
+    now = running()
+    if seen is False and now is True:
+        return OPENED
+    return GONE if seen is True and now is False else False

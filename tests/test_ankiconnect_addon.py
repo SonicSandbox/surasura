@@ -56,13 +56,28 @@ def test_the_light_look_watches_for_an_anki_opened_only_where_none_was_seen(monk
     monkeypatch.setattr(A, "running", lambda: looked.append(1) or True)
     refused = {"ok": False, "version": None, "error": "refused"}
     monkeypatch.setattr(anki_connect, "probe", lambda url, timeout=5: dict(refused))
-    assert A.answers("u", seen=False) is True and looked == [1]
-    assert A.answers("u", seen=True) is False and A.answers("u", seen=None) is False and looked == [1]
+    assert A.answers("u", seen=False) == A.OPENED and looked == [1]     # the watch waits SETTLE s on it (Mado-N)
+    assert A.answers("u", seen=True) is False and A.answers("u", seen=None) is False and looked == [1, 1]
     monkeypatch.setattr(anki_connect, "probe", lambda url, timeout=5: dict(refused, timed_out=True))
-    assert A.answers("u", seen=False) is False and looked == [1]          # open but busy: the probe's answer waits
+    assert A.answers("u", seen=False) is False and looked == [1, 1]       # open but busy: the probe's answer waits
     monkeypatch.setattr(A, "running", lambda: False)
     monkeypatch.setattr(anki_connect, "probe", lambda url, timeout=5: dict(refused))
     assert A.answers("u", seen=False) is False
+    assert A.answers("u", seen=True) == A.GONE, "Mado-N A8N-2: the Anki seen running closed is news (the steps go)"
+    monkeypatch.setattr(A, "running", lambda: None)
+    assert A.answers("u", seen=True) is False and A.answers("u", seen=False) is False      # can't tell: no news
+
+
+def test_the_full_look_takes_the_process_list_only_when_nothing_answered(monkeypatch):
+    # Mado-N (IK-1): Settings' Check and Needs you's read — AnkiConnect and the process list taken together
+    looked = []
+    monkeypatch.setattr(A, "running", lambda: looked.append(1) or True)
+    answer = {"ok": False, "version": None, "error": "refused"}
+    monkeypatch.setattr(anki_connect, "probe", lambda url, timeout=5: dict(answer))
+    assert A.look("u") == dict(answer, running=True) and looked == [1]
+    for more in ({"timed_out": True}, {"version": 6}, {"ok": True, "version": 6}):
+        answer.update(more)
+        assert "running" not in A.look("u") and looked == [1]
 
 
 def test_running_is_none_when_the_process_list_cant_be_read(monkeypatch):

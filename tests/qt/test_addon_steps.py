@@ -113,6 +113,44 @@ def test_the_watch_waits_every_seconds_between_looks(qapp, monkeypatch):
     host.close()
 
 
+
+def test_an_anki_opened_counts_only_once_it_has_gone_settle_seconds_unanswered_and_closing_counts_at_once(
+        qapp, monkeypatch):
+    # Mado-N A8N-1: a starting Anki loads AnkiConnect first — *Open Anki* (or opening it by hand) never flashes the
+    # steps; A8N-2: an Anki seen running that closes is news at once
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(addon_steps.time, "monotonic", lambda: clock["t"])
+    news = {"now": A.OPENED}
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: news["now"])
+    answered = []
+    host = QWidget()
+    host.show()
+    tick = QTimer()
+    watch = addon_steps.Watch(host, tick, lambda: "u", lambda: answered.append(watch.news))
+    watch.arm(True, False)
+
+    def look(advance):
+        clock["t"] += advance
+        tick.timeout.emit()
+        assert wait_until(lambda: not watch.looking)
+    look(0)
+    look(A.SETTLE / 2)
+    assert answered == []                                 # opened, not long enough: maybe still loading
+    news["now"] = False                                   # (gone again, or nothing) — the count starts over
+    look(A.SETTLE / 2)
+    news["now"] = A.OPENED
+    look(1)
+    look(A.SETTLE - 2)
+    assert answered == []
+    look(2)
+    assert answered == [A.OPENED] and not watch.armed     # SETTLE s unanswered: AnkiConnect missing
+    watch.arm(True, True)                                 # the host's look: Anki running
+    news["now"] = A.GONE
+    look(0)
+    assert answered == [A.OPENED, A.GONE]                 # closed: at once
+    host.close()
+
 def test_the_watch_stops_with_its_part_and_a_shell_without_a_poll_has_none(qapp, monkeypatch):
     monkeypatch.setattr(A, "EVERY", 0.0)
     asked = []

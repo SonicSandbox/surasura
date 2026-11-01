@@ -1,5 +1,6 @@
-"""AnkiConnect missing, on screen (alpha 8, Mado-A): the one part setup's Anki step and Settings' *Connection* row show
-when AnkiConnect may be missing (`ankiconnect_addon.needs_addon`), and the one watch that runs *Check again* by itself.
+"""AnkiConnect missing, on screen (alpha 8, Mado-A): the one part setup's Anki step, Settings' *Connection* row and
+*Needs you*'s Anki line (Mado-N) show when AnkiConnect may be missing (`ankiconnect_addon.needs_addon`), and the one
+watch that runs *Check again* by itself.
 
 - **`AddonSteps`**: *Copy code* (2055492159 on the clipboard; its press says *Copied* at once, its name again
   `COPIED_MS` later, the button never narrower meanwhile) beside the three steps on one line. The host hands its own
@@ -7,7 +8,9 @@ when AnkiConnect may be missing (`ankiconnect_addon.needs_addon`), and the one w
 - **`Watch`**: while armed and its widget is on screen and live (not under the setup wizard, which disables the
   window's parts), every `EVERY` s on the shell's status poll (the window's one existing timer, `ShellWindow._poll`;
   none, no watch) it takes the light look (`ankiconnect_addon.answers`, on a worker, one at a time) and, the first
-  time it has news (AnkiConnect answers; an Anki opened where the last look saw none), calls the host's *Check again*.
+  time it has news (AnkiConnect answers; an Anki seen running is gone; an Anki opened where the last look saw none,
+  once it has gone `SETTLE` s unanswered — a starting Anki loads AnkiConnect first), calls the host's *Check again*;
+  the news it called on stays in `news`.
   Nothing loops: a tick off screen, unarmed or with a look out is a flag read; it stops with its widget.
 """
 import time
@@ -77,6 +80,8 @@ class Watch(QObject):
         self.armed = False
         self.seen = None                  # the host's last look: an Anki process seen True, none False, can't tell None
         self.looking = False
+        self.news = None                  # the light look's news the host was last called on (`answers`' answer)
+        self._opened = None               # when the looks began seeing an Anki opened, unanswered (`SETTLE`)
         self._last = 0.0
         self._timer = timer
         if timer is not None:
@@ -89,6 +94,8 @@ class Watch(QObject):
         on = bool(on)
         if on and not self.armed:
             self._last = time.monotonic()
+        if not on or seen is not False:
+            self._opened = None
         self.armed, self.seen = on, seen
 
     def _tick(self):
@@ -102,13 +109,21 @@ class Watch(QObject):
         bridge.run_in_worker(A.answers, self.url(), self.seen, then=self._looked,
                              failed=lambda _info: self._looked(False))
 
-    def _looked(self, ok):
+    def _looked(self, news):
         if sip.isdeleted(self):
             return
         self.looking = False
-        self._last = time.monotonic()
-        if ok and self.armed and self._live():
+        self._last = now = time.monotonic()
+        if news == A.OPENED:                              # A8N-1: AnkiConnect missing only once Anki has had time to
+            if self._opened is None:                      # load it (else *Open Anki* flashes the steps)
+                self._opened = now
+            if now - self._opened < A.SETTLE:
+                return
+        else:
+            self._opened = None
+        if news and self.armed and self._live():
             self.armed = False                            # once: the host's look arms it again if Anki still isn't in
+            self.news = news
             self.answered()
 
 

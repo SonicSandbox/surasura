@@ -549,6 +549,26 @@ def test_an_ignore_still_looking_for_its_folder_when_start_over_is_pressed_is_ne
     assert top.key in keys_shown(screen)
 
 
+def test_the_question_names_the_ignored_titles_only_when_this_visit_ignored_one(world):
+    """Intent SO-1 decision 4: "including the ones you ignored" only when there are some."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    _sort_some(screen, writer, ("soon", "goal"))
+
+    def words():
+        card = screen.ask_over()
+        text = " ".join(lab.text() for lab in card.findChildren(sort_screen.QLabel))
+        card._answer(False)
+        settle()
+        return text
+    assert S.SORT_OVER_BODY_PLAIN.format(n=2) in words()
+    win.looks = OwnLooks([])
+    press(screen, Qt.Key.Key_Left)
+    assert wait_until(lambda: calls(writer, "remove"), 5) and _saved(writer, 3)
+    settle()
+    assert S.SORT_OVER_BODY.format(n=3) in words()
+
+
 def test_the_last_ignore_has_a_one_press_undo_by_its_button_too(world):
     """SO-1 (b): the last choice — an Ignore included — is undone by one press, the button as Ctrl+Z (its own test
     above), at once."""

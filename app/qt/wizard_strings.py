@@ -375,6 +375,10 @@ SORT_OVER_BODY = ("The {n:,} titles you sorted here go back to New arrivals, inc
                   "sorting back.")
 SORT_OVER_BODY_ONE = ("The title you sorted here goes back to New arrivals, even if you ignored it, and you start again "
                       "from the top. Undo puts it back.")
+SORT_OVER_BODY_PLAIN = ("The {n:,} titles you sorted here go back to New arrivals, and you start again from the top. A "
+                        "title you've moved since stays where you put it. Undo puts your sorting back.")
+SORT_OVER_BODY_PLAIN_ONE = ("The title you sorted here goes back to New arrivals, and you start again from the top. Undo "
+                            "puts it back.")
 SORT_OVER_YES = "Start over"
 SORT_OVER_YES_TIP = "Put them back to sort, and start from the top."
 SORT_OVER_SAID = "{n:,} titles back to sort"

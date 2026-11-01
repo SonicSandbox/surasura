@@ -789,9 +789,12 @@ class SortScreen(QWidget):
             self.question = None
             if yes and not sip.isdeleted(self):
                 self.start_over()
-        self.question = confirm.ask(
-            self, S.SORT_OVER_ASK, S.SORT_OVER_BODY_ONE if n == 1 else S.SORT_OVER_BODY.format(n=n), S.SORT_OVER_YES,
-            S.SORT_OVER_YES_TIP, default_no=True, on_answer=answered)
+        if any(e["name"] == "ignore" for e in self._placed()):     # (the ignored ones named only when there are)
+            body = S.SORT_OVER_BODY_ONE if n == 1 else S.SORT_OVER_BODY.format(n=n)
+        else:
+            body = S.SORT_OVER_BODY_PLAIN_ONE if n == 1 else S.SORT_OVER_BODY_PLAIN.format(n=n)
+        self.question = confirm.ask(self, S.SORT_OVER_ASK, body, S.SORT_OVER_YES, S.SORT_OVER_YES_TIP, default_no=True,
+                                    on_answer=answered)
         return self.question
 
     def start_over(self):

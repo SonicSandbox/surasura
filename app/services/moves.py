@@ -1189,6 +1189,8 @@ class Writer:
                     if ids and new is None:         # the folder holds more now (a new episode): its titles alone
                         new = self._remove(store, {"ids": ids}, moved)
                     made.append((ign.get("of"), new))
+                if not any(new for _of, new in made) and not getattr(out, "items", None):
+                    raise lib.UndoRefused("every title changed since")      # nothing put back: *Can't undo*
         except BaseException:
             cmd.pop("renamed", None)
             _move_back(moved)

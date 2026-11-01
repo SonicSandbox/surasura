@@ -285,3 +285,74 @@ def test_a_skipped_folder_is_read_again_by_start_over_and_skipped_again_by_its_u
     again = w._replaced[ignore]
     w._undo_removed(store, again, {})
     assert set(c) <= set(_state(store)[0]["arrivals"]) and store.skipped_folders() == []
+
+
+def _writer_steps():
+    """The writer's steps alone (no thread): what `_start_over` / `_undo_start_over` read."""
+    import threading
+    from app.services import moves as M
+    w = M.Writer.__new__(M.Writer)
+    w._cond, w._replaced, w._undo = threading.Condition(), {}, []
+    return M, w
+
+
+def _skip_and_start_over(store, shows, placed=()):
+    """Ignore show C by skipping its folder (and any `placed` before it), then Start over. -> (writer, ignore, reset)."""
+    M, w = _writer_steps()
+    ignore = M.Writer._skip_folder(w, store, {"op": "skip_folder", "path": os.path.join(store.test_source,
+                                                                                         list(shows)[2])})
+    changes = list(placed) + [ignore]
+    reset = w._start_over(store, {"placed": [ls.change_record(c) for c in changes]})
+    reset.sources = changes
+    return w, ignore, reset
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_resets_undo_ignores_only_the_untouched_titles_when_one_was_placed_since(language, library):
+    """Intent SO-1 #1: a title of the skipped folder placed after the reset — its Undo leaves that one, ignores the
+    rest as titles alone, and leaves the folder read (it holds a placed title now)."""
+    store, shows = library(language)
+    _a, _b, c = shows.values()
+    w, _ignore, reset = _skip_and_start_over(store, shows)
+    store.place(c[:1], "goal")
+    w._undo_start_over(store, reset, {})
+    order = _state(store)[0]
+    assert c[0] in order["goal"] and not set(c[1:]) & set(_state(store)[1])
+    assert store.skipped_folders() == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_folder_that_cant_be_skipped_again_has_its_titles_ignored_alone(language, library, monkeypatch):
+    """Its folder refused now (a folder above it skipped since, or no source): the titles are ignored alone."""
+    store, shows = library(language)
+    _a, _b, c = shows.values()
+    w, _ignore, reset = _skip_and_start_over(store, shows)
+    monkeypatch.setattr(store, "skip_refused", lambda path: "inside a skipped folder")
+    w._undo_start_over(store, reset, {})
+    assert not set(c) & set(_state(store)[1]) and store.skipped_folders() == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_ignores_are_given_again_even_when_every_placement_moved_since(language, library):
+    """Every placement moved since the reset (left as it is): the Ignore is still given again."""
+    store, shows = library(language)
+    a, _b, c = shows.values()
+    place = store.place(a, "top")
+    w, _ignore, reset = _skip_and_start_over(store, shows, placed=[place])
+    store.move(a, "goal")
+    w._undo_start_over(store, reset, {})
+    assert set(a) <= set(_state(store)[0]["goal"]) and not set(c) & set(_state(store)[1])
+    assert len(store.skipped_folders()) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_resets_undo_with_nothing_left_to_put_back_says_it_cant(language, library):
+    """Every title it brought back placed since: nothing to give again — refused (*Can't undo*), nothing written."""
+    store, shows = library(language)
+    _a, _b, c = shows.values()
+    w, _ignore, reset = _skip_and_start_over(store, shows)
+    store.place(c, "soon")
+    before = _state(store)
+    with pytest.raises(ls.UndoRefused):
+        w._undo_start_over(store, reset, {})
+    assert _state(store) == before and store.skipped_folders() == []

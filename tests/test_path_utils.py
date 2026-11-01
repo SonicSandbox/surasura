@@ -157,7 +157,7 @@ def test_the_guard_fails_a_test_that_makes_a_houseki_root(tmp_path, monkeypatch)
     guard = harness_guards._guard_real_local_data.__wrapped__()
     next(guard)
     root.mkdir(parents=True)
-    with pytest.raises(AssertionError, match="made or wrote the Houseki root"):
+    with pytest.raises(AssertionError, match="at the top of the Houseki root"):
         next(guard)
 
 

@@ -156,6 +156,94 @@ def test_a_look_that_takes_in_one_episode_groups_only_its_shows_and_files_no_evi
     assert len(worked_out) == 1, "evidence worked out for more sizes than the new file's"
 
 
+def _origin(item_id, origin, rel, size=None, sha=None, video_size=None, video_key=None, version=None):
+    return ls.Origin(item_id, 1, origin, size, 1, sha, rel, "available", None, version, None, video_size, video_key)
+
+
+def _bare_look(origins):
+    look = sources._Look.__new__(sources._Look)
+    look.origins, look.members, look.evidence, look.by_show, look.shows_asked = origins, None, None, None, set()
+    look.books_in = look.book_origins = look.by_item = None
+    return look
+
+
+def test_the_tables_of_records_of_every_kind_equal_the_whole_library_build():
+    """Why: the records a look reads are not all one show's tidy episodes — one show's copies in a 3.0 `Library`
+    folder and in a 2.x tier folder (one folder key, two folders), a folder written in two cases, a book's parts
+    (`<epub>#<n>`: never evidence, filed by their book and bytes), a version, a loose copy, a record with no copy path,
+    a text that is no content (an `.epub` origin), records with no size, no hash or no video key, two shows' texts of
+    one size and hash — each table and each size's evidence must still be the whole-library build's."""
+    d = os.path.join(os.sep, "src")
+    origins = {}
+    for k, o in [
+            ("/src/a/01.srt", _origin(1, f"{d}/a/01.srt", "Library/星の歌/01.srt", 50, "s1", 900, "v1")),
+            ("/src/a/02.srt", _origin(2, f"{d}/a/02.srt", "Library/星の歌/02.srt", 50, "s2")),
+            ("/src/a/02 v2.srt", _origin(2, f"{d}/a/02 v2.srt", "Library/星の歌/02.srt", 60, "s3", version=True)),
+            ("/src/old/03.srt", _origin(3, f"{d}/old/03.srt", "HighPriority/星の歌/03.srt", 50, "s1", 900, "v2")),
+            ("/src/b/01.srt", _origin(4, f"{d}/b/01.srt", "library/Show B/01.srt", 50, "s1", 900, "v1")),
+            ("/src/b/02.srt", _origin(5, f"{d}/b/02.srt", "LIBRARY/show b/02.srt", 70, None, None, "v3")),
+            ("/src/b/03.srt", _origin(6, f"{d}/b/03.srt", "Library/Show B/03.srt", "70", "s4", "900", "v4")),
+            ("/src/loose.srt", _origin(7, f"{d}/loose.srt", "loose.srt", 50, "s1", 900, "v5")),
+            ("/src/none.srt", _origin(8, f"{d}/none.srt", None, 50, "s1")),
+            ("/src/book.epub", _origin(9, f"{d}/book.epub", "Library/本/book.epub", 50, "s1")),
+            ("/src/本.epub#1", _origin(10, f"{d}/本.epub#1", "Library/本/本 1.txt", 50, "e1")),
+            ("/src/本.epub#2", _origin(11, f"{d}/本.epub#2", "Library/本/本 2.txt", 80, "e1", 900, "v6")),
+            ("/src/x#y", _origin(12, f"{d}/x#y", "Library/X/x.srt", 50, "s1")),
+            ("/src/s1/01.srt", _origin(13, f"{d}/s1/01.srt", "Library/Show/Season 1/01.srt", 50, "s1", 900, "v1")),
+            ("/src/hato.srt", _origin(14, f"{d}/hato.srt", f"{ls.HATO_FOLDER}/hato.srt", 50, "s5"))]:
+        origins[k] = o
+    look = _bare_look(origins)
+    old = _old_members(origins)
+    for t in ("show", "sha", "book", "item", "head"):        # in an order no look follows: each table on its own
+        assert look._members(t) == old[t], t
+    assert look._members("show") is look._members("show")   # grouped once
+    shows = _old_show_origins(origins)
+    assert len(shows[ls.folder_key_of("Library/星の歌/x")]) == 4 and len(shows[ls.folder_key_of("Library/Show B/x")]) == 3
+    for fk in list(shows) + ["missing"]:
+        assert list(look._show_origins(fk)) == shows.get(fk, []), fk
+    look = _bare_look(origins)                               # evidence first, before any table
+    by_text, by_video = _old_evidence(origins)
+    assert by_text[50]["s1"] == {"星の歌", "Show B", "Show/Season 1"} == by_video[900]["v1"]
+    assert set(by_video[900]) == {"v1"}                      # a tier copy's, a loose one's, a part's: no show's
+    for size in (50, 60, 70, 80, "70", None, 900, 1):
+        assert look._evidence("text", size) == by_text.get(size, {}), size
+        assert look._evidence("video", size) == by_video.get(size, {}), size
+        assert look._evidence("text", size) == by_text.get(size, {}), size     # worked out once, the same again
+
+
+def test_a_refresh_keeps_the_shows_asked_and_leaves_the_tables_not_grouped_yet_to_be_grouped_as_they_are():
+    """Why: a book's take-in reads its items' records again (`_refresh`, K5); a show's origins asked before it must
+    follow (rebuilt in place), a show not asked yet and a table not grouped yet must come out, when first asked, as the
+    records are now — never as they were, never missing the item that moved into it."""
+    from types import SimpleNamespace
+    d = os.path.join(os.sep, "src")
+    origins = {"/src/a/01.srt": _origin(1, f"{d}/a/01.srt", "Library/A/01.srt", 50, "s1"),
+               "/src/a/02.srt": _origin(2, f"{d}/a/02.srt", "Library/A/02.srt", 50, "s2"),
+               "/src/b/01.srt": _origin(3, f"{d}/b/01.srt", "Library/B/01.srt", 50, "s3"),
+               "/src/本.epub#1": _origin(4, f"{d}/本.epub#1", "Library/本/1.txt", 50, "e1")}
+    look = _bare_look(dict(origins))
+    look.book_keys = look.editions = None
+    a, b, book = (ls.folder_key_of(f"Library/{x}/x") for x in ("A", "B", "本"))
+    assert [o.item_id for o in look._show_origins(a)] == [1, 2]
+    look._members("item")
+    now = {"/src/a/02.srt": _origin(2, f"{d}/a/02.srt", "Library/B/02.srt", 50, "s2"),     # item 2 moved to B
+           "/src/本.epub#1": _origin(4, f"{d}/本.epub#1", "Library/本/1.txt", 50, "e2"),     # the book's new bytes
+           "/src/本.epub#2": _origin(5, f"{d}/本.epub#2", "Library/本/2.txt", 50, "e2")}     # and a new part
+    look.store = SimpleNamespace(origins=lambda items: {k: o for k, o in now.items() if o.item_id in items})
+    look._refresh({2, 4}, SimpleNamespace(added=[5]))
+    after = dict(origins, **now)
+    assert look.origins == after
+    assert set(look.members) == {"show", "item"}, "a table not grouped yet was grouped by the refresh"
+    shows = _old_show_origins(after)
+    assert [o.item_id for o in look._show_origins(a)] == [1]                  # asked before: followed
+    for fk in (a, b, book):
+        assert list(look._show_origins(fk)) == shows[fk], fk
+    old = _old_members(after)
+    for t in ("show", "item", "sha", "book", "head"):
+        assert look._members(t) == old[t], t
+    assert look._books()["e2"] == {1: (4, "Library/本/1.txt", None), 2: (5, "Library/本/2.txt", None)}
+
+
 def test_the_folder_key_memo_reads_every_kind_of_path_as_folder_key_of():
     """Why: the show table files each origin under its copy's folder key, now worked out once per folder; the memo
     must give `folder_key_of`'s answer for every path a record can hold — a 3.0 `Library` copy (any case), a 2.x tier's,

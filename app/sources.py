@@ -1131,10 +1131,11 @@ class _Look:
         self.book_origins = None     # LM3 (c): {an EPUB's key: {part number: Origin}} of the books' parts' records
         self.editions = None         # LM3 (W4): {(a folder's key, a book's name, edition marks off): {its EPUBs' keys}}
         self.members = None          # K5: {table: {bucket: {origin key}}} behind the tables above (`_members`)
+        self.shows_asked = set()     # F13: the shows' folder keys `_show_origins` built (kept by `_refresh`)
         self.splitter = None         # K5 C2: the new books split ahead by worker processes (`_take`, `_prepared`)
         self.writers = None          # K5 C2: the threads a book's parts are written and flushed by (`_write_parts`)
         self.pending_books = set()   # LM3: the EPUBs whose new edition waits in the store (never hashed nor split)
-        self.evidence = None         # D3: ({size: {sha256: shows}}, {video size: {video key: shows}}) of the origins
+        self.evidence = None         # D3: the origins' keys by text / video size, and each size's shows (`_evidence`)
         self.content_keys = {}       # D3: {a video's path: its content key}, read once a look (`_content_key`)
         self.waiting_named = None    # FIX1 (MV-A4): the waiting items' videos by name and size (`_waiting_named`)
         self.roots = {}              # D5: {a source's id: its folder} (`run`), and {its id: away?} asked once a look
@@ -1938,9 +1939,8 @@ class _Look:
         picked = self._decides(show, texts, vids, votes)
         if picked is not False:
             return picked
-        by_text, by_video = self._evidence()                 # the recorded files decide nothing: their bytes
-        for _n, path, st in texts:
-            shas = by_text.get(st.st_size)
+        for _n, path, st in texts:                           # the recorded files decide nothing: their bytes
+            shas = None if votes[path] else self._evidence("text", st.st_size)
             if votes[path] or not shas:
                 continue
             try:
@@ -1949,7 +1949,7 @@ class _Look:
                 continue
             votes[path] = shas.get(got[1], set())
         for path, st in vids:
-            keys = by_video.get(st.st_size)
+            keys = None if votes[path] else self._evidence("video", st.st_size)
             if not votes[path] and keys and not ls.is_placeholder(st) and not self._recent(st):
                 votes[path] = keys.get(self._content_key(path), set())
         picked = self._decides(show, texts, vids, votes)
@@ -1998,21 +1998,33 @@ class _Look:
         base = [t[1] for t in texts] or [v[0] for v in vids]
         return one if 2 * sum(1 for p in base if votes.get(p)) > len(base) else False
 
-    def _evidence(self):
-        """D3: the origins' texts {size: {sha256: shows}} and videos {video size: {video key: shows}} — a version's
-        too (its bytes are its episode's show's), never a book's part — gathered once a look."""
+    def _evidence(self, kind, size):
+        """D3: the origins' texts of this size {sha256: shows} (`kind` "text") or their videos of this video size
+        {video key: shows} ("video") — a version's too (its bytes are its episode's show's), never a book's part —
+        empty when none. The origins are filed by size once a look; F13: each size's shows worked out only when it is
+        asked (every origin's show and name read at once held the interpreter 0.4 s at 20k)."""
         if self.evidence is None:
             by_text, by_video = {}, {}
             for k, o in self.origins.items():
-                show = _library_show(o.rel_path)
-                if show is None or "#" in k:
+                if "#" in k:
                     continue
-                if isinstance(o.size, int) and o.sha256 and ls.is_content_name(os.path.basename(k)):
-                    by_text.setdefault(o.size, {}).setdefault(o.sha256, set()).add(show)
+                if isinstance(o.size, int) and o.sha256:
+                    by_text.setdefault(o.size, []).append((k, o))
                 if isinstance(o.video_size, int) and o.video_key:
-                    by_video.setdefault(o.video_size, {}).setdefault(o.video_key, set()).add(show)
-            self.evidence = by_text, by_video
-        return self.evidence
+                    by_video.setdefault(o.video_size, []).append((k, o))
+            self.evidence = {"text": by_text, "video": by_video}, {}
+        filed, done = self.evidence
+        if (kind, size) not in done:
+            out = done[kind, size] = {}
+            for k, o in filed[kind].get(size, ()):         # (as filed: the origins as first read)
+                show = _library_show(o.rel_path)
+                if show is None:
+                    continue
+                if kind == "text" and ls.is_content_name(os.path.basename(k)):
+                    out.setdefault(o.sha256, set()).add(show)
+                elif kind == "video":
+                    out.setdefault(o.video_key, set()).add(show)
+        return done[kind, size]
 
     def _content_key(self, path):
         """A video's content key (`videos.content_key`), read once a look (D3: a folder's show may ask it first)."""
@@ -2280,7 +2292,7 @@ class _Look:
         """The EPUBs already in or kept out (their parts' origins, `<epub>#<n>`): gathered once a look (H20), kept by
         `_refresh`."""
         if self.book_keys is None:
-            self.book_keys = set(self._members()["head"]) | {k.rsplit("#", 1)[0] for k in self.ex_paths if "#" in k}
+            self.book_keys = set(self._members("head")) | {k.rsplit("#", 1)[0] for k in self.ex_paths if "#" in k}
         return self.book_keys
 
     # --- new files (SRC-7) ----------------------------------------------------------------------------------------- #
@@ -2890,11 +2902,13 @@ class _Look:
         return out
 
     def _show_origins(self, fk):
-        """The origins of the show whose `Library` folder key is `fk` (all of them grouped by it once a look)."""
+        """The origins of the show whose `Library` folder key is `fk` (the origins grouped by it once a look; F13: a
+        show's own list built when first asked, kept by `_refresh` from then on)."""
         if self.by_show is None:
             self.by_show, self.show_origins = {}, {}
-            for b in self._members()["show"]:
-                self._rebuild("show", b)
+        if fk not in self.shows_asked:
+            self.shows_asked.add(fk)
+            self._rebuild("show", fk)
         return self.show_origins.get(fk, ())
 
     def _video_only(self, folder, path, st, show):
@@ -2959,7 +2973,7 @@ class _Look:
         placeholder = ls.is_placeholder(st)
         if not placeholder and self._recent(st):
             return None
-        if not placeholder and st.st_size in self._evidence()[1]:
+        if not placeholder and self._evidence("video", st.st_size):
             vkey = self._content_key(path)
             item = self._waiting_items().get(vkey) if vkey else None
             if item is not None:
@@ -3393,7 +3407,7 @@ class _Look:
             self.store.update_origins(touched)               # (A3): only its records' stats follow
             return
         if known:                                            # moved or renamed: each part's place kept (Hon)
-            same = self._members()["sha"].get(sha, ())               # K5: its own bytes' parts, not every origin
+            same = self._members("sha").get(sha, ())               # K5: its own bytes' parts, not every origin
             places = {o.item_id: o.chapter for o in (self.origins[k] for k in same) if o.chapter}
             change = self._commit([dict({"origin": f"{origin}#{i}", "size": st.st_size, "mtime_ns": st.st_mtime_ns,
                                          "sha256": sha, "show": rel.split("/")[1] if rel.count("/") >= 2 else show,
@@ -3512,7 +3526,7 @@ class _Look:
         editions', versions), gathered once a look."""
         if self.book_origins is None:
             self.book_origins = {}
-            for b in self._members()["book"]:
+            for b in self._members("book"):
                 self._rebuild("book", b)
         return self.book_origins
 
@@ -3649,29 +3663,52 @@ class _Look:
         """{item id: [its Origins]}, grouped once a look (anew after a switch, `_refresh`)."""
         if self.by_item is None:
             self.by_item = {}
-            for b in self._members()["item"]:
+            for b in self._members("item"):
                 self._rebuild("item", b)
         return self.by_item
 
-    def _members(self):
-        """K5 (alpha 4): {table: {bucket: {origin key}}} — the keys behind each book table (`_buckets`), grouped once a
+    def _members(self, table):
+        """K5 (alpha 4): {bucket: {origin key}} — the keys behind the book table `table` (`_buckets`), grouped once a
         look and kept by `_refresh`, so a table is built bucket by bucket and a book's take-in rebuilds its own buckets
-        only (every table rebuilt after every book made a first look of N books cost N²: 19 h at 25k)."""
+        only (every table rebuilt after every book made a first look of N books cost N²: 19 h at 25k). F13: each table
+        grouped only when first asked — a look that takes in one episode asks the show table alone (all five, the
+        shows' folder keys worked out per origin, held the interpreter 0.5 s at 20k, stretching a window's save)."""
         if self.members is None:
-            self.members = {t: {} for t in ("sha", "book", "item", "head", "show")}
-            self.position = {}
-            for k, o in self.origins.items():
-                self.position[k] = len(self.position)
-                for t, b in self._buckets(k, o):
-                    self.members[t].setdefault(b, set()).add(k)
+            self.members, self.folder_keys = {}, {}
+            self.position = {k: i for i, k in enumerate(self.origins)}
             self.next_position = len(self.position)
-        return self.members
+        if table in self.members:
+            return self.members[table]
+        got = self.members[table] = {}
+        if table == "show":                                  # the keys by their copies' folder first, in one pass
+            folders = {}
+            for k, o in self.origins.items():
+                folders.setdefault((o.rel_path or "").rpartition("/")[0], []).append(k)
+            for folder, keys in folders.items():
+                got.setdefault(self._folder_key(folder), set()).update(keys)
+        else:
+            for k, o in self.origins.items():
+                for _t, b in self._buckets(k, o, table):
+                    got.setdefault(b, set()).add(k)
+        return got
 
-    @staticmethod
-    def _buckets(k, o):
-        """The (table, bucket)s the origin `o` (at key `k`) is filed under — each table's own rule, as it always read."""
+    def _folder_key(self, folder):
+        """`folder_key_of` of a file in `folder` (its copy's path up to its last `/`; '' for a loose one), worked out
+        once a look (F13: a show's episodes share theirs)."""
+        if folder not in self.folder_keys:
+            self.folder_keys[folder] = ls.folder_key_of(folder + "/x")
+        return self.folder_keys[folder]
+
+    def _buckets(self, k, o, table=None):
+        """The (table, bucket)s the origin `o` (at key `k`) is filed under — each table's own rule, as it always read
+        (`table`: that table's only)."""
+        if table == "item":
+            return [("item", o.item_id)]
+        folder = (o.rel_path or "").rpartition("/")[0]
+        if table == "show":
+            return [("show", self._folder_key(folder))]
         head, _sep, number = k.rpartition("#")
-        out = [("item", o.item_id), ("show", ls.folder_key_of(o.rel_path or ""))]
+        out = [] if table else [("item", o.item_id), ("show", self._folder_key(folder))]
         if head:
             out.append(("head", head))                       # `_book_keys`
         if head and number.isdigit() and ls._EPUB_PART.search(str(o.origin or "")):
@@ -3679,12 +3716,12 @@ class _Look:
         own, _sep, n = (o.origin or "").rpartition("#")
         if own and n.isdigit() and o.sha256:
             out.append(("sha", o.sha256))                    # `_books`
-        return out
+        return [tb for tb in out if tb[0] == table] if table else out
 
     def _rebuild(self, table, b):
         """One bucket of one table built again from its keys, in the order the look holds its origins (the store's key
         order, a book read again after it: as the tables were always built)."""
-        keys = sorted(self.members[table].get(b, ()), key=self.position.__getitem__)
+        keys = sorted(self._members(table).get(b, ()), key=self.position.__getitem__)
         if table == "sha":
             got = {}
             for k in keys:
@@ -3716,7 +3753,8 @@ class _Look:
         if not ids or self.origins is None:
             return
         fresh = self.store.origins(items=ids)
-        members = self._members()
+        self._members("item")
+        members = self.members                               # F13: only the tables grouped so far are kept
         old = {k for i in ids for k in members["item"].get(i, ())}
         old |= {k for k in fresh if k in self.origins}       # a key another item held
         touched = set()
@@ -3725,7 +3763,7 @@ class _Look:
             if k not in fresh:
                 del self.position[k]
             for t, b in self._buckets(k, o):
-                held = members[t].get(b)
+                held = members.get(t, {}).get(b)
                 if held is not None:
                     held.discard(k)
                     if not held:
@@ -3737,17 +3775,18 @@ class _Look:
                 self.next_position += 1
             self.origins[k] = o
             for t, b in self._buckets(k, o):
-                members[t].setdefault(b, set()).add(k)
+                if t in members:
+                    members[t].setdefault(b, set()).add(k)
                 touched.add((t, b))
         built = {"sha": self.books_in is not None, "book": self.book_origins is not None,
-                 "item": self.by_item is not None, "show": self.by_show is not None}
+                 "item": self.by_item is not None}
         for t, b in sorted(touched, key=repr):
-            if built.get(t):
+            if built.get(t) or (t == "show" and b in self.shows_asked):
                 self._rebuild(t, b)
         if self.book_keys is not None:
             for t, b in touched:
                 if t == "head":
-                    if b in members["head"]:
+                    if b in members.get("head", ()):
                         self.book_keys.add(b)
                     elif not any(k.rsplit("#", 1)[0] == b for k in self.ex_paths if "#" in k):
                         self.book_keys.discard(b)
@@ -3769,6 +3808,6 @@ class _Look:
         `version`: an old edition's, LM3)."""
         if self.books_in is None:
             self.books_in = {}
-            for b in self._members()["sha"]:
+            for b in self._members("sha"):
                 self._rebuild("sha", b)
         return self.books_in

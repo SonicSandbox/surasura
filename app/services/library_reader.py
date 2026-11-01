@@ -336,15 +336,16 @@ class LibraryReader:
     # --- 3.0.1 item 5
     def follow_airing(self, service):
         """AniList's airing asks (`airing.Airing`, made with the covers fetcher; None: none) — asked at each build for
-        Current's titles near their end; its answers (any thread) rebuild the next view. Any thread."""
+        Current's titles near their end; its answers (any thread) rebuild the next view. No view is built for the
+        asker itself: the view reads the cache, never the asker (a build forced here held the window's next one back
+        behind the burst rule, a4). Any thread."""
         with self._lock:
             if service is self._airing:
-                return                                  # the same asker: nothing to build (S19)
+                return
             self._airing = service
         if service is not None:
             me = weakref.ref(self)                      # (never a cycle reader -> service -> reader: AD0-2)
             service.on_change = lambda: _hand_airing(me)
-        self.airing_moved()
 
     def airing_moved(self):
         """The cache moved (an answer kept, or cleared): the next look builds a view with it. Any thread."""

@@ -499,8 +499,10 @@ class FakeAdder(QObject):
         self.ran.append(f"{name}:first" if first else name)        # first: setup's own first look (Current, SRC-1)
         self.given.emit("Added 嵐壁の巨兵 at #1 · analysed on the next Generate")
 
-    def add_files(self, paths, **_kw):
+    def add_files(self, paths, **kw):
         self.added.append(list(paths))                             # alpha 8: page 3's files, the drop's path
+        if "origin" in kw:
+            self.__dict__.setdefault("origins", []).append(kw["origin"])   # (a video picked: its subtitle's video)
         return 1
 
 
@@ -539,18 +541,19 @@ class NoFoldersApi(FakeApi):
 
 def test_choose_a_file_lists_what_the_library_reads_and_says_what_it_doesnt(make, tmp_path):
     """*Choose a file…*: each file picked is read by the one rule (`path_utils.file_kind`) — a subtitle, a text and an
-    EPUB are listed (each with *Remove*), a video is said, never listed; nothing is brought in before *Next*."""
+    EPUB are listed (each with *Remove*), a file it never reads (a picture) is said, never listed; nothing is brought in
+    before *Next*. (A video: its subtitle — `test_a_video_chosen_*`.)"""
     wiz, shell, *_ = make()
     adder = shell.adder = FakeAdder()
     go_to(wiz, "shows")
     page = wiz.page
     picked = [str(tmp_path / n) for n in ("ぼっち・ざ・ろっく！ 第01話.ja.srt", "夜の図書館.epub", "日記.txt",
-                                          "ぼっち・ざ・ろっく！ 第01話.mkv")]
+                                          "ぼっち・ざ・ろっく！ 第01話.png")]
     wiz.pick_files_dialog = lambda _title, _start: picked
     QTest.mouseClick(page.btn_file, Qt.MouseButton.LeftButton)
     assert page.files == [os.path.normpath(p) for p in picked[:3]]
-    assert not page.refused_line.isHidden() and "第01話.mkv" in page.refused_line.text()
-    assert S.FILE_NOT_READ.format(name="ぼっち・ざ・ろっく！ 第01話.mkv") in page.refused_line.text()
+    assert not page.refused_line.isHidden() and "第01話.png" in page.refused_line.text()
+    assert S.FILE_NOT_READ.format(name="ぼっち・ざ・ろっく！ 第01話.png") in page.refused_line.text()
     QApplication.processEvents()                                   # (a new row is shown by the next turn of the loop)
     removes = [b for b in page.folders_part.findChildren(QPushButton)
                if b.text() == S.FOLDER_REMOVE and b.isVisibleTo(page)]
@@ -576,6 +579,29 @@ def test_next_brings_the_texts_in_at_once_and_each_book_through_extract_then_goe
     assert adder.added == [[os.path.normpath(picked[0])]] and books == [os.path.normpath(picked[1])]
     assert wiz.say_line.text() == S.FILES_ADDED.format(what="1 file")
     assert W.PAGES[wiz.index] == "order" and page.files == []
+
+
+class FakeRest:
+    """The YouTube module's `(playlist_link, bring_in_rest)` (alpha 8, a playlist's rest): a link naming a `list=` is
+    that playlist (the module's rule, its own tests), each start recorded — no test here reaches yt-dlp."""
+
+    def __init__(self):
+        self.calls = []
+
+    def link(self, url):
+        from urllib.parse import parse_qs, urlsplit
+        listed = (parse_qs(urlsplit(url.strip()).query).get("list") or [""])[0]
+        return f"https://www.youtube.com/playlist?list={listed}" if listed else None
+
+    def __call__(self, shell, language, playlists):
+        self.calls.append((list(playlists), language))
+
+
+@pytest.fixture(autouse=True)
+def rest(monkeypatch):
+    fake = FakeRest()
+    monkeypatch.setattr(W, "_youtube_rest", lambda: (fake.link, fake, "Stopped."))
+    return fake
 
 
 class FakeFetch:
@@ -640,7 +666,7 @@ def test_a_youtube_fetch_that_brings_nothing_says_why_on_the_page_and_setup_goes
     assert W.PAGES[wiz.index] == "shows" and page.links.toPlainText() == ""
 
 
-def test_youtube_videos_that_came_go_to_new_arrivals_then_the_sort_screen(make, monkeypatch):
+def test_youtube_videos_that_came_go_to_new_arrivals_then_the_sort_screen(make, monkeypatch, rest):
     """The fetch's transcripts go through the downloader's own seam (`windows.youtube_arrivals`: New arrivals); once
     they landed, the load screen says so beside its task and the sorting comes up."""
     wiz, shell, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
@@ -666,7 +692,75 @@ def test_youtube_videos_that_came_go_to_new_arrivals_then_the_sort_screen(make, 
     path = os.path.join("Processed", "peko peko vlog - 【Japanese Podcast #43】 [7nlUSMQKRKQ].txt")
     fetch.ended([path], [])
     assert handed == [[path]]
-    assert sorted_ == [S.YOUTUBE_DONE.format(what="1 video")]
+    # alpha 8 (Sonic: "it should still get the whole playlist"): the line says it's the playlist's first video, and its
+    # rest was asked for once the first video's fetch ended — never waited for
+    assert sorted_ == [S.YOUTUBE_DONE.format(what="1 video") + " · " + S.YOUTUBE_REST[0]]
+    assert rest.calls == [(["https://www.youtube.com/playlist?list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn"], "ja")]
+
+
+def test_a_playlists_rest_is_asked_for_once_per_playlist_and_never_for_a_single_video(make, monkeypatch, rest):
+    """Three lines: a single video, Sonic's playlist link and the same playlist's own page — one rest asked for (the
+    playlist once), the single video none; *Next* goes on at once (the load screen waits for the first videos only)."""
+    wiz, _shell, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
+    fetch = FakeFetch()
+    monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    page.btn_youtube.click()
+    page.links.setPlainText("https://www.youtube.com/watch?v=eFwn9e8IYsI\n"
+                            "https://www.youtube.com/watch?v=7nlUSMQKRKQ&list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn\n"
+                            "https://www.youtube.com/playlist?list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn\n")
+    wiz.next()
+    assert len(fetch.calls) == 1 and len(fetch.calls[0][0]) == 3        # each line's first video: one job
+    assert rest.calls == []                                            # (asked for once the first videos are in)
+    fetch.ended([], ["the video is private or no longer there"])
+    assert rest.calls == [(["https://www.youtube.com/playlist?list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn"], "ja")]
+    assert wiz.youtube_playlists == 1
+
+
+def test_a_first_videos_fetch_the_learner_stopped_starts_no_rest(make, monkeypatch, rest):
+    """(A8P-9) The first videos' job cancelled in the bar: the learner changed their mind — no playlist follows."""
+    wiz, _shell, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
+    fetch = FakeFetch()
+    monkeypatch.setattr(W, "_youtube_fetcher", lambda: fetch)
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    page.btn_youtube.click()
+    page.links.setPlainText("https://www.youtube.com/watch?v=7nlUSMQKRKQ&list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn")
+    wiz.next()
+    fetch.ended([], ["Stopped."])
+    assert rest.calls == [] and S.YOUTUBE_REST_ONLY[0] not in wiz.youtube_said
+
+
+def test_no_rest_is_asked_for_when_the_first_videos_fetch_cannot_start(make, monkeypatch, rest):
+    """The module broken at its fetch: said on the page, setup goes on, and no playlist's rest is started."""
+    wiz, _shell, *_ = make(data={"enable_youtube_transcripts": True, "youtube_risk_acknowledged": True})
+
+    def broken():
+        raise RuntimeError("yt-dlp manager missing")
+    monkeypatch.setattr(W, "_youtube_fetcher", broken)
+    go_to(wiz, "shows")
+    page = wiz.page
+    page.entered()
+    assert wait_until(lambda: not page.btn_youtube.isHidden())
+    page.btn_youtube.click()
+    page.links.setPlainText("https://www.youtube.com/watch?v=7nlUSMQKRKQ&list=PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn")
+    wiz.next()
+    assert rest.calls == []
+    assert "yt-dlp manager missing" in wiz.youtube_said
+
+
+def test_youtube_line_names_a_playlists_rest_coming_in_the_background():
+    assert W.youtube_line(1, 0, "", 1) == "YouTube · 1 video in New arrivals · " + S.YOUTUBE_REST[0]
+    assert W.youtube_line(2, 0, "", 2) == ("YouTube · 2 videos in New arrivals · the first of 2 playlists: the rest "
+                                           "follows in the background")
+    # the first video in already (or not come): its playlist still follows (it reads only the videos not in yet)
+    assert W.youtube_line(0, 0, S.YOUTUBE_HAD, 1) == S.YOUTUBE_FAILED.format(why=S.YOUTUBE_HAD) + " · " + \
+        S.YOUTUBE_REST_ONLY[0]
 
 
 def test_youtube_line_says_what_came_and_what_didnt():
@@ -2025,3 +2119,139 @@ def test_a_scan_that_found_nothing_waits_for_the_youtube_videos_still_coming(mak
     wiz._load_scanned({"ids": []})
     assert wiz.covered is not None and wiz._load["step"] == "youtube"
     assert wiz.covered.task.text() == S.LOAD_YOUTUBE
+
+
+# --- alpha 8 (A8P-L6, Sonic "Yes do that"): *Choose a file…* given a video ------------------------------------- #
+_CUE = "1\n00:00:01,000 --> 00:00:03,500\nひとりちゃん、今日もギター持ってきたの？\n"
+
+
+def _episode_folder(root, names):
+    """A show's folder as a learner keeps it: the videos (big enough to be videos) and their subtitles beside them."""
+    folder = root / "ぼっち・ざ・ろっく！"
+    folder.mkdir()
+    for name in names:
+        path = folder / name
+        if name.endswith((".mkv", ".mp4")):
+            path.write_bytes(b"\x1aE\xdf\xa3" + b"\0" * 2_000_000)
+        else:
+            path.write_text(_CUE, encoding="utf-8")
+    return folder
+
+
+def _pick_video(wiz, page, video):
+    wiz.pick_files_dialog = lambda _title, _start: [str(video)]
+    QTest.mouseClick(page.btn_file, Qt.MouseButton.LeftButton)
+    # said at once (the look runs on a worker): never a silent press
+    assert S.VIDEO_LOOKING.format(name=video.name) in page.refused_line.text() or page.files
+
+
+@pytest.mark.parametrize("subtitle", ["Episode 05.srt", "Episode 05.ass", "Episode 05.ja.srt"])
+def test_a_video_chosen_as_a_file_brings_in_its_subtitle_by_the_librarys_pairing_rule(make, tmp_path, subtitle):
+    """A video picked with *Choose a file…*: the subtitle beside it the library's one pairing rule gives it (its stem,
+    a language-tagged name) is listed as the file brought in, and the page says which."""
+    wiz, shell, *_ = make()
+    shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    folder = _episode_folder(tmp_path, ["Episode 05.mkv", subtitle, "Episode 06.mkv", "Episode 06.ja.srt"])
+    _pick_video(wiz, page, folder / "Episode 05.mkv")
+    assert wait_until(lambda: page.files == [os.path.normpath(str(folder / subtitle))])
+    assert S.VIDEO_SUBTITLE.format(name="Episode 05.mkv", subtitle=subtitle) in wiz.say_line.text()
+    assert page.btn_its_folder.isHidden() and page.refused_line.isHidden()
+    # (A8P-6) Next brings the subtitle in naming the video picked: its item's ▶ and mining find that video
+    wiz.next()
+    assert shell.adder.origins == [{os.path.normpath(str(folder / subtitle)): os.path.normpath(
+        str(folder / "Episode 05.mkv"))}]
+
+
+def test_a_video_with_several_subtitles_brings_in_the_best_one_and_says_how_many(make, tmp_path):
+    """Several subtitles for one video: the library's one order (`subtitle_rank`) picks — our language's tag before an
+    untagged one; another language's (`.en.srt`) is never one."""
+    wiz, shell, *_ = make()
+    shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    folder = _episode_folder(tmp_path, ["[Grp] Bocchi - 05 [1080p].mkv", "[Grp] Bocchi - 05 [1080p].ass",
+                                        "[Grp] Bocchi - 05 [1080p].ja.srt", "[Grp] Bocchi - 05 [1080p].en.srt"])
+    _pick_video(wiz, page, folder / "[Grp] Bocchi - 05 [1080p].mkv")
+    best = os.path.normpath(str(folder / "[Grp] Bocchi - 05 [1080p].ja.srt"))
+    assert wait_until(lambda: page.files == [best])
+    assert S.VIDEO_SUBTITLE_BEST.format(name="[Grp] Bocchi - 05 [1080p].mkv",
+                                        subtitle="[Grp] Bocchi - 05 [1080p].ja.srt", n=2) in wiz.say_line.text()
+
+
+def test_a_dual_copy_gets_its_episodes_subtitle(make, tmp_path):
+    """(A8P-15) The pairing rule gives an episode's subtitle to its plain release; the learner picked the Dual copy
+    they watch: its episode's subtitle still comes in."""
+    wiz, shell, *_ = make()
+    shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    folder = _episode_folder(tmp_path, ["Show - 05.mkv", "Show - 05 [Dual].mkv", "Show - 05.ja.srt"])
+    _pick_video(wiz, page, folder / "Show - 05 [Dual].mkv")
+    assert wait_until(lambda: page.files == [os.path.normpath(str(folder / "Show - 05.ja.srt"))])
+
+
+def test_next_waits_while_a_videos_subtitle_is_looked_for(make, tmp_path, monkeypatch):
+    """(A8P-7) *Next* during the look (a slow share): said, and nothing goes on without the subtitle."""
+    from app import sources
+    gate = threading.Event()
+    real = sources.subtitles_for_video
+    monkeypatch.setattr(sources, "subtitles_for_video", lambda path, language: gate.wait(10) and real(path, language))
+    wiz, shell, *_ = make()
+    shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    folder = _episode_folder(tmp_path, ["Episode 05.mkv", "Episode 05.ja.srt"])
+    _pick_video(wiz, page, folder / "Episode 05.mkv")
+    wiz.next()
+    assert W.PAGES[wiz.index] == "shows" and page.refused_line.text() == S.VIDEO_STILL_LOOKING
+    gate.set()
+    assert wait_until(lambda: page.files == [os.path.normpath(str(folder / "Episode 05.ja.srt"))])
+    wiz.next()
+    assert shell.adder.added == [[os.path.normpath(str(folder / "Episode 05.ja.srt"))]]
+
+
+def test_a_video_without_a_subtitle_says_so_and_offers_its_folder(make, tmp_path):
+    """No subtitle beside it (another episode's only): said in plain words, nothing listed, and *Choose its folder*
+    offered — pressed, the folder is listed as *Choose a folder…* lists one; the offer goes. A page that can't read
+    folders offers none (the line alone)."""
+    wiz, shell, *_ = make()
+    shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    (tmp_path / "lone").mkdir()
+    lone = _episode_folder(tmp_path / "lone", ["Episode 09.mkv"])
+    _pick_video(wiz, page, lone / "Episode 09.mkv")
+    assert wait_until(lambda: S.VIDEO_NO_SUBTITLE_PLAIN.format(name="Episode 09.mkv") in page.refused_line.text())
+    assert page.btn_its_folder.isHidden()                      # (this page reads no folders: nothing to offer)
+    wiz, shell, *_ = make()
+    wiz.api.read_folders = lambda *_a, **_k: None              # (the services read folders: page 3 lists them)
+    shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    folder = _episode_folder(tmp_path, ["Episode 07.mkv", "Episode 06.mkv", "Episode 06.ja.srt"])
+    _pick_video(wiz, page, folder / "Episode 07.mkv")
+    assert wait_until(lambda: not page.btn_its_folder.isHidden())
+    assert page.files == []
+    assert S.VIDEO_NO_SUBTITLE.format(name="Episode 07.mkv") in page.refused_line.text()
+    page.btn_its_folder.click()
+    assert wait_until(lambda: page.has_folder(str(folder)))
+    assert page.btn_its_folder.isHidden()
+
+
+def test_a_video_and_a_subtitle_picked_together_each_say_their_own(make, tmp_path):
+    """A subtitle and a video with none, picked at once: the subtitle listed, the video's line said beside it; a file
+    the library never reads (a picture) is said too."""
+    wiz, shell, *_ = make()
+    shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    folder = _episode_folder(tmp_path, ["Episode 08.mkv", "Episode 01.ja.srt"])
+    (folder / "表紙.png").write_bytes(b"\x89PNG")
+    wiz.pick_files_dialog = lambda _t, _s: [str(folder / "Episode 01.ja.srt"), str(folder / "Episode 08.mkv"),
+                                            str(folder / "表紙.png")]
+    QTest.mouseClick(page.btn_file, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: S.VIDEO_NO_SUBTITLE_PLAIN.format(name="Episode 08.mkv") in page.refused_line.text())
+    assert page.files == [os.path.normpath(str(folder / "Episode 01.ja.srt"))]
+    assert S.FILE_NOT_READ.format(name="表紙.png") in page.refused_line.text()

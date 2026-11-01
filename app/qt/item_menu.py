@@ -1007,6 +1007,8 @@ class ItemActions(QObject):
             return None                              # a tray file on a show's part: placed in the list, as before
         rect = self.lst.visualRect(idx)
         ep = self.lst.delegate.episode_at(entry, rect, pos) if group else None
+        if isinstance(ep, view_rows.Fold):           # --- a8: on a fold's line, after its run's last part
+            ep = other.episodes[ep.end]
         if ep is not None:
             return other, (ep if ep.id != other.episodes[-1].id else None)
         slab = self.lst.delegate.slot_rect(kind, rect, _lines)

@@ -354,15 +354,13 @@ class LibraryReader:
 
     def _ask_airing(self, view):
         """(The reader's thread.) Current's titles near their end (`airing.near_end`), handed to the asker, which keeps
-        only the due ones and returns at once."""
+        only the due ones and returns at once — every build, none too: an id no longer near its end is never sent."""
         with self._lock:
             service = self._airing
         if service is None or view.cached:
             return
         try:
-            ids = airing_module.near_end(view.rows, self._works)
-            if ids:
-                service.want(ids)
+            service.want(airing_module.near_end(view.rows, self._works))   # (none: the last ones let go)
         except Exception as e:                          # never in the way of a view
             print(f"Library reader: airing wasn't asked: {e!r}")
     # --- end 3.0.1 item 5

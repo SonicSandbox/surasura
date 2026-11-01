@@ -150,7 +150,7 @@ def test_only_current_rows_with_an_id_and_at_most_one_file_left_are_near_their_e
             _row(2, [_ep(1), _ep(2, watched=False), _ep(3, watched=False)]),      # two left: far from its end
             _row(3, [_ep(1, watched=False)]),                                     # no id
             _row(4, [_ep(1), _ep(2)], group=True),                                # a group
-            _row(5, [_ep(1), _ep(2), heard]),                                     # its audiobook item never counts
+            _row(5, [_ep(1), _ep(2, watched=False), heard]),                      # its audiobook item never counts
             _row(1, [_ep(4, watched=False)]),                                     # a second part: once
             _row(6, [])]
     assert A.near_end(rows, works) == [501, 505]
@@ -362,7 +362,7 @@ def test_the_reader_hands_over_only_current_s_shows_near_their_end_and_reads_the
             "the hero has six episodes left; the arrivals' shows (202, 303) are never Current's"
         hero = [i for i in seed.library.items() if i["work_id"] == seed.hero_work]
         seed.library.commit(items=[dict(id=i["id"], watched=1) for i in hero[:-1]])
-        assert _wait(lambda: asker.asked)
+        assert _wait(lambda: asker.asked and asker.asked[-1][1])
         tid, ids = asker.asked[-1]
         assert ids == [101] and tid != threading.get_ident()
         A._write(reader._airing_kept.path, {"101": {"status": "RELEASING", "episodes": 12, "asked_at": NOW}})
@@ -370,3 +370,87 @@ def test_the_reader_hands_over_only_current_s_shows_near_their_end_and_reads_the
         assert _wait(lambda: views[-1].airing.get(seed.hero_work, {}).get("status") == "RELEASING")
     finally:
         reader.stop()
+
+
+def test_the_asker_itself_never_calls_the_request_while_the_switch_is_off(tmp_path):
+    """Its own rule, not only the fetcher's `_post`: a request handed in that would send anyway is never called."""
+    sent = []
+    switch = {"on": True}
+    a = A.Airing("ja", lambda variables, query: sent.append(variables) or {"Page": {"media": []}},
+                 lambda: switch["on"], path=str(tmp_path / "airing_ja.json"), clock=lambda: NOW, background=False)
+    assert a.want([501]) == 1
+    switch["on"] = False
+    assert a.run_once() == 0 and sent == []
+    switch["on"] = True
+    assert a.want([501]) == 1 and a.run_once() == 1 and sent == [{"ids": [501]}]
+
+
+def test_a_hand_edited_infinite_count_or_time_is_no_number():
+    """`Infinity` in the cache (a hand edit): no count, so no "more" — and the offer's words never fail on it."""
+    eps = [_ep(n) for n in range(1, 13)]
+    assert A.holds({"status": "FINISHED", "episodes": float("inf")}, eps) is None
+    assert A.holds({"status": "FINISHED", "episodes": float("nan")}, eps) is None
+    assert A.due({"status": "FINISHED", "asked_at": float("-inf")}, NOW), "no time: asked"
+
+
+def test_an_answer_in_flight_when_covers_are_removed_is_never_kept(anilist, tmp_path):
+    """A7: *Remove downloaded covers* while a request is out — its answer lands after, and is dropped."""
+    _media(anilist, 501, "RELEASING", 12)
+    f = fetcher(Pen(), anilist)
+    a = _airing(f, tmp_path)
+    anilist.after_post = a.clear                    # the press comes while AniList answers
+    assert a.want([501]) == 1 and a.run_once() == 0
+    assert not os.path.exists(a.path) and a._known() == {}
+
+
+def test_a_queued_or_retried_id_no_longer_near_its_end_is_never_sent(anilist, tmp_path):
+    """Spec §4 *never: Finished*: a show finished (or moved out of Current) while its ask waited for its turn or its
+    retry — the reader's next ids no longer hold it — is dropped, never sent."""
+    wall = {"t": NOW}
+    f = fetcher(Pen(), anilist)
+    a = _airing(f, tmp_path, clock=lambda: wall["t"])
+    anilist.down = True
+    assert a.want([501, 502]) == 2 and a.run_once() == 0           # refused: both wait for their retry
+    anilist.down = False
+    a.want([502])                                                  # 501 left Current meanwhile
+    wall["t"] = NOW + A.RETRY_S + 1
+    assert a.run_once() == 1
+    assert _queries(anilist)[-1]["variables"]["ids"] == [502]
+    assert a.want([503]) == 1
+    a.want([])                                                     # the view's last near-end show is gone
+    assert a.run_once() == 0 and len(_queries(anilist)) == 2
+
+
+def test_an_answer_the_same_as_before_builds_no_view(anilist, tmp_path):
+    """S19: asked again a day later and AniList says the same, only its time moved: the reader isn't woken."""
+    _media(anilist, 501, "RELEASING", 12, next_at=int(NOW + 3 * DAY), next_ep=9)
+    wall = {"t": NOW}
+    f = fetcher(Pen(), anilist)
+    a = _airing(f, tmp_path, clock=lambda: wall["t"])
+    told = []
+    a.on_change = lambda: told.append(wall["t"])
+    a.want([501]) and a.run_once()
+    wall["t"] = NOW + DAY + 1
+    assert a.want([501]) == 1 and a.run_once() == 1
+    assert told == [NOW], "the first answer told the reader; the same answer again didn't"
+    assert A.read(a.path)["501"]["asked_at"] == NOW + DAY + 1
+    _media(anilist, 501, "FINISHED", 12)
+    wall["t"] = NOW + 2 * DAY + 2
+    a.want([501]) and a.run_once()
+    assert told == [NOW, NOW + 2 * DAY + 2]
+
+
+def test_the_cache_is_written_though_the_reader_holds_it_open_a_moment(tmp_path, monkeypatch):
+    """Windows refuses a rename over a file another thread has open: tried again, never an answer lost."""
+    path = str(tmp_path / "airing_ja.json")
+    real_replace, refused = os.replace, []
+
+    def busy_once(src, dst):
+        if not refused:
+            refused.append(dst)
+            raise PermissionError(13, "in use")
+        return real_replace(src, dst)
+    monkeypatch.setattr(A.os, "replace", busy_once)
+    monkeypatch.setattr(A, "REPLACE_WAIT_S", 0.0)
+    assert A._write(path, {"501": {"status": "RELEASING"}}) and refused
+    assert A.read(path) == {"501": {"status": "RELEASING"}}

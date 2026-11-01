@@ -19,6 +19,7 @@ file that can't be read is empty. Kept answers are used while the switch is off;
 (`Airing.clear`, A7). The reader reads it on its own thread, again only when the file moved (`Kept`).
 """
 import json
+import math
 import os
 import threading
 import time
@@ -33,6 +34,7 @@ AIRED_S = 3600                      # … or this long after its next episode's 
 ENDED_S = 30 * DAY_S                # an ended show's (its episode count can still be corrected)
 UNKNOWN_S = 7 * DAY_S               # no row for the id (deleted, merged), or a status AniList adds later
 RETRY_S = 15 * 60                   # a failed ask (the covers' own `RETRY_S`)
+REPLACE_TRIES, REPLACE_WAIT_S = 3, 0.05     # the cache's rename, while the reader may have it open (Windows)
 WAIT_S = 10.0
 
 Q_AIRING = ("query ($ids: [Int]) { Page(perPage: 50) { media(id_in: $ids) { id status episodes "
@@ -53,7 +55,9 @@ def airing_id(work):
 
 
 def _number(value):
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    """A finite number, else None (a hand-edited `Infinity` or `NaN` is no count and no time)."""
+    ok = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    return value if ok else None
 
 
 def holds(entry, episodes):
@@ -68,6 +72,11 @@ def holds(entry, episodes):
     if total is not None and view_rows.episodes_short(episodes, total):
         return "more"
     return None
+
+
+def _answer(entry):
+    """What an answer says, without when it was asked."""
+    return {k: v for k, v in entry.items() if k != "asked_at"} if isinstance(entry, dict) else None
 
 
 def due(entry, now):
@@ -144,8 +153,14 @@ def _write(path, shows):
             json.dump({"v": 1, "shows": shows}, f, ensure_ascii=False, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
-        return True
+        for turn in range(REPLACE_TRIES):
+            try:
+                os.replace(tmp, path)
+                return True
+            except PermissionError:                 # Windows: the reader's `Kept` has it open this moment
+                if turn == REPLACE_TRIES - 1:
+                    raise
+                time.sleep(REPLACE_WAIT_S)
     except OSError:
         try:
             os.remove(tmp)
@@ -198,6 +213,9 @@ class Airing:
         self._shows = None                  # the cache as this service knows it (read at the first ask)
         self._queue = []
         self._later = {}                    # id -> when a failed ask is asked again
+        self._wanted = set()                # the reader's last near-end ids: a queued or retried id no longer in
+        #                                     them (finished, moved out of Current, watched back) is never sent
+        self._gen = 0                       # moved by `clear`: an answer asked before it is never kept after it
         self._stop = False
         self._thread = None
 
@@ -216,7 +234,11 @@ class Airing:
 
     def want(self, ids):
         """The ids of Current's titles near their end (`near_end`): each one whose kept answer is due, not queued and
-        not waiting for a retry, queued. -> how many (0 with the switch off: nothing kept)."""
+        not waiting for a retry, queued; they replace the last ids handed (an empty list too). -> how many (0 with the
+        switch off: nothing kept)."""
+        ids = list(ids or ())
+        with self._cond:
+            self._wanted = set(ids)
         if not ids or not self.on():
             return 0
         now = self.clock()
@@ -248,6 +270,7 @@ class Airing:
         with self._cond:
             self._shows = {}
             self._later.clear()
+            self._gen += 1
             try:
                 os.remove(self._path())
             except (OSError, RuntimeError):
@@ -279,10 +302,12 @@ class Airing:
         with self._cond:
             now = self.clock()
             for i, t in list(self._later.items()):
-                if t <= now and i not in self._queue:
+                if i not in self._wanted:
+                    del self._later[i]              # no longer near its end in Current: never asked
+                elif t <= now and i not in self._queue:
                     del self._later[i]
                     self._queue.append(i)
-            todo, self._queue = self._queue, []
+            todo, self._queue = [i for i in self._queue if i in self._wanted], []
         if not todo or not self.on():
             return 0                                # switched off: nothing asked, nothing kept (a later want asks)
         kept = 0
@@ -291,6 +316,8 @@ class Airing:
         return kept
 
     def _ask(self, chunk):
+        with self._cond:
+            gen = self._gen
         try:
             data = self.post({"ids": list(chunk)}, Q_AIRING)
         except Exception:
@@ -305,9 +332,10 @@ class Airing:
                 found[m["id"]] = m
         now = self.clock()
         with self._cond:
-            if self._stop:
-                return 0
-            shows = dict(self._known())
+            if self._stop or gen != self._gen:
+                return 0                            # stopped, or *Remove downloaded covers* came meanwhile
+            before = self._known()
+            shows = dict(before)
             for i in chunk:
                 m = found.get(i)
                 nxt = (m or {}).get("nextAiringEpisode") or {}
@@ -317,7 +345,9 @@ class Airing:
                                  "asked_at": now}
             self._shows = shows
             _write(self._path(), shows)
-        self._changed()
+            moved = any(_answer(before.get(str(i))) != _answer(shows[str(i)]) for i in chunk)
+        if moved:
+            self._changed()                         # S19: an answer the same as before (only its time) builds nothing
         return len(chunk)
 
     def _changed(self):

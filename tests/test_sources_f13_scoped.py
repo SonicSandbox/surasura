@@ -10,6 +10,7 @@ show; the folder-key memo equals `folder_key_of` on every kind of path; the empt
 folders as the Python rule did. The scope itself is checked by counts, never by time (it holds on any runner)."""
 import os
 import shutil
+import sys
 
 import pytest
 
@@ -139,14 +140,22 @@ def test_a_look_that_takes_in_one_episode_groups_only_its_shows_and_files_no_evi
     store, data_dir = _empty(language)
     src = _drive("driveA")
     looks = _caught(monkeypatch)
+    keyed, real_key = [], ls.folder_key_of
+
+    def folder_key_of(rel):                                  # counted when the look asks (never the store's own)
+        if sys._getframe(1).f_code.co_filename.endswith("sources.py"):
+            keyed.append(rel)
+        return real_key(rel)
     with store:
         root = store.add_source(src)
         _seed(store, root, data_dir, language, src, 600, name="[Grp] {show} - {e:02d} (1080p)." + language + ".srt")
         show = "既存0003"
         _write(os.path.join(src, "seeded", show, f"[Grp] {show} - 77 (1080p).{language}.srt"), _text(language, 77))
         _settle(src)
+        monkeypatch.setattr(ls, "folder_key_of", folder_key_of)
         assert _look(store, language, root)["added"] == 1
     look = looks[-1]
+    assert 0 < len(keyed) < 40, f"{len(keyed)} folder keys worked out for 600 origins in 12 folders"
     assert len(look.origins) >= 600
     assert set(look.members) == {"show"}, "a book table or the item table was grouped"
     assert look.books_in is None and look.book_origins is None and look.by_item is None

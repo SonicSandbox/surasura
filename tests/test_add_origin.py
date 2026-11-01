@@ -257,3 +257,25 @@ def test_one_add_lists_each_originals_folder_once(lib, make_writer, monkeypatch)
     monkeypatch.setattr(runner.os, "listdir", real)                  # (never `undo`: it drops the test root too)
     assert listed.count(os.path.normcase(os.path.abspath(folder))) == 1
     assert all(_record(lib.store, s)[1].get("video_path") for s in subs)
+
+
+def test_a_subtitle_brought_in_for_a_video_the_learner_picked_names_that_video(lib, make_writer):
+    # why: alpha 8 (A8P-6 / IK-2) — setup's *Choose a file…* given a video finds its subtitle by the library's one
+    # pairing rule, which may pair by episode number; Connect looks beside by name only, so the add must name the
+    # video the learner picked, else the episode is *No video* although they chose the very file
+    w, heard = make_writer()
+    folder = _drive("driveA")
+    sub, _none = _original(lib.language, folder, video=False)
+    mkv = _video(os.path.join(folder, "Hoshizora.Kissa.E1121.WEB.mkv"))           # another name, the same episode
+    assert runner.beside(sub) is None                                              # (by name: nothing)
+    new = _add(w, heard, [sub], origin={sub: mkv})
+    _item, record = _record(lib.store, sub)
+    assert _same(record["video_path"], mkv) and record["video_size"] == os.path.getsize(mkv)
+    assert _same(_video_of(lib.language, new), mkv)
+
+
+def test_a_picked_video_gone_before_the_add_falls_back_to_the_one_beside_by_name(lib, make_writer):
+    w, heard = make_writer()
+    sub, mkv = _original(lib.language, _drive("driveA"))
+    _add(w, heard, [sub], origin={sub: os.path.join(os.path.dirname(sub), "deleted meanwhile.mkv")})
+    assert _same(_record(lib.store, sub)[1]["video_path"], mkv)

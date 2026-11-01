@@ -408,3 +408,25 @@ def test_E4_a_read_only_store_refuses_the_downloads_and_says_they_wait_in_proces
         assert writer.pending() == 0
     finally:
         writer.finish(time.monotonic() + 2)
+
+
+def test_alpha8_a_playlists_first_video_and_its_rest_are_one_title_in_new_arrivals(real):
+    """Alpha 8 (Sonic: "it should still get the whole playlist"): setup's first video lands loose in Processed (its
+    one video's place), the rest later in `Processed/<channel> - <playlist> (playlist)/` (the downloader's playlist
+    folder) — both through the downloader's one seam, and every one of them one title: the channel's (the records name
+    it), waiting in New arrivals. The rest's hand-over is quiet: the bar keeps the rest's own line."""
+    lib = real()
+    words = names("ja")
+    channel = words[40]
+    first = _download(lib.data_dir, words[41], channel, "PlFirst0001")
+    windows.youtube_arrivals(lib.win)([first])
+    assert wait_until(lambda: _item(lib.store, lib.data_dir, first) in _arrival_ids(lib.page.view_model), 5)
+    lib.win.bar_line.set_full(words[50])                              # the rest's line, said meanwhile
+    folder = f"Processed/{channel} - {words[42]} (playlist)"
+    rest = [_download(lib.data_dir, words[43 + k], channel, f"PlRest{k:05d}", folder=folder) for k in range(3)]
+    windows.youtube_arrivals(lib.win, quiet=True)(rest)
+    every = [first] + rest
+    assert wait_until(lambda: all(_item(lib.store, lib.data_dir, p) in _arrival_ids(lib.page.view_model)
+                                  for p in every), 5)
+    assert len({lib.store.item(_item(lib.store, lib.data_dir, p))["work_id"] for p in every}) == 1
+    assert lib.win.bar_line.full() == words[50]                       # quiet: nothing said over it

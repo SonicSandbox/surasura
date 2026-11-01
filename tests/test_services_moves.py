@@ -2631,9 +2631,14 @@ def test_so1_an_ignore_whose_title_cant_come_back_keeps_its_file_in_the_trash(li
             return None                                  # (as an Ignore read again meanwhile: nothing put back)
         return real(self, change, *args, **kw)
     monkeypatch.setattr(ls.Store, "undo", undo)
+    with open(path, "w", encoding="utf-8") as f:       # (its name taken too: it would have come back renamed)
+        f.write("別のファイル\n")
     _so1_over(w, heard, [place, ignore])
+    assert w.idle(5)
     assert lib.store.place_of(a)[0] == "arrivals" and lib.store.item(b) is None
-    assert not os.path.exists(path) and all(os.path.exists(os.path.join(lib.data_dir, *t.split("/"))) for t in trashed)
+    assert all(os.path.exists(os.path.join(lib.data_dir, *t.split("/"))) for t in trashed)
+    stem, ext = os.path.splitext(path)
+    assert not os.path.exists(f"{stem}_1{ext}") and not heard.notes, "no file left out, no note naming one"
 
 
 def test_so1_an_ignored_titles_file_whose_name_was_taken_comes_back_under_a_new_one(lib, make_writer):

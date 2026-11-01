@@ -1834,6 +1834,7 @@ class ShellWindow(QMainWindow):
             if qcovers.fetcher() is self._fetcher:
                 qcovers.use_fetcher(None)
             self._fetcher = None
+        _follow_airing(reader, self._fetcher)       # 3.0.1 item 5: the reader asks the library's own fetcher
         if self._first_painted and writer is not None:
             qcovers.start_scan(getattr(reader, "opener", None), self.language, writer)
 
@@ -1878,6 +1879,7 @@ class ShellWindow(QMainWindow):
         f = self._fetcher = make(self.language, writer, settings=services.settings.get)
         f.data_dir = getattr(getattr(library, "opener", None), "data_dir", None) or f.data_dir   # disk first
         qcovers.use_fetcher(f, qcovers.resolver(getattr(library, "opener", None)))
+        _follow_airing(library, f)                     # 3.0.1 item 5
         return f
 
     def ask_shown_covers(self):
@@ -3477,6 +3479,14 @@ def _session_ending():
         return bool(app is not None and app.isSavingSession())
     except Exception:
         return False
+
+
+def _follow_airing(reader, fetcher):
+    """3.0.1 item 5: the reader asks AniList's airing status through the covers fetcher's own asker (its switch, its
+    throttle), or nothing without one."""
+    follow = getattr(reader, "follow_airing", None)
+    if follow is not None:
+        follow(getattr(fetcher, "airing", None))
 
 
 # --- W3.2 B: how the window wakes (IK0-5, L3.1-4) ----------------------------------------------------------------- #

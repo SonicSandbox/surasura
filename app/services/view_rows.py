@@ -157,6 +157,9 @@ View = namedtuple("View", View._fields + ("epoch",), defaults=tuple(View._field_
 # --- W-1: `keep_watched`, the library's *Keep studying watched episodes* as the feed's options gave it (the stones' tip
 # line, the first mark's toast, an episode's *Mine now*); False in the first screen's cache
 View = namedtuple("View", View._fields + ("keep_watched",), defaults=tuple(View._field_defaults.values()) + (False,))
+# --- 3.0.1 item 5: `airing`, AniList's kept answers for Current's titles ({work_id: entry}, `airing.of_rows`), set by
+# the reader on its thread — what `drag.when_done` holds a show back by. Never in the first screen's cache ({}: none)
+View = namedtuple("View", View._fields + ("airing",), defaults=tuple(View._field_defaults.values()) + ({},))
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 #   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
 #   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)
@@ -466,6 +469,13 @@ def numbers_gap(episodes):
     """Whether the numbered files leave a hole (*Ep 1–4, 6*: Ep 5 is still to come, L6.3 R5); files with no number (a
     special, a video) don't count."""
     return len(runs([e.number for e in episodes if e.number is not None])) > 1
+
+
+def episodes_short(episodes, total):
+    """Whether the highest numbered file is below `total`, an airing source's episode count (3.0.1 item 5: *a file
+    still to come*, R5). No numbered file, or no count: never."""
+    numbers = [e.number for e in episodes if e.number is not None]
+    return bool(numbers) and bool(total) and max(numbers) < total
 
 
 def to_finish(episodes):

@@ -72,6 +72,7 @@ import threading
 import time
 import weakref
 
+from app.services import airing as airing_module
 from app.services import view_rows
 
 POLL_S = 0.1                     # the store's FEED_POLL
@@ -123,6 +124,13 @@ def _hand_folders(ref, found):
     reader = ref()
     if reader is not None:
         reader.set_folders(found)
+
+
+def _hand_airing(ref):
+    """AniList's new airing answers to the reader, while it is alive (3.0.1 item 5)."""
+    reader = ref()
+    if reader is not None:
+        reader.airing_moved()
 
 
 def _hand_playable(ref, answers):
@@ -225,6 +233,12 @@ class LibraryReader:
         self._folders_asked = set()
         self._folders_owed = False         # ... the last view's arrivals to ask at the next look (no build for it)
         # --- end A4B-8
+        # --- 3.0.1 item 5: AniList's airing answers — the cache read on this thread when it moved (`Kept`), put on the
+        # view (`View.airing`); Current's titles near their end handed to the asker (`follow_airing`) at each build
+        self._airing_kept = airing_module.Kept(language)
+        self._airing = None                # the covers fetcher's `airing.Airing`, handed by the window
+        self._airing_new = False
+        # --- end 3.0.1 item 5
         # --- LM11b G5: a window command not written yet ({item_id: tier}, `expect`), built in until the feed holds it
         self._expected = {}
         self._expected_new = None          # the window's newest, taken in by the next look
@@ -318,6 +332,40 @@ class LibraryReader:
             self._folders_version += 1
             self._folders_new = True
         self._wake.set()
+
+    # --- 3.0.1 item 5
+    def follow_airing(self, service):
+        """AniList's airing asks (`airing.Airing`, made with the covers fetcher; None: none) — asked at each build for
+        Current's titles near their end; its answers (any thread) rebuild the next view. Any thread."""
+        with self._lock:
+            if service is self._airing:
+                return                                  # the same asker: nothing to build (S19)
+            self._airing = service
+        if service is not None:
+            me = weakref.ref(self)                      # (never a cycle reader -> service -> reader: AD0-2)
+            service.on_change = lambda: _hand_airing(me)
+        self.airing_moved()
+
+    def airing_moved(self):
+        """The cache moved (an answer kept, or cleared): the next look builds a view with it. Any thread."""
+        with self._lock:
+            self._airing_new = True
+        self._wake.set()
+
+    def _ask_airing(self, view):
+        """(The reader's thread.) Current's titles near their end (`airing.near_end`), handed to the asker, which keeps
+        only the due ones and returns at once."""
+        with self._lock:
+            service = self._airing
+        if service is None or view.cached:
+            return
+        try:
+            ids = airing_module.near_end(view.rows, self._works)
+            if ids:
+                service.want(ids)
+        except Exception as e:                          # never in the way of a view
+            print(f"Library reader: airing wasn't asked: {e!r}")
+    # --- end 3.0.1 item 5
 
     def _ask_folders(self, view):
         """(The reader's thread.) The arrivals' first files no answer was asked for yet, asked of the looks."""
@@ -564,6 +612,7 @@ class LibraryReader:
             estimates_new, self._folders_new = estimates_new or self._folders_new, False    # A4B-8: their folders
             numbers_new = estimates_new                 # fix round (IK-2): the arrivals' own numbers
             estimates_new, self._playable_new = estimates_new or self._playable_new, False     # row 55: ▶'s answers
+            estimates_new, self._airing_new = estimates_new or self._airing_new, False   # 3.0.1 item 5: AniList's
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
         expected_moved = self._take_expected()                      # LM11b G5: and the window's expectation
         estimates_new = expected_moved or estimates_new
@@ -1044,7 +1093,9 @@ class LibraryReader:
                                pieces=self._pieces,           # LM11b G1
                                playable=self._playable,       # row 55
                                folders=folders)               # A4B-8
-        view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
+        view = view._replace(epoch=self._epoch,         # LM11b: a library rebuilt or reset lets the window's picks go
+                             airing=airing_module.of_rows(view.rows, self._works, self._airing_kept.shows()))  # 3.0.1 5
+        self._ask_airing(view)                          # 3.0.1 item 5
         if self.play is not None:
             self._ask_play(view)                        # row 55
         self._ask_folders(view)                         # A4B-8

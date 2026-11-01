@@ -542,8 +542,10 @@ ROWS = {
                       "computer", "Export or import every setting",
                       "settings export import save backup move new computer pc file"),
     # --- W3.2 L3: Connections' covers (the window's spec 01 §1.3: the switch says in one line what is sent)
+    # 3.0.1 item 5 (AA-1, PROVISIONAL): the same switch asks AniList whether a show near its end is still airing
     "covers_download": ("Download covers", "Sends each show's AniList id or name to AniList, and a video's id to "
-                        "YouTube. Nothing else.", "Fetch your shows' covers from AniList (YouTube videos: their own thumbnail)",
+                        "YouTube. Near a show's last episode, also asks AniList whether it is still airing, so it "
+                        "isn't finished early. Nothing else.", "Fetch your shows' covers from AniList (YouTube videos: their own thumbnail)",
                         "covers download pictures anilist thumbnails posters"),
     "remove_downloaded_covers": ("Remove downloaded covers", "The pictures you chose and those beside your files stay",
                                  "Delete every cover Surasura downloaded; pictures beside your files come back by "

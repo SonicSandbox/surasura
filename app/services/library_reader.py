@@ -189,6 +189,8 @@ class LibraryReader:
         self._cache_due_at = 0.0           # when a write first fell due (a store busy for long still gets one)
         self._cards_all_at = 0.0
         self._cards_stale = False
+        self._cards_asked = {}             # item -> its cards when last asked, for every item asked (`cards_rose`)
+        self._cards_rose = 0               # how many times an item asked before came back with more cards
         self._mode_at = 0.0
         self._recheck = False
         self._store_id = None
@@ -417,6 +419,12 @@ class LibraryReader:
         with self._lock:
             return self._view
 
+    def cards_rose(self):
+        """How many times an item whose cards were asked before came back with more (Current, Soon, Finished): cards
+        that landed while this reader looked. Never an item's first count — cards there at the open, or a show with old
+        cards coming back into Current, start from theirs (Surasura's star ask, `app/qt/star_ask.py`). Any thread."""
+        return self._cards_rose
+
     def store_id(self):
         """The library's own id (its meta's `store_id`) once a read found it, else None (W-1: a hint shown once per
         library). Any thread."""
@@ -499,6 +507,7 @@ class LibraryReader:
         # files — so a reader a language switch dropped holds none of them, whoever still holds the reader. The last
         # view stays (`view()`: the window shows it until the next language's first view comes)
         self._items, self._works, self._cards, self._options = {}, {}, {}, {}
+        self._cards_asked = {}
         self._pieces = {}
         self._folders, self._folders_ask = {}, None     # A4B-8
         self._tiers, self._pos, self._dirty, self._moved_in = None, {}, set(), {}
@@ -872,6 +881,12 @@ class LibraryReader:
                 else:
                     new.pop(i, None)
         self._changed_ids = set()
+        asked = self._cards_asked
+        for i in ids:
+            n = new.get(i, 0)
+            if n > asked.get(i, n):
+                self._cards_rose += 1
+            asked[i] = n
         return self._cards if new == self._cards else new
 
     def _merge(self, feed):

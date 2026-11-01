@@ -181,6 +181,13 @@ def open_library(language, check=None, log=None, **reader_kw):
     return opener, numbers, reader
 
 
+class Kept(dict):
+    """The numbers' table while the plan can't be followed (stale): each row's *N new* is the last plan's, kept until a
+    plan that can be is read — the rows paint it faded (Sonic, 2026-10-31: "only faded, that's all"). The table and its
+    state travel as one object, so a reader never pairs a fresh table with a stale mark."""
+    kept = True
+
+
 def _nothing(*_args):
     pass
 
@@ -2286,6 +2293,9 @@ class Numbers:
             block = [i for i in ids if i not in dropped]
             if not block:
                 return {}                           # nothing that counts moved: every row keeps its figures
+            if not all(_holds(eng, i) for i in block):
+                self.worker.put(self._resync)       # an item the plan never counted (New arrivals, Finished, a file
+                return {}                           # added since): it will count, so worked out again — never a move
             if seq is not None and not _holds(eng, anchor):
                 at = _nearest_held(eng, seq, anchor, before_id is not None, set(ids), tier)
                 if at is not None:
@@ -2293,7 +2303,7 @@ class Numbers:
             before = list(eng._n_new)
             try:
                 _words, moved = eng.move(block, tier, before_id=before_id, after_id=after_id)
-            except plan_engine.PlanError as e:
+            except plan_engine.PlanError as e:      # the engine's own refusal (an anchor gone meanwhile)
                 self.worker.put(self._resync)
                 print(f"Window numbers: the move couldn't be followed: {e}")
                 return {}
@@ -2356,14 +2366,14 @@ class Numbers:
         order = self._order(store)                  # read once a load: the staleness check and the engine share it
         why = self._stale(plan, store, ids, order)
         if why is not None:
-            self._set(None, counts, why, key)
+            self._set(None, self._kept(counts), why, key)
             return
         try:
             eng = plan_engine.Engine(plan, ids, numbers_only=True)  # an i+1 plan: its numbers (row 36)
             del plan                                # the per-file lines go: the engine keeps its own tables
             eng._numbers(order)
         except plan_engine.PlanError as e:
-            self._set(None, counts, f"stale: {e}", key)
+            self._set(None, self._kept(counts), f"stale: {e}", key)
             return
         self.renumbered += 1
         self._set(eng, self._figures(eng, counts), None, key)
@@ -2424,8 +2434,11 @@ class Numbers:
                 eng._numbers(order)
             except plan_engine.PlanError as e:      # an item the plan doesn't hold came in: Generate first
                 self._engine, self._why = None, f"stale: {e}"
-                self._publish({i: (k, c, None) for i, (k, c, _n) in counts.items()}, None)
                 said = self._why                    # logged after the lock (a file write: never while a read waits)
+                # The rows keep the last plan's *N new* until the next one is read (the Generate it waits for): never
+                # a blank between the drop and that Generate — faded (`Kept`), only the rows that show one rebuilt.
+                kept = Kept(counts)
+                self._publish(kept, _faded_ids(counts, kept))
             else:
                 self.renumbered += 1
                 table = self._figures(eng, counts)
@@ -2437,6 +2450,16 @@ class Numbers:
             self._say(said)
         self._call_change()
 
+    def _kept(self, counts):
+        """A plan that can't be followed (stale): each row's last *N new* kept until a plan that can be is read — a
+        Generate that ends while the library moved on (known words from cards that landed meanwhile) is followed by
+        the next one, and the rows never blink blank between the two; faded (`Kept`). A row the last table never
+        numbered has none."""
+        with self._lock:
+            last = self._table
+        return Kept({item: (known, counted, (last.get(item) or (0, 0, None))[2])
+                     for item, (known, counted, _n) in counts.items()})
+
     def _figures(self, eng, counts):
         n_new = eng._n_new
         table = {}
@@ -2447,9 +2470,15 @@ class Numbers:
 
     def _set(self, eng, table, why, key):
         with self._lock:
+            last = self._table
+        # The fade coming or going (either table kept): what changed, worked out before the lock (a read of the numbers
+        # never waits on it: U-A6), so only those rows rebuild (U-1, U-A1); a move published meanwhile: unknown. Any
+        # other load replaces every figure: unknown, as ever (M47)
+        changed = _faded_ids(last, table) if isinstance(last, Kept) or isinstance(table, Kept) else None
+        with self._lock:
             said = self._why
             self._engine, self._why, self._plan_key = eng, why, key
-            self._publish(table, None)
+            self._publish(table, changed if self._table is last else None)
         if why != said:
             self._say(why)
         self._call_change()
@@ -2483,6 +2512,15 @@ class Numbers:
 def _plan_engine():
     from app import plan_engine
     return plan_engine
+
+
+def _faded_ids(old, new):
+    """The items whose figures look different from `old` to `new`: another value, gone, or a figure shown whose fade
+    changed (one table kept, the other not)."""
+    flip = isinstance(old, Kept) != isinstance(new, Kept)
+    out = {i for i, v in new.items() if old.get(i) != v or (flip and v[2] is not None)}
+    out.update(i for i in old if i not in new)
+    return out
 
 
 def _set_aside(store, ids):

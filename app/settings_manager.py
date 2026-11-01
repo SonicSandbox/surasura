@@ -32,6 +32,7 @@ DEFAULT_SETTINGS = {
     "only_i_plus_one": False,
     "ensure_audio_example": False,
     "add_graduated_words": True,
+    "update_check_enabled": True,  # ask GitHub at start whether a new version is out (off: no request at all)
     "auto_update_enabled": True,   # one-click in-place updates for minor releases
     "skipped_version": "",          # a version the user skipped — never offered again
     # Per-sentence source badge in the report: "off" | "icon" | "filename" | "full".
@@ -679,6 +680,14 @@ def connect_on(settings) -> bool:
     (off)."""
     on = settings.get("connect_enabled") if hasattr(settings, "get") else False
     return bool(on) and automation(settings)
+
+
+def update_check_on(settings) -> bool:
+    """*Check for updates* (Settings → App, on by default): may Surasura ask GitHub whether a new version is out —
+    its own release and Anki Miner's. Off, no update request is sent at all. Takes a settings dict, a window's frozen
+    copy, or None (on). The test switch `SURASURA_NO_UPDATE_CHECK` is each caller's own, as before."""
+    value = settings.get("update_check_enabled", True) if hasattr(settings, "get") else True
+    return value is not False
 
 
 def get_default_settings() -> Dict[str, Any]:

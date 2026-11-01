@@ -88,6 +88,15 @@ def test_fewer_files_than_anilist_lists_asks_with_the_counts():
                                                                                    "have up to 24")
 
 
+def test_the_count_said_is_the_highest_numbered_file_never_the_number_of_files():
+    """A special with no number beside Ep 1–12 (13 files): "you have up to 12"."""
+    eps = _at_once(12) + _eps(None, 1, added=[NOW - 3 * DAY], start_id=50)
+    row = _row("p1", 1, 1, eps)
+    done = {"status": "FINISHED", "episodes": 24, "next_at": None, "asked_at": NOW}
+    assert drag.when_done(_aired(_view([row]), 1, done), row, NOW) == ("offer", strings.DONE_WHY_MORE.format(n=24,
+                                                                                                               m=12))
+
+
 def test_another_work_s_answer_or_none_leaves_the_dates_to_decide():
     row = _row("p1", 1, 1, _at_once(6))
     assert drag.when_done(_aired(_view([row]), 2, RELEASING), row, NOW) == ("finish",)

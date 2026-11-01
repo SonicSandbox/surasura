@@ -417,6 +417,24 @@ def test_an_answer_in_flight_when_covers_are_removed_is_never_kept(anilist, tmp_
     assert not os.path.exists(a.path) and a._known() == {}
 
 
+def test_covers_removed_between_an_answer_and_its_write_leaves_no_file(anilist, tmp_path, monkeypatch):
+    """A7, the narrow race: the answer is taken in, then *Remove downloaded covers* comes before it reaches the disk
+    (the write waits outside the service's lock): the removal stands, nothing is written."""
+    _media(anilist, 501, "RELEASING", 12)
+    f = fetcher(Pen(), anilist)
+    a = _airing(f, tmp_path)
+    real_answer = A._answer
+
+    def removed_meanwhile(entry):                   # runs as the answer is taken in; the press lands right after
+        a._gen += 1
+        monkeypatch.setattr(A, "_answer", real_answer)
+        return real_answer(entry)
+    monkeypatch.setattr(A, "_answer", removed_meanwhile)
+    assert a.want([501]) == 1
+    a.run_once()
+    assert not os.path.exists(a.path)
+
+
 def test_a_queued_or_retried_id_no_longer_near_its_end_is_never_sent(anilist, tmp_path):
     """Spec §4 *never: Finished*: a show finished (or moved out of Current) while its ask waited for its turn or its
     retry — the reader's next ids no longer hold it — is dropped, never sent."""

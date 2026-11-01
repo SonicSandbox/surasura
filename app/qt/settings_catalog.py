@@ -35,6 +35,7 @@ import unicodedata
 from collections import namedtuple
 from collections.abc import Mapping
 
+from app import settings_manager
 from app.connect import settings_values
 from app.qt import settings_strings as S
 from app.services import tools_found
@@ -168,6 +169,11 @@ _YOUTUBE = _module("modules.youtube_downloader")
 def _connect_switch(settings, language, ctx):
     level = tools_found.INSTALLED if "miner_found" in ctx else tools_found.MISSING
     return tools_found.make_cards_shown(level, _CONNECT(settings, language, ctx))
+
+
+def _update_check(settings, language, ctx):
+    """*Update automatically* shows under *Check for updates* while it is on — the one rule the check obeys."""
+    return settings_manager.update_check_on(settings)
 
 
 def _needs_miner(settings, language, ctx):
@@ -361,12 +367,14 @@ ROWS = (
     # App (no theme picker: one theme in 3.0, RS-1)
     _row("text_size", "app", "choice", ("text_size",), options=("S", "M", "L")),
     _row("app_motion", "app", "choice", ("app_motion",), options=("follow", "full", "reduced")),
-    _row("auto_update_enabled", "app", "toggle", ("auto_update_enabled",)),
+    _row("update_check_enabled", "app", "toggle", ("update_check_enabled",)),
+    _row("auto_update_enabled", "app", "toggle", ("auto_update_enabled",), sub=True, when=_update_check),
     _row("telemetry_enabled", "app", "toggle", ("telemetry_enabled",)),
     _row("logs", "app", "custom"),
     _row("data_credits", "app", "custom"),
     _row("discord", "app", "link"),                              # 3.0: the server's invite, in the browser
     _row("website", "app", "link"),                              # 3.0: surasura.dev, in the browser
+    _row("star_github", "app", "link"),                          # 3.0: the star ask's quiet row, never prompted
     _row("version", "app", "custom"),
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`

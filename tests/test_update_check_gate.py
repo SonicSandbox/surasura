@@ -59,3 +59,17 @@ def test_dashboard_still_starts_the_update_check_without_the_flag(monkeypatch):
         assert "check_updates_thread" in started
     finally:
         root.destroy()
+
+
+def test_dashboard_starts_no_update_check_with_check_for_updates_off(monkeypatch):
+    """*Check for updates* off (the 3.0 window's Settings > App, `update_check_enabled`): the dashboard asks GitHub
+    nothing either, flag or not."""
+    from app import settings_manager
+    monkeypatch.delenv("SURASURA_NO_UPDATE_CHECK")
+    real = settings_manager.load_settings
+    monkeypatch.setattr(settings_manager, "load_settings", lambda *a, **k: dict(real(*a, **k), update_check_enabled=False))
+    root, started = _build_dashboard_recording_threads()
+    try:
+        assert "check_updates_thread" not in started
+    finally:
+        root.destroy()

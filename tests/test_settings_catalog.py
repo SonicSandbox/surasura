@@ -569,6 +569,29 @@ def _shown(settings, language, ctx=EVERYTHING):
     return {row.id for row in catalog.ROWS if catalog.visible(row, settings, language, ctx)}
 
 
+def test_check_for_updates_is_an_app_switch_on_by_default_and_update_automatically_sits_under_it():
+    """*Check for updates* (Settings → App; Sonic 2026-10-31): its own key, on by default; off hides *Update
+    automatically* (nothing is offered to update), which comes back with it."""
+    row = catalog.ROW["update_check_enabled"]
+    assert (row.section, row.kind, row.keys) == ("app", "toggle", ("update_check_enabled",))
+    assert settings_manager.DEFAULT_SETTINGS["update_check_enabled"] is True
+    assert catalog.change(row, {}, "ja", False) == ({"update_check_enabled": False}, None)
+    app = [r.id for r in catalog.rows("app")]
+    assert app.index("auto_update_enabled") == app.index("update_check_enabled") + 1
+    assert catalog.ROW["auto_update_enabled"].sub
+    for language in ("ja", "zh"):
+        assert {"update_check_enabled", "auto_update_enabled"} <= _shown({}, language)
+        assert "auto_update_enabled" not in _shown({"update_check_enabled": False}, language)
+        assert "update_check_enabled" in _shown({"update_check_enabled": False}, language)
+
+
+def test_update_check_on_reads_only_a_saved_false_as_off():
+    """`settings_manager.update_check_on`: missing, None or a frozen copy read as on (the default); only False is off."""
+    on = settings_manager.update_check_on
+    assert on({}) and on(None) and on(freeze({"update_check_enabled": True}))
+    assert not on({"update_check_enabled": False}) and not on(freeze({"update_check_enabled": False}))
+
+
 def test_japanese_rows_hide_for_chinese_and_the_script_shows_only_for_chinese():
     japanese_only = {"paren_readings", "names_katakana", "names_recurring", "names_kanji", "names_work_terms",
                      "ignore_names", "phrases_and_titles", "pronoun_bases", "phrase_rows", "exclude_single"}

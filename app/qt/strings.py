@@ -647,6 +647,12 @@ DONE_OK = "OK"
 DONE_OK_TIP = "Leave them off your list"
 DONE_UNDONE_BACK = "{ep} not watched — its words are back."
 # --- end W-1
+# Surasura's star ask (Sonic 2026-10-31; `app/qt/star_ask.py`): once, ever, when cards from your own show first land
+STAR_ASK = "Surasura is free and made by one person. A ⭐ on GitHub helps other learners find it."
+STAR_ASK_STAR = "⭐ Star Surasura on GitHub"
+STAR_ASK_STAR_TIP = "Opens Surasura's GitHub page in your browser"
+STAR_ASK_NOT_NOW = "Not now"
+STAR_ASK_NOT_NOW_TIP = "Closes this; it isn't asked again"
 DONE_ALL = "✓ All {n} watched — finished with it?"
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"

@@ -63,8 +63,9 @@ HOW_PARSING_URL = "https://github.com/SonicSandbox/surasura/blob/main/docs/How%2
 DISCORD_URL = "https://surasura.dev/app/discord"      # the server's invite, by redirect (in the browser, never an app call)
 WEBSITE_URL = "https://surasura.dev"                  # Surasura's website (in the browser, never an app call)
 ISSUES_URL = "https://github.com/SonicSandbox/surasura/issues"
+STAR_URL = "https://github.com/SonicSandbox/surasura"   # the star ask's and App's row (in the browser, never an app call)
 LINK_URLS = {"how_parsing_works": HOW_PARSING_URL, "discord": DISCORD_URL,   # a link row's page, by its id
-             "website": WEBSITE_URL}
+             "website": WEBSITE_URL, "star_github": STAR_URL}
 FOLDER_PICK_TITLE = "Where videos are looked for"
 
 # --- the controls' own words (settings_controls.py; moved here from its top, W3.3 P3) ------------------------------ #
@@ -516,6 +517,9 @@ ROWS = {
     "app_motion": ("Motion",
                    "Follow Windows: as Windows’ Show animations is set. Reduced: nothing slides, rows jump into place, "
                    "short fades stay", "How much the window moves", "motion animation reduced slide fade"),
+    "update_check_enabled": ("Check for updates", "At start, asks GitHub whether a new version is out. Off: no request",
+                             "Ask GitHub at start whether a new Surasura (or Anki Miner) is out",
+                             "update check updates new version github offline privacy network"),
     "auto_update_enabled": ("Update automatically", "One click for small releases",
                             "Offer one-click in-app updates for small releases. Big ones always download by hand",
                             "update automatic"),
@@ -529,6 +533,8 @@ ROWS = {
                 "Opens Surasura's Discord server in your browser", "discord community help chat support join server"),
     "website": ("Surasura website", "Surasura's home page, surasura.dev", "Opens surasura.dev in your browser",
                 "website homepage home page site web download surasura.dev"),
+    "star_github": ("Star Surasura on GitHub", "Free and made by one person: a ⭐ helps other learners find it",
+                    "Opens Surasura's GitHub page in your browser", "star github stars support like repository source"),
     "version": ("Version {version}", "", "Opens the data folder", "version data folder"),
     "set_up_again": ("Set up again", "Walks through the first steps again", "Opens the setup again",
                      "set up again wizard setup"),

@@ -388,9 +388,10 @@ def _running_folders():
 def hold_running(kind, wait=None, cancel=None):
     """This process's running mark, for `kind` ("window", "cli", "mcp", a command's name), held until it ends or
     `release_running` -> True. Once a process: a second call only counts (the command line called in-process again).
-    PROFILE_MOVE held by another program: the mark is let go, the move waited for up to `wait` s (MOVE_WAIT), the mark
-    taken again; still held -> `MoveRunning`. A mark that can't be written (a read-only folder) is no mark: False,
-    logged by the caller — never a refusal to start."""
+    PROFILE_MOVE held by another program, or (for every program but the window, whose start gate settles it) a move a
+    kill left in this install's journal: the mark is let go, the move waited for up to `wait` s (MOVE_WAIT), the mark
+    taken again; still so -> `MoveRunning`. A mark that can't be written (a read-only folder) is no mark: False, logged
+    by the caller — never a refusal to start, though a move running is still waited for."""
     with _registry_lock:
         if _mark:
             _mark["count"] += 1
@@ -398,13 +399,14 @@ def hold_running(kind, wait=None, cancel=None):
     deadline = time.monotonic() + max(0.0, float(MOVE_WAIT if wait is None else wait))
     while True:
         handle, path = _take_mark(kind)
-        if handle is None:
-            return False
-        if not _moving():
+        if not _moving() and (kind == "window" or not _journal_in_flight()):
+            if handle is None:
+                return False
             with _registry_lock:
                 _mark.update(handle=handle, path=path, count=1)
             return True
-        _drop_mark(handle, path)
+        if handle is not None:
+            _drop_mark(handle, path)
         if time.monotonic() >= deadline or (cancel is not None and cancel.is_set()):
             raise MoveRunning(PROFILE_MOVE, read_holder(PROFILE_MOVE))
         time.sleep(POLL)
@@ -418,6 +420,20 @@ def _moving():
         return any(_held_at(path, 2, 0.01) for path, _record in _all_paths(PROFILE_MOVE))
     except (OSError, ValueError, RuntimeError):
         return False
+
+
+def _journal_in_flight():
+    """Does this install's journal hold a move a kill left part way (or one that can't be read)? Only the window's
+    start gate may settle it: until then nothing else reads the half-moved profile. An asked request is no move."""
+    try:
+        with open(os.path.join(path_utils.get_local_data_path(), path_utils.PROFILE_JOURNAL), "r",
+                  encoding="utf-8") as f:
+            journal = json.load(f)
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, RuntimeError):
+        return True
+    return not isinstance(journal, dict) or journal.get("status") != "asked"
 
 
 def _take_mark(kind):
@@ -480,7 +496,6 @@ def running_others():
         folders = _running_folders()
     except (OSError, RuntimeError):
         return found
-    own = _mark.get("path")
     for where in folders:
         try:
             names = sorted(n for n in os.listdir(where) if n.endswith(".lock"))
@@ -488,9 +503,7 @@ def running_others():
             continue
         for name in names:
             path = os.path.join(where, name)
-            if own and os.path.normcase(path) == os.path.normcase(own):
-                continue
-            handle = path_utils.try_lock(path)
+            handle = path_utils.try_lock(path)          # (this process's own mark is held: it reads as a holder)
             if handle is not None:                  # nobody holds it: a program that died
                 _drop_mark(handle, path)
                 continue

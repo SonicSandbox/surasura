@@ -212,7 +212,7 @@ def test_a_backup_that_isnt_whole_is_refused_and_nothing_changes(damage):
         with open(os.path.join(backup, ls.RESET_RECORD), "w", encoding="utf-8") as f:
             f.write("{ half")
     elif damage == "status":
-        ls._write_record(backup, dict(record, status="started"))
+        ls._write_record(backup, dict(record, status="undone"))
     else:
         with open(record["db_copy"], "r+b") as f:
             f.seek(0)
@@ -305,7 +305,7 @@ def test_a_put_back_killed_after_its_commit_is_finished_at_the_next_look_before_
         assert ls.PUT_BACK_PENDING not in store.meta()
         assert _record(backup)["status"] == "put-back"
         assert set(content) <= set(_content(data_dir))
-        assert ls.finish_put_back(store) is False                # one meta read when there is none
+        assert ls.finish_put_back(store) is None                 # one meta read when there is none
 
 
 def test_a_kill_before_the_commit_leaves_the_library_as_it_was_and_a_stopped_backup_to_put_back():
@@ -362,3 +362,152 @@ def test_new_records_name_their_kind_and_the_program_that_made_them():
         folder = ls.start_fresh(store)["backup"]
     record = _record(folder)
     assert record["kind"] == ls.RESET_KIND_SORT and record["app_version"]
+
+
+# --- review round 1 (the register's rows) ------------------------------------------------------------------------- #
+
+def test_put_it_back_undoes_a_sort_again_a_kill_stopped_before_its_write():
+    """Adversary #7: *Put it back* for a backup stopped part way (the library still in the store, some of its
+    folder's entries moved): every recorded move undone, newest first; the record says undone; the library as it was."""
+    store, data_dir, user_files_dir, src, root = _world("ja")
+
+    def kill(name):
+        if name == "data":
+            raise _Killed(name)
+    with store:
+        rows, content = _rows(store), _content(data_dir)
+        with pytest.raises(_Killed):
+            ls.start_fresh(store, _step=kill)
+        locks._registry.clear()
+        (folder,) = _backups(user_files_dir)
+        assert _record(folder)["status"] == "started"
+        assert [b for b in profile_reset.backups() if b["folder"] == folder][0]["stopped"]
+        ls.put_back_library(store, folder)
+        assert _rows(store) == rows and _content(data_dir) == content
+    assert _record(folder)["status"] == "undone"
+    assert not [b for b in profile_reset.backups() if b["folder"] == folder]
+
+
+def test_a_sort_again_killed_after_its_write_but_before_its_record_is_a_whole_backup():
+    """Adversary #8: a record left `started` after the commit (the store already holds a new library): never *Put
+    it back* (that would pour the old folder's copies into the new library), but a whole backup put back as any."""
+    store, data_dir, user_files_dir, src, root = _world("ja")
+    with store:
+        rows = _rows(store)
+        real = ls._write_record
+
+        def no_written(folder, record):
+            if record.get("status") == "written":
+                raise _Killed("written")
+            real(folder, record)
+        ls._write_record = no_written
+        try:
+            with pytest.raises(_Killed):
+                ls.start_fresh(store)
+        finally:
+            ls._write_record = real
+        locks._registry.clear()
+        (folder,) = _backups(user_files_dir)
+        assert _record(folder)["status"] == "started"
+        assert store.conn.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0     # the write committed
+        ls.put_back_library(store, folder)
+        assert _rows(store) == rows
+
+
+def test_a_look_waits_while_a_put_back_still_owes_its_files_and_the_helper_holds_the_store():
+    """Adversary #9: the files not back yet and the maintenance lock held elsewhere: the look answers busy instead
+    of reading a folder whose copies are missing (it would call the library emptied)."""
+    store, data_dir, user_files_dir, backup, _before = _sorted_again("ja")
+
+    def kill(name):
+        if name == "committed":
+            raise _Killed(name)
+    with store:
+        with pytest.raises(_Killed):
+            ls.put_back_library(store, backup, _step=kill)
+        locks._registry.clear()
+        held = ls.MaintenanceLock(store.db_path)
+        assert held.try_acquire()
+        try:
+            assert ls.finish_put_back(store) is False
+            row = store.sources()[0]
+            assert sources.scan(store, "ja", row["id"])["busy"] is True
+        finally:
+            held.close()
+        assert ls.finish_put_back(store) is True and ls.finish_put_back(store) is None
+
+
+def test_a_sort_again_while_a_put_back_still_owes_its_files_brings_them_back_first():
+    """Adversary #18: the one write rewrites meta: the files owed come back before it, never stranded."""
+    store, data_dir, user_files_dir, backup, (rows, content, _m, _meta) = _sorted_again("ja")
+
+    def kill(name):
+        if name == "committed":
+            raise _Killed(name)
+    with store:
+        with pytest.raises(_Killed):
+            ls.put_back_library(store, backup, _step=kill)
+        locks._registry.clear()
+        ls.start_fresh(store)
+        assert _record(backup)["status"] == "put-back"
+        assert ls.PUT_BACK_PENDING not in store.meta()
+
+
+def test_files_that_didnt_come_back_keep_the_backup_listed_and_a_second_put_back_brings_them():
+    """Adversary #19: a Put back whose files didn't all come back stays listed (*files-back*, what's missing
+    named); putting it back again brings the rest."""
+    store, data_dir, user_files_dir, backup, (rows, content, _m, _meta) = _sorted_again("ja")
+    real = ls._put_back
+    calls = []
+
+    def flaky(dst, src):
+        calls.append(dst)
+        if len(calls) == 1:
+            raise PermissionError(13, "held open", dst)
+        real(dst, src)
+    with store:
+        ls._put_back = flaky
+        try:
+            ls.put_back_library(store, backup)
+        finally:
+            ls._put_back = real
+        record = _record(backup)
+        assert record["status"] == "files-back" and record["not_put_back"]
+        assert [b for b in profile_reset.backups() if b["folder"] == backup][0]["stopped"]
+        ls.put_back_library(store, backup)
+        assert _record(backup)["status"] == "put-back" and _content(data_dir) == content
+
+
+def test_a_put_back_owed_whose_record_cant_be_read_lets_the_looks_go_on():
+    """Adversary #25: nothing can be read to bring back: the mark goes (said in the log), never a busy look for ever."""
+    store, data_dir, user_files_dir, backup, _before = _sorted_again("ja")
+
+    def kill(name):
+        if name == "committed":
+            raise _Killed(name)
+    with store:
+        with pytest.raises(_Killed):
+            ls.put_back_library(store, backup, _step=kill)
+        locks._registry.clear()
+        with open(os.path.join(backup, ls.RESET_RECORD), "w", encoding="utf-8") as f:
+            f.write("{ half")
+        assert ls.finish_put_back(store) is True
+        assert ls.PUT_BACK_PENDING not in store.meta() and ls.finish_put_back(store) is None
+
+
+def test_the_room_needed_is_two_of_the_store_and_the_spare_exactly():
+    """Mutant S01: P3's number, to the byte, for a library whose data folder is on the backup's drive."""
+    store, data_dir, user_files_dir, backup, _before = _sorted_again("ja")
+    size = sum(os.path.getsize(store.db_path + s) for s in ("", "-wal") if os.path.exists(store.db_path + s))
+    assert ls.room_for(store) == 2 * size + ls.ROOM_SPARE
+
+
+def test_a_never_again_row_only_the_backup_holds_comes_back_with_it():
+    """Mutant S09: the union is both ways — a row the library now lacks (a store rebuilt since) comes back from the
+    backup's copy."""
+    store, data_dir, user_files_dir, backup, (_r, _c, made, _meta) = _sorted_again("ja")
+    with store:
+        with store._writing():
+            store.conn.execute("DELETE FROM made_words")
+        ls.put_back_library(store, backup)
+        assert set(made) <= set(_made(store))

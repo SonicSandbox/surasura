@@ -36,7 +36,7 @@ CALL_SITES = {
     "app/connect/ledger.py": 1,
     "app/import_2x.py": 2,
     "app/library_store.py": 3,
-    "app/locks.py": 7,
+    "app/locks.py": 8,
     "app/path_utils.py": 19,
     "app/profile_reset.py": 1,
     "app/qt/shell.py": 1,

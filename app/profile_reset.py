@@ -62,6 +62,9 @@ REFUSED_TAKEN = "{what} is in the way of putting this backup back: nothing was p
 REFUSED_GONE = "This backup can't be read ({why}): nothing was put back."
 REFUSED_JOURNAL = "Nothing was changed: {why}"
 STUCK = "{what} couldn't be put back where it was: close whatever has it open, then try again."
+STUCK_TAKEN = "{what} can't go back: {path} is in its place now. Move that elsewhere, then try again."
+STUCK_GONE = ("{what} can't go back: {path} isn't reachable (a drive or a network folder offline?). Try again once it "
+              "is.")
 UNREADABLE = "The record of a Start over or Put back can't be read ({path}): nothing was moved."
 WHO = {"window": "Surasura's window (in another sign-in?)", "cli": "Surasura's command line", "mcp": "Piyo's helper",
        "connect": "Connect"}
@@ -84,7 +87,8 @@ class MoveRefused(Exception):
 
 
 def _now():
-    return time.strftime("%Y-%m-%dT%H:%M:%S")
+    from app import library_store
+    return library_store._now()                 # one format for both kinds of backup (the list sorts by it)
 
 
 def _app_version():
@@ -96,14 +100,8 @@ def _app_version():
 
 
 def _version(text):
-    """'3.0.1' -> (3, 0, 1); anything else -> ()."""
-    out = []
-    for piece in str(text or "").split("."):
-        digits = "".join(ch for ch in piece if ch.isdigit())
-        if not digits:
-            break
-        out.append(int(digits))
-    return tuple(out)
+    from app import library_store
+    return library_store._version_of(text)
 
 
 def _write_json(path, data):
@@ -178,6 +176,19 @@ def cancel_request():
         return False
 
 
+def set_aside_journal():
+    """A journal that can't be read, set aside (`profile-move.json.unreadable-<stamp>`) on the learner's word at the
+    gate, so the window can open: its records stay in Backups, to put back by hand -> True when set aside."""
+    now = pending()
+    if not now or now.get("status") != "unreadable":
+        return False
+    try:
+        os.replace(journal_path(), journal_path() + ".unreadable-" + time.strftime("%Y%m%d-%H%M%S"))
+        return True
+    except OSError:
+        return False
+
+
 def _clear_journal():
     try:
         os.remove(journal_path())
@@ -226,7 +237,7 @@ def _plan_back(places, stamp, aside):
         record = _read_json(record_path(stamp, places))
     except (OSError, ValueError) as e:
         raise MoveRefused("gone", REFUSED_GONE.format(why=e)) from e
-    if record.get("status") != DONE:
+    if record.get("status") != DONE and not (record.get("status") == STARTED and _whole(places, record)):
         raise MoveRefused("gone", REFUSED_GONE.format(why=f"its status is {record.get('status')!r}"))
     mine, theirs = _version(_app_version()), _version(record.get("app_version"))
     if mine and theirs > mine:
@@ -249,18 +260,32 @@ def _plan_back(places, stamp, aside):
     return record, moves
 
 
+def _whole(places, record):
+    """Every part the record names is in its backup (a Start over whose last record write failed)."""
+    moves = [m for m in record.get("moves") or () if isinstance(m, dict)]
+    return bool(moves) and all(os.path.lexists(_path(places, m.get("place"), m.get("dst") or "") or "")
+                               for m in moves if m.get("place") in places)
+
+
+def _moved_any(places, record):
+    return any(os.path.lexists(_path(places, m.get("place"), m.get("dst") or "") or "")
+               for m in record.get("moves") or () if isinstance(m, dict) and m.get("place") in places)
+
+
 # --- Holders ------------------------------------------------------------------------------------------------------- #
 
 def other_install():
     """P14: another install named in `installs.json` whose library folder and program are still there (it shares
     this data name's roaming and local places) -> its library folder, else None."""
+    import sys
     mine = os.path.normcase(os.path.realpath(path_utils.get_user_data_path()))
+    me = os.path.normcase(os.path.realpath(sys.executable))
     for entry in path_utils.read_install_note():
         root, exe = entry.get("data_root"), entry.get("exe")
         if not isinstance(root, str) or not isinstance(exe, str):
             continue
-        if os.path.normcase(os.path.realpath(root)) == mine:
-            continue
+        if os.path.normcase(os.path.realpath(root)) == mine or os.path.normcase(os.path.realpath(exe)) == me:
+            continue                                    # this program's own entry (an older library folder too)
         if os.path.isdir(root) and os.path.isfile(exe):
             return root
     return None
@@ -329,6 +354,14 @@ def _result(status, reason=None, words=None, part=None, holder=None, backup=None
     return {"status": status, "reason": reason, "words": words, "part": part, "holder": holder, "backup": backup}
 
 
+def _take_move(token):
+    """The profile-move lock, waited for a second (a starting program's look takes it for a moment)."""
+    try:
+        return locks.take(locks.PROFILE_MOVE, "Setting your old Surasura aside", wait=1.0, owner=token)
+    except locks.Busy as e:
+        raise MoveRefused("busy", REFUSED_BUSY, holder=e.holder) from None
+
+
 def _run(journal, wait, on_wait, cancel, step, rename):
     from app import library_store
     if library_store.update_staged():
@@ -336,10 +369,7 @@ def _run(journal, wait, on_wait, cancel, step, rename):
     token = object()
     held = []
     try:
-        try:
-            held.append(locks.take(locks.PROFILE_MOVE, "Setting your old Surasura aside", owner=token))
-        except locks.Busy as e:
-            raise MoveRefused("busy", REFUSED_BUSY, holder=e.holder) from None
+        held.append(_take_move(token))
         other = other_install()
         if other:
             raise MoveRefused("install", REFUSED_INSTALL.format(path=other))
@@ -353,10 +383,13 @@ def _run(journal, wait, on_wait, cancel, step, rename):
             raise MoveRefused("running", REFUSED_RUNNING.format(who="Connect"), holder=e.holder) from None
         stores = _store_locks(token)
         try:
-            return _move(journal, step, rename)
+            answer = _move(journal, step, rename)
         finally:
             for lock in stores:
                 lock.close()
+        if answer[0] != "committed":
+            return answer[1]
+        return _finish(answer[1], answer[2], step)      # the stores' own locks let go: P4 opens each store
     finally:
         for h in reversed(held):
             h.release()
@@ -379,37 +412,63 @@ def _move(journal, step, rename):
     if back is not None:
         record["put_back_of"] = journal["backup"]
     where = record_path(stamp, places)
+    journal = dict(journal, status=MOVING, stamp=stamp, record=where, moving_at=_now(), moves=moves)
     try:
+        _write_json(journal_path(), journal)            # the journal first: a kill before the record leaves no orphan
         _write_json(where, record)
-        journal = dict(journal, status=MOVING, stamp=stamp, record=where, moving_at=_now(), moves=moves)
-        _write_json(journal_path(), journal)
     except OSError as e:
-        _forget_folders(places, stamp)
+        _settle(journal, places, UNDONE)
         _clear_record(where)
         raise MoveRefused("journal", REFUSED_JOURNAL.format(why=e)) from e
     step("planned")
     for n, move in enumerate(moves):
         move["begun"] = True                            # recorded before it begins (H1): a kill here is undone too
-        _write_json(journal_path(), journal)
         src, dst = _path(places, move["place"], move["src"]), _path(places, move["place"], move["dst"])
         try:
+            _write_json(journal_path(), journal)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             if os.path.lexists(dst):
                 raise FileExistsError(dst)
             rename(src, dst)
         except OSError as e:
             print(f"Start over: {move['rel']} couldn't be moved ({e!r}); undoing")
-            stuck = _undo(journal, places, rename)
-            if stuck:
-                return _result("stuck", "stuck", STUCK.format(what=WHAT.get(stuck["role"], stuck["rel"])), part=stuck)
-            _settle(journal, places, UNDONE, held=move)
-            return _result("undone", "held", REFUSED_HELD.format(what=WHAT.get(move["role"], move["rel"])), part=move)
+            return ("refused", _undone(journal, places, rename, move))
         step(f"moved:{n}")
     journal["status"] = DONE                            # the commit point: from here on it is finished forward
     journal["done_at"] = _now()
-    _write_json(journal_path(), journal)
+    try:
+        _write_json(journal_path(), journal)
+    except OSError as e:                                # never committed: undone like a refused rename
+        print(f"Start over: its journal couldn't be written ({e!r}); undoing")
+        journal["status"] = MOVING
+        return ("refused", _undone(journal, places, rename, None, REFUSED_JOURNAL.format(why=e)))
     step("committed")
-    return _finish(journal, places, step)
+    return ("committed", journal, places)
+
+
+def _undone(journal, places, rename, move, words=None):
+    """A move that can't go on, undone in place -> `run`'s answer (undone, or stuck with the part named)."""
+    stuck = _undo(journal, places, rename)
+    if stuck:
+        return _stuck(stuck, places)
+    _settle(journal, places, UNDONE, held=move)
+    if move is None:
+        return _result("undone", "journal", words)
+    return _result("undone", "held", REFUSED_HELD.format(what=WHAT.get(move["role"], move["rel"])), part=move)
+
+
+def _stuck(move, places):
+    """A move that can't be undone, in the window's words: what is in its way, or that its place is unreachable."""
+    what = WHAT.get(move.get("role"), move.get("rel"))
+    src = _path(places, move.get("place"), move.get("src") or "")
+    dst = _path(places, move.get("place"), move.get("dst") or "")
+    if src and os.path.lexists(src) and dst and os.path.lexists(dst):
+        words = STUCK_TAKEN.format(what=what, path=src)
+    elif not (dst and os.path.lexists(dst)) and not (src and os.path.lexists(src)):
+        words = STUCK_GONE.format(what=what, path=dst or move.get("place"))
+    else:
+        words = STUCK.format(what=what)
+    return _result("stuck", "stuck", words, part=move)
 
 
 def _undo(journal, places, rename):
@@ -419,11 +478,13 @@ def _undo(journal, places, rename):
         if not move.get("begun"):
             continue
         src, dst = _path(places, move["place"], move["src"]), _path(places, move["place"], move["dst"])
-        if src is None or dst is None:
-            return move
+        if src is None or dst is None or not os.path.isdir(places[move["place"]]):
+            return move                                 # its place unreachable (a drive offline): never guessed
         if not os.path.lexists(dst):
-            move["begun"] = False                       # never got there: still in its place
-            continue
+            if os.path.lexists(src):
+                move["begun"] = False                   # never got there: still in its place
+                continue
+            return move                                 # in neither place: unreachable, never "rolled back"
         if os.path.lexists(src):
             return move                                 # something new in its place: never written over
         try:
@@ -449,23 +510,31 @@ def recover(_step=None, _rename=None):
     was*), "stuck" (a rename that couldn't be undone: the journal kept), "done" (a `done` one finished forward),
     "undone", "none"."""
     journal = pending()
-    if journal is None:
+    if journal is None or journal.get("status") not in (MOVING, DONE, UNDONE):
         return _result("none")
-    places = path_utils.profile_places()
-    status = journal.get("status")
-    if status == MOVING:
-        stuck = _undo(journal, places, _rename or os.rename)
-        if stuck:
-            return _result("stuck", "stuck", STUCK.format(what=WHAT.get(stuck.get("role"), stuck.get("rel"))),
-                           part=stuck)
-        _settle(journal, places, UNDONE)
-        return _result("rolled-back", "stopped")
-    if status == DONE:
-        return _finish(journal, places, _step or (lambda _name: None))
-    if status == UNDONE:
-        _settle(journal, places, UNDONE)
-        return _result("undone")
-    return _result("none")
+    token = object()
+    try:
+        held = _take_move(token)                        # two programs never settle one journal at once
+    except MoveRefused as e:
+        return _result("refused", e.reason, e.words, holder=e.holder)
+    try:
+        journal = pending() or {}
+        places = path_utils.profile_places()
+        status = journal.get("status")
+        if status == MOVING:
+            stuck = _undo(journal, places, _rename or os.rename)
+            if stuck:
+                return _stuck(stuck, places)
+            _settle(journal, places, UNDONE)
+            return _result("rolled-back", "stopped")
+        if status == DONE:
+            return _finish(journal, places, _step or (lambda _name: None))
+        if status == UNDONE:
+            _settle(journal, places, UNDONE)
+            return _result("undone")
+        return _result("none")
+    finally:
+        held.release()
 
 
 def _settle(journal, places, status, held=None):
@@ -522,11 +591,13 @@ def _finish(journal, places, step):
     the journal gone. Each step best-effort, logged: the move stands."""
     stamp, back = journal.get("stamp"), journal.get("backup")
     where = journal.get("record") or record_path(stamp, places)
+    carried = {}
+    if journal["action"] == START_OVER:
+        carried = _carry_opt_outs(places, journal)      # from the journal's own moves: never lost with the record
+        _seen_fresh()
     try:
         record = _read_json(where)
-        record.update(status=DONE, finished_at=_now())
-        if journal["action"] == START_OVER:
-            record["carried"] = _carry_opt_outs(places, record)
+        record.update(status=DONE, finished_at=_now(), carried=carried)
         _write_json(where, record)
     except Exception as e:
         print(f"Start over: its record couldn't be finished ({e!r}); everything moved")
@@ -538,11 +609,25 @@ def _finish(journal, places, step):
             _write_json(record_path(back, places), chosen)
         except Exception as e:
             print(f"Put back: the backup's record couldn't be marked put back ({e!r}); everything moved")
+        for lang in LANGUAGES:                          # waited in the backup: never purged at once for it
+            path_utils.restart_trash_clock(os.path.join(path_utils.get_data_path(lang), ".trash"))
         _renew_stores(places, stamp)
         step("renewed")
     _clear_journal()
     step("cleared")
     return _result("done", backup=stamp)
+
+
+def _seen_fresh():
+    """P8: an installed library started over is recorded as started fresh in the start gate's note (which stays), so
+    the Surasura 2 import is never offered again for it. Best-effort."""
+    try:
+        library = path_utils.installed_library()
+        if library:
+            from app.services import first_run
+            first_run.record(library, fresh=True)
+    except Exception as e:
+        print(f"Start over: the start gate's note wasn't updated ({e!r})")
 
 
 def _carry_opt_outs(places, record):
@@ -554,11 +639,11 @@ def _carry_opt_outs(places, record):
         if move.get("role") != "settings":
             continue
         moved = _path(places, move["place"], move["dst"])
-        if os.path.normcase(_path(places, move["place"], move["rel"])) != os.path.normcase(target):
+        if move.get("back") or \
+                os.path.normcase(_path(places, move["place"], move["rel"])) != os.path.normcase(target):
             continue
         try:
-            with open(moved, "r", encoding="utf-8-sig") as f:
-                old = json.load(f)
+            old = json.loads(path_utils.read_text(moved, errors="strict"))
         except (OSError, ValueError):
             return {}
         carried = {k: False for k in NETWORK_OPT_OUTS if isinstance(old, dict) and old.get(k) is False}
@@ -609,7 +694,11 @@ def backups(places=None):
         if status in (UNDONE, PUT_BACK_DONE):
             continue
         stamp = name[len(PREFIX):]
-        stopped = status == STARTED and journal.get("stamp") != stamp
+        if status == STARTED and journal.get("stamp") == stamp:
+            continue                                    # in flight: the gate's, never the sheet's
+        if status == STARTED and not _moved_any(places, record):
+            continue                                    # stopped before it moved anything: nothing to put back
+        stopped = status == STARTED and not _whole(places, record)
         kind = PUT_BACK_OVER if record.get("kind") == KIND_PUT_BACK_OVER else STARTED_OVER
         out.append({"kind": kind, "scope": "profile", "folder": os.path.join(root, name),
                     "stamp": stamp, "date": record.get("started_at"), "status": status, "stopped": stopped,
@@ -624,14 +713,13 @@ def backups(places=None):
         for name in found:
             folder = os.path.join(trash, name)
             try:
-                record = _read_json(os.path.join(folder, library_store.RESET_RECORD))
-            except (OSError, ValueError):
+                record, moves = library_store._backup_record(folder)
+            except (OSError, ValueError, KeyError, TypeError):
                 continue
             status = record.get("status")
             if status in (UNDONE, PUT_BACK_DONE):
                 continue
-            stopped = status == STARTED and any(os.path.lexists(str(m.get("to") or ""))
-                                                for m in record.get("moves") or () if isinstance(m, dict))
+            stopped = status == "files-back" or (status == STARTED and any(os.path.lexists(m["to"]) for m in moves))
             if status == STARTED and not stopped:
                 continue                                # a kill before anything moved: nothing to put back
             kind = PUT_BACK_OVER if record.get("kind") == library_store.RESET_KIND_OVER else SORTED_AGAIN

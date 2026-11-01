@@ -12865,6 +12865,7 @@ def start_fresh(store, forget_known=False, _step=None):
         try:
             if not lock.try_acquire():
                 raise ResetRefused(RESET_BUSY)
+            _finish_pending(store)
             _check_room(store)
             return _start_fresh(store, forget_known, step)
         finally:
@@ -13127,18 +13128,37 @@ def room_for(store):
 
 
 def _check_room(store):
-    """`room_for` against the drive's free space -> None; short -> ResetRefused(RESET_ROOM), nothing changed. A drive
-    whose free space can't be read is never refused for it."""
+    """`room_for` against the free space of the backup folder's drive, and of the stores' drive when it is another
+    one (the store's copy and growth: two of it and ROOM_SPARE) -> None; short -> ResetRefused(RESET_ROOM), nothing
+    changed. A drive whose free space can't be read is never refused for it."""
     import shutil
     where = store.user_files_dir if os.path.isdir(store.user_files_dir) else os.path.dirname(store.user_files_dir)
+    checks = [(where, room_for(store))]
+    stores = os.path.dirname(store.db_path)
     try:
-        free = shutil.disk_usage(where).free
+        if os.stat(stores).st_dev != os.stat(where).st_dev:
+            checks.append((stores, room_for(store) - _cross_volume(store)))
     except OSError:
-        return
-    need = room_for(store)
-    if free < need:
-        drive = os.path.splitdrive(os.path.abspath(where))[0] or os.path.abspath(where)
-        raise ResetRefused(RESET_ROOM.format(mb=-(-need // (1024 * 1024)), drive=drive))
+        pass
+    for folder, need in checks:
+        try:
+            free = shutil.disk_usage(folder).free
+        except OSError:
+            continue
+        if free < need:
+            drive = os.path.splitdrive(os.path.abspath(folder))[0] or os.path.abspath(folder)
+            raise ResetRefused(RESET_ROOM.format(mb=-(-need // (1024 * 1024)), drive=drive))
+
+
+def _cross_volume(store):
+    """The part of `room_for` that is `data/<lang>`'s entries on another drive (they land beside the backup)."""
+    size = 0
+    for suffix in ("", "-wal"):
+        try:
+            size += os.path.getsize(store.db_path + suffix)
+        except OSError:
+            pass
+    return room_for(store) - 2 * size - ROOM_SPARE
 
 
 def _backup_record(folder):
@@ -13179,11 +13199,15 @@ def _scratch_of(store, record):
     whole, and brought up to this program's schema there when it is older -> the scratch path. Refused (ResetRefused)
     when the copy isn't whole or a newer Surasura made it."""
     scratch = store.db_path + ".put-back.db"
-    for suffix in ("", "-wal", "-shm", "-journal"):
-        try:
-            os.remove(scratch + suffix)
-        except FileNotFoundError:
-            pass
+    _drop_scratch(scratch)                              # a killed Put back's leftover
+    try:
+        return _scratch_made(store, record, scratch)
+    except BaseException:
+        _drop_scratch(scratch)
+        raise
+
+
+def _scratch_made(store, record, scratch):
     try:
         src = _ro(record["db_copy"])
     except sqlite3.Error as e:
@@ -13201,7 +13225,6 @@ def _scratch_of(store, record):
     finally:
         src.close()
     if version > STORE_SCHEMA:
-        _drop_scratch(scratch)
         raise ResetRefused(RESET_NEWER.format(version=record.get("app_version") or f"library version {version}"))
     if version < STORE_SCHEMA:
         try:
@@ -13211,7 +13234,6 @@ def _scratch_of(store, record):
             finally:
                 old.close()
         except Exception as e:
-            _drop_scratch(scratch)
             raise ResetRefused(RESET_NOT_BACKUP.format(why=f"its library copy couldn't be brought up to date: {e}"))
     return scratch
 
@@ -13226,7 +13248,8 @@ def _drop_scratch(scratch):
         _OWN_BUMPS.pop(key, None)
     if lock is not None:
         lock.file.close()
-    for path in [scratch + s for s in ("", "-wal", "-shm", "-journal", ".lock", ".wlock", ".damaged")] +             glob.glob(glob.escape(scratch) + ".bak.*"):
+    for path in [scratch + s for s in ("", "-wal", "-shm", "-journal", ".lock", ".wlock", ".damaged", ".part")] + \
+            glob.glob(glob.escape(scratch) + ".bak.*"):
         try:
             os.remove(path)
         except OSError:
@@ -13329,8 +13352,15 @@ def put_back_library(store, folder, _step=None):
         record, moves = _backup_record(folder)
     except (OSError, ValueError, KeyError, TypeError) as e:
         raise ResetRefused(RESET_NOT_BACKUP.format(why=f"its record can't be read: {e}")) from None
-    if record.get("status") not in ("written", "done") or record.get("language") not in (None, store.language):
-        raise ResetRefused(RESET_NOT_BACKUP.format(why=f"it never finished ({record.get('status')})"))
+    if record.get("language") not in (None, store.language):
+        raise ResetRefused(RESET_NOT_BACKUP.format(why=f"it is {record.get('language')}'s"))
+    status = record.get("status")
+    if status == "started" and not _committed(store, record):
+        return _put_it_back(store, folder, record, moves)    # stopped part way: its moves undone (*Put it back*)
+    if status == "files-back":
+        return _files_back_now(store, folder)
+    if status not in ("written", "done", "started"):
+        raise ResetRefused(RESET_NOT_BACKUP.format(why=f"it never finished ({status})"))
     mine, theirs = _version_of(_app_version()), _version_of(record.get("app_version"))
     if mine and theirs > mine:
         raise ResetRefused(RESET_NEWER.format(version=record.get("app_version")))
@@ -13353,6 +13383,7 @@ def put_back_library(store, folder, _step=None):
         try:
             if not lock.try_acquire():
                 raise ResetRefused(RESET_BUSY)
+            _finish_pending(store)
             _check_room(store)
             scratch = _scratch_of(store, record)
             try:
@@ -13364,7 +13395,10 @@ def put_back_library(store, folder, _step=None):
                                                        write=lambda s: _put_back_tables(s, name),
                                                        extra={"put_back_of": name})
                 finally:
-                    store.conn.execute("DETACH DATABASE old")
+                    try:
+                        store.conn.execute("DETACH DATABASE old")
+                    except sqlite3.Error as e:             # never masks the error that got here
+                        print(f"Put back: its scratch copy couldn't be let go ({e!r})")
             finally:
                 _drop_scratch(scratch)
             step("committed")
@@ -13382,13 +13416,102 @@ def put_back_library(store, folder, _step=None):
     return {"backup": aside, "put_back": folder, "sources": [r["id"] for r in rows]}
 
 
+def _committed(store, record):
+    """Did a reset's (or a Put back's) one write commit? The store no longer holds the library its backup copy holds
+    (a new store_id): a record a kill left `started` after its commit is a whole backup; one left before its commit has
+    the library still in the store, its moves only part done. No copy (a kill before it was made): not committed."""
+    try:
+        conn = _ro(record["db_copy"])
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'store_id'").fetchone()
+        finally:
+            conn.close()
+    except (sqlite3.Error, KeyError, TypeError, OSError):
+        return False
+    return row is not None and str(row[0]) != str(store.meta().get("store_id"))
+
+
+def _put_it_back(store, folder, record, moves):
+    """*Put it back*: a Sort again (or a Put back's setting-aside) a kill stopped before its write — the library still
+    in the store — its moves undone, newest first (`_put_back`: a rename, else copied and checked, never over a file
+    there), under `start_fresh`'s locks; the record `undone` (with what couldn't come back)."""
+    from app import locks
+    token = object()
+    held = []
+    try:
+        try:
+            held.append(locks.take("results", "Putting your library back", owner=token))
+        except locks.Busy:
+            raise ResetRefused(RESET_GENERATE) from None
+        try:
+            held.append(locks.take("connect", "Putting your library back", owner=token))
+        except locks.Busy:
+            raise ResetRefused(RESET_CONNECT) from None
+        lock = MaintenanceLock(store.db_path)
+        try:
+            if not lock.try_acquire():
+                raise ResetRefused(RESET_BUSY)
+            left = []
+            for move in reversed(moves):
+                back = _from_now(store, move)
+                try:
+                    _put_back(move["to"], back)
+                except Exception as e:
+                    left.append({"from": back, "to": move["to"], "error": repr(e)})
+            record.update(status="undone", undone_at=_now())
+            if left:
+                record["not_put_back"] = left
+            _after_commit("its record", _write_record, folder, record)
+        finally:
+            lock.close()
+    finally:
+        for h in reversed(held):
+            h.release()
+    _after_commit("the windows' bell", library_watch.ring, store.db_path)
+    rows = _after_commit("the folders' list", store.sources) or []
+    return {"backup": None, "put_back": folder, "sources": [r["id"] for r in rows]}
+
+
+def _files_back_now(store, folder):
+    """A Put back whose files didn't all come back (`files-back`): `_files_back` again, under the maintenance lock."""
+    lock = MaintenanceLock(store.db_path)
+    try:
+        if not lock.try_acquire():
+            raise ResetRefused(RESET_BUSY)
+        _files_back(store, folder)
+    finally:
+        lock.close()
+    rows = _after_commit("the folders' list", store.sources) or []
+    return {"backup": None, "put_back": folder, "sources": [r["id"] for r in rows]}
+
+
+def _pending_folder(store):
+    """The backup a committed Put back still owes its files (PUT_BACK_PENDING), or None. One meta read."""
+    with store._reading():
+        row = store.conn.execute("SELECT value FROM meta WHERE key = ?", (PUT_BACK_PENDING,)).fetchone()
+    return None if row is None else os.path.join(store.user_files_dir, ".trash", os.path.basename(str(row[0])))
+
+
+def _finish_pending(store):
+    """Under the maintenance lock already held: a Put back's files still owed brought back first, so a Sort again or
+    another Put back never drops its mark (the one write rewrites meta)."""
+    folder = _pending_folder(store)
+    if folder is not None:
+        _files_back(store, folder)
+
+
 def _version_of(text):
+    """A program version as numbers: '3.0.1' -> (3, 0, 1); a pre-release counts as its release, '3.0.1-alpha9' and
+    '3.0.0-rc.2' -> (3, 0, 1) and (3, 0, 0): each piece's leading digits, stopping at the first piece that isn't a
+    plain number. () for no version (never refused for it)."""
     out = []
     for piece in str(text or "").split("."):
-        digits = "".join(ch for ch in piece if ch.isdigit())
+        digits = re.match(r"\d*", piece).group()
         if not digits:
             break
         out.append(int(digits))
+        if digits != piece:
+            break
     return tuple(out)
 
 
@@ -13401,10 +13524,8 @@ def _files_back(store, folder, step=None):
     try:
         record, moves = _backup_record(folder)
     except (OSError, ValueError, KeyError, TypeError) as e:
-        print(f"Put back: the backup's record can't be read ({e!r}); its files stay in it")
-        if os.path.isdir(folder):
-            return []
-        record, moves = None, []                        # the backup is gone: nothing left to bring back
+        print(f"Put back: the backup's record can't be read ({e!r}); its files stay in it, to bring back by hand")
+        record, moves = None, []                        # nothing can be read to bring back: the mark goes
     left = []
     for move in moves:
         if move["step"] == "manifest":
@@ -13426,26 +13547,43 @@ def _files_back(store, folder, step=None):
         return left
     _after_commit("the windows' bell", library_watch.ring, store.db_path)
     if record is not None:
-        record.update(status="put-back", put_back_at=_now())
-        if left:
-            record["not_put_back"] = left
+        record.update(status="files-back" if left else "put-back", put_back_at=_now())   # some left: still listed
+        record["not_put_back"] = left
         _after_commit("its record", _write_record, folder, record)
+    _after_commit("the library set aside", _aside_done, store, os.path.basename(folder))
     step("put-back")
     return left
 
 
+def _aside_done(store, name):
+    """The backup this Put back set the library aside into (its record names `put_back_of`), finished `done` when a
+    kill left it `started` or `written`."""
+    trash = os.path.join(store.user_files_dir, ".trash")
+    for other in os.listdir(trash):
+        if not other.startswith(RESET_PREFIX):
+            continue
+        try:
+            with open(os.path.join(trash, other, RESET_RECORD), encoding="utf-8") as f:
+                record = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and record.get("put_back_of") == name and \
+                record.get("status") in ("started", "written"):
+            record.update(status="done", finished_at=_now())
+            _write_record(os.path.join(trash, other), record)
+
+
 def finish_put_back(store):
     """P10b: a Put back killed after its commit (PUT_BACK_PENDING in the store's meta) finished forward, its files
-    moved back — before any look reads the folders (`sources.scan`) -> True when one was finished. One meta read
-    when there is none. Under the maintenance lock (the export's); held elsewhere, the next look tries again."""
+    moved back — before any look reads the folders (`sources.scan`) -> True when one was finished, None when none is
+    owed (one meta read), False when one is owed but the maintenance lock is held elsewhere (the look must wait: it
+    would find the library's copies missing). """
     try:
-        with store._reading():
-            row = store.conn.execute("SELECT value FROM meta WHERE key = ?", (PUT_BACK_PENDING,)).fetchone()
+        folder = _pending_folder(store)
     except Exception:
-        return False
-    if row is None:
-        return False
-    folder = os.path.join(store.user_files_dir, ".trash", os.path.basename(str(row[0])))
+        return None
+    if folder is None:
+        return None
     lock = MaintenanceLock(store.db_path)
     try:
         if not lock.try_acquire():

@@ -267,9 +267,12 @@ def test_a_put_back_refused_in_its_second_half_undoes_both_halves_newest_first(r
     """PB-o's one journal: the live profile set aside, then the backup's parts renamed back; a refusal among the
     second half undoes the parts already back AND the setting-aside, newest first (the same path is free only in that
     order) — the newer profile exactly as it was, the backup still offered."""
-    _profile()
+    places = _profile()
     stamp = _stamp_of(_start_over())
     _write(path_utils.get_settings_path(), json.dumps({"target_language": "zh"}))
+    for rel in ("window_state.json", "window_cache_ja.json", "window_cache_zh.json"):   # the same places as the
+        _write(os.path.join(places["install"], rel), names("zh")[1])                     # backup's first parts
+    _write(os.path.join(places["install"], "connect", "ledger.json"), names("zh")[2])
     newer = _snapshot()
     n_aside = len(_moving())
     calls = []
@@ -607,7 +610,7 @@ def test_a_backup_that_never_finished_or_cant_be_read_is_refused():
     stamp = _over_and_new()
     where = profile_reset.record_path(stamp)
     record = json.load(open(where, encoding="utf-8"))
-    _write(where, json.dumps(dict(record, status="started")))
+    _write(where, json.dumps(dict(record, status="undone")))
     profile_reset.request(profile_reset.PUT_BACK, stamp)
     assert profile_reset.run(wait=0)["reason"] == "gone"
     _write(where, "{ not json")
@@ -776,3 +779,248 @@ def test_nothing_reads_or_writes_a_moving_place_before_the_windows_gate(monkeypa
     assert at_gate["marked"].get("count") == 1                # the window held its running mark throughout
     assert at_gate["parts"] == watched
     assert not locks._mark                                   # the window's mark went with its run
+
+
+# --- review round 1 (the register's rows) ------------------------------------------------------------------------- #
+
+def test_a_part_whose_place_is_unreachable_at_the_next_start_is_never_called_rolled_back():
+    """Adversary #1: a drive (the library folder on a NAS, a USB drive) offline at the next start: a begun move
+    found in neither place is unreachable, never "never moved" — stuck, the journal kept, the window never opens; once
+    the drive is back the rollback finishes and the profile is exactly as it was."""
+    import shutil
+    places = _profile()
+    before = _snapshot()
+    n = len(_moving())
+
+    def step(name):
+        if name == f"moved:{n - 1}":
+            raise _Killed(name)
+    profile_reset.request(profile_reset.START_OVER)
+    with pytest.raises(_Killed):
+        profile_reset.run(wait=0, _step=step)
+    locks._registry.clear()
+    stamp = profile_reset.pending()["stamp"]
+    backup = os.path.join(places["library"], path_utils.BACKUPS, profile_reset.PREFIX + stamp)
+    offline = os.path.join(os.path.dirname(places["library"]), "offline-" + stamp)
+    shutil.move(backup, offline)                         # the drive's part of the backup out of reach
+    answer = profile_reset.recover()
+    assert answer["status"] == "stuck" and "isn't reachable" in answer["words"]
+    assert profile_reset.pending()["status"] == profile_reset.MOVING
+    shutil.move(offline, backup)                         # the drive is back
+    assert profile_reset.recover()["status"] == "rolled-back"
+    assert _snapshot() == before
+
+
+def test_put_back_over_a_profile_with_its_own_live_store_still_renews_each_store():
+    """Adversary #2: after Start over, setup builds a store at the same path; the Put back's P4 runs once the mover
+    has let go of the stores' locks, so each store put back gets its new id and epoch."""
+    _profile()
+    old = {}
+    for lang in LANGUAGES:
+        store = ls.open_store(lang, path_utils.get_data_path(lang), path_utils.get_user_files_path(lang))
+        old[lang] = (store.meta()["store_id"], int(store.meta()["epoch"]))
+        store.close()
+    stamp = _stamp_of(_start_over())
+    for lang in LANGUAGES:                               # the new profile's own library
+        data_dir, user_files_dir, doc = library(lang, shows=1, episodes=1)
+        write_manifest(user_files_dir, doc)
+        assert ls.maintain(lang, data_dir, user_files_dir) == ls.EXIT_DONE
+    profile_reset.request(profile_reset.PUT_BACK, stamp)
+    _stamp_of(profile_reset.run(wait=0))
+    for lang in LANGUAGES:
+        store = ls.open_store(lang, path_utils.get_data_path(lang), path_utils.get_user_files_path(lang))
+        try:
+            assert store.meta()["store_id"] != old[lang][0] and int(store.meta()["epoch"]) == old[lang][1] + 1
+        finally:
+            store.close()
+
+
+def test_no_program_but_the_window_starts_on_a_profile_a_kill_left_part_way(monkeypatch):
+    """Adversary #3: a move a kill left `moving` (or `done`, or a journal that can't be read): the command line,
+    Piyo's server, any child waits for the window's gate to settle it, then stops (MoveRunning); the window itself
+    starts (its gate is what settles it). An asked request stops nobody."""
+    monkeypatch.setattr(locks, "MOVE_WAIT", 0.3)
+    for status in ("moving", "done"):
+        _write(profile_reset.journal_path(), json.dumps({"action": "start-over", "status": status, "moves": []}))
+        with pytest.raises(locks.MoveRunning):
+            locks.hold_running("cli")
+        assert not locks._mark
+    _write(profile_reset.journal_path(), "{ half")
+    with pytest.raises(locks.MoveRunning):
+        locks.hold_running("mcp")
+    assert locks.hold_running("window") is True
+    locks.release_running()
+    _write(profile_reset.journal_path(), json.dumps({"action": "start-over", "status": "asked"}))
+    assert locks.hold_running("cli") is True
+    locks.release_running()
+
+
+def test_this_programs_own_older_entry_in_the_installs_note_is_never_another_install(tmp_path):
+    """Adversary #4: entries are never pruned; one naming an older library folder of this same program stays
+    there, and must never refuse Start over."""
+    _profile()
+    older = tmp_path / "older library"
+    older.mkdir()
+    _write(os.path.join(path_utils.local_data_root(), path_utils.INSTALLS_NOTE),
+           json.dumps([{"data_root": str(older), "exe": sys.executable}]))
+    assert _start_over()["status"] == "done"
+
+
+def test_put_back_gives_whats_back_in_the_data_folders_trash_a_new_clock(renames_only):
+    """Adversary #5: renames keep file times; a Remove's copy that waited in a Started-over backup gets a new
+    30-day clock, so the next clean-up never purges it at once."""
+    import time
+    _profile()
+    trashed = _write(os.path.join(path_utils.get_data_path("ja"), ".trash", "removed.srt"), names("ja")[3])
+    old = time.time() - 40 * 86400
+    os.utime(trashed, (old, old))
+    stamp = _stamp_of(_start_over())
+    profile_reset.request(profile_reset.PUT_BACK, stamp)
+    _stamp_of(profile_reset.run(wait=0))
+    assert os.path.getmtime(trashed) > time.time() - 600
+
+
+@pytest.mark.parametrize("text, version", [("3.0.1", (3, 0, 1)), ("3.0.1-alpha9", (3, 0, 1)),
+                                           ("3.0.0-rc.2", (3, 0, 0)), ("2.9.0.6", (2, 9, 0, 6)), ("", ()),
+                                           (None, ()), ("v3", ())])
+def test_a_pre_release_counts_as_its_release_when_versions_are_compared(text, version):
+    """Adversary #11: an alpha's or rc's backup is never "from a newer Surasura" for the release it leads to."""
+    assert ls._version_of(text) == version == profile_reset._version(text)
+
+
+def test_a_program_whose_mark_cant_be_written_still_waits_for_a_move(tmp_path, monkeypatch):
+    """Adversary #13: no mark (a read-only folder) is never a way past a move that is running."""
+    monkeypatch.setattr(locks, "_take_mark", lambda kind: (None, None))
+    monkeypatch.setattr(locks, "MOVE_WAIT", 0.3)
+    proc = _child(tmp_path, 'held = locks.take(locks.PROFILE_MOVE, "Setting your old Surasura aside")', "mover2")
+    try:
+        with pytest.raises(locks.MoveRunning):
+            locks.hold_running("cli")
+    finally:
+        _end(proc)
+    assert locks.hold_running("cli") is False
+
+
+def test_a_start_over_whose_last_record_write_failed_can_still_be_put_back_and_keeps_its_opt_outs(monkeypatch):
+    """Adversary #15: the move stands once committed; a record left `started` with every part in its backup is a
+    whole backup (listed, put back), and the opt-outs come from the journal, never lost with the record."""
+    _profile(settings={"telemetry_enabled": False})
+    real = profile_reset._write_json
+
+    def failing(path, data):
+        if path.endswith(profile_reset.RECORD) and data.get("status") == profile_reset.DONE:
+            raise OSError(28, "No space left on device")
+        real(path, data)
+    with monkeypatch.context() as patched:
+        patched.setattr(profile_reset, "_write_json", failing)
+        stamp = _stamp_of(_start_over())
+    with open(path_utils.get_settings_path(), encoding="utf-8") as f:
+        assert json.load(f) == {"telemetry_enabled": False}
+    (listed,) = profile_reset.backups()
+    assert listed["stamp"] == stamp and listed["status"] == "started" and not listed["stopped"]
+    profile_reset.request(profile_reset.PUT_BACK, stamp)
+    assert profile_reset.run(wait=0)["status"] == "done"
+
+
+def test_a_journal_that_cant_be_written_mid_move_is_undone_in_place(monkeypatch):
+    """Adversary #16 / Haiku: a full disk on the journal's own write between two renames: every rename done is
+    undone there and then, and the answer says so (never an exception out of the gate)."""
+    _profile()
+    before = _snapshot()
+    real = profile_reset._write_json
+    writes = []
+
+    def failing(path, data):
+        if path == profile_reset.journal_path() and data.get("status") == profile_reset.MOVING:
+            writes.append(1)
+            if len(writes) == 6:
+                raise OSError(28, "No space left on device")
+        real(path, data)
+    with monkeypatch.context() as patched:
+        patched.setattr(profile_reset, "_write_json", failing)
+        answer = _start_over()
+    assert answer["status"] == "undone" and _snapshot() == before and profile_reset.pending() is None
+
+
+def test_the_commit_points_write_failing_undoes_every_rename(monkeypatch):
+    _profile()
+    before = _snapshot()
+    real = profile_reset._write_json
+
+    def failing(path, data):
+        if path == profile_reset.journal_path() and data.get("status") == profile_reset.DONE:
+            raise OSError(28, "No space left on device")
+        real(path, data)
+    with monkeypatch.context() as patched:
+        patched.setattr(profile_reset, "_write_json", failing)
+        answer = _start_over()
+    assert answer["status"] == "undone" and answer["reason"] == "journal" and _snapshot() == before
+
+
+def test_an_installed_library_started_over_is_never_offered_the_surasura_2_import_again(monkeypatch):
+    """Adversary #20 / P8: the start gate's note (which stays) records the library as started fresh."""
+    _profile()
+    monkeypatch.setattr(path_utils, "installed_library", lambda: path_utils.get_user_data_path())
+    _write(path_utils.get_settings_path(), json.dumps({"onboarding_completed": True}))
+    _stamp_of(_start_over())
+    assert first_run._seen(path_utils.get_user_data_path())["fresh"] is True
+
+
+def test_two_programs_never_settle_one_journal_at_once(tmp_path):
+    """Haiku (crash lens): recovering a journal takes the profile-move lock; while another program holds it,
+    recover answers busy and moves nothing."""
+    _profile()
+    before = _snapshot()
+
+    def step(name):
+        if name == "moved:2":
+            raise _Killed(name)
+    profile_reset.request(profile_reset.START_OVER)
+    with pytest.raises(_Killed):
+        profile_reset.run(wait=0, _step=step)
+    locks._registry.clear()
+    mid = _snapshot()
+    proc = _child(tmp_path, 'held = locks.take(locks.PROFILE_MOVE, "Setting your old Surasura aside")', "mover3")
+    try:
+        answer = profile_reset.recover()
+        assert answer["status"] == "refused" and answer["reason"] == "busy" and _snapshot() == mid
+    finally:
+        _end(proc)
+    assert profile_reset.recover()["status"] == "rolled-back" and _snapshot() == before
+
+
+def test_a_rollback_never_writes_over_something_new_in_a_parts_place_even_where_renames_replace():
+    """Mutant K27: where a rename replaces a file (POSIX), the rollback still never puts a part back over something
+    that appeared in its place: stuck, naming the path, the new file kept."""
+    places = _profile()
+
+    def step(name):
+        if name == "moved:3":
+            raise _Killed(name)
+    profile_reset.request(profile_reset.START_OVER)
+    with pytest.raises(_Killed):
+        profile_reset.run(wait=0, _step=step)
+    locks._registry.clear()
+    first = [m for m in profile_reset.pending()["moves"] if m["begun"] and m["role"] != "connect"][0]
+    new = os.path.join(places[first["place"]], *first["src"].split("/"))
+    _write(new, "written by a program that started anyway")
+    answer = profile_reset.recover(_rename=os.replace)
+    assert answer["status"] == "stuck" and new in answer["words"]
+    with open(new, encoding="utf-8") as f:
+        assert f.read() == "written by a program that started anyway"
+
+
+def test_a_stopped_backup_is_listed_first_even_when_an_older_one(tmp_path):
+    """Mutant K23: *stopped part way* goes before the rest whatever its date."""
+    trash = os.path.join(path_utils.get_user_files_path("ja"), ".trash")
+    _write(os.path.join(trash, ls.RESET_PREFIX + "20261101-101010", ls.RESET_RECORD),
+           json.dumps({"language": "ja", "status": "done", "started_at": "2026-11-01T10:10:10Z", "moves": [],
+                       "db_copy": os.path.join(trash, ls.RESET_PREFIX + "20261101-101010", "x.db")}))
+    folder = os.path.join(trash, ls.RESET_PREFIX + "20261020-101010")
+    _write(os.path.join(folder, "data", "Library", "a.srt"), names("ja")[2])
+    _write(os.path.join(folder, ls.RESET_RECORD),
+           json.dumps({"language": "ja", "status": "started", "started_at": "2026-10-20T10:10:10Z",
+                       "db_copy": os.path.join(folder, "x.db"),
+                       "moves": [{"step": "data", "from": "x", "to": os.path.join(folder, "data", "Library")}]}))
+    assert [(b["stamp"], b["stopped"]) for b in profile_reset.backups()] == [
+        (ls.RESET_PREFIX + "20261020-101010", True), (ls.RESET_PREFIX + "20261101-101010", False)]

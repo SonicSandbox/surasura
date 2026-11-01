@@ -1,0 +1,24 @@
+Parsing scorecard 2026-10-30T21:04:07 — 2932 cases · plain (no variant) · rev ee5b6e6 · settings 2026-09-26 · ENGINE 33 / SCHEMA 20
+
+  cat                                                   cases   LOCK ok LOCK FAIL TGT fixed TGT wrong     LIMIT (changed)  DISPUTED (changed)   skipped    errors
+  A    Reading files and cleaning text                    107        95         0         0         3         9         0         0         0         0         0
+  B    Sentence splitting                                  73        63         0         0         1         9         0         0         0         0         0
+  C    Script and characters                               56        42         0         0         7         7         0         0         0         0         0
+  D    Symbols and numerals                                79        67         0         0         8         4         0         0         0         0         0
+  E    Affix joins and お / ご                              252       207         0         0        24        21         0         0         0         0         0
+  F    Compounds and coincidences                         511       404         0         0         8        99         0         0         0         0         0
+  G    Sound words + と                                    182       168         0         0         9         5         0         0         0         0         0
+  H    Verbs, readings and lemmas                         102        57         0         0        29        16         0         0         0         0         0
+  I    Names                                               81        50         0         0         9        22         0         0         0         0         0
+  J    Known words                                         56        37         0         0        12         7         0         0         0         0         0
+  K    Card matching                                      294       269         0         0        12        13         0         0         0         0         0
+  L    Difficulty and i+1                                  90        85         0         0         3         2         0         0         0         0         0
+  M    パターン, 例文 and the sentence dictionary               188       129         0         0        25        13         0         0         0        21         0
+  N    Caches and versions                                 12         9         0         0         0         3         0         0         0         0         0
+  O    Chinese segmentation and script                    171       134         0         0        26        11         0         0         0         0         0
+  P    Ordinary text (random audit, verified)             678       673         0         0         0         5         0         0         0         0         0
+  all                                                    2932      2489         0         0       176       246         0         0         0        21         0
+
+No reference baseline — this run is the first (or --baseline none); the next run diffs against it.
+
+Baseline written: tests\parsing\baselines\20261030-210407.json (report beside it: .txt)

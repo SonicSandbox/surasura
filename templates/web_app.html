@@ -262,7 +262,7 @@
             content: attr(data-content);
         }
 
-        /* "6+" chip on a sidebar file from the 6+ months list: a faint outline in the theme's own
+        /* "Goal" chip on a sidebar file from your Goal: a faint outline in the theme's own
            secondary colours, so it sets later-goal content apart without competing with the
            filename. Its text is drawn by ::after like .hidden-content, so dictionary extensions
            never read it — but unlike .hidden-content it keeps pointer events, for its hover title. */
@@ -2211,8 +2211,8 @@
 
                 let goalIndicator = "";
                 if (fileData.is_goal_content) {
-                    // A quiet chip for content from the 6+ months list (styled in .tier-chip).
-                    goalIndicator = `<span class="tier-chip" data-content="6+" title="From your 6+ months list" migaku_ignore data-yomichan-ignore></span>`;
+                    // A quiet chip for content from your Goal (styled in .tier-chip): the window's own name for it.
+                    goalIndicator = `<span class="tier-chip" data-content="Goal" title="From your Goal: someday, in no order" migaku_ignore data-yomichan-ignore></span>`;
                 }
 
                 const safeFilename = escapeHtml(fileData.filename);
@@ -3010,7 +3010,7 @@
                             ${data.Score !== undefined ? `<span>Score: ${data.Score}</span>` : ''}
                             ${(data["Occurrences (Global)"] !== undefined) ? `<span>Freq: ${data["Occurrences (Global)"]}</span>` : (data.Occurrences !== undefined ? `<span>Freq: ${data.Occurrences}</span>` : '')}
                         </div>
-                        ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in 6+ months"></span>` : '')}${isReading ? `<span class="priority-marker marker-reading" title="Reading word: you'll meet this in text but hardly ever hear it — worth a reading-first card"></span>` : ''}${inAnki ? `<span class="priority-marker marker-anki" title="Already in your Anki backlog — a new card for it is waiting"></span>` : ''}
+                        ${isLopsided ? `<span class="priority-marker marker-lopsided" title="Lopsided: You'll see this word a lot in the next few weeks, but rarely after that"></span>` : (isPriority ? `<span class="priority-marker marker-priority" title="High Leverage: You'll see this word a lot now, and in your Goal too"></span>` : '')}${isReading ? `<span class="priority-marker marker-reading" title="Reading word: you'll meet this in text but hardly ever hear it — worth a reading-first card"></span>` : ''}${inAnki ? `<span class="priority-marker marker-anki" title="Already in your Anki backlog — a new card for it is waiting"></span>` : ''}
                         <div style="display:flex; gap: 5px; flex-wrap: wrap;">
                             ${tierBadgesHtml}
                         </div>

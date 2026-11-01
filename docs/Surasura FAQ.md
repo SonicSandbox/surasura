@@ -12,8 +12,8 @@ Welcome to the Surasura FAQ! If you can't find the answer you're looking for her
 
 ### Core Concepts
 
-**What is the actual difference between the "NOW," "Soon," and "6+ months" timelines?**
-These timelines affect sorting and weighting. NOW content appears first, receives a higher priority icon, and ranks higher when exporting your frequency list.
+**What is the difference between Current, Soon and Goal?**
+They tell Surasura when you'll watch or read each title, and your list follows. **Current** is your order: Up Next on top, then the **Soon** line; what you'll meet first weighs the most. **Goal**, at its foot, is someday, in no order: its words still count, but less. **Finished** is a record: a source of sentences, never counted. (Surasura 2.x called them NOW, Soon and 6+ months.)
 
 **Are the generated sentences exactly "i+1"?**
 As close as your content allows. Surasura scans your whole library and picks the sentences with the fewest other unknown words — counting the words you'll have learned earlier in your journey as known. A word you can read through one you already know — 利用者 when you know 利用 — doesn't count against a sentence either (it still has its own place on your list, at half its score). The first sentence is always the one where you first meet the word, even when it isn't i+1. If you want *only* true i+1 sentences, turn on **Settings → 🧠 Sentences & Logic → Only include i+1 sentences**; words without one are then left out.
@@ -33,14 +33,14 @@ Anki sync talks only to the Anki running on your own computer.
 **What is the exact purpose of the "Extract / Splice" tool?**
 To split large files, like massive EPUBs or Anki decks, into manageable chapters. This saves you from having to use third-party conversion tools. It lives inside the **Content Manager**, under **📖 Extract (EPUB / Anki)**.
 
-**There used to be two buttons — "Generate Journey" and "View Vocab Journey". Where did they go?**
-They're now a single **Generate Journey** button. If anything has changed since your last run it re-analyzes; if nothing has, it simply reopens your existing report instantly. Changing only the theme or Zen limit re-renders the report without re-analyzing. The button shows which it will be: a thin blue border means something has changed since your last Generate, and a small ✓ on its right edge means your journey is up to date.
+**Where is the Generate Journey button?**
+In 3.0 it is two: **Generate** (top) builds your list, and **Journey ↗** opens it. Generate shows ✓ when nothing in your library, your known words or your settings has changed since your last run.
 
 **Can I see which file an example sentence came from?**
 Yes — turn on **Settings → Experience & UI → "Sentence source"**. Each example sentence then gets a small marker showing its source: hover for the file (and, for subtitles, the timestamp), click to copy the full path, and shift-click to open the file at that exact sentence. For a YouTube transcript, clicking opens the video at the moment the line is spoken.
 
-**Does graduating content mark *all* words in that media as "Known"?**
-No, it only marks the specific words listed in your analysis results.
+**Does moving a show to Finished mark its words as known?**
+No. A finished show stops pushing your list around and stays a source of sentences; only the words you know (from Anki, an import, or marked known) count as known. Checking an episode's stone takes the words only it used off your list.
 
 ---
 

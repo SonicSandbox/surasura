@@ -2506,6 +2506,215 @@ def test_S2_each_arrival_lands_where_its_icon_or_menu_says_and_its_undo_puts_it_
         w.place([a], "the top")                          # a window's slip: refused at the call, never queued
 
 
+def _tiers_and_values(lib, placed=()):
+    """Every item's tier, place and values — and `changed_in` for the `placed` (a neighbour the Soon line moved across
+    gets the line's own version, as any move's Undo gives it)."""
+    return [r[:-1] + ((r[-1],) if r[0] in placed else ()) for r in lib.store.conn.execute(
+        "SELECT id, tier, ord, graduated_at, watched, changed_in FROM items ORDER BY id")]
+
+
+def test_mado_o_start_over_is_one_saved_change_and_its_undo_puts_the_sort_back(lib, make_writer):
+    """The sort screen's *Start sorting over* (alpha 8): the placements it made, given back as one `start_over` — every
+    title in New arrivals, one change on the Undo stack; Ctrl+Z takes the reset back exactly, and the next Ctrl+Z the
+    newest placement (the stack under it intact)."""
+    w, heard = make_writer()
+    a, b, c = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("goal")[3], lib.ids("soon")[1]))
+    w.place([a], "top")
+    w.place([b], "goal")
+    w.place([c], "finished")
+    assert h.until(lambda: len(heard.saved) == 3)
+    placed = [ch for ch, _l in heard.saved]
+    sorted_ = _tiers_and_values(lib, (a, b, c))
+    w.start_over(placed, label="over")
+    assert h.until(lambda: len(heard.saved) == 4)
+    change, label = heard.saved[-1]
+    assert label == "over" and change.kind == "move" and {it["id"] for it in change.items} == {a, b, c}
+    assert set(lib.ids("arrivals")) >= {a, b, c} and not lib.store.item(c)["graduated_at"]
+    assert journal(lib.language) is None, "landed: out of the journal"
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 1)
+    assert _tiers_and_values(lib, (a, b, c)) == sorted_
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert lib.store.place_of(c)[0] == "arrivals" and lib.store.place_of(b)[0] == "goal"
+
+
+def test_mado_o_a_start_over_queued_at_a_crash_is_replayed_and_one_that_landed_is_let_go_quietly(
+        lib, make_writer, short_lock_wait):
+    """Journalled like any move: the placements' records replay it at the next start; a journal still naming one that
+    landed before the crash puts back nothing and lists nothing."""
+    w, heard = make_writer()
+    a, b = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("soon")[1]))
+    w.place([a], "top")
+    w.place([b], "finished")
+    assert h.until(lambda: len(heard.saved) == 2)
+    placed = [ch for ch, _l in heard.saved]
+    holder = LockHolder(lib.db)
+    w.start_over(placed)
+    assert h.until(lambda: journalled(lib.language) == [("start_over", [a, b])])
+    kept = journal(lib.language)
+    w._abandon()                                        # the crash
+    holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert lib.store.place_of(a)[0] == "arrivals" and lib.store.place_of(b)[0] == "arrivals"
+    assert heard2.notes == [] and heard2.saved == []
+    with open(M.journal_path(lib.language), "w", encoding="utf-8") as f:
+        json.dump(kept, f)                              # a journal left by a crash just after it landed
+    w3, heard3 = make_writer()
+    assert w3.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert heard3.notes == [] and lib.store.place_of(a)[0] == "arrivals"
+
+
+def test_so1_start_over_brings_an_ignored_titles_file_back_and_its_undo_ignores_it_again(lib, make_writer):
+    """SO-1 (Sonic 2026-10-31): an Ignore on the sort screen (a Remove: its file to the trash) is put back by Start
+    over — the file back where it was, the title in New arrivals — in the same one command as the placements; the
+    reset's Undo removes it again (file to the trash) and puts the placement back; the Ignore's own Undo then takes
+    back that new removal (the title and its file back once more)."""
+    w, heard = make_writer()
+    a, b = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("soon")[1]))
+    path = _file(lib, b)
+    w.place([a], "top")
+    w.remove([b])
+    assert h.until(lambda: len(heard.saved) == 2)
+    placed, ignore = heard.saved[0][0], heard.saved[1][0]
+    assert not os.path.exists(path) and lib.store.item(b) is None
+    w.start_over([placed, ignore], label="over")
+    assert h.until(lambda: len(heard.saved) == 3)
+    reset = heard.saved[-1][0]
+    assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and lib.store.place_of(a)[0] == "arrivals"
+    assert [i["ids"] for i in reset.ignored] == [[b]]
+    w.undo(reset)
+    assert h.until(lambda: len(heard.undone) == 1)
+    assert not os.path.exists(path) and lib.store.item(b) is None, "ignored again: its file in the trash"
+    assert lib.store.place_of(a)[0] == "now"
+    w.undo(ignore)                                       # the screen's Undo of its Ignore: the new removal
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and heard.notes == []
+
+
+def test_so1_a_start_over_of_an_ignore_queued_at_a_crash_brings_it_back_at_the_next_start(lib, make_writer,
+                                                                                            short_lock_wait):
+    """A reset holding only an Ignore, journalled, the app gone before it landed: its title is still in the trash, so
+    the replay brings it back (file and row) — never taken for one that landed."""
+    w, heard = make_writer()
+    b = _arrival(lib, lib.ids("soon")[1])
+    path = _file(lib, b)
+    w.remove([b])
+    assert h.until(lambda: len(heard.saved) == 1)
+    holder = LockHolder(lib.db)
+    w.start_over([heard.saved[0][0]])
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["start_over"])
+    w._abandon()
+    holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and heard2.notes == []
+
+
+def _so1_sorted(lib, w, heard):
+    """A placed on top, B ignored (removed: its file to the trash), both saved. -> (a, b, b's path, place, ignore)."""
+    a, b = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("soon")[1]))
+    path = _file(lib, b)
+    w.place([a], "top")
+    w.remove([b])
+    assert h.until(lambda: len(heard.saved) == 2)
+    return a, b, path, heard.saved[0][0], heard.saved[1][0]
+
+
+def _so1_over(w, heard, changes):
+    n = len(heard.saved)
+    w.start_over(changes)
+    assert h.until(lambda: len(heard.saved) == n + 1)
+    return heard.saved[-1][0]
+
+
+def test_so1_after_the_ignores_own_undo_ctrl_z_goes_on_to_the_choice_before_it(lib, make_writer):
+    """Adversary SO-1 #1: Start over, its Undo, then the Ignore's own Undo — the next Ctrl+Z takes back the placement
+    before it, never stuck on the Ignore's old change."""
+    w, heard = make_writer()
+    a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    reset = _so1_over(w, heard, [place, ignore])
+    w.undo(reset)
+    assert h.until(lambda: len(heard.undone) == 1)
+    w.undo(ignore)
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert os.path.exists(path)
+    w.undo()                                             # Ctrl+Z
+    assert h.until(lambda: len(heard.undone) == 3)
+    assert lib.store.place_of(a)[0] == "arrivals" and heard.notes == []
+
+
+def test_so1_a_second_start_over_after_the_firsts_undo_brings_the_ignored_title_back_again(lib, make_writer):
+    """Adversary SO-1 #2: Start over, Undo it, Start over again (the screen hands the Ignore's old change): the title
+    comes back again — the writer takes the change that stands for it now."""
+    w, heard = make_writer()
+    _a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    reset = _so1_over(w, heard, [place, ignore])
+    w.undo(reset)
+    assert h.until(lambda: len(heard.undone) == 1) and not os.path.exists(path)
+    again = _so1_over(w, heard, [place, ignore])
+    assert [i["ids"] for i in again.ignored] == [[b]] and os.path.exists(path)
+    assert lib.store.place_of(b)[0] == "arrivals"
+
+
+def test_so1_the_resets_undo_leaves_a_brought_back_title_placed_since(lib, make_writer):
+    """Adversary SO-1 #3: a title Start over brought back and the learner placed since: the reset's Undo leaves it
+    where it was put (its file where it is), and still puts the rest back."""
+    w, heard = make_writer()
+    a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    reset = _so1_over(w, heard, [place, ignore])
+    w.place([b], "goal")
+    assert h.until(lambda: len(heard.saved) == 4)
+    w.undo(reset)
+    assert h.until(lambda: len(heard.undone) == 1)
+    assert lib.store.place_of(b)[0] == "goal" and os.path.exists(path)
+    assert lib.store.place_of(a)[0] == "now"
+
+
+def test_so1_an_ignore_whose_title_cant_come_back_keeps_its_file_in_the_trash(lib, make_writer, monkeypatch):
+    """A file brought out of the trash whose row then doesn't come back (its folder read again meanwhile, here the
+    store's Undo answering nothing): the file goes back to the trash in the same write — never a file in the
+    library with no title, nor a note naming it."""
+    w, heard = make_writer()
+    a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    trashed = [r["trashed_path"] for r in lib.store.trash_rows(ignore.trash_ids)]
+    real = ls.Store.undo
+
+    def undo(self, change, *args, **kw):
+        if change.kind == "remove":
+            return None                                  # (as an Ignore read again meanwhile: nothing put back)
+        return real(self, change, *args, **kw)
+    monkeypatch.setattr(ls.Store, "undo", undo)
+    with open(path, "w", encoding="utf-8") as f:       # (its name taken too: it would have come back renamed)
+        f.write("別のファイル\n")
+    _so1_over(w, heard, [place, ignore])
+    assert w.idle(5)
+    assert lib.store.place_of(a)[0] == "arrivals" and lib.store.item(b) is None
+    assert all(os.path.exists(os.path.join(lib.data_dir, *t.split("/"))) for t in trashed)
+    stem, ext = os.path.splitext(path)
+    assert not os.path.exists(f"{stem}_1{ext}") and not heard.notes, "no file left out, no note naming one"
+
+
+def test_so1_an_ignored_titles_file_whose_name_was_taken_comes_back_under_a_new_one(lib, make_writer):
+    """Its name taken meanwhile (a new file there): the Ignore's file comes back as name_1.ext — the title's row reads
+    that file, the other one untouched — and the note names it."""
+    w, heard = make_writer()
+    _a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("別のファイル\n")
+    _so1_over(w, heard, [place, ignore])
+    rel = lib.store.item(b)["rel_path"]
+    stem, ext = os.path.splitext(os.path.basename(path))
+    assert rel.endswith(f"{stem}_1{ext}") and os.path.exists(os.path.join(lib.data_dir, *rel.split("/")))
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == "別のファイル\n"
+    assert h.until(lambda: heard.notes) and f"{stem}_1{ext}" in heard.notes[-1]
+
+
 def test_S2_after_show_with_no_show_to_follow_writes_nothing_and_rereads(lib, make_writer):
     w, heard = make_writer()
     loose = [i for i in lib.ids("goal") if lib.store.item(i)["rel_path"].count("/") == 1][0]   # a loose file

@@ -382,4 +382,24 @@ SORT_EMPTY = "All sorted."
 SORT_PLACED = {"now": "{title} → Current", "soon": "{title} → Soon", "goal": "{title} → Goal",
                "finished": "{title} → Finished", "ignore": "{title} ignored"}
 SORT_REST_PLACED = "{n:,} titles → {place}"
+# Mado-O (alpha 8, Sonic 2026-10-31: "the ability to reset from the beginning")
+SORT_OVER = "Start sorting over"
+SORT_OVER_TIP = ("Everything you sorted here goes back to be sorted again, including the ones you ignored, and you "
+                 "start from the top. Undo puts your sorting back.")
+SORT_OVER_ASK = "Start sorting over?"
+SORT_OVER_BODY = ("The {n:,} titles you sorted here go back to New arrivals, including the ones you ignored, and you "
+                  "start again from the top. A title you've moved since stays where you put it. Undo puts your "
+                  "sorting back.")
+SORT_OVER_BODY_ONE = ("The title you sorted here goes back to New arrivals, even if you ignored it, and you start again "
+                      "from the top. Undo puts it back.")
+SORT_OVER_BODY_PLAIN = ("The {n:,} titles you sorted here go back to New arrivals, and you start again from the top. A "
+                        "title you've moved since stays where you put it. Undo puts your sorting back.")
+SORT_OVER_BODY_PLAIN_ONE = ("The title you sorted here goes back to New arrivals, and you start again from the top. Undo "
+                            "puts it back.")
+SORT_OVER_YES = "Start over"
+SORT_OVER_YES_TIP = "Put them back to sort, and start from the top."
+SORT_OVER_SAID = "{n:,} titles back to sort"
+SORT_OVER_SAYING = "Putting {n:,} titles back to sort…"
+SORT_OVER_SAYING_ONE = "Putting 1 title back to sort…"
+SORT_OVER_SAID_ONE = "1 title back to sort"
 SORT_KEYS_NAME = "Keys"

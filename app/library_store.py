@@ -1443,9 +1443,50 @@ class Change:
         self.piece_fields = []  # LM11: (piece, "kind" | "title", old, new) written, put back by the value check
         self.dropped = []     # LM11: the pieces' rows the command emptied and deleted (an undo brings them back)
         self.roots = []       # T6: [(root_id, old kind, new kind)] a *Stop reading* wrote (the value check puts it back)
+        self.to = None        # Mado-O: the tier a `place` put its items in (`Store.unsort` reads it)
+        self.ignored = []     # Mado-O (SO-1): the Ignores an `unsort` brought back [{"ids", "folder", "of"}] — its Undo
+                              #   (the window's writer: files move) ignores them again
 
     def __repr__(self):
         return f"<Change {self.kind} v{self.version} e{self.epoch} items={len(self.items)}>"
+
+
+def change_record(change):
+    """Mado-O (alpha 8): a placement's `Change` (or, SO-1, an Ignore's: a remove, a folder skip) as JSON-able values —
+    what `Store.unsort` needs of it (the window's journal keeps it); `change_from_record` reads it back."""
+    return {"kind": change.kind, "epoch": change.epoch, "version": change.version, "to": change.to,
+            "items": [dict(it) for it in change.items], "status": [list(s) for s in change.status],
+            "repieced": [list(r) for r in change.repieced], "piece_fields": [list(f) for f in change.piece_fields],
+            "dropped": [list(d) for d in change.dropped], "trash_ids": list(change.trash_ids),
+            "folder": getattr(change, "folder", None), "folder_path": getattr(change, "folder_path", None)}
+
+
+def change_from_record(rec):
+    change = Change(rec["kind"], rec["epoch"], rec["version"])
+    change.to = rec.get("to") if rec.get("to") in TIERS else None
+    change.items = [dict(it) for it in rec.get("items") or ()]
+    change.status = [tuple(s) for s in rec.get("status") or ()]
+    change.repieced = [tuple(r) for r in rec.get("repieced") or ()]
+    change.piece_fields = [tuple(f) for f in rec.get("piece_fields") or () if len(f) == 4 and f[1] in ("kind", "title")]
+    change.dropped = [tuple(d) for d in rec.get("dropped") or ()]
+    change.trash_ids = [t for t in rec.get("trash_ids") or () if isinstance(t, int)]
+    if isinstance(rec.get("folder"), int) and isinstance(rec.get("folder_path"), str):
+        change.folder, change.folder_path = rec["folder"], rec["folder_path"]
+    change.from_record = True
+    return change
+
+
+def _placed_to(change, tier):
+    """`Store.place`'s change, told the tier it put its items in (Mado-O: `Store.unsort`'s "still where it was put")."""
+    if change is not None:
+        change.to = tier
+    return change
+
+
+def _same_place(tier, to):
+    """Mado-O: is an item in `tier` still in the place `to` put it? Current is one place: the Soon line moves its
+    titles between NOW and Soon (a crossing takes the crossing command's version, never the learner's move)."""
+    return tier == to or (tier in CURRENT and to in CURRENT)
 
 
 class _Command:
@@ -1566,6 +1607,51 @@ class Check:
         self.started_at = started_at
 
 
+def _walk_back(seqs, items, okset):
+    """`Store._replace`'s walk: a change's `items` (its recorded previous order) back into `seqs` ({tier: _Seq}, the
+    items of `okset` already taken out) — each right after its recorded predecessor if that item is in the tier now
+    (untouched, or put back earlier in this walk); else after that predecessor's own recorded predecessor, along the
+    list; else before the nearest recorded successor outside the change's set that is in the tier; else at the tier's
+    top. Mado-O (alpha 8): shared with `Store.unsort`, which walks many changes over one load of the tiers."""
+    info = {it["id"]: it for it in items}
+    inset = set(info)
+    restored = set()
+    for it in items:
+        if it["id"] not in okset:
+            continue
+        seq = seqs[it["tier"]]
+        where = None
+        p, seen = it["prev"], set()
+        while p is not None and p not in seen:
+            seen.add(p)
+            if p in inset:
+                if p in restored:
+                    where = ("after", p)
+                    break
+                p = info[p]["prev"]
+                continue
+            if p in seq:
+                where = ("after", p)
+            break
+        if where is None:
+            n, seen = it["next"], set()
+            while n is not None and n not in seen:
+                seen.add(n)
+                if n in inset:
+                    n = info[n]["next"]
+                    continue
+                if n in seq:
+                    where = ("before", n)
+                break
+        if where is None:
+            seq.insert_after(it["id"], None)
+        elif where[0] == "after":
+            seq.insert_after(it["id"], where[1])
+        else:
+            seq.insert_before(it["id"], where[1])
+        restored.add(it["id"])
+
+
 class _Seq:
     """One tier's order as a doubly linked list, for the bulk commands (undo, restore, sync, Reset,
     re-import) that re-place many items: O(1) per removal or insertion."""
@@ -1617,6 +1703,7 @@ class _Seq:
         return out
 
 
+UNSORT_KINDS = ("move", "finish", "set_tier")    # Mado-O: the placements `Store.unsort` walks back itself
 _ROW = "id, tier, ord, changed_in, parent_folder, rel_path, availability, rel_key, graduated_at, entry, piece_id"
 
 
@@ -4355,13 +4442,14 @@ class Store:
                 if spot is None:
                     return None
                 tier, before_id, after_id = spot
-                return self.move(ids, tier, before_id=before_id, after_id=after_id, by=by, explicit=explicit)
+                return _placed_to(self.move(ids, tier, before_id=before_id, after_id=after_id, by=by,
+                                            explicit=explicit), tier)
             if where == "finished":
-                return self.finish(ids, by=by, explicit=explicit)
+                return _placed_to(self.finish(ids, by=by, explicit=explicit), "graduated")
             tier = {"top": "now", "now": "now", "soon": "soon", "goal": "goal", "later": "goal"}.get(where)
             if tier is None:
                 raise ValueError(f"unknown place {where!r}")
-            return self.move(ids, tier, by=by, explicit=explicit)
+            return _placed_to(self.move(ids, tier, by=by, explicit=explicit), tier)
 
     def _after_show(self, item_id, record, excl=()):
         """Where `after-show` puts an item (HC-N6, ✅ P2.1-2, Q4-9): (tier, before_id, after_id), or None (it stays).
@@ -4427,6 +4515,119 @@ class Store:
             return (nxt[1], nxt[0], None)
         last = max(current, key=order)
         return (last[1], None, last[0])
+
+    # --- Mado-O (alpha 8): the sort screen's *Start sorting over* --------------------------------------------- #
+    def unsort(self, placed, by="user", rel_paths=None):
+        """The sort screen's *Start sorting over* (Sonic 2026-10-31): the placements it made (`placed`, each a `Change`
+        or its `change_record`) undone in ONE command, newest first, each as its own Undo would — every title back in
+        New arrivals where it stood, its values (watched, the cards' place, the Finished date) put back — and recorded
+        as one move whose own Undo puts every title back where the sort had it (tier, order, date, piece, values; the
+        placements' own Undo works again after it). Still placed (PROVISIONAL): a title in the
+        place its placement put it (`Change.to`; Current is one place — the Soon line moves titles across it as others
+        are placed); one moved to another place since (Goal, finished later, taken out) stays where it is; a change
+        without `to` keeps the version rule. The value check per value. A placement of another epoch is left. A plain
+        placement (a move or a finish) is walked back over ONE load of the tiers (`_walk_back`: a 20k library's reset
+        holds the write lock briefly); anything else by its own nested Undo. SO-1 (Sonic 2026-10-31): the screen's
+        Ignores too (a remove, a folder skip: `trash_ids`) — each put back by its own Undo (`rel_paths` {trash_id:
+        rel}: where the caller's writer put its files back, under this write lock), recorded on the change's `ignored`
+        for its Undo to ignore again. -> the change, or None (nothing left to put back)."""
+        changes = [c if isinstance(c, Change) else change_from_record(c) for c in placed if c is not None]
+        changes = [c for c in changes if c.kind in UNSORT_KINDS + ("remove",) or not getattr(c, "from_record", False)]
+        with self._command("unsort", by) as cmd:            # (a record holds a placement's or an Ignore's fields)
+            changes = sorted((c for c in changes if c.epoch == cmd.epoch), key=lambda c: c.version, reverse=True)
+            ignores = [c for c in changes if c.kind == "remove" and c.trash_ids]
+            changes = [c for c in changes if c.items and not any(c is i for i in ignores)]
+            rows = self._rows({it["id"] for c in changes for it in c.items})
+            mine = {}                                           # item -> the placement it still stands by (newest)
+            for c in changes:
+                for it in c.items:
+                    r = rows.get(it["id"])
+                    if r is None or it["id"] in mine:
+                        continue
+                    if r[3] == c.version or (c.to is not None and r[3] > c.version and _same_place(r[1], c.to)):
+                        mine[it["id"]] = c.version
+            if not mine and not ignores:
+                return None
+            change = self._change(cmd, "move")
+            self._before(change, [rows[i] for i in mine])
+            plain = [c for c in changes if c.kind in UNSORT_KINDS and c.pieces is None and c.works is None and
+                     not c.added and not c.trash_ids and not c.options]
+            plain_ids, back, run = {id(c) for c in plain}, set(), []
+
+            def walk():                                         # a run of plain placements: one load of the tiers
+                back.update(self._unsort_plain(cmd, run, mine, rows, change))
+                run.clear()
+            for c in sorted(changes + ignores, key=lambda c: c.version, reverse=True):     # newest first, as Undos
+                if id(c) in plain_ids:
+                    run.append(c)
+                    continue
+                walk()
+                if any(c is i for i in ignores):                # SO-1: an Ignore, by its own Undo (one put back
+                    out = self.undo(c, rel_paths=rel_paths)     # meanwhile brings nothing)
+                    if getattr(out, "added", None):
+                        self.conn.executemany("UPDATE items SET changed_in = ? WHERE id = ?",   # the reset's own: its
+                                              [(cmd.version, i) for i in out.added])         # Undo leaves one touched
+                        change.ignored.append({"ids": list(out.added), "of": c.version,
+                                               "folder": c.folder_path if getattr(c, "folder", None) else None})
+                elif any(mine.get(it["id"]) == c.version for it in c.items):
+                    was = {i: r[3] for i, r in self._rows([it["id"] for it in c.items]).items()}
+                    try:
+                        out = self.undo(c)                      # nested: one transaction, one version
+                    except UndoRefused:                         # (a kind no Undo takes back: left as it is)
+                        continue
+                    now = self._rows(list(was))
+                    moved = [i for i in was if i in now and now[i][3] != was[i]]
+                    self.conn.executemany("UPDATE items SET changed_in = ? WHERE id = ?",
+                                          [(cmd.version, i) for i in moved])
+                    back.update(moved)
+                    change.status += list(getattr(out, "status", None) or ())
+            walk()
+            change.items = [it for it in change.items if it["id"] in back]
+            return change if change.items or change.ignored else None
+
+    def _unsort_plain(self, cmd, plain, mine, rows, reset):
+        """`unsort`'s plain placements, newest first: their items back as each Undo puts them (`_walk_back` over one
+        load of the tiers; the Finished date, the piece hint, the placement log), `changed_in` the reset's own; their
+        values by the value check (`_undo_status`), the pieces their settling re-cut mended (`_unpiece`). The values
+        written go on `reset` (its Undo's value check). -> the ids put back."""
+        items = [(c, it) for c in plain for it in c.items if mine.get(it["id"]) == c.version]
+        okset = {it["id"] for _c, it in items}
+        if not okset:
+            return set()
+        tiers = {it["tier"] for _c, it in items} | {rows[i][1] for i in okset}
+        seqs, ords = self._seqs(tiers)
+        for i in okset:
+            seqs[rows[i][1]].remove(i)
+        for c in plain:
+            _walk_back(seqs, c.items, {it["id"] for it in c.items if mine.get(it["id"]) == c.version})
+        self._write_seqs(seqs, ords, okset, lambda i: cmd.version)
+        self.conn.executemany("UPDATE items SET graduated_at = ? WHERE id = ?",
+                              [(it.get("graduated_at"), it["id"]) for _c, it in items if it["tier"] != rows[it["id"]][1]])
+        for _c, it in items:
+            if it.get("piece") is not None:
+                cmd.hints[it["id"]] = it["piece"]               # back in the piece it came from (05 §5.2)
+            cmd.event(it["id"], "placed", it.get("explicit", 1))
+        cmd.touch(tiers, within=all(it["tier"] == rows[it["id"]][1] for _c, it in items))
+        columns = {r[1] for r in self.conn.execute("PRAGMA table_info(items)")}
+        wanted = sorted({s[1] for c in plain for s in c.status if s[1] in columns})
+        held = {}                                               # (id, column) -> its value now, read once
+        for col in wanted:
+            for part in _chunks(sorted(okset), 500):
+                for i, v in self.conn.execute(f"SELECT id, {col} FROM items WHERE id IN ({','.join('?' * len(part))})",
+                                              part):
+                    held[(i, col)] = v
+        for c in plain:
+            own = {i for i, v in mine.items() if v == c.version}   # its own items (an item placed twice: the newest)
+            one = Change(c.kind, c.epoch, c.version)
+            one.status = [s for s in c.status if s[0] in own and s[1] in columns]
+            one.repieced = [r for r in c.repieced if r[0] in own]
+            one.piece_fields, one.dropped = c.piece_fields, c.dropped
+            if one.status:
+                reset.status += [(i, col, new, old) for i, col, old, new in one.status
+                                 if (i, col) in held and held[(i, col)] == new]    # what the value check puts back
+                self._undo_status(cmd, one)
+            self._unpiece(cmd, one)
+        return okset
 
     # --- Finished (05 §5.7–5.8): never a known word, never a card deleted ------------------------------ #
 
@@ -5479,51 +5680,16 @@ class Store:
         items = change.items
         cur = self._rows([it["id"] for it in items])
         ok = [it for it in items if it["id"] in cur and cur[it["id"]][3] == change.version]
-        skipped = [it["id"] for it in items if it not in ok]
+        okset = {it["id"] for it in ok}
+        skipped = [it["id"] for it in items if it["id"] not in okset]    # (by id: a 20k Undo, Mado-O)
         if not ok:
             return out, skipped
-        okset = {it["id"] for it in ok}
         tiers = {it["tier"] for it in ok} | {cur[it["id"]][1] for it in ok}
         seqs, ords = self._seqs(tiers)
         for it in ok:
             seqs[cur[it["id"]][1]].remove(it["id"])
         info = {it["id"]: it for it in items}
-        inset = set(info)
-        restored = set()
-        for it in items:
-            if it["id"] not in okset:
-                continue
-            seq = seqs[it["tier"]]
-            where = None
-            p, seen = it["prev"], set()
-            while p is not None and p not in seen:
-                seen.add(p)
-                if p in inset:
-                    if p in restored:
-                        where = ("after", p)
-                        break
-                    p = info[p]["prev"]
-                    continue
-                if p in seq:
-                    where = ("after", p)
-                break
-            if where is None:
-                n, seen = it["next"], set()
-                while n is not None and n not in seen:
-                    seen.add(n)
-                    if n in inset:
-                        n = info[n]["next"]
-                        continue
-                    if n in seq:
-                        where = ("before", n)
-                    break
-            if where is None:
-                seq.insert_after(it["id"], None)
-            elif where[0] == "after":
-                seq.insert_after(it["id"], where[1])
-            else:
-                seq.insert_before(it["id"], where[1])
-            restored.add(it["id"])
+        _walk_back(seqs, items, okset)
         self._write_seqs(seqs, ords, okset, lambda i: info[i]["changed_in"])
         for it in ok:
             if it.get("piece") is not None:

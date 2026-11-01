@@ -85,8 +85,35 @@ def _log_end(code):
         log_error(f"Ended {_run.get('command')} after {time.monotonic() - started:.1f} s (exit {code})")
 
 
+def _hold_running(command, headless):
+    """This program's running mark for its life (Fresh library, P13: what *Start over completely* waits for, on every
+    OS) -> True when held. A Start over or Put back running (the profile-move lock): waited for, then logged, said
+    (unless headless) and exit 3 — nothing of the profile is touched while it moves. A mark that can't be taken is only
+    logged: never a refusal to start."""
+    from app import locks
+    try:
+        return locks.hold_running(command)
+    except locks.MoveRunning:
+        log_error(f"{command}: a Start over or Put back is running; not started")
+        if not headless:
+            _error_box("Surasura", locks.MOVE_RUNNING)
+        sys.exit(3)
+    except Exception as e:
+        log_error(f"{command}: its running mark couldn't be taken ({e!r})")
+        return False
+
+
+def init_telemetry():
+    """Telemetry's start (either window): the Tk dashboard's here, the 3.0 window's after its start gate."""
+    try:
+        from app import telemetry
+        telemetry.init()
+    except Exception as e:
+        log_error(f"Telemetry init failed: {e}")
+
+
 def run():
-    """The program: one command (`main`, the dispatch), its end logged (`_log_end`)."""
+    """The program: one command (`main`, the dispatch), its end logged (`_log_end`), its running mark held throughout."""
     import time
     args = [arg for arg in sys.argv[1:] if arg != "--headless"]
     command = args[0] if args else "window"
@@ -94,7 +121,9 @@ def run():
         return main()
     _run.update(command=command, started=time.monotonic())
     code = 0
+    marked = False
     try:
+        marked = _hold_running(command, "--headless" in sys.argv[1:])
         main()
     except SystemExit as e:
         code = 0 if e.code is None else e.code
@@ -104,6 +133,9 @@ def run():
         raise
     finally:
         _log_end(code)
+        if marked:
+            from app import locks
+            locks.release_running()
 
 
 def main():
@@ -300,20 +332,15 @@ def main():
             log_error("Headless: nothing to run; the dashboard never opens headless")
             sys.exit(2)
 
-        # Telemetry Initialization (either window)
-        try:
-            from app import telemetry
-            telemetry.init()
-        except Exception as e:
-            log_error(f"Telemetry init failed: {e}")
-
         # Default: the window. On the 3.0 line that is the PyQt6 window (W2.1, the window's spec 01 §1.6); the Tk
-        # dashboard opens for `dashboard`, or when PyQt6 is missing.
+        # dashboard opens for `dashboard`, or when PyQt6 is missing. The window's telemetry starts after its start gate
+        # (`shell.main`): it reads settings.json, which a Start over moves at the gate (Fresh library, R2)
         window = None if use_tk else _qt_window()
         if window is not None:
             log_error("Launching the window")
-            sys.exit(window.main(list(sys.argv)) or 0)
+            sys.exit(window.main(list(sys.argv), after_gate=init_telemetry) or 0)
 
+        init_telemetry()
         log_error("Launching Dashboard")
         from app import main as dashboard
         dashboard.main()

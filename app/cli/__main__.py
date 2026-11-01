@@ -115,15 +115,41 @@ def _refresh_tools_entry(verb):
         contract.log.exception("surasura.json (the shared tools file) wasn't refreshed")
 
 
+def _hold_running(kind):
+    """The call's running mark (Fresh library, P13: what *Start over completely* waits for) -> True when held. A Start
+    over or Put back running: waited for, then `busy` (nothing of the profile is read while it moves). A mark that
+    can't be taken is only logged."""
+    from app import locks
+    try:
+        return locks.hold_running(kind)
+    except locks.MoveRunning:
+        raise contract.CliError("busy", locks.MOVE_RUNNING) from None
+    except Exception:
+        contract.log.exception("the running mark wasn't taken")
+        return False
+
+
 def main(argv=None, out=None):
     """Run one call; returns its exit code. `out` replaces stdout (tests)."""
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["mcp"]:
-        # The MCP server (app/cli/mcp_server.py) owns stdout as its wire: no JSON channel, no swapped stdout.
+        # The MCP server (app/cli/mcp_server.py) owns stdout as its wire: no JSON channel, no swapped stdout. Its
+        # running mark is held while it serves.
+        from app import locks
         from app.cli import mcp_server
-        return mcp_server.main(argv[1:])
+        try:
+            marked = _hold_running("mcp")
+        except contract.CliError as e:
+            sys.stderr.write(f"surasura-cli mcp: {e.message}\n")
+            return contract.EXIT_CODES["busy"]
+        try:
+            return mcp_server.main(argv[1:])
+        finally:
+            if marked:
+                locks.release_running()
     contract.open_channel(out)
     saved = sys.stdout, sys.stderr
+    marked = []
     try:
         root = _root_option(argv)        # before parsing: a usage error under --root logs into that root too
         if root:
@@ -142,6 +168,8 @@ def main(argv=None, out=None):
         def call():
             if usage is not None:
                 raise usage
+            if not args.version:
+                marked.append(_hold_running("cli"))
             if verb not in ANSWER_WHILE_UPDATING:
                 contract.check_update()
             contract.check_build(store=not args.version)    # a mixed program folder is refused, --version too
@@ -153,6 +181,9 @@ def main(argv=None, out=None):
 
         return contract.run(verb, call, argv, progress=getattr(args, "progress", False))
     finally:
+        if any(marked):
+            from app import locks
+            locks.release_running()
         sys.stdout, sys.stderr = saved
         contract.close_log()
 

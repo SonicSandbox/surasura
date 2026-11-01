@@ -12609,6 +12609,15 @@ RESET_DAMAGED = "Your library needs Repair first."
 RESET_LINKED = ("A linked folder in your data folder is in the way ({path}): Surasura never moves or removes what a "
                 "link leads to. Remove the link (never its folder), then sort your library again.")
 RESET_NOT_ALL_BACK = "Part of your library couldn't be put back; it is in the backup ({folder})"
+# Fresh library (3.0.1): a record's kind — a Sorted-again backup, or the library a Put back set aside first (3.0's
+# records have none: Sorted again) — and Put back's refusals (nothing changed)
+RESET_KIND_SORT = "sort-again"
+RESET_KIND_OVER = "put-back-over"
+RESET_ROOM = "Needs about {mb} MB free on {drive}."
+RESET_NEWER = "Made by a newer Surasura ({version}): update first."
+RESET_NOT_BACKUP = "This backup can't be put back ({why}); nothing was changed."
+ROOM_SPARE = 100 * 1024 * 1024    # bytes beyond the store's two copies (P3: the copy, the one write's growth)
+PUT_BACK_PENDING = "put_back_pending"   # meta: a Put back committed, its files not all back yet (the backup's name)
 
 
 class ResetRefused(StoreError):
@@ -12751,8 +12760,7 @@ def _put_back(dst, src):
     """One `_set_aside` undone — recorded before it began, so one that stopped part way (a copy checked, some files
     removed) is undone too (H1 / LF-6): when nothing is left at `src`, the backup renamed back; else each file of the
     backup missing at `src` copied back, never over a file there (the original: a byte check that failed leaves bad
-    bytes in the backup). The backup's copy then stays."""
-    import shutil
+    bytes in the backup), each copy checked (`_copy_checked`). The backup's copy then stays."""
     if not os.path.lexists(dst):
         return
     if not os.path.lexists(src):
@@ -12763,14 +12771,27 @@ def _put_back(dst, src):
             pass
     if not os.path.isdir(dst):
         if not os.path.lexists(src):
-            shutil.copy2(dst, src)
+            _copy_checked(dst, src)
         return
     for where, _dirs, names in os.walk(dst):
         here = os.path.normpath(os.path.join(src, os.path.relpath(where, dst)))
         os.makedirs(here, exist_ok=True)
         for n in names:
             if not os.path.lexists(os.path.join(here, n)):
-                shutil.copy2(os.path.join(where, n), os.path.join(here, n))
+                _copy_checked(os.path.join(where, n), os.path.join(here, n))
+
+
+def _copy_checked(a, b):
+    """`a` copied to `b` (a name nothing holds) and its bytes checked (S2, F4): a copy that doesn't match is removed
+    again and raises, so a file put back is whole or not there."""
+    import shutil
+    shutil.copy2(a, b)
+    if not _same_bytes(a, b):
+        try:
+            os.remove(b)
+        except OSError:
+            pass
+        raise OSError(f"the copy put back from {a} did not match it")
 
 
 def _write_record(folder, record):
@@ -12844,6 +12865,7 @@ def start_fresh(store, forget_known=False, _step=None):
         try:
             if not lock.try_acquire():
                 raise ResetRefused(RESET_BUSY)
+            _check_room(store)
             return _start_fresh(store, forget_known, step)
         finally:
             lock.close()
@@ -12852,7 +12874,9 @@ def start_fresh(store, forget_known=False, _step=None):
             h.release()
 
 
-def _start_fresh(store, forget_known, step):
+def _start_fresh(store, forget_known, step, kind=RESET_KIND_SORT, write=None, extra=None):
+    """`start_fresh`'s steps (1)–(6) under its locks; `write(store)` (Put back's) replaces the one write's emptying
+    (`_reset_tables`) and the caller goes on from the commit -> (folder, record); `extra` joins the record."""
     from contextlib import ExitStack
     from app import sources
     language, data_dir, user_files_dir = store.language, store.data_dir, store.user_files_dir
@@ -12884,7 +12908,8 @@ def _start_fresh(store, forget_known, step):
                               "to": os.path.join(folder, "data", name)})
         db_copy = os.path.join(folder, os.path.basename(store.db_path))
         record = {"language": language, "status": "started", "started_at": _now(), "db": store.db_path,
-                  "db_copy": db_copy, "moves": moves, "known": None,
+                  "db_copy": db_copy, "moves": moves, "known": None, "kind": kind, "app_version": _app_version(),
+                  **(extra or {}),
                   "how_to_put_back": "Close Surasura. Copy db_copy over db (delete db's -wal and -shm first) when the "
                                      "status is written or done, then move every 'to' back to its 'from'."}
         _write_record(folder, record)
@@ -12903,7 +12928,7 @@ def _start_fresh(store, forget_known, step):
                         if left:
                             move["left"] = left         # D5: never removed, no checked copy; named in reset.json
                 step(name)
-            _reset_tables(store)
+            (write or _reset_tables)(store)
             step("wipe")
             store.conn.execute("COMMIT")
         except Exception as e:
@@ -12924,6 +12949,8 @@ def _start_fresh(store, forget_known, step):
             raise
         record["status"] = "written"                    # committed: from here on nothing is the reset's failure (H2)
         _after_commit("its record", _write_record, folder, record)
+    if write is not None:
+        return folder, record
     return _after_write(store, folder, record, forget_known, step)
 
 
@@ -13062,6 +13089,391 @@ def unfinished_reset(user_files_dir, told=False):
         except (OSError, ValueError, AttributeError, TypeError):
             continue
     return None
+
+
+# --- Put back a Sorted-again backup (Fresh library, 3.0.1; the spec §6.2, P3, P4, P9, P10b) ---------------------- #
+
+def room_for(store):
+    """P3: the free bytes a Sort again or a Put back needs on the library's backup folder's drive -> bytes: two of the
+    store (its copy into the backup, and the one write's growth: a Put back's scratch copy too), every entry of
+    `data/<lang>` that sits on another drive (it would be copied, not renamed), and ROOM_SPARE."""
+    size = 0
+    for suffix in ("", "-wal"):
+        try:
+            size += os.path.getsize(store.db_path + suffix)
+        except OSError:
+            pass
+    need = 2 * size + ROOM_SPARE
+    trash = os.path.join(store.user_files_dir, ".trash")
+    try:
+        dev = os.stat(trash if os.path.isdir(trash) else store.user_files_dir).st_dev
+        names = os.listdir(store.data_dir) if os.path.isdir(store.data_dir) else []
+    except OSError:
+        return need
+    for name in names:
+        path = os.path.join(store.data_dir, name)
+        try:
+            if os.lstat(path).st_dev == dev:
+                continue
+        except OSError:
+            continue
+        for where, _dirs, files in os.walk(path):
+            for n in files:
+                try:
+                    need += os.lstat(os.path.join(where, n)).st_size
+                except OSError:
+                    pass
+    return need
+
+
+def _check_room(store):
+    """`room_for` against the drive's free space -> None; short -> ResetRefused(RESET_ROOM), nothing changed. A drive
+    whose free space can't be read is never refused for it."""
+    import shutil
+    where = store.user_files_dir if os.path.isdir(store.user_files_dir) else os.path.dirname(store.user_files_dir)
+    try:
+        free = shutil.disk_usage(where).free
+    except OSError:
+        return
+    need = room_for(store)
+    if free < need:
+        drive = os.path.splitdrive(os.path.abspath(where))[0] or os.path.abspath(where)
+        raise ResetRefused(RESET_ROOM.format(mb=-(-need // (1024 * 1024)), drive=drive))
+
+
+def _backup_record(folder):
+    """A Sorted-again backup's record -> (record, its moves with each `to` and `from` worked out again from the backup
+    folder and the library's places now — never the absolute paths it was written with: a library folder moved since
+    still puts back). 3.0's records (no `kind`) read as Sorted again."""
+    with open(os.path.join(folder, RESET_RECORD), encoding="utf-8") as f:
+        record = json.load(f)
+    if not isinstance(record, dict) or not isinstance(record.get("moves"), list):
+        raise ValueError("its record isn't one")
+    then = os.path.dirname(str(record.get("db_copy") or os.path.join(folder, "x")))
+    record["db_copy"] = os.path.join(folder, os.path.basename(str(record.get("db_copy") or "")))
+    moves = []
+    for move in record["moves"]:
+        rel = os.path.relpath(str(move["to"]), then)
+        moves.append(dict(move, to=os.path.join(folder, rel), rel=rel))
+    return record, moves
+
+
+def _from_now(store, move):
+    """Where a recorded move goes back to now (its step and name, under the store's own places)."""
+    from app import sources
+    if move["step"] == "manifest":
+        return manifest_path(store.user_files_dir)
+    if move["step"] == "cache":
+        return sources.cache_path(store.language)
+    return os.path.join(store.data_dir, os.path.basename(str(move["from"])))
+
+
+def _ro(path):
+    """A read-only, immutable connection on a backup's store copy: never a byte of it written (no -wal, no -shm)."""
+    import pathlib
+    return sqlite3.connect(pathlib.Path(path).as_uri() + "?mode=ro&immutable=1", uri=True, isolation_level=None)
+
+
+def _scratch_of(store, record):
+    """The backup's store copy copied to a scratch database beside the store (the backup is never written), checked
+    whole, and brought up to this program's schema there when it is older -> the scratch path. Refused (ResetRefused)
+    when the copy isn't whole or a newer Surasura made it."""
+    scratch = store.db_path + ".put-back.db"
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            os.remove(scratch + suffix)
+        except FileNotFoundError:
+            pass
+    try:
+        src = _ro(record["db_copy"])
+    except sqlite3.Error as e:
+        raise ResetRefused(RESET_NOT_BACKUP.format(why=f"its library copy can't be read: {e}")) from None
+    try:
+        try:
+            if [r[0] for r in src.execute("PRAGMA quick_check")] != ["ok"]:
+                raise ResetRefused(RESET_NOT_BACKUP.format(why="its library copy is damaged"))
+            version = src.execute("PRAGMA user_version").fetchone()[0]
+            _copy_db(src, scratch)
+            if not _copy_whole(src, scratch):
+                raise ResetRefused(RESET_NOT_BACKUP.format(why="its library copy didn't copy whole"))
+        except sqlite3.DatabaseError as e:
+            raise ResetRefused(RESET_NOT_BACKUP.format(why=f"its library copy can't be read: {e}")) from None
+    finally:
+        src.close()
+    if version > STORE_SCHEMA:
+        _drop_scratch(scratch)
+        raise ResetRefused(RESET_NEWER.format(version=record.get("app_version") or f"library version {version}"))
+    if version < STORE_SCHEMA:
+        try:
+            old = Store(scratch, store.language, store.data_dir, store.user_files_dir, role="helper")
+            try:
+                _upgrade(old)
+            finally:
+                old.close()
+        except Exception as e:
+            _drop_scratch(scratch)
+            raise ResetRefused(RESET_NOT_BACKUP.format(why=f"its library copy couldn't be brought up to date: {e}"))
+    return scratch
+
+
+def _drop_scratch(scratch):
+    import glob
+    for path in [scratch + s for s in ("", "-wal", "-shm", "-journal", ".lock", ".wlock", ".damaged")] +             glob.glob(glob.escape(scratch) + ".bak.*"):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _table_columns(conn, schema, table):
+    return [r[1] for r in conn.execute(f'PRAGMA "{schema}".table_info("{table}")')]
+
+
+def _put_back_tables(store, name):
+    """Put back's one write (inside `_start_fresh`'s write lock, the backup's scratch copy ATTACHed as `old`): the
+    library's own tables, `roots` and every exclusion replaced from it, row for row; Connect's never-again sets the
+    union of both (a card made or deleted since is never made again); meta the copy's, with a new store_id, the
+    epoch and every version above both (P4: Connect's queued jobs drop, every window reads in full), the id sequences
+    at the higher of the two (ids never reused), and PUT_BACK_PENDING naming the backup until its files are back
+    (`_files_back`). Committed by the caller."""
+    conn = store.conn
+    now = store._meta()
+    old = dict(conn.execute("SELECT key, value FROM old.meta").fetchall())     # as stored (`_set_meta`: str)
+    seq = {n: s for n, s in conn.execute("SELECT name, seq FROM main.sqlite_sequence")}
+    old_seq = {n: s for n, s in conn.execute("SELECT name, seq FROM old.sqlite_sequence")} \
+        if conn.execute("SELECT 1 FROM old.sqlite_master WHERE name = 'sqlite_sequence'").fetchone() else {}
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("PRAGMA defer_foreign_keys = ON")
+    for sql in ADDED_TABLES_SQL:
+        conn.execute(sql)
+    tables = ("roots", "pieces", "works", "items") + tuple(t for t in RESET_TABLES if t not in
+                                                            ("pieces", "works", "items")) + ("exclusions",)
+    for table in reversed(tables):
+        conn.execute(f"DELETE FROM main.{table}")
+    for table in tables:
+        if not conn.execute("SELECT 1 FROM old.sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+            continue
+        cols = [c for c in _table_columns(conn, "old", table) if c in set(_table_columns(conn, "main", table))]
+        names = ", ".join(f'"{c}"' for c in cols)
+        conn.execute(f"INSERT INTO main.{table} ({names}) SELECT {names} FROM old.{table}")
+    if conn.execute("SELECT 1 FROM old.sqlite_master WHERE name = 'made_words'").fetchone():
+        have = {(i, w): _json_list(n) for i, w, n in conn.execute("SELECT item_id, word, note_ids FROM main.made_words")}
+        for item_id, word, notes, made_at, batch in conn.execute(
+                "SELECT item_id, word, note_ids, made_at, batch FROM old.made_words").fetchall():
+            if (item_id, word) not in have:
+                conn.execute("INSERT INTO main.made_words (item_id, word, note_ids, made_at, batch) VALUES "
+                             "(?, ?, ?, ?, ?)", (item_id, word, notes, made_at, batch))
+                continue
+            both = have[(item_id, word)] + [n for n in _json_list(notes) if n not in have[(item_id, word)]]
+            conn.execute("UPDATE main.made_words SET note_ids = ? WHERE item_id = ? AND word = ?",
+                         (_dumps(both), item_id, word))
+    if conn.execute("SELECT 1 FROM old.sqlite_master WHERE name = 'made_lines'").fetchone():
+        cols = ", ".join(f'"{c}"' for c in _table_columns(conn, "old", "made_lines")
+                         if c in set(_table_columns(conn, "main", "made_lines")))
+        conn.execute(f"INSERT OR IGNORE INTO main.made_lines ({cols}) SELECT {cols} FROM old.made_lines")
+    for table in set(seq) | set(old_seq):
+        top = max(int(seq.get(table) or 0), int(old_seq.get(table) or 0))
+        if conn.execute("UPDATE main.sqlite_sequence SET seq = ? WHERE name = ?", (top, table)).rowcount == 0:
+            conn.execute("INSERT INTO main.sqlite_sequence (name, seq) VALUES (?, ?)", (table, top))
+    meta = dict(old)
+    meta["store_id"] = uuid.uuid4().hex
+    for key in ("epoch", "state_version", "order_version", "availability_version", "pins_version"):
+        meta[key] = max(_int(now.get(key)), _int(old.get(key))) + 1
+    meta["log_seq"] = max(_int(now.get("log_seq")), _int(old.get("log_seq")))
+    meta = {k: v for k, v in meta.items() if not k.startswith("reader")}
+    meta.update({k: v for k, v in now.items() if k.startswith("reader")})   # Connect read the log up to here
+    for key in ("newer_copy", "migration_failed", "upgrade_failed", "reimport_pending", PUT_BACK_PENDING):
+        meta.pop(key, None)
+    meta.update(copy_dirty=1, migrated_at=_now(), put_back_at=_now())
+    meta[PUT_BACK_PENDING] = name
+    conn.execute("DELETE FROM main.meta")
+    store._set_meta(meta)
+
+
+def _int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def put_back_library(store, folder, _step=None):
+    """*Put back…* a Sorted-again backup (`folder`: `User Files/<lang>/.trash/library-reset-<stamp>/`, 3.0's too) of
+    `store`'s language, in the running window (its looks' worker, the watches let go) -> {"backup": the backup the
+    library now went into, "put_back": `folder`, "sources": root ids}. Under `start_fresh`'s locks, Connect's taken
+    (never only checked), and its refusals; ResetRefused too for a backup that isn't whole or finished (a part
+    missing, its record not written or done, its copy damaged), made by a newer Surasura (RESET_NEWER), or room short
+    (RESET_ROOM). Nothing is ever merged (Q1) but Connect's never-again sets.
+
+    In order: (1) the backup checked, and its store copy copied to a scratch database beside the store and brought up
+    to date there (the backup's bytes never change); (2) the library now set aside exactly as Sort again sets it aside
+    (`_start_fresh`'s steps 1–5, a backup of its own, kind RESET_KIND_OVER: Put back can itself be put back);
+    (3) the one write (`_put_back_tables`) and its commit — before it, an error puts every move of (2) back, as
+    `start_fresh` does; (4) after it, `_files_back`: the backup's folder times and `data/<lang>` entries moved back
+    (never over a file there), what comes back into `data/<lang>/.trash` given a new 30-day clock, a fresh JSON copy
+    (the backup's manifest names the old store_id: never moved back), the backup's record `put-back`. A kill after the
+    commit leaves PUT_BACK_PENDING in the store: the next look finishes (4) first (`finish_put_back`, P10b). A 3.0
+    backup made with *Also forget my known words* puts back the library only (P9): known words are never touched."""
+    step = _step or (lambda _name: None)
+    if update_staged():
+        raise ResetRefused(RESET_UPDATE)
+    try:
+        record, moves = _backup_record(folder)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise ResetRefused(RESET_NOT_BACKUP.format(why=f"its record can't be read: {e}")) from None
+    if record.get("status") not in ("written", "done") or record.get("language") not in (None, store.language):
+        raise ResetRefused(RESET_NOT_BACKUP.format(why=f"it never finished ({record.get('status')})"))
+    mine, theirs = _version_of(_app_version()), _version_of(record.get("app_version"))
+    if mine and theirs > mine:
+        raise ResetRefused(RESET_NEWER.format(version=record.get("app_version")))
+    for move in moves:
+        if move["step"] != "manifest" and not os.path.lexists(move["to"]):
+            raise ResetRefused(RESET_NOT_BACKUP.format(why=f"{move['rel']} isn't in it"))
+    from app import locks
+    token = object()
+    held = []
+    try:
+        try:
+            held.append(locks.take("results", "Putting your library back", owner=token))
+        except locks.Busy:
+            raise ResetRefused(RESET_GENERATE) from None
+        try:
+            held.append(locks.take("connect", "Putting your library back", owner=token))
+        except locks.Busy:
+            raise ResetRefused(RESET_CONNECT) from None
+        lock = MaintenanceLock(store.db_path)
+        try:
+            if not lock.try_acquire():
+                raise ResetRefused(RESET_BUSY)
+            _check_room(store)
+            scratch = _scratch_of(store, record)
+            step("scratch")
+            try:
+                store.conn.execute("ATTACH DATABASE ? AS old", (scratch,))
+                try:
+                    name = os.path.basename(folder)
+                    aside, aside_record = _start_fresh(store, False, step, kind=RESET_KIND_OVER,
+                                                       write=lambda s: _put_back_tables(s, name),
+                                                       extra={"put_back_of": name})
+                finally:
+                    store.conn.execute("DETACH DATABASE old")
+            finally:
+                _drop_scratch(scratch)
+            step("committed")
+            _after_commit("its record", _write_record, folder, dict(record, status="files-back",
+                                                                    put_back_over=os.path.basename(aside)))
+            _files_back(store, folder, step)
+            aside_record.update(status="done", finished_at=_now())
+            _after_commit("its record", _write_record, aside, aside_record)
+        finally:
+            lock.close()
+    finally:
+        for h in reversed(held):
+            h.release()
+    rows = _after_commit("the folders' list", store.sources) or []
+    return {"backup": aside, "put_back": folder, "sources": [r["id"] for r in rows]}
+
+
+def _version_of(text):
+    out = []
+    for piece in str(text or "").split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            break
+        out.append(int(digits))
+    return tuple(out)
+
+
+def _files_back(store, folder, step=None):
+    """A committed Put back's files (`put_back_library`'s step 4; `finish_put_back`'s): each recorded move but the
+    manifest's back where it came from (`_put_back`: a rename, else copied and checked, never over a file there),
+    `data/<lang>/.trash` given a new clock, a fresh JSON copy, the bell, PUT_BACK_PENDING cleared and the backup's
+    record `put-back` -> the moves that couldn't come back (named in the record, `not_put_back`). Best-effort."""
+    step = step or (lambda _name: None)
+    try:
+        record, moves = _backup_record(folder)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"Put back: the backup's record can't be read ({e!r}); its files stay in it")
+        if os.path.isdir(folder):
+            return []
+        record, moves = None, []                        # the backup is gone: nothing left to bring back
+    left = []
+    for move in moves:
+        if move["step"] == "manifest":
+            continue                                    # its store_id is the old one's: exported fresh instead
+        back = _from_now(store, move)
+        try:
+            _put_back(move["to"], back)
+            if move["step"] == "data" and os.path.basename(back) == ".trash":
+                restart_trash_clock(back)               # waited in the backup: never purged at once for it
+        except Exception as e:
+            left.append({"from": back, "to": move["to"], "error": repr(e)})
+        step(f"back:{move['rel']}")
+    _after_commit("the JSON copy (it waits for the next save)", export_copy, store)
+    try:
+        with store._writing():
+            store.conn.execute("DELETE FROM meta WHERE key = ?", (PUT_BACK_PENDING,))
+    except Exception as e:
+        print(f"Put back: its mark couldn't be cleared ({e!r}); the next look finishes it")
+        return left
+    _after_commit("the windows' bell", library_watch.ring, store.db_path)
+    if record is not None:
+        record.update(status="put-back", put_back_at=_now())
+        if left:
+            record["not_put_back"] = left
+        _after_commit("its record", _write_record, folder, record)
+    step("put-back")
+    return left
+
+
+def finish_put_back(store):
+    """P10b: a Put back killed after its commit (PUT_BACK_PENDING in the store's meta) finished forward, its files
+    moved back — before any look reads the folders (`sources.scan`) -> True when one was finished. One meta read
+    when there is none. Under the maintenance lock (the export's); held elsewhere, the next look tries again."""
+    try:
+        with store._reading():
+            row = store.conn.execute("SELECT value FROM meta WHERE key = ?", (PUT_BACK_PENDING,)).fetchone()
+    except Exception:
+        return False
+    if row is None:
+        return False
+    folder = os.path.join(store.user_files_dir, ".trash", os.path.basename(str(row[0])))
+    lock = MaintenanceLock(store.db_path)
+    try:
+        if not lock.try_acquire():
+            return False
+        _files_back(store, folder)
+        return True
+    finally:
+        lock.close()
+
+
+def renew_after_put_back(language, data_dir, user_files_dir):
+    """P4 after a Started-over backup is put back (`profile_reset`, at the start gate): the store put back gets a new
+    store_id and its epoch and versions + 1 (Connect's jobs queued since drop; every window reads it in full), and a
+    fresh JSON copy. Connect's never-again sets are not merged from the profile set aside: its store is another
+    library, whose item ids name other items. -> True when renewed."""
+    store = open_store(language, data_dir, user_files_dir, role="helper")
+    if store is None:
+        return False
+    try:
+        lock = MaintenanceLock(store.db_path)
+        try:
+            if not lock.try_acquire():
+                return False
+            with store._writing():
+                meta = store._meta()
+                renewed = {"store_id": uuid.uuid4().hex, "copy_dirty": 1}
+                for key in ("epoch", "state_version", "order_version", "availability_version", "pins_version"):
+                    renewed[key] = int(meta.get(key) or 0) + 1
+                store._set_meta(renewed)
+            _after_commit("the JSON copy (it waits for the next save)", export_copy, store)
+            _after_commit("the windows' bell", library_watch.ring, store.db_path)
+            return True
+        finally:
+            lock.close()
+    finally:
+        store.close()
 
 
 # ------------------------------------------------------------------------------------------------ #

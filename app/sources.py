@@ -199,6 +199,10 @@ def scan(store, language, root, first=False, progress=None, stop=None, full=Fals
             return _result(busy=True)
         _RUNNING.add(key)
     try:
+        try:                                    # P10b: a Put back killed after its commit finishes before any look
+            ls.finish_put_back(store)
+        except Exception as e:                  # (never in the look's way: the next look tries again)
+            print(f"Sources: a Put back's files couldn't be finished: {e!r}")
         if key not in _EMPTIED:                 # A5K-2: before this run's first look puts any copy back (item 8a)
             try:
                 store.note_emptied()

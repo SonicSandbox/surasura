@@ -3701,14 +3701,11 @@ class _Look:
 
     def _buckets(self, k, o, table=None):
         """The (table, bucket)s the origin `o` (at key `k`) is filed under — each table's own rule, as it always read
-        (`table`: that table's only)."""
+        (`table`: that table's only; the show table is grouped by folder in `_members`)."""
         if table == "item":
             return [("item", o.item_id)]
-        folder = (o.rel_path or "").rpartition("/")[0]
-        if table == "show":
-            return [("show", self._folder_key(folder))]
         head, _sep, number = k.rpartition("#")
-        out = [] if table else [("item", o.item_id), ("show", self._folder_key(folder))]
+        out = [] if table else [("item", o.item_id), ("show", self._folder_key((o.rel_path or "").rpartition("/")[0]))]
         if head:
             out.append(("head", head))                       # `_book_keys`
         if head and number.isdigit() and ls._EPUB_PART.search(str(o.origin or "")):

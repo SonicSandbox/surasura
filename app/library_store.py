@@ -4562,11 +4562,11 @@ class Store:
                     run.append(c)
                     continue
                 walk()
-                if any(c is i for i in ignores):                # SO-1: an Ignore, by its own Undo
-                    if not any(not r["restored_at"] for r in self.trash_rows(c.trash_ids)):
-                        continue                                # (put back meanwhile: nothing of it to bring back)
-                    out = self.undo(c, rel_paths=rel_paths)
+                if any(c is i for i in ignores):                # SO-1: an Ignore, by its own Undo (one put back
+                    out = self.undo(c, rel_paths=rel_paths)     # meanwhile brings nothing)
                     if getattr(out, "added", None):
+                        self.conn.executemany("UPDATE items SET changed_in = ? WHERE id = ?",   # the reset's own: its
+                                              [(cmd.version, i) for i in out.added])         # Undo leaves one touched
                         change.ignored.append({"ids": list(out.added), "of": c.version,
                                                "folder": c.folder_path if getattr(c, "folder", None) else None})
                 elif any(mine.get(it["id"]) == c.version for it in c.items):

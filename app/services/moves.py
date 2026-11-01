@@ -374,10 +374,19 @@ class Writer:
         ignored again by its Undo (`_undo_start_over`), after which each Ignore's own Undo takes back the new one. Journalled with the placements' records (`library_store.change_record`): a crash before it lands replays
         it; one that landed before the crash is let go quietly."""
         from app import library_store
-        changes = [c for c in changes if c is not None]
+        with self._cond:                            # SO-1: an Ignore given again by a reset's Undo: its new change
+            changes = [self._latest(c) for c in changes if c is not None]
         placed = [library_store.change_record(c) for c in changes]
         ids = list(dict.fromkeys(it["id"] for rec in placed for it in rec["items"]))
         return self._put({"op": "start_over", "ids": ids, "placed": placed, "label": label, "changes": changes})
+
+    def _latest(self, change):
+        """(Under `_cond`.) `change`, or the change that took its place (`_replaced`, followed to the end)."""
+        seen = set()
+        while change in self._replaced and id(change) not in seen:
+            seen.add(id(change))
+            change = self._replaced[change]
+        return change
 
     def put_back(self, ids, label=None):
         """`Store.put_back_finished`: Finished's *Put back* — the top of Current and its cards back in the order, one
@@ -1139,13 +1148,17 @@ class Writer:
                 rel_paths = {}
                 for rec in cmd["placed"]:
                     if rec.get("kind") == "remove":
-                        for row in store.trash_rows(rec.get("trash_ids") or ()):
+                        ids = [t for t in rec.get("trash_ids") or () if isinstance(t, int)]
+                        for row in store.trash_rows(ids):
                             mine[row["id"]] = []
                             rel_paths.update(self._from_trash(store, [row], cmd, mine[row["id"]]))
                             moved += mine[row["id"]]
                 change = store.unsort(cmd["placed"], rel_paths=rel_paths)
                 left = [r["id"] for r in store.trash_rows(list(mine)) if not r["restored_at"]]
-                for trash_id in left:
+                for trash_id in left:               # its row stayed in the trash: so does its file (and no note)
+                    gone = {os.path.basename(back) for back, _was in mine[trash_id]}
+                    if cmd.get("renamed"):
+                        cmd["renamed"] = [n for n in cmd["renamed"] if n not in gone]
                     _move_back(mine[trash_id])
                 return change
         except BaseException:
@@ -1162,15 +1175,19 @@ class Writer:
         moved, made = [], []
         try:
             with store._writing():
-                out = store.undo(change) if change.items else None
-                if change.items and _refused(change, out):
-                    raise lib.UndoRefused("every title changed since")
+                out = store.undo(change) if change.items else None     # (per title: one moved since stays)
                 for ign in change.ignored:
-                    if ign.get("folder"):
-                        new = self._skip_folder(store, {"path": ign["folder"]}, moved)
-                    else:
-                        ids = [i for i in ign["ids"] if store.item(i) is not None]
-                        new = self._remove(store, {"ids": ids}, moved) if ids else None
+                    now = store.check(ign["ids"]).items
+                    ids = [i for i in ign["ids"] if now.get(i) == change.version]   # untouched since the reset
+                    new = None
+                    if ids and ign.get("folder") and len(ids) == len(ign["ids"]) and \
+                            set(store.items_under(ign["folder"])) == set(ids):
+                        try:
+                            new = self._skip_folder(store, {"path": ign["folder"]}, moved)
+                        except lib.NotASource:      # (skipped above it, or no source now: its titles alone)
+                            new = None
+                    if ids and new is None:         # the folder holds more now (a new episode): its titles alone
+                        new = self._remove(store, {"ids": ids}, moved)
                     made.append((ign.get("of"), new))
         except BaseException:
             cmd.pop("renamed", None)
@@ -1182,6 +1199,9 @@ class Writer:
                 old = next((c for c in sources if c.version == of), None)
                 if old is not None and new is not None:
                     self._replaced[old] = new
+                    for k, c in enumerate(self._undo):      # Ctrl+Z reaches the new one where the old one stood
+                        if c is old:
+                            self._undo[k] = new
         return out
 
     def _from_trash(self, store, rows, cmd, moved):
@@ -1479,9 +1499,10 @@ class Writer:
         if change is None:
             with self._cond:
                 change = cmd["change"] = self._undo[-1] if self._undo else None
+        asked = change
         with self._cond:                            # SO-1: an Ignore a Start over's Undo gave again: its new change
-            while change is not None and change in self._replaced:
-                change = cmd["change"] = self._replaced[change]
+            if change is not None:
+                change = cmd["change"] = self._latest(change)
         if change is None:
             self._landed(cmd)
             return
@@ -1512,7 +1533,9 @@ class Writer:
             refused = True
             cmd.pop("renamed", None)
         with self._cond:
-            for done in (change, then if tried else None):     # a drop refused first: its choice stays undoable
+            for done in (change, then if tried else None, asked if asked is not change else None):
+                if done is None:                    # (a drop refused first: its choice stays undoable)
+                    continue
                 try:
                     self._undo.remove(done)
                 except ValueError:

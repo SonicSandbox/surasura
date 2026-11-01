@@ -274,7 +274,7 @@ def test_a_skipped_folder_is_read_again_by_start_over_and_skipped_again_by_its_u
     store, shows = library(language)
     _a, _b, c = shows.values()
     w = M.Writer.__new__(M.Writer)                       # (no thread: only what these steps read)
-    w._cond, w._replaced = threading.Condition(), {}
+    w._cond, w._replaced, w._undo = threading.Condition(), {}, []
     ignore = M.Writer._skip_folder(w, store, {"op": "skip_folder", "path": os.path.join(store.test_source,
                                                                                          list(shows)[2])})
     reset = w._start_over(store, {"placed": [ls.change_record(ignore)]})

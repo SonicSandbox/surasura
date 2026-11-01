@@ -199,3 +199,63 @@ def test_with_anki_closed_the_line_gives_the_closed_reason_even_when_another_wai
     entry, = _anki_entries(_record(anki_session.UNUSABLE, anki_session.UNUSABLE, runner.ANKI_CLOSED, openable=True))
     assert entry.title == "Anki isn't open: 3 episodes wait for it"
     assert entry.data["reason"] == runner.ANKI_CLOSED != anki_session.UNUSABLE, entry.data
+
+
+# --- Mado-N (Sonic 2026-10-31, MA-1 / MA-2): AnkiConnect missing on the Anki line, Mado-A's one rule and words ------ #
+def _closed_with(running, n=19):
+    rec = _record(*[runner.ANKI_CLOSED] * n, openable=True)
+    if running != "unlooked":
+        rec["anki_running"] = running
+    return rec
+
+
+def test_anki_open_without_ankiconnect_says_so_with_the_steps_and_offers_no_open_anki():
+    # why: the stuck case (IK-4) — *Open Anki* answered "already open" and the line said Anki wasn't open
+    from app import ankiconnect_addon as A
+    entry, = _anki_entries(_closed_with(True))
+    assert entry.title == f"{A.NO_CONNECT}: 19 episodes wait for it"
+    assert entry.data["steps"] == "no_addon" and entry.actions == ()
+    assert entry.data["running"] is True and entry.data["closed"]
+
+
+def test_a_look_that_cant_tell_says_both_and_keeps_open_anki_with_open_anki_first_in_the_steps():
+    from app import ankiconnect_addon as A
+    entry, = _anki_entries(_closed_with(None, n=1))
+    assert entry.title == f"{A.UNSURE}: 1 episode waits for it"
+    assert entry.data["steps"] == "unsure" and entry.actions == ("open_anki",)
+
+
+@pytest.mark.parametrize("running", [False, "unlooked"])
+def test_anki_seen_closed_or_not_looked_for_is_the_plain_line_with_no_steps(running):
+    entry, = _anki_entries(_closed_with(running))
+    assert entry.title == "Anki isn't open: 19 episodes wait for it"
+    assert entry.data["steps"] is None and entry.actions == ("open_anki",) and entry.data["running"] is False
+
+
+def test_the_words_changing_keep_the_lines_key_so_it_never_counts_again():
+    # why: Anki opened without AnkiConnect changes the words, not the trouble — a seen line stays seen
+    keys = {_anki_entries(_closed_with(r))[0].key for r in (True, None, False)}
+    assert len(keys) == 1
+
+
+def test_a_permission_prompt_never_shows_the_steps_whatever_the_process_list_says():
+    rec = _record(anki_session.UNUSABLE, openable=True)
+    rec["anki_running"] = True
+    entry, = _anki_entries(rec)
+    assert entry.title == "Anki needs you: 1 episode waits for it" and entry.data["steps"] is None
+
+
+@pytest.mark.parametrize("language", ["ja", "zh"])
+def test_read_connect_looks_for_an_anki_process_only_while_the_closed_line_needs_it(monkeypatch, language):
+    from app import ankiconnect_addon
+    from app.connect import open_anki, status
+    asked = []
+    monkeypatch.setattr(open_anki, "find", lambda: None)
+    monkeypatch.setattr(ankiconnect_addon, "running", lambda: asked.append(1) or True)
+    for reasons, want in (([runner.ANKI_CLOSED], True), ([runner.REVIEWING], "absent"),
+                          ([anki_session.UNUSABLE], "absent")):
+        asked.clear()
+        rec = {"languages": {language: _record(*reasons)}}
+        monkeypatch.setattr(status, "read", lambda languages=None, path=None, rec=rec: rec)
+        got = service.read_connect(language)
+        assert got.get("anki_running", "absent") == want and len(asked) == (1 if want is True else 0)

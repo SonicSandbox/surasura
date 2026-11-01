@@ -1,12 +1,13 @@
 """AnkiConnect missing (alpha 8, Mado-A; Sonic's lean, QUESTIONS.md 2026-10-31): the one rule and the one set of words
 every place that says AnkiConnect isn't answering shows — setup's Anki step (`app/qt/wizard.py`), Settings › Anki &
-mining's *Connection* row (`app/qt/settings_live.py`) and Connect's setup check (`app/connect/setup.py`).
+mining's *Connection* row (`app/qt/settings_live.py`), *Needs you*'s Anki line (`app/services/needs.py`,
+`app/qt/needs.py`; Mado-N) and Connect's setup check (`app/connect/setup.py`).
 
 - the add-on's code (`CODE`), for *Copy code* and for the places that can only say it (`steps_line(code=True)`);
 - the three steps: *In Anki: Tools › Add-ons › Get Add-ons… → paste the code → restart Anki*;
 - `needs_addon(look)`: whether a look that didn't reach Anki may be AnkiConnect missing (an Anki process seen, or it
-  can't tell) — setup and Settings show the steps then, never for an Anki seen closed. Connect's check takes no
-  process look and has no button: it writes the steps, the code in them, under every closed answer;
+  can't tell) — setup, Settings and *Needs you* show the steps then, never for an Anki seen closed. Connect's check
+  takes no process look and has no button: it writes the steps, the code in them, under every closed answer;
 - `running()`: is an Anki process running (the process list, `open_anki.running`; True / False / None);
 - `answers(url, seen)`: the light look *Check again* runs by itself on (`app/qt/addon_steps.py`) — AnkiConnect asked
   once, a short wait; and, while the last look saw no Anki running, the process list too (Anki opened without

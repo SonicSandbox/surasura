@@ -39,6 +39,10 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
   (`relink_many`: one toast, one Undo; what the store couldn't take said in the bar). The library's card waits for
   every folder's look (`settled`: the shell's judged summary) and offers *Start fresh* — Settings' own sheet, then
   `SourceLooks.fresh` (the old library backed up in the trash, never deleted).
+- **Anki closed, or AnkiConnect missing** (A3W-6; Mado-N, Sonic 2026-10-31 MA-1 / MA-2): the Anki line wears Mado-A's
+  part (`addon_steps.AddonSteps`: *Copy code* + the three steps) where the one rule says AnkiConnect may be missing
+  (`ankiconnect_addon.needs_addon`, the entry's `steps`), and its watch (`addon_steps.Watch`, on the shell's status
+  poll while the card is on screen): once Anki answers it wakes Connect (`kick`), whose look takes the card away.
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
@@ -52,7 +56,7 @@ from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QScr
                              QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
-from app.qt import bridge, motion, strings, style, toast
+from app.qt import addon_steps, bridge, motion, strings, style, toast
 from app.qt import press as qpress
 from app.services import needs as service
 from app.services import phase
@@ -214,6 +218,17 @@ def _settings_folders(settings, language):
         return []
 
 
+def _small(parent, text, tip):
+    """A card's button: small, its tip, reached by Tab, the hand over it."""
+    b = QPushButton(text, parent)
+    b.setProperty("size", "sm")
+    b.setToolTip(tip)
+    b.setAccessibleName(text)
+    b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    return b
+
+
 def _label(text, name, parent, wrap=True):
     lab = _Words(text, parent)
     lab.setObjectName(name)
@@ -258,6 +273,7 @@ class NeedsCards(QWidget):
         self.shown = lambda name, entry, line=None: True
         self.adopt = lambda button, name, entry: None   # a button made again while its press is live: it shows it
         self.has_more = lambda entry: False     # alpha 4 D2: whether a card shows a ⋯ (`NeedsYou.more_entries`)
+        self.addon = lambda card, box, entry: None  # Mado-N: the Anki line's *Copy code* + steps (`NeedsYou._addon`)
         self._owed = None                       # C1: the entries given while the page is hidden, built when it shows
         self._want = ()                         # alpha 4 B: every entry, in order (built or not)
         self._found, self._looking = {}, ()
@@ -401,15 +417,10 @@ class NeedsCards(QWidget):
 
     def _button(self, parent, name, entry, line=None, label=None):
         text, tip = strings.NEEDS_ACTIONS[name]
-        b = QPushButton(label or text, parent)
-        b.setProperty("size", "sm")
+        b = _small(parent, label or text, tip)
         b.setProperty("action", name)
         if line is not None:
             b.setProperty("line", line.key)     # round 8 row 45: a line's own answer (its arc on that line's button)
-        b.setToolTip(tip)
-        b.setAccessibleName(label or text)
-        b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.clicked.connect(lambda _c=False, n=name, e=entry, ln=line: self.action.emit(n, e, ln))
         if name in PRESSED:
             qpress.room(b)                      # round 8 row 45: its arc's room kept at rest, so nothing moves
@@ -429,6 +440,7 @@ class NeedsCards(QWidget):
         box.addWidget(_label(e.title, "needstitle", card))
         if e.say:
             box.addWidget(_label(e.say, "sheetline", card))
+        self.addon(card, box, e)
         by_line = dict(zip((ln.key for ln in e.lines), results or ())) if results else {}
         shown = FOLDER_LINES_SHOWN if e.kind in (service.FILES_FOLDER, service.LIBRARY_GONE) else LINES_SHOWN
         for ln in e.lines[:shown]:
@@ -666,6 +678,7 @@ class NeedsYou(QObject):
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.has_more = lambda e: e.kind not in service.NO_LATER
+        self.cards.addon = self._addon
         self.cards.more.connect(self.more_menu)
         self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry, b.property("line")),
                                                                win=self.win)
@@ -1709,6 +1722,39 @@ class NeedsYou(QObject):
                       strings.NEEDS_OPENING_ANKI if started else strings.NEEDS_ANKI_NOT_STARTED)
         self._press("open_anki", entry, self.connect_calls["open_anki"], self.read_settings() or {}, then=done,
                     goes=False)
+
+    def _addon(self, card, box, entry):
+        """Mado-N (Sonic 2026-10-31, MA-1 / MA-2): the Anki line while Anki is closed — or AnkiConnect missing — wears
+        Mado-A's part: *Copy code* + the three steps where the one rule says (the entry's `steps`: `needs_addon`), and
+        its watch, which takes the light look every few seconds while the card is on screen; Anki answering (or an Anki
+        opened where none was seen) is `_anki_answered`."""
+        data = entry.data or {}
+        if entry.kind != service.ANKI_WAIT or not data.get("closed"):
+            return
+        if data.get("steps"):
+            steps = addon_steps.AddonSteps(lambda text, tip: _small(card, text, tip), "sheetline", self._say, card)
+            steps.copy.setProperty("action", "copy_code")
+            steps.set_unsure(data["steps"] == "unsure")
+            box.addWidget(steps)
+            card.steps = steps
+        card.watch = addon_steps.Watch(card, addon_steps.ticker(self.win), self._anki_url, self._anki_answered)
+        card.watch.arm(True, data.get("running"))
+
+    def _anki_url(self):
+        from app import anki_connect
+        from app.services.settings import thaw
+        return anki_connect.address(thaw(self.read_settings() or {}))
+
+    def _anki_answered(self):
+        """The watch's news: Connect woken to look now (`kick`, as *Open Anki*'s own wait does: `open_anki.kick_when_open`)
+        — its waiting episodes go, and the card with them, within seconds, never at its 2-minute look — and the entries
+        read again (an Anki opened without AnkiConnect: the steps show)."""
+        kick, read_settings = self.connect_calls.get("kick"), self.read_settings
+        if kick is not None:
+            from app.qt import applog
+            bridge.run_in_worker(lambda: kick(read_settings() or {}), then=lambda _p: None,
+                                 failed=lambda info: applog.log("needs", f"Connect wasn't woken: {info[0]!r}"))
+        self.refresh()
 
     def _do_dismiss(self, entry, _line):
         dismiss = self.connect_calls["dismiss"]

@@ -84,7 +84,7 @@ import threading
 import time
 from collections import namedtuple
 
-from app import library_store, path_utils
+from app import ankiconnect_addon, library_store, path_utils
 from app.services import view_rows
 
 Entry = namedtuple("Entry", "key kind title lines actions unseen say data", defaults=("", None))
@@ -152,6 +152,9 @@ STRINGS = {
                                  "Surasura doesn't use it. The book's words count, as they did.",
     "anki_closed_title": "Anki isn't open: {n} wait for it",
     "anki_needs_title": "Anki needs you: {n} wait for it",
+    # Mado-N (Sonic 2026-10-31, MA-1 / MA-2): AnkiConnect may be missing — Mado-A's words (`ankiconnect_addon`)
+    "anki_no_addon_title": ankiconnect_addon.NO_CONNECT + ": {n} wait for it",
+    "anki_unsure_title": ankiconnect_addon.UNSURE + ": {n} wait for it",
     "anki_one": "1 episode", "anki_n": "{n:,} episodes",
     "bulk_title_files": "{n:,} files are gone in {m:,} shows",
     "bulk_title_videos": "{n:,} episodes in {m:,} shows have no video",
@@ -453,7 +456,13 @@ def _anki_entry(connect, seen):
     *Open Anki* where Surasura can start it: `anki_openable`, `read_connect`'s), or *Anki needs you* with Anki's own
     reason (a permission prompt, another profile). No *Dismiss*: it goes by itself once Anki opens (Connect's next look
     gives its episodes another reason). Its key holds the reason: closed again later after it went, it counts again
-    (`prune`)."""
+    (`prune`).
+    Mado-N (Sonic 2026-10-31, MA-1 / MA-2): Connect can't tell a closed Anki from AnkiConnect missing, so the closed
+    line asks the process list too (`read_connect`'s `anki_running`) and takes Mado-A's one rule
+    (`ankiconnect_addon.needs_addon`): an Anki seen running is *Anki is open, but AnkiConnect isn't answering* with
+    *Copy code* and the three steps (`data["steps"]` "no_addon"; no *Open Anki*: it is open), one it can't tell is
+    *Anki isn't open, or AnkiConnect isn't answering* with *Open Anki* first in the steps ("unsure"), one seen closed
+    the plain line. The key stays the reason's: the words changing never count it again."""
     waits = _anki_waits(connect)
     if not waits:
         return None
@@ -461,14 +470,19 @@ def _anki_entry(connect, seen):
     episodes = STRINGS["anki_one"] if n == 1 else STRINGS["anki_n"].format(n=n)
     closed = _anki_closed() in waits
     reason = _anki_closed() if closed else max(waits, key=waits.get)
-    title = STRINGS["anki_closed_title" if closed else "anki_needs_title"].format(n=episodes)
+    look = {"running": connect["anki_running"]} if closed and "anki_running" in (connect or {}) else {}
+    steps = (("unsure" if look["running"] is None else "no_addon") if ankiconnect_addon.needs_addon(look) else None)
+    title = STRINGS[{"no_addon": "anki_no_addon_title", "unsure": "anki_unsure_title"}.get(
+        steps, "anki_closed_title" if closed else "anki_needs_title")].format(n=episodes)
     if n == 1:
         title = title.replace(" wait for it", " waits for it")
     key = f"anki:{_digest([reason])}:{_SESSION}"     # this window's run: closed again after a restart, it counts again
                                                       # (A-4); `prune` takes an earlier run's key out
-    actions = ("open_anki",) if closed and (connect or {}).get("anki_openable") else ()
+    actions = ("open_anki",) if closed and steps != "no_addon" and (connect or {}).get("anki_openable") else ()
     return Entry(key=key, kind=ANKI_WAIT, title=title, lines=(), actions=actions, unseen=key not in seen,
-                 say="" if closed else reason, data={"episodes": n, "reason": reason})
+                 say="" if closed else reason,
+                 data={"episodes": n, "reason": reason, "closed": closed, "steps": steps,
+                       "running": look.get("running", False)})
 
 
 def _gone_entry(group, hits, seen):
@@ -1190,6 +1204,7 @@ def read_connect(language, path=None):
         rec["known_offer"] = known_offer(language)
         if _anki_closed() in _anki_waits(rec):          # A3W-6's *Open Anki*: Anki looked for only then
             rec["anki_openable"] = _anki_openable()
+            rec["anki_running"] = ankiconnect_addon.running()     # Mado-N: open without AnkiConnect? (the steps)
         return rec
     except Exception:
         return None

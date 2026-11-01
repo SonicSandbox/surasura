@@ -919,6 +919,109 @@ def test_a3w6_the_line_comes_and_goes_with_connects_anki_wait_even_when_connects
     assert wait_until(lambda: not any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)
 
 
+
+# --- Mado-N (Sonic 2026-10-31, MA-1 / MA-2): Copy code on the Anki line, and the look that ends it ------------------ #
+def _closed_jobs(n=3):
+    from app.connect import runner
+    return [{"item": 9000 + k, "job": k, "state": "waiting", "reason": runner.ANKI_CLOSED} for k in range(n)]
+
+
+def test_mado_n_anki_open_without_ankiconnect_wears_copy_code_and_the_steps_and_the_press_reacts_at_once(
+        world, monkeypatch):
+    # why: the stuck case — Anki open, AnkiConnect missing: the line names it, Copy code + the three steps (Mado-A's
+    # one part), no *Open Anki* ("already open"); the press says Copied in its own frame, the bar where to paste it
+    from app import ankiconnect_addon as A
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: False)
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_running": True}
+    seed, win, writer, ny = world(connect=connect)
+    entry = entry_of(ny, service.ANKI_WAIT)
+    assert entry.title == f"{A.NO_CONNECT}: 3 episodes wait for it"
+    win.show_tab("needs")
+    card = ny.cards.card(entry.key)
+    assert wait_until(lambda: card.isVisible(), 5)
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"copy_code"}
+    copy = button(ny, entry.key, "copy_code")
+    assert copy.text() == A.COPY and copy.toolTip() == A.COPY_TIP
+    assert card.steps.line.text() == A.steps_line() and card.steps.line.objectName() == "sheetline"
+    QApplication.clipboard().clear()
+    copy.click()
+    assert copy.text() == A.COPIED and QApplication.clipboard().text() == A.CODE       # at once, no wait
+    assert win.bar_line.full() == A.COPIED_LINE
+
+
+def test_mado_n_a_look_that_cant_tell_puts_open_anki_first_and_a_closed_anki_shows_no_steps(world, monkeypatch):
+    from app import ankiconnect_addon as A
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: False)
+    connect = {"jobs": _closed_jobs(1), "gaps": [], "needs": [], "anki_openable": True, "anki_running": None}
+    seed, win, writer, ny = world(connect=connect, connect_calls={"open_anki": lambda settings: True})
+    entry = entry_of(ny, service.ANKI_WAIT)
+    win.show_tab("needs")
+    card = ny.cards.card(entry.key)
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"copy_code", "open_anki"}
+    assert card.steps.line.text() == A.steps_line(unsure=True)
+    connect["anki_running"] = False                                     # Anki seen closed: the plain line
+    ny.refresh()
+    assert wait_until(lambda: entry_of(ny, service.ANKI_WAIT).data["steps"] is None, 5)
+    key = entry_of(ny, service.ANKI_WAIT).key
+    assert key == entry.key, "the words changed, never the trouble: the same key"
+    assert {b.property("action") for b in ny.cards.buttons(key)} == {"open_anki"}
+    assert ny.cards.card(key).watch.armed, "a closed Anki is watched too: opening it ends the line"
+
+
+def test_mado_n_the_watch_wakes_connect_once_anki_answers_and_the_card_goes_with_its_next_look(world, monkeypatch):
+    # why: AnkiConnect installed and Anki restarted — Connect is woken at once (never its 2-minute look), on a worker,
+    # and Connect's look taking the episodes off *closed* takes the card away; the watch looks only while it shows
+    from app import ankiconnect_addon as A
+    main = threading.main_thread()
+    asked, kicked = [], []
+    answer = {"ok": False}
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append((url, seen)) or answer["ok"])
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_running": True}
+    seed, win, writer, ny = world(connect=connect, connect_calls={
+        "kick": lambda settings: kicked.append((settings.get("connect_enabled"), threading.current_thread() is main))})
+    entry = entry_of(ny, service.ANKI_WAIT)
+    card = ny.cards.card(entry.key)
+    watch = card.watch
+    watch._tick()
+    assert asked == [], "the page isn't shown: no look"
+    win.show_tab("needs")
+    assert wait_until(lambda: card.isVisible(), 5)
+    watch._tick()
+    assert wait_until(lambda: asked and not watch.looking, 5)
+    assert asked[0] == ("http://127.0.0.1:8765", True) and kicked == [], "no answer: nothing woken"
+    answer["ok"] = True                                                 # AnkiConnect answers now
+    watch._last = 0.0
+    watch._tick()
+    assert wait_until(lambda: kicked, 5) and kicked == [(True, False)]  # Connect woken on a worker
+    assert not watch.armed, "once: the card's own look ends it"
+    connect["jobs"] = [dict(j, reason=None) for j in connect["jobs"]]  # Connect's look: Anki is in
+    connect.pop("anki_running")
+    ny.refresh()
+    assert wait_until(lambda: not any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)
+
+
+def test_mado_n_an_anki_opened_where_none_was_seen_brings_the_steps_by_itself(world, monkeypatch):
+    # why: Anki started without AnkiConnect after the line was read — the watch sees the process (seen False) and the
+    # entries are read again: the steps show with no press
+    from app import ankiconnect_addon as A
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    seen_by_look = []
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: seen_by_look.append(seen) or seen is False)
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_running": False}
+    seed, win, writer, ny = world(connect=connect, connect_calls={"kick": lambda settings: None})
+    entry = entry_of(ny, service.ANKI_WAIT)
+    win.show_tab("needs")
+    card = ny.cards.card(entry.key)
+    assert wait_until(lambda: card.isVisible(), 5)
+    connect["anki_running"] = True                                      # (what the next read's process look finds)
+    card.watch._tick()
+    assert wait_until(lambda: entry_of(ny, service.ANKI_WAIT).data["steps"] == "no_addon", 5)
+    assert seen_by_look[0] is False
+    new = ny.cards.card(entry.key)
+    assert button(ny, entry.key, "copy_code") is not None and new.watch.seen is True
+
+
 # --- Michi-C (A7B-1…A7B-3): the shows behind the backlog ---------------------------------------------------------- #
 def _behind(ids, away=True):
     shows = [{"title": "月影の旅人", "cards": 2300, "ids": list(ids), "state": "waiting"},

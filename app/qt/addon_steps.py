@@ -1,5 +1,6 @@
-"""AnkiConnect missing, on screen (alpha 8, Mado-A): the one part setup's Anki step and Settings' *Connection* row show
-when AnkiConnect may be missing (`ankiconnect_addon.needs_addon`), and the one watch that runs *Check again* by itself.
+"""AnkiConnect missing, on screen (alpha 8, Mado-A): the one part setup's Anki step, Settings' *Connection* row and
+*Needs you*'s Anki line (Mado-N) show when AnkiConnect may be missing (`ankiconnect_addon.needs_addon`), and the one
+watch that runs *Check again* by itself.
 
 - **`AddonSteps`**: *Copy code* (2055492159 on the clipboard; its press says *Copied* at once, its name again
   `COPIED_MS` later, the button never narrower meanwhile) beside the three steps on one line. The host hands its own

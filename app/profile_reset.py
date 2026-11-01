@@ -70,7 +70,8 @@ WHAT = {"user_files": "your known words and lists", "data": "your library's copi
         "koe_usage": "Koe", "reports": "your saved reports", "connect": "Connect's records",
         "library_store": "your library", "covers": "the covers", "window_state": "the window's own files",
         "window_cache": "the window's own files", "window_pending": "the window's own files",
-        "needs_seen": "the window's own files"}
+        "needs_seen": "the window's own files", "settings_import": "your settings", "staging": "Anki Miner's setup",
+        "junban_backlog_shows": "順's files", "youtube_rest": "YouTube's list", "unlisted": "a file of Surasura's"}
 
 
 class MoveRefused(Exception):

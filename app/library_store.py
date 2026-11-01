@@ -13217,7 +13217,15 @@ def _scratch_of(store, record):
 
 
 def _drop_scratch(scratch):
+    """The scratch copy and every file beside it gone — its write lock's handle let go first (a Store keeps one for
+    the process's life: `_write_lock_for`)."""
     import glob
+    key = os.path.normcase(os.path.abspath(scratch))
+    with _WRITE_LOCKS_GUARD:
+        lock = _WRITE_LOCKS.pop(key, None)
+        _OWN_BUMPS.pop(key, None)
+    if lock is not None:
+        lock.file.close()
     for path in [scratch + s for s in ("", "-wal", "-shm", "-journal", ".lock", ".wlock", ".damaged")] +             glob.glob(glob.escape(scratch) + ".bak.*"):
         try:
             os.remove(path)
@@ -13347,8 +13355,8 @@ def put_back_library(store, folder, _step=None):
                 raise ResetRefused(RESET_BUSY)
             _check_room(store)
             scratch = _scratch_of(store, record)
-            step("scratch")
             try:
+                step("scratch")
                 store.conn.execute("ATTACH DATABASE ? AS old", (scratch,))
                 try:
                     name = os.path.basename(folder)

@@ -385,17 +385,17 @@ def _running_folders():
     return out
 
 
-def hold_running(kind, wait=MOVE_WAIT, cancel=None):
+def hold_running(kind, wait=None, cancel=None):
     """This process's running mark, for `kind` ("window", "cli", "mcp", a command's name), held until it ends or
     `release_running` -> True. Once a process: a second call only counts (the command line called in-process again).
-    PROFILE_MOVE held by another program: the mark is let go, the move waited for up to `wait` s, the mark taken again;
-    still held -> `MoveRunning`. A mark that can't be written (a read-only folder) is no mark: False, logged by the
-    caller — never a refusal to start."""
+    PROFILE_MOVE held by another program: the mark is let go, the move waited for up to `wait` s (MOVE_WAIT), the mark
+    taken again; still held -> `MoveRunning`. A mark that can't be written (a read-only folder) is no mark: False,
+    logged by the caller — never a refusal to start."""
     with _registry_lock:
         if _mark:
             _mark["count"] += 1
             return True
-    deadline = time.monotonic() + max(0.0, float(wait))
+    deadline = time.monotonic() + max(0.0, float(MOVE_WAIT if wait is None else wait))
     while True:
         handle, path = _take_mark(kind)
         if handle is None:

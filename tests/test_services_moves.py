@@ -2510,6 +2510,33 @@ def test_mado_o_a_start_over_queued_at_a_crash_is_replayed_and_one_that_landed_i
     assert heard3.notes == [] and lib.store.place_of(a)[0] == "arrivals"
 
 
+def test_so1_start_over_brings_an_ignored_titles_file_back_and_its_undo_ignores_it_again(lib, make_writer):
+    """SO-1 (Sonic 2026-10-31): an Ignore on the sort screen (a Remove: its file to the trash) is put back by Start
+    over — the file back where it was, the title in New arrivals — in the same one command as the placements; the
+    reset's Undo removes it again (file to the trash) and puts the placement back; the Ignore's own Undo then takes
+    back that new removal (the title and its file back once more)."""
+    w, heard = make_writer()
+    a, b = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("soon")[1]))
+    path = _file(lib, b)
+    w.place([a], "top")
+    w.remove([b])
+    assert h.until(lambda: len(heard.saved) == 2)
+    placed, ignore = heard.saved[0][0], heard.saved[1][0]
+    assert not os.path.exists(path) and lib.store.item(b) is None
+    w.start_over([placed, ignore], label="over")
+    assert h.until(lambda: len(heard.saved) == 3)
+    reset = heard.saved[-1][0]
+    assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and lib.store.place_of(a)[0] == "arrivals"
+    assert [i["ids"] for i in reset.ignored] == [[b]]
+    w.undo(reset)
+    assert h.until(lambda: len(heard.undone) == 1)
+    assert not os.path.exists(path) and lib.store.item(b) is None, "ignored again: its file in the trash"
+    assert lib.store.place_of(a)[0] == "now"
+    w.undo(ignore)                                       # the screen's Undo of its Ignore: the new removal
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and heard.notes == []
+
+
 def test_S2_after_show_with_no_show_to_follow_writes_nothing_and_rereads(lib, make_writer):
     w, heard = make_writer()
     loose = [i for i in lib.ids("goal") if lib.store.item(i)["rel_path"].count("/") == 1][0]   # a loose file

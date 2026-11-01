@@ -224,6 +224,7 @@ class Writer:
         self._pending = deque()                     # commands in the order given; the head is the one being written
         self._seq = itertools.count(1)
         self._undo = deque(maxlen=depth)            # the Changes saved, newest last
+        self._replaced = {}                         # SO-1: an Ignore's change -> the one a Start over's Undo gave again
         self._journalled = set()                    # seqs the journal file holds now
         self._journal_dirty = False
         self._head_waits = False                    # P-2-F: the head met a busy store (until it lands)
@@ -369,12 +370,14 @@ class Writer:
     def start_over(self, changes, label=None):
         """Mado-O (alpha 8): the sort screen's *Start sorting over* — `Store.unsort` of the placements it made
         (`changes`, saved), one command: every title still where the screen put it back in New arrivals; undone as one
-        move. Journalled with the placements' records (`library_store.change_record`): a crash before it lands replays
+        move. SO-1: its Ignores too — their files back from the trash under the same write lock (`_start_over`), and
+        ignored again by its Undo (`_undo_start_over`), after which each Ignore's own Undo takes back the new one. Journalled with the placements' records (`library_store.change_record`): a crash before it lands replays
         it; one that landed before the crash is let go quietly."""
         from app import library_store
-        placed = [library_store.change_record(c) for c in changes if c is not None]
+        changes = [c for c in changes if c is not None]
+        placed = [library_store.change_record(c) for c in changes]
         ids = list(dict.fromkeys(it["id"] for rec in placed for it in rec["items"]))
-        return self._put({"op": "start_over", "ids": ids, "placed": placed, "label": label})
+        return self._put({"op": "start_over", "ids": ids, "placed": placed, "label": label, "changes": changes})
 
     def put_back(self, ids, label=None):
         """`Store.put_back_finished`: Finished's *Put back* — the top of Current and its cards back in the order, one
@@ -1009,7 +1012,10 @@ class Writer:
         if op == "put_back":
             return store.put_back_finished(ids)
         if op == "start_over":                      # Mado-O (alpha 8)
-            return store.unsort(cmd["placed"])
+            change = self._start_over(store, cmd)
+            if change is not None:
+                change.sources = list(cmd.get("changes") or ())     # SO-1: the Ignores its Undo gives a new change
+            return change
         if op == "import_finished":
             return store.import_finished(cmd["paths"])
         if op == "relink":
@@ -1069,13 +1075,15 @@ class Writer:
         raise ValueError(f"unknown command {op!r}")
 
     # --- the trash: Remove, Put back, their Undo ------------------------------------------------------------------ #
-    def _remove(self, store, cmd):
+    def _remove(self, store, cmd, moved=None):
         """*Remove...*: under the store's write lock first (busy → StoreBusy before any file moves), each file to the
         trash (`trash_file`: its 30-day clock restarted; a missing item has none), then `Store.remove` in the same
         transaction; the files back where they were if anything fails. (The renames are quick: the lock is held for
-        them, so nothing can change the rows between the look and the write.)"""
+        them, so nothing can change the rows between the look and the write.) `moved` (SO-1): a caller's list, inside
+        its own write — the caller moves them back."""
         lib = _ls()
-        moved = []
+        own = moved is None
+        moved = [] if own else moved
         try:
             with store._writing():
                 trashed = {}
@@ -1090,15 +1098,17 @@ class Writer:
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
                 return store.remove(cmd["ids"], trashed)
         except BaseException:
-            _move_back(moved)
+            if own:
+                _move_back(moved)
             raise
 
-    def _skip_folder(self, store, cmd):
+    def _skip_folder(self, store, cmd, moved=None):
         """K6: under the store's write lock, the refusal asked first (no file moves for a refused folder), then each
         item's copy under the folder to the trash, as `_remove` does, then `Store.skip_folder` in the same transaction;
-        the files back where they were if anything fails."""
+        the files back where they were if anything fails. `moved`: as `_remove`'s."""
         lib = _ls()
-        moved = []
+        own = moved is None
+        moved = [] if own else moved
         try:
             with store._writing():
                 reason = store.skip_refused(cmd["path"])
@@ -1114,8 +1124,65 @@ class Writer:
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
                 return store.skip_folder(cmd["path"], trashed)
         except BaseException:
+            if own:
+                _move_back(moved)
+            raise
+
+    # --- Mado-O (SO-1): *Start sorting over* brings the screen's Ignores back, and its Undo ignores them again ------ #
+    def _start_over(self, store, cmd):
+        """Under the store's write lock: the Ignores' files back from the trash first (`_from_trash`), then
+        `Store.unsort` in the same transaction; a file whose row didn't come back (its folder read again meanwhile)
+        goes back to the trash, and every file goes back if anything fails."""
+        moved, mine = [], {}
+        try:
+            with store._writing():
+                rel_paths = {}
+                for rec in cmd["placed"]:
+                    if rec.get("kind") == "remove":
+                        for row in store.trash_rows(rec.get("trash_ids") or ()):
+                            mine[row["id"]] = []
+                            rel_paths.update(self._from_trash(store, [row], cmd, mine[row["id"]]))
+                            moved += mine[row["id"]]
+                change = store.unsort(cmd["placed"], rel_paths=rel_paths)
+                left = [r["id"] for r in store.trash_rows(list(mine)) if not r["restored_at"]]
+                for trash_id in left:
+                    _move_back(mine[trash_id])
+                return change
+        except BaseException:
+            cmd.pop("renamed", None)
             _move_back(moved)
             raise
+
+    def _undo_start_over(self, store, change, cmd):
+        """The Undo of a Start over that brought Ignores back: under the write lock, the placements back where the sort
+        had them (`Store.undo`), then each Ignore given again as it was (its folder skipped / its titles removed, their
+        files to the trash: `_skip_folder` / `_remove`) — one transaction; every file back if anything fails. Each
+        Ignore's own change is then the new one (`_replaced`): the screen's Undo of it takes that back."""
+        lib = _ls()
+        moved, made = [], []
+        try:
+            with store._writing():
+                out = store.undo(change) if change.items else None
+                if change.items and _refused(change, out):
+                    raise lib.UndoRefused("every title changed since")
+                for ign in change.ignored:
+                    if ign.get("folder"):
+                        new = self._skip_folder(store, {"path": ign["folder"]}, moved)
+                    else:
+                        ids = [i for i in ign["ids"] if store.item(i) is not None]
+                        new = self._remove(store, {"ids": ids}, moved) if ids else None
+                    made.append((ign.get("of"), new))
+        except BaseException:
+            cmd.pop("renamed", None)
+            _move_back(moved)
+            raise
+        sources = getattr(change, "sources", None) or ()
+        with self._cond:
+            for of, new in made:
+                old = next((c for c in sources if c.version == of), None)
+                if old is not None and new is not None:
+                    self._replaced[old] = new
+        return out
 
     def _from_trash(self, store, rows, cmd, moved):
         """A Put back's file half (Undo of a remove, `restore`), under the caller's write lock: each row's file back
@@ -1412,6 +1479,9 @@ class Writer:
         if change is None:
             with self._cond:
                 change = cmd["change"] = self._undo[-1] if self._undo else None
+        with self._cond:                            # SO-1: an Ignore a Start over's Undo gave again: its new change
+            while change is not None and change in self._replaced:
+                change = cmd["change"] = self._replaced[change]
         if change is None:
             self._landed(cmd)
             return
@@ -1422,6 +1492,9 @@ class Writer:
         try:
             if change.kind == "remove":             # its rows are in the trash: what it checks is theirs
                 self._undo_removed(store, change, cmd)
+                ok, changed = None, ()
+            elif getattr(change, "ignored", None):  # SO-1: a Start over that brought Ignores back
+                self._undo_start_over(store, change, cmd)
                 ok, changed = None, ()
             else:
                 ok, changed = store.undo_check(change)
@@ -1677,7 +1750,10 @@ class Writer:
             return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
         if cmd["op"] == "start_over":               # Mado-O: none still where the screen put it (as it leaves them)
             now = store.check(cmd["ids"]).items
-            if not any(now.get(it["id"]) == rec["version"] for rec in cmd.get("placed") or () for it in rec["items"]):
+            waiting = [t for rec in cmd.get("placed") or () if rec.get("kind") == "remove" for t in rec.get("trash_ids")
+                       or ()]                       # SO-1: an Ignore still in the trash is still to bring back
+            if not any(now.get(it["id"]) == rec["version"] for rec in cmd.get("placed") or () for it in rec["items"]) \
+                    and not any(not r["restored_at"] for r in store.trash_rows(waiting)):
                 return "done"
         if cmd["op"] == "skip_folder" and store.skip_refused(cmd["path"]) == _ls().SKIP_ALREADY:
             return "done"                           # K6: the folder (or one holding it) skipped already, as it leaves

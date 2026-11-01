@@ -769,13 +769,14 @@ class SortScreen(QWidget):
     # --- Mado-O (alpha 8): *Start sorting over* ----------------------------------------------------------------- #
     def _placed(self):
         """The choices this screen made that *Start sorting over* puts back: Current, Soon, Goal, Finished (a *Put the
-        rest in…* among them) — never an Ignore (PROVISIONAL: the folder stays unread, the title out)."""
-        return [e for e in self.history if e["name"] in PLACE_OF]
+        rest in…* among them) and — SO-1, Sonic 2026-10-31 ("I did accidentally ignore something") — Ignore: the
+        title back to sort, its folder read again. Ignores made anywhere else stay."""
+        return [e for e in self.history if e["name"] in PLACE_OF or e["name"] == "ignore"]
 
     def _can_start_over(self):
         """Something to put back, and no Start over (or its Undo) still on its way to the writer."""
         return (self._over_flight is None and self._over_undoing is None and       # (a waiting one is in flight)
-                any(e["name"] in PLACE_OF for e in self.history))
+                any(e["name"] in PLACE_OF or e["name"] == "ignore" for e in self.history))
 
     def ask_over(self):
         """*Start sorting over*: asked first (the one confirmation; No by default — it puts back), then `start_over`."""
@@ -810,6 +811,9 @@ class SortScreen(QWidget):
                  "before": list(self.history)}
         taken = {id(e) for e in entries}
         self.history = [e for e in self.history if id(e) not in taken] + [entry]
+        for e in entries:
+            if e["ticket"] is None:                         # an Ignore still looking for its folder: never given now
+                e["undone"] = e["gone"] = True
         for e in entries:
             for k in e["keys"]:
                 self.hidden.pop(k, None)

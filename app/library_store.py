@@ -1444,18 +1444,21 @@ class Change:
         self.dropped = []     # LM11: the pieces' rows the command emptied and deleted (an undo brings them back)
         self.roots = []       # T6: [(root_id, old kind, new kind)] a *Stop reading* wrote (the value check puts it back)
         self.to = None        # Mado-O: the tier a `place` put its items in (`Store.unsort` reads it)
+        self.ignored = []     # Mado-O (SO-1): the Ignores an `unsort` brought back [{"ids", "folder", "of"}] — its Undo
+                              #   (the window's writer: files move) ignores them again
 
     def __repr__(self):
         return f"<Change {self.kind} v{self.version} e{self.epoch} items={len(self.items)}>"
 
 
 def change_record(change):
-    """Mado-O (alpha 8): a placement's `Change` as JSON-able values — what `Store.unsort` needs of it (the window's
-    journal keeps it); `change_from_record` reads it back."""
+    """Mado-O (alpha 8): a placement's `Change` (or, SO-1, an Ignore's: a remove, a folder skip) as JSON-able values —
+    what `Store.unsort` needs of it (the window's journal keeps it); `change_from_record` reads it back."""
     return {"kind": change.kind, "epoch": change.epoch, "version": change.version, "to": change.to,
             "items": [dict(it) for it in change.items], "status": [list(s) for s in change.status],
             "repieced": [list(r) for r in change.repieced], "piece_fields": [list(f) for f in change.piece_fields],
-            "dropped": [list(d) for d in change.dropped]}
+            "dropped": [list(d) for d in change.dropped], "trash_ids": list(change.trash_ids),
+            "folder": getattr(change, "folder", None), "folder_path": getattr(change, "folder_path", None)}
 
 
 def change_from_record(rec):
@@ -1466,6 +1469,9 @@ def change_from_record(rec):
     change.repieced = [tuple(r) for r in rec.get("repieced") or ()]
     change.piece_fields = [tuple(f) for f in rec.get("piece_fields") or () if len(f) == 4 and f[1] in ("kind", "title")]
     change.dropped = [tuple(d) for d in rec.get("dropped") or ()]
+    change.trash_ids = [t for t in rec.get("trash_ids") or () if isinstance(t, int)]
+    if isinstance(rec.get("folder"), int) and isinstance(rec.get("folder_path"), str):
+        change.folder, change.folder_path = rec["folder"], rec["folder_path"]
     change.from_record = True
     return change
 
@@ -4511,7 +4517,7 @@ class Store:
         return (last[1], None, last[0])
 
     # --- Mado-O (alpha 8): the sort screen's *Start sorting over* --------------------------------------------- #
-    def unsort(self, placed, by="user"):
+    def unsort(self, placed, by="user", rel_paths=None):
         """The sort screen's *Start sorting over* (Sonic 2026-10-31): the placements it made (`placed`, each a `Change`
         or its `change_record`) undone in ONE command, newest first, each as its own Undo would — every title back in
         New arrivals where it stood, its values (watched, the cards' place, the Finished date) put back — and recorded
@@ -4521,13 +4527,16 @@ class Store:
         are placed); one moved to another place since (Goal, finished later, taken out) stays where it is; a change
         without `to` keeps the version rule. The value check per value. A placement of another epoch is left. A plain
         placement (a move or a finish) is walked back over ONE load of the tiers (`_walk_back`: a 20k library's reset
-        holds the write lock briefly); anything else by its own nested Undo. -> the change, or None (nothing left to
-        put back)."""
+        holds the write lock briefly); anything else by its own nested Undo. SO-1 (Sonic 2026-10-31): the screen's
+        Ignores too (a remove, a folder skip: `trash_ids`) — each put back by its own Undo (`rel_paths` {trash_id:
+        rel}: where the caller's writer put its files back, under this write lock), recorded on the change's `ignored`
+        for its Undo to ignore again. -> the change, or None (nothing left to put back)."""
         changes = [c if isinstance(c, Change) else change_from_record(c) for c in placed if c is not None]
-        changes = [c for c in changes if c.kind in UNSORT_KINDS or not getattr(c, "from_record", False)]
-        with self._command("unsort", by) as cmd:            # (a record holds a placement's fields only)
-            changes = sorted((c for c in changes if c.epoch == cmd.epoch and c.items), key=lambda c: c.version,
-                             reverse=True)
+        changes = [c for c in changes if c.kind in UNSORT_KINDS + ("remove",) or not getattr(c, "from_record", False)]
+        with self._command("unsort", by) as cmd:            # (a record holds a placement's or an Ignore's fields)
+            changes = sorted((c for c in changes if c.epoch == cmd.epoch), key=lambda c: c.version, reverse=True)
+            ignores = [c for c in changes if c.kind == "remove" and c.trash_ids]
+            changes = [c for c in changes if c.items and not any(c is i for i in ignores)]
             rows = self._rows({it["id"] for c in changes for it in c.items})
             mine = {}                                           # item -> the placement it still stands by (newest)
             for c in changes:
@@ -4537,15 +4546,30 @@ class Store:
                         continue
                     if r[3] == c.version or (c.to is not None and r[3] > c.version and _same_place(r[1], c.to)):
                         mine[it["id"]] = c.version
-            if not mine:
+            if not mine and not ignores:
                 return None
             change = self._change(cmd, "move")
             self._before(change, [rows[i] for i in mine])
             plain = [c for c in changes if c.kind in UNSORT_KINDS and c.pieces is None and c.works is None and
                      not c.added and not c.trash_ids and not c.options]
-            back = self._unsort_plain(cmd, plain, mine, rows, change)
-            for c in changes:
-                if not any(c is p for p in plain) and any(mine.get(it["id"]) == c.version for it in c.items):
+            plain_ids, back, run = {id(c) for c in plain}, set(), []
+
+            def walk():                                         # a run of plain placements: one load of the tiers
+                back.update(self._unsort_plain(cmd, run, mine, rows, change))
+                run.clear()
+            for c in sorted(changes + ignores, key=lambda c: c.version, reverse=True):     # newest first, as Undos
+                if id(c) in plain_ids:
+                    run.append(c)
+                    continue
+                walk()
+                if any(c is i for i in ignores):                # SO-1: an Ignore, by its own Undo
+                    if not any(not r["restored_at"] for r in self.trash_rows(c.trash_ids)):
+                        continue                                # (put back meanwhile: nothing of it to bring back)
+                    out = self.undo(c, rel_paths=rel_paths)
+                    if getattr(out, "added", None):
+                        change.ignored.append({"ids": list(out.added), "of": c.version,
+                                               "folder": c.folder_path if getattr(c, "folder", None) else None})
+                elif any(mine.get(it["id"]) == c.version for it in c.items):
                     was = {i: r[3] for i, r in self._rows([it["id"] for it in c.items]).items()}
                     try:
                         out = self.undo(c)                      # nested: one transaction, one version
@@ -4557,8 +4581,9 @@ class Store:
                                           [(cmd.version, i) for i in moved])
                     back.update(moved)
                     change.status += list(getattr(out, "status", None) or ())
+            walk()
             change.items = [it for it in change.items if it["id"] in back]
-            return change if change.items else None
+            return change if change.items or change.ignored else None
 
     def _unsort_plain(self, cmd, plain, mine, rows, reset):
         """`unsort`'s plain placements, newest first: their items back as each Undo puts them (`_walk_back` over one

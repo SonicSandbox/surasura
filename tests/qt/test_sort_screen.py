@@ -54,6 +54,7 @@ class SortWriter(SkipWriter):
     def __init__(self, library):
         super().__init__(library)
         self.before = {}
+        self.brought = {}
 
     def _write(self, change):
         if change.op == "start_over":
@@ -66,6 +67,9 @@ class SortWriter(SkipWriter):
         rows = self.before.pop(id(change), None)
         if rows:
             self.library.commit(items=rows, order=True)
+        again = self.brought.pop(id(change), None)
+        if again:
+            self.library.commit(gone=[("item", i) for i in again], order=True)
         return super().undo(change, label)
 
     def start_over(self, changes, label=None):
@@ -75,10 +79,13 @@ class SortWriter(SkipWriter):
 
     def _write_start_over(self, change):
         self.before[id(change)] = [dict(r) for r in self.library.items() if r["id"] in change.ids]
+        brought = self.brought[id(change)] = []
         for c in reversed(change.kw["changes"]):
-            rows = self.before.get(id(c))
+            rows = self.before.get(id(c)) if c.op != "skip_folder" else self.taken.get(c.folder)
             if rows:
                 self.library.commit(items=rows, order=True)
+                if c.op in ("remove", "skip_folder"):              # SO-1: an Ignore back; its Undo ignores it again
+                    brought += [r["id"] for r in rows]
 
 
 class OwnLooks:
@@ -496,20 +503,66 @@ def test_undo_after_start_over_puts_the_sorting_back_and_then_each_choice_undoes
     assert wait_until(lambda: screen.top_arrival().key == placed[2].key, 5)
 
 
-def test_an_ignored_title_stays_ignored_and_its_undo_still_works_after_start_over(world):
-    """PROVISIONAL: Ignore isn't put back (its folder stays unread); after the reset, its own Undo is still on Undo."""
+def test_ignored_titles_come_back_with_start_over_and_its_undo_ignores_them_again(world):
+    """SO-1 (Sonic 2026-10-31: "I did accidentally ignore something"): an Ignore on this screen — its folder skipped,
+    or the title taken out — comes back with Start over, in the same one command; one Undo ignores them again."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    first = keys_shown(screen)
+    skipped = screen.top_arrival()
+    folder = os.path.join(os.sep, "Media", skipped.title)
+    win.looks = OwnLooks([folder])
+    writer.under[folder] = list(skipped.item_ids)
+    press(screen, Qt.Key.Key_Left)
+    assert wait_until(lambda: calls(writer, "skip_folder"), 5) and _saved(writer, 1)
+    win.looks = OwnLooks([])
+    removed = screen.top_arrival()
+    press(screen, Qt.Key.Key_Left)
+    assert wait_until(lambda: calls(writer, "remove"), 5) and _saved(writer, 2)
+    _sort_some(screen, writer, ("goal",))
+    settle()
+    screen.start_over()
+    assert wait_until(lambda: calls(writer, "start_over"), 5)
+    assert [c.op for c in calls(writer, "start_over")[0][2]["changes"]] == ["skip_folder", "remove", "place"]
+    assert wait_until(lambda: keys_shown(screen) == first, 5), "the ignored ones back to sort too"
+    assert wait_until(lambda: screen._over_flight is None, 5)
+    press(screen, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert wait_until(lambda: skipped.key not in keys_shown(screen) and removed.key not in keys_shown(screen), 5)
+    assert [e["name"] for e in screen.history] == ["ignore", "ignore", "goal"]
+
+
+def test_an_ignore_still_looking_for_its_folder_when_start_over_is_pressed_is_never_given(world):
+    """SO-1: Start over takes an Ignore whose folder is still being looked for as never made — its answer, coming
+    after, gives nothing; the title stays to sort."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    _sort_some(screen, writer, ("soon",))
+    top = screen.top_arrival()
+    win.looks = OwnLooks([os.path.join(os.sep, "Media", top.title)], hold=True)
+    press(screen, Qt.Key.Key_Left)
+    screen.start_over()
+    win.looks.release()
+    assert wait_until(lambda: calls(writer, "start_over"), 5)
+    wait_until(lambda: False, 0.4)
+    QApplication.processEvents()
+    assert calls(writer, "skip_folder") == [] and calls(writer, "remove") == []
+    assert top.key in keys_shown(screen)
+
+
+def test_the_last_ignore_has_a_one_press_undo_by_its_button_too(world):
+    """SO-1 (b): the last choice — an Ignore included — is undone by one press, the button as Ctrl+Z (its own test
+    above), at once."""
     _seed, win, writer = world()
     screen = open_sort(win)
     win.looks = OwnLooks([])
-    ignored = screen.top_arrival()
+    top = screen.top_arrival()
     press(screen, Qt.Key.Key_Left)
+    assert screen.btn_undo.isEnabled() and top.key not in keys_shown(screen)
     assert wait_until(lambda: calls(writer, "remove"), 5) and _saved(writer, 1)
-    _sort_some(screen, writer, ("goal",))
-    screen.start_over()
-    assert wait_until(lambda: calls(writer, "start_over"), 5)
-    assert [c.op for c in calls(writer, "start_over")[0][2]["changes"]] == ["place"], "never the Ignore"
-    assert ignored.key not in keys_shown(screen)
-    assert [e["name"] for e in screen.history] == ["ignore", "over"]
+    settle()
+    QTest.mouseClick(screen.btn_undo, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: calls(writer, "undo"), 5) and calls(writer, "undo")[0][2]["change"] is writer.saved[0]
+    assert wait_until(lambda: screen.top_arrival() is not None and screen.top_arrival().key == top.key, 5)
 
 
 def test_start_over_waits_for_a_choice_still_being_saved_and_puts_it_back_too(world):

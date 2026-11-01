@@ -14,6 +14,7 @@ What a wrong answer would cost a learner:
 Real Japanese / Chinese texts from tests/Test Resources in temp folders beside the test's data folder; made-up shows.
 """
 import json
+import os
 
 import pytest
 
@@ -36,6 +37,7 @@ def library():
         names = SHOWS[language] + (("海辺の手紙",) if language == "ja" else ("山城旧事",))
         src = _source(language, {names[0]: 3, names[1]: 2, names[2]: 2})
         store.__enter__()
+        store.test_source = src                          # (where the shows' folders are: an Ignore skips one)
         opened.append(store)
         _look(store, language, store.add_source(src), first=ls.SORT)
         by_show = {}
@@ -55,6 +57,14 @@ def _state(store):
         order.setdefault(tier, []).append(i)
     values = {r[0]: r[2:] for r in store.conn.execute(f"SELECT {COLUMNS} FROM items")}
     return order, values
+
+
+def _groups(values):
+    """{id: values} without the piece's id, and the titles grouped as the pieces group them."""
+    pieces = {}
+    for i, v in values.items():
+        pieces.setdefault(v[4], set()).add(i)
+    return {i: v[:4] for i, v in values.items()}, sorted(sorted(g) for g in pieces.values())
 
 
 def _no_versions(state):
@@ -212,3 +222,66 @@ def test_a_watched_mark_changed_after_the_sort_is_left_and_the_resets_undo_never
     assert all(st[0] != b[0] for st in change.status)
     store.undo(change)
     assert store.conn.execute("SELECT watched FROM items WHERE id = ?", (b[0],)).fetchone()[0] == 0
+
+
+# --- SO-1 (Sonic 2026-10-31: "I did accidentally ignore something"): the screen's Ignores come back too ------------ #
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_titles_ignored_on_the_screen_come_back_to_sort_with_the_rest(language, library):
+    """An Ignore that took the title out (`remove`) and one that skipped its folder (`skip_folder`): the reset brings
+    both back to New arrivals where they stood — the folder read again — beside the placements, in ONE command; the
+    change names what it brought back (`ignored`), for its Undo (the writer's) to ignore again."""
+    store, shows = library(language)
+    a, b, c = shows.values()
+    unsorted = _no_versions(_state(store))
+    folder_c = os.path.join(store.test_source, list(shows)[2])
+    placed = [store.place(a, "top"), store.remove(b), store.skip_folder(folder_c)]
+    assert set(_state(store)[0].get("arrivals", ())) == set(), "every title sorted or ignored"
+    assert store.skipped_folders()
+    version = store.meta()["state_version"]
+    change = store.unsort(placed)
+    assert store.meta()["state_version"] == version + 1, "ONE command"
+    order, values = _no_versions(_state(store))
+    assert order == unsorted[0], "every title back where it stood"
+    assert _groups(values) == _groups(unsorted[1]), "its values and its groups (a Remove's Undo makes new piece rows)"
+    assert store.skipped_folders() == [], "the folder read again"
+    assert sorted((sorted(i["ids"]), bool(i["folder"])) for i in change.ignored) ==         sorted([(sorted(b), False), (sorted(c), True)])
+    store.undo(change)                                   # (the store's half: the placement back; the writer ignores)
+    assert set(a) <= set(_state(store)[0]["now"])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_ignore_put_back_meanwhile_is_left_and_its_record_round_trips(language, library):
+    """An Ignore whose title was put back already (its own Undo, the trash's Put back) brings nothing twice; the
+    journal's record of an Ignore (`change_record` → JSON) brings it back as the change does."""
+    store, shows = library(language)
+    a, b, _c = shows.values()
+    gone = store.remove(a)
+    store.undo(gone)                                     # put back meanwhile
+    assert store.unsort([gone]) is None
+    ignored = store.remove(b)
+    record = json.loads(json.dumps(ls.change_record(ignored), ensure_ascii=False))
+    change = store.unsort([record])
+    assert change is not None and set(b) <= set(_state(store)[0]["arrivals"])
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_skipped_folder_is_read_again_by_start_over_and_skipped_again_by_its_undo(language, library):
+    """The writer's half (`Writer._start_over` / `_undo_start_over`, called as the writer's thread calls them): an
+    Ignore that skipped the title's folder — Start over reads the folder again and the title is back to sort; its Undo
+    skips the folder again in the same write, and the Ignore's own Undo then takes back that new skip."""
+    import threading
+    from app.services import moves as M
+    store, shows = library(language)
+    _a, _b, c = shows.values()
+    w = M.Writer.__new__(M.Writer)                       # (no thread: only what these steps read)
+    w._cond, w._replaced = threading.Condition(), {}
+    ignore = M.Writer._skip_folder(w, store, {"op": "skip_folder", "path": os.path.join(store.test_source,
+                                                                                         list(shows)[2])})
+    reset = w._start_over(store, {"placed": [ls.change_record(ignore)]})
+    reset.sources = [ignore]
+    assert set(c) <= set(_state(store)[0]["arrivals"]) and store.skipped_folders() == []
+    w._undo_start_over(store, reset, {})
+    assert not set(c) & set(_state(store)[1]) and len(store.skipped_folders()) == 1
+    again = w._replaced[ignore]
+    w._undo_removed(store, again, {})
+    assert set(c) <= set(_state(store)[0]["arrivals"]) and store.skipped_folders() == []

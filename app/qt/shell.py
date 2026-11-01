@@ -2508,9 +2508,12 @@ class ShellWindow(QMainWindow):
         windows.say_in_bar(self, line)
 
     def _duties_started(self):
-        """Started: what the bar and the header read from disk, read on workers."""
+        """Started: what the bar and the header read from disk, read on workers; a YouTube playlist's rest still to
+        come goes on (alpha 8, `windows.resume_youtube`)."""
         self._check_journey()
         self._read_level()
+        from app.qt import windows
+        windows.resume_youtube(self)
 
     def changeEvent(self, event):
         super().changeEvent(event)

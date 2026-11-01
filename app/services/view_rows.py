@@ -103,6 +103,9 @@ Episode = namedtuple("Episode", Episode._fields + ("added",),
 Episode = namedtuple("Episode", Episode._fields + ("disk",), defaults=tuple(Episode._field_defaults.values()) + (None,))
 #   disk (a7): the file's own date in ns (`mtime_ns`: a source's copy keeps its original's), what `still_arriving`
 #   reads beside `added`; None for a video waiting for its subtitle and in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("media",), defaults=tuple(Episode._field_defaults.values()) + (None,))
+#   media (a8): its own show's type (a group holds several) — the words of the fold it is in (`folds`); None in a cache
+#   from before (its row's then)
 Row = namedtuple("Row", "key index tier work_id piece_id media media_word verb title title_ep line source n_files n_watched "
                         "pct pct_tone n_new status mark episodes next_index studying date cover_title accessible "
                         "description chips more_chips play_tip can_play cards_out string", defaults=(False, None))
@@ -304,6 +307,7 @@ STRINGS = {
     "watched_leaves": "Watched: its words leave your list.",
     # a6 (Sonic 2026-10-29): a run of watched parts of one show folded into one journey row (`range_text`'s range)
     "fold_watched": "{range} watched", "fold_tip": "Watched (marked in your library): click to show each one",
+    "fold_tip_open": "Watched (marked in your library): click to fold them into one line again",       # a8: the window's
     "channel_n": "{n} videos · {title}",
     "top_tip": "Everything above this line mines itself: your top {n} files",
     "top_tip_split": "Everything above this line mines itself: your top {n} files — of {title}, its first {k} of {m}",
@@ -498,6 +502,56 @@ def range_text(media, numbers, count):
         return one.format(n=a) if a == b else many.format(a=a, b=b)
     head = many.split("{")[0]
     return head + ", ".join(f"{a}" if a == b else f"{a}–{b}" for a, b in rs)
+
+
+# --- a8 (Sonic 2026-10-31: "even after opening up, it keeps the ones together … you can still expand those too but only
+# after an additional motion"): a run of watched parts folded into one line — the journey's (a6, `static_html_generator.
+# _journey_folds`) and an opened row's (`app/qt/rows.py`), one rule
+Fold = namedtuple("Fold", "id start end label ids")
+#   id: ("fold", its first part's id) — never a file's id, so the window holds it where it holds an episode's (the hand's,
+#   the keyboard's line); start, end: its first and last part's place in the row; label: *Ep 1–40 watched*; ids: its
+#   parts' file ids
+
+
+def watched_runs(keys):
+    """[(start, end)] (`end` its last place): each run of equal keys next to each other, a run of one too; None is never
+    in one. A watched run's keys: what may not change inside it (its show, and its tier: the side of the Soon line —
+    in the window, of the top-20 line too), None where a part isn't watched."""
+    out, last = [], None
+    for k, key in enumerate(keys):
+        if key is not None and key == last:
+            out[-1] = (out[-1][0], k)
+        elif key is not None:
+            out.append((k, k))
+        last = key
+    return out
+
+
+def fold_label(media, numbers, count):
+    """A fold's words: its range as a row says it (`range_text`) — *Ep 1–14 watched*, *Parts 1–40 watched*."""
+    return STRINGS["fold_watched"].format(range=range_text(media, numbers, count))
+
+
+def folds(row, breaks=()):
+    """An opened row's folds: each run of two or more watched parts of one show and one tier (`watched_runs`, the
+    journey's rule: never across the Soon line running through the row, `soon_from`) — never its next part (Up next
+    stays a line of its own, so the row opens there: its watched parts before it are one line, or one per show; the
+    journey, with no Up next, folds a show watched to its end whole), never an audiobook's waiting item, never across a
+    place in `breaks` (the window's: the top-20 line running through the row). -> (Fold, …), first to last."""
+    eps, nxt = row.episodes, row.next_index
+    soon = getattr(row, "soon_from", None)
+    cuts = sorted(set(breaks) | ({soon} if soon is not None else set()))
+    keys = [None if not e.watched or k == nxt or _heard(e) else
+            (getattr(e, "show_key", None), sum(1 for b in cuts if b <= k)) for k, e in enumerate(eps)]
+    out = []
+    for a, b in watched_runs(keys):
+        if b > a:
+            run = eps[a:b + 1]
+            numbers = [e.number for e in run if e.number is not None]
+            label = fold_label(getattr(run[0], "media", None) or row.media, numbers, len(run))
+            out.append(Fold(("fold", run[0].id), a, b, label, tuple(e.id for e in run)))
+    return tuple(out)
+# --- end a8
 
 
 def pct_of(known, counted):
@@ -835,7 +889,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
                  ask=ask, looking=looking, text=_waits_for(item, media), added=item.get("added_at"),
-                 disk=item.get("mtime_ns"))
+                 disk=item.get("mtime_ns"), media=media)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)

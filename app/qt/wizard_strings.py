@@ -105,6 +105,7 @@ COVERS = "Show covers"
 COVERS_LINE = ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. Near a show's last "
                "episode, also asks AniList whether it is still airing, so it isn't finished early. Nothing else.")
 COVERS_TIP = ("Covers for your shows, looked up by each show's name.\n"
+              "• Near a show's last episode, whether it is still airing\n"
               "• Turn it off any time: Settings")
 COVERS_PICTURE_NAME = "A plain tile becomes the show's cover"
 UPGRADE_SHOWS_LINE = ("Your known words and settings came over from Surasura 2. "

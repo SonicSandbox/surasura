@@ -210,6 +210,7 @@ class Airing:
         self.background = background        # False (tests): no thread — the caller runs `run_once()` itself
         self.on_change = None
         self._cond = threading.Condition()
+        self._disk = threading.Lock()       # the cache file's writes and its removal (never held with `_cond`)
         self._shows = None                  # the cache as this service knows it (read at the first ask)
         self._queue = []
         self._later = {}                    # id -> when a failed ask is asked again
@@ -271,6 +272,7 @@ class Airing:
             self._shows = {}
             self._later.clear()
             self._gen += 1
+        with self._disk:
             try:
                 os.remove(self._path())
             except (OSError, RuntimeError):
@@ -344,8 +346,10 @@ class Airing:
                                  "next_at": _number(nxt.get("airingAt")) if isinstance(nxt, dict) else None,
                                  "asked_at": now}
             self._shows = shows
-            _write(self._path(), shows)
             moved = any(_answer(before.get(str(i))) != _answer(shows[str(i)]) for i in chunk)
+        with self._disk:                            # never under `_cond`: the window's `stop` never waits on a disk
+            if gen == self._gen:                    # (*Remove downloaded covers* meanwhile: its removal stands)
+                _write(self._path(), shows)
         if moved:
             self._changed()                         # S19: an answer the same as before (only its time) builds nothing
         return len(chunk)

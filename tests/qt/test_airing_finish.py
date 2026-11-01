@@ -103,7 +103,9 @@ def test_a_film_finishes_unless_anilist_says_it_is_still_to_air():
 
 
 @pytest.mark.parametrize("other", ["keep", "pending", "arrivals", "finished", "gap", "waiting"])
-def test_today_s_other_holds_still_offer_and_say_anilist_s_why_alongside(other):
+def test_today_s_other_holds_offer_as_today_with_no_anilist_reason(other):
+    """AA-3: the reason is AniList's only when AniList alone held the show (the intent keeper's decision 2): kept
+    studying, a write on its way, a file in New arrivals or Finished, a hole or a waiting video each asks as 3.0."""
     eps = _at_once(6)
     if other == "gap":
         eps = eps[:3] + eps[4:]
@@ -113,8 +115,9 @@ def test_today_s_other_holds_still_offer_and_say_anilist_s_why_alongside(other):
     view = _view([row], keep=other == "keep", arrivals=[NS(work_id=1)] if other == "arrivals" else (),
                  finished=[NS(work_id=1)] if other == "finished" else ())
     assert drag.when_done(view, row, NOW, pending=other == "pending") == ("offer",)
-    assert drag.when_done(_aired(view, 1, RELEASING), row, NOW, pending=other == "pending") == \
-        ("offer", strings.DONE_WHY_AIRING)
+    assert drag.when_done(_aired(view, 1, RELEASING), row, NOW, pending=other == "pending") == ("offer",)
+    assert drag.when_done(_aired(view, 1, {"status": "FINISHED", "episodes": 28}), row, NOW,
+                          pending=other == "pending") == ("offer",)
 
 
 def test_a_join_or_a_cached_view_is_never_touched_by_anilist():

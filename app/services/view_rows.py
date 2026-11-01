@@ -444,8 +444,9 @@ def still_arriving(episodes, now=None, airing=None):
     one file alone — but one numbered episode of a show alone is (a premiere's week: A7K-5, PROVISIONAL), never a film
     or a video with no number. A file with no arrival time (a cache from before) can't tell: True (the offer asks).
     `airing`: what an airing source says of the title — True still airing (it may be arriving, whatever the files
-    say), False done airing (the files' times no longer hold it back), None nothing known: 3.0 asks no airing source
-    (AniList's status waits on Sonic's word for that network use; it would come in here), the files' times decide."""
+    say), False done airing (the files' times no longer hold it back), None nothing known: the files' times decide.
+    AniList's status (3.0.1, `app/services/airing.py`) never comes in here: `drag.when_done` asks it only after this
+    rule let a title go, so it can hold one back and never release one."""
     if airing is not None:
         return bool(airing)
     stamps = [e.added for e in episodes]

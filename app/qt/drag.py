@@ -206,9 +206,9 @@ def when_done(view, row, now=None, pending=False):
     - ("offer",) — today's *finished with it?*, for a whole title: R4 it may still be arriving (its newest file came
       in on its own lately, `view_rows.still_arriving`, or it already has files in Finished: a show still airing), R5
       a file still to come (a hole in its numbers, one in New arrivals, a video waiting for its subtitle); it is
-      ("offer", why) when AniList's kept answer (`view.airing`, 3.0.1 item 5) holds it back — still airing (R4,
-      `still_arriving(..., airing=True)`), or more episodes listed than its files reach (R5) — and AniList never
-      finishes one (never `airing=False`); R6 *Keep
+      ("offer", why) when nothing of these holds it but AniList's kept answer (`view.airing`, 3.0.1 item 5): still
+      airing (R4), or more episodes listed than its files reach (R5) — asked only after 3.0's own checks, so AniList
+      never finishes one sooner; R6 *Keep
       studying watched episodes* on (nothing moves by itself), a write still on its way (`pending`: the view may not
       hold it yet), a group, a row of no title, the first screen's cache (Goal, New arrivals and Finished not read).
     - None — nothing is offered (the plain ✓; Up Next's Done says why): hato's mix; a part of a title whose other part waits in Current, in Goal or inside a
@@ -252,13 +252,14 @@ def when_done(view, row, now=None, pending=False):
             return None                              # an earlier or unnumbered part waits in Goal: a part, never Finished
         up = min(nxt, key=lambda p: p.first)
         return ("join", mine + [up.piece_id], False, ids_of(row) + list(up.item_ids), up.line)
-    entry = (getattr(view, "airing", None) or {}).get(row.work_id)     # 3.0.1 item 5: AniList only holds it back
-    hold = airing.holds(entry, eps)
     if still or any(e.waiting for e in eps) or any(a.work_id == row.work_id for a in (view.arrivals or ())) \
             or any(r.work_id == row.work_id for m in (view.finished or ()) for r in m.rows) \
-            or view_rows.numbers_gap(eps) or hold == "more" \
-            or view_rows.still_arriving(eps, now, airing=True if hold == "airing" else None):
-        return ("offer", _why(hold, entry, eps)) if hold else ("offer",)
+            or view_rows.numbers_gap(eps) or view_rows.still_arriving(eps, now):
+        return ("offer",)
+    entry = (getattr(view, "airing", None) or {}).get(row.work_id)     # 3.0.1 item 5: AniList only holds it back
+    hold = airing.holds(entry, eps)
+    if hold:
+        return ("offer", _why(hold, entry, eps))     # AniList alone held it: the offer says why (AA-3)
     return ("finish",)
 
 

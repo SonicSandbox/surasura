@@ -37,6 +37,8 @@ import json
 import os
 import threading
 
+from app import ankiconnect_addon
+
 RECORD = "setup.json"
 RECORD_VERSION = 1
 # What Connect itself asks of AnkiConnect (the mine step's tag, the review guard, the profile guard, the sync rule's
@@ -71,7 +73,6 @@ ITEM_WORDS = {"ffmpeg": "not found", "ffprobe": "not found", "yt_dlp": "not inst
               "ocr": "not installed", "video_ocr": "not installed"}
 UNSAID_SAY = "Anki Miner says its own setup isn't finished, without saying what."
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
-ANKICONNECT_CODE = "2055492159"     # AnkiConnect's add-on code on AnkiWeb
 
 OK, WAITING, NEEDS_YOU, NOT_CHECKED, SKIPPED = "ok", "waiting", "needs-you", "not-checked", "skipped"
 
@@ -171,13 +172,13 @@ def _anki(url, open_anki_on):
         missing = ", ".join(f'"{name}"' for name in report["missing"])
         return _check("anki", NEEDS_YOU,
                       f"The Anki add-on that answers Surasura (AnkiConnect) can't do {missing}, which Connect needs.",
-                      f"In Anki: Tools → Add-ons → Get Add-ons…, code {ANKICONNECT_CODE} (AnkiConnect), then restart "
-                      "Anki."), True
+                      ankiconnect_addon.steps_line(code=True)), True
     if report.get("timed_out"):
         return _check("anki", WAITING, "Anki is open but busy: it didn't answer in time. Connect tries again."), False
     when = ("Surasura opens it when you open Surasura (Open Anki for me)." if open_anki_on
             else "Connect waits until you open it; your cards are made then.")
-    return _check("anki", WAITING, f"Anki isn't open (or AnkiConnect isn't installed in it). {when}",
+    return _check("anki", WAITING, f"Anki isn't open (or AnkiConnect isn't installed in it). {when} "
+                                   f"No AnkiConnect? {ankiconnect_addon.steps_line(code=True)}.",
                   "Open Anki"), False
 
 

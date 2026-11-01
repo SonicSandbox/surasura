@@ -373,13 +373,10 @@ def anki_look(settings, language):
 
 
 def _anki_running():
-    """(A worker.) Is an Anki running though AnkiConnect didn't answer (§C11)? Connect's own look (`open_anki.running`,
-    the process list): True / False, or None when it can't tell."""
-    try:
-        from app.connect import open_anki
-        return open_anki.running()
-    except Exception:
-        return None
+    """(A worker.) Is an Anki running though AnkiConnect didn't answer (§C11)? The one look Settings' row takes too
+    (`ankiconnect_addon.running`: the process list): True / False, or None when it can't tell."""
+    from app import ankiconnect_addon
+    return ankiconnect_addon.running()
 
 
 def library_rows(settings, language):

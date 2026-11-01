@@ -120,6 +120,9 @@ def test_anki_closed_is_a_wait_never_needs_you_and_its_profile_waits_to_be_check
     checks = _by_id(result)
     assert checks["anki"]["state"] == "waiting" and "Anki isn't open" in checks["anki"]["say"]
     assert checks["anki"]["do"] == "Open Anki"
+    # Mado-A: the same three steps setup and Settings show, with the code written in (no Copy code here)
+    from app import ankiconnect_addon
+    assert ankiconnect_addon.steps_line(code=True) in checks["anki"]["say"]
     assert checks["anki_profile"]["state"] == "not-checked"
     assert not result["ready"]
     assert "anki_profile" not in setup.read_record(), "no profile is recorded until Anki answers"
@@ -142,7 +145,7 @@ def test_an_add_on_on_port_8765_missing_an_action_is_named(monkeypatch, ready_37
     anki = StandInAnki(monkeypatch, missing=["getActiveProfile"])
     check = _by_id(setup.checks(_settings(ready_37), "ja"))["anki"]
     assert check["state"] == "needs-you" and '"getActiveProfile"' in check["say"]
-    assert "2055492159" in check["do"]
+    assert check["do"] == "In Anki: Tools › Add-ons › Get Add-ons… → paste the code 2055492159 → restart Anki"
     assert ("probe", setup.ANKI_ACTIONS) in anki.asked, "every action Connect needs is asked for by name"
 
 

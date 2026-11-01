@@ -105,6 +105,7 @@ Download the latest release zip file from the [Releases page](https://github.com
 1. Run `Surasura.exe` to launch the dashboard.
 
 2. **Import Known Vocabulary** to sync your known words from Migaku, Anki, or Jiten.
+   *Surasura talks to Anki through **AnkiConnect**, a free Anki add-on: in Anki, Tools › Add-ons › Get Add-ons…, paste the code `2055492159` (setup's **Copy code** puts it on your clipboard), then restart Anki.*
 
 3. **Import Content** — open the Content Manager and add your files:
 

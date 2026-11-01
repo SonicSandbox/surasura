@@ -857,14 +857,107 @@ def test_C11_setup_says_anki_is_open_without_ankiconnect_and_what_to_do_on_both_
     known = wiz.page
     assert wait_until(lambda: wiz.anki is not None and not known.closed_part.isHidden())
     assert known.closed_line.text() == words and known.anki.line == card
-    assert known.closed_how.text() == how and known.closed_how.isHidden() == (not how)
+    # alpha 8 (Mado-A): what to do is *Copy code* beside the three steps — the words Settings' row shows too
+    steps = known.closed_steps
+    assert steps.isHidden() == (not how)
     if how:
-        assert "AnkiConnect" in how and "2055492159" in how and "restart Anki" in how
+        assert steps.line.text() == how and steps.copy.text() == "Copy code" and steps.copy.toolTip()
+        assert "Get Add-ons" in how and "paste the code" in how and "restart Anki" in how
     go_to(wiz, "order")
     order = wiz.page
     assert wait_until(lambda: not order.closed_part.isHidden() and not wiz._anki_looking)
     assert order.closed_line.text() == words
-    assert order.closed_how.text() == how and order.closed_how.isHidden() == (not how)
+    assert order.closed_steps.isHidden() == (not how)
+    if how:
+        assert order.closed_steps.line.text() == how
+
+
+def test_copy_code_puts_ankiconnects_code_on_the_clipboard_and_says_copied_at_once(make, monkeypatch):
+    # Mado-A: the press reacts in the frame it happens in (*Copied*, the button never narrower), the bar says where to
+    # paste it, and the button's name comes back after COPIED_MS; a second press restarts the wait
+    from app import ankiconnect_addon as A
+    monkeypatch.setattr(A, "COPIED_MS", 150)
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": [], "running": True})
+    wiz, _shell, api, _settings, _m = make(api=api)
+    wiz.next()
+    steps = wiz.page.closed_steps
+    assert wait_until(lambda: steps.isVisible())
+    QApplication.clipboard().setText("")
+    width = steps.copy.width()
+    QTest.mouseClick(steps.copy, Qt.MouseButton.LeftButton)
+    assert QApplication.clipboard().text() == "2055492159"
+    assert steps.copy.text() == "Copied" and steps.copy.width() >= width
+    assert wiz.say_line.accessibleName() == A.COPIED_LINE        # the wizard's own line says where to paste it
+    assert wait_until(lambda: steps.copy.text() == "Copy code", 2)
+    wiz.next()                                            # A8A-4: another page — the line goes
+    assert wiz.say_line.accessibleName() != A.COPIED_LINE and wiz.say_line.isHidden()
+
+
+def test_check_again_runs_by_itself_once_anki_answers_and_never_while_the_part_is_away(make, monkeypatch):
+    # Mado-A: the closed part's watch rides the shell's poll; each light look runs on a worker, one at a time; the
+    # first one that finds AnkiConnect answering runs Check again's look, which opens the page's decks
+    from PyQt6.QtCore import QTimer
+    from app import ankiconnect_addon as A
+    from app.qt import addon_steps
+    tick = QTimer()
+    monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    asked = []
+    answer = {"now": False}
+
+    def answers(url, seen=None):
+        asked.append((url, threading.current_thread() is threading.main_thread()))
+        return answer["now"]
+    monkeypatch.setattr(A, "answers", answers)
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": [], "running": True})
+    wiz, _shell, api, _settings, _m = make(api=api)
+    tick.timeout.emit()
+    QApplication.processEvents()
+    assert asked == []                                    # page 1: no closed part on screen, nothing asked
+    wiz.next()
+    page = wiz.page
+    assert wait_until(lambda: page.closed_part.isVisible() and not wiz._anki_looking)
+    looks = len([c for c in api.calls if c[0] == "anki_look"])
+    tick.timeout.emit()
+    assert wait_until(lambda: len(asked) == 1)
+    assert asked[0] == ("http://127.0.0.1:8765", False)   # the one address, on a worker
+    assert wait_until(lambda: not page.closed_part.watch.looking)
+    assert len([c for c in api.calls if c[0] == "anki_look"]) == looks     # not answering: no full look
+    api.anki = {"open": True, "say": None, "decks": list(DECKS), "preselected": ["日本語::Mining"]}
+    answer["now"] = True
+    tick.timeout.emit()
+    assert wait_until(lambda: not page.closed_part.isVisible() and not page.decks_part.isHidden())
+    assert len([c for c in api.calls if c[0] == "anki_look"]) == looks + 1
+    n = len(asked)
+    tick.timeout.emit()
+    QApplication.processEvents()
+    assert len(asked) == n                                # Anki is in: the part is gone, the watch asks nothing
+
+
+def test_anki_opened_without_ankiconnect_shows_the_steps_by_itself(make, monkeypatch):
+    # A8A-1: the commonest first run — Anki closed (no steps), then opened without AnkiConnect: the light look sees the
+    # Anki process (the last look saw none) and the full look shows Copy code and the steps, no press
+    from PyQt6.QtCore import QTimer
+    from app import ankiconnect_addon as A
+    from app.qt import addon_steps
+    tick = QTimer()
+    monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    seen = []
+    monkeypatch.setattr(A, "answers", lambda url, last=None: seen.append(last) or last is False)
+    api = FakeApi(anki={"open": False, "say": None, "decks": [], "preselected": [], "running": False})
+    wiz, _shell, api, _settings, _m = make(api=api)
+    wiz.next()
+    page = wiz.page
+    assert wait_until(lambda: page.closed_part.isVisible() and not wiz._anki_looking)
+    assert page.closed_line.text() == S.ANKI_CLOSED and page.closed_steps.isHidden()
+    api.anki = dict(api.anki, running=True)               # Anki opened; AnkiConnect still missing
+    tick.timeout.emit()
+    assert wait_until(lambda: page.closed_steps.isVisible())
+    assert page.closed_line.text() == S.ANKI_NO_CONNECT and seen[0] is False
+    tick.timeout.emit()
+    assert wait_until(lambda: len(seen) == 2 and not page.closed_part.watch.looking)
+    assert seen[1] is True                                # Anki seen now: only AnkiConnect's answer is news
 
 
 # --- 5 · cards made for you -------------------------------------------------------------------------------------------------- #

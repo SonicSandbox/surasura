@@ -457,9 +457,9 @@ def _anki_entry(connect, seen):
     reason (a permission prompt, another profile). No *Dismiss*: it goes by itself once Anki opens (Connect's next look
     gives its episodes another reason). Its key holds the reason: closed again later after it went, it counts again
     (`prune`).
-    Mado-N (Sonic 2026-10-31, MA-1 / MA-2): Connect can't tell a closed Anki from AnkiConnect missing, so the closed
-    line asks the process list too (`read_connect`'s `anki_running`) and takes Mado-A's one rule
-    (`ankiconnect_addon.needs_addon`): an Anki seen running is *Anki is open, but AnkiConnect isn't answering* with
+    Mado-N (Sonic 2026-10-31, MA-1 / MA-2): Connect can't tell a closed Anki from AnkiConnect missing (and its answer
+    may be two minutes old), so the closed line takes a look of its own (`read_connect`'s `anki_look`: AnkiConnect and
+    the process list together) and Mado-A's one rule (`ankiconnect_addon.needs_addon`): an Anki seen running is *Anki is open, but AnkiConnect isn't answering* with
     *Copy code* and the three steps (`data["steps"]` "no_addon"; no *Open Anki*: it is open), one it can't tell is
     *Anki isn't open, or AnkiConnect isn't answering* with *Open Anki* first in the steps ("unsure"), one seen closed
     the plain line. The key stays the reason's: the words changing never count it again."""
@@ -470,7 +470,7 @@ def _anki_entry(connect, seen):
     episodes = STRINGS["anki_one"] if n == 1 else STRINGS["anki_n"].format(n=n)
     closed = _anki_closed() in waits
     reason = _anki_closed() if closed else max(waits, key=waits.get)
-    look = {"running": connect["anki_running"]} if closed and "anki_running" in (connect or {}) else {}
+    look = ((connect or {}).get("anki_look") or {}) if closed else {}
     steps = (("unsure" if look["running"] is None else "no_addon") if ankiconnect_addon.needs_addon(look) else None)
     title = STRINGS[{"no_addon": "anki_no_addon_title", "unsure": "anki_unsure_title"}.get(
         steps, "anki_closed_title" if closed else "anki_needs_title")].format(n=episodes)
@@ -1204,7 +1204,7 @@ def read_connect(language, path=None):
         rec["known_offer"] = known_offer(language)
         if _anki_closed() in _anki_waits(rec):          # A3W-6's *Open Anki*: Anki looked for only then
             rec["anki_openable"] = _anki_openable()
-            rec["anki_running"] = ankiconnect_addon.running()     # Mado-N: open without AnkiConnect? (the steps)
+            rec["anki_look"] = _anki_look()                 # Mado-N: open without AnkiConnect? (the steps)
         return rec
     except Exception:
         return None
@@ -1217,6 +1217,19 @@ def _anki_closed():
     """Connect's *Anki isn't open* reason (`runner.ANKI_CLOSED`)."""
     from app.connect.runner import ANKI_CLOSED
     return ANKI_CLOSED
+
+
+def _anki_look():
+    """Mado-N: AnkiConnect asked once and, unanswered, the process list (`ankiconnect_addon.look`), at the address every
+    Anki caller reads -> the look, or None: under `SURASURA_NO_ANKI_SYNC` (the suites: never a live Anki) or when it
+    failed. A worker's look."""
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return None
+    try:
+        from app import anki_connect, settings_manager
+        return ankiconnect_addon.look(anki_connect.address(settings_manager.load_settings()))
+    except Exception:
+        return None
 
 
 def _anki_openable():

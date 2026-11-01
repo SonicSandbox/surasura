@@ -113,11 +113,8 @@ def read_level(settings, language):
 def probe_anki(settings):
     """*Check*: AnkiConnect asked once at the one address every Anki caller reads (loopback only) -> `probe`'s dict;
     when nothing answered, its `running` too (an Anki process seen: AnkiConnect may be missing — the wizard's look)."""
-    from app import ankiconnect_addon, anki_connect
-    report = anki_connect.probe(anki_connect.address(settings_service.thaw(settings)), timeout=PROBE_TIMEOUT)
-    if not report.get("ok") and report.get("version") is None and not report.get("timed_out"):
-        report["running"] = ankiconnect_addon.running()
-    return report
+    from app import anki_connect
+    return ankiconnect_addon.look(anki_connect.address(settings_service.thaw(settings)), timeout=PROBE_TIMEOUT)
 
 
 def read_hato():

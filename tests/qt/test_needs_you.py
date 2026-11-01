@@ -926,13 +926,18 @@ def _closed_jobs(n=3):
     return [{"item": 9000 + k, "job": k, "state": "waiting", "reason": runner.ANKI_CLOSED} for k in range(n)]
 
 
+def _refused(running):
+    """The closed line's own look (`needs.read_connect`'s `anki_look`): AnkiConnect refused, the process list's say."""
+    return {"ok": False, "version": None, "error": "refused", "running": running}
+
+
 def test_mado_n_anki_open_without_ankiconnect_wears_copy_code_and_the_steps_and_the_press_reacts_at_once(
         world, monkeypatch):
     # why: the stuck case — Anki open, AnkiConnect missing: the line names it, Copy code + the three steps (Mado-A's
     # one part), no *Open Anki* ("already open"); the press says Copied in its own frame, the bar where to paste it
     from app import ankiconnect_addon as A
     monkeypatch.setattr(A, "answers", lambda url, seen=None: False)
-    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_running": True}
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(True)}
     seed, win, writer, ny = world(connect=connect)
     entry = entry_of(ny, service.ANKI_WAIT)
     assert entry.title == f"{A.NO_CONNECT}: 3 episodes wait for it"
@@ -952,14 +957,14 @@ def test_mado_n_anki_open_without_ankiconnect_wears_copy_code_and_the_steps_and_
 def test_mado_n_a_look_that_cant_tell_puts_open_anki_first_and_a_closed_anki_shows_no_steps(world, monkeypatch):
     from app import ankiconnect_addon as A
     monkeypatch.setattr(A, "answers", lambda url, seen=None: False)
-    connect = {"jobs": _closed_jobs(1), "gaps": [], "needs": [], "anki_openable": True, "anki_running": None}
+    connect = {"jobs": _closed_jobs(1), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(None)}
     seed, win, writer, ny = world(connect=connect, connect_calls={"open_anki": lambda settings: True})
     entry = entry_of(ny, service.ANKI_WAIT)
     win.show_tab("needs")
     card = ny.cards.card(entry.key)
     assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"copy_code", "open_anki"}
     assert card.steps.line.text() == A.steps_line(unsure=True)
-    connect["anki_running"] = False                                     # Anki seen closed: the plain line
+    connect["anki_look"] = _refused(False)                              # Anki seen closed: the plain line
     ny.refresh()
     assert wait_until(lambda: entry_of(ny, service.ANKI_WAIT).data["steps"] is None, 5)
     key = entry_of(ny, service.ANKI_WAIT).key
@@ -977,7 +982,7 @@ def test_mado_n_the_watch_wakes_connect_once_anki_answers_and_the_card_goes_with
     answer = {"ok": False}
     monkeypatch.setattr(A, "EVERY", 0.0)
     monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append((url, seen)) or answer["ok"])
-    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_running": True}
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(True)}
     seed, win, writer, ny = world(connect=connect, connect_calls={
         "kick": lambda settings: kicked.append((settings.get("connect_enabled"), threading.current_thread() is main))})
     entry = entry_of(ny, service.ANKI_WAIT)
@@ -996,30 +1001,40 @@ def test_mado_n_the_watch_wakes_connect_once_anki_answers_and_the_card_goes_with
     assert wait_until(lambda: kicked, 5) and kicked == [(True, False)]  # Connect woken on a worker
     assert not watch.armed, "once: the card's own look ends it"
     connect["jobs"] = [dict(j, reason=None) for j in connect["jobs"]]  # Connect's look: Anki is in
-    connect.pop("anki_running")
+    connect.pop("anki_look")
     ny.refresh()
     assert wait_until(lambda: not any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)
 
 
-def test_mado_n_an_anki_opened_where_none_was_seen_brings_the_steps_by_itself(world, monkeypatch):
-    # why: Anki started without AnkiConnect after the line was read — the watch sees the process (seen False) and the
-    # entries are read again: the steps show with no press
+def test_mado_n_an_anki_opened_where_none_was_seen_brings_the_steps_by_itself_and_closed_takes_them_away(
+        world, monkeypatch):
+    # why: Anki started without AnkiConnect after the line was read — the watch sees the process (seen False; once it
+    # has gone SETTLE s unanswered) and the entries are read again: the steps show with no press, Connect not woken
+    # (nothing for it yet). A8N-2: then Anki closed — the watch (seen True) sees it gone and the plain line is back
     from app import ankiconnect_addon as A
     monkeypatch.setattr(A, "EVERY", 0.0)
-    seen_by_look = []
-    monkeypatch.setattr(A, "answers", lambda url, seen=None: seen_by_look.append(seen) or seen is False)
-    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_running": False}
-    seed, win, writer, ny = world(connect=connect, connect_calls={"kick": lambda settings: None})
+    monkeypatch.setattr(A, "SETTLE", 0.0)
+    seen_by_look, kicked = [], []
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: seen_by_look.append(seen) or
+                        (A.OPENED if seen is False else A.GONE))
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(False)}
+    seed, win, writer, ny = world(connect=connect, connect_calls={"kick": kicked.append})
     entry = entry_of(ny, service.ANKI_WAIT)
     win.show_tab("needs")
     card = ny.cards.card(entry.key)
     assert wait_until(lambda: card.isVisible(), 5)
-    connect["anki_running"] = True                                      # (what the next read's process look finds)
+    connect["anki_look"] = _refused(True)                               # (what the next read's own look finds)
     card.watch._tick()
     assert wait_until(lambda: entry_of(ny, service.ANKI_WAIT).data["steps"] == "no_addon", 5)
-    assert seen_by_look[0] is False
+    assert seen_by_look[0] is False and kicked == []
     new = ny.cards.card(entry.key)
     assert button(ny, entry.key, "copy_code") is not None and new.watch.seen is True
+    assert wait_until(lambda: new.isVisible(), 5)
+    connect["anki_look"] = _refused(False)                              # Anki closed
+    new.watch._tick()
+    assert wait_until(lambda: entry_of(ny, service.ANKI_WAIT).data["steps"] is None, 5)
+    assert seen_by_look[-1] is True and kicked == []
+    assert button(ny, entry.key, "open_anki") is not None and button(ny, entry.key, "copy_code") is None
 
 
 # --- Michi-C (A7B-1…A7B-3): the shows behind the backlog ---------------------------------------------------------- #

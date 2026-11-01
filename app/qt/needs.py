@@ -42,7 +42,8 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
 - **Anki closed, or AnkiConnect missing** (A3W-6; Mado-N, Sonic 2026-10-31 MA-1 / MA-2): the Anki line wears Mado-A's
   part (`addon_steps.AddonSteps`: *Copy code* + the three steps) where the one rule says AnkiConnect may be missing
   (`ankiconnect_addon.needs_addon`, the entry's `steps`), and its watch (`addon_steps.Watch`, on the shell's status
-  poll while the card is on screen): once Anki answers it wakes Connect (`kick`), whose look takes the card away.
+  poll while the card is on screen): once Anki answers it wakes Connect (`kick`), whose look takes the card away; an
+  Anki opened or closed meanwhile reads the line again.
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
@@ -1726,8 +1727,8 @@ class NeedsYou(QObject):
     def _addon(self, card, box, entry):
         """Mado-N (Sonic 2026-10-31, MA-1 / MA-2): the Anki line while Anki is closed — or AnkiConnect missing — wears
         Mado-A's part: *Copy code* + the three steps where the one rule says (the entry's `steps`: `needs_addon`), and
-        its watch, which takes the light look every few seconds while the card is on screen; Anki answering (or an Anki
-        opened where none was seen) is `_anki_answered`."""
+        its watch, which takes the light look every few seconds while the card is on screen; its news (Anki answering,
+        an Anki opened or closed) is `_anki_answered`'s."""
         data = entry.data or {}
         if entry.kind != service.ANKI_WAIT or not data.get("closed"):
             return
@@ -1737,20 +1738,22 @@ class NeedsYou(QObject):
             steps.set_unsure(data["steps"] == "unsure")
             box.addWidget(steps)
             card.steps = steps
-        card.watch = addon_steps.Watch(card, addon_steps.ticker(self.win), self._anki_url, self._anki_answered)
-        card.watch.arm(True, data.get("running"))
+        watch = card.watch = addon_steps.Watch(card, addon_steps.ticker(self.win), self._anki_url, None)
+        watch.answered = lambda w=watch: self._anki_answered(w.news)
+        watch.arm(True, data.get("running"))
 
     def _anki_url(self):
         from app import anki_connect
         from app.services.settings import thaw
         return anki_connect.address(thaw(self.read_settings() or {}))
 
-    def _anki_answered(self):
-        """The watch's news: Connect woken to look now (`kick`, as *Open Anki*'s own wait does: `open_anki.kick_when_open`)
-        — its waiting episodes go, and the card with them, within seconds, never at its 2-minute look — and the entries
-        read again (an Anki opened without AnkiConnect: the steps show)."""
+    def _anki_answered(self, news):
+        """The watch's news: the entries read again (an Anki opened without AnkiConnect: the steps show; closed: they
+        go). AnkiConnect answering (`news` True) also wakes Connect to look now (`kick`, as *Open Anki*'s own wait does:
+        `open_anki.kick_when_open`) — its waiting episodes go, and the card with them, within seconds, never at its
+        2-minute look."""
         kick, read_settings = self.connect_calls.get("kick"), self.read_settings
-        if kick is not None:
+        if news is True and kick is not None:
             from app.qt import applog
             bridge.run_in_worker(lambda: kick(read_settings() or {}), then=lambda _p: None,
                                  failed=lambda info: applog.log("needs", f"Connect wasn't woken: {info[0]!r}"))

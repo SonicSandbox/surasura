@@ -205,7 +205,7 @@ def test_with_anki_closed_the_line_gives_the_closed_reason_even_when_another_wai
 def _closed_with(running, n=19):
     rec = _record(*[runner.ANKI_CLOSED] * n, openable=True)
     if running != "unlooked":
-        rec["anki_running"] = running
+        rec["anki_look"] = {"ok": False, "version": None, "error": "refused", "running": running}
     return rec
 
 
@@ -240,22 +240,39 @@ def test_the_words_changing_keep_the_lines_key_so_it_never_counts_again():
 
 def test_a_permission_prompt_never_shows_the_steps_whatever_the_process_list_says():
     rec = _record(anki_session.UNUSABLE, openable=True)
-    rec["anki_running"] = True
+    rec["anki_look"] = {"ok": False, "version": None, "error": "refused", "running": True}
     entry, = _anki_entries(rec)
     assert entry.title == "Anki needs you: 1 episode waits for it" and entry.data["steps"] is None
 
 
+def test_anki_answering_now_beside_connects_older_closed_never_shows_the_steps():
+    # why (A8N-1 / IK-1): Connect's "closed" can be two minutes old; a look that finds AnkiConnect answering is no
+    # add-on missing, whatever the process list says — the plain line, and the watch wakes Connect at once
+    rec = _closed_with(True)
+    rec["anki_look"] = {"ok": True, "version": 6, "error": ""}
+    entry, = _anki_entries(rec)
+    assert entry.title == "Anki isn't open: 19 episodes wait for it" and entry.data["steps"] is None
+
+
 @pytest.mark.parametrize("language", ["ja", "zh"])
-def test_read_connect_looks_for_an_anki_process_only_while_the_closed_line_needs_it(monkeypatch, language):
+def test_read_connect_takes_its_look_only_while_the_closed_line_needs_it_and_never_under_the_suites_guard(
+        monkeypatch, language):
     from app import ankiconnect_addon
     from app.connect import open_anki, status
     asked = []
     monkeypatch.setattr(open_anki, "find", lambda: None)
-    monkeypatch.setattr(ankiconnect_addon, "running", lambda: asked.append(1) or True)
-    for reasons, want in (([runner.ANKI_CLOSED], True), ([runner.REVIEWING], "absent"),
+    monkeypatch.setattr(ankiconnect_addon, "look", lambda url, timeout=1: asked.append(url) or {"running": True})
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    for reasons, want in (([runner.ANKI_CLOSED], {"running": True}), ([runner.REVIEWING], "absent"),
                           ([anki_session.UNUSABLE], "absent")):
         asked.clear()
         rec = {"languages": {language: _record(*reasons)}}
         monkeypatch.setattr(status, "read", lambda languages=None, path=None, rec=rec: rec)
         got = service.read_connect(language)
-        assert got.get("anki_running", "absent") == want and len(asked) == (1 if want is True else 0)
+        assert got.get("anki_look", "absent") == want and len(asked) == (0 if want == "absent" else 1)
+        assert all(u.startswith("http://127.0.0.1:") for u in asked), "loopback only"
+    monkeypatch.setenv("SURASURA_NO_ANKI_SYNC", "1")             # the suites: a live Anki is never asked
+    asked.clear()
+    rec = {"languages": {language: _record(runner.ANKI_CLOSED)}}
+    monkeypatch.setattr(status, "read", lambda languages=None, path=None, rec=rec: rec)
+    assert service.read_connect(language).get("anki_look") is None and asked == []

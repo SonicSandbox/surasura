@@ -58,7 +58,7 @@ def test_releasing_holds_a_season_downloaded_at_once_with_its_reason():
     assert drag.when_done(_aired(_view([row]), 1, RELEASING), row, NOW) == ("offer", strings.DONE_WHY_AIRING)
 
 
-@pytest.mark.parametrize("status", A.AIRING)
+@pytest.mark.parametrize("status", ["RELEASING", "NOT_YET_RELEASED", "HIATUS"])     # AniList's own names
 def test_every_airing_status_holds(status):
     row = _row("p1", 1, 1, _at_once(4))
     assert drag.when_done(_aired(_view([row]), 1, {"status": status}), row, NOW)[0] == "offer"

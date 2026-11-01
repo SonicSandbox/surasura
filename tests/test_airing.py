@@ -82,7 +82,7 @@ def test_the_id_is_the_work_s_anilist_id_else_its_anilist_cover_s_ref_and_nothin
 
 
 # --- AniList only holds a show back (A5) ---------------------------------------------------------------------------- #
-@pytest.mark.parametrize("status", A.AIRING)
+@pytest.mark.parametrize("status", ["RELEASING", "NOT_YET_RELEASED", "HIATUS"])     # AniList's own names
 def test_an_airing_status_holds_the_show_whatever_its_files(status):
     eps = [_ep(n) for n in range(1, 13)]
     assert A.holds({"status": status, "episodes": 12}, eps) == "airing"
@@ -188,6 +188,13 @@ def test_the_reader_s_copy_reads_the_file_again_only_when_it_moved(tmp_path):
     A._write(path, {"501": {"status": "FINISHED", "episodes": 13}})
     os.utime(path, ns=(time.time_ns(), os.stat(path).st_mtime_ns + 10_000_000))
     assert kept.shows()["501"]["status"] == "FINISHED"
+    second = 1_800_000_000 * 10 ** 9                 # two rewrites of the same size within one second (NTFS keeps 100 ns)
+    A._write(path, {"501": {"status": "RELEASING", "episodes": 13}})
+    os.utime(path, ns=(second + 100_000_000, second + 100_000_000))
+    assert kept.shows()["501"]["status"] == "RELEASING"
+    A._write(path, {"501": {"status": "CANCELLED", "episodes": 13}})
+    os.utime(path, ns=(second + 200_000_000, second + 200_000_000))
+    assert kept.shows()["501"]["status"] == "CANCELLED", "read again: the time moved, though not by a whole second"
     os.remove(path)
     assert kept.shows() == {}
 
@@ -235,6 +242,13 @@ def test_a_kept_answer_that_isn_t_due_is_never_asked_again(anilist, tmp_path):
     assert a.want([501]) == 0 and a.run_once() == 0 and len(anilist.posts) == 1
     a.clock = lambda: NOW + 31 * DAY
     assert a.want([501]) == 1 and a.run_once() == 1 and len(anilist.posts) == 2
+
+
+def test_the_query_asks_a_page_as_large_as_a_batch():
+    """AniList answers at most `perPage` media: a page smaller than the 50 ids sent would leave the rest unanswered
+    (each then kept as "unknown")."""
+    assert "Page(perPage: 50)" in A.Q_AIRING and A.BATCH == 50
+    assert "media(id_in: $ids)" in A.Q_AIRING and "search" not in A.Q_AIRING
 
 
 def test_fifty_ids_a_query(anilist, tmp_path):

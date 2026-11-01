@@ -102,5 +102,5 @@ def test_the_chip_is_quiet_and_hidden_from_dictionary_extensions():
     assert 'title="From your Goal: someday, in no order" migaku_ignore data-yomichan-ignore' in html
     assert ".tier-chip::after" in html
     assert 'title="Goal Content">G</span>' not in html
-    # 3.0's window names the list Goal: no 2.x tier name reaches the report's words (the chip, its hover, the ✦ hover)
+    # 3.0's window names the list Goal: no 2.x tier name reaches the report's words (the chip, its hover; the ✦ hover never named one)
     assert "6+ months" not in html and 'data-content="6+"' not in html

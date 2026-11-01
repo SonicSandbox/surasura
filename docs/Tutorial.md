@@ -8,7 +8,7 @@
 | :-- | :-- |
 | **What are you learning?** | Japanese or Chinese |
 | **Skip the words you already know** | **From Anki** (it stays in sync), **Import a list** (Migaku, Jiten, a file) or **Start fresh** |
-| **Where are your shows and books?** | *Choose a folder…* · *Choose a file…* · *YouTube…*. Nothing is moved: Surasura reads them where they are |
+| **Bring in what you'll watch and read** | *Choose a folder…* · *Choose a file…* · *YouTube…*. Nothing is moved: Surasura reads them where they are |
 | **Where does each one go?** | Every title, one key each: **Soon (S) · Current (→) · Goal (↓) · Finished (↑) · Ignore (←)**. *Put the rest in…* sorts what's left at once, and *Start sorting over* begins again |
 | **Your cards, in the order you'll meet the words** | Let Surasura keep Anki's new cards in your order (順) |
 | **Cards that make themselves** | Anki Miner makes a card from the episode you're watching: the line, its audio and a picture |
@@ -26,7 +26,7 @@
 | :-- | :-- |
 | **Current** | Your order: **Up Next** on top, then the Soon line, and **Goal** (someday, in no order) at its foot |
 | **Finished** | What you've finished: a record, and still a source of sentences. **Put back** returns it |
-| **Needs you** | One card for each thing that waits on your decision, each with *Not now* · *Stop asking* |
+| **Needs you** | One card for each thing that waits on your decision, each with *Not now* · *Stop asking* in its ⋯ |
 | **Settings** | Every setting on one page; each row says what it does |
 
 - **Move a show:** drag it, or use ↑ ↓. Drop it on **Soon**, **Goal** or **Finished**. One Undo.
@@ -56,7 +56,8 @@
 
 ![Mine: the episode's cards come next](assets/images/readme/mine.png)
 
-- **Mine** makes an episode's cards with Anki Miner. Surasura installs Anki Miner and finishes its setup itself.
+- **Mine** makes an episode's cards with Anki Miner. Setup gets Anki Miner's installer for you, and *Finish its setup*
+  does the rest: you never open Anki Miner's window.
 - **順 Junban** keeps Anki's new cards in your order: move a show, and Anki follows.
 - Desktop Anki must be open. Set your deck's *New card sort order* to **Order gathered**.
 

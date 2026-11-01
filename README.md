@@ -48,7 +48,7 @@ Japanese and Chinese.
 1. **Point it at your content folder.** Setup asks *Where are your shows and books?* It finds your shows, books (EPUB)
    and audiobooks where they are, and works out their series, episodes and order. Nothing is moved. Covers come from
    AniList when you turn on *Show covers*.
-2. **Tell it what you know.** Your Anki decks, Jiten, Migaku, or a known-words file.
+2. **Tell it what you know.** Your Anki decks, Jiten, Migaku, or an Anki deck file (`.apkg`).
    *Surasura talks to Anki through **AnkiConnect**, a free Anki add-on: in Anki, Tools › Add-ons › Get Add-ons…, paste
    the code `2055492159` (setup's **Copy code** puts it on your clipboard), then restart Anki.*
 3. **Sort what it found.** One title at a time, one key each: **Soon (S) · Current (→) · Goal (↓) · Finished (↑) ·
@@ -150,7 +150,7 @@ Surasura's shared パターン data for Japanese is built from:
 
 The data itself is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
-The kanji names Surasura keeps whole as one word (Settings → Language & Parsing → "Kanji names as one word") come from
+The kanji names Surasura keeps whole as one word (Settings → Language & Parsing → "Kanji names (JMnedict)") come from
 [JMnedict](https://www.edrdg.org/enamdict/enamdict_doc.html), the Japanese proper-names dictionary of the JMdict/EDICT
 project, property of the [Electronic Dictionary Research and Development Group](https://www.edrdg.org/edrdg/licence.html),
 used under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) — by way of the name lists in
@@ -165,11 +165,11 @@ of the [Electronic Dictionary Research and Development Group](https://www.edrdg.
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), and from JMnedict's names of works, products and
 organizations. Only marks on spellings, and those words' spellings and readings, are kept (no meanings); that table
 (`app/dictionary_data.py`) is shared under the same licence.
-JMdict's kanji spellings, entry by entry, and the readings of the entries a card can end in — no meanings — keep "Kanji
-terms your library repeats as one word" from ever joining a word the dictionary lists, and tell which word an Anki card
+JMdict's kanji spellings, entry by entry, and the readings of the entries a card can end in — no meanings — keep "A work’s
+own terms" from ever joining a word the dictionary lists, and tell which word an Anki card
 is (心する 'take heed' is a word of its own, not 心); that table (`app/jmdict_data.py`) is shared under the same licence
-too. So are the set phrases Surasura can add to your list (Settings → Language & Parsing → "Idioms and set phrases on
-your list"): JMdict's phrases as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
+too. So are the set phrases Surasura can add to your list (Settings → Language & Parsing → "Idioms as
+rows"): JMdict's phrases as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
 which of their words live only inside them (by JPDB 2024's ranks) and which are units in general text (counted, as
 statistics only, on the shared パターン set's Japanese text above); that table (`app/phrase_data.py`) is shared under
 the same licence. So is the list of one-kanji words Surasura can offer (Settings → Language & Parsing → "List one-kanji
@@ -193,7 +193,7 @@ With *Download covers* on (off until you say yes), the 3.0 window shows each sho
 [YouTube](https://www.youtube.com); nothing is shipped, and *Remove downloaded covers* deletes them.
 
 The same credits, with the frequency lists and the tokenizers' dictionaries (UniDic, jieba, OpenCC), are in the app:
-Settings → Data & System → Data credits.
+Settings → App → Data credits.
 
 ## 📜License
 

@@ -13,6 +13,7 @@ What a wrong answer would cost a learner:
 
 Real Japanese / Chinese names: the store's library from tests/Test Resources (`names`), the downloads named the same.
 """
+import json
 import os
 import threading
 import time
@@ -37,8 +38,9 @@ pytestmark = pytest.mark.skipif(not library_watch.watchable(), reason="the bell 
 
 
 # --- helpers ------------------------------------------------------------------------------------------------------ #
-def _download(data_dir, name, channel, video, folder="Processed", language="ja"):
-    """A transcript as the YouTube downloader writes it (its header, its cue sidecar), with real text."""
+def _download(data_dir, name, channel, video, folder="Processed", language="ja", place=None):
+    """A transcript as the YouTube downloader writes it (its header, its cue sidecar), with real text. `place`: a
+    playlist video's place in its list ((list id, index): the sidecar's `playlist`, Mado-Q)."""
     words = names(language)
     path = os.path.join(data_dir, *folder.split("/"), f"{channel} - {name} [{video}].txt")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -46,9 +48,11 @@ def _download(data_dir, name, channel, video, folder="Processed", language="ja")
         f.write(f"{name}\n{channel} | 2026-10-14 | 12:34\nCaptions: {language} (manual)\nhttps://www.youtube.com/watch"
                 f"?v={video}\n\n------------------------------------------------------------\n\n"
                 + " ".join(words[:15]) + "\n")
+    side = {"video_id": video, "url": f"https://www.youtube.com/watch?v={video}", "title": name, "cues": []}
+    if place is not None:
+        side["playlist"] = {"id": place[0], "index": place[1]}
     with open(os.path.splitext(path)[0] + ".surasura.json", "w", encoding="utf-8") as f:
-        f.write('{"video_id": "%s", "url": "https://www.youtube.com/watch?v=%s", "title": "%s", "cues": []}'
-                % (video, video, name))
+        json.dump(side, f, ensure_ascii=False)
     return path
 
 
@@ -244,6 +248,19 @@ def test_youtube_record_reads_the_sidecar_and_the_header_and_bilibili_names_no_c
     assert rec["content_key"] == "bilibili:4791234" and "channel_id" not in rec and "show" not in rec
 
 
+def test_youtube_record_carries_a_playlist_videos_place_from_its_sidecar_and_drops_a_bad_one(tmp_path):
+    """Mado-Q: the downloader's sidecar names a playlist video's place in its list; the record hands it to the store
+    (which orders the list's videos by it). A place that isn't (a list id, a whole number) is never handed on."""
+    words = names("ja")
+    path = _download(str(tmp_path), words[3], words[4], "we6eAG5TfBw", place=("PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn", 1))
+    rec = windows.youtube_record(path, "ja")
+    assert rec["playlist"] == {"id": "PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn", "index": 1}
+    for bad in (("PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn", True), ("PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn", "1"), (7, 1)):
+        path = _download(str(tmp_path), words[3], words[4], "we6eAG5TfBw", place=bad)
+        assert "playlist" not in windows.youtube_record(path, "ja"), bad
+    assert "playlist" not in windows.youtube_record(_download(str(tmp_path), words[5], words[4], "Mrw5VVykBuk"), "ja")
+
+
 def test_youtubes_on_complete_registers_both_files_as_youtube_with_their_channel_and_says_they_wait(real):
     """The door's `on_complete` with two created files: both through the writer (not this thread's store), producer
     `youtube` with the channel the header names, waiting in New arrivals (no rule); the window shows them and the
@@ -430,3 +447,27 @@ def test_alpha8_a_playlists_first_video_and_its_rest_are_one_title_in_new_arriva
                                   for p in every), 5)
     assert len({lib.store.item(_item(lib.store, lib.data_dir, p))["work_id"] for p in every}) == 1
     assert lib.win.bar_line.full() == words[50]                       # quiet: nothing said over it
+
+
+def test_mado_q_setups_first_video_and_the_rest_in_file_name_order_show_in_the_lists_order(real):
+    """Sonic's try (Mado-Q): his link names episode 43 — the list's last in learning order — so setup brings it in
+    first; the rest come later in file-name order. Through the downloader's one seam and the window's writer, New
+    arrivals shows them in the list's order: 1, 2, 3, then 43."""
+    lib = real()
+    words = names("ja")
+    channel, list_id = words[40], "PLjfPBTv1Zr1J8RTG9iCANlm2vzBhl7QZn"
+    first = _download(lib.data_dir, words[41], channel, "7nlUSMQKRKQ", place=(list_id, 44))
+    windows.youtube_arrivals(lib.win)([first])
+    assert wait_until(lambda: _item(lib.store, lib.data_dir, first) in _arrival_ids(lib.page.view_model), 5)
+    folder = f"Processed/{channel} - {words[42]} (playlist)"
+    rest = [_download(lib.data_dir, words[43 + k], channel, video, folder=folder, place=(list_id, index))
+            for k, (video, index) in enumerate((("Mrw5VVykBuk", 2), ("fYB1wDXQalg", 3), ("we6eAG5TfBw", 1)))]
+    windows.youtube_arrivals(lib.win, quiet=True)(sorted(rest))
+    every = [first] + rest
+    assert wait_until(lambda: all(_item(lib.store, lib.data_dir, p) in _arrival_ids(lib.page.view_model)
+                                  for p in every), 5)
+    ids = {p: _item(lib.store, lib.data_dir, p) for p in every}
+    order = [i for i in lib.store.ids("arrivals") if i in ids.values()]
+    assert order == [ids[rest[2]], ids[rest[0]], ids[rest[1]], ids[first]]
+    shown = [i for a in lib.page.view_model.arrivals for i in a.item_ids if i in ids.values()]
+    assert shown == order                                             # the tray shows the store's order

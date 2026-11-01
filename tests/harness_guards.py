@@ -28,15 +28,16 @@ import atexit
 import json
 import os
 import re
-import shutil
 import socket
 import sys
-import tempfile
 import threading
 import time
 import traceback
 
 import pytest
+
+from tests import user_bases
+from tests.user_bases import BASE_NAMES, ROOTS_PREFIX  # noqa: F401  (the harness's own names, as before)
 
 EVERY_SUITE = ("_guard_real_local_data", "_guard_anki_port", "pytest_collection", "pytest_runtest_protocol",
                "pytest_runtest_teardown", "pytest_runtestloop")
@@ -50,38 +51,10 @@ EVERY_SUITE = ("_guard_real_local_data", "_guard_anki_port", "pytest_collection"
 # the per-user bases themselves: nothing in it, or started by it, reaches the real Houseki roots through them. (A route
 # past the variables — `expanduser` with one unset, the known-folder API, a path written out — still could: the guard
 # below watches the true roots too.)
-ROOTS_PREFIX = "surasura-test-bases-"
-BASE_NAMES = ("LOCALAPPDATA", "APPDATA", "XDG_DATA_HOME")
+# The move itself is tests/user_bases.py's: the shared test data (tests/fixtures) makes it too, for a probe run by
+# hand outside pytest.
 ORIGINAL_BASES = {name: os.environ.get(name) for name in BASE_NAMES}     # as the run was started: None = unset
-
-
-def _redirect_user_bases():
-    """Point %LOCALAPPDATA%, %APPDATA% and XDG_DATA_HOME at a new folder in TEMP (removed when this process exits);
-    PYTHONUSERBASE keeps naming this user's packages (Python looks for them under %APPDATA%), for the children too."""
-    import site
-    os.environ.setdefault("PYTHONUSERBASE", site.getuserbase())
-    _forget_stale_bases()
-    bases = tempfile.mkdtemp(prefix=ROOTS_PREFIX)
-    atexit.register(shutil.rmtree, bases, True)   # before any test's exit hook, so it runs after them
-    for name, sub in (("LOCALAPPDATA", "Local"), ("APPDATA", "Roaming"), ("XDG_DATA_HOME", "Local")):
-        os.makedirs(os.path.join(bases, sub), exist_ok=True)
-        os.environ[name] = os.path.join(bases, sub)
-
-
-def _forget_stale_bases(older_than=86400):
-    """Remove the bases a run killed before its exit left in TEMP (a day old or more)."""
-    temp = tempfile.gettempdir()
-    try:
-        names = [n for n in os.listdir(temp) if n.startswith(ROOTS_PREFIX)]
-    except OSError:
-        return
-    for name in names:
-        path = os.path.join(temp, name)
-        try:
-            if time.time() - os.path.getmtime(path) > older_than:
-                shutil.rmtree(path, True)
-        except OSError:
-            pass
+_redirect_user_bases = user_bases.redirect
 
 
 def _real_local_data_folder():
@@ -107,12 +80,21 @@ _REAL_HOUSEKI_ROOTS = _real_houseki_roots()     # mock path_utils or point the e
 
 
 def _root_state(root):
-    """Whether `root` exists, and the names at its top. Not deeper: other sessions' own source runs write inside it
-    (their token stores, their per-install folders); a test reaching it makes it, or a name at its top."""
+    """Whether `root` exists, the names at its top, and which of them are empty folders. Not deeper: other sessions'
+    own source runs write inside it (their token stores, their per-install folders); a test reaching it makes it, or
+    a name at its top."""
     try:
-        return True, sorted(os.listdir(root))
+        names = sorted(os.listdir(root))
     except OSError:
-        return os.path.isdir(root), []
+        return os.path.isdir(root), [], []
+    return True, names, [n for n in names if _empty_folder(os.path.join(root, n))]
+
+
+def _empty_folder(path):
+    try:
+        return os.path.isdir(path) and not os.listdir(path)
+    except OSError:
+        return False
 
 
 def _folder_state(folder):
@@ -145,8 +127,29 @@ def _guard_real_local_data():
     assert _folder_state(_REAL_LOCAL_DATA) == before, \
         f"a test wrote the local data folder {_REAL_LOCAL_DATA} (reached without the test root): use the test root"
     for root, was in zip(watched, roots):
-        assert _root_state(root) == was, \
-            f"a test made or wrote the Houseki root {root} (reached without the test root): use the test root"
+        made, gone = _changed(was, _root_state(root))
+        assert not made and not gone, (
+            f"a test made {made} or removed {gone} at the top of the Houseki root {root} (reached without the test "
+            f"root): use the test root" + _whose(root, made))
+
+
+def _changed(was, now):
+    """(what appeared, what went) between two `_root_state`s. Appeared: the root itself, or a name at its top. Went: a
+    name that held something — an empty folder removed is no loss (the lead cleaning up two empty leaked folders by
+    hand failed every run then live, 2026-10-31); a populated one, or the root with one, is."""
+    made = (now[1] or ["(the root itself)"]) if now[0] and not was[0] else sorted(set(now[1]) - set(was[1]))
+    return made, sorted(set(was[1]) - set(now[1]) - set(was[2]))
+
+
+def _whose(root, made):
+    """A hint for the reader of a failure: a per-install folder in the user's true local root that isn't this
+    checkout's was made by another process on this machine (another copy's hand-run probe made one mid-run,
+    2026-10-31), not by this run's code. Never for the run's own roots, which only this run reaches."""
+    key = os.path.basename(_REAL_LOCAL_DATA)
+    if (not made or root != _TRUE_HOUSEKI_ROOTS[0] or root in _REAL_HOUSEKI_ROOTS or key in made
+            or not all(re.fullmatch(r"[0-9a-f]{16}", name) for name in made)):
+        return ""
+    return f" — {made} isn't this checkout's install folder ({key}): another copy's process made it, likely by hand"
 
 
 def _clear_destroyed_default_root():

@@ -328,7 +328,8 @@ def youtube_record(path, language):
     own header (line 2: `<channel> | <published> | <length>`), else the id its name ends with. Producer `youtube` (the
     module's, bilibili.tv's too); `channel_id` = the channel's name as the header gives it (the downloader keeps no
     channel id), which `placing_rules`' `youtube:<channel>` names; no channel (bilibili.tv names none) → the producer's
-    rule alone. The show is the channel, so one channel's videos are one title."""
+    rule alone. The show is the channel, so one channel's videos are one title. A playlist's video carries its place
+    in the list (`playlist` {"id", "index"}, the sidecar's: the store adds it in the list's order, Mado-Q)."""
     stem = os.path.splitext(path)[0]
     side = {}
     try:
@@ -360,6 +361,10 @@ def youtube_record(path, language):
     if channel and channel != "Unknown" and site == "youtube":
         record["channel_id"] = channel
         record["show"] = {"title": channel}
+    from app.library_store import list_place
+    place = list_place(side)                              # Mado-Q: a playlist's video lands in the list's order
+    if place is not None:
+        record["playlist"] = {"id": place[0], "index": place[1]}
     return record
 
 

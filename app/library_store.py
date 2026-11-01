@@ -2856,7 +2856,9 @@ class Store:
         3.0 (L3.1): the record names its title first (`_work_by_record`: its ids, then its show), and an item that
         waits in New arrivals is placed by the user's rule for its source in the same command (`placing_rules`,
         05 §5.12: logged as the source's, explicit — D30); `rules` = {source: target} as the caller read them from
-        settings.json (`placing_rules`; None or empty: it waits); a back-fill places by no rule.
+        settings.json (`placing_rules`; None or empty: it waits); a back-fill places by no rule. A record naming its
+        place in a list (a YouTube playlist's video, Mado-Q) is added in that list's order among its title's items of
+        it (`_series_spot`), and `after-show` reads the same places (`_series_neighbour`).
 
         3.0 (SRC K3, SRC-7, never a duplicate): an episode already in is never a second item — see `_register`. A
         source's `Library` copy hato's file took over (`change.unused`) goes to the trash after the commit (inside an
@@ -2920,7 +2922,11 @@ class Store:
                         change.excluded_key = key          # N1: its Undo takes the exclusion back too
                         cmd.touch()
             elif row is None:
-                if meta.get("arrivals_on"):
+                # Mado-Q: a playlist's video goes in its list's order among its title's videos of that list
+                spot = self._series_spot(pairing, ("arrivals",) if meta.get("arrivals_on") else CURRENT)
+                if spot is not None:
+                    change = self._add(prepared, None, "anchor", spot, None, None, "register", by, 0)
+                elif meta.get("arrivals_on"):
                     change = self._add(prepared, "arrivals", "end", None, None, None, "register", by, 0)
                 else:
                     first = rel.split("/", 1)[0]
@@ -4420,6 +4426,11 @@ class Store:
         tier = {"top": "now", "now": "now", "soon": "soon", "goal": "goal", "later": "goal"}.get(where)
         if tier is None:
             raise ValueError(f"unknown place {where!r}")
+        spot = self._series_spot(record, (tier,), item_id)       # Mado-Q: beside its list's videos there, in order
+        if spot is not None:
+            anchor, before = spot
+            return self.move([item_id], tier, before_id=anchor if before else None,
+                             after_id=None if before else anchor, by=by, explicit=explicit) is not None
         return self.move([item_id], tier, by=by, explicit=explicit) is not None
 
     def place(self, item_ids, where, by="user", explicit=None):
@@ -4467,6 +4478,52 @@ class Store:
             return (tier, self._past_group(before_id, -1), None)
         return spot
 
+    def _series_spot(self, record, tiers, item_id=None):
+        """(Mado-Q, alpha 8: Sonic "i want it in the order") Where `register` puts a new item whose record names its
+        place in a list (`_series`: a YouTube playlist's video, by the list's learning order) among its title's items
+        of that list in `tiers`, read in order: (anchor id, True) — before the first whose place is later — else
+        (anchor id, False), after the last. None when the record names no place, or no item of that list is there:
+        the caller's own rule. So a list's videos land in its order whatever order they come in (setup's first video,
+        then the rest; a run stopped and resumed; a video added to the list later). Never inside a group (LM11).
+        `item_id`: an item already in (a rule placing it, `_place_one`) — its own title's."""
+        mine = list_place(record)
+        work = (self._work_by_record(record) if item_id is None else self.conn.execute(
+            "SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()[0]) if mine is not None else None
+        if work is None:
+            return None
+        found = self._series_neighbour(work, mine, [r for r in self.conn.execute(
+            "SELECT id, tier, ord FROM items WHERE work_id = ?", (work,)) if r[1] in tiers])
+        if found is None:
+            return None
+        row, before = found
+        return (self._past_group(row[0], -1 if before else 1), before)
+
+    def _series_neighbour(self, work, mine, rows):
+        """(The one reading of a list's order: `_series_spot`'s and `after-show`'s.) Among `rows` (id, tier, ord) of
+        title `work`, those whose record names a place in list `mine[0]`: (the one just before it in the list, False) — it
+        goes after, as `after-show` reads episode numbers — else (the first after it, True), it goes before; None when
+        none is there."""
+        places = self._series_places(work, mine[0])
+        order = lambda r: (places[r[0]], TIERS[r[1]][3], r[2], r[0])      # noqa: E731
+        same = [r for r in rows if r[0] in places]
+        earlier = [r for r in same if places[r[0]] < mine[1]]
+        if earlier:
+            return (max(earlier, key=order), False)
+        later = [r for r in same if places[r[0]] >= mine[1]]
+        return (min(later, key=order), True) if later else None
+
+    def _series_places(self, work, list_id):
+        """{item id: its place in list `list_id`} for the title's items whose record names one (`list_place`); only
+        records holding the list's id are parsed (a long title's other records never are)."""
+        out = {}
+        for item_id, text in self.conn.execute(f"SELECT item_id, pairing FROM pairings p WHERE item_id IN "
+                                               f"(SELECT id FROM items WHERE work_id = ?) AND {_PREFERRED_ROW} "
+                                               f"AND instr(p.pairing, ?) > 0", (work, list_id)):
+            found = list_place(_json_dict(text))
+            if found is not None and found[0] == list_id:
+                out[item_id] = found[1]
+        return out
+
     def _show_spot(self, item_id, record, excl):
         """`_after_show`'s reading of the title's rows."""
         work = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
@@ -4506,6 +4563,11 @@ class Store:
             tier, (how, anchor) = self._in_run([r + (rels[r[0]],) for r in current], rels[item_id], ep)
             return (tier, anchor, None) if how == "before" else (tier, None, anchor)
         order = lambda r: (TIERS[r[1]][3], r[2], r[0])           # noqa: E731
+        series = list_place(record) if mine is None else None
+        found = self._series_neighbour(work[0], series, current) if series is not None else None
+        if found is not None:            # Mado-Q: a playlist's video in its list's order (`_series_spot`'s reading)
+            row, before = found
+            return (row[1], row[0], None) if before else (row[1], None, row[0])
         if mine is not None and all(r[0] in episodes for r in current):
             earlier = [r for r in current if episodes[r[0]] < mine[1]]
             if earlier:
@@ -6125,6 +6187,19 @@ def _episode(record):
     if isinstance(season, str) and season.strip().isdigit():
         season = int(season.strip())
     return (season if isinstance(season, int) and not isinstance(season, bool) else 1, episode)
+
+
+def list_place(record):
+    """(list id, place) of a record that names its place in a list — a YouTube playlist's video: `playlist` {"id",
+    "index"}, the index in the list's learning order (its first video 1; Mado-Q) — or None. The one check of its shape
+    (the window's YouTube record asks it too)."""
+    found = record.get("playlist") if isinstance(record, dict) else None
+    if not isinstance(found, dict):
+        return None
+    list_id, index = found.get("id"), found.get("index")
+    if not isinstance(list_id, str) or not list_id.strip() or isinstance(index, bool) or not isinstance(index, int):
+        return None
+    return (list_id.strip(), index)
 
 
 def media_type_guess(counts, anilist_id=None, tmdb_id=None):

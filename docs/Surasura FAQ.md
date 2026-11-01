@@ -12,11 +12,11 @@ Welcome to the Surasura FAQ! If you can't find the answer you're looking for her
 
 ### Core Concepts
 
-**What is the actual difference between the "NOW," "Soon," and "6+ months" timelines?**
-These timelines affect sorting and weighting. NOW content appears first, receives a higher priority icon, and ranks higher when exporting your frequency list.
+**What is the difference between Current, Soon and Goal?**
+They tell Surasura when you'll watch or read each title, and your list follows. **Current** is your order: Up Next on top, then the **Soon** line; what you'll meet first weighs the most. **Goal**, at its foot, is someday, in no order: its words still count, but less. **Finished** is a record: a source of sentences, never counted. (Surasura 2.x called them NOW, Soon and 6+ months.)
 
 **Are the generated sentences exactly "i+1"?**
-As close as your content allows. Surasura scans your whole library and picks the sentences with the fewest other unknown words — counting the words you'll have learned earlier in your journey as known. A word you can read through one you already know — 利用者 when you know 利用 — doesn't count against a sentence either (it still has its own place on your list, at half its score). The first sentence is always the one where you first meet the word, even when it isn't i+1. If you want *only* true i+1 sentences, turn on **Settings → 🧠 Sentences & Logic → Only include i+1 sentences**; words without one are then left out.
+As close as your content allows. Surasura scans your whole library and picks the sentences with the fewest other unknown words — counting the words you'll have learned earlier in your journey as known. A word you can read through one you already know — 利用者 when you know 利用 — doesn't count against a sentence either (it still has its own place on your list, at half its score). The first sentence is always the one where you first meet the word, even when it isn't i+1. If you want *only* true i+1 sentences, turn on **Settings → Sentences → Only i+1 sentences**; words without one are then left out.
 
 **Does Surasura go online? What leaves my computer?**
 Your content, known words and analysis never leave your computer — everything is worked out on your own machine. Surasura only goes online for:
@@ -31,16 +31,16 @@ Anki sync talks only to the Anki running on your own computer.
 ### UI & Features
 
 **What is the exact purpose of the "Extract / Splice" tool?**
-To split large files, like massive EPUBs or Anki decks, into manageable chapters. This saves you from having to use third-party conversion tools. It lives inside the **Content Manager**, under **📖 Extract (EPUB / Anki)**.
+To split large files, like massive EPUBs or Anki decks, into manageable chapters. This saves you from having to use third-party conversion tools. It lives under **+ Add › EPUB or Anki deck…**.
 
-**There used to be two buttons — "Generate Journey" and "View Vocab Journey". Where did they go?**
-They're now a single **Generate Journey** button. If anything has changed since your last run it re-analyzes; if nothing has, it simply reopens your existing report instantly. Changing only the theme or Zen limit re-renders the report without re-analyzing. The button shows which it will be: a thin blue border means something has changed since your last Generate, and a small ✓ on its right edge means your journey is up to date.
+**Where is the Generate Journey button?**
+In 3.0 it is two: **Generate** (top) builds your list, and **Journey ↗** opens it. Generate shows ✓ when nothing in your library, your known words or your settings has changed since your last run.
 
 **Can I see which file an example sentence came from?**
-Yes — turn on **Settings → Experience & UI → "Sentence source"**. Each example sentence then gets a small marker showing its source: hover for the file (and, for subtitles, the timestamp), click to copy the full path, and shift-click to open the file at that exact sentence. For a YouTube transcript, clicking opens the video at the moment the line is spoken.
+Yes — pick a look in **Settings → Journey → Where a sentence came from**. Each example sentence then gets a small marker showing its source: hover for the file (and, for subtitles, the timestamp), click to copy the full path, and shift-click to open the file at that exact sentence. For a YouTube transcript, clicking opens the video at the moment the line is spoken.
 
-**Does graduating content mark *all* words in that media as "Known"?**
-No, it only marks the specific words listed in your analysis results.
+**Does moving a show to Finished mark its words as known?**
+No. A finished show stops pushing your list around and stays a source of sentences; only the words you know (from Anki, an import, or marked known) count as known. Checking an episode's stone takes the words only it used off your list.
 
 ---
 
@@ -67,7 +67,7 @@ Then in the Vocab Journey Web Page they:
 When exporting, Surasura includes the context sentence. You can format this export (like a CSV) to map directly to the sentence fields in Migaku or Anki.
 
 **Once I add words to Anki/Migaku, will they keep showing up in Surasura the next day?**
-If you mark a word as "Known", "Ignore" or graduate it in Surasura, it will be excluded from your future priority lists. However, your daily spaced repetition (SRS) is handled entirely by Anki or Migaku.
+If you mark a word as "Known" or "Ignore" in Surasura, it will be excluded from your future priority lists. However, your daily spaced repetition (SRS) is handled entirely by Anki or Migaku.
 
 Note: A single Surasura could guide you for months without needing to re-generate.
 
@@ -78,7 +78,7 @@ Yes. **Settings → 🧮 Data & System → Export Sentence Dictionary** makes a 
 Yes. Press **Anki**, choose your decks and press **Sync now** — then tick **Sync automatically when Anki is running**. Whenever Anki is open, Surasura adds the words from cards you've studied since last time. New (unstudied) cards are never counted as known, and nothing is ever removed. It needs the AnkiConnect add-on.
 
 **Can my list update itself when I learn words in Anki?**
-Yes. In the **Anki** window, tick **Generate when Anki adds known words**. When a sync brings in words you now know, Generate runs by itself in the background: it doesn't open the report, runs at most every 10 minutes, and waits while the Content Manager, an import or another Generate is running. New episodes never set it off — you may want to order them first.
+Yes. In the **Anki** window, tick **Generate when Anki adds known words**. When a sync brings in words you now know, Generate runs by itself in the background: it doesn't open the report, runs at most every 10 minutes, and waits while an import or another Generate is running. New episodes never set it off — you may want to order them first.
 
 **Can I see which words I already have Anki cards for?**
 Yes. Once you've chosen decks in the **Anki** window, every word a new card is already waiting for gets a small card icon in the report, the **Show** menu gains **In Anki** and **Not in Anki**, and each episode says how many of its words are already in Anki. The Anki window shows how many new cards are waiting. Switch the icon off under **Settings → 📊 Experience & UI → Label backlogged Anki words**.
@@ -102,9 +102,9 @@ Your list counts words one at a time, so a phrase can never be on it — yet phr
 A percentage is the share of *all* the word's uses: `を〜 24%` on 利用する means that 24 of every 100 times the word is used, を comes right before it. (On a Chinese card, the measure-word line is the share of the times the word is counted: `本〜 94%` on 书.) Pairings show only when they turn up in at least three separate places in the data — different episodes, books or articles, or unrelated sentences — so one show's catchphrase doesn't become the word's pattern. When the word was seen fewer than 50 times in the data the lines came from — your library, or Surasura's shared set — Anki Backfill marks the lines "thin": they are still real uses, just few of them, so read them as a hint. A card template can show that mark (an amber パターン label, for instance); a template that doesn't know it simply ignores it, and no text is ever added to your card for it.
 
 **Is there a way to bulk-download YouTube transcripts to feed into Surasura?**
-Yes. Open the **Content Manager** and press **▶ YouTube**, then paste any number of links — single videos, pasted lists, or whole playlists. Clean `.txt` transcripts land in your **Processed** folder and in the tab you're on. (This is an optional feature; if you don't see the button, enable it under **Settings → Language & Parsing**.)
+Yes. Press **+ Add › YouTube or bilibili…**, then paste any number of links — single videos, pasted lists, or whole playlists. Their transcripts come into your library and wait in **New arrivals**; a playlist comes in whole, in its own order.
 
-For anime subtitles specifically, Surasura doesn't fetch those — grab them from a subtitle site (there's an **Anime subtitles ↗** link in the Content Manager) and add them like any other file.
+For anime subtitles specifically, Surasura doesn't fetch those — grab them from a subtitle site and add them like any other file.
 
 **Can I use Bilibili?**
 Yes — **bilibili.tv** links (episodes, whole seasons, uploads) work in the same box, with no account. Shows there are licensed per country, so an episode that isn't available in your region says so instead of downloading. **bilibili.com** links aren't supported: that site only gives subtitles to signed-in users. Look for the same show on bilibili.tv instead.
@@ -114,7 +114,7 @@ Yes — **bilibili.tv** links (episodes, whole seasons, uploads) work in the sam
 ### Troubleshooting & Support
 
 **Why am I seeing Japanese words in my Chinese frequency results?**
-First check the language: the flag at the bottom of the dashboard (or **Settings → 🌐 Language & Parsing**) should be Chinese. Each language has its own library, so also check that no Japanese files ended up in your Chinese library — open the **Content Manager** with Chinese selected and look through the tabs.
+First check the language: **Settings → Content → Language** should be Chinese. Each language has its own library, so also check that no Japanese files ended up in your Chinese library — look through Current, New arrivals and Finished with Chinese selected.
 
 **My Chinese content mixes Simplified and Traditional. Why does 学习 show up separately from 學習?**
 Because they're written differently, Surasura counts them as two words unless you tell it otherwise. Go to **Settings → 🌐 Language & Parsing → Script** (shown when Chinese is selected) and pick **Simplified (简体)** or **Traditional (繁體)**. Everything — content, known words, lists — is then read in that one script, so each word counts once and a known word matches in either script. Your files are never changed; pick **As-is** to go back. Simplified → Traditional can occasionally choose the wrong character in a rare context, and it uses standard forms (爲, 裏) rather than Taiwan's (為, 裡).

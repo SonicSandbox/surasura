@@ -1,175 +1,95 @@
-# <img src="docs/assets/images/icon_512.png" width="40" height="40"> Surasura (スラスラ) - The Immersion Architect
-![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.10+-blue.svg) [![Discord](https://img.shields.io/badge/Discord-join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/Uy8mHymrRv)
+<div align="center">
 
-*For Intermediate-Advanced learners. Supports Japanese & Chinese...* 
+<img src="docs/assets/images/icon_512.png" width="96" height="96" alt="Surasura">
 
-![Results](docs/assets/images/img_readability_results.PNG)
+# Surasura スラスラ
 
-## Your map to seamless immersion
+![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6) ![Japanese · Chinese](https://img.shields.io/badge/日本語%20·%20中文-learners-bb86fc) ![Offline](https://img.shields.io/badge/runs-offline-03dac6) ![License](https://img.shields.io/badge/license-MIT-blue.svg) [![Discord](https://img.shields.io/badge/Discord-join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/Uy8mHymrRv)
 
-> **The only frequency list that matters is the one based on YOUR watch / read list.**
+**The only frequency list that matters is the one made from your own shows and books.**
 
-A tool that generates THAT list, and gives you the episode-by-episode (or chapter) *highest-leverage* order order based on:
+**Point it at your content folder. It works out the rest:** series, books, episodes, covers and order.
 
-- your known vocabulary
-- your immersion content 
-- your word frequency
+</div>
 
-After analyzing, it will generate a study plan with curated examples. 
-Optimizes the order you learn words. Easy sentence mining for Anki or Migaku.
+<div align="center">
 
-## 🎯 Why? - The Diminishing Returns of Vocab
+![Surasura 3.0: three episodes checked off, Mine, a new show dragged in from New arrivals, a show moved to Goal](docs/assets/images/readme/demo.gif)
 
-> **The only frequency list that matters is the one based on YOUR watch / read list.**
+[▶ Full demo (MP4, 45 s)](docs/assets/images/readme/demo.mp4)
 
-Otherwise you're wasting time learning words you'll just forget.
+</div>
 
-Useful if you:
+## What it does
 
-- Hit 4500+ words
+| Your library, in your order | The words worth learning next |
+| :---: | :---: |
+| ![Current: Up Next with its cover, % known and new words](docs/assets/images/readme/current.png) | ![The journey: each episode's new words with a sentence from it](docs/assets/images/readme/journey.png) |
+| Each row is a show or a book. **% known** and **new words** are worked out from your own known words. | The words that open up the most of your shows and books, episode by episode, each with a sentence from your library. |
+| ![New arrivals: new shows and episodes, with their covers, waiting to be placed](docs/assets/images/readme/arrivals.png) | ![Mine: the episode's cards come next](docs/assets/images/readme/mine.png) |
+| New episodes, books and videos **arrive by themselves**. Drag one into your order, or press ↑. | **Mine** makes the cards with Anki Miner, and Anki shows them in your order. |
 
-- Have limited immersion time
+**Also:** **Piyo ぴよ** lets you practise with your own AI app, on your own words.
 
-- Are tired of adding words you'll never see
+## What it reads
 
-- Want to see mulitple examples and pick the best one
+| 📺 Subtitles | 📖 Books | 🎧 Audiobooks | ▶️ YouTube · bilibili | 📝 Text | 🗂️ Anki decks |
+| :---: | :---: | :---: | :---: | :---: | :---: |
+| `.srt` `.ass` `.ssa`, named the way releases name them (`.ja`, `.ab`, `[jpn]`…) | EPUB, split by chapter | `.m4b` `.mp3` `.m4a`… with their transcript, joined to their book when there is one | A video's subtitles, from its link | `.txt` `.md`, or pasted | A deck's sentences (`.apkg`) |
 
-- Enjoy seeing your progress %
+Japanese and Chinese.
 
-- Like using physical books / YouTube
+| A book opens by chapter |
+| :---: |
+| ![A book opened by chapter: each chapter's % known and new words; 🎧 its audiobook joined to it](docs/assets/images/readme/book-chapters.png) |
 
+## Get started
 
-Use Surasura to know every word you learn is immediately relevant to your content goals.
+1. **Point it at your content folder.** Setup asks *Where are your shows and books?* It finds your shows, books (EPUB)
+   and audiobooks where they are, and works out their series, episodes and order. Nothing is moved. Covers come from
+   AniList when you turn on *Show covers*.
+2. **Tell it what you know.** Your Anki decks, Jiten, Migaku, or an Anki deck file (`.apkg`).
+   *Surasura talks to Anki through **AnkiConnect**, a free Anki add-on: in Anki, Tools › Add-ons › Get Add-ons…, paste
+   the code `2055492159` (setup's **Copy code** puts it on your clipboard), then restart Anki.*
+3. **Sort what it found.** One title at a time, one key each: **Soon (S) · Current (→) · Goal (↓) · Finished (↑) ·
+   Ignore (←)**. Not sure yet? Leave the rest in **New arrivals** and sort them later.
+4. **Watch and read in order.** **Current** is your order: **Up Next** on top, then Soon, and **Goal** (someday) at its
+   foot. Drag a show to move it. Check an episode's stone when you've watched it, and its words leave your list.
+5. **Learn the words.** *Generate* builds your list; **Journey ↗** opens it: each episode's new words, each with a
+   sentence from your library. **Mine** makes the cards with Anki Miner, and Anki shows them in your order.
 
-### 🏆 Features
+*(Nothing of your own yet? Setup's **Try it with samples first** puts a few samples in.)*
 
-- 🗄️ **Migaku, Anki & Jiten Sync**: Import known words from Migaku, Jiten.moe, or Anki — live from a running Anki (AnkiConnect), or from a deck file.
+## Download
 
-- 順 **Anki Backlog Order**: Re-sort the new cards waiting in your Anki deck into Surasura's learn order. Only new cards move, you see a preview first, and one click restores the old order.
-
-- 📖 **EPUB & Anki Extractor**: Extract and split text from Japanese EPUBs or Anki decks.
-
-- 🎬 **YouTube & bilibili.tv Transcripts**: Pull clean, analysis-ready transcripts from YouTube videos and playlists, or bilibili.tv episodes, straight into your library.
-
-- 🔍 **Search Your Report**: Any word, every sentence that uses it, and the other forms it takes in your content.
-
-- 🔗 **Sentence Sources**: See which file or episode each example sentence came from — YouTube lines open the video at that moment.
-
-- 文 **Reading Words**: Flags words you'll mostly read but rarely hear, so they get a reading-first card.
-
-- ⌕ **Word Lookup**: One click finds more real-world sentences for a word on Nadeshiko.
-
-- 🔤 **Advanced Analyzer**: Tokenize text using Fugashi/Unidic-lite and calculate comprehension scores.
-
-- 🧮 **Progress Tracking**: Track your progress % before AND after watching/reading.
-
-- 🧘 **Zen Mode**: A distraction-free mode for focused learning.
-
-- 📊 **Vocab List Dashboard**: Generates an interactive HTML dashboard to learn and add words to Migaku or Anki.
-
-- 🎨 **Enhanced Themes**: Multiple curated themes (Zen Focus, Midnight Vibrant, etc.).
-
-- 🇨🇳 **Multi-Language Support**: Now also supports Chinese via Jieba segmentation — Simplified, Traditional, or a mix of both read as one script of your choice.
-
-- 📚 **Physical Book Support**: Add the EPUB, study, and immerse without ever needing to look up a word again.
-
-- 🚀 **Custom Freq List**: Generate your own frequency list from your immersion content. Supports **Migaku** (JSON), **Yomitan** (Zip with readings), and plain text formats.
-
-- 🎚️ **Commonness Slider**: Dial in how deep to go — from only the most common words to everything but one-offs — with a live word-count and coverage preview.
-
-
-### Current Limitations
-- Only executable for Windows (macOS/Linux can run from source)
-- Occasional Wacky Parsing
-
-## 📥 Latest Release Zip
-
-Download the latest release zip file from the [Releases page](https://github.com/SonicSandbox/surasura/releases).
-
-> **Quick Start:** Download -> Extract -> Run `Surasura.exe`
+| You have | Get |
+| :--- | :--- |
+| Windows 10 or 11 | `Surasura-<version>-setup.exe` from the [Releases page](https://github.com/SonicSandbox/surasura/releases) |
+| Surasura 2.x | The same installer: it brings your known words, word lists and settings over |
 
 > **Coming from a 2.9 test build?** 3.0 sets up once more: your library order, watched / Finished marks and journey don't carry over. Your known words come back with your first Anki sync. On a PC where Surasura 2.x once ran, 3.0's first screen also offers to bring your word lists and settings from it.
 
-## Screenshots
-> Dashboard with Migaku extension
+New to the window? The [guide](docs/Tutorial.md) shows it in a few minutes.
 
-![Results](docs/assets/images/img_readability_results_Migaku_extension.PNG)
+<details>
+<summary>🛠️ Running from source</summary>
 
-
-| Dashboard Overview | Zen Mode |
-| :---: | :---: |
-| ![Dashboard](docs/assets/images/img_readability_gui.PNG) | ![Zen Mode](docs/assets/images/img_readability_results_zen.PNG) |
-
-## 🚀 Get Started
-
-1. Run `Surasura.exe` to launch the dashboard.
-
-2. **Import Known Vocabulary** to sync your known words from Migaku, Anki, or Jiten.
-   *Surasura talks to Anki through **AnkiConnect**, a free Anki add-on: in Anki, Tools › Add-ons › Get Add-ons…, paste the code `2055492159` (setup's **Copy code** puts it on your clipboard), then restart Anki.*
-
-3. **Import Content** — open the Content Manager and add your files:
-
-
-- **Extract** an EPUB / Anki deck
-- Pull a **YouTube** transcript
-
-Drag them into your immersion order across the **NOW · Soon · 6+ months** tabs:
-
-- **NOW**: what you're consuming today (next ~2 weeks).
-
-- **Soon**: your medium-term list (within 6 months).
-
-- **6+ months**: aspirations / "someday" content.
-
-   *(New library? Tap **Test with samples** to try it instantly.)*
-
-4. **Generate Journey** — build your personalized word list and open the interactive report.
-
-
-## 🛠️ Running from Source
-If you prefer to run Surasura from source rather than using the pre-built executable:
-
-### 1. Requirements
-- Python 3.10 or higher.
-- (Windows only) Ensure `tkinter` is installed (usually bundled with Python).
-
-### 2. Setup
-1. Clone the repository: `git clone https://github.com/SonicSandbox/surasura.git`
-2. Install dependencies:
+1. Python 3.10 or higher.
+2. Clone the repository: `git clone https://github.com/SonicSandbox/surasura.git`
+3. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-
-### 3. Launching
-Run the master entry point:
-```bash
-python app_entry.py
-```
-This dispatcher ensures the correct environment is set up and launches the main dashboard.
-
-## 🛠️ Building the Application
-To create your own standalone executable:
-
-1. Ensure you have the dev dependencies installed:
+4. Run the master entry point:
    ```bash
-   pip install pyinstaller
+   python app_entry.py
    ```
-2. Run the build script:
-   ```bash
-   python package_app.py
-   ```
-This runs the test suite, cleans previous builds, runs PyInstaller with the correct configuration, and creates the ready-to-use app in `dist/Surasura/`. Add `--zip` to also produce `dist/Surasura_v<version>.zip`. (See [README_PACKAGING.md](README_PACKAGING.md) for the release options.)
 
-## 📂 Project Structure
-- `app/`: Core application scripts and GUI modules.
-- `app_entry.py`: Main entry point and dispatcher.
-- `package_app.py`: Build and packaging script.
-- `scripts/`: Shared utilities and data conversion scripts.
-- `templates/`: HTML templates for visualization.
-- `data/`: Input text files (Place your TXT/SRT files here).
-- `User Files/`: Configuration and frequency lists.
-- `results/`: Generated CSVs and HTML reports.
+To build your own standalone program: `pip install pyinstaller`, then `python package_app.py` (it runs the test suite,
+then PyInstaller, into `dist/Surasura/`; `--zip` also makes `dist/Surasura_v<version>.zip`). See
+[README_PACKAGING.md](README_PACKAGING.md) for the release options.
 
+</details>
 
 ## 🗺️ Roadmap
 
@@ -209,6 +129,8 @@ In the app, the bug at the top right (**Report a problem**) makes a zip of what'
 ## 💡 Motivation
 *I was tired of learning words I never see, and I also like reading physical books. Otherwise, mining from physical books is a pain.* Surasura solves that friction.
 
+Surasura 2.x's README: [docs/legacy/README_2.x.md](docs/legacy/README_2.x.md).
+
 ## 🙏 Data Credits
 
 Surasura's shared パターン data for Japanese is built from:
@@ -228,7 +150,7 @@ Surasura's shared パターン data for Japanese is built from:
 
 The data itself is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
-The kanji names Surasura keeps whole as one word (Settings → Language & Parsing → "Kanji names as one word") come from
+The kanji names Surasura keeps whole as one word (Settings → Language & Parsing → "Kanji names (JMnedict)") come from
 [JMnedict](https://www.edrdg.org/enamdict/enamdict_doc.html), the Japanese proper-names dictionary of the JMdict/EDICT
 project, property of the [Electronic Dictionary Research and Development Group](https://www.edrdg.org/edrdg/licence.html),
 used under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) — by way of the name lists in
@@ -243,11 +165,11 @@ of the [Electronic Dictionary Research and Development Group](https://www.edrdg.
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), and from JMnedict's names of works, products and
 organizations. Only marks on spellings, and those words' spellings and readings, are kept (no meanings); that table
 (`app/dictionary_data.py`) is shared under the same licence.
-JMdict's kanji spellings, entry by entry, and the readings of the entries a card can end in — no meanings — keep "Kanji
-terms your library repeats as one word" from ever joining a word the dictionary lists, and tell which word an Anki card
+JMdict's kanji spellings, entry by entry, and the readings of the entries a card can end in — no meanings — keep "A work’s
+own terms" from ever joining a word the dictionary lists, and tell which word an Anki card
 is (心する 'take heed' is a word of its own, not 心); that table (`app/jmdict_data.py`) is shared under the same licence
-too. So are the set phrases Surasura can add to your list (Settings → Language & Parsing → "Idioms and set phrases on
-your list"): JMdict's phrases as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
+too. So are the set phrases Surasura can add to your list (Settings → Language & Parsing → "Idioms as
+rows"): JMdict's phrases as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
 which of their words live only inside them (by JPDB 2024's ranks) and which are units in general text (counted, as
 statistics only, on the shared パターン set's Japanese text above); that table (`app/phrase_data.py`) is shared under
 the same licence. So is the list of one-kanji words Surasura can offer (Settings → Language & Parsing → "List one-kanji
@@ -271,7 +193,7 @@ With *Download covers* on (off until you say yes), the 3.0 window shows each sho
 [YouTube](https://www.youtube.com); nothing is shipped, and *Remove downloaded covers* deletes them.
 
 The same credits, with the frequency lists and the tokenizers' dictionaries (UniDic, jieba, OpenCC), are in the app:
-Settings → Data & System → Data credits.
+Settings → App → Data credits.
 
 ## 📜License
 

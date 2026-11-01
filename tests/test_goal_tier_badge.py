@@ -1,4 +1,4 @@
-"""The report sidebar marks files from the 6+ months list with a quiet "6+" chip.
+"""The report sidebar marks files from your Goal with a quiet "Goal" chip (3.0's name; 2.x said "6+").
 
 The marker existed as a green "G" badge but had never once appeared: the generator looked for each
 file under User Files/<lang>/GoalContent — a folder that never exists (content lives in
@@ -98,7 +98,9 @@ def test_the_chip_is_quiet_and_hidden_from_dictionary_extensions():
     — and no trace of the old saturated green "G" or its internal "Goal Content" name."""
     with open(TEMPLATE, encoding="utf-8") as f:
         html = f.read()
-    assert 'class="tier-chip" data-content="6+"' in html
-    assert 'title="From your 6+ months list" migaku_ignore data-yomichan-ignore' in html
+    assert 'class="tier-chip" data-content="Goal"' in html
+    assert 'title="From your Goal: someday, in no order" migaku_ignore data-yomichan-ignore' in html
     assert ".tier-chip::after" in html
     assert 'title="Goal Content">G</span>' not in html
+    # 3.0's window names the list Goal: no 2.x tier name reaches the report's words (the chip, its hover; the ✦ hover never named one)
+    assert "6+ months" not in html and 'data-content="6+"' not in html

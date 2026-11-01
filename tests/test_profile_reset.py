@@ -263,6 +263,28 @@ def test_a_file_really_held_open_refuses_the_rename_and_nothing_changes():
     assert _snapshot() == mid
 
 
+def test_a_put_back_refused_in_its_second_half_undoes_both_halves_newest_first(renames_only):
+    """PB-o's one journal: the live profile set aside, then the backup's parts renamed back; a refusal among the
+    second half undoes the parts already back AND the setting-aside, newest first (the same path is free only in that
+    order) — the newer profile exactly as it was, the backup still offered."""
+    _profile()
+    stamp = _stamp_of(_start_over())
+    _write(path_utils.get_settings_path(), json.dumps({"target_language": "zh"}))
+    newer = _snapshot()
+    n_aside = len(_moving())
+    calls = []
+
+    def rename(a, b):
+        calls.append(a)
+        if len(calls) == n_aside + 3:                    # the third part coming back
+            raise PermissionError(13, "held open", a)
+        os.rename(a, b)
+    profile_reset.request(profile_reset.PUT_BACK, stamp)
+    answer = profile_reset.run(wait=0, _rename=rename)
+    assert answer["status"] == "undone" and _snapshot() == newer
+    assert [b["stamp"] for b in profile_reset.backups()] == [stamp]
+
+
 def test_a_rename_that_cant_be_undone_keeps_the_journal_and_says_which_part():
     """A rollback refused (a file opened in between): the journal stays, the window never opens (the gate says which
     part and *Try again*); once free, recover() finishes the rollback and the profile is as it was."""
@@ -439,6 +461,25 @@ def test_a_program_that_marked_itself_first_is_seen_by_a_mover_that_starts_after
     assert locks.running_others() == []                  # its mark went with it (and its file tidied)
 
 
+def test_a_program_of_another_install_sharing_these_places_is_a_holder_too(tmp_path):
+    """Another install's programs keep their marks in their own install folder in the local root: they share the
+    roaming and local places, so they count."""
+    folder = os.path.join(path_utils.local_data_root(), "cccccccccccccccc", "locks", locks.RUNNING_DIR)
+    proc = _child(tmp_path, f"""
+        import json, os
+        from app import path_utils
+        os.makedirs({folder!r}, exist_ok=True)
+        held = path_utils.try_lock({os.path.join(folder, "4242-1-0.lock")!r})
+        with open({os.path.join(folder, "4242-1-0.json")!r}, "w") as f:
+            json.dump({{"pid": os.getpid(), "kind": "window"}}, f)
+    """, "other")
+    try:
+        assert [o["kind"] for o in locks.running_others()] == ["window"]
+    finally:
+        _end(proc)
+    assert locks.running_others() == []
+
+
 def test_a_mark_a_dead_program_left_is_no_holder_and_is_tidied_away():
     folder = os.path.join(path_utils.get_local_data_path(), "locks", locks.RUNNING_DIR)
     _write(os.path.join(folder, "99999-1-0.lock"), "")
@@ -500,12 +541,15 @@ def test_the_helper_holding_a_store_refuses_and_nothing_moves():
     assert answer["status"] == "refused" and answer["reason"] == "running" and _snapshot() == before
 
 
-def test_connect_is_taken_for_the_whole_move():
-    """Connect is taken, never only checked: while the renames run, a Connect starting can't take its lock."""
+def test_connect_and_the_profile_move_lock_are_taken_for_the_whole_move():
+    """Connect is taken, never only checked, and so is the profile-move lock: while the renames run, a Connect or any
+    program starting can't take its lock (`hold_running` waits on it)."""
     _profile()
     seen = []
-    _start_over(_step=lambda name: seen.append(locks.held_in_process("connect")) if name.startswith("moved") else None)
-    assert seen and all(seen)
+    _start_over(_step=lambda name: seen.append((locks.held_in_process("connect"),
+                                                locks.held_in_process(locks.PROFILE_MOVE)))
+                if name.startswith("moved") else None)
+    assert seen and all(a and b for a, b in seen)
     assert not locks.held_in_process("connect") and not locks.held_in_process(locks.PROFILE_MOVE)
 
 
@@ -715,6 +759,7 @@ def test_nothing_reads_or_writes_a_moving_place_before_the_windows_gate(monkeypa
     class Window:
         @staticmethod
         def main(argv, after_gate=None):
+            at_gate["marked"] = dict(locks._mark)
             at_gate["telemetry"] = list(started)
             at_gate["parts"] = {path: (_hash(path), os.stat(path).st_mtime_ns) for path in watched}
             after_gate()
@@ -728,5 +773,6 @@ def test_nothing_reads_or_writes_a_moving_place_before_the_windows_gate(monkeypa
         app_entry.run()
     assert e.value.code == 0
     assert at_gate["telemetry"] == [] and started == ["telemetry"]
+    assert at_gate["marked"].get("count") == 1                # the window held its running mark throughout
     assert at_gate["parts"] == watched
     assert not locks._mark                                   # the window's mark went with its run

@@ -104,6 +104,22 @@ def test_put_back_brings_every_row_back_and_sets_the_library_now_aside_in_a_back
         assert _rows(store) == now_rows
 
 
+def test_what_comes_back_into_the_data_folders_trash_gets_a_new_30_day_clock():
+    """A removed episode's copy waited in the backup: back in `data/<lang>/.trash`, its clock starts again, so the
+    next clean-up never purges it at once for the days it spent in the backup."""
+    import time
+    store, data_dir, user_files_dir, backup, _before = _sorted_again("ja")
+    trashed = [m["to"] for m in _record(backup)["moves"] if os.path.basename(m["from"]) == ".trash"][0]
+    old = time.time() - 40 * 86400
+    for where, _d, files in os.walk(trashed):
+        for n in files:
+            os.utime(os.path.join(where, n), (old, old))
+    with store:
+        ls.put_back_library(store, backup)
+    files = [os.path.join(w, n) for w, _d, fs in os.walk(os.path.join(data_dir, ".trash")) for n in fs]
+    assert files and all(os.path.getmtime(f) > time.time() - 600 for f in files)
+
+
 def test_ids_are_never_reused_after_a_put_back():
     """The sequences stand at the higher of the two libraries: the next item is newer than both."""
     store, data_dir, user_files_dir, backup, _before = _sorted_again("ja")

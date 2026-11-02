@@ -1024,3 +1024,17 @@ def test_a_stopped_backup_is_listed_first_even_when_an_older_one(tmp_path):
                        "moves": [{"step": "data", "from": "x", "to": os.path.join(folder, "data", "Library")}]}))
     assert [(b["stamp"], b["stopped"]) for b in profile_reset.backups()] == [
         (ls.RESET_PREFIX + "20261020-101010", True), (ls.RESET_PREFIX + "20261101-101010", False)]
+
+
+def test_a_started_over_record_that_moved_nothing_is_never_offered():
+    """Mutant N21: a record a kill left `started` before its first rename (nothing in its backup) has nothing to put
+    back: never listed, never a *stopped part way* the learner can't act on."""
+    places = path_utils.profile_places()
+    stamp = "20261101-090000"
+    _write(profile_reset.record_path(stamp, places),
+           json.dumps({"kind": "start-over", "status": "started", "stamp": stamp, "started_at": "2026-11-01T09:00:00Z",
+                       "moves": [{"place": "library", "role": "results", "rel": "results",
+                                  "dst": f"{path_utils.BACKUPS}/{profile_reset.PREFIX}{stamp}/results"}]}))
+    assert profile_reset.backups() == []
+    _write(_in_backup(places, stamp, "library", "results/x.html"), names("ja")[1])     # one part did move
+    assert [(b["stamp"], b["stopped"]) for b in profile_reset.backups()] == [(stamp, False)]

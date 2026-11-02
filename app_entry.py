@@ -83,6 +83,9 @@ def _log_end(code):
     started = _run.pop("started", None)
     if started is not None:
         log_error(f"Ended {_run.get('command')} after {time.monotonic() - started:.1f} s (exit {code})")
+    if _run.pop("marked", False):                    # its running mark goes with its end (an `os._exit` too)
+        from app import locks
+        locks.release_running()
 
 
 def _hold_running(command, headless):
@@ -121,9 +124,8 @@ def run():
         return main()
     _run.update(command=command, started=time.monotonic())
     code = 0
-    marked = False
     try:
-        marked = _hold_running(command, "--headless" in sys.argv[1:])
+        _run["marked"] = _hold_running(command, "--headless" in sys.argv[1:])
         main()
     except SystemExit as e:
         code = 0 if e.code is None else e.code
@@ -133,9 +135,6 @@ def run():
         raise
     finally:
         _log_end(code)
-        if marked:
-            from app import locks
-            locks.release_running()
 
 
 def main():

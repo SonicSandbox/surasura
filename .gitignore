@@ -25,6 +25,7 @@ dist/
 User Files/
 data/
 results/
+Backups/
 debug/app_debug_log.txt
 debug/build_log.txt
 surasura_v*.zip

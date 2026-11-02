@@ -55,6 +55,7 @@ from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
 from app import theme
 from app.qt import bridge, motion, rows, shadow, strings, style
 from app.qt import press as qpress
+from app.services import airing
 from app.services import jobs as jobs_module
 from app.services import view_rows
 
@@ -204,7 +205,10 @@ def when_done(view, row, now=None, pending=False):
     - ("finish",) — R3: it finishes by itself, through the Finish path (`DragMoves.to_finished`).
     - ("offer",) — today's *finished with it?*, for a whole title: R4 it may still be arriving (its newest file came
       in on its own lately, `view_rows.still_arriving`, or it already has files in Finished: a show still airing), R5
-      a file still to come (a hole in its numbers, one in New arrivals, a video waiting for its subtitle), R6 *Keep
+      a file still to come (a hole in its numbers, one in New arrivals, a video waiting for its subtitle); it is
+      ("offer", why) when nothing of these holds it but AniList's kept answer (`view.airing`, 3.0.1 item 5): still
+      airing (R4), or more episodes listed than its files reach (R5) — asked only after 3.0's own checks, so AniList
+      never finishes one sooner; R6 *Keep
       studying watched episodes* on (nothing moves by itself), a write still on its way (`pending`: the view may not
       hold it yet), a group, a row of no title, the first screen's cache (Goal, New arrivals and Finished not read).
     - None — nothing is offered (the plain ✓; Up Next's Done says why): hato's mix; a part of a title whose other part waits in Current, in Goal or inside a
@@ -252,7 +256,25 @@ def when_done(view, row, now=None, pending=False):
             or any(r.work_id == row.work_id for m in (view.finished or ()) for r in m.rows) \
             or view_rows.numbers_gap(eps) or view_rows.still_arriving(eps, now):
         return ("offer",)
+    entry = (getattr(view, "airing", None) or {}).get(row.work_id)     # 3.0.1 item 5: AniList only holds it back
+    hold = airing.holds(entry, eps)
+    if hold:
+        return ("offer", _why(hold, entry, eps))     # AniList alone held it: the offer says why (AA-3)
     return ("finish",)
+
+
+def _why(hold, entry, eps):
+    """AA-3 (PROVISIONAL): the few words the offer says when AniList held the show back."""
+    if hold == "airing":
+        return strings.DONE_WHY_AIRING
+    return strings.DONE_WHY_MORE.format(n=int(entry["episodes"]), m=max(e.number for e in eps if e.number is not None))
+
+
+def offer_text(verdict, row):
+    """The finish toast's words for `when_done`'s ("offer",), or ("offer", why) with AniList's why."""
+    if len(verdict) > 1:
+        return strings.DONE_ALL_WHY.format(n=all_n(row), why=verdict[1])
+    return strings.DONE_ALL.format(n=all_n(row))
 
 
 def all_n(row):
@@ -2433,7 +2455,7 @@ class DragController(QObject):
             if verdict is not None and verdict[0] != "offer":
                 self._by_itself(row, verdict)
             elif verdict is not None:
-                self.win.toasts.show(strings.DONE_ALL.format(n=all_n(row)), buttons=[
+                self.win.toasts.show(offer_text(verdict, row), buttons=[
                     (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
             elif not finishes(row):
                 self.say(strings.WELL_UNLIT_MIX)
@@ -2496,8 +2518,8 @@ class DragController(QObject):
                 return
             self._by_itself(row, verdict)
             return
-        if verdict is not None:                      # ("offer",): today's *finished with it?*
-            ticket = Ticket(strings.DONE_ALL.format(n=all_n(row)), (row.key,), tuple(ids))
+        if verdict is not None:                      # ("offer", ...): today's *finished with it?*
+            ticket = Ticket(offer_text(verdict, row), (row.key,), tuple(ids))
             if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
             self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,

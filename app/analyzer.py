@@ -145,7 +145,12 @@ ENSURE_AUDIO_EXAMPLE = False
 #     name met in a finished show stays whole in the episodes ahead — a library holding Finished content can list its
 #     words differently with nothing changed in it. Never counted, as before. The token store moves its rows from kept
 #     to set aside in place, nothing tokenized: SCHEMA_VERSION stays 20. 3.0: one re-analysis with 31–32.
-ENGINE_REVISION = 33
+# 34: A known sentence's set phrases are known (Sonic, alpha 9 try): a known entry that is a sentence — a sentence field
+#     synced from Anki — marks the set phrases Generate finds in it known, as it marks its words, so 気がする leaves the
+#     list of a learner whose cards' sentences hold it (load_known_words). No tokenizing changed: SCHEMA_VERSION stays
+#     20; the known-words cache reads every KnownWord.json again (its key holds the finder: Store._known_key). 3.0: one
+#     re-analysis with 31–33.
+ENGINE_REVISION = 34
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -2632,8 +2637,10 @@ def load_known_words(json_path, tokenizer):
     script = getattr(tokenizer, "script", "asis")
     # Idioms and set phrases on the list (logic.phrase_rows, Japanese): a phrase row is its words' lemmas joined
     # (気が付く), so a known phrase is known however its sentences spell it — a 気がつく card synced from Anki makes
-    # the row 気が付く known. Only a set phrase's run: 努力する's words joined name nothing. Off, nothing is added (the
-    # known-words cache is keyed on the switch and the phrases: token_index).
+    # the row 気が付く known. Only a set phrase's run: 努力する's words joined name nothing. A known sentence (a sentence
+    # field synced from Anki: もう遅い気がする) marks the set phrases in it known too, as it marks its words — found
+    # by Generate's own finder (`PhraseSet.find`, its rules), never a second one. Off, nothing is added (the
+    # known-words cache is keyed on the switch, the phrases and the finder: token_index).
     phrase_set = None
     if isinstance(tokenizer, JapaneseTokenizer) and LOGIC.get("phrase_rows", True):
         try:
@@ -2666,7 +2673,12 @@ def load_known_words(json_path, tokenizer):
                     # A known joined word marks its pieces known too, as it did before words kept their
                     # affixes: 時間 is known only through the user's 時間帯 (Patterns_Quality_Spec §6.2a).
                     pieces = [] if isinstance(tokenizer, JapaneseTokenizer) else None
-                    tokens = tokenizer.tokenize(term) if pieces is None else tokenizer.tokenize(term, pieces)
+                    sentences = ()
+                    if pieces is None:
+                        tokens = tokenizer.tokenize(term)
+                    else:
+                        sentences = list(tokenizer.tokenize_sentences(term, pieces))
+                        tokens = [token for _, s_tokens in sentences for token in s_tokens]
                     term = zh_script.convert(term, script)
 
                     # 0. Trust the explicit dictForm as a lemma (catches cases where tokenizer normalizes "その" -> "其の")
@@ -2689,6 +2701,11 @@ def load_known_words(json_path, tokenizer):
                         known_lemmas.add(term)
                         if phrase_set is not None and phrase_set.of_word("".join(t[0] for t in tokens)) is not None:
                             known_lemmas.add("".join(t[0] for t in tokens))
+                    # 3. The set phrases in each of its sentences, as Generate finds them there (above).
+                    if phrase_set is not None:
+                        for s_text, s_tokens in sentences:
+                            for _, _, index in phrase_set.find(s_tokens, s_text):
+                                known_lemmas.add(phrase_set.entry(index).word)
 
                 except Exception:
                     # Fallback if tokenization fails

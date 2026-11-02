@@ -7,6 +7,8 @@ the next shorter one at that place is tried. Pure: a hand-built set of real phra
 shape) and the app's real tokenizer, so the matcher is tested whatever the shipped data holds.
 """
 
+import json
+
 import pytest
 
 from app import analyzer, phrases
@@ -221,3 +223,46 @@ def test_the_shipped_set_loads_once_per_process():
     assert first is not None and first is phrases.load()
     from app import phrase_data
     assert len(first) == phrase_data.COUNT
+
+def _known(tmp_path, monkeypatch, found_in, terms, on=True):
+    """load_known_words over a KnownWord.json of `terms`, every one KNOWN, with these phrases -> the known lemmas."""
+    path = tmp_path / "KnownWord.json"
+    path.write_text(json.dumps({"words": [{"dictForm": t, "knownStatus": "KNOWN"} for t in terms]}, ensure_ascii=False),
+                    encoding="utf-8")
+    monkeypatch.setitem(analyzer.LOGIC, "phrase_rows", on)
+    monkeypatch.setattr(phrases, "load", lambda: found_in if on else pytest.fail("the phrases were read with it off"))
+    analyzer.SANITIZE_JA = True
+    return analyzer.load_known_words(str(path), analyzer.JapaneseTokenizer(library=False))[1]
+
+
+def test_a_known_sentence_marks_the_set_phrases_in_it_known(found_in, tmp_path, monkeypatch):
+    """A sentence synced from an Anki card's sentence field says every word in it is known — its set phrases too:
+    found by Generate's own finder, in any form (気が付いて is 気が付く), one per sentence of a two-line entry
+    (the second line's もしかしたら too). A card that IS a phrase is still known as it was."""
+    lemmas = _known(tmp_path, monkeypatch, found_in, [
+        "彼女はすぐに気が付いて振り返った。", "手っ取り早い方法を教えてくれ。\nもしかしたら明日は晴れるかもしれない。",
+        "気をつける"])
+    assert {"気が付く", "手っ取り早い", "若しか為るた", "気を付ける"} <= lemmas
+    assert {"彼女", "振り返る", "方法"} <= lemmas, "its words, as before"
+
+
+def test_a_known_sentence_marks_only_what_the_finder_finds_there(found_in, tmp_path, monkeypatch):
+    """The finder's own rules, never a second matcher's: words on both sides of a comma are no phrase (気が、ついた),
+    a phrase with a form of its own is that form only (もしかして is not もしかしたら), and a sentence holding none
+    marks none."""
+    lemmas = _known(tmp_path, monkeypatch, found_in, [
+        "気が、ついたら朝だった。", "もしかして、あなたが先生ですか。", "駅までは歩くのが一番近い。"])
+    assert lemmas.isdisjoint({"気が付く", "若しか為るた"}) and "気" in lemmas and "付く" in lemmas
+    assert not {entry.word for entry in found_in.entries} & lemmas
+
+
+def test_off_a_known_sentence_marks_its_words_only(found_in, tmp_path, monkeypatch):
+    """Idioms and set phrases off: no phrase is read, and a sentence marks only its words, as before."""
+    lemmas = _known(tmp_path, monkeypatch, found_in, ["彼女はすぐに気が付いて振り返った。"], on=False)
+    assert "気が付く" not in lemmas and {"気", "付く"} <= lemmas
+
+
+def test_an_empty_known_file_marks_nothing(found_in, tmp_path, monkeypatch):
+    """No words, an empty term and a term with no Japanese: nothing known, nothing raised."""
+    assert _known(tmp_path, monkeypatch, found_in, []) == set()
+    assert not {entry.word for entry in found_in.entries} & _known(tmp_path, monkeypatch, found_in, ["", "OK!"])

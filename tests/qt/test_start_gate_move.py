@@ -400,3 +400,18 @@ def test_a_mover_that_crashed_over_a_journal_in_flight_never_offers_not_now(qapp
     assert _shown(g) == {start_gate.TRY_AGAIN, start_gate.QUIT}
     g.quit_button.click()
     os.remove(profile_reset.journal_path())
+
+
+def test_a_frozen_program_whose_own_file_is_gone_is_named_before_the_window_closes(tmp_path, monkeypatch):
+    import sys
+    from app.qt import shell
+    # why: a frozen program has no app_entry.py to check, so its own .exe must be the file that is looked for
+    exe = tmp_path / "Surasura.exe"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+    assert shell.relaunch_refused([str(exe)]) == f"{exe} isn't there"
+    exe.write_text("", encoding="utf-8")
+    assert shell.relaunch_refused([str(exe)]) is None
+    # why: an empty executable names no file at all, so the message falls back to "the program"
+    monkeypatch.setattr(sys, "executable", "")
+    assert shell.relaunch_refused([str(exe)]) == "the program isn't there"

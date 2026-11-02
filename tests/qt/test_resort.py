@@ -503,3 +503,41 @@ def test_put_back_looks_at_every_folder_after_so_a_file_new_since_comes_in():
         looks.close()
     assert answers[0]["done"]
     assert any(r.endswith("09.ja.srt") for _t, r in _tiers(data_dir, user_files_dir)), "read by the look after"
+
+
+class _IndexerChores:
+    """The window's chores as the load run asks them: an index ask that is always under way (`indexing()` True) and
+    a log under the test's folder; nothing else."""
+
+    def __init__(self, log):
+        self.log = log
+
+    def index(self, force=False):
+        return None
+
+    def index_log(self):
+        return self.log
+
+    def indexing(self):
+        return True
+
+
+def test_the_load_screen_counts_only_its_own_languages_indexer_runs(tmp_path, qapp):
+    """Another language's indexer runs don't end the words step: three runs of zh leave a ja load on the index step,
+    and three of ja end it. Why: a Chinese library's indexer run must not finish a Japanese load's words early."""
+    shell = type("Shell", (), {"chores": _IndexerChores(str(tmp_path / "index.log"))})()
+    run = sort_screen.LoadRun(shell, lambda widget: None, door="resort", language=lambda: "ja",
+                              sort=lambda: None)
+    run.begin()
+    try:
+        run.scanned([1])
+        for _ in range(3):
+            run.indexed("zh")
+        assert run.state["step"] == "index", "a zh run never counts toward a ja load's words step"
+        for _ in range(2):
+            run.indexed("ja")
+        assert run.state["step"] == "index", "two ja runs do not end the words step"
+        run.indexed("ja")
+        assert run.state["step"] != "index", "three ja runs end the words step"
+    finally:
+        run.end()

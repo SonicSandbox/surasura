@@ -446,3 +446,19 @@ def test_sizes_land_in_place_and_the_rest_are_worked_out_only_on_show_all(window
     sheet.show_all()
     assert wait_until(lambda: len(sheet.sizes) == 7, 10) and walked == [5, 2]
     card.no.click()
+
+
+def test_a_second_press_on_the_sheet_changes_nothing_so_sort_and_start_over_never_both_run(window):
+    # the first press decides: a double press (another button, or the same one again) must not replace it
+    looks = SheetLooks()
+    seed, win = window(looks)
+    _page, fresh, _over = _rows(win)
+    card = fresh.ask()
+    sheet = _sheet(card)
+    sheet.choose(("sort",))
+    assert card.answer is True and sheet.choice == ("sort",)
+    sheet.choose(("over",))
+    assert sheet.choice == ("sort",) and card.answer is True
+    # the same button pressed again is a second press too: it changes nothing either
+    sheet.choose(("sort",))
+    assert sheet.choice == ("sort",) and card.answer is True

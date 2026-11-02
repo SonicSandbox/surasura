@@ -1341,13 +1341,19 @@ class DragController(QObject):
         kind, row, lines = model.entries[src]
         rect = self.lst.visualRect(model.index(src, 0))
         slot = self.lst.delegate.slot_rect(kind, rect, lines)
+        grab = QPointF(press[3] - slot.topLeft())
+        if model.open_key == row.key:                # a9 try #4: an opened row lifts closed — its ghost and its slot
+            self.lst.toggle(model.index(src, 0))     # the closed row's, never a picture of every part (a 300-part
+            self.lst.executeDelayedItemsLayout()     # group's was 13,000 px tall: 2 s on the window's thread here)
+            rect = self.lst.visualRect(model.index(src, 0))
+            slot = self.lst.delegate.slot_rect(kind, rect, lines)
         picked = self.lst.picked_rows
         if row.key in picked and len(picked) > 1:        # --- A4: a picked row's drag carries every pick
             return self._begin_picks(picked, global_pos, slot.size())
         d = _Drag()
         d.src, d.key, d.row, d.ids, d.title = src, row.key, row, ids_of(row), row.title
         d.source = "current"
-        d.grab = QPointF(press[3] - slot.topLeft())
+        d.grab = grab
         height = rect.height() - self.lst.delegate._lines_h(lines)
         pix = self._row_picture(kind, row, lines, rect, slot)
         unlit = None
@@ -1442,7 +1448,7 @@ class DragController(QObject):
             return
         kind, row, lines = model.entries[r]
         if kind not in (rows.HERO, rows.ROW) or model.open_key == row.key:
-            return                                   # (an opened row's picture is the screen's, taken at the lift)
+            return                                   # (an opened row lifts closed: its picture is baked at the lift)
         rect = lst.visualRect(model.index(r, 0))
         slot = lst.delegate.slot_rect(kind, rect, lines)
         dpr = lst.viewport().devicePixelRatioF() or 1.0

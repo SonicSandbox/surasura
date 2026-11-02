@@ -1881,6 +1881,8 @@ class DragController(QObject):
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False,
                       anki=on_bar) is None:
             return None
+        for work_id in [w for w, k in self._airing_asking.items() if k in keys]:
+            del self._airing_asking[work_id]         # alpha 9 M1: sent to Finished — never again by itself (its Undo)
 
         def choose(keep):
             choice = Ticket((strings.PICKS_TAKEN_OUT if many else strings.DRAG_TAKEN_OUT).format(title=title), keys,
@@ -2610,7 +2612,6 @@ class DragController(QObject):
         own words for a finish by itself)."""
         if self.refused() is not None:
             return
-        self._airing_asking.pop(row.work_id, None)  # (alpha 9 M1: its finish is asked no more)
         base = self.base()
         if base is not None and any(r.key == row.key for r in base.rows):
             self._ahead(without(base, row.key, FINISHED), gone=(row.key, FINISHED))
@@ -2648,9 +2649,12 @@ class DragController(QObject):
         """Alpha 9 (M1): each show offered *Still asking AniList*, read on the view shown — still asking: kept; its
         answer come: `when_done` again, so it finishes by itself when nothing holds it now (an ended show marked all at
         once, as before AniList), else its offer stands; no answer any more (the switch turned off) or the show gone
-        from Current: let go (AniList never finishes a show, only its answer does). Kept for a later view, silently,
-        while a drag runs, the store can't take a move or a write is still on its way."""
+        from Current, or a file of it unwatched again (an Undo of the mark): let go (AniList never finishes a show, only
+        its answer does, and only one still all watched). Kept for a later view, silently, while a drag runs, the store
+        can't take a move or a write is still on its way; nothing once the controller is let go (a close)."""
         self._airing_again = False
+        if self._closed or sip.isdeleted(self):
+            return
         view = self.page.view_model
         if view is None or getattr(view, "cached", False):
             return
@@ -2662,7 +2666,8 @@ class DragController(QObject):
                 continue                             # still asking, or asked at a later view
             del self._airing_asking[work_id]
             row = next((r for r in view.rows if r.key == key), None)
-            if row is None or not isinstance(entry, dict):
+            if row is None or not isinstance(entry, dict) or \
+                    any(not e.watched for e in view_rows.to_finish(row.episodes)):
                 continue
             verdict = when_done(view, row)           # L6.3: the one rule
             if verdict is not None and verdict[0] != "offer":
@@ -2916,6 +2921,7 @@ class DragController(QObject):
             self.cancel()
         self._closed = True
         self._settle.stop()
+        self._airing_asking.clear()                  # (alpha 9 M1: nothing asked again past it)
         self.expect_marks, self._mark_undos = {}, []
         self._anki_let_go()
         self._filter(False)

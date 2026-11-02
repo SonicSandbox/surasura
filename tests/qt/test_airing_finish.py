@@ -450,6 +450,45 @@ def test_window_move_to_finished_pressed_on_the_offer_is_never_asked_again(world
     assert row.work_id not in win.moves._airing_asking
 
 
+def test_window_a_show_sent_to_finished_by_a_pick_is_never_asked_again(world):
+    """Review round 3 (M): every way to Finished ends the asking — the picks' / a drag's Finished (`_finish`) too, so an
+    Undo of it, then the answer, never finishes the show by itself."""
+    _seed, win, _writer, row = _marked_all_before_the_answer(world, 424251)
+    assert wait_until(lambda: not win.moves.tickets, 3)
+    win.moves.send_picks("finished", drag.ids_of(row), 1, keys=(row.key,))
+    assert row.work_id not in win.moves._airing_asking
+
+
+def test_window_the_mark_undone_then_the_answer_finishes_nothing(world):
+    """Review round 3 (H): *Mark all watched* undone after the *Still asking* offer — AniList's "ended" answer then
+    never finishes a show with files to watch (`when_done` reads every file watched: the caller checks)."""
+    from tests.qt.test_drag import calls
+    _seed, win, writer, row = _marked_all_before_the_answer(world, 424252)
+    assert wait_until(lambda: not win.moves.tickets, 3)
+    win.moves.undo(win.moves.toasted)
+    assert wait_until(lambda: (settle() or True) and not win.moves.tickets and
+                      not all(e.watched for e in next(r for r in rows_of(win) if r.key == row.key).episodes), 3)
+    reader = win.services.library
+    A._write(reader._airing_kept.path, {"424252": {"status": "FINISHED", "episodes": len(row.episodes),
+                                                   "next_at": None, "asked_at": time.time()}})
+    reader.airing_moved()
+    assert wait_until(lambda: (settle() or True) and
+                      (win.page_widgets["current"].view_model.airing.get(row.work_id) or {}).get("status") ==
+                      "FINISHED", 3)
+    settle(30)
+    assert calls(writer, "set_tier") == [] and not win.moves._airing_asking
+
+
+def test_window_closed_nothing_is_asked_again(world):
+    """Review round 3 (L): the controller let go (a close, a language switch) asks nothing again — no finish past it."""
+    _seed, win, _writer, row = _marked_all_before_the_answer(world, 424253)
+    win.moves.close()
+    assert not win.moves._airing_asking
+    win.moves._airing_asking[-1] = "gone"           # (one left over, its show gone: `_again` still touches nothing)
+    win.moves._again()
+    assert win.moves._airing_asking == {-1: "gone"}
+
+
 def test_window_download_covers_switched_builds_the_airing_answers_again(world):
     """Review L1: AniList's *Still asking* follows the covers switch — a write of `covers_download` asks the reader for
     a view with the airing answers read again (switched off: no show waits for an answer that will never come)."""

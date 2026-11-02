@@ -78,11 +78,12 @@ def _text(case, sources, start, end):
 
 
 def _hashes(root):
-    """Every file's sha256 and every folder under `root` (app_entry's log and its folders aside)."""
+    """Every file's sha256 and every folder under `root` (app_entry's log and its folders aside, and the folders of its
+    running mark: the mark itself goes with the process, Fresh library P13)."""
     out = {}
     for folder, _dirs, files in os.walk(root):
         here = os.path.relpath(folder, root).replace("\\", "/")
-        if here not in ("local", "local/logs"):
+        if here not in ("local", "local/logs", "local/locks", "local/locks/running"):
             out[here + "/"] = "folder"
         for name in files:
             path = os.path.join(folder, name)

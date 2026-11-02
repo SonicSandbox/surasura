@@ -916,13 +916,14 @@ class Store:
         for key in ("phrases_and_titles", "pronoun_bases"):
             if not logic.get(key, True):
                 signature = f"{signature}|{key}=off"
-        # Idioms and set phrases on the list: a known phrase is also known as its lemmas joined — the phrases' own, so the
-        # phrase data's revision too (analyzer.load_known_words).
+        # Idioms and set phrases on the list: a known phrase is also known as its lemmas joined, and a known sentence's
+        # phrases are known — the phrases' own, found by their finder, so the phrase data's revision and the finder's
+        # version too (analyzer.load_known_words).
         if not logic.get("phrase_rows", True):
             return signature
         try:
-            from app import phrase_data
-            return f"{signature}|phrase_rows={phrase_data.REVISION}"
+            from app import phrase_data, phrases
+            return f"{signature}|phrase_rows={phrase_data.REVISION}/{phrases.MATCHER_VERSION}"
         except Exception:
             return f"{signature}|phrase_rows=on"
 

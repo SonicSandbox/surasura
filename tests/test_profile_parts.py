@@ -35,14 +35,18 @@ CALL_SITES = {
     "app/connect/known_signal.py": 1,
     "app/connect/ledger.py": 1,
     "app/import_2x.py": 2,
+    "app/instance_name.py": 1,
     "app/library_store.py": 3,
     "app/locks.py": 8,
     "app/path_utils.py": 19,
     "app/profile_reset.py": 1,
     "app/qt/shell.py": 1,
-    "app/qt/single.py": 2,
+    "app/qt/single.py": 1,
     "app/replan_preview.py": 1,
     "app/report.py": 2,
+    "app/scrub.py": 3,
+    "app/send_report.py": 5,
+    "app/services/airing.py": 1,
     "app/services/anki_miner_setup.py": 4,
     "app/services/arrivals.py": 1,
     "app/services/chores.py": 1,
@@ -98,10 +102,10 @@ def _part_of(path, parts=None):
 
 def _writers():
     """(what writes it, its path, a folder?) — each from the code's own path function under the test root."""
-    from app import report, telemetry, updater
+    from app import report, send_report, telemetry, updater
     from app.cli import contract, events
     from app.connect import anki_miner, kick, known_signal, ledger
-    from app.services import first_run, library_reader, moves, needs, settings_io
+    from app.services import airing, first_run, library_reader, moves, needs, settings_io
     from app.services import anki_miner_setup
     out = [
         ("the window's reader cache", library_reader.cache_path("ja"), False),
@@ -115,6 +119,7 @@ def _writers():
         ("Anki Miner's install staging", anki_miner_setup.staging_folder(), True),
         ("the folder-time cache", os.path.join(ledger.folder(), "sources_ja.json"), False),
         ("the covers cache", os.path.join(path_utils.get_covers_cache_path(), "a.jpg"), False),
+        ("the airing cache", airing.cache_path("ja"), False),
         ("the window's state", os.path.join(path_utils.get_local_data_path(), "window_state.json"), False),
         ("the one-window lock", os.path.join(path_utils.get_local_data_path(), "window-abc.lock"), False),
         ("the update's state", updater.update_state_path(), False),
@@ -127,6 +132,10 @@ def _writers():
         ("a word store", os.path.join(_root(), "index", "token_store_ja.db"), False),    # token_index's rule
         # (the suite's conftest points `store_path_for` at a folder of its own)
         ("the saved reports", os.path.join(report.folder(), "report.json"), False),
+        ("the report waiting to be sent", os.path.join(send_report._folder(send_report.OUTBOX_DIR),
+                                                       send_report.OUTBOX_ZIP), False),
+        ("a sent report", os.path.join(send_report._folder(send_report.SENT_DIR), "K3Q7PM.zip"), False),
+        ("Send report's name and code", send_report._state_path(), False),
         ("the telemetry id", os.path.join(path_utils.get_persistent_user_data_path(), "telemetry_id.json"), False),
         ("the telemetry URL", os.path.join(path_utils.persistent_root(), telemetry.URL_CACHE), False),
         ("the start gate's note", first_run.note_path(), False),

@@ -830,6 +830,7 @@ PARTS = (
     ("install", "window_pending_*.json", "window_pending", MOVES, STAYS),
     ("install", "needs_seen_*.json", "needs_seen", MOVES, STAYS),
     ("install", "covers", "covers", MOVES, STAYS),
+    ("install", "airing_*.json", "airing", MOVES, STAYS),        # AniList's answers, kept as covers are
     ("install", "settings_import.json", "settings_import", MOVES, STAYS),
     ("install", "backlog_shows_*.json", "junban_backlog_shows", MOVES, STAYS),
     ("install", "anki-miner-install", "staging", MOVES, STAYS),
@@ -844,6 +845,9 @@ PARTS = (
     ("roaming", "koe_credentials.json", "koe_key", MOVES, STAYS),       # Q5: Koe's key goes too
     ("roaming", "koe_usage.json", "koe_usage", MOVES, STAYS),
     ("roaming", "reports", "reports", MOVES, STAYS),
+    ("roaming", "report_outbox", "reports", MOVES, STAYS),       # Send report: the zip waiting (saved reports)
+    ("roaming", "report_sent", "reports", MOVES, STAYS),         # the sent zips, kept 90 days
+    ("roaming", "report_send.json", "report_send", MOVES, STAYS),    # the Discord name and sender code: as settings
     ("roaming", "youtube_rest_*.json", "youtube_rest", MOVES, STAYS),
     ("local", "library.json", "library_note", STAYS, STAYS),     # P8: the installer's and the start gate's notes
     ("local", "installs.json", "installs_note", STAYS, STAYS),

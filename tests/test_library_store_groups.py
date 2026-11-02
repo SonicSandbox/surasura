@@ -690,6 +690,24 @@ def test_G1_a_group_across_the_soon_line_stays_one_group_however_the_line_moves(
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_G1_a_title_sent_to_soon_lands_after_a_group_the_line_runs_through_never_inside_it(language):
+    """Alpha 9 #JNFJ8Q: Soon's top past the line is after the Soon rows of a group the line cuts (the view's one row),
+    so the sort screen's Soon never puts a title inside the group. A plain run of the group's last show starting Soon
+    right after it is another row: the title goes before it."""
+    store = _three(language)
+    (p2, m2), (pl, ml) = _runs(store, "now")[-2:]
+    store.join([p2, pl], how="group")
+    store.move([store.ids("goal")[-1]], "now", before_id=store.ids("now")[0])
+    assert store.item(ml[-1])["tier"] == "soon", "the line runs through the group"
+    sent = store.ids("goal")[0]
+    store.place([sent], "soon")
+    soon = store.ids("soon")
+    assert soon.index(sent) == soon.index(ml[-1]) + 1
+    assert {_piece(store, i) for i in m2 + ml} == {p2} and pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_G1_an_episode_dragged_from_a_group_at_nows_end_to_the_top_of_soon_stays_in_it(language):
     """Beside its group across the line is within the group: a reorder, never a foreign drop."""
     store = _three(language)

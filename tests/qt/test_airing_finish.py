@@ -58,6 +58,14 @@ def test_releasing_holds_a_season_downloaded_at_once_with_its_reason():
     assert drag.when_done(_aired(_view([row]), 1, RELEASING), row, NOW) == ("offer", strings.DONE_WHY_AIRING)
 
 
+def test_a_show_anilist_has_not_answered_for_yet_waits_with_its_reason():
+    """Alpha 9 #JNFJ8Q (Chii Fuyo, still airing, every episode marked at once before AniList had answered): no answer
+    yet for a show AniList can be asked about is never "nothing known" — it asks, and says why."""
+    row = _row("p1", 1, 1, _at_once(3), title="夜明けの旅団")
+    assert drag.when_done(_aired(_view([row]), 1, {"status": A.PENDING}), row, NOW) ==         ("offer", strings.DONE_WHY_ASKING)
+    assert drag.offer_text(("offer", strings.DONE_WHY_ASKING), row) ==         "✓ All 3 watched · Still asking AniList whether it's airing — finished with it?"
+
+
 @pytest.mark.parametrize("status", ["RELEASING", "NOT_YET_RELEASED", "HIATUS"])     # AniList's own names
 def test_every_airing_status_holds(status):
     row = _row("p1", 1, 1, _at_once(4))
@@ -233,6 +241,25 @@ def test_scenario_no_id_or_no_answer_behaves_as_today():
         assert drag.when_done(view, row, time.time()) == ("finish",)
 
 
+def test_scenario_every_episode_marked_before_anilist_answered_stays_in_current():
+    """Alpha 9 #JNFJ8Q: a show downloaded at once with its AniList id, the switch on, no answer kept yet (the ask goes
+    out when a show is near its end, its answer a moment later behind the covers on one AniList budget): marking it all
+    watched asks; with the switch off it finishes by itself as in 3.0."""
+    names = [f"夜明けの旅団 第{k:02d}話.srt" for k in range(1, 4)]
+    store, _src = _first_look("ja", lambda s: _from_sample(s, "夜明けの旅団", WEEKLY, names, [2] * 3))
+    with store:
+        row = _row_named(_store_view(store, "ja"), "夜明けの旅団")
+        _id(store, row, 171018)
+        view = _store_view(store, "ja")
+        works = {w["id"]: w for w in store.read_feed()["works"]}
+        now = time.time()
+        asking = view._replace(airing=A.of_rows(view.rows, works, {}, asking=True))
+        off = view._replace(airing=A.of_rows(view.rows, works, {}, asking=False))
+        row = _all_watched(asking, _row_named(asking, "夜明けの旅団"))
+        assert drag.when_done(asking, row, now) == ("offer", strings.DONE_WHY_ASKING)
+        assert drag.when_done(off, row, now) == ("finish",)
+
+
 def test_scenario_a_film_finishes_by_itself_as_today():
     store, _src = _first_look("ja", lambda s: _from_sample(s, "劇場版 夜明けの旅団", FILM, [FILM], [1]))
     with store:
@@ -260,3 +287,32 @@ def test_window_the_last_done_of_a_show_anilist_holds_offers_with_its_reason_and
     win.moves.done(row, row.episodes[-1])
     assert [c[0] for c in calls(writer)] == ["set_watched"]
     assert win.toasts.card.base == strings.DONE_ALL_WHY.format(n=len(row.episodes), why=strings.DONE_WHY_AIRING)
+
+
+def test_window_mark_all_watched_before_anilist_answered_offers_and_writes_only_the_marks(world):
+    """Alpha 9 #JNFJ8Q, the window's own path (⋯ *Mark all watched*, `done_many`): a show with an id whose answer
+    hasn't come yet (the asker switched on) is marked watched and asked about — never moved to Finished."""
+    from tests.qt.test_drag import calls
+
+    class Asker:
+        on_change = None
+
+        def want(self, ids):
+            return 0
+
+        def on(self):
+            return True
+    seed, win, writer = world()
+    row = rows_of(win)[4]
+    seed.library.commit(works=[{"id": row.work_id, "anilist_id": 424243}])
+    reader = win.services.library
+    reader._airing_kept.shows()                     # (its path, under the test's local folder: nothing kept)
+    reader.follow_airing(Asker())
+    reader.airing_moved()
+    assert wait_until(lambda: win.page_widgets["current"].view_model.airing.get(row.work_id) == {"status": A.PENDING},
+                      3)
+    row = rows_of(win)[4]
+    win.moves.done_many(row, list(row.episodes))
+    assert [c[0] for c in calls(writer)] == ["set_watched"]
+    assert win.toasts.card.base == strings.DONE_ALL_WHY.format(n=len(row.episodes), why=strings.DONE_WHY_ASKING)
+    assert row.key in [r.key for r in rows_of(win)]

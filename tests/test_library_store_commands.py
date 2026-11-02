@@ -1849,15 +1849,54 @@ def test_set_soon_line_and_the_library_options_undo(language):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_soons_top_is_the_first_slot_below_the_line(language):
     """05 §5.1: "the top of Soon" is the first slot below the line, counted without the rows being placed — an item
-    sent there from NOW lands first in Soon, never bounced back above the line."""
+    sent there from NOW lands in Soon, never bounced back above the line; and never between the NOW and Soon files of
+    the show the line then runs through (B2-1's rule in the store, alpha 9 #JNFJ8Q): the line takes Soon's first file
+    up, so the item lands after that show's Soon files."""
     store = migrated(language, shows=3, episodes=4)
     now, soon = store.ids("now"), store.ids("soon")
+    cut = [i for i in soon if store.item(i)["work_id"] == store.item(soon[0])["work_id"]]
+    assert len(cut) > 1, "the setup: the show the line takes a file up from has more files in Soon"
     store.move([now[0]], "soon")
-    assert store.ids("soon")[0] == now[0] and store.ids("now") == now[1:] + [soon[0]]
+    assert store.ids("now") == now[1:] + [soon[0]]
+    assert store.ids("soon")[:len(cut)] == cut[1:] + [now[0]]
     assert _line_holds(store)
     demoted = store.ids("now")[2]
     store.set_tier([demoted], "soon")
     assert store.item(demoted)["tier"] == "soon" and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_sent_to_soon_never_lands_inside_the_show_the_line_runs_through(language):
+    """Alpha 9 #JNFJ8Q (Sonic: "It seems to naturally have split ようこそ"): the Soon line counts files, so it can fall
+    inside a book's parts; a title the sort screen (New arrivals' `place --where soon`) sent to Soon landed at Soon's
+    very top — between the book's NOW and Soon parts — and the book showed as two rows around it. It lands after the
+    book's Soon files: one row, the title below it; nothing else moves (the line, NOW)."""
+    store = migrated(language, shows=3, episodes=4)
+    third = [i for i in store.ids("now") if store.item(i)["work_id"] == store.item(store.ids("now")[8])["work_id"]]
+    store.set_soon_line(10)                            # the line inside the third show: 2 files NOW, 2 Soon
+    now, soon = store.ids("now"), store.ids("soon")
+    assert now[-2:] == third[:2] and soon[:2] == third[2:]
+    sent = store.ids("goal")[:4]                       # a whole title from 6+ Months
+    store.place(sent, "soon")
+    assert store.ids("now") == now and store.ids("soon") == third[2:] + sent + soon[2:]
+    assert {store.item(i)["piece_id"] for i in third[2:]} == {store.item(third[2])["piece_id"]}
+    assert _line_holds(store)
+    store.set_tier([store.ids("goal")[0]], "soon")     # Demote's own path to Soon's top: the same rule
+    assert store.ids("soon")[:2] == third[2:]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_sent_to_soon_still_goes_first_in_soon_when_the_line_falls_between_two_shows(language):
+    """The line between two shows (the usual case): Soon's very top, as before."""
+    store = migrated(language, shows=3, episodes=4)
+    store.set_soon_line(8)                             # after the second show's last file
+    first_soon = store.ids("soon")[0]
+    assert store.item(first_soon)["work_id"] != store.item(store.ids("now")[-1])["work_id"]
+    sent = store.ids("goal")[:4]
+    store.place(sent, "soon")
+    assert store.ids("soon")[:5] == sent + [first_soon] and _line_holds(store)
     store.close()
 
 

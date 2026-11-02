@@ -4,7 +4,8 @@ by itself while AniList says it is still airing, or while AniList lists more epi
 (`drag.when_done`). Qt-free, Tk-free, standard library only; the request itself is the covers' (`covers_online`).
 
 **AniList only holds a show back** (A5): `holds` gives "airing" or "more", else None — and None leaves the files' dates
-to decide, as 3.0 did. AniList's "finished" never finishes a show sooner (`view_rows.still_arriving` gets `airing=True`
+to decide, as 3.0 did. A show it can be asked about and hasn't answered for yet (`PENDING`: an id, the switch on, no
+kept answer) is "asking": it waits for the answer, never finishes by itself before it (alpha 9 try, #JNFJ8Q). AniList's "finished" never finishes a show sooner (`view_rows.still_arriving` gets `airing=True`
 or None, never False).
 
 **What is sent** (CLAUDE.md §1, *Covers*): AniList ids only (`Q_AIRING`, `BATCH` a query), through the covers fetcher's
@@ -28,6 +29,7 @@ from app.services import view_rows
 
 AIRING = ("RELEASING", "NOT_YET_RELEASED", "HIATUS")     # AniList's statuses that hold a show back
 ENDED = ("FINISHED", "CANCELLED")
+PENDING = "pending"                 # `of_rows`' entry for a show with an id and no kept answer while AniList can be asked
 BATCH = 50                          # ids a query (AniList's page)
 DAY_S = 24 * 3600                   # an airing show's answer is asked again after this …
 AIRED_S = 3600                      # … or this long after its next episode's air time, whichever comes first
@@ -62,10 +64,12 @@ def _number(value):
 
 def holds(entry, episodes):
     """What AniList's kept answer `entry` says of a show whose files are `episodes` (A5): "airing" (still airing,
-    whatever its files), "more" (AniList lists more episodes than its highest numbered file), or None — nothing that
-    holds it back: the files' dates decide."""
+    whatever its files), "more" (AniList lists more episodes than its highest numbered file), "asking" (`PENDING`: not
+    answered yet — it may still be airing), or None — nothing that holds it back: the files' dates decide."""
     if not isinstance(entry, dict):
         return None
+    if entry.get("status") == PENDING:
+        return "asking"
     if entry.get("status") in AIRING:
         return "airing"
     total = _number(entry.get("episodes"))
@@ -112,18 +116,22 @@ def near_end(rows, works):
     return out
 
 
-def of_rows(rows, works, shows):
-    """{work_id: kept answer} for Current's `rows` (the view's `airing`): what `drag.when_done` reads."""
+def of_rows(rows, works, shows, asking=False):
+    """{work_id: kept answer} for Current's `rows` (the view's `airing`): what `drag.when_done` reads. `asking`: AniList
+    can be asked now (the asker's switch on) — a show with an id and no kept answer gets `{"status": PENDING}`, so a
+    show marked all watched before its answer came (or before it was near its end: a mark of many) waits for it."""
     out = {}
-    if not shows:
+    if not shows and not asking:
         return out
     for r in rows:
         if getattr(r, "group", False) or r.work_id is None:
             continue
         aid = airing_id(works.get(r.work_id))
-        entry = shows.get(str(aid)) if aid is not None else None
+        entry = (shows or {}).get(str(aid)) if aid is not None else None
         if isinstance(entry, dict):
             out[r.work_id] = entry
+        elif aid is not None and asking:
+            out[r.work_id] = {"status": PENDING}
     return out
 
 

@@ -2601,7 +2601,10 @@ class Store:
         """Where "the top of `tier`" is. Soon's top is the first slot below the Soon line (L2.2 05 §5.1), counted
         without the rows being placed: rows leaving NOW let the line take Soon's first rows up, so the slot is after
         Current's `soon_line`-th row once they're gone; with fewer rows than the line nothing can sit below it (the
-        end of Soon, which the line then takes up). Any other tier: its top."""
+        end of Soon, which the line then takes up). Any other tier: its top. A show the line runs through (the line
+        counts files, so it can fall inside a book's parts) is never cut by what lands there: the slot is after its
+        Soon files (`_past_cut`: the window's `drag.soon_slot` rule, B2-1, for every path — the sort screen's Soon, New
+        arrivals' ⋯ *Soon*, `place --where soon`; alpha 9 #JNFJ8Q: one book shown as two rows around another)."""
         n = self._soon_line() if tier == "soon" else None
         if not n:
             return ("top",)
@@ -2612,10 +2615,47 @@ class Store:
                                          f"({','.join('?' * len(chunk))})", chunk).fetchone()[0]
         need = n - (now - leaving)
         if need <= 0:
-            return ("top",)
+            last = next((r for r in self.conn.execute("SELECT id FROM items WHERE tier = 'now' ORDER BY ord DESC, id "
+                                                      "DESC LIMIT ?", (len(excl) + 1,)) if r[0] not in excl), None)
+            past = self._past_cut(last[0], excl) if last is not None else None
+            return ("after", past) if past is not None else ("top",)
         rows = [r[0] for r in self.conn.execute("SELECT id FROM items WHERE tier = 'soon' ORDER BY ord, id LIMIT ?",
                                                 (need + len(excl),)) if r[0] not in excl]
-        return ("after", rows[need - 1]) if len(rows) >= need else ("end",)
+        if len(rows) < need:
+            return ("end",)
+        return ("after", self._past_cut(rows[need - 1], excl) or rows[need - 1])
+
+    def _past_cut(self, at_id, excl):
+        """The last Soon row (none of `excl`) of the show that row `at_id` belongs to, running on just below it — the
+        view's reading of a show the Soon line runs through (`view_rows.build`'s straddle: a group by its piece, else
+        `_same_show`: one work, without one one folder) — or None when the next Soon row is another show's."""
+        groups = {}
+
+        def key(row):
+            piece, work, folder = row[1:]
+            if piece is not None and piece not in groups:
+                groups[piece] = self._is_group(piece)
+            if piece is not None and groups[piece]:
+                return ("group", piece)
+            return ("work", work) if work is not None else ("folder", folder) if folder is not None else None
+        cols = "id, piece_id, work_id, parent_folder"
+        at = self.conn.execute(f"SELECT {cols}, tier, ord FROM items WHERE id = ?", (at_id,)).fetchone()
+        mine = key(at[:4]) if at is not None else None
+        if mine is None:
+            return None
+        if at[4] == "soon":
+            after = self.conn.execute(f"SELECT {cols} FROM items WHERE tier = 'soon' AND (ord, id) > (?, ?) "
+                                      f"ORDER BY ord, id", (at[5], at_id))
+        else:
+            after = self.conn.execute(f"SELECT {cols} FROM items WHERE tier = 'soon' ORDER BY ord, id")
+        past = None
+        for row in after:
+            if row[0] in excl:
+                continue
+            if key(row) != mine:
+                break
+            past = row[0]
+        return past
 
     def _folder_last(self, tier, folder, excl):
         """The last row of `folder` (the placement key) in `tier`, skipping `excl`: (id, ord) or None."""

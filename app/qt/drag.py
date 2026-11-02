@@ -207,8 +207,9 @@ def when_done(view, row, now=None, pending=False):
       in on its own lately, `view_rows.still_arriving`, or it already has files in Finished: a show still airing), R5
       a file still to come (a hole in its numbers, one in New arrivals, a video waiting for its subtitle); it is
       ("offer", why) when nothing of these holds it but AniList's kept answer (`view.airing`, 3.0.1 item 5): still
-      airing (R4), or more episodes listed than its files reach (R5) — asked only after 3.0's own checks, so AniList
-      never finishes one sooner; R6 *Keep
+      airing (R4), or more episodes listed than its files reach (R5), or no answer yet for a show AniList can be asked
+      about (`airing.PENDING`: it waits for the answer, alpha 9 #JNFJ8Q) — asked only after 3.0's own checks, so
+      AniList never finishes one sooner; R6 *Keep
       studying watched episodes* on (nothing moves by itself), a write still on its way (`pending`: the view may not
       hold it yet), a group, a row of no title, the first screen's cache (Goal, New arrivals and Finished not read).
     - None — nothing is offered (the plain ✓; Up Next's Done says why): hato's mix; a part of a title whose other part waits in Current, in Goal or inside a
@@ -267,6 +268,8 @@ def _why(hold, entry, eps):
     """AA-3 (PROVISIONAL): the few words the offer says when AniList held the show back."""
     if hold == "airing":
         return strings.DONE_WHY_AIRING
+    if hold == "asking":
+        return strings.DONE_WHY_ASKING
     return strings.DONE_WHY_MORE.format(n=int(entry["episodes"]), m=max(e.number for e in eps if e.number is not None))
 
 

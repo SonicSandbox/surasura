@@ -245,9 +245,11 @@ class Confirm(motion.Overlay):
         if obj is self._window:
             if event.type() == QEvent.Type.Resize and self.isVisible():
                 self.place()
-            elif event.type() == QEvent.Type.Hide and not event.spontaneous() and self.answer is None:
+            elif (event.type() == QEvent.Type.Hide and not event.spontaneous() and not obj.isMinimized()
+                  and self.answer is None):
                 # ✕ (a close that went through) or a hide with a question open: No, no callback, and no dimmed room
-                # left for the window's next showing. (Minimising is a spontaneous hide: the question stays.)
+                # left for the window's next showing. (Minimising is a spontaneous hide, and a secondary window's
+                # tuck into its icon hides it while still minimised — try a9 #5: the question stays.)
                 self._answer(False, drop=True)
         return False
 

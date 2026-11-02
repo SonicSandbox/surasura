@@ -45,6 +45,11 @@ from app.unicode_ranges import HAN, KANA
 KNOWN_FILE = "KnownWord.json"
 STATE_FILE = "anki_sync_state.json"
 STATE_VERSION = 1
+# Bump when a studied note's words would now be read differently: a state saved under another reading makes the next
+# sync a full one, once (append-only: what was read before stays known). 2: a word field holding a sentence is read
+# whole, as "Also read" reads one (`anki_match.holds_sentence`; was its first clause: でも、そんな気がする -> でも).
+# Japanese only: Chinese read every line whole already.
+READING_VERSION = 2
 SOURCE = "AnkiConnect"
 # The source of the words GraduatedList.txt held, merged once into KnownWord.json (app/graduated_merge.py): Replace
 # keeps them.
@@ -266,7 +271,7 @@ def _read_state(language, quarantine):
 
 
 def load_state(language):
-    """The saved sync state, or {} when missing or corrupt. Keys: version, url, decks, fields,
+    """The saved sync state, or {} when missing or corrupt. Keys: version, url, decks, fields, reading,
     include_suspended, note_ids, known_sig, last_sync (ISO), last_added, last_backup."""
     return _read_state(language, quarantine=False)
 
@@ -397,6 +402,44 @@ def models_in_scope(url, decks, include_suspended=False):
     return out
 
 
+SENTENCE_SAMPLE = 10                # each note type's newest studied notes the Anki window looks at for sentences
+
+
+def word_field_sentences(url, decks, include_suspended, fields, language, models=(), sample=SENTENCE_SAMPLE):
+    """[the note types (of `models`, those in scope) whose WORD field holds sentences] (`anki_match.holds_sentence`,
+    read as `_terms_from_notes` reads it: every word in it known), sorted — a note type counts when most of its newest
+    `sample` studied notes hold one. Two requests (one multi of findNotes, one notesInfo); [] when Anki can't answer:
+    the window's line is only a word to the user, never a reason to fail its read."""
+    from app import anki_match
+    decks, models = _clean_decks(decks), [str(m) for m in models or ()]
+    if not decks or not models:
+        return []
+    scope = scope_query(decks, include_suspended)
+    try:
+        replies = anki_connect.multi([{"action": "findNotes",
+                                       "params": {"query": f'{scope} note:"{anki_connect.escape_query(m)}"'}}
+                                      for m in models], url)
+        ids = []
+        for reply in replies:
+            result = reply.get("result") if isinstance(reply, dict) and reply.get("error") is None else None
+            ids += sorted(anki_connect._int_ids(result if isinstance(result, list) else []))[-sample:]
+        notes = anki_connect.notes_info(url, ids) if ids else []
+    except AnkiError:
+        return []
+    seen, held = {}, {}
+    for note in notes:
+        model = str(note.get("modelName", ""))
+        note_fields = note.get("fields") if isinstance(note.get("fields"), dict) else {}
+        word = word_field(sorted(note_fields, key=lambda name: _field_order(note_fields[name])), fields)
+        if not word:
+            continue
+        value = note_fields.get(word[0])
+        seen[model] = seen.get(model, 0) + 1
+        if anki_match.holds_sentence(value.get("value", "") if isinstance(value, dict) else "", language):
+            held[model] = held.get(model, 0) + 1
+    return sorted(m for m, n in held.items() if 2 * n > seen[m])
+
+
 def resolve_fields(model_fields, chosen):
     """Which of a note type's fields to read. `chosen == []` means Auto: the first field. Otherwise
     each chosen name present on the model (exact, then case-insensitive), in the chosen order.
@@ -461,9 +504,16 @@ def _terms_from_notes(notes, fields, language, result):
             # まく, the reading on its second line, known as a word of its own. The "Also read" field, and
             # Chinese: one term per line — a sentence field marks every word of its sentence known (the analyzer
             # tokenizes each term); a <br> or a <div> between two lines parts them (in Japanese an opening <div>
-            # too, as Anki writes a second line), never fuses them.
-            if name in words:
+            # too, as Anki writes a second line), never fuses them. A word field that holds a sentence
+            # (`anki_match.holds_sentence`: でも、そんな気がする) is read as "Also read" reads one — never its first
+            # clause alone (でも) — each line without the punctuation around it, as `card_word` reads a word: a word
+            # typed with a stop (ありがとう！) is the entry it was (ありがとう), never a second one beside it.
+            sentence = name in words and anki_match.holds_sentence(raw, "ja")
+            if name in words and not sentence:
                 lines = [anki_match.card_word(raw, "ja")]
+            elif sentence:
+                lines = [anki_match._bare(line.strip())
+                         for line in clean_field_html(anki_match._LINE_TAG_RE.sub("\n", raw)).split("\n")]
             else:
                 lines = clean_field_html(anki_match._LINE_TAG_RE.sub("\n", raw) if language == "ja" else raw).split("\n")
             for line in lines:
@@ -528,6 +578,7 @@ def _sync(language, url, decks, fields, include_suspended, full):
                or sorted(state.get("decks") or []) != sorted(decks)
                or list(state.get("fields") or []) != fields
                or bool(state.get("include_suspended")) != include_suspended
+               or (language == "ja" and state.get("reading", 1) != READING_VERSION)
                or state.get("known_sig") != known_signature(known_path))
     full = bool(full or changed)
     result = SyncResult(mode="full" if full else "delta")
@@ -571,6 +622,7 @@ def _sync(language, url, decks, fields, include_suspended, full):
     result.total_known = len(_known_keys(words or []))
     _save_state(language, {
         "url": url, "decks": decks, "fields": fields, "include_suspended": include_suspended,
+        "reading": READING_VERSION,
         "note_ids": sorted(note_ids),                       # N, not a union (spec gotcha 8)
         "known_sig": known_signature(known_path),           # AFTER our own write (gotcha 7)
         "last_sync": now, "last_added": result.added,
@@ -1072,6 +1124,7 @@ def _replace_held(language, result, known_path, words, url, decks, fields, inclu
         state = load_state(language)
         state.update({
             "url": url, "decks": decks, "fields": fields, "include_suspended": include_suspended,
+            "reading": READING_VERSION,
             "note_ids": sorted(note_ids), "known_sig": known_signature(known_path),
             "last_sync": now, "last_added": result.added, "last_backup": result.backup,
         })

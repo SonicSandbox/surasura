@@ -114,6 +114,10 @@ def test_the_steps_run_in_order_each_with_its_count_then_the_sort_screen(make, e
     hold.set()
     assert wait_until(lambda: isinstance(wiz.covered, sort_screen.SortScreen), 5)
     assert wiz.index == 2
+    # Mado-P: the sort screen covers the wizard by geometry, outside its layout; the wizard's minimum holds its room,
+    # so the window's (`first_run._Cover`) never lets it be cut off
+    need, hint = wiz.covered.minimumSizeHint(), wiz.minimumSizeHint()
+    assert hint.width() >= need.width() and hint.height() >= need.height()
     QTest.mouseClick(wiz.covered.btn_done, Qt.MouseButton.LeftButton)
     assert wiz.covered is None and wiz.index == 3
 

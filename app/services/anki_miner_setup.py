@@ -494,7 +494,7 @@ SAID_PITCH = " Pitch categories are written in romaji, as “{note}” reads the
 SAID_DICTS = " Anki Miner's {language} dictionaries are in (its profile “{name}”)."
 SAID_DICTS_CURRENT = " Anki Miner's {language} dictionaries are in (the profile its window uses)."
 SAID_DICTS_SHORT = " Anki Miner's {language} dictionaries are in."     # the profile already said in the same line
-# The note types Anki Miner fills completely (3.10.1 `services/note_presets.py`): their fields need no saying
+# The note types Anki Miner fills completely (3.11.0 `services/note_presets.py`): their fields need no saying
 PRESETS = frozenset(("lapis", "kiku", "senren", "anki miner note"))
 SETUP_DO_FAILED = "Its setup didn't finish here: Surasura offers it again the next time you open Surasura"
 

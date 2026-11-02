@@ -45,9 +45,9 @@ SETUP_ITEMS = frozenset(("dictionary", "resources", "language_pack"))
 # What Surasura sets itself through Anki Miner's `settings-import` (Z-3, A4M1-2b): these of its `check` items — the
 # deck, note type and fields a language's cards go to (`connect.miner_settings`)
 SETTINGS_ITEMS = frozenset(("deck", "note_type", "fields"))
-# Its `check` items a mine needs (the same nine in every build from 3.5.0 to its 2026-10-31 main), and those only its
-# fetch, speech and OCR commands use, which its own `ready` leaves out (3.7's yt_dlp and speech_model; main's
-# `_NOT_FOR_MINE` adds ocr and video_ocr): `unfinished`
+# Its `check` items a mine needs (the same nine in every build from 3.5.0 to 3.11.0), and those only its fetch, speech
+# and OCR commands use, which its own `ready` leaves out (3.7's yt_dlp and speech_model; 3.11's `_NOT_FOR_MINE` adds ocr
+# and video_ocr): `unfinished`
 MINE_ITEMS = SETUP_ITEMS | SETTINGS_ITEMS | frozenset(("anki", "ffmpeg", "ffprobe"))
 NOT_FOR_MINE = frozenset(("yt_dlp", "speech_model", "ocr", "video_ocr"))
 LINE_TOLERANCE = 0.05           # seconds: a returned line_start further off is another line (sim.py, IS:311)

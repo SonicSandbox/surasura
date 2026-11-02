@@ -13,7 +13,7 @@ from Surasura's own settings or from Anki, never guessed from a name alone:
 - **the fields** (`fields_for`): Anki Miner's own rule, the word in the note type's first field; every other role keeps
   the field Anki Miner has for it while the note type has that field (one left empty stays empty unless the note type
   changed: Anki Miner reads a mapped field as a switch, word audio for one), else takes the field of its name in the
-  note types Anki Miner fills completely (Lapis, Kiku, Anki Miner Note, Senren: `NAMES`, from Anki Miner 3.10.1's
+  note types Anki Miner fills completely (Lapis, Kiku, Anki Miner Note, Senren: `NAMES`, from Anki Miner 3.11.0's
   `note_presets.py`); a note type with no sentence field isn't one Anki Miner can make Surasura's cards with.
 
 What can't be known — several known-words decks and no Junban deck, an empty deck — is asked in Surasura's own window
@@ -23,7 +23,7 @@ Standard library only; Anki is read through the `anki` reads handed in (`AnkiRea
 """
 from collections import Counter
 
-# Each role's field in the note types Anki Miner fills completely, in its own preset's names (3.10.1
+# Each role's field in the note types Anki Miner fills completely, in its own preset's names (3.11.0
 # `services/note_presets.py`: Lapis / Kiku / Anki Miner Note, then Senren). A name is matched ignoring case.
 NAMES = {
     "sentence": ("Sentence",),

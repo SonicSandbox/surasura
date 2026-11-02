@@ -113,6 +113,50 @@ def test_a_half_width_field_is_read_as_the_word_in_full_width():
     assert anki_match.card_word("ｶﾞｯｺｳ", "zh") == "ガッコウ", "a Chinese field is read in NFKC too"
 
 
+@pytest.mark.parametrize("raw", ["「撒く」", "撒く。", "撒く<br>まく", "撒く<div>まく</div>", "仰ぐ（あおぐ）", "勉強(する)",
+                                 "上層部、首脳部", "撒く・巻く", "撒く／巻く", "撒く 巻く", "撒く まく", "撒く、まく",
+                                 "引[ひ]きずる", "冒険", "ジョン・スミス", "ﾊﾞｼｯと", "気がする", "腑に落ちる", "気がする。",
+                                 "そんな気がする", "撒く - to scatter", "撒く まく。", "撒く (to scatter, 種を)",
+                                 "撒く<br>種を撒く。", "1.5倍", "", None, "<br>", '<img src="paste-8f3a.jpg">'])
+def test_a_word_field_holding_one_word_or_a_set_phrase_holds_no_sentence(raw):
+    """Every shape a one-word card is typed in (`card_word`'s own cases) — a stop, a reading after a space or a comma,
+    a list of dictionary words, a note in brackets — and a set phrase are no sentence: the sync reads them as their one
+    word, as before. One clause with no stop (そんな気がする) is none either: `card_word` reads it whole already. Only the
+    first line decides (a sentence on the second is the card's example), and a dot is no stop (1.5倍)."""
+    assert not anki_match.holds_sentence(raw, "ja")
+
+
+@pytest.mark.parametrize("raw", ["でも、そんな気がする", "でも、そんな気がする。", "もう遅い気がする。", "そうか。じゃあ行こう",
+                                 "いや、いい", "<b>気</b>がする、と思った", "昨日 友達と映画を見た", "今、何時？",
+                                 "嘘、本当？", "今日、雨。", "本当？うん、そう。", "ありがとう！",
+                                 "でも、そんな気がする。<br>But I feel that way."])
+def test_a_word_field_holding_a_sentence_says_so(raw):
+    """Sonic's Sentence chosen as the word field: a sentence end, or clauses parted by a comma or a space that are not
+    each a dictionary word, make a sentence — Japanese's own marks, never a deck's. Two clauses with a stop are one
+    even when each is a dictionary word (今、何時？), and kana after a word is no reading with a stop inside it
+    (本当？うん、そう。). Its first line decides."""
+    assert anki_match.holds_sentence(raw, "ja")
+
+
+def test_with_the_dictionary_unread_a_list_reads_as_a_sentence_and_a_reading_never_does(monkeypatch):
+    """No JMdict (the table can't be read): a list of words can't be told from clauses, so it reads as a sentence —
+    each word in it known — while a word and its reading in kana (撒く まく) and a word alone stay one word."""
+    monkeypatch.setattr(anki_match, "_dictionary_entries", lambda: None)
+    assert anki_match.holds_sentence("上層部、首脳部", "ja") and anki_match.holds_sentence("撒く。", "ja")
+    assert not anki_match.holds_sentence("撒く まく", "ja") and not anki_match.holds_sentence("撒く", "ja")
+
+
+def test_a_chinese_sentence_is_marked_by_its_punctuation_never_a_space():
+    """Chinese writes no space between words: a space parts a word from its pinyin or its other script (学习 xuéxí,
+    学习 / 學習), never two clauses. A comma between two clauses or a sentence end makes a sentence. Any other
+    language: never."""
+    for raw in ("学习 xuéxí", "学习", "学习 / 學習", "约翰・列侬", "学习（xuéxí）"):
+        assert not anki_match.holds_sentence(raw, "zh"), raw
+    for raw in ("我觉得，是这样", "我觉得是这样。", "这次的冒险很有意思！", "大学，研究"):
+        assert anki_match.holds_sentence(raw, "zh"), raw
+    assert not anki_match.holds_sentence("でも、そんな気がする。", "en")
+
+
 @pytest.mark.parametrize("raw", ["学习 (xuéxí)", "学习（xuéxí）", "学习 xuéxí", "学习 / 學習", "「学习」",
                                  "学习<br>xuéxí", "学习[xue2 xi2]", "<ruby>学<rt>xué</rt></ruby><ruby>习<rt>xí</rt></ruby>",
                                  '<span class="tone2">学</span><span class="tone2">习</span>'])

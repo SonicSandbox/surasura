@@ -321,7 +321,7 @@ def test_an_error_naming_a_path_is_scrubbed_in_the_zips_list_and_in_show_me(worl
     from app.connect import status
 
     def unlistable(left_out=None):
-        raise PermissionError(f"[WinError 5] Access is denied: '{world.home}\AppData\Local\Houseki'")
+        raise PermissionError(f"[WinError 5] Access is denied: '{world.home}\\AppData\\Local\\Houseki'")
     monkeypatch.setattr(status, "log_files", unlistable)
     report.save("もう一つ", "")
     words = report.describe(report.plan("ja"))

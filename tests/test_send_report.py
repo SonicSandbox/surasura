@@ -475,3 +475,9 @@ def test_a_waiting_zip_changed_in_place_at_the_same_size_is_never_sent(saved, re
     with pytest.raises(ValueError):
         send_report.send()                                                       # … its sha256 doesn't
     assert receiver.got == []
+
+
+def test_a_name_of_exactly_32_characters_goes(saved, receiver):
+    send_report.build("ja")
+    assert send_report.send(name="あ" * 32).outcome == send_report.SENT
+    assert base64.urlsafe_b64decode(receiver.got[0]["headers"]["X-Discord-Name"] + "==").decode("utf-8") == "あ" * 32

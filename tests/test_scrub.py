@@ -385,7 +385,7 @@ def test_every_short_hash_in_the_app_is_an_install_key_identity_knows_or_hashes_
 
 
 # --- what the mutants asked for (one rule, one test) ------------------------------------------------------------- #
-@pytest.mark.parametrize("sep", ["\x5c", "\u005c", "%2F", "\\\\\\\\"])
+@pytest.mark.parametrize("sep", [r"\x5c", r"\u005c", "%2F", "%5C", r"\\", r"\\\\"])
 def test_a_home_written_with_escaped_separators_loses_its_name(sep):
     ident = person(users=[])
     out = ident.scrub(sep.join(["C:", "Users", "Zoë Tanaka-Probe", "Videos"]))
@@ -520,11 +520,11 @@ def test_each_install_key_source_is_its_own(probe, monkeypatch, missing):
 
 @pytest.mark.parametrize("written, scrubbed", [
     (r"C:\Users\z\Videos", r"C:\Users\<you>\Videos"),
-    ("C:\\Users\\z\\Videos", "C:\\Users\\<you>\\Videos"),                 # JSON: a run of backslashes
+    (r"C:\\Users\\z\\Videos", r"C:\\Users\\<you>\\Videos"),                         # JSON: a run of backslashes
     ("C:%5CUsers%5Cz%5CVideos", "C:%5CUsers%5C<you>%5CVideos"),
     ("C:%5cUsers%5cz%5cVideos", "C:%5cUsers%5c<you>%5cVideos"),
-    ("C:\x5cUsers\x5cz\x5cVideos", "C:\x5cUsers\x5c<you>\x5cVideos"),
-    ("C:\u005cUsers\u005cz\u005cVideos", "C:\u005cUsers\u005c<you>\u005cVideos"),
+    (r"C:\x5cUsers\x5cz\x5cVideos", r"C:\x5cUsers\x5c<you>\x5cVideos"),             # (written out, not escapes)
+    (r"C:\u005cUsers\u005cz\u005cVideos", r"C:\u005cUsers\u005c<you>\u005cVideos"),
     ("C:%2FUsers%2Fz%2FVideos", "C:%2FUsers%2F<you>%2FVideos"),
     ("/c/Users/z/Videos", "/c/Users/<you>/Videos"),                                   # Git Bash
     ("file:///C:/Users/z/Videos", "file:///C:/Users/<you>/Videos"),
@@ -634,3 +634,32 @@ def test_a_name_placeholder_is_never_a_hit_either():
 def test_a_non_ascii_name_goes_even_beside_ascii_letters_or_digits():
     ident = scrub.Identity(users=["田中", "Zoë"])
     assert ident.scrub("田中2号 and Zoëlle, xZoë") == "<you>2号 and <you>lle, x<you>"
+
+
+# --- round 2's survivors (the Haiku list) ------------------------------------------------------------------------ #
+def test_a_home_given_with_a_trailing_separator_is_the_same_home():
+    for home in (r"C:\Users\z" + "\\", "C:/Users/z/"):
+        assert scrub.Identity(homes=[home]).scrub(r"C:\Users\z\Videos") == r"C:\Users\<you>\Videos"
+
+
+def test_a_short_organisation_name_still_goes():
+    assert scrub.Identity(orgs=["ACME"]).scrub(r"C:\Users\x\OneDrive - ACME\a") == r"C:\Users\x\OneDrive - <org>\a"
+
+
+def test_a_short_name_with_one_letter_outside_ascii_has_its_lock_form():
+    assert scrub.Identity(users=["Zoë"]).scrub("surasura-window-Zo_-1-0a1b2c3d4e5f") == \
+        "surasura-window-<you>-1-0a1b2c3d4e5f"
+
+
+def test_the_longest_string_is_tried_first():
+    ident = scrub.Identity(users=["zoe"], machines=["zoe-pc"])
+    assert ident.scrub(r"\\zoe-pc\share and zoe") == r"\\<pc>\share and <you>"
+
+
+def test_a_short_home_folder_is_still_a_home(monkeypatch, tmp_path):
+    _only(monkeypatch, tmp_path, USERPROFILE=r"D:\z")
+    assert r"D:\z" in scrub.read_identity().homes
+
+
+def test_a_picture_named_after_you_is_a_hit(tmp_path):
+    assert scrub.leaks(_zip(tmp_path, {"reports/a/ztanprobe.png": _png()}), person()) == ["reports/a/ztanprobe.png"]

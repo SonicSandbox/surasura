@@ -1275,6 +1275,7 @@ class ReportWindow(SecondaryWindow):
     def _show_send(self, got, line=None, n=None):
         if n is not None and n != self._reads:                    # a newer read is on its way
             return
+        self.send_read = n                                        # (the read last shown: a test waits for it)
         waiting, sent, code, name = got
         self.waiting = waiting
         shown = waiting is not None and self.outbox is None and not qpress.live(self, "report:send")
@@ -1282,7 +1283,7 @@ class ReportWindow(SecondaryWindow):
             w.setVisible(shown)                                    # ... while a send or a delete is under way)
         if code:
             self.sender_line.setText(strings.REPORT_SENDER.format(code=code))
-            self.new_code_button.setEnabled(True)
+            self.new_code_button.setEnabled(self.outbox is None and not qpress.live(self, "report:send"))
         if name and not self.name_filled and not self.name_field.isModified():      # once, never over an edit
             self.name_field.setText(name)
         self.name_filled = True

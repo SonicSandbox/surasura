@@ -380,9 +380,15 @@ def _outbox_empty():
 
 
 def _look(w):
-    """Send report pressed: wait for What goes."""
+    """Send report pressed: wait for What goes, and for the send state read after it."""
     w.send_button.click()
     assert wait_until(lambda: w.pages.currentIndex() == w.GOES, 15)
+    _read(w)
+
+
+def _read(w):
+    """Wait until the window has shown its newest read of the send state (waiting zip, code, name)."""
+    assert wait_until(lambda: getattr(w, "send_read", None) == w._reads, 15)
 
 
 def test_send_report_is_the_main_button_and_says_the_promise_always(main):
@@ -684,10 +690,12 @@ def test_esc_while_the_report_is_made_keeps_nothing_waiting_and_sends_nothing(ma
     from app import send_report
     gate = threading.Event()
     real = send_report.build
+    made = []
 
     def slow(*a, **k):
         gate.wait(10)
-        return real(*a, **k)
+        made.append(real(*a, **k))
+        return made[-1]
     monkeypatch.setattr(send_report, "build", slow)
     w = _press(main)
     _save(w, JA_WHAT)
@@ -695,7 +703,13 @@ def test_esc_while_the_report_is_made_keeps_nothing_waiting_and_sends_nothing(ma
     QTest.keyClick(w, Qt.Key.Key_Escape)
     assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
     gate.set()
-    assert wait_until(lambda: not any(t.name == "report-discard" for t in threading.enumerate()) and _outbox_empty())
+    assert wait_until(lambda: made, 15)                                # the zip was made after the close
+    for _ in range(50):
+        QApplication.processEvents()
+    for t in threading.enumerate():
+        if t.name == "report-discard":
+            t.join(5)
+    assert _outbox_empty()
     w = _press(main)
     assert wait_until(lambda: w.sender_line.text() != "")
     assert w.waiting_line.isHidden() and receiver.got == [] and len(core.listed()) == 1

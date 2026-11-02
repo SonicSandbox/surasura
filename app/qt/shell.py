@@ -47,6 +47,7 @@ from app.qt import press as qpress                        # round 8 row 45: a pr
 from app.qt import standing as standing_qt                # round 8 row 54: every standing line's ✕
 from app.qt import phase_strip                            # the phase strip: five circles at the bar's bottom left
 from app.qt import star_ask                               # Surasura's star ask (2026-10-31)
+from app.qt import tool_icons                             # try a9 #5: the open windows beside Anki
 from app.services import phase as phase_service
 from app.services import standing as standing_service
 from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
@@ -1996,6 +1997,8 @@ class ShellWindow(QMainWindow):
         row.addWidget(self.bar_arc)                       # ... on screen turns here, no words (hidden at rest)
         row.addStretch(0)                                # the room left of the marks while the chip holds the slot
         # (W31A-1's quiet marks ⇅ ⇄ went in alpha 3: the re-order's and Connect's lines are 順's and Anki Miner's hovers)
+        self.tool_icons = tool_icons.ToolIcons(self, footer)    # try a9 #5: the open windows, each one click from back
+        row.addWidget(self.tool_icons)
         # W3.1a: the corner — the emerald and *Anki · N waiting* (the AnkiWeb mark's words in its hover), then known
         self.anki_mark = frame.AnkiMark(footer)
         row.addWidget(self.anki_mark)

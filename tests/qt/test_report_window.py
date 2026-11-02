@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QFileDialog, QWidget
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QPushButton, QWidget
 
 from app import report as core
 from app.qt import report as report_ui
@@ -442,6 +442,166 @@ def test_press_look_then_send_saves_whats_typed_shows_what_goes_and_sends_only_o
     waiting, sent = _send_state()
     assert waiting is None and [s[0] for s in sent] == ["K3Q7PM"]
     assert wait_until(lambda: not w.sent_heading.isHidden() and w.sent_rows.count() == 1)
+    assert w.done_line.text() == strings.REPORT_SENT_WHERE_ONE.format(id="K3Q7PM")   # try a9 #6: where it went
+
+
+def _sent_open(w, rid):
+    """The *Open* of `rid`'s row under Sent reports."""
+    for i in range(w.sent_rows.count()):
+        row = w.sent_rows.itemAt(i).widget()
+        if row is not None and any(f"#{rid}" in x.text() for x in row.findChildren(QLabel)):
+            return [b for b in row.findChildren(QPushButton) if b.text() == strings.REPORT_SENT_OPEN][0]
+    raise AssertionError(f"no row for #{rid}")
+
+
+def test_after_send_the_done_line_says_where_the_reports_went_and_sent_reports_sits_right_under_it(main, receiver):
+    """try a9 #6 (Sonic: "I don't see anything and now I can't see the 5 nor the zip"): the done line counts the reports
+    the send took off the list and names Sent reports, which follows it at once (no other row between)."""
+    w = _press(main)
+    w.include_results.setChecked(False)
+    _save(w, JA_WHAT)
+    _save(w, ZH_WHAT, "风景 shows once")
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.sent_id == "K3Q7PM" and w.sent_rows.count() == 1, 15)
+    assert w.done_line.text() == strings.REPORT_SENT_WHERE_MANY.format(id="K3Q7PM", n=2)
+    assert "Sent reports" in w.done_line.text() and not w.done_line.isHidden()
+    box = w.done_line.parentWidget().layout()
+    order = []
+
+    def walk(layout):
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item.widget() is not None:
+                order.append(item.widget())
+            elif item.layout() is not None:
+                walk(item.layout())
+    walk(box)
+    shown = [x for x in order if x.isVisibleTo(w)]
+    at = shown.index(w.done_line)
+    assert shown[at + 1:at + 3] == [w.copy_button, w.invite_button] and shown[at + 3] is w.sent_box
+    assert w.sent_heading.isVisibleTo(w) and w.sent_heading.y() == 0       # its heading first in it
+
+
+def test_opening_a_sent_report_shows_the_reports_it_held_words_and_pictures(main, receiver, sent):
+    """try a9 #6: a sent #ID opens the reports it held, from the zip kept on this PC — not only the zip."""
+    from app import scrub
+    scrub.identity()                                                   # (a scrubbed picture goes with it)
+    w = _press(main)
+    w.include_results.setChecked(False)
+    _save(w, JA_WHAT, "Currentに残る")
+    _save(w, ZH_WHAT)
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.sent_rows.count() == 1, 15)
+    _sent_open(w, "K3Q7PM").click()
+    assert wait_until(lambda: w.pages.currentIndex() == w.SENT, 15)
+    assert w.sent_opened_heading.text().startswith("#K3Q7PM, sent ")
+    items = [w.sent_lines.itemAt(i).widget() for i in range(w.sent_lines.count())]
+    words = [x.text() for x in items if isinstance(x, QLabel) and x.pixmap().isNull()]
+    pictures = [x for x in items if isinstance(x, QLabel) and not x.pixmap().isNull()]
+    assert len(words) == 2 and JA_WHAT in words[0] and "Currentに残る" in words[0] and ZH_WHAT in words[1]
+    assert len(pictures) >= 1                                          # the picture that went, as it went
+    w.sent_zip.click()
+    assert wait_until(lambda: [k for k, _p in sent] == ["show"])
+    assert sent[0][1].endswith("K3Q7PM.zip")
+    w.sent_back.click()
+    assert w.pages.currentIndex() == w.FORM and w.sent_opened is None
+
+
+def test_sent_contents_reads_only_the_reports_in_order_and_scales_wide_pictures(tmp_path):
+    from PyQt6.QtGui import QColor, QImage
+    from PyQt6.QtCore import QBuffer, QIODevice
+
+    def png(width):
+        img = QImage(width, 40, QImage.Format.Format_RGB32)
+        img.fill(QColor("#2d2d2d"))
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        img.save(buf, "PNG")
+        return bytes(buf.data())
+    path = tmp_path / "K3Q7PM.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("reports/20261102-100529-1/report.txt", "What happened:\n" + ZH_WHAT + "\n")
+        z.writestr("reports/20261102-093757-2/report.txt", "What happened:\n" + JA_WHAT + "\n")
+        z.writestr("reports/20261102-093757-2/picture-10.png", png(80))
+        z.writestr("reports/20261102-093757-2/picture-2.png", png(1200))
+        z.writestr("reports/20261102-093757-2/report.json", "{}")
+        z.writestr("logs/app_debug_log.txt", "not a report")
+        z.writestr("MANIFEST.txt", "")
+    got = report_ui.sent_contents(str(path), 600)
+    assert [rid for rid, _t, _p in got] == ["20261102-093757-2", "20261102-100529-1"]     # oldest first
+    assert JA_WHAT in got[0][1] and ZH_WHAT in got[1][1] and got[1][2] == []
+    assert [img.width() for img in got[0][2]] == [600, 80]             # picture-2 before picture-10; scaled to fit
+
+
+def test_a_sent_report_read_late_never_takes_the_page_back_after_back(main, monkeypatch, tmp_path):
+    """Open on a sent #ID, then Back (or another report opened) before its zip was read: the late answer shows nothing."""
+    import threading
+    gate = threading.Event()
+    real = report_ui.sent_contents
+    monkeypatch.setattr(report_ui, "sent_contents", lambda *a: (gate.wait(10), real(*a))[1])
+    path = tmp_path / "K3Q7PM.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("reports/20261102-093757-2/report.txt", "What happened:\n" + JA_WHAT + "\n")
+    w = _press(main)
+    w.open_sent("K3Q7PM", "2026-11-02 02:05", str(path))
+    w.back()
+    gate.set()
+    assert wait_until(lambda: not report_ui.qpress.live(w, "report:sent:K3Q7PM"))
+    QTest.qWait(50)
+    assert w.pages.currentIndex() == w.FORM and w.sent_lines.count() == 0
+
+
+def test_a_sent_report_read_late_never_takes_the_page_from_show_me(main, monkeypatch, tmp_path):
+    import threading
+    gate = threading.Event()
+    real = report_ui.sent_contents
+    monkeypatch.setattr(report_ui, "sent_contents", lambda *a: (gate.wait(10), real(*a))[1])
+    path = tmp_path / "K3Q7PM.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("reports/20261102-093757-2/report.txt", "What happened:\n" + JA_WHAT + "\n")
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    w.open_sent("K3Q7PM", "2026-11-02 02:05", str(path))
+    w.show_button.click()
+    assert wait_until(lambda: w.pages.currentIndex() == w.CONTENTS)
+    gate.set()
+    assert wait_until(lambda: not report_ui.qpress.live(w, "report:sent:K3Q7PM"))
+    QTest.qWait(50)
+    assert w.pages.currentIndex() == w.CONTENTS
+
+
+def test_sent_reports_wait_while_what_goes_is_up(main, receiver):
+    """The adversary's S1: a sent #ID opened from What goes would leave its zip and the held row behind."""
+    w = _press(main)
+    w.include_results.setChecked(False)
+    _save(w, JA_WHAT)
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.sent_rows.count() == 1, 15)
+    _save(w, ZH_WHAT)
+    _look(w)
+    assert not w.sent_box.isEnabled() and not _sent_open(w, "K3Q7PM").isEnabled()
+    w.goes_back.click()
+    assert w.sent_box.isEnabled() and _sent_open(w, "K3Q7PM").isEnabled()
+
+
+def test_a_sent_zip_with_no_reports_says_so_instead_of_a_blank_page(main, tmp_path):
+    path = tmp_path / "K3Q7PM.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("logs/app_debug_log.txt", "a log")
+    w = _press(main)
+    w.open_sent("K3Q7PM", "2026-11-02 02:05", str(path))
+    assert wait_until(lambda: w.status.text() == strings.REPORT_SENT_EMPTY.format(id="K3Q7PM"))
+    assert w.pages.currentIndex() == w.FORM and w.sent_opened is None
+
+
+def test_a_sent_zip_that_cant_be_read_says_so_and_stays_on_the_form(main, receiver, tmp_path):
+    w = _press(main)
+    w.open_sent("K3Q7PM", "2026-11-02 02:05", str(tmp_path / "gone.zip"))
+    assert wait_until(lambda: w.status.text().startswith("#K3Q7PM couldn't be read: "))
+    assert w.pages.currentIndex() == w.FORM and w.sent_opened is None
 
 
 def test_copy_puts_the_id_on_the_clipboard_and_the_invite_opens_the_one_link(main, receiver, sent):
@@ -632,15 +792,26 @@ def test_send_while_a_zip_is_being_made_saves_nothing_and_says_so(main, sent, tm
     assert len(core.listed()) == 0 and wait_until(lambda: [k for k, _v in sent] == ["show"])
 
 
-def test_the_window_says_what_a_report_holds_and_github_is_the_quieter_way(main, sent):
+def test_the_window_says_what_a_report_holds_and_github_is_the_quieter_way(main, sent, tmp_path):
+    """try a9 #6: Sonic thought Send went to GitHub — GitHub is named only on Make a zip instead's path, once a zip is
+    made, never beside Send."""
     from app.qt import settings_strings
     w = _press(main)
     for said in ("logs", "settings", "titles in your library", "Windows name"):
         assert said in w.hint.text()
+    assert w.send_where.isHidden() and w.issues_button.isHidden()
+    shown = [x for x in w.findChildren(QWidget) if x.isVisibleTo(w) and hasattr(x, "text")]
+    assert not any("GitHub" in x.text() for x in shown)
+    assert "GitHub" not in strings.REPORT_SEND_TIP and "GitHub" not in strings.REPORT_PROMISE
+    _save(w, JA_WHAT)
+    w.dest = str(tmp_path)
+    w.include_results.setChecked(False)
+    w.zip_button.click()
+    assert wait_until(lambda: w.reports == [] and not w.issues_button.isHidden())
     assert w.send_where.text() == strings.REPORT_SEND_WHERE and "Make a zip instead" in strings.REPORT_SEND_WHERE
     assert w.issues_button.toolTip() == strings.REPORT_ISSUES_TIP
     w.issues_button.click()                                            # the quieter way: GitHub Issues, in the browser
-    assert wait_until(lambda: sent == [("url", settings_strings.ISSUES_URL)])
+    assert wait_until(lambda: ("url", settings_strings.ISSUES_URL) in sent)
 
 
 def test_a_picture_taken_once_the_scrub_is_ready_is_saved_marked_and_one_before_is_not(main):

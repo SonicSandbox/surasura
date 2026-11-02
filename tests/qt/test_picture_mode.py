@@ -316,6 +316,7 @@ DRAWN = {
     ("shell.py", "TabButton.paintEvent", "self.name"): "a tab's name",
     ("shell.py", "TabButton.paintEvent", "text"): "a tab's count",
     ("sort_screen.py", "_FadeLine.paintEvent", "self.text()"): "a QLabel's own text: picture mode swaps it",
+    ("tool_icons.py", "ToolIcon.paintEvent", "self.mark"): "a tool's constant mark, else its window's name's letter",
     ("wizard.py", "StepList.paintEvent", "mark"): "a step's mark",
     ("wizard.py", "StepList.paintEvent", "S.STEPS[pid]"): "a step's name",
     ("wizard.py", "Choice.paintEvent", "title"): "scrub.shown(self.title) just above",

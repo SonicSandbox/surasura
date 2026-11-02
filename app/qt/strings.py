@@ -558,6 +558,17 @@ PHASE_FAILED_NOW = "Failed: {why}"
 PHASE_NEEDS = "Needs you: {why}"
 PHASE_ENDED_WAITING = "Last: {what} — stopped {time}: {why}"   # a7: it ended waiting, with nothing for you to decide
 PHASE_TIME = "%H:%M"
+# try a9 #5 (Sonic: "How about an Icon for what is running at the right side to the left of Anki? … Like the windows
+# that you can still get back by clicking it"): the bottom bar's icons, one per open tool window (`app/qt/tool_icons.py`)
+TOOL_ICONS_NAME = "Open windows"
+TOOL_MARKS = {"junban": "順", "put-back": "戻", "backfill": "補", "youtube-downloader": "▶", "youtube-preview": "見",
+              "koe": "声", "anki": "A", "report": "報", "frequency-lists": "頻", "sentence-dictionary": "辞",
+              "word-lists": "除", "library-folders": "棚", "removed": "削"}    # else its name's first letter
+TOOL_WORKING = "Working"
+TOOL_OPEN = "Open"
+TOOL_TIP = "{name}: {doing}"
+TOOL_BACK_TIP = "Click to bring it back"
+TOOL_FRONT_TIP = "Click to bring it to the front"
 PHASE_PRESS = "Press to open its settings"         # the hover's last line, on a circle that has some (mouse or keys)
 # a7 (Sonic 2026-10-29): an amber circle's last line — what waits for your decision, and where a press takes you to it
 PHASE_PRESS_NEEDS = "Waiting for your decision: press to answer it in Needs you"
@@ -1595,8 +1606,19 @@ REPORT_DONT_SEND_TIP = "Delete the waiting report's zip. Your saved reports stay
 REPORT_DISCARDED = "Not sent. Your saved reports are still on your list"
 REPORT_SENT_HEADING = "Sent reports"
 REPORT_SENT_ROW = "#{id}   {when}"
-REPORT_SENT_OPEN = "Open the zip"
-REPORT_SENT_OPEN_TIP = "Show this report's zip, as it was sent, selected in its folder (kept on this PC for 90 days)"
+# try a9 #6 (Sonic: "I don't see anything and now I can't see the 5 nor the zip"): the done line says where they went,
+# *Sent reports* sits right under it, and a sent #ID opens the reports it held
+REPORT_SENT_WHERE_ONE = "Sent. Your report is #{id}. The report it held is under Sent reports, just below"
+REPORT_SENT_WHERE_MANY = "Sent. Your report is #{id}. The {n} reports it held are under Sent reports, just below"
+REPORT_SENT_OPEN = "Open"
+REPORT_SENT_OPEN_TIP = "See the reports #{id} held, their words and pictures, as they were sent"
+REPORT_SENT_ZIP = "Open the zip"
+REPORT_SENT_ZIP_TIP = "Show this report's zip, as it was sent, selected in its folder (kept on this PC for 90 days)"
+REPORT_SENT_OPENED = "#{id}, sent {when}"
+REPORT_SENT_OPENED_TIP = "The reports this send held, as they went"
+REPORT_SENT_READ_FAILED = "#{id} couldn't be read: {why}"
+REPORT_SENT_EMPTY = "#{id} holds no reports to show: Open the zip to see what went"
+REPORT_SENT_PICTURE_TIP = "A picture this report held, as it went: names and folders already written as <you>"
 REPORT_SEND_WHERE = "Make a zip instead keeps it on this PC, to post on Surasura's Discord or GitHub Issues yourself."
 REPORT_ISSUES = "GitHub Issues works too"
 REPORT_ISSUES_TIP = ("Open Surasura's GitHub Issues in your browser, to post the zip there instead (needs a GitHub "

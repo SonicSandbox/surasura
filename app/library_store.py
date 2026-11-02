@@ -361,12 +361,17 @@ def _local_root():
     return _local_data_root()
 
 
+def library_key(data_dir):
+    """The 16 hex characters a library database is named by (`library_db_path`; the report's scrub writes them
+    `<install key>`)."""
+    return hashlib.sha256(path_key(os.path.realpath(data_dir)).encode("utf-8")).hexdigest()[:16]
+
+
 def library_db_path(language, data_dir):
     """`library_<lang>_<key>.db`, one per install and language: the key comes from the data folder's
     real path, so a checkout and an installed copy never share a library, and a moved folder gets a
     new (empty) database that rebuilds from the JSON copy (§6.8)."""
-    key = hashlib.sha256(path_key(os.path.realpath(data_dir)).encode("utf-8")).hexdigest()[:16]
-    name = f"library_{language}_{key}.db"
+    name = f"library_{language}_{library_key(data_dir)}.db"
     root = _guard()
     if root:
         return os.path.join(root, "index", name)

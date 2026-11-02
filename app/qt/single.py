@@ -15,11 +15,8 @@ The protocol, one line each way: the first sends `hello <pid>` as it accepts (so
 the foreground, can let the first take it: `AllowSetForegroundWindow`); the second sends its arguments as JSON; the
 first answers `ok` and comes forward.
 """
-import getpass
-import hashlib
 import json
 import os
-import re
 import sys
 import time
 
@@ -27,6 +24,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
 from app import path_utils
+from app.instance_name import _session_id, instance_name  # noqa: F401  (Qt-free: the report's scrub reads it too)
 from app.qt import applog
 
 CONNECT_MS = 300
@@ -37,34 +35,6 @@ MAX_LINE = 64 * 1024
 
 def _log(msg):
     applog.log("single instance", msg)
-
-
-def _session_id():
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            from ctypes import wintypes
-            sid = wintypes.DWORD(0)
-            if ctypes.windll.kernel32.ProcessIdToSessionId(os.getpid(), ctypes.byref(sid)):
-                return str(sid.value)
-        except Exception:
-            pass
-        return "0"
-    return os.environ.get("XDG_SESSION_ID") or str(getattr(os, "getsid", lambda _p: 0)(0))
-
-
-def instance_name():
-    """The pipe's name: the user, the session and the install (a test's own name when it sets one)."""
-    override = os.environ.get("SURASURA_INSTANCE_NAME")
-    if override:
-        return override
-    try:
-        user = getpass.getuser()
-    except Exception:
-        user = "user"
-    install = hashlib.sha256(path_utils.get_local_data_path().encode("utf-8")).hexdigest()[:12]
-    raw = f"surasura-window-{user}-{_session_id()}-{install}"
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
 
 
 def lock_path():

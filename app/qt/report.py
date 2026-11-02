@@ -1427,16 +1427,13 @@ def prepare_send(language, include, library, extra):
 
 def discard(sha256=None, tries=5):
     """(A worker.) The outbox zip deleted (`send_report.discard`) — only when it is still the one this window made
-    (`sha256`: another window's newer one, or an older one waiting, is left alone) — tried again a moment later while
+    (`sha256`, checked under send_report's lock: another window's newer one, or an older one waiting, is left
+    alone) — tried again a moment later while
     a read of it holds it open (Windows refuses the delete then). -> whether one was deleted."""
     import time
     for n in range(tries):
         try:
-            if sha256 is not None:
-                ob = send_report.waiting()
-                if ob is None or ob.sha256 != sha256:
-                    return False
-            return send_report.discard()
+            return send_report.discard(expect=sha256)
         except PermissionError:
             if n == tries - 1:
                 raise

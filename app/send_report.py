@@ -130,11 +130,17 @@ def sender_code():
     code = data.get("sender")
     if isinstance(code, str) and _SENDER.match(code):
         return code
-    return new_code()
+    return _make_code()                 # (unlocked: `send` asks for it under _BUSY)
 
 
 def new_code():
-    """*New code*: a fresh sender code (later reports no longer group with the earlier ones). -> it."""
+    """*New code*: a fresh sender code (later reports no longer group with the earlier ones). -> it. Under _BUSY:
+    `report_send.json` also holds the day's count, which a send's end writes (`_sent`) — never one lost to the other."""
+    with _BUSY:
+        return _make_code()
+
+
+def _make_code():
     data = _state()
     data["sender"] = "".join(secrets.choice(CROCKFORD) for _ in range(SENDER_LEN))
     _save_state(data)
@@ -233,9 +239,13 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
         return Outbox(path, meta)
 
 
-def discard():
-    """*Don't send*: the waiting zip deleted (its reports stay on the list). -> True when one was waiting."""
+def discard(expect=None):
+    """*Don't send*: the waiting zip deleted (its reports stay on the list). `expect`: the sha256 of the zip the caller
+    showed — another one waiting instead (an older one kept, another window's newer one) is left alone; checked under
+    _BUSY, so no build lands between the check and the delete. -> True when one was deleted."""
     with _BUSY:
+        if expect is not None and getattr(waiting(), "sha256", None) != expect:
+            return False
         folder = os.path.join(path_utils.persistent_root(), OUTBOX_DIR)
         gone = False
         for name in (OUTBOX_META, OUTBOX_ZIP):

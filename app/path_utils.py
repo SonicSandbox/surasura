@@ -244,6 +244,11 @@ def _install_key(install_dir):
         p = unicodedata.normalize("NFC", p).casefold()
     return hashlib.sha256(p.encode("utf-8")).hexdigest()[:16]
 
+def install_key():
+    """This install's key (`_install_key`): its local data folder's name, the one rule `get_local_data_path` and the
+    report's scrub (`app/scrub.py`, which writes it `<install key>` in a report) both read."""
+    return _install_key(os.path.dirname(sys.executable) if installed_library() else get_user_data_path())
+
 def get_local_data_path():
     """
     Get the per-install LOCAL data folder: the command line's logs, locks and events (P0.3 02-contract §6), and the
@@ -261,8 +266,7 @@ def get_local_data_path():
     elif "PYTEST_CURRENT_TEST" in os.environ:
         raise RuntimeError("a test reached the real local data folder: set SURASURA_TEST_ROOT")
     else:
-        install = os.path.dirname(sys.executable) if installed_library() else get_user_data_path()
-        path = os.path.join(_local_data_root(), _install_key(install))
+        path = os.path.join(_local_data_root(), install_key())
     os.makedirs(path, exist_ok=True)
     return path
 

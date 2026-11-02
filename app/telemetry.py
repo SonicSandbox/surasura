@@ -73,6 +73,17 @@ def receiver_url():
     """Where a heartbeat goes: the address update.json last named, else the build's .env TELEMETRY_URL (or None)."""
     return _cached_url() or TELEMETRY_URL
 
+
+# The receiver's own address, as the build's packaging/build_config.json names it (`release.telemetry_url`; a test
+# holds the two equal): where Send report goes when no address is kept and the .env names none (update checks off).
+BUILT_IN_URL = "https://surasura-telemetry.sonicswain.workers.dev"
+
+
+def report_receiver():
+    """Where Send report goes (`app/send_report.py`): the heartbeat's receiver, else the built-in one. The heartbeat's
+    own None (nothing to send to) is unchanged."""
+    return receiver_url() or BUILT_IN_URL
+
 def get_telemetry_state():
     """
     Retrieves or generates a persistent anonymous user ID and tracks open count.

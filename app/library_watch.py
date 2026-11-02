@@ -576,9 +576,13 @@ def _last_error():
 # can take another's ring; a window that crashes frees its slot with its process. (Watching the store's own file
 # instead would be late by seconds whenever a save isn't flushed to disk at once: the watch study, §2.2.)
 
+def bell_key(db_path):
+    """The 16 hex characters a store's bell is named by (the report's scrub writes them `<install key>`)."""
+    return hashlib.sha1(os.path.normcase(os.path.abspath(db_path)).encode("utf-8")).hexdigest()[:16]
+
+
 def bell_name(db_path, slot):
-    key = hashlib.sha1(os.path.normcase(os.path.abspath(db_path)).encode("utf-8")).hexdigest()[:16]
-    return f"Local\\Surasura-bell-{key}-{slot}"
+    return f"Local\\Surasura-bell-{bell_key(db_path)}-{slot}"
 
 
 def ring(db_path):

@@ -782,7 +782,7 @@ class AnkiWindow(windows.SecondaryWindow):
         the numbers); the old language's line goes."""
         self._probe_seq += 1
         self._probing = False
-        self._counts, self._models = {}, {}
+        self._counts, self._models, self._sentences = {}, {}, []
         self._unsaved_pick = False
         self._load_choices()
         self.chk_suspended.blockSignals(True)

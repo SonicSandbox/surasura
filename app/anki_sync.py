@@ -48,6 +48,7 @@ STATE_VERSION = 1
 # Bump when a studied note's words would now be read differently: a state saved under another reading makes the next
 # sync a full one, once (append-only: what was read before stays known). 2: a word field holding a sentence is read
 # whole, as "Also read" reads one (`anki_match.holds_sentence`; was its first clause: でも、そんな気がする -> でも).
+# Japanese only: Chinese read every line whole already.
 READING_VERSION = 2
 SOURCE = "AnkiConnect"
 # The source of the words GraduatedList.txt held, merged once into KnownWord.json (app/graduated_merge.py): Replace
@@ -401,20 +402,27 @@ def models_in_scope(url, decks, include_suspended=False):
     return out
 
 
-SENTENCE_SAMPLE = 30                # the newest studied notes the Anki window looks at for sentences in the word field
+SENTENCE_SAMPLE = 10                # each note type's newest studied notes the Anki window looks at for sentences
 
 
-def word_field_sentences(url, decks, include_suspended, fields, language, sample=SENTENCE_SAMPLE):
-    """[the note types whose WORD field holds sentences] (`anki_match.holds_sentence`, read as `_terms_from_notes` reads
-    it: every word in it known), sorted — a note type counts when most of its notes among the newest `sample` studied
-    ones hold one. Two requests (findNotes, notesInfo); [] when Anki can't answer: the window's line is only a word
-    to the user, never a reason to fail its read."""
+def word_field_sentences(url, decks, include_suspended, fields, language, models=(), sample=SENTENCE_SAMPLE):
+    """[the note types (of `models`, those in scope) whose WORD field holds sentences] (`anki_match.holds_sentence`,
+    read as `_terms_from_notes` reads it: every word in it known), sorted — a note type counts when most of its newest
+    `sample` studied notes hold one. Two requests (one multi of findNotes, one notesInfo); [] when Anki can't answer:
+    the window's line is only a word to the user, never a reason to fail its read."""
     from app import anki_match
-    decks = _clean_decks(decks)
-    if not decks:
+    decks, models = _clean_decks(decks), [str(m) for m in models or ()]
+    if not decks or not models:
         return []
+    scope = scope_query(decks, include_suspended)
     try:
-        ids = sorted(anki_connect.find_notes(url, scope_query(decks, include_suspended)))[-sample:]
+        replies = anki_connect.multi([{"action": "findNotes",
+                                       "params": {"query": f'{scope} note:"{anki_connect.escape_query(m)}"'}}
+                                      for m in models], url)
+        ids = []
+        for reply in replies:
+            result = reply.get("result") if isinstance(reply, dict) and reply.get("error") is None else None
+            ids += sorted(anki_connect._int_ids(result if isinstance(result, list) else []))[-sample:]
         notes = anki_connect.notes_info(url, ids) if ids else []
     except AnkiError:
         return []
@@ -498,9 +506,14 @@ def _terms_from_notes(notes, fields, language, result):
             # tokenizes each term); a <br> or a <div> between two lines parts them (in Japanese an opening <div>
             # too, as Anki writes a second line), never fuses them. A word field that holds a sentence
             # (`anki_match.holds_sentence`: でも、そんな気がする) is read as "Also read" reads one — never its first
-            # clause alone (でも).
-            if name in words and not anki_match.holds_sentence(raw, "ja"):
+            # clause alone (でも) — each line without the punctuation around it, as `card_word` reads a word: a word
+            # typed with a stop (ありがとう！) is the entry it was (ありがとう), never a second one beside it.
+            sentence = name in words and anki_match.holds_sentence(raw, "ja")
+            if name in words and not sentence:
                 lines = [anki_match.card_word(raw, "ja")]
+            elif sentence:
+                lines = [anki_match._bare(line.strip())
+                         for line in clean_field_html(anki_match._LINE_TAG_RE.sub("\n", raw)).split("\n")]
             else:
                 lines = clean_field_html(anki_match._LINE_TAG_RE.sub("\n", raw) if language == "ja" else raw).split("\n")
             for line in lines:
@@ -565,7 +578,7 @@ def _sync(language, url, decks, fields, include_suspended, full):
                or sorted(state.get("decks") or []) != sorted(decks)
                or list(state.get("fields") or []) != fields
                or bool(state.get("include_suspended")) != include_suspended
-               or state.get("reading", 1) != READING_VERSION
+               or (language == "ja" and state.get("reading", 1) != READING_VERSION)
                or state.get("known_sig") != known_signature(known_path))
     full = bool(full or changed)
     result = SyncResult(mode="full" if full else "delta")

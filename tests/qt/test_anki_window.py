@@ -253,6 +253,17 @@ def test_a_word_field_holding_sentences_is_said_under_the_fields(main, anki):
     assert w.sentences.isHidden() and w.resolved.text() == "Lapis → Expression"
 
 
+def test_the_sentences_line_goes_with_the_language_it_was_read_for(main, anki):
+    """The line names the Japanese decks' word field: the window switched to Chinese (Anki not read again yet) never
+    keeps saying it (the adversary's finding 2)."""
+    _choose(main, **{"anki_sync_fields": {"ja": ["Sentence"]}})
+    w = _open(main)
+    assert not w.sentences.isHidden()
+    w._connected = False                                  # Anki closed meanwhile: nothing reads the new scope
+    w.language_changed("zh")
+    assert w.sentences.isHidden() and w._sentences == []
+
+
 # --- nothing written by opening (S16, IK-13) ------------------------------------------------------------------- #
 def test_the_first_open_pick_is_shown_and_saved_only_on_the_first_action(main, anki):
     w = _open(main)

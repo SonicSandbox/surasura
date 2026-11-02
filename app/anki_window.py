@@ -113,11 +113,13 @@ def field_lines(models, chosen):
 def sentence_hint(models, chosen, sentences):
     """The line under the fields when the word field holds sentences (`anki_sync.word_field_sentences`: every word in
     them known) -> None when it holds none, else the field to choose for the card's own word: the first such note
-    type's first field when that isn't the word field read now (Lapis: Expression), or "" when there is none to name."""
+    type's first field when that isn't the word field read now (Lapis: Expression), or "" when there is none to name.
+    A note type no longer in scope (another language's, a deck removed) says nothing."""
     for model in sentences or ():
         names = list((models or {}).get(model) or ())
         word = anki_sync.word_field(names, chosen)
-        return names[0] if names and word and names[0] != word[0] else ""
+        if word:
+            return names[0] if names[0] != word[0] else ""
     return None
 
 
@@ -168,9 +170,9 @@ def read_scope(url, decks, suspended, chosen=(), language="ja"):
     for `decks`. Raises AnkiError."""
     if not decks:
         return {}, {}, []
-    return (anki_sync.deck_study_counts(url, decks, suspended),
-            anki_sync.models_in_scope(url, decks, suspended),
-            anki_sync.word_field_sentences(url, decks, suspended, list(chosen or ()), language))
+    models = anki_sync.models_in_scope(url, decks, suspended)
+    return (anki_sync.deck_study_counts(url, decks, suspended), models,
+            anki_sync.word_field_sentences(url, decks, suspended, list(chosen or ()), language, models))
 
 
 def known_view(language):

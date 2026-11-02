@@ -99,6 +99,6 @@ def test_a_word_field_holding_a_sentence_marks_the_sentence_as_the_sync_reads_it
     anki.found = [201, 202]
     out = known_signal.read("ja", URL, ["DevTest"], ["Sentence"], SETTINGS)
 
-    assert out["marked"] == ["でも、そんな気がする。", "撒く"]
+    assert out["marked"] == ["でも、そんな気がする", "撒く"]
     forms = _known_forms(known_file)
     assert "でも" not in forms and "まく" not in forms

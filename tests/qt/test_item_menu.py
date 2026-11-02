@@ -688,6 +688,7 @@ def test_reduced_motion_holds_and_joins_the_same(world):
         assert lst_of(win).join_key == rs[a].key
         release_global(win, to)
         assert calls(writer) == [("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id], "ahead": False})]
+        assert wait_until(lambda: not win.moves.ghost.isVisible(), 5)   # (its short fade ends before the window goes)
     finally:
         mode.set_setting(was)
 
@@ -2571,5 +2572,47 @@ def test_G2_a_rest_on_a_stale_finished_row_is_never_a_group_target(world):
     move_global(win, to)
     rest()
     assert win.moves.running.target[0] == "list" and lst_of(win).join_key is None
+    win.moves.cancel()
+    assert writer.calls == []
+
+
+@pytest.mark.parametrize("frac, joins", [(0.4, True), (0.6, False)])
+def test_dragged_down_a_hold_joins_on_the_upper_middle_where_the_row_stays_never_on_the_lower_where_it_moves(
+        world, frac, joins):
+    # dragged down from above, the gap opens above a row's upper half and the row stays under the hand, so a hold there
+    # counts; its lower half moves the row up from under the hand, so the same hold there is never a join
+    _seed, win, writer = world()
+    b, a = two_shows(win)                                            # b below a, another show
+    assert a < b
+    rs = rows_of(win)
+    lift(win, a)                                                     # dragged down onto b
+    move_global(win, slab_point(win, b, frac))
+    settle()
+    assert win.moves.running is not None                             # the drag is live, so the hold below is the rule's
+    rest()
+    if joins:
+        assert lst_of(win).join_key == rs[b].key
+    else:
+        assert lst_of(win).join_key is None and win.moves.running.target[0] == "list"
+    win.moves.cancel()
+    assert writer.calls == []
+
+
+def test_leaving_the_middle_lets_the_hold_go_and_coming_back_needs_a_new_hold(world):
+    # held on a row, the hand moves to the row's bottom edge (no row is joined there): the hold goes. Straight back to
+    # the middle is not the old hold again — the label waits for a new rest, as a hand that just came back has not held
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    lift(win, b)
+    move_global(win, slab_point(win, a, 0.6))
+    rest()
+    assert lst_of(win).join_key == rows_of(win)[a].key
+    move_global(win, slab_point(win, a, 0.9))
+    settle()
+    move_global(win, slab_point(win, a, 0.6))
+    settle()
+    assert lst_of(win).join_key is None and win.moves.running.target[0] == "list"
+    rest()
+    assert lst_of(win).join_key == rows_of(win)[a].key
     win.moves.cancel()
     assert writer.calls == []

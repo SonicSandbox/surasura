@@ -15,6 +15,8 @@ seam, a ▶ that opens the part above) — so every answer here is the full scan
 or painted wrong; a drag that loses some of the group's parts on the way to Goal. Rows built by `view_rows.build` from
 feed rows named as the library names a book's parts, with the fixtures' Japanese titles.
 """
+import time
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -329,6 +331,41 @@ def test_the_hand_that_travelled_from_a_closed_rows_lift_leaves_its_slot_to_the_
     assert win.moves.target_at(gp) == ("list", win.moves.slot_at(hand.y()))
     assert win.moves.slot_at(hand.y()) != d.src
     win.moves.cancel()
+
+
+def test_a_rest_right_after_an_opened_row_closed_under_the_hand_joins_nothing(world):
+    """The adversary's second B: after the clamp the hand rests over another show's row, inside the lift's home. A hold
+    there grouped the lifted row with it (`join`, `how: group`) — a rest that never travelled must do nothing, so no
+    hold starts and no outline shows till the hand travels."""
+    seed, win, writer = world()
+    lst = lst_of(win)
+    entries = lst.model().entries
+    cur = [n for n, e in enumerate(entries) if e[0] == rows.ROW]
+    i = max(cur[-6:], key=lambda n: len(entries[n][1].episodes))
+    lst.toggle(lst.model().index(i, 0))
+    _settle()
+    bar = lst.verticalScrollBar()
+    bar.setValue(bar.value() + _rect(lst, i).top() - 100)              # its head 100 px from the top
+    _settle()
+    at = title_point(lst, i)
+    press(lst, at)
+    k = theme.MOTION["drag-start-px"]
+    move(lst, at + QPoint(0, k))
+    d = win.moves.running
+    assert d is not None and d.home is not None                       # the close moved the row from under the hand
+    hand = next(at + QPoint(0, k + dy) for dy in range(-k + 1, k)
+                if win.moves.joins._over(d, lst.viewport().mapToGlobal(at + QPoint(0, k + dy))) is not None)
+    gp = lst.viewport().mapToGlobal(hand)
+    move_global(win, gp)
+    end = time.monotonic() + 0.7                                       # longer than the hold (JOIN_REST_MS)
+    while time.monotonic() < end:
+        QApplication.processEvents()
+        time.sleep(0.01)
+    move_global(win, gp)
+    assert win.moves.target_at(gp) == ("list", d.src)
+    release_global(win, gp)
+    _settle()
+    assert calls(writer) == []
 
 
 def test_an_opened_row_lifts_closed_and_a_drop_on_goal_moves_every_one_of_its_files(world):

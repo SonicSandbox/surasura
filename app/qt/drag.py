@@ -1601,15 +1601,15 @@ class DragController(QObject):
         tab = self.win.tab_buttons.get("finished")
         if tab is not None and tab.isVisible() and tab.rect().contains(tab.mapFromGlobal(global_pos)):
             return "tab", "finished"
-        if self.joins is not None and self.running is not None:     # --- W3.2 Q8: over another part of the same title
-            key = self.joins.target(self.running, global_pos)
-            if key is not None:
-                return "join", key
         d = self.running
         if d is not None and d.home is not None:     # a9 try #4: the opened row closed under the hand: till the hand
             if (global_pos - d.home[0]).manhattanLength() < theme.MOTION["drag-start-px"]:     # travels, its own slot
-                return "list", d.home[1]             # (a release right there moves nothing)
-            d.home = None
+                return "list", d.home[1]             # (a release right there moves nothing, a rest there joins
+            d.home = None                            # nothing: no hold starts on the row the close put under it)
+        if self.joins is not None and d is not None:     # --- W3.2 Q8: over another part of the same title
+            key = self.joins.target(d, global_pos)
+            if key is not None:
+                return "join", key
         return "list", self.slot_at(self.lst.viewport().mapFromGlobal(global_pos).y())
 
     def slot_at(self, y):

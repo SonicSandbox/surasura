@@ -14,10 +14,14 @@
   *Undo* (Ctrl+Z), *Done*. A choice takes the title off at once (pending — the press rule) and the next comes up; a
   refused one comes back. **It decides nothing:** every placement is New arrivals' own (`arrivals.give_place`,
   `item_menu.give_skip`, `MovesController.undo_last`), through the window's writer. Opened by setup (after the load
-  screen) and by New arrivals' *Sort them all…* (`open_over(win)`): one screen, both doors.
+  screen), by New arrivals' *Sort them all…* (`open_over(win)`) and by *Sort my library again* (after its load
+  screen): one screen, three doors.
+- **`LoadRun`** (Fresh library 3.0.1, P12): the load's steps in one sequence for both its callers — the setup wizard
+  and *Sort my library again* over the window (`cover_window`): never a second copy.
 """
 import math
 import os
+import time
 
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPointF, Qt, QTimer, pyqtSignal
@@ -400,8 +404,9 @@ def _sub_line(a):
 
 class SortScreen(QWidget):
     """Every title in New arrivals, sorted one at a time from the top (module docstring). `win`: the main window (its
-    `moves`, `looks`, `language`); `door`: "setup" (Esc does nothing — setup's rule, WZ-6 — and *Done* goes on) or
-    "arrivals" (Esc and ✕ close). `closed(how)`: "done" / "closed" / "empty"."""
+    `moves`, `looks`, `language`); `door`: "setup" (Esc does nothing — setup's rule, WZ-6 — and *Done* goes on),
+    "arrivals" (Esc and ✕ close) or "resort" (*Sort my library again*'s: Esc closes, as *Done*; Finished asks nothing,
+    as in setup — Q7). `closed(how)`: "done" / "closed" / "empty"."""
     closed = pyqtSignal(str)
 
     def __init__(self, win, parent=None, door="setup"):
@@ -521,7 +526,7 @@ class SortScreen(QWidget):
         foot.addWidget(self.btn_undo)
         self.btn_rest = _button(S.SORT_REST, S.SORT_REST_TIP, self._rest_menu, self, name="sortquiet")
         foot.addWidget(self.btn_rest)
-        self.btn_done = _button(S.SORT_DONE, S.SORT_DONE_TIP if self.door == "setup" else S.SORT_CLOSE_TIP,
+        self.btn_done = _button(S.SORT_DONE, S.SORT_DONE_TIPS.get(self.door, S.SORT_CLOSE_TIP),
                                 lambda: self.finish("done"), self)
         self.btn_done.setProperty("kind", "primary")
         foot.addWidget(self.btn_done)
@@ -956,3 +961,269 @@ def open_over(win):
     screen.raise_()
     screen.setFocus()
     return screen
+
+
+# --- one load, two callers (Fresh library 3.0.1, P12: setup and *Sort my library again*) --------------------------- #
+class LoadRun(QObject):
+    """The load sequence (Mado-O's, from the setup wizard; one copy): the scan's count (`said`, the caller's look
+    reports it), then, once the caller says the scan ended (`scanned(ids)`), the words (the window's own indexer,
+    `Chores.index(force=True)`, its count read from its log), the covers from disk (`shell.scan_covers`) and — setup
+    only — the wait for page 2's Anki sync (`sync_running()`, its end `synced()`) and for page 3's YouTube videos
+    (`fetching()`); then the sort screen (`SortScreen(shell, door=)`). *Stop* keeps what each step did and goes to the
+    sorting; a step with nothing to do is passed by. `cover(widget or None)` puts the load screen and the sort screen
+    over the caller (None: neither); `stop_scan()` stops the caller's look between files; `sort()` (the wizard's
+    `_load_sort`) opens the sorting, `open_sort` by default; `after(how)` once the sort screen closed (`state["ids"]`:
+    the scan's items); `empty()` when the scan took nothing in (the cover gone). `language()`: whose indexer runs
+    count. `state`: {"step", "ids", "stopped", "indexed", "since"}. Outside setup it hears the window's indexer itself
+    (`shell.bridge.indexed`)."""
+
+    def __init__(self, shell, cover, door="setup", stop_scan=None, language=None, sort=None, after=None, empty=None,
+                 sync_running=None, fetching=None, parent=None):
+        super().__init__(parent)
+        self.shell, self._cover, self.door = shell, cover, door
+        self.setup = door == "setup"
+        self._stop_scan = stop_scan
+        self._language = language or (lambda: getattr(shell, "language", None))
+        self._sort, self._after, self._empty = sort, after, empty
+        self._sync_running = sync_running or (lambda: False)
+        self._fetching = fetching or (lambda: False)
+        self.state = None
+        self.loading = None                           # the load screen (gone with the cover once the sorting opens)
+        self.ended = False
+        self._heard = None
+        if not self.setup:                            # (setup's wizard hears it and hands it on: `indexed`)
+            heard = getattr(shell, "bridge", None)
+            if heard is not None and hasattr(heard, "indexed"):
+                heard.indexed.connect(self.indexed)
+                self._heard = heard
+
+    def _alive(self):
+        return not self.ended and not sip.isdeleted(self)
+
+    def _guard(self, fn):
+        """`fn`, dropped once the run ended (a worker's or a timer's late call)."""
+        def call(*args):
+            return fn(*args) if self._alive() else None
+        return call
+
+    def begin(self):
+        """The load screen over the caller, its first count. -> the screen."""
+        self.loading = LoadScreen()
+        self.loading.stop.connect(self._guard(self.stop))
+        self.state = {"step": "scan", "ids": [], "stopped": False, "indexed": 0, "since": None}
+        self._cover(self.loading)
+        self.said((0, 0))
+        return self.loading
+
+    def task(self, text):
+        screen = self.loading
+        if screen is not None and not sip.isdeleted(screen) and self.state is not None and \
+                self.state["step"] != "sort":
+            screen.set_task(text)
+
+    def said(self, said):
+        """The scan's progress: the wait (`(on,)`), the copy's count (`("copy", done, total)`) or what it found
+        (`(found, shows)`)."""
+        if self.state is None or self.state["step"] != "scan":
+            return
+        if len(said) == 1:
+            if said[0]:
+                self.task(S.LOAD_WAIT)
+        elif said[0] == "copy":
+            self.task(S.LOAD_COPY.format(done=said[1], total=said[2]))
+        else:
+            self.task(S.LOAD_SCAN.format(episodes=_count(S.EPISODES, said[0]), shows=_count(S.SHOWS_N, said[1])))
+
+    def stop(self):
+        """*Stop*: the step under way keeps what it did (the scan stops between files; the indexer and the covers go on
+        by themselves behind the screen) and the sorting comes up."""
+        if self.state is None:
+            return
+        self.state["stopped"] = True
+        if self.state["step"] == "scan":
+            if self._stop_scan is not None:
+                self._stop_scan()                     # its end goes on to the sorting (`scanned`)
+        else:
+            self._to_sort()
+
+    def scanned(self, ids):
+        """The scan ended with `ids` taken in: none — the cover goes (`empty()`); else the next step (the sorting at
+        once after *Stop*)."""
+        if self.state is None:
+            return
+        self.state["ids"] = list(ids or ())
+        if not self.state["ids"]:
+            self.end()
+            if self._empty is not None:
+                self._empty()
+            return
+        if self.state["stopped"]:
+            self._to_sort()
+        else:
+            self.index()
+
+    def _chores(self):
+        return getattr(self.shell, "chores", None)
+
+    def index(self):
+        """The token store's indexing, the window's own (`Chores.index(force=True)`), its count read from its log (only
+        once this run wrote it)."""
+        load = self.state
+        load["step"] = "index"
+        load["since"] = time.time()
+        chores = self._chores()
+        asked = chores.index(force=True) if chores is not None else "none"
+        if asked not in (None, "busy"):               # off (a test's switch), closed, no chores: nothing to wait for
+            self.covers()
+            return
+        self.task(S.LOAD_INDEX_START)
+        self.tick()
+
+    def tick(self):
+        """Every half second while the words are read: the count from the log; and the step ends as soon as the
+        window's chores have no index ask left — its run ended, or none came: never a cover waiting for a run that
+        won't come."""
+        load, chores = self.state, self._chores()
+        if load is None or load["step"] != "index" or chores is None:
+            return
+        idle = getattr(chores, "indexing", None)
+        if callable(idle) and not idle():
+            self.covers()
+            return
+        from app.qt import applog, bridge
+        from app.services import setup_load
+
+        def shown(count):
+            if count is not None and self.state is load and load["step"] == "index":
+                self.task(S.LOAD_INDEX.format(done=count[0], total=count[1]))
+        bridge.run_in_worker(setup_load.read_count, chores.index_log(), load["since"], then=self._guard(shown),
+                             failed=lambda info: applog.log("load", f"indexer count: {info[0]}"))
+        QTimer.singleShot(500, self._guard(self.tick))
+
+    def indexed(self, language):
+        """An indexer run ended: after three runs (the library changing all along) the step ends whatever they left —
+        the indexer finishes it behind the window; before that, the tick sees the chores idle."""
+        load = self.state
+        if not self._alive() or load is None or load["step"] != "index" or language != self._language():
+            return
+        load["indexed"] += 1
+        if load["indexed"] >= 3:
+            self.covers()
+
+    def covers(self):
+        """The covers beside the files and in the EPUBs (`shell.scan_covers`, the window's own disk scan)."""
+        from app.qt import bridge
+        load = self.state
+        load["step"] = "covers"
+        scan = getattr(self.shell, "scan_covers", None)
+        relay = bridge.Relay(self)
+
+        def heard(said):
+            if said[0] == "end" and not sip.isdeleted(relay):
+                relay.deleteLater()                   # (after a Stop too: never left behind)
+            if self.state is not load or load["step"] != "covers":
+                return
+            if said[0] == "end":
+                self.anki()
+            else:
+                self.task(S.LOAD_COVERS.format(done=said[1], total=said[2]))
+        relay.said.connect(self._guard(heard))
+        thread = scan(progress=lambda done, total: relay.call(("count", done, total)),
+                      then=lambda _found: relay.call(("end",))) if scan is not None else None
+        if thread is None:
+            relay.deleteLater()
+            self.anki()
+            return
+        self.task(S.LOAD_COVERS_START)
+
+    def anki(self):
+        """Setup's page 2 known-words sync, still running: waited for (its end, `synced`); else on."""
+        self.state["step"] = "anki"
+        if self.setup and self._sync_running():
+            self.task(S.LOAD_ANKI)
+            return
+        self.youtube()
+
+    def synced(self):
+        if self._alive() and self.state is not None and self.state["step"] == "anki":
+            self.youtube()
+
+    def youtube(self):
+        """Alpha 8: setup's page 3 YouTube videos, still coming: waited for (their end goes on to the sorting; a
+        stalled fetch ends itself, and *Stop* goes on without them); else on to the sorting."""
+        if self.state is None:
+            return
+        self.state["step"] = "youtube"
+        if self.setup and self._fetching():
+            self.task(S.LOAD_YOUTUBE)
+            return
+        self._to_sort()
+
+    def _to_sort(self):
+        (self._sort or self.open_sort)()
+
+    def open_sort(self):
+        """The sort screen over the caller: every title in New arrivals (the window hands it each view)."""
+        load = self.state
+        if load is None or load["step"] == "sort" or not self._alive():
+            return None
+        load["step"] = "sort"
+        screen = SortScreen(self.shell, door=self.door)
+        screen.closed.connect(self._guard(self._sorted))
+        self._cover(screen)
+        return screen
+
+    def _sorted(self, how=None):
+        if self._after is not None:
+            self._after(how)
+        else:
+            self.end()
+
+    def end(self):
+        """The run over: the cover gone, nothing more painted."""
+        if self.ended:
+            return
+        self.ended = True
+        if self._heard is not None:
+            try:
+                self._heard.indexed.disconnect(self.indexed)
+            except (TypeError, RuntimeError):
+                pass
+        self._cover(None)
+
+
+def _count(pair, n):
+    """(one, many) for `n`: *1 episode*, *412 episodes* (the wizard's own)."""
+    n = int(n or 0)
+    return pair[0] if n == 1 else pair[1].format(n=n)
+
+
+def cover_window(shell):
+    """A cover over the window's central area for a `LoadRun` outside setup (Sort again): `cover(widget)` shows
+    `widget` there, following its size (the one before it gone); `cover(None)` takes it away. `cover.covered()`: the
+    widget shown, or None."""
+    from app.qt import first_run
+    area = shell.centralWidget()
+    held = {"w": None, "parts": None}
+
+    def cover(widget):
+        old, held["w"] = held["w"], widget
+        if widget is not None and held["parts"] is None:
+            held["parts"] = first_run._hold(area)     # the window's parts under it take no focus (Tab, Enter)
+        if widget is None and held["parts"] is not None:
+            first_run._release(held["parts"])
+            held["parts"] = None
+        if widget is not None:
+            widget.setParent(area)
+            widget.setGeometry(area.rect())
+            first_run._Cover(widget, area)
+            widget.show()
+            widget.raise_()
+            widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        if old is not None and old is not widget and not sip.isdeleted(old):
+            if shell.__dict__.get("_sort_screen") is old:
+                del shell.__dict__["_sort_screen"]
+            old.hide()
+            old.deleteLater()
+    cover.covered = lambda: held["w"]
+    return cover

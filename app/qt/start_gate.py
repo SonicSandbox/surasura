@@ -17,6 +17,14 @@ window of its own and runs the application's loop until it is safe to go on (Tru
     again* and *Quit*.
   * The folder ask (several 2.x installs, each named — the user picks, D11; an import made into another library; 2.x
     used here with no note naming its folder): a button per install, *Choose the old folder…*, *Start fresh*, *Quit*.
+  * **Start over / Put back** (Fresh library 3.0.1, `first_run.PROFILE_MOVE`; the spec §6.3–6.5): on the restart's
+    own start (`gate(app, move=True)`) the move runs before anything opens — *Setting your old Surasura aside…* only
+    past QUIET_SHOW s; another Surasura program still running is waited for (*Waiting for … to close*, *Not now*). A
+    request found on any other start is asked (*Start over now* / *No, keep everything*), never run (P16). A move that
+    didn't run says why (*Try again*, *Not now*: the window opens as it was); one a rename undid names what held it;
+    one a kill stopped part way was rolled back (*everything is as it was*); one that can't be put back where it was
+    (`stuck`) never opens the window (*Try again*, *Quit*); a note that can't be read is set aside on the learner's
+    word only (*Set it aside*).
 
 An everyday start that has quiet work (a GraduatedList to merge, the library recorded for the first time) runs it on a
 worker with no window; the window shows only if that work is refused, or after QUIET_SHOW s (the merge can wait on the
@@ -98,6 +106,32 @@ MISSING_NEW_TIP = "Make an empty library in this folder.\n• Only if your old l
 START_HERE = "Start my library here"
 START_HERE_TIP = ("Make your library in this folder and start setting up.\n"
                   "• Already have a library on a drive or online? Connect it, then press Try again.")
+# Fresh library 3.0.1: Start over / Put back at the start (the mover's own refusals are `profile_reset`'s words)
+MOVE_WORKING = {"start-over": "Setting your old Surasura aside…", "put-back": "Putting your Surasura back…"}
+MOVE_WAITING = "Waiting for {who} to close…"
+MOVE_WAITING_LINE = "Surasura goes on by itself once it has closed."
+MOVE_ASK_HEADING = {"start-over": "Start over is waiting", "put-back": "Put back is waiting"}
+MOVE_ASK_LINE = {"start-over": "You asked to start Surasura over, but it didn't restart then. Start over now?",
+                 "put-back": "You asked to put back what you had, but Surasura didn't restart then. Put it back now?"}
+MOVE_NOW = {"start-over": "Start over now", "put-back": "Put it back now"}
+MOVE_NOW_TIP = {"start-over": "Set everything aside in one dated backup and start setup from the beginning.",
+                "put-back": "Put back what you had. What you have now goes into a backup of its own."}
+MOVE_KEEP = "No, keep everything"
+MOVE_KEEP_TIP = "Open Surasura as it is. Nothing is changed."
+MOVE_DIDNT_HEADING = {"start-over": "Start over didn't run", "put-back": "Put back didn't run"}
+MOVE_ROLLED_HEADING = {"start-over": "Start over was stopped part way", "put-back": "Put back was stopped part way"}
+MOVE_ROLLED_LINE = "Everything is as it was. Try again?"
+MOVE_STUCK_HEADING = "Surasura can't put everything back where it was"
+MOVE_UNREADABLE_HEADING = "Surasura can't read its note of a Start over"
+MOVE_NOT_NOW = "Not now"
+MOVE_NOT_NOW_TIP = "Open Surasura as it is. You'll be asked again next time."
+MOVE_OPEN = "Open Surasura"
+MOVE_OPEN_TIP = "Open Surasura as it is."
+MOVE_SET_ASIDE = "Set it aside"
+MOVE_SET_ASIDE_TIP = ("Put the note aside and open Surasura.\n"
+                      "• Its backups stay where they are, in each place's Backups folder.")
+MOVE_SCREENS = ("move-moving", "move-waiting", "move-ask", "move-didnt", "move-rolled", "move-stuck",
+                "move-unreadable")
 
 PROGRESS_EVERY = 0.05          # s: the import's progress reaches the window at most this often (a stage change always)
 QUIET_SHOW = 0.3               # s: quiet work still running after this shows *Getting your library ready…*
@@ -119,11 +153,15 @@ def _throttled(call):
 class Gate(QWidget):
     """The gate's window and its steps. `result` is None until it ends (`ended`), then True (go on) / False (quit)."""
 
-    def __init__(self, app, st, error=None):
+    def __init__(self, app, st, error=None, move=False):
         super().__init__(None, Qt.WindowType.Window)
         self.app = app
         self.st = st
         self.error = error
+        self.move = bool(move)                    # this start is a Start over's own restart: an asked move runs (P16)
+        self.moving = None                        # the move under way: its wait's cancel (a threading.Event)
+        self.move_words = None                    # what the last move said (its screen's line)
+        self.not_now = False                      # *Not now* pressed while another program was waited for
         self.result = None
         self.ended = False
         self.looping = False                      # inside `gate`'s run of the application's loop
@@ -232,9 +270,57 @@ class Gate(QWidget):
                                          when=str(elsewhere.get("finished") or "")[:10])
         return ASK_SEVERAL_LINE if len(st.get("installs") or []) > 1 else ASK_LINE
 
+    def _action(self):
+        journal = (self.st or {}).get("journal") or {}
+        return "put-back" if journal.get("action") == "put-back" else "start-over"
+
+    def _move_screen(self, name, message):
+        """A Start over's (or a Put back's) screen: its words and its buttons."""
+        self.screen = name
+        act = self._action()
+        heading, line = {
+            "move-moving": (MOVE_WORKING[act], None),
+            "move-waiting": (message, MOVE_WAITING_LINE),
+            "move-ask": (MOVE_ASK_HEADING[act], MOVE_ASK_LINE[act]),
+            "move-didnt": (MOVE_DIDNT_HEADING[act], message),
+            "move-rolled": (MOVE_ROLLED_HEADING[act], MOVE_ROLLED_LINE),
+            "move-stuck": (MOVE_STUCK_HEADING, message),
+            "move-unreadable": (MOVE_UNREADABLE_HEADING, message),
+        }[name]
+        self._set(self.heading, heading)
+        self._set(self.line, line)
+        busy = name in ("move-moving", "move-waiting")
+        self._set(self.stage, None)
+        self.bar.setVisible(busy)
+        if busy:
+            self.bar.setRange(0, 0)
+        self._picks([])
+        self._word(self.choose_button, MOVE_NOW[act], MOVE_NOW_TIP[act], "primary")
+        other = {"move-ask": (MOVE_KEEP, MOVE_KEEP_TIP, None), "move-unreadable": (MOVE_SET_ASIDE, MOVE_SET_ASIDE_TIP,
+                                                                                  None),
+                 "move-rolled": (MOVE_OPEN, MOVE_OPEN_TIP, None), "move-waiting": (MOVE_NOT_NOW, MOVE_NOT_NOW_TIP, None)}
+        self._word(self.fresh_button, *other.get(name, (MOVE_NOT_NOW, MOVE_NOT_NOW_TIP, None)))
+        self._word(self.try_button, TRY_AGAIN, TRY_AGAIN_TIP, "primary")
+        shown = {"move-moving": (), "move-waiting": (self.fresh_button,),
+                 "move-ask": (self.choose_button, self.fresh_button, self.quit_button),
+                 "move-didnt": (self.try_button, self.fresh_button, self.quit_button),
+                 "move-rolled": (self.try_button, self.fresh_button, self.quit_button),
+                 "move-stuck": (self.try_button, self.quit_button),
+                 "move-unreadable": (self.fresh_button, self.quit_button)}[name]
+        for b in (self.choose_button, self.fresh_button, self.try_button, self.cancel_button, self.quit_button):
+            b.setVisible(b in shown)
+            b.setEnabled(True)
+        if not self.isVisible():
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
     def show_screen(self, name, message=None):
         """One of: working, preparing, missing, new, program, unfinished, lost, blocked, stopped, check, ask — its
-        words and its buttons."""
+        words and its buttons; a Start over's own (`MOVE_SCREENS`)."""
+        if name in MOVE_SCREENS:
+            self._move_screen(name, message)
+            return
         self.screen = name
         st = self.st or {}
         library = st.get("library") or ""
@@ -284,6 +370,10 @@ class Gate(QWidget):
             self.activateWindow()
 
     def _progress(self, value):
+        if value and value[0] == "move-wait":
+            if not self.ended and self.working:
+                self._waiting(value[1])
+            return
         stage, done, total = value
         if self.ended or self.screen not in ("working", "preparing") or self._cancel.is_set():
             return
@@ -300,7 +390,16 @@ class Gate(QWidget):
             self.show_screen("check", str(self.error or ""))
             return
         kind = self.st["state"]
-        if kind == first_run.LIBRARY_MISSING:
+        if kind == first_run.PROFILE_MOVE:
+            journal = self.st.get("journal") or {}
+            if journal.get("status") == "unreadable":
+                from app import profile_reset
+                self.show_screen("move-unreadable", profile_reset.UNREADABLE.format(path=journal.get("path")))
+            elif journal.get("status") == "asked" and not self.move:
+                self.show_screen("move-ask")                 # P16: never run unasked
+            else:
+                self._run_move()
+        elif kind == first_run.LIBRARY_MISSING:
             self.show_screen("missing")
         elif kind == first_run.HOLDS_PROGRAM:
             self.show_screen("program")
@@ -327,6 +426,118 @@ class Gate(QWidget):
             QTimer.singleShot(round(QUIET_SHOW * 1000), lambda n=self._runs: self._slow(n))
         bridge.run_in_worker(first_run.run, self.st, _throttled(self.relay.call), self._cancel.is_set, source, fresh,
                              then=self._ran, failed=self._crashed)
+
+    # --- Fresh library: the move at the start ------------------------------------------------------------------- #
+    def _run_move(self):
+        """The journal run (`first_run.run(move=True)`, on a worker): a line only past QUIET_SHOW s (renames take well
+        under a second); another program's mark waited for, said (`_waiting`)."""
+        self.working = True
+        self._runs += 1
+        self.moving = threading.Event()
+        if self.isVisible():
+            self.show_screen("move-moving")
+        else:
+            QTimer.singleShot(round(QUIET_SHOW * 1000), lambda n=self._runs: self._slow_move(n))
+        relay = self.relay
+
+        def on_wait(holders):
+            relay.call(("move-wait", holders))
+        bridge.run_in_worker(first_run.run, self.st, None, self.moving, None, False, False, True, on_wait,
+                             then=self._moved, failed=self._crashed)
+
+    def _slow_move(self, run):
+        if not self.ended and self.working and run == self._runs and self.screen != "move-waiting":
+            self.show_screen("move-moving")
+
+    def _waiting(self, holders):
+        from app import profile_reset
+        first = (holders or [{}])[0]
+        who = profile_reset.WHO.get(first.get("kind"), "another Surasura program")
+        self.show_screen("move-waiting", MOVE_WAITING.format(who=who))
+
+    def _moved(self, result):
+        self.working = False
+        self.moving = None
+        if self.ended:
+            return
+        if self.quit_after:
+            self.finish(False)
+            return
+        move = result.get("move") or {}
+        status, words = move.get("status") or result.get("status"), move.get("words") or result.get("message")
+        not_now, self.not_now = self.not_now, False
+        if not_now and status == "refused":       # *Not now* ended the wait: nothing moved, the window as it was
+            self.finish(True)                     # (the wait over before the press: the move's own answer rules —
+            return                                #  never a window over a move that ran or got stuck, G3)
+        self.move_words = words
+        if status in ("done", "none", "asked") and not (status == "asked" and self.move):
+            if status == "asked":
+                self.show_screen("move-ask")
+            else:
+                self._after_move()
+        elif status == "rolled-back":
+            self.show_screen("move-rolled")
+        elif status == "stuck":
+            self.show_screen("move-stuck", words)
+        elif status == "refused" and move.get("reason") == "unreadable":
+            self.show_screen("move-unreadable", words)
+        else:                                     # refused (the request kept) or undone (a rename held: all undone)
+            self.show_screen("move-didnt", words)
+
+    def _after_move(self):
+        """The move settled: the start's state looked at again (the window opens, or the next screen)."""
+        self._looking()
+        bridge.run_in_worker(first_run.state, then=self._after_looked, failed=self._look_failed)
+
+    def _after_looked(self, st):
+        if self.ended:
+            return
+        self.st, self.error = st, None
+        if st["state"] == first_run.PROFILE_MOVE and (st.get("journal") or {}).get("status") == "asked":
+            self.finish(True)                     # *Not now*'s request kept: the window opens, asked next time
+        elif not first_run.needs_run(st):
+            self.finish(True)
+        else:
+            self.start()
+
+    def _move_now(self):
+        """*Start over now* (the learner's yes, P16) / *Try again*: a request taken back since is asked again first."""
+        if self.working:
+            return
+        from app import profile_reset
+        journal = (self.st or {}).get("journal") or {}
+        if profile_reset.pending() is None:       # rolled back or undone: the request gone with it
+            try:
+                profile_reset.request(journal.get("action") or profile_reset.START_OVER, journal.get("backup"))
+            except profile_reset.MoveRefused as e:
+                self.show_screen("move-didnt", e.words)
+                return
+        self.move = True
+        self._run_move()
+
+    def _move_other(self):
+        """The screen's other button: *No, keep everything* (the request taken back), *Not now* (kept: asked next
+        time; a wait ended), *Open Surasura*, *Set it aside* (an unreadable note, on the learner's word)."""
+        from app import profile_reset
+        if self.screen == "move-waiting":
+            if self.moving is not None:
+                self.moving.set()                 # the wait ends; the move answers refused, nothing moved
+            self.not_now = True
+            return
+        if self.working:
+            return
+        if self.screen == "move-ask":
+            profile_reset.cancel_request()
+            self._after_move()
+        elif self.screen == "move-unreadable":
+            if profile_reset.set_aside_journal():
+                self._after_move()
+            else:
+                self.show_screen("move-unreadable", self.line.text())
+        elif self.screen == "move-rolled":
+            self._after_move()
+        else:
+            self.finish(True)                     # *Not now*: the request kept, the window as it was
 
     def _slow(self, run):
         """Quiet work still running: say so (a start with nothing on screen looks dead)."""
@@ -372,11 +583,21 @@ class Gate(QWidget):
         if self.quit_after:
             self.finish(False)
             return
+        if self.screen in MOVE_SCREENS or (self.st or {}).get("state") == first_run.PROFILE_MOVE:
+            from app import profile_reset
+            journal = profile_reset.pending() or {}
+            in_flight = journal.get("status") in (profile_reset.MOVING, profile_reset.DONE, "unreadable")
+            self.show_screen("move-stuck" if in_flight else "move-didnt", str(info[0]))   # never *Not now* over a
+            return                                                                          # journal in flight (G3)
         self.show_screen("stopped", str(info[0]))
 
     def try_again(self):
-        """Look again (on a worker): an unfinished import resumes; anything else starts over from its new state."""
+        """Look again (on a worker): an unfinished import resumes; anything else starts over from its new state. A
+        Start over's screen: the move again (`_move_now`; a stuck one settles from where it is)."""
         if self.working:
+            return
+        if self.screen in MOVE_SCREENS:
+            self._move_now()
             return
         self._looking()
         bridge.run_in_worker(first_run.state, then=self._looked_again, failed=self._look_failed)
@@ -401,7 +622,11 @@ class Gate(QWidget):
             self.start()
 
     def choose(self):
-        """The old folder, chosen (the system's folder picker), then checked and brought over (`pick`)."""
+        """The old folder, chosen (the system's folder picker), then checked and brought over (`pick`). A waiting
+        Start over's screen: *Start over now* (`_move_now`)."""
+        if self.screen in MOVE_SCREENS:
+            self._move_now()
+            return
         if self.working:
             return
         st = self.st or {}
@@ -428,6 +653,9 @@ class Gate(QWidget):
             self.show_screen("lost" if self.screen == "lost" else "ask", check["message"])
 
     def fresh(self):
+        if self.screen in MOVE_SCREENS:
+            self._move_other()
+            return
         if not self.working:
             self._run(fresh=True)
 
@@ -445,6 +673,8 @@ class Gate(QWidget):
         if self.working:
             self.quit_after = True
             self.cancel()
+            if self.moving is not None:           # a Start over waiting for another program: the wait ends (nothing
+                self.moving.set()                 # moved, the request kept) and the gate quits
             self.quit_button.setEnabled(False)
             return
         self.finish(False)
@@ -481,8 +711,9 @@ class Gate(QWidget):
         self.quit()
 
 
-def gate(app):
-    """Before `Services()`: True when the window may open the library, False to quit (see the module docstring)."""
+def gate(app, move=False):
+    """Before `Services()`: True when the window may open the library, False to quit (see the module docstring).
+    `move`: this start is a Start over's own restart (`shell.move_mark`): an asked move runs here (P16)."""
     try:
         st, error = first_run.state(), None
     except Exception as e:                        # an unexpected read failure: the gate says so, never guesses
@@ -490,7 +721,7 @@ def gate(app):
     hud.mark("gate")
     if st is not None and not first_run.needs_run(st):
         return True
-    g = Gate(app, st, error)
+    g = Gate(app, st, error, move=move)
     g.start()
     if not g.ended:
         keep = app.quitOnLastWindowClosed()

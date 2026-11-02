@@ -601,8 +601,7 @@ def test_known_words_that_couldnt_be_forgotten_are_never_recorded_as_forgotten(m
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_forgetting_known_words_is_a_clean_slate_and_both_backups_keep_every_word(language):
-    # I-R4 / Q-1: a fresh library's "forget my known words" is a clean slate, as its tip says ("replaced by an empty
-    # one") — no dismissed (IGNORED) words, no past Graduates' words; the dated backup and the reset's copy, taken
+    # I-R4 / Q-1: a fresh library's "forget my known words" is a clean slate ("replaced by an empty one") — no dismissed (IGNORED) words, no past Graduates' words; the dated backup and the reset's copy, taken
     # first and byte-identical, hold the file whole
     store, data_dir, user_files_dir, src, root = _world(language)
     path = os.path.join(user_files_dir, "KnownWord.json")
@@ -621,8 +620,7 @@ def test_forgetting_known_words_is_a_clean_slate_and_both_backups_keep_every_wor
         assert json.load(f)["words"] == []
     known = _record(answer["backup"])["known"]                          # the record names where the words went
     assert _bytes(known["copy"]) == _bytes(known["dated"]) == before
-    from app.qt import settings_strings
-    assert "replaced by an empty one" in settings_strings.FRESH_KNOWN_TIP   # the tip says what it does
+    # (the window's *Also forget my known words* tick is gone, Fresh library Q3: this path stays for 3.0's backups, P9)
 
 
 def test_the_sheets_counts_are_what_a_fresh_library_never_brings_back():

@@ -124,7 +124,7 @@ Wondering why a word on your list or your card is cut the way it is? [How Parsin
 
 Encountered a bug or have a feature request? Please search the [Issues](https://github.com/SonicSandbox/surasura/issues) page to see if it's already being worked on. If not, feel free to open a new issue.
 
-In the app, the bug at the top right (**Report a problem**) makes a zip of what's needed to look into it; **Send on Discord** shows the zip and opens the server: drop it in the bug-report channel, or attach it to an issue here.
+In the app, the bug at the top right (**Report a problem**) gathers what's needed to look into it; **Send report** shows you exactly what goes, with your Windows name and folders taken out, then sends it to Sonic privately (kept 90 days; [what leaves your computer](https://github.com/SonicSandbox/surasura/blob/main/docs/Surasura%20FAQ.md)). **Make a zip instead** keeps it on your PC, to post on Discord or attach to an issue here.
 
 ## 💡 Motivation
 *I was tired of learning words I never see, and I also like reading physical books. Otherwise, mining from physical books is a pain.* Surasura solves that friction.

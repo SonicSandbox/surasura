@@ -11,25 +11,38 @@
 - **The window** (`ReportWindow`, a `windows.SecondaryWindow`: Esc closes it): *What happened?*, *What did you
   expect?*, the picture(s) with *Leave the picture out*, *Save to my list*; the list (each report: *Open*, *Remove*,
   Undo on the status line; an opened one shows its words, pictures and notes, and takes a note); *Show me what's in
-  it*, *Make the zip* into Downloads or a folder picked, *Include my last lists*, and the hint to send it to Sonic.
-  *Send on Discord* (3.0): what's typed saved first, the zip made, shown selected in its folder (Explorer's `/select,`)
-  and Surasura's Discord opened in the browser (`settings_strings.DISCORD_URL`: a link opened, never a call of the
-  app's); one line says where to drop it, *GitHub Issues works too* the quieter way.
-  Every read and write of the list, its pictures and the zip runs on a worker; the zip's folder opens once it is
-  written. What the tester typed and didn't save is kept while Surasura runs (`DRAFT`): Esc never loses it.
+  it*, *Include my last lists*.
+- **Send report** (3.0, alpha 10; `tracks/ship/work/send-report/SPEC.md` §3, SR-Q1…Q3 at their leans, PROVISIONAL):
+  the main button, *No personal data or identification is included* under it, always; an optional Discord name
+  (remembered on this PC; a second line says it goes once typed). The press saves what's typed, builds the scrubbed
+  zip into the outbox (`app/send_report.py`) and shows **What goes** — every file and its size, the placeholders, the
+  pictures at full width, the name or none, the sender code, how long it's kept — with *Send*, *Open the zip*,
+  *Back*. Sent: "Sent. Your report is #ID", *Copy* and the invite (`settings_strings.DISCORD_URL`, a link opened in
+  the browser). Not sent: the zip waits (*Send now* · *Don't send*), never sent again by itself (Q4). The sender code
+  shows with *New code*; *Sent reports* lists this PC's copies. *Make a zip instead* (the Discord / GitHub path by
+  hand) writes the scrubbed zip into Downloads or a folder picked and shows it selected in its folder; its done line
+  offers the invite, *GitHub Issues works too* the quieter way.
+  Every read and write of the list, its pictures, the zips and the send runs on a worker. What the tester typed and
+  didn't save is kept while Surasura runs (`DRAFT`): Esc never loses it.
+- **Picture mode** (`PictureMode`, SR-2): while a window's picture is taken every name and path it shows is drawn
+  scrubbed (`app/scrub.py`), and put back after; a picture taken before the scrub's Identity is ready is saved
+  unmarked and never sent.
 """
 import os
 import re
 import threading
+import zipfile
 
-from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QPointF, QRectF, QSize, QStandardPaths, Qt
-from PyQt6.QtGui import QFontMetrics, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                             QListWidgetItem,
-                             QPlainTextEdit, QPushButton, QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout,
-                             QWidget)
+from PyQt6.QtCore import (QBuffer, QByteArray, QIODevice, QPointF, QRectF, QSignalBlocker, QSize, QStandardPaths, Qt,
+                          QTimer)
+from PyQt6.QtGui import QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
+from PyQt6.QtWidgets import (QAbstractButton, QAbstractItemView, QAbstractScrollArea, QAbstractSpinBox, QApplication,
+                             QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QItemDelegate, QLabel, QLineEdit,
+                             QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy,
+                             QStackedWidget, QStyledItemDelegate, QTextEdit, QToolButton, QVBoxLayout, QWidget)
 
 from app import report as core
+from app import scrub, send_report
 from app import theme
 from app.qt import bridge, rows, screens, strings, style
 from app.qt import settings_strings as SS
@@ -67,6 +80,19 @@ def bug_path(cx, cy, s):
     return body, paths
 
 
+PREPARE_AFTER_MS = 3000         # the scrub's Identity worked out this long after the first frame (or on the bug's hover)
+_preparing = [None]             # the worker working it out, while it does
+
+
+def prepare_identity():
+    """(The window's thread.) Who "you" are (`scrub.prepare`), on one worker at a time: nothing when it is ready or
+    being worked out."""
+    t = _preparing[0]
+    if scrub.ready() or (t is not None and t.is_alive()):
+        return
+    _preparing[0] = scrub.prepare()
+
+
 def bug_tip(n):
     return strings.REPORT_TIP_COUNT.format(n=n) if n else strings.REPORT_TIP
 
@@ -88,8 +114,13 @@ class BugButton(QToolButton):
         self.counted = bridge.Relay(self)                         # the count, read on its own thread: never one of
         self.counted.said.connect(self.set_count)                 # ... the window's worker jobs, never a wait
         first = getattr(shell, "first_frame", None)
-        if first is not None:                                     # the count read after the first frame
-            first.connect(self.refresh)
+        if first is not None:                                     # the count read after the first frame, and who
+            first.connect(self.refresh)                           # ... "you" are worked out on a worker a moment
+            self.prepare_timer = QTimer(self)                     # ... after (the scrub's Identity: never beside
+            self.prepare_timer.setSingleShot(True)                # ... the start's own work)
+            self.prepare_timer.setInterval(PREPARE_AFTER_MS)
+            self.prepare_timer.timeout.connect(prepare_identity)
+            first.connect(self.prepare_timer.start)
 
     def refresh(self):
         relay = self.counted
@@ -166,7 +197,12 @@ class BugButton(QToolButton):
 
     def enterEvent(self, event):
         super().enterEvent(event)
+        prepare_identity()                                        # (the hand on its way: ready by the press)
         self.update()
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        prepare_identity()
 
     def leaveEvent(self, event):
         super().leaveEvent(event)
@@ -204,16 +240,20 @@ def key_fields(window):
 
 def take_pictures(shell):
     """Each Surasura window's own picture (`QWidget.grab()`: the window draws itself; nothing of the screen), every key
-    field drawn as dots while it is taken (`key_fields`: a shown Jiten key never in a picture). -> [QImage] (the main
-    window's first). Thread-safe images: encoded on the worker at Save."""
+    field drawn as dots while it is taken (`key_fields`: a shown Jiten key never in a picture), in picture mode
+    (`PictureMode`: every name and path drawn scrubbed). -> ([QImage] (the main window's first), scrubbed): `scrubbed`
+    False when the scrub's Identity wasn't ready yet (`scrub.prepare`, at the main window's first frame) — such a
+    picture is saved unmarked and Send report never sends it. Thread-safe images: encoded on the worker at Save."""
     out = []
+    ident = scrub.kept()                                          # (never read here, never waited for)
     for w in surasura_windows(shell):
         try:
             fields = [(f, f.echoMode()) for f in key_fields(w)]
             for f, _mode in fields:
                 f.setEchoMode(QLineEdit.EchoMode.Password)
             try:
-                img = w.grab().toImage()
+                with PictureMode(w, ident):
+                    img = w.grab().toImage()
             finally:
                 for f, mode in fields:
                     f.setEchoMode(mode)
@@ -221,7 +261,182 @@ def take_pictures(shell):
             continue
         if not img.isNull():
             out.append(img)
-    return out
+    return out, ident is not None
+
+
+class _ShownItems(QStyledItemDelegate):
+    """An item view's own delegate while its picture is taken: each item's words scrubbed (`initStyleOption`)."""
+
+    def __init__(self, ident, parent):
+        super().__init__(parent)
+        self.ident = ident
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        option.text = self.ident.scrub(option.text)
+
+
+class PictureMode:
+    """While one window's picture is taken (SPEC §2.4; `grab()` paints at once, so it lasts only that): every name and
+    path it shows drawn scrubbed, and everything put back after — even when the grab fails.
+
+    - a label that shortens its text (a `shown_fit()` of its own: `ElidedLabel`, the bar's line, a source's *From …*, a
+      toast) fits it again from its whole text, which it reads through `scrub.shown` — never half a name;
+    - every other label's and button's words, swapped only where the scrub changes them, under a `QSignalBlocker`;
+    - a text field, a text box and a drop-down are never touched: a stand-in showing the scrubbed words is laid over
+      each one that holds a name (no signal, the cursor, the undo history and the document all as they were);
+    - an item view drawn by Qt's own delegate gets `_ShownItems` for the moment; one with a delegate of its own reads
+      its words through `scrub.shown` (`rows.Text.static`, the word lists' `_RemoveDelegate`), as every painted widget
+      does (the audit test in `tests/qt/test_picture_mode.py`).
+    `ident` None (the Identity not ready): nothing is changed. Only visible widgets are looked at. `scrub.shown`
+    scrubs from `__enter__` to `__exit__`'s start (`scrub.picture_mode`): the shortened labels fit again after it."""
+
+    EDITS = (QLineEdit, QPlainTextEdit, QTextEdit, QComboBox)
+
+    def __init__(self, window, ident):
+        self.window, self.ident = window, ident
+        self.fitted, self.swapped, self.standins, self.views = [], [], [], []
+        self.mode = None
+
+    def __enter__(self):
+        if self.ident is None:
+            return self
+        self.mode = scrub.picture_mode()
+        self.mode.__enter__()
+        try:
+            self._swap()
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *_exc):
+        if self.mode is not None:
+            mode, self.mode = self.mode, None
+            mode.__exit__(None, None, None)
+        self._restore()
+        return False
+
+    def _swap(self):
+        scrub_text = self.ident.scrub
+        for w in self.window.findChildren(QWidget):
+            if not w.isVisible() or w.window() is not self.window:     # (another window: its own picture, or none)
+                continue
+            if callable(getattr(w, "shown_fit", None)):
+                self.fitted.append(w)
+                w.shown_fit()
+            elif isinstance(w, self.EDITS):
+                if isinstance(w, QLineEdit) and isinstance(w.parentWidget(), (QComboBox, QAbstractSpinBox)):
+                    continue                                       # (a drop-down's stand-in covers it; a spin
+                    #                                                  box's holds a number)
+                stand = _stand_in(w, scrub_text)
+                if stand is not None:
+                    self.standins.append(stand)
+            elif isinstance(w, (QLabel, QAbstractButton)):
+                text = w.text()
+                new = scrub_text(text) if text else text
+                if new != text:
+                    with QSignalBlocker(w):
+                        w.setText(new)
+                    self.swapped.append((w, text))
+            elif isinstance(w, QAbstractItemView):
+                d = w.itemDelegate()
+                if type(d) in (QStyledItemDelegate, QItemDelegate):
+                    self.views.append((w, d))
+                    w.setItemDelegate(_ShownItems(self.ident, w))
+
+    def _restore(self):
+        for w, text in reversed(self.swapped):
+            try:
+                with QSignalBlocker(w):
+                    w.setText(text)
+            except RuntimeError:
+                pass
+        for stand in self.standins:
+            try:
+                stand.hide()
+                stand.deleteLater()
+            except RuntimeError:
+                pass
+        for view, d in self.views:
+            try:
+                shown = view.itemDelegate()
+                view.setItemDelegate(d)
+                shown.deleteLater()
+            except RuntimeError:
+                pass
+        for w in self.fitted:                                      # (picture mode is off by now: the whole text)
+            try:
+                w.shown_fit()
+            except RuntimeError:
+                pass
+        self.fitted, self.swapped, self.standins, self.views = [], [], [], []
+
+
+def _stand_in(w, scrub_text):
+    """A stand-in laid over the text field, text box or drop-down `w` for its picture, showing its words scrubbed —
+    or None when they name no one. Never focused, never pressed; dropped after the grab."""
+    if isinstance(w, QLineEdit):
+        if w.echoMode() != QLineEdit.EchoMode.Normal:
+            return None                                            # dots: nothing to read
+        text, hint = w.text(), w.placeholderText()
+        new, new_hint = scrub_text(text), scrub_text(hint)
+        if (new, new_hint) == (text, hint):
+            return None
+        stand = QLineEdit(w.parentWidget())
+        stand.setText(new)
+        stand.setPlaceholderText(new_hint)
+        stand.setAlignment(w.alignment())
+        stand.setFrame(w.hasFrame())
+        stand.setReadOnly(w.isReadOnly())
+        stand.setTextMargins(w.textMargins())
+        stand.setCursorPosition(min(w.cursorPosition(), len(new)))
+    elif isinstance(w, QPlainTextEdit):
+        text = w.toPlainText()
+        new = scrub_text(text)
+        if new == text:
+            return None
+        stand = QPlainTextEdit(w.parentWidget())
+        stand.setPlainText(new)
+        stand.setLineWrapMode(w.lineWrapMode())
+        stand.setReadOnly(w.isReadOnly())
+    elif isinstance(w, QTextEdit):
+        text = w.toPlainText()                                     # (its words: never its markup's)
+        new = scrub_text(text)
+        if new == text:
+            return None
+        stand = QTextEdit(w.parentWidget())
+        stand.setPlainText(new)
+        stand.setLineWrapMode(w.lineWrapMode())
+        stand.setReadOnly(w.isReadOnly())
+    else:                                                          # a drop-down: the words it shows
+        text = w.currentText()
+        new = scrub_text(text)
+        if new == text:
+            return None
+        stand = QComboBox(w.parentWidget())
+        stand.setEditable(w.isEditable())
+        stand.addItem(w.itemIcon(w.currentIndex()) if w.currentIndex() >= 0 else QIcon(), new)
+        stand.setIconSize(w.iconSize())
+    stand.setObjectName(w.objectName())
+    for key in w.dynamicPropertyNames():
+        name = bytes(key).decode("utf-8", "replace")
+        stand.setProperty(name, w.property(name))
+    stand.setStyleSheet(w.styleSheet())
+    stand.setFont(w.font())
+    stand.setEnabled(w.isEnabled())
+    stand.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    stand.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+    stand.setGeometry(w.geometry())
+    if isinstance(w, QAbstractScrollArea):                         # the same lines in view
+        stand.setHorizontalScrollBarPolicy(w.horizontalScrollBarPolicy())
+        stand.setVerticalScrollBarPolicy(w.verticalScrollBarPolicy())
+    stand.show()
+    stand.raise_()
+    if isinstance(w, QAbstractScrollArea):
+        stand.verticalScrollBar().setValue(w.verticalScrollBar().value())
+        stand.horizontalScrollBar().setValue(w.horizontalScrollBar().value())
+    return stand
 
 
 def png_bytes(image):
@@ -236,11 +451,11 @@ def png_bytes(image):
 
 def open_report(shell):
     """The bug's press: the pictures first, then the window (raised with the new pictures when open)."""
-    pictures = take_pictures(shell)
+    pictures, scrubbed = take_pictures(shell)
     win = windows.opened(shell, NAME)
     if win is not None:
-        win.set_pictures(pictures)
-    return windows.show(shell, NAME, lambda s: ReportWindow(s, pictures))
+        win.set_pictures(pictures, scrubbed)
+    return windows.show(shell, NAME, lambda s: ReportWindow(s, pictures, scrubbed))
 
 
 def downloads():
@@ -261,24 +476,36 @@ class ElidedLabel(QLabel):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        shown = self.fontMetrics().elidedText(self.full, Qt.TextElideMode.ElideRight, max(0, self.width()))
+        self._fit()
+
+    def _fit(self):
+        """Cut to its room — the whole text scrubbed first while a picture is taken (`PictureMode`)."""
+        shown = self.fontMetrics().elidedText(scrub.shown(self.full), Qt.TextElideMode.ElideRight, max(0, self.width()))
         if shown != self.text():
             self.setText(shown)
+
+    shown_fit = _fit
 
 
 # --- the window --------------------------------------------------------------------------------------------------- #
 class ReportWindow(SecondaryWindow):
-    FORM, OPENED, CONTENTS = 0, 1, 2
+    FORM, OPENED, CONTENTS, GOES = 0, 1, 2, 3
 
-    def __init__(self, shell, pictures=()):
+    def __init__(self, shell, pictures=(), scrubbed=False):
         super().__init__(shell, strings.REPORT_WINDOW_NAME)
         self.pictures = list(pictures)
+        self.scrubbed = bool(scrubbed)                            # the pictures were taken in picture mode
         self.reports = None                                       # the list as last read (None: not read yet)
         self.opened_id = None
         self.list_paints = 0
         self.dest = downloads()
         self.last_removed = None
-        self.sending = False                                      # *Send on Discord* under way (its save, then its zip)
+        self.sending = False                                      # *Send report* under way (its save, then its zip)
+        self.outbox = None                                        # the zip the What goes page shows (send_report.Outbox)
+        self.waiting = None                                       # a zip kept after a send that didn't go
+        self.sent_id = None                                       # the last report sent (#ID), for Copy
+        self.name_filled = False                                  # the remembered Discord name filled in (once)
+        self.goes_name_value = ""                                 # the name What goes said goes
         self._thumbs = None                                       # the form's thumbnails, made once per set of pictures
         f = theme.text_factor(style.current()[1])
         self.pages = QStackedWidget(self)
@@ -286,6 +513,7 @@ class ReportWindow(SecondaryWindow):
         self.pages.addWidget(self._form_page())
         self.pages.addWidget(self._opened_page())
         self.pages.addWidget(self._contents_page())
+        self.pages.addWidget(self._goes_page())
         self.body.addWidget(self._heading(strings.REPORT_LIST_HEADING.format(n=0)))
         self.list_heading = self.body.itemAt(self.body.count() - 1).widget()
         self.list = QListWidget(self)
@@ -296,6 +524,7 @@ class ReportWindow(SecondaryWindow):
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # a long line elides instead
         self.body.addWidget(self.list)
         self.body.addLayout(self._send_row())
+        self.body.addLayout(self._after_rows())
         self.hint = self._line(strings.REPORT_HINT)
         self.body.addWidget(self.hint)
         where = QHBoxLayout()
@@ -310,7 +539,9 @@ class ReportWindow(SecondaryWindow):
         self.setMinimumWidth(round(560 * f))
         self._show_pictures()
         self._restore_draft()
+        prepare_identity()                                        # (worked out after the first frame; else now)
         self.read()
+        self.read_send()
 
     # --- parts ------------------------------------------------------------------------------------------------- #
     def _heading(self, text):
@@ -418,13 +649,68 @@ class ReportWindow(SecondaryWindow):
         box.addLayout(row)
         return page
 
+    def _goes_page(self):
+        """*What goes* (Q1): every file that goes and its size, the placeholders, the pictures at full width, the
+        Discord name or none, the sender code, how long it's kept and by whom, and what's left out and why."""
+        page = QWidget(self)
+        box = QVBoxLayout(page)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.addWidget(self._heading(strings.REPORT_GOES_HEADING))
+        scroll = QScrollArea(page)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget(scroll)
+        lines = QVBoxLayout(inner)
+        lines.setContentsMargins(0, 0, 0, 0)
+        self.goes_placeholders = self._line(strings.REPORT_GOES_PLACEHOLDERS)
+        self.goes_name = self._line("")
+        self.goes_sender = self._line("")
+        self.goes_kept = self._line(strings.REPORT_GOES_KEPT)
+        for line in (self.goes_placeholders, self.goes_name, self.goes_sender, self.goes_kept):
+            lines.addWidget(line)
+        self.goes_files = QLabel(inner)
+        self.goes_files.setObjectName("windowline")
+        self.goes_files.setTextFormat(Qt.TextFormat.PlainText)
+        self.goes_files.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.goes_files.setToolTip(strings.REPORT_GOES_TIP)
+        self.goes_files.setAccessibleName(strings.REPORT_GOES_HEADING)
+        lines.addWidget(self.goes_files)
+        self.goes_pictures_line = self._line(strings.REPORT_GOES_PICTURES)
+        lines.addWidget(self.goes_pictures_line)
+        self.goes_pictures = QVBoxLayout()
+        lines.addLayout(self.goes_pictures)
+        lines.addStretch(1)
+        scroll.setWidget(inner)
+        self.goes_scroll = scroll
+        box.addWidget(scroll, 1)
+        row = QHBoxLayout()
+        self.goes_back = self._button(strings.REPORT_BACK, strings.REPORT_GOES_BACK_TIP, self.back, row)
+        row.addStretch(1)
+        self.goes_open = self._button(strings.REPORT_GOES_OPEN, strings.REPORT_GOES_OPEN_TIP, self.open_outbox, row,
+                                      presses=True)
+        self.goes_send = self._button(strings.REPORT_GOES_SEND, strings.REPORT_GOES_SEND_TIP, self.send, row,
+                                      "primary", presses=True)
+        box.addLayout(row)
+        return page
+
     def _send_row(self):
+        """The name field, then *Include my last lists* · *Show me what's in it* · *Make a zip instead* · **Send
+        report**, the promise under it, always, and a second line once a Discord name is typed."""
         box = QVBoxLayout()
-        where = QHBoxLayout()
-        self.dest_line = self._line("")
-        where.addWidget(self.dest_line, 1)
-        self.change_button = self._button(strings.REPORT_CHANGE, strings.REPORT_CHANGE_TIP, self.pick_folder, where)
-        box.addLayout(where)
+        named = QHBoxLayout()
+        self.name_label = self._line(strings.REPORT_NAME_LABEL)
+        self.name_label.setWordWrap(False)
+        named.addWidget(self.name_label)
+        self.name_field = QLineEdit(self)
+        self.name_field.setMaxLength(send_report.NAME_MAX)
+        self.name_field.setPlaceholderText(strings.REPORT_NAME_HINT)
+        self.name_field.setToolTip(strings.REPORT_NAME_TIP)
+        self.name_field.setAccessibleName(strings.REPORT_NAME_LABEL)
+        self.name_field.textChanged.connect(self._name_changed)
+        self.name_label.setBuddy(self.name_field)
+        named.addWidget(self.name_field, 1)
+        box.addLayout(named)
         row = QHBoxLayout()
         self.include_results = QCheckBox(strings.REPORT_RESULTS, self)
         self.include_results.setChecked(True)
@@ -437,13 +723,70 @@ class ReportWindow(SecondaryWindow):
                                         presses=True)
         self.zip_button = self._button(strings.REPORT_ZIP, strings.REPORT_ZIP_NONE_TIP, self.make_zip, row,
                                        presses=True)
-        self.discord_button = self._button(strings.REPORT_DISCORD, strings.REPORT_DISCORD_NONE_TIP, self.send_discord,
-                                           row, "primary", presses=True)
+        self.send_button = self._button(strings.REPORT_SEND, strings.REPORT_SEND_NONE_TIP, self.send_report, row,
+                                        "primary", presses=True)
         self.zip_button.setEnabled(False)
-        self.discord_button.setEnabled(False)
+        self.send_button.setEnabled(False)
         self.show_button.setEnabled(False)
         box.addLayout(row)
+        self.promise = self._line(strings.REPORT_PROMISE)
+        self.promise.setAlignment(Qt.AlignmentFlag.AlignRight)
+        box.addWidget(self.promise)
+        self.name_goes = self._line(strings.REPORT_NAME_GOES)
+        self.name_goes.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.name_goes.setVisible(False)
+        box.addWidget(self.name_goes)
+        return box
+
+    def _after_rows(self):
+        """The sender code and *New code*; after a send, the #ID with *Copy* and the invite; a report waiting to send
+        with *Send now* · *Don't send*; the zip's folder (after *Make a zip instead*); *Sent reports*."""
+        box = QVBoxLayout()
+        code = QHBoxLayout()
+        self.sender_line = self._line("")
+        self.sender_line.setToolTip(strings.REPORT_SENDER_TIP)
+        code.addWidget(self.sender_line, 1)
+        self.new_code_button = self._button(strings.REPORT_NEW_CODE, strings.REPORT_NEW_CODE_TIP, self.new_code, code,
+                                            "chip", presses=True)
+        self.new_code_button.setEnabled(False)                    # (until the code is read)
+        box.addLayout(code)
+        done = QHBoxLayout()
+        self.done_line = self._line("")
+        done.addWidget(self.done_line, 1)
+        self.copy_button = self._button(strings.REPORT_COPY, strings.REPORT_COPY, self.copy_id, done, "chip")
+        self.invite_button = self._button(strings.REPORT_INVITE, strings.REPORT_INVITE_TIP.format(url=SS.DISCORD_URL),
+                                          self.open_invite, done, presses=True)
+        self.invite_button.setObjectName("windowlink")
+        self.invite_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.done_row = [self.done_line, self.copy_button, self.invite_button]
+        for w in self.done_row:
+            w.setVisible(False)
+        box.addLayout(done)
+        wait = QHBoxLayout()
+        self.waiting_line = self._line(strings.REPORT_WAITING)
+        wait.addWidget(self.waiting_line, 1)
+        self.send_now_button = self._button(strings.REPORT_SEND_NOW, strings.REPORT_SEND_NOW_TIP, self.send_now, wait,
+                                            presses=True)
+        self.dont_send_button = self._button(strings.REPORT_DONT_SEND, strings.REPORT_DONT_SEND_TIP, self.dont_send,
+                                             wait, presses=True)
+        self.waiting_row = [self.waiting_line, self.send_now_button, self.dont_send_button]
+        for w in self.waiting_row:
+            w.setVisible(False)
+        box.addLayout(wait)
+        where = QHBoxLayout()
+        self.dest_line = self._line("")
+        where.addWidget(self.dest_line, 1)
+        self.change_button = self._button(strings.REPORT_CHANGE, strings.REPORT_CHANGE_TIP, self.pick_folder, where)
+        self.dest_row = [self.dest_line, self.change_button]
+        for w in self.dest_row:                                   # the GitHub path: shown once a zip is made
+            w.setVisible(False)
+        box.addLayout(where)
         self._show_dest()
+        self.sent_heading = self._heading(strings.REPORT_SENT_HEADING)
+        self.sent_heading.setVisible(False)
+        box.addWidget(self.sent_heading)
+        self.sent_rows = QVBoxLayout()
+        box.addLayout(self.sent_rows)
         return box
 
     def _show_dest(self):
@@ -459,27 +802,32 @@ class ReportWindow(SecondaryWindow):
         self.expected.setPlainText(draft.get("expected", ""))
         self.leave_out.setChecked(bool(draft.get("leave_out")))
         if not self.pictures and draft.get("pictures"):            # opened without a new picture: the draft's
-            self.set_pictures(draft["pictures"])
+            self.set_pictures(draft["pictures"], draft.get("scrubbed", False))
 
     def _keep_draft(self):
         what, expected = self.what.toPlainText(), self.expected.toPlainText()
         if what.strip() or expected.strip():
             setattr(self.shell, DRAFT, {"what": what, "expected": expected, "leave_out": self.leave_out.isChecked(),
-                                        "pictures": list(self.pictures)})
+                                        "pictures": list(self.pictures), "scrubbed": self.scrubbed})
         else:
             setattr(self.shell, DRAFT, None)
 
     def closeEvent(self, event):
         try:
             self._keep_draft()                                     # Esc or ✕: the words wait for the next press
+            if self.outbox is not None and not qpress.live(self, "report:send"):     # looked at, not sent: deleted
+                sha, self.outbox = self.outbox.sha256, None
+                threading.Thread(target=discard, args=(sha,), name="report-discard", daemon=True).start()
         except RuntimeError:
             pass
         super().closeEvent(event)
 
     # --- the pictures ------------------------------------------------------------------------------------------ #
-    def set_pictures(self, pictures):
-        """The bug pressed again with the window open: the new pictures for the next report."""
+    def set_pictures(self, pictures, scrubbed=False):
+        """The bug pressed again with the window open: the new pictures for the next report (`scrubbed`: taken in
+        picture mode)."""
         self.pictures = list(pictures)
+        self.scrubbed = bool(scrubbed)
         self._thumbs = None
         self._show_pictures()
 
@@ -550,7 +898,7 @@ class ReportWindow(SecondaryWindow):
         self.zip_button.setEnabled(n > 0)
         self.show_button.setEnabled(n > 0)
         self.zip_button.setToolTip(strings.REPORT_ZIP_TIP if n else strings.REPORT_ZIP_NONE_TIP)
-        self._discord_ready()
+        self._send_ready()
         button = getattr(self.shell, "report_button", None)
         if button is not None:
             button.set_count(n)
@@ -582,29 +930,34 @@ class ReportWindow(SecondaryWindow):
 
     def _form_changed(self):
         self.save_button.setEnabled(bool(self.what.toPlainText().strip()))
-        self._discord_ready()
+        self._send_ready()
 
-    def _discord_ready(self):
-        """*Send on Discord*: ready with a saved report, or with words typed (saved first)."""
-        if not hasattr(self, "discord_button"):                   # (the form is built before the send row)
+    def _send_ready(self):
+        """*Send report*: ready with a saved report, or with words typed (saved first)."""
+        if not hasattr(self, "send_button"):                      # (the form is built before the send row)
             return
         ready = bool(self.reports) or self.save_button.isEnabled() or self.sending
-        self.discord_button.setEnabled(ready)
-        self.discord_button.setToolTip(strings.REPORT_DISCORD_TIP if ready else strings.REPORT_DISCORD_NONE_TIP)
+        self.send_button.setEnabled(ready)
+        self.send_button.setToolTip(strings.REPORT_SEND_TIP if ready else strings.REPORT_SEND_NONE_TIP)
+
+    def _name_changed(self, text):
+        self.name_goes.setVisible(bool(text.strip()))
 
     # --- the presses ------------------------------------------------------------------------------------------- #
     def save(self, then=None, control=None, broke=None):
-        """`then()`: once it is saved, `broke()` when it couldn't be (*Send on Discord*'s zip, its arc on `control`)."""
+        """`then()`: once it is saved, `broke()` when it couldn't be (*Send report*'s zip, its arc on `control`). Its
+        pictures are marked scrubbed only when taken in picture mode: an unmarked one is never sent."""
         what = self.what.toPlainText().strip()
         if not what or not self.save_button.isEnabled():
             return
         expected = self.expected.toPlainText()
         images = [] if self.leave_out.isChecked() else list(self.pictures)
+        scrubbed = self.scrubbed and bool(images)
         sent = (self.what.toPlainText(), expected, self.pictures)
         where = _where(self.shell)
 
         def work():
-            return core.save(what, expected, [png_bytes(i) for i in images], where=where)
+            return core.save(what, expected, [png_bytes(i) for i in images], where=where, scrubbed=scrubbed)
         def saved(r):
             self._saved(r, sent)
             if then is not None:
@@ -693,8 +1046,15 @@ class ReportWindow(SecondaryWindow):
                    failed=self.alive(lambda info: self.say(strings.REPORT_NOTE_FAILED.format(why=info[0]))))
 
     def back(self):
+        """Back to the form. From What goes: its zip is deleted unsent (the reports stay on the list)."""
         self.opened_id = None
+        if self.outbox is not None and not qpress.live(self, "report:send"):
+            sha, self.outbox = self.outbox.sha256, None
+            qpress.run(None, "report:send", discard, sha, win=self, then=self.alive(lambda _g: self.read_send()),
+                       failed=lambda _info: None)
         self.pages.setCurrentIndex(self.FORM)
+        if hasattr(self, "send_button"):
+            self._goes_hold(False)
         self.what.setFocus()
 
     def remove(self, rid, control=None):
@@ -756,55 +1116,275 @@ class ReportWindow(SecondaryWindow):
                    then=self.alive(shown),
                    failed=self.alive(lambda info: self.say(strings.REPORT_ZIP_FAILED.format(why=info[0]))))
 
-    def send_discord(self):
-        """*Send on Discord*: what's typed saved first, then the zip made, shown in its folder, and the invite opened."""
-        if qpress.live(self, "report:zip"):                       # a zip under way: nothing saved, said why
+    # --- Send report (SPEC §3: press → look → Send) ------------------------------------------------------------ #
+    def send_report(self):
+        """*Send report*: what's typed saved first, then the scrubbed zip made and checked into the outbox, then the
+        What goes page — nothing leaves the PC until its *Send*."""
+        if qpress.live(self, "report:zip") or qpress.live(self, "report:send"):    # a report under way: said why
             self.say(strings.REPORT_ZIP_BUSY)
             return
         if self.save_button.isEnabled():
             self._sending(True)
-            if self.save(then=lambda: self.make_zip(discord=True, saved=True), control=self.discord_button,
+            if self.save(then=lambda: self._build(saved=True), control=self.send_button,
                          broke=lambda: self._sending(False)) is None:
                 self._sending(False)
         elif self.reports:
-            self.make_zip(discord=True)
+            self._build()
 
     def _sending(self, on):
         self.sending = on
-        self._discord_ready()
+        self._send_ready()
+
+    def _build(self, saved=False):
+        """(The window's thread.) The outbox zip made on a worker; `saved`: a report was just saved."""
+        if not self.reports and not saved:
+            self._sending(False)
+            self.say(strings.REPORT_EMPTY)
+            return
+        language, include = self.language, self.include_results.isChecked()
+        library, extra = library_summary(self.shell), about_extra(self)
+
+        def built(got):
+            if self.gone:                                          # closed before it was looked at: never kept
+                self.sending = False
+                if got[0] == "built":                              # (only the zip this press made)
+                    threading.Thread(target=discard, args=(got[1].sha256,), name="report-discard",
+                                     daemon=True).start()
+                return
+            self._sending(False)
+            self._hold(False)
+            self._built(*got)
+
+        def broke(info):
+            self.sending = False
+            if not self.gone:
+                self._sending(False)
+                self._hold(False)
+                self.say(strings.REPORT_SEND_FAILED.format(why=info[0]))
+        self._hold(True)
+        p = qpress.run(self.send_button, "report:send", prepare_send, language, include, library, extra, win=self,
+                       busy=strings.REPORT_BUILDING, then=built, failed=broke)
+        if p is None:
+            self._hold(False)
+            self._sending(False)
+
+    def _built(self, kind, outbox, pictures, code=None):
+        if kind == "limit":
+            self.say(strings.REPORT_SEND_LIMIT)
+        elif kind == "too big":
+            self.say(strings.REPORT_SEND_TOO_BIG)
+        elif kind == "unsafe":
+            self.say(strings.REPORT_SEND_UNSAFE)
+        else:
+            self._show_goes(outbox, pictures, code)
+        self.read_send()
+
+    def _show_goes(self, outbox, pictures, code=None):
+        """The What goes page for `outbox`, its pictures (QImages read from the zip) at the page's width. The Discord
+        name and the sender code it shows are the ones that go: the row under it waits while it's up (`_goes_hold`)."""
+        self.outbox = outbox
+        self.opened_id = None
+        self.goes_name_value = " ".join(self.name_field.text().split())       # (as send_report cleans it)
+        name = self.goes_name_value
+        self.goes_name.setText(strings.REPORT_GOES_NAME.format(name=name) if name else strings.REPORT_GOES_NO_NAME)
+        if code:
+            self.sender_line.setText(strings.REPORT_SENDER.format(code=code))
+        self.goes_sender.setText(self.sender_line.text())
+        self.goes_sender.setVisible(bool(self.sender_line.text()))
+        self.goes_files.setText(outbox.describe())
+        self._clear(self.goes_pictures)
+        self.pages.setCurrentIndex(self.GOES)
+        self._goes_hold(True)
+        self.pages.currentWidget().layout().activate()            # (laid out: the pictures' width is the page's)
+        width = max(1, self.goes_scroll.viewport().width() - 4, self.pages.width() - 24)
+        dpr = self.devicePixelRatioF()
+        for img in pictures:
+            pm = QPixmap.fromImage(img)
+            if pm.width() > width * dpr:
+                pm = pm.scaledToWidth(round(width * dpr), Qt.TransformationMode.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            self.goes_pictures.addWidget(self._thumb(pm, strings.REPORT_GOES_PICTURE_TIP))
+        self.goes_pictures_line.setVisible(bool(pictures))
+        self.goes_send.setFocus()
+
+    def _goes_hold(self, on):
+        """While What goes is up (and while its zip is sent): the name, the code and the send row wait, so what goes
+        is what the page says."""
+        for w in (self.name_field, self.send_button, self.zip_button, self.show_button, self.new_code_button,
+                  self.include_results):
+            w.setEnabled(not on)
+        for w in (self.list_heading, self.list, self.hint):       # (the page's room: the list is in the zip it shows)
+            w.setVisible(not on)
+        if not on:
+            self.new_code_button.setEnabled(bool(self.sender_line.text()))
+            self._send_ready()
+            n = len(self.reports or [])
+            self.zip_button.setEnabled(n > 0)
+            self.show_button.setEnabled(n > 0)
+
+    def send(self):
+        """The What goes page's *Send*: the zip it showed, once (another one waiting instead is never sent)."""
+        if self.outbox is not None:
+            self._send(self.goes_send, self.outbox)
+
+    def send_now(self):
+        """*Send now*: the waiting zip again, with its own nonce (the receiver gives the same #ID)."""
+        if self.waiting is not None:
+            self._send(self.send_now_button, self.waiting)
+
+    def _send(self, control, outbox):
+        if qpress.live(self, "report:send") or qpress.live(self, "report:zip"):
+            self.say(strings.REPORT_ZIP_BUSY)
+            return
+        name = self.goes_name_value if outbox is self.outbox else self.name_field.text()
+        shell = self.shell
+
+        def done(result):
+            words = _send_words(result)
+            if self.gone:                                          # Esc while it went: the main window says it
+                windows.say_in_bar(shell, words)
+                _count_again(shell)
+                return
+            self._hold(False)
+            self.outbox = None
+            if result.outcome == send_report.SENT:
+                self.sent_id = result.id
+                self.last_removed = None
+                self.say_undo(False)
+                self._done_row(strings.REPORT_SENT_ID.format(id=result.id), copy=True,
+                               invite=strings.REPORT_INVITE)
+            if self.pages.currentIndex() == self.GOES:
+                self.back()
+            self.read(then_say=words)
+            self.read_send()
+
+        def broke(info):
+            words = strings.REPORT_SEND_FAILED.format(why=info[0])
+            if self.gone:
+                windows.say_in_bar(shell, words)
+                return
+            self._hold(False)
+            self.outbox = None
+            if self.pages.currentIndex() == self.GOES:
+                self.back()
+            self.say(words)
+            self.read_send()
+        self._hold(True)
+        p = qpress.run(control, "report:send", send_report.send, name, None, None, None, outbox.nonce, win=self,
+                       busy=strings.REPORT_SENDING.format(size=core._mb(outbox.size)), then=done, failed=broke)
+        if p is None:
+            self._hold(False)
+
+    def dont_send(self):
+        """*Don't send*: the waiting zip deleted; the saved reports stay on the list."""
+        def gone(_was):
+            self.read_send(then_say=strings.REPORT_DISCARDED)
+        sha = self.waiting.sha256 if self.waiting is not None else None      # (only the one it showed)
+        qpress.run(self.dont_send_button, "report:send", discard, sha, win=self, then=self.alive(gone),
+                   failed=self.alive(lambda info: self.say(strings.REPORT_SEND_FAILED.format(why=info[0]))))
+
+    def open_outbox(self):
+        """*Open the zip*: the zip that goes, selected in its folder (the exact bytes)."""
+        if self.outbox is not None:
+            show_zip(self, self.outbox.path, control=self.goes_open)
+
+    def read_send(self, then_say=None):
+        """(A worker.) This PC's send state: a waiting zip, the sent copies, the sender code, the remembered name."""
+        self._reads = getattr(self, "_reads", 0) + 1
+        n = self._reads
+        bridge.run_in_worker(send_state, then=self.alive(lambda got: self._show_send(got, then_say, n)),
+                             failed=lambda _info: None)
+
+    def _show_send(self, got, line=None, n=None):
+        if n is not None and n != self._reads:                    # a newer read is on its way
+            return
+        self.send_read = n                                        # (the read last shown: a test waits for it)
+        waiting, sent, code, name = got
+        self.waiting = waiting
+        shown = waiting is not None and self.outbox is None and not qpress.live(self, "report:send")
+        for w in self.waiting_row:                                 # (never beside What goes, which shows that zip, nor
+            w.setVisible(shown)                                    # ... while a send or a delete is under way)
+        if code:
+            self.sender_line.setText(strings.REPORT_SENDER.format(code=code))
+            self.new_code_button.setEnabled(self.outbox is None and not qpress.live(self, "report:send"))
+        if name and not self.name_filled and not self.name_field.isModified():      # once, never over an edit
+            self.name_field.setText(name)
+        self.name_filled = True
+        self._clear(self.sent_rows)
+        for rid, when, path in sent[:SENT_SHOWN]:
+            self.sent_rows.addWidget(self._sent_row(rid, when, path))
+        self.sent_heading.setVisible(bool(sent))
+        if line is not None:
+            self.say(line)
+
+    def _sent_row(self, rid, when, path):
+        w = QWidget(self)
+        box = QHBoxLayout(w)
+        box.setContentsMargins(0, 0, 0, 0)
+        label = self._line(strings.REPORT_SENT_ROW.format(id=rid, when=when.strftime("%Y-%m-%d %H:%M")))
+        box.addWidget(label, 1)
+        b = QPushButton(strings.REPORT_SENT_OPEN, w)
+        b.setToolTip(strings.REPORT_SENT_OPEN_TIP)
+        b.setAccessibleName(strings.REPORT_ROW_BUTTON_NAME.format(action=strings.REPORT_SENT_OPEN, what=f"#{rid}"))
+        b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        b.setProperty("kind", "chip")
+        b.clicked.connect(lambda _c=False, p=path, c=b: show_zip(self, p, control=c))
+        box.addWidget(b)
+        return w
+
+    def new_code(self):
+        def made(code):
+            self.sender_line.setText(strings.REPORT_SENDER.format(code=code))
+            self.say(strings.REPORT_NEW_CODE_DONE.format(code=code))
+        qpress.run(self.new_code_button, "report:new-code", send_report.new_code, win=self, then=self.alive(made),
+                   failed=self.alive(lambda info: self.say(strings.REPORT_SEND_FAILED.format(why=info[0]))))
+
+    def _done_row(self, words, copy=False, invite=None):
+        """After a send (#ID, *Copy*, the invite) or a zip made (the invite): what comes next."""
+        self.done_line.setText(words)
+        self.done_line.setVisible(bool(words))
+        self.copy_button.setVisible(copy)
+        if copy and self.sent_id:
+            self.copy_button.setToolTip(strings.REPORT_COPY_TIP.format(id=self.sent_id))
+        self.invite_button.setVisible(invite is not None)
+        if invite is not None:
+            self.invite_button.setText(invite)
+            self.invite_button.setAccessibleName(invite)
+
+    def copy_id(self):
+        if self.sent_id:
+            QApplication.clipboard().setText(strings.REPORT_ID.format(id=self.sent_id))
+            self.say(strings.REPORT_COPIED.format(id=self.sent_id))
+
+    def open_invite(self):
+        qpress.open(self, SS.DISCORD_URL, control=self.invite_button)
 
     def open_issues(self):
         qpress.open(self, SS.ISSUES_URL, control=self.issues_button)
 
-    def make_zip(self, discord=False, saved=False):
-        """`discord`: the zip shown selected in its folder and the invite opened, instead of its folder opened.
-        `saved`: a report was just saved (the list not read back yet)."""
-        if (not self.reports and not saved) or qpress.live(self, "report:zip"):    # (a second press: the first's)
-            if discord:
-                self._sending(False)
-                self.say(strings.REPORT_ZIP_BUSY if self.reports or saved else strings.REPORT_EMPTY)
+    # --- Make a zip instead (the GitHub / Discord path by hand) ---------------------------------------------------- #
+    def make_zip(self):
+        """The zip into Downloads or the folder picked, scrubbed (a file the check flags is named, never a reason to
+        stop), shown selected in its folder; the done line offers the invite."""
+        if not self.reports or qpress.live(self, "report:zip") or qpress.live(self, "report:send"):
+            if self.reports:
+                self.say(strings.REPORT_ZIP_BUSY)
             return
         language, include, dest = self.language, self.include_results.isChecked(), self.dest
         library = library_summary(self.shell)
-
         shell = self.shell
         extra = about_extra(self)
 
-        def show(win, path):
-            if discord:
-                show_and_invite(win, path)
-            else:
-                qpress.open(win, os.path.dirname(path), key="report:open-folder")
-
-        def made(path):
-            self.sending = False
-            words = (strings.REPORT_SENT.format(name=os.path.basename(path)) if discord
-                     else strings.REPORT_ZIPPED.format(name=os.path.basename(path), folder=dest))
+        def made(got):
+            path, flagged = got
+            name = os.path.basename(path)
+            words = (strings.REPORT_ZIPPED_CHECK.format(name=name, folder=dest, n=len(flagged)) if flagged
+                     else strings.REPORT_ZIPPED.format(name=name, folder=dest))
             if self.gone:                                          # closed while it was made: the main window says it
                 windows.say_in_bar(shell, words)
                 _count_again(shell)
                 try:
-                    show(shell, path)
+                    show_zip(shell, path)
                 except RuntimeError:
                     pass
                 return
@@ -812,47 +1392,118 @@ class ReportWindow(SecondaryWindow):
             self.last_removed = None
             self.say_undo(False)
             self.back()
+            for w in self.dest_row:
+                w.setVisible(True)
+            self._done_row("", invite=strings.REPORT_INVITE_ZIP)
             self.read(then_say=words)
-            show(self, path)
+            show_zip(self, path)
 
         def broke(info):
-            self.sending = False
             words = strings.REPORT_ZIP_FAILED.format(why=info[0])
             if self.gone:
                 windows.say_in_bar(shell, words)
                 return
             self._hold(False)
-            self._discord_ready()
+            self._send_ready()
             self.say(words)
         self._hold(True)
-        p = qpress.run(self.discord_button if discord else self.zip_button, "report:zip", core.make_zip, dest,
-                       language, include, library, None, extra, win=self, then=made, failed=broke)
+        p = qpress.run(self.zip_button, "report:zip", zip_checked, dest, language, include, library, extra, win=self,
+                       then=made, failed=broke)
         if p is None:
             self._hold(False)
-            self._sending(False)
 
     def _hold(self, on):
-        """While the zip is made: the list, a note and Undo wait (a report changed meanwhile would be kept anyway)."""
+        """While a report is made or sent: the list, a note and Undo wait (a report changed meanwhile would be kept
+        anyway)."""
         self.list.setEnabled(not on)
         self.note_button.setEnabled(not on)
         if hasattr(self, "undo_button"):
             self.undo_button.setEnabled(not on)
 
 
-def show_and_invite(win, path):
-    """(The window's thread, the zip written.) The zip shown selected in its folder, then Surasura's Discord opened in
-    the browser on top of it, ready for the zip to be dragged in — each on a worker, never the window's thread. A folder
-    that can't be shown still opens the invite."""
-    def invite(_got=None):
-        qpress.open(win, SS.DISCORD_URL, key="report:discord")
+SENT_SHOWN = 5                  # *Sent reports*: the newest shown (each kept 90 days)
+
+
+def prepare_send(language, include, library, extra):
+    """(A worker.) *Send report*'s press: refused before anything is made on the 6th send of a day; else the outbox
+    zip (`send_report.build`) and its pictures as QImages. -> (kind, Outbox or None, [QImage], the sender code that
+    goes, when built): kind `built`,
+    `limit`, `too big` (over 10 MB even trimmed) or `unsafe` (the guard's hit: no zip offered)."""
+    from PyQt6.QtGui import QImage
+    if send_report.sent_today() >= send_report.PER_DAY:
+        return "limit", None, []
+    try:
+        ob = send_report.build(language, include, library, None, extra)
+    except send_report.TooBig:
+        return "too big", None, []
+    except core.Unsafe:
+        return "unsafe", None, []
+    pictures = []
+    with zipfile.ZipFile(ob.path) as z:
+        for name in z.namelist():
+            if name.lower().endswith(".png"):
+                img = QImage.fromData(z.read(name), "PNG")
+                if not img.isNull():
+                    pictures.append(img)
+    return "built", ob, pictures, send_report.sender_code()
+
+
+def discard(sha256=None, tries=5):
+    """(A worker.) The outbox zip deleted (`send_report.discard`) — only when it is still the one this window made
+    (`sha256`, checked under send_report's lock: another window's newer one, or an older one waiting, is left
+    alone) — tried again a moment later while
+    a read of it holds it open (Windows refuses the delete then). -> whether one was deleted."""
+    import time
+    for n in range(tries):
+        try:
+            return send_report.discard(expect=sha256)
+        except PermissionError:
+            if n == tries - 1:
+                raise
+            time.sleep(0.05)
+
+
+def send_state():
+    """(A worker.) (the waiting Outbox or None, [(id, when, path)] sent, the sender code, the remembered name)."""
+    return (send_report.waiting(), send_report.sent_reports(), send_report.sender_code(),
+            send_report.remembered_name())
+
+
+def zip_checked(dest, language, include, library, extra):
+    """(A worker.) *Make a zip instead*: the zip and the files its check flagged. -> (path, [names])."""
+    found = []
+    path = core.make_zip(dest, language, include, library, None, extra, found=found)
+    return path, found
+
+
+def _send_words(result):
+    """The status line's words for a send's Result (SPEC §3)."""
+    o = result.outcome
+    if o == send_report.SENT:
+        return strings.REPORT_SENT_ID.format(id=result.id)
+    if o == send_report.LIMIT:
+        return strings.REPORT_SEND_LIMIT
+    if o == send_report.OFFLINE:
+        return strings.REPORT_SEND_OFFLINE
+    if o == send_report.BUSY:
+        return strings.REPORT_SEND_BUSY
+    if o == send_report.TOO_BIG:
+        return strings.REPORT_SEND_TOO_BIG
+    if o == send_report.PAUSED:
+        return strings.REPORT_SEND_PAUSED
+    return strings.REPORT_SEND_REFUSED.format(status=result.status or "?")
+
+
+def show_zip(win, path, control=None):
+    """A zip shown selected in its folder (Explorer's `/select,`), on a worker — never the window's thread."""
     if qpress.OFF_THREAD:
-        qpress.run(None, "report:show-zip", screens.show_in_folder, path, win=win, then=invite, failed=invite)
+        qpress.run(control, f"report:show-zip:{path}", screens.show_in_folder, path, win=win,
+                   failed=lambda _info: None)
         return
     try:
         screens.show_in_folder(path)
     except Exception:
         pass
-    invite()
 
 
 def about_extra(win):

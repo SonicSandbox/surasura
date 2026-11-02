@@ -29,7 +29,7 @@ from PyQt6.QtGui import QKeySequence, QLinearGradient, QPainter, QPainterPath, Q
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QSizePolicy,
                              QToolButton, QVBoxLayout, QWidget)
 
-from app import theme
+from app import scrub, theme
 from app.qt import bridge, motion, rows, shadow, strings, style
 
 DEBOUNCE_MS = 120                       # A2 #85: the query asked this long after the last keystroke
@@ -180,10 +180,11 @@ class HitRow(QWidget):
         title_font, sub_font = rows.TEXT.font("row-title"), rows.TEXT.font("row-sub")
         tm, sm = rows.TEXT.metrics("row-title"), rows.TEXT.metrics("row-sub")
         base = mid - 2 * f
-        title = tm.elidedText(self.hit.title, Qt.TextElideMode.ElideRight, int(width))
+        whole = scrub.shown(self.hit.title)                # (a picture being taken: scrubbed, never half a name)
+        title = tm.elidedText(whole, Qt.TextElideMode.ElideRight, int(width))
         p.setFont(title_font)
         at = x
-        for text, lit in split_lit(title, self.hit.spans):
+        for text, lit in split_lit(title, self.hit.spans if whole == self.hit.title else ()):
             p.setPen(style.qcolor(cs["accent" if lit else "ink"]))
             p.drawText(QPointF(at, base), text)
             if lit:
@@ -193,7 +194,7 @@ class HitRow(QWidget):
         p.setFont(sub_font)
         p.setPen(style.qcolor(cs["overlay-ink-dim"]))
         p.drawText(QPointF(x, base + sm.ascent() + 3 * f),
-                   sm.elidedText(self.hit.where, Qt.TextElideMode.ElideRight, int(width)))
+                   sm.elidedText(scrub.shown(self.hit.where), Qt.TextElideMode.ElideRight, int(width)))
         p.end()
 
 

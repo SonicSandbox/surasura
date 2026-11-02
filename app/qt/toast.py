@@ -19,7 +19,7 @@ from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QFontMetrics, QPainter
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy
 
-from app import theme
+from app import scrub, theme
 from app.qt import motion, shadow, strings, style
 
 MAX_BUTTONS = 3                                 # Undo + two (the mock's widest: [Mine it too] [Remove unstudied cards])
@@ -101,9 +101,11 @@ class ToastCard(motion.Overlay):
     def fit_text(self):
         fm = QFontMetrics(self.text.font())
         tail = self.tail
-        self.text.setText(fm.elidedText(self.base, Qt.TextElideMode.ElideRight,
+        self.text.setText(fm.elidedText(scrub.shown(self.base), Qt.TextElideMode.ElideRight,
                                         max(0, self.text.width() - fm.horizontalAdvance(tail))) + tail)
         self.text.setToolTip(self.message if self.text.text() != self.message else "")
+
+    shown_fit = fit_text            # (Report a problem's picture mode fits it again, the message scrubbed)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

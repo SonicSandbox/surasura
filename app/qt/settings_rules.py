@@ -28,7 +28,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QSize, Qt, QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 
-from app import settings_manager, theme
+from app import scrub, settings_manager, theme
 from app.qt import applog, bridge, style
 from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
@@ -141,9 +141,15 @@ class _SourceWords(QLabel):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideMiddle, max(0, self.width()))
+        self._fit()
+
+    def _fit(self):
+        """Cut to its room — the whole text scrubbed first while a picture is taken (`report.PictureMode`)."""
+        shown = self.fontMetrics().elidedText(scrub.shown(self._full), Qt.TextElideMode.ElideMiddle, max(0, self.width()))
         if shown != self.text():
             self.setText(shown)
+
+    shown_fit = _fit
 
 
 class RuleLine(QWidget):

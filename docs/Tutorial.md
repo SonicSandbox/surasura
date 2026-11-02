@@ -70,6 +70,7 @@
 ## More
 
 - **Piyo ぴよ** (practise with your own AI): Settings › Connections › *Piyo ぴよ*.
-- **Report a problem** (the bug icon, top right) zips what's needed; **Send on Discord** opens the server.
+- **Report a problem** (the bug icon, top right): **Send report** shows exactly what goes, your Windows name taken
+  out, then sends it to Sonic; **Make a zip instead** keeps it on your PC.
 - Questions: [FAQ](Surasura%20FAQ.md) · [How Parsing Works](How%20Parsing%20Works.md) ·
   [Discord](https://surasura.dev/app/discord).

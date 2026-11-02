@@ -45,7 +45,7 @@ from PyQt6.QtGui import QFont, QFontMetricsF, QLinearGradient, QPainter, QPen, Q
 from PyQt6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLayout,
                              QPlainTextEdit, QBoxLayout, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QVBoxLayout, QWidget)
 
-from app import ankiconnect_addon, path_utils, settings_manager, theme
+from app import ankiconnect_addon, path_utils, scrub, settings_manager, theme
 from app.qt import addon_steps, applog, bridge, confirm, motion, settings_strings, strings, style, windows
 from app.qt import press as qpress
 from app.qt import wizard_strings as S
@@ -373,8 +373,9 @@ class Choice(QAbstractButton):
             x += d + _px(10)
         p.setFont(title_font)
         p.setPen(_c("ink") if chosen or not self.small else _c("ink-dim"))
-        p.drawText(QPointF(x, base), self.title)
-        end = x + fm.horizontalAdvance(self.title)
+        title = scrub.shown(self.title)                     # (scrubbed while Report a problem takes a picture)
+        p.drawText(QPointF(x, base), title)
+        end = x + fm.horizontalAdvance(title)
         if self.recommended:
             rec = _font("eyebrow")
             rec.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 110)
@@ -384,7 +385,7 @@ class Choice(QAbstractButton):
         if self.line and not self.small:
             p.setFont(_font("row-sub"))
             p.setPen(_c("ink-dim"))
-            p.drawText(QPointF(pad, base + _px(22)), self.line)
+            p.drawText(QPointF(pad, base + _px(22)), scrub.shown(self.line))     # (Anki's status: may name a profile)
         if chosen:
             if self.small:
                 self._paint_vein(p, self.height() - _px(8), x - _px(2), end + _px(2))
@@ -860,7 +861,7 @@ class DeckChip(QAbstractButton):
         p.setFont(name_f)
         p.setPen(_c("ink") if on else _c("ink-dim"))
         count = QFontMetricsF(count_f).horizontalAdvance(S.DECK_CARDS.format(n=self.count or 0))
-        name = QFontMetricsF(name_f).elidedText(self.name, Qt.TextElideMode.ElideMiddle,
+        name = QFontMetricsF(name_f).elidedText(scrub.shown(self.name), Qt.TextElideMode.ElideMiddle,
                                                 max(0.0, self.width() - x - _px(8) - count - _px(14)))
         p.drawText(QPointF(x, base), name)                # (whole in its tooltip and its name for a reader)
         x += QFontMetricsF(name_f).horizontalAdvance(name) + _px(8)

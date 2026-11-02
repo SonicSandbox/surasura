@@ -482,6 +482,17 @@ def picture_mode():
         _PICTURES = was
 
 
+def kept():
+    """The Identity already worked out for this test root, or None — never read, never waited for (the bug press, on
+    the window's thread: a zip's fresh read may hold the lock meanwhile)."""
+    return _current()
+
+
+def drawing():
+    """A picture is being taken with the Identity ready (`shown` scrubs): a painter's cached picture is drawn again."""
+    return _PICTURES and _current() is not None
+
+
 def shown(s):
     """What a painted widget draws: `s` scrubbed while a picture is taken (never waiting for the Identity), else `s`."""
     ident = _current() if _PICTURES and isinstance(s, str) else None

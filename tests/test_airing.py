@@ -569,6 +569,8 @@ def test_only_current_shows_near_their_end_with_no_id_and_a_name_anilist_may_kno
     works[6]["anilist_id"] = 154587
     group, works[7] = _titled(7, "Sousou no Frieren Season 2", [_ep(1)], group=True)
     rows.append(group)
+    clip, works[8] = _titled(8, "Bocchi the Rock!", [_ep(1)], media="anime")
+    rows.append(clip._replace(source="youtube"))    # bilibili / YouTube files, typed anime: never by title (review L4)
     assert A.near_end_titles(rows, works) == ["Mushoku Tensei Season 2"], \
         "two left: far from its end · a book · no name left once cleaned · the same title once · an id · a group"
     found = {"Mushoku Tensei Season 2": {"id": 146065, "asked_at": NOW}}
@@ -595,20 +597,27 @@ def test_a_show_with_no_id_waits_for_its_title_s_answer_and_none_found_leaves_it
 
 
 def test_a_title_is_asked_through_the_covers_search_then_its_id_in_the_same_round(anilist, tmp_path):
+    _serve(anilist, "Mushoku Tensei Season 1")
     _serve(anilist, "Mushoku Tensei")
-    anilist.media[146065] = dict(anilist.media[146065], status="RELEASING", nextAiringEpisode=None)
+    anilist.media[108465] = dict(anilist.media[108465], status="FINISHED", nextAiringEpisode=None)
     f = fetcher(Pen(), anilist)
     a = _airing(f, tmp_path)
     told = []
-    a.on_change = lambda: told.append(1)
-    assert a.want_titles(["Mushoku Tensei Season 2"]) == 1 and a.run_once() == 1
-    search, ids = [b for b, _h in anilist.posts]
-    assert search == {"query": O.Q_SEARCH, "variables": {"search": "Mushoku Tensei"}}, "the cleaned name, no season"
-    assert ids == {"query": A.Q_AIRING, "variables": {"ids": [146065]}}
+
+    def reader_like():                              # the reader's next build hands the id it now has (review L3)
+        told.append(1)
+        a.want([108465])
+    a.on_change = reader_like
+    assert a.want_titles(["Mushoku Tensei Season 1"]) == 1 and a.run_once() == 1
+    full, search, ids = [b for b, _h in anilist.posts]
+    assert full["variables"] == {"search": "Mushoku Tensei Season 1"}, "the cleaned name: AniList finds nothing"
+    assert search == {"query": O.Q_SEARCH, "variables": {"search": "Mushoku Tensei"}}, "then its season off"
+    assert ids == {"query": A.Q_AIRING, "variables": {"ids": [108465]}}
+    assert a.run_once() == 0 and len(anilist.posts) == 3, "the id found is asked once, never again by the rebuild"
+    assert a.want_titles(["Mushoku Tensei Season 1"]) == 0, "found: never asked by title again"
     shows, titles = A.read_all(a.path)
-    assert titles == {"Mushoku Tensei Season 2": {"id": 146065, "asked_at": NOW}}
-    assert shows["146065"]["status"] == "RELEASING" and told
-    assert a.want_titles(["Mushoku Tensei Season 2"]) == 0, "found: never asked by title again"
+    assert titles == {"Mushoku Tensei Season 1": {"id": 108465, "asked_at": NOW}}
+    assert shows["108465"]["status"] == "FINISHED" and told
     kept = A.Kept("ja", a.path)
     assert kept.titles() == titles and kept.shows() == shows
 
@@ -619,7 +628,8 @@ def test_a_title_with_no_sure_answer_is_kept_as_none_and_asked_again_in_a_week(a
     f = fetcher(Pen(), anilist)
     a = _airing(f, tmp_path, clock=lambda: wall["t"])
     assert a.want_titles(["Naruto Season 2"]) == 1 and a.run_once() == 0
-    assert len(anilist.posts) == 1 and _queries(anilist) == [], "no id: nothing asked by id"
+    assert [b["variables"]["search"] for b, _h in anilist.posts] == ["Naruto Season 2", "Naruto"]
+    assert _queries(anilist) == [], "no id: nothing asked by id"
     assert A.read_all(a.path)[1] == {"Naruto Season 2": {"id": None, "asked_at": NOW}}
     assert a.want_titles(["Naruto Season 2"]) == 0
     wall["t"] = NOW + 8 * DAY

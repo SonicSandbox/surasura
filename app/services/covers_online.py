@@ -4,20 +4,20 @@ network call, specified there and named in `CLAUDE.md` §1. Qt-free, Tk-free, st
 
 **Nothing leaves the machine unless `covers_download` is True** (settings.json, read only — never written here; asked
 again before every request). What is sent, and nothing else: an AniList id (`id_in`, up to `BATCH` a query), or — only
-when no id is known — a cleaned title (`clean_title`: no release group, episode, resolution, hash or path; its season
-too, `search_text`); YouTube gets
+when no id is known — a cleaned title (`clean_title`: no release group, episode, resolution, hash or path; asked again
+without its season when that finds no sure answer, `search_text`); YouTube gets
 a video id (`i.ytimg.com/vi/<id>/hqdefault.jpg`: a video already in the library, C5). Every request says
 `User-Agent: Surasura/<version>` and sends no `Referer` (AniList's image server refuses some by it) and no cookie.
 TMDB is skipped in 3.0's first cut (no key in source, CI or tests: the seam is `paste`'s *no_key*).
 
 - **`Fetcher(language, writer)`**: `want(wants)` — the titles that arrived or first show (never a sweep of the
   library: the window asks for what it paints) — returns at once; its own thread (never the window's) fetches them:
-  ids first, batched, then a title search — sent the cleaned name without its season (`search_text`) — behind the
-  confidence gate (`gate`: one candidate's romaji, English, native or synonym title, folded as one show
-  (`episode_names.show_key`), equals the cleaned name's, and the season — and the year, when the name holds one —
-  agrees; none: a TV show or film whose title is the name and a subtitle; none either: season 1's TV sequels walked to
-  the season the name says, alpha 9 try (*Mushoku Tensei* S01 / S02); else nothing: the generated cover stays and
-  *Change cover…* offers `candidates`). AniList's API is asked at most `PER_MINUTE` times a minute (its degraded limit), its images
+  ids first, batched, then a title search — the cleaned name, then, when the gate takes none of its answers, the name
+  without its season (`search_text`; `Fetcher._lookup`) — behind the confidence gate (`gate`: one candidate's romaji,
+  English, native or synonym title, folded as one show (`episode_names.show_key`), equals the cleaned name's, and the
+  season — and the year, when the name holds one — agrees; none: a TV show or film whose title is the name and a
+  subtitle; none either: season 1's TV sequels walked to the season the name says, alpha 9 try (*Mushoku Tensei* S01 /
+  S02); else nothing: the generated cover stays and *Change cover…* offers `candidates`). AniList's API is asked at most `PER_MINUTE` times a minute (its degraded limit), its images
   `IMAGES_PER_MINUTE`. Each image is written into the covers cache (`.part`, then renamed) and recorded
   `writer.set_cover(work, "anilist" | "youtube", ref=<id>, path="cache:<name>", auto=True)` — a background cover:
   never on the user's Undo stack — and only over no cover or an unlocked generated one (or its own source's after
@@ -176,22 +176,22 @@ def _season(title):
     return _numbered(title, _SEASONS)
 
 
-def _reading(title):
+def _reading(title, years=True):
     """(base, season, part, year) of a title as the gate reads it: its season (`_season`), its part or cour (`Part 2`,
     `Cour 2`, `第2クール`: a season AniList splits in two) and a year in round brackets (`HUNTER×HUNTER (2011)`) taken
-    off the base; each None when it says none."""
+    off the base (`years`; else the year stays in it); each None when it says none."""
     t = unicodedata.normalize("NFKC", title or "")
     m = _TITLE_YEAR.search(t)
     year = int(m.group(1)) if m else None
-    t, season = _season(_TITLE_YEAR.sub(" ", t))
+    t, season = _season(_TITLE_YEAR.sub(" ", t) if years else t)
     t, part = _numbered(t, _PARTS)
     return t, season, part, year
 
 
 def search_text(name):
-    """What AniList's search is sent for a cleaned name: the name without its season or part (`Mushoku Tensei Season 1`
-    → `Mushoku Tensei`: AniList finds nothing for the first) — the gate then picks the season; the name itself when
-    nothing is left."""
+    """A cleaned name without its season or part (`Mushoku Tensei Season 1` → `Mushoku Tensei`: AniList finds nothing
+    for the first), asked when the name as it is finds no sure answer (`Fetcher._lookup`) — the gate then picks the
+    season among the show's entries; the name itself when nothing is left."""
     base = re.sub(r"\s+", " ", _reading(name)[0]).strip(" -–—~._:|")
     return base or name
 
@@ -214,7 +214,11 @@ def _passes(media, key, season, part, year, whole):
         return False
     for title in _titles(media):
         base, s, p, y = _reading(title)
-        if (y is not None and y != year) or (s or 1) != (season or 1) or (p or 1) != (part or 1):
+        if (s or 1) != (season or 1) or (p or 1) != (part or 1):
+            continue
+        if whole and y is not None and show_key(_reading(title, years=False)[0]) == key:
+            return True                         # its year said as the name says it (`Hunter x Hunter 2011`)
+        if y is not None and y != year:
             continue
         if whole and show_key(base) == key:
             return True
@@ -599,11 +603,10 @@ class Fetcher:
         if not self._go():
             return 0
         try:
-            media = self._find(search_text(name))
+            match = self._lookup(name, year)
         except _Failed:
             self._failed(w)
             return 0
-        match = gate(name, media, year)
         if match is None or not _cover_url(match):
             self._finished(w)                       # no sure match: *Change cover…* offers the candidates
             return 0
@@ -639,13 +642,24 @@ class Fetcher:
         data = self._post({"search": name}, Q_SEARCH, first)
         return [m for m in (data.get("Page") or {}).get("media") or () if isinstance(m, dict)]
 
+    def _lookup(self, name, year, first=False):
+        """The gate's one answer for a cleaned name, or None: AniList asked the name as it is (a season's own title can
+        sit past a franchise's first page without it), then — only when the gate takes none of those answers and the
+        name says a season or part — the name without it (`search_text`: AniList finds nothing for `Mushoku Tensei
+        Season 1`). Raises when AniList didn't answer (`_post`)."""
+        match = gate(name, self._find(name, first), year)
+        text = search_text(name)
+        if match is None and text != name:
+            match = gate(name, self._find(text, first), year)
+        return match
+
     def _match(self, title):
-        """(Airing's thread; Sonic 2026-11-02, item 2) A title's AniList id by its cleaned name — this search, this
-        gate — or None: no name to ask by, or no one sure answer. Raises when AniList didn't answer (`_post`)."""
+        """(Airing's thread; Sonic 2026-11-02, item 2) A title's AniList id by its cleaned name — the covers' own search
+        and gate (`_lookup`) — or None: no name to ask by, or no one sure answer. Raises when AniList didn't answer."""
         name, year = clean_title(title)
         if not name:
             return None
-        match = gate(name, self._find(search_text(name)), year)
+        match = self._lookup(name, year)
         return match.get("id") if match is not None and isinstance(match.get("id"), int) else None
 
     def _post(self, variables, query, first=False):
@@ -710,7 +724,9 @@ class Fetcher:
         if not name:
             return []
         try:
-            media = self._find(search_text(name), first=True)
+            media = self._find(name, first=True)
+            if not media and search_text(name) != name:     # nothing for `… Season 1`: the show's entries
+                media = self._find(search_text(name), first=True)
         except _Failed as e:
             if not self._go():                      # switched off or stopped while it waited: nothing was asked
                 return None

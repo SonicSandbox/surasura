@@ -68,8 +68,10 @@ def airing_id(work, titles=None):
 def title_of(row, work):
     """The title a show with no AniList id is asked by (Sonic 2026-11-02, item 2): its work's title, when the covers
     would ask AniList by it (`covers_online.by_title`: a name it cleans to; not a book, a YouTube channel, a drama …
-    by the row's media type) — else None. A group, or a row of no title, never."""
-    if getattr(row, "group", False) or not work or not isinstance(work.get("title"), str):
+    by the row's media type; never a row of YouTube or bilibili files, whatever it is called: `view_rows.source_of`)
+    — else None. A group, or a row of no title, never."""
+    if getattr(row, "group", False) or getattr(row, "source", None) == "youtube" or not work or \
+            not isinstance(work.get("title"), str):
         return None
     from app.services import covers_online          # (covers_online imports this module)
     return work["title"] if covers_online.by_title(work["title"], getattr(row, "media", None)) else None
@@ -434,18 +436,20 @@ class Airing:
             titles, self._tqueue = [t for t in self._tqueue if t in self._twanted], []
         if not (todo or titles) or not self.on():
             return 0                                # switched off: nothing asked, nothing kept (a later want asks)
-        if titles:
-            todo += [i for i in self._ask_titles(titles) if i not in todo]
+        found, moved = self._ask_titles(titles) if titles else ([], False)
+        todo += [i for i in found if i not in todo]
         kept = 0
         for at in range(0, len(todo), BATCH):
             kept += self._ask(todo[at:at + BATCH])
+        if moved:                                   # told after its id was asked: the view built then never asks it
+            self._changed()                         # again (a title none found: its PENDING goes, the dates decide)
         return kept
 
     def _ask_titles(self, titles):
-        """Each title's id through `find`, kept in the cache (None: no sure answer). -> the ids found whose own answer
-        is due (asked in this round)."""
+        """Each title's id through `find`, kept in the cache (None: no sure answer). -> (the ids found whose own answer
+        is due, asked in this round; whether a title's answer moved — the caller tells the reader once they are)."""
         if self.find is None:
-            return []
+            return [], False
         with self._cond:
             gen = self._gen
         answers = {}
@@ -459,11 +463,11 @@ class Airing:
                 continue
             answers[t] = found if isinstance(found, int) and not isinstance(found, bool) and found > 0 else None
         if not answers:
-            return []
+            return [], False
         now = self.clock()
         with self._cond:
             if self._stop or gen != self._gen:
-                return []                           # stopped, or *Remove downloaded covers* came meanwhile
+                return [], False                    # stopped, or *Remove downloaded covers* came meanwhile
             shows = self._known()
             before = self._titles
             titles_now = dict(before)
@@ -474,9 +478,7 @@ class Airing:
         with self._disk:                            # (as `_ask`'s)
             if gen == self._gen:
                 _write(self._path(), shows, titles_now)
-        if moved:
-            self._changed()                         # (a title no sure answer for: its PENDING goes, the dates decide)
-        return [i for i in answers.values() if i is not None and due(shows.get(str(i)), now)]
+        return [i for i in answers.values() if i is not None and due(shows.get(str(i)), now)], moved
 
     def _ask(self, chunk):
         with self._cond:

@@ -9442,14 +9442,18 @@ def _store_note_emptied(self):
     in meta `folder_emptied` {"at", "files"} -> the files counted, or None (files there, an empty record). Asked at each
     run's first look: a note stays while the folder fills again (the card waits for its answer), and an emptying found
     later is a new note — a new `at`, so a card asked again even after *Keep my old library*. A bookkeeping write (no
-    version moves; never in the JSON copy); *Start fresh*'s fresh meta drops it."""
+    version moves; never in the JSON copy); *Start fresh*'s fresh meta drops it. The top folders are read by SQLite
+    (F13: every copy's path read in Python held the interpreter 75 ms at 20k, in the look that takes in one file)."""
     with self._reading():
-        rels = [r[0] for r in self.conn.execute("SELECT rel_path FROM items WHERE availability != 'waiting'")]
-    tops = {_strip(str(rel)).split("/", 1)[0] for rel in rels if rel}
+        files = self.conn.execute("SELECT count(*) FROM items WHERE availability != 'waiting'").fetchone()[0]
+        tops = {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT CASE WHEN instr(rel, '/') THEN substr(rel, 1, instr(rel, '/') - 1) ELSE rel END FROM "
+            "(SELECT CASE WHEN substr(rel_path, 1, 2) = './' THEN substr(rel_path, 3) ELSE rel_path END AS rel "
+            "FROM items WHERE availability != 'waiting' AND rel_path != '')")}
     if not tops or any(_holds_a_file(os.path.join(self.data_dir, top)) for top in tops):
         return None
-    self.bookkeeping({FOLDER_EMPTIED: _dumps({"at": _now(), "files": len(rels)})})
-    return len(rels)
+    self.bookkeeping({FOLDER_EMPTIED: _dumps({"at": _now(), "files": files})})
+    return files
 
 
 def _holds_a_file(path):

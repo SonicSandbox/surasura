@@ -805,3 +805,23 @@ def test_another_windows_newer_report_is_never_deleted_by_a_late_close(main, rec
         if t.name == "report-discard":
             t.join(5)
     assert send_report.waiting() is not None and send_report.waiting().sha256 == newer.sha256
+
+
+def test_who_you_are_is_worked_out_after_the_start_or_as_the_hand_reaches_the_bug(main):
+    # GitHub's shard 3 (2026-11-01): worked out at every first frame, the read ran beside the start's own work and the
+    # drag suite's timed checks. Now: a moment after the first frame, or at once when the hand reaches the bug.
+    import threading
+    from PyQt6.QtCore import QPointF
+    from PyQt6.QtGui import QEnterEvent
+    from app import scrub
+    timer = main.report_button.prepare_timer
+    assert timer.isSingleShot() and timer.interval() == report_ui.PREPARE_AFTER_MS == 3000
+    for t in threading.enumerate():
+        if t.name == "scrub-identity":
+            t.join(10)
+    scrub.reset()
+    p = QPointF(4, 4)
+    QApplication.sendEvent(main.report_button, QEnterEvent(p, p, p))
+    QApplication.sendEvent(main.report_button, QEnterEvent(p, p, p))          # (a second pass: one worker only)
+    assert sum(t.name == "scrub-identity" for t in threading.enumerate()) <= 1
+    assert wait_until(scrub.ready, 10)

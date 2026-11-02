@@ -33,7 +33,8 @@ import re
 import threading
 import zipfile
 
-from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, QPointF, QRectF, QSignalBlocker, QSize, QStandardPaths, Qt
+from PyQt6.QtCore import (QBuffer, QByteArray, QIODevice, QPointF, QRectF, QSignalBlocker, QSize, QStandardPaths, Qt,
+                          QTimer)
 from PyQt6.QtGui import QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QShortcut
 from PyQt6.QtWidgets import (QAbstractButton, QAbstractItemView, QAbstractScrollArea, QAbstractSpinBox, QApplication,
                              QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QItemDelegate, QLabel, QLineEdit,
@@ -79,6 +80,19 @@ def bug_path(cx, cy, s):
     return body, paths
 
 
+PREPARE_AFTER_MS = 3000         # the scrub's Identity worked out this long after the first frame (or on the bug's hover)
+_preparing = [None]             # the worker working it out, while it does
+
+
+def prepare_identity():
+    """(The window's thread.) Who "you" are (`scrub.prepare`), on one worker at a time: nothing when it is ready or
+    being worked out."""
+    t = _preparing[0]
+    if scrub.ready() or (t is not None and t.is_alive()):
+        return
+    _preparing[0] = scrub.prepare()
+
+
 def bug_tip(n):
     return strings.REPORT_TIP_COUNT.format(n=n) if n else strings.REPORT_TIP
 
@@ -101,8 +115,12 @@ class BugButton(QToolButton):
         self.counted.said.connect(self.set_count)                 # ... the window's worker jobs, never a wait
         first = getattr(shell, "first_frame", None)
         if first is not None:                                     # the count read after the first frame, and who
-            first.connect(self.refresh)                           # ... "you" are worked out on a worker (the scrub's
-            first.connect(lambda: scrub.prepare())                # ... Identity: ready before the first bug press)
+            first.connect(self.refresh)                           # ... "you" are worked out on a worker a moment
+            self.prepare_timer = QTimer(self)                     # ... after (the scrub's Identity: never beside
+            self.prepare_timer.setSingleShot(True)                # ... the start's own work)
+            self.prepare_timer.setInterval(PREPARE_AFTER_MS)
+            self.prepare_timer.timeout.connect(prepare_identity)
+            first.connect(self.prepare_timer.start)
 
     def refresh(self):
         relay = self.counted
@@ -179,7 +197,12 @@ class BugButton(QToolButton):
 
     def enterEvent(self, event):
         super().enterEvent(event)
+        prepare_identity()                                        # (the hand on its way: ready by the press)
         self.update()
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        prepare_identity()
 
     def leaveEvent(self, event):
         super().leaveEvent(event)
@@ -516,7 +539,7 @@ class ReportWindow(SecondaryWindow):
         self.setMinimumWidth(round(560 * f))
         self._show_pictures()
         self._restore_draft()
-        scrub.prepare()                                           # (worked out at the first frame; else now)
+        prepare_identity()                                        # (worked out after the first frame; else now)
         self.read()
         self.read_send()
 

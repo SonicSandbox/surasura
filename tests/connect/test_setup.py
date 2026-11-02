@@ -383,7 +383,7 @@ def test_what_only_anki_miners_youtube_fetch_needs_never_stops_connect(monkeypat
     assert _by_id(result)["anki_miner_setup"]["state"] == "ok" and result["ready"]
 
 
-# Anki Miner main's (2026-10-31, unreleased; still 3.10.1) `check`, as its `check_result` builds it: every item in its
+# Anki Miner 3.11.0's `check` (its main from 2026-10-31, released 2026-11-02), as its `check_result` builds it: every item in its
 # order, `message` None when ok, and `ready` every item but `_NOT_FOR_MINE` (yt_dlp, speech_model, ocr, video_ocr)
 ITEMS_MAIN = ITEMS_37 + ["ocr", "video_ocr"]
 NOT_FOR_MINE_MAIN = {"yt_dlp", "speech_model", "ocr", "video_ocr"}

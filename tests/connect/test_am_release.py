@@ -200,8 +200,8 @@ def test_a_newer_release_is_a_notice_and_catching_up_clears_it_with_no_fetch():
     approved = {"version": am_release.APPROVED, "url": am_release.approved_page()}
     assert am_release.notice("3.7.0") == approved, "alpha 4 M5: the approved version, never the kept 3.8.0 itself"
     assert am_release.notice(am_release.APPROVED) is None, "Anki Miner updated by hand: the notice goes at once"
-    assert am_release.notice("3.10.1.0") is None, "3.10.1.0 is 3.10.1"
-    assert am_release.notice("3.11.0") is None
+    assert am_release.notice(am_release.APPROVED + ".0") is None, "3.11.0.0 is 3.11.0"
+    assert am_release.notice("3.12.0") is None, "a newer one installed by hand: no notice"
     assert am_release.notice(None) is None, "Anki Miner not known to be installed: no notice"
     assert fetch.calls == 1
 
@@ -507,3 +507,14 @@ def test_a_release_newer_than_the_approved_one_is_never_offered_the_approved_one
     assert am_release.notice("3.7.0") == {"version": approved, "url": f"{am_release.RELEASES}/tag/v{approved}"}
     assert am_release.notice(approved) is None, "up to the approved version: nothing to offer"
     assert am_release.notice("99.0.0") is None, "a newer one you installed yourself: no notice, never a downgrade"
+
+
+def test_the_pin_has_the_shape_the_install_route_compares_with():
+    """The bump procedure (planning `alpha4/anki-miner-pin.md`) changes two lines by hand. The Install route takes the
+    release only when its tag less the `v` equals APPROVED and GitHub's digest equals APPROVED_SHA256 lowered
+    (`anki_miner_setup._asset` / `_approved`): a pin written `v3.11.0`, with a space, or a digest cut short would send
+    every Install to the releases page instead, and no other test sees it (they read the pin symbolically)."""
+    import re
+    assert re.fullmatch(r"\d+\.\d+\.\d+", am_release.APPROVED), am_release.APPROVED
+    assert re.fullmatch(r"[0-9a-f]{64}", am_release.APPROVED_SHA256), "GitHub's sha256 digest, 64 lowercase hex"
+    assert am_release.approved_page().endswith(f"/tag/v{am_release.APPROVED}")

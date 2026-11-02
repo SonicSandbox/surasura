@@ -49,13 +49,16 @@ at a time). ⋯ or a right-click on a picked row while 2+ rows are picked offers
 split's first part is among them; *Group…* first where it applies): each ONE store command through
 `drag.DragController.send_picks` — one toast naming the count, one Undo; *Remove…* asks first (`ask_remove_picks`). A
 drag from a picked row carries them all (`DragController.begin`).
-**Drop-to-join (G3):** a part dragged over the middle of another part of the same title (its top and bottom 30 % stay
-a move beside it, so a part can still be placed next to its other part): the rows hold still (no gap opens), that part
-shows a green dashed outline and *Drop to join*; the drop joins them in episode order, opens the result and toasts
+**Where a drop lands (Sonic 2026-11-01: "It's always been too easy to combine"; PROVISIONAL):** over a row's upper half
+above it, its lower half below (the gap shows it); a join or a group only after the hand holds `JOIN_REST_MS` on the
+row's middle where the row stays under it (`holds_on`: never on the half the gap opens under, never its top and bottom
+`JOIN_EDGE`), and only a release then; moving off lets the hold go. A quick release there places it by halves.
+**Drop-to-join (G3):** a part held on another part of the same title: the rows hold still (the gap closes), that part
+shows a green dashed outline and *Join as one show*; the drop joins them in episode order, opens the result and toasts
 *Joined Ep x–y* with Undo.
-**Drop to group (LM11b G2; Sonic's answers: a drop on another show makes a group, no question):** over the middle of
-another show's part, or of a group (either side a group), the hand rests `JOIN_REST_MS` before that row is outlined with
-*Drop to group* (a passing drag still reorders); the drop is one `Writer.join(..., how="group")`, the row dropped on
+**Drop to group (LM11b G2; Sonic's answers: a drop on another show makes a group, no question):** held on another
+show's part, or a group (either side a group), that row is outlined with *Drop to group* (a passing drag still
+reorders); the drop is one `Writer.join(..., how="group")`, the row dropped on
 first (it keeps its place, a group its name), never `ahead` — toasted *Grouped … with …* with Undo once the store
 saved it (a refusal toasts nothing: no promise the store didn't keep), the result opened. A row in Finished or New
 arrivals is never a group's target (the store's `NO_GROUP_TIERS`).
@@ -86,8 +89,11 @@ from app import library_store
 from app.qt import bridge, confirm, drag, finished, rows, strings
 from app.services import view_rows
 
-JOIN_EDGE = 0.3                                     # a part's top and bottom 30 %: a move beside it, not a join
-JOIN_REST_MS = 500                                  # LM11b G2: another show groups only once the hand rests this long
+# Where a drop over a row lands (Sonic 2026-11-01: "It's always been too easy to combine"; PROVISIONAL, checked in his
+# try): its upper half places above it, its lower half below; a join or a group only after the hand holds on its middle
+# this long, where the row stays under the hand (`holds_on`)
+JOIN_EDGE = 0.25                                    # a part's top and bottom 25 %: never a hold, a move beside it
+JOIN_REST_MS = 500                                  # the hold before *Join as one show* / *Drop to group* shows
 
 Entry = namedtuple("Entry", "name label tip ok children checked payload writes", defaults=(None, None, None, False))
 #   writes: a hook's entry that asks the store for a write — greyed by the menu, with the store's reason, while the
@@ -127,8 +133,18 @@ def comes_first(part, target):
 pieces_of = drag.pieces_of          # the pieces a row stands for (B2-2): one rule, L6.3's join forward reads it too
 
 
+def holds_on(y, top, bottom, still, held):
+    """Whether a hand at `y` over a row's slab (`top`…`bottom`) is where a hold joins or groups: inside its middle (its
+    top and bottom `JOIN_EDGE` place beside it), and until the hold is done (`held`) only where the row stays painted
+    under the hand (`still`: its half whose gap opens on its far side). The other half shows the gap under the hand —
+    and a gap's centre is the row's resting middle, so aiming at it must never join. Held, the rows close up and the
+    whole middle keeps it."""
+    edge = round((bottom - top + 1) * JOIN_EDGE)
+    return top + edge <= y <= bottom - edge and (still or held)
+
+
 def same_show(a, b):
-    """Two runs of one show (a drop joins them at once): never a group on either side (LM11b G2)."""
+    """Two runs of one show (a held drop joins them as one): never a group on either side (LM11b G2)."""
     return not getattr(a, "group", False) and not getattr(b, "group", False) and a.work_id == b.work_id
 
 
@@ -963,17 +979,18 @@ class ItemActions(QObject):
 
     # --- drop-to-join (G3; `drag.DragController` asks) ------------------------------------------------------------- #
     def target(self, d, global_pos):
-        """The key of the row under the hand that a drop joins: a part of the same show at once; another show's, or a
-        group, once the hand has rested `JOIN_REST_MS` on it (LM11b G2). Else None."""
+        """The key of the row under the hand that a drop joins (a part of the same show) or groups with (another show's,
+        or a group: LM11b G2) — only once the hand has held `JOIN_REST_MS` on it (Sonic 2026-11-01; a quick drop
+        there places it by halves). Else None."""
         hit = self._over(d, global_pos)
         other, ep = hit if hit is not None else (None, None)
-        if other is None or (d.row is not None and same_show(d.row, other)):
+        if other is None:
             self._resting = self._rested = self._group_key = self._ep_at = None
             self._rest.stop()
-            return other.key if other is not None else None
+            return None
         self._ep_at = (other.key, ep) if ep is not None else None
         if self._rested == (d, other.key):
-            self._group_key = other.key
+            self._group_key = None if d.row is not None and same_show(d.row, other) else other.key
             return other.key
         self._group_key = None
         if self._resting != (d, other.key):          # a new row under the hand: its rest starts now
@@ -983,7 +1000,7 @@ class ItemActions(QObject):
 
     def _over(self, d, global_pos):
         """(the row under the hand a drop would join, the opened group's episode it is on — not its last — or None),
-        else None: over a row's middle (its edges place beside it), or anywhere on an opened group's episodes. A drag
+        else None: over a row's middle where a hold counts (`holds_on`), or anywhere on an opened group's episodes. A drag
         from the list: a joinable part; New arrivals' (IK-3): a group only."""
         row = d.row
         if d.external:
@@ -1012,9 +1029,9 @@ class ItemActions(QObject):
         if ep is not None:
             return other, (ep if ep.id != other.episodes[-1].id else None)
         slab = self.lst.delegate.slot_rect(kind, rect, _lines)
-        edge = round(slab.height() * JOIN_EDGE)
-        if not slab.top() + edge <= pos.y() <= slab.bottom() - edge:
-            return None                              # its edges place it beside the part, as any row's do
+        still = drag.part_offset(d.src, self.moves.slot_at(pos.y()), idx.row(), 1) == 0
+        if not holds_on(pos.y(), slab.top(), slab.bottom(), still, self._rested == (d, other.key)):
+            return None                              # its edges, and the half the gap opens under, place it by halves
         return other, None
 
     def _rested_on(self):

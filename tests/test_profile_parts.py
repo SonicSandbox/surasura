@@ -291,3 +291,17 @@ def test_every_role_that_moves_has_words_for_the_window():
     from app import profile_reset
     moving = {role for _p, _n, role, so, _sa in path_utils.PARTS if so == path_utils.MOVES}
     assert moving | {"library_store", "unlisted"} <= set(profile_reset.WHAT)
+
+
+def test_in_the_real_layout_only_this_installs_files_in_libraries_move(tmp_path):
+    """The installed layout keeps every install's stores in the local root's `libraries` (the test root keeps them in
+    `index`): this install's store files move, their lock files and another install's stores stay."""
+    local = tmp_path / "Local" / "Houseki" / "Surasura"
+    own = os.path.basename(ls.library_db_path("zh", path_utils.get_data_path("zh")))
+    for name in (own, own + "-wal", own + ".lock", "library_zh_fedcba9876543210.db"):
+        _make(str(local / "libraries" / name))
+    parts = {p["rel"]: p for p in path_utils.profile_parts({"local": str(local)})}
+    assert parts[f"libraries/{own}"]["role"] == "library_store"
+    assert parts[f"libraries/{own}"]["start_over"] == parts[f"libraries/{own}-wal"]["start_over"] == path_utils.MOVES
+    for name in (own + ".lock", "library_zh_fedcba9876543210.db"):
+        assert parts[f"libraries/{name}"]["start_over"] == path_utils.STAYS

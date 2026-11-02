@@ -14,6 +14,10 @@
 
 <div align="center">
 
+![Surasura and Anki side by side: Anki's next card is Bocchi the Rock!'s 一緒に; Yomi no Tsugai is dragged to the top in Surasura; Anki's next card is now Yomi no Tsugai's 取る](docs/assets/images/readme/anki.gif)
+
+[▶ The same clip (MP4, 18 s)](docs/assets/images/readme/anki.mp4)
+
 ![Surasura 3.0: three episodes checked off, Mine, a new show dragged in from New arrivals, a show moved to Goal](docs/assets/images/readme/demo.gif)
 
 [▶ Full demo (MP4, 45 s)](docs/assets/images/readme/demo.mp4)

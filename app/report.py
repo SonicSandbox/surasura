@@ -22,7 +22,15 @@ followed, a cloud placeholder downloaded. The rules are the evidence collector's
 app won't open, and a test holds its list to this one.
 
 Nothing here sends anything anywhere: the zip is written to a folder on this PC (Downloads, or one the tester picks)
-and the tester sends it.
+and the tester sends it, or Send report (`app/send_report.py`) sends the one `make_send_zip` writes.
+
+**The scrub** (Send report, `tracks/ship/work/send-report/SPEC.md` §2): every entry, its name and the zip's list pass
+one function as the zip is written (`_entry_bytes`): read as text (`scrub.decode`), each string that names the tester —
+their home folder, user and machine names, Anki profiles, install keys, emails — written as a placeholder (`app/scrub.py`).
+Deck names, titles, words and subtitle lines stay. Make the zip keeps what the scrub can't see into (the report page,
+a picture taken before 3.0, a file that isn't text) and its list marks them *not checked*; the zip Send report sends
+leaves them out, each with its reason. Then the guard (`scrub.leaks`) reads the written zip again: a hit stops a zip
+that would be sent, and is named in Make the zip's list (never the string: the app log names the file).
 """
 import datetime
 import fnmatch
@@ -40,13 +48,14 @@ import uuid
 import zipfile
 
 from app import path_utils
+from app import scrub as scrubbing
 
 REPORTS_DIR = "reports"
 REMOVED_DIR = "removed"
 REPORT_FILE = "report.json"
 PART = ".part"
 PICTURE = "picture-{n}.png"
-FORMAT = 1
+FORMAT = 2                      # 2: report.json says "scrubbed": 1 when its pictures were taken in picture mode
 RESULTS_CAP = 200 * 1024 * 1024  # results\ larger than this is left out whole, said in the zip's list
 ZIP_NAME = "Surasura-problems-{stamp}.zip"
 MAX_PICTURES = 6
@@ -208,7 +217,7 @@ class Report:
     """One saved report as read: `id`, `created` (ISO), `what`, `expected`, `notes` [{at, text}], `pictures` (file
     names in its folder), `where` (the window / tab it came from), `build`."""
 
-    __slots__ = ("id", "path", "created", "what", "expected", "notes", "pictures", "where", "build")
+    __slots__ = ("id", "path", "created", "what", "expected", "notes", "pictures", "where", "build", "scrubbed")
 
     def __init__(self, path, data):
         self.id = os.path.basename(path)
@@ -221,6 +230,7 @@ class Report:
                          if isinstance(p, str) and os.path.basename(p) == p and os.path.isfile(os.path.join(path, p))]
         self.where = str(data.get("where") or "")
         self.build = data.get("build") if isinstance(data.get("build"), dict) else {}
+        self.scrubbed = data.get("scrubbed") == 1                  # its pictures drew every name scrubbed (FORMAT 2)
 
     def title(self):
         """Its first line of words, for the list."""
@@ -228,8 +238,11 @@ class Report:
         return first
 
     def data(self):
-        return {"format": FORMAT, "created": self.created, "what": self.what, "expected": self.expected,
-                "notes": self.notes, "pictures": self.pictures, "where": self.where, "build": self.build}
+        out = {"format": FORMAT, "created": self.created, "what": self.what, "expected": self.expected,
+               "notes": self.notes, "pictures": self.pictures, "where": self.where, "build": self.build}
+        if self.scrubbed:
+            out["scrubbed"] = 1
+        return out
 
 
 def _stamp_of(name):
@@ -266,9 +279,10 @@ def _ids_in(root):
     return names
 
 
-def save(what, expected="", pictures=(), where="", root=None, now=None):
-    """Save one report. `pictures`: PNG bytes, at most MAX_PICTURES. -> the Report. Raises ValueError on no words.
-    The folder is written as `<id>.part` and renamed last: a crash part-way leaves nothing the list shows."""
+def save(what, expected="", pictures=(), where="", root=None, now=None, scrubbed=False):
+    """Save one report. `pictures`: PNG bytes, at most MAX_PICTURES; `scrubbed`: they were taken in picture mode
+    (`scrub.picture_mode`, the Identity ready), so Send report may send them. -> the Report. Raises ValueError on no
+    words. The folder is written as `<id>.part` and renamed last: a crash part-way leaves nothing the list shows."""
     what = (what or "").strip()
     if not what:
         raise ValueError("a report needs its words")
@@ -290,6 +304,8 @@ def save(what, expected="", pictures=(), where="", root=None, now=None):
         data = {"format": FORMAT, "created": now.isoformat(timespec="seconds"), "what": what,
                 "expected": (expected or "").strip(), "notes": [], "pictures": names, "where": where or "",
                 "build": build()}
+        if scrubbed:
+            data["scrubbed"] = 1
         _atomic_write(os.path.join(part, REPORT_FILE), _json_bytes(data))
         final = os.path.join(root, rid)
         os.rename(part, final)
@@ -490,11 +506,14 @@ def _anki_bytes(language):
 
 
 class Entry:
-    """One file the zip will hold: `name` (in the zip), `source` (a path read as it is) or `data` (bytes made here)."""
-    __slots__ = ("name", "source", "data", "size")
+    """One file the zip will hold: `name` (in the zip), `source` (a path read as it is) or `data` (bytes made here);
+    `rid`: the report whose report.json it is (`_clear` reads its original digest); `scrubbed`: a picture taken in
+    picture mode."""
+    __slots__ = ("name", "source", "data", "size", "rid", "scrubbed")
 
-    def __init__(self, name, source=None, data=None):
+    def __init__(self, name, source=None, data=None, rid=None, scrubbed=False):
         self.name, self.source, self.data = name.replace("\\", "/"), source, data
+        self.rid, self.scrubbed = rid, scrubbed
         if data is not None:
             self.size = len(data)
         else:
@@ -510,9 +529,10 @@ class Plan:
 
     def __init__(self):
         self.entries, self.left_out, self.reports, self.removed = [], [], [], []
+        self.unchecked, self.flagged = [], []          # (written by the zip: what it kept unchecked, the guard's hits)
 
-    def add(self, name, source=None, data=None):
-        self.entries.append(Entry(name, source, data))
+    def add(self, name, source=None, data=None, rid=None, scrubbed=False):
+        self.entries.append(Entry(name, source, data, rid, scrubbed))
 
     def size(self):
         return sum(e.size for e in self.entries)
@@ -548,7 +568,8 @@ def _report_entries(plan, reports):
         for name in [REPORT_FILE] + r.pictures:
             full = os.path.join(r.path, name)
             if _file_ok(full, f"{base}/{name}", plan):
-                plan.add(f"{base}/{name}", source=full)
+                plan.add(f"{base}/{name}", source=full, rid=r.id if name == REPORT_FILE else None,
+                         scrubbed=r.scrubbed and name != REPORT_FILE)
         plan.reports.append(r.id)
 
 
@@ -581,9 +602,10 @@ def _results_entries(plan):
     plan.entries += entries
 
 
-def plan(language, include_results=True, library=None, root=None, extra=None):
+def plan(language, include_results=True, library=None, root=None, extra=None, results_why=None):
     """Every file the zip will hold, worked out without writing anything (but the reports folder, made when missing).
-    `library`: the window's counts and folder list (`{counts, sources, state}`) as it shows them. -> a Plan."""
+    `library`: the window's counts and folder list (`{counts, sources, state}`) as it shows them; `results_why`: why
+    results\\ is left out, when not for the tick (Send report's size). -> a Plan."""
     p = Plan()
     root = root or folder()
     unreadable = []
@@ -625,9 +647,13 @@ def plan(language, include_results=True, library=None, root=None, extra=None):
     if include_results:
         _results_entries(p)
     else:
-        p.left_out.append("results\\: left out (Include my last lists was unticked)")
+        p.left_out.append(f"results\\: left out ({results_why or 'Include my last lists was unticked'})")
     p.left_out.append("never taken: your subtitle and book files, Anki's cards, keys and tokens, the library's "
                       "database; Connect's titles and words and Anki Miner's sentences are counted, never copied")
+    ident = scrubbing.identity(fresh=True)                         # every name and line as the zip will hold it
+    for e in p.entries:
+        e.name = scrubbing.name(e.name, ident)
+    p.left_out = [ident.scrub(x) for x in p.left_out]
     return p
 
 
@@ -653,6 +679,10 @@ def _manifest(p, hashes):
     lines = [f"Surasura problem reports: {len(p.entries)} files (sha256  size  name)"]
     for e in p.entries:
         lines.append(f"{hashes.get(e.name, '-')}  {e.size}  {e.name}")
+    if p.unchecked:
+        lines += ["", "Not checked:"] + [f"  {x}: {NOT_CHECKED}" for x in p.unchecked]
+    if p.flagged:
+        lines += ["", "May hold your Windows name:"] + [f"  {x}: {MAY_NAME_YOU}" for x in p.flagged]
     lines += ["", "Left out:"] + [f"  {x}" for x in p.left_out]
     return ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -674,11 +704,119 @@ def zip_name(dest, now=None):
     return path
 
 
-def make_zip(dest, language, include_results=True, library=None, root=None, extra=None, now=None):
-    """The zip, in `dest` (made if missing): written as `<name>.zip.part`, read back whole (every name, every CRC),
-    renamed into place — and only then are its reports taken off the list (and `removed/`, the `.part` folders a crash
-    left, cleared). A failure part-way leaves no zip and the list as it was. -> the zip's path."""
+# --- the one write point: every entry scrubbed (SR-1) ------------------------------------------------------------ #
+# The entries Send report takes are text Surasura reads whole (open_report takes only these, and the pictures)
+SEND_TEXT = re.compile(r"\.(?:txt|log|json|jsonl|csv)(?:\.(?:\d+|old))?$", re.IGNORECASE)
+NOT_CHECKED = "not checked: look it over before you post it"
+MAY_NAME_YOU = "may hold your Windows name: look it over before you post it"
+LEFT_PAGE = "the report page: made again from the lists, so it isn't sent"
+LEFT_PICTURE = "a picture taken before Surasura could hide names in it (Make a zip instead keeps it)"
+LEFT_UNREAD = "couldn't be read as text, so it couldn't be checked"
+LEFT_KIND = "not a text file Surasura can check"
+
+
+class Unsafe(Exception):
+    """The guard found something that may name the tester in the zip Send report would send (`names`: its entries'
+    names, scrubbed): the zip is never offered."""
+
+    def __init__(self, names):
+        super().__init__(f"{len(names)} file(s) may hold your Windows name")
+        self.names = names
+
+
+def _entry_bytes(e, data, language, send, ident):
+    """Every zip entry passes here, once: -> (bytes, note). `note` None: its text, scrubbed, in UTF-8. Send (`send`):
+    (None, why) for what it leaves out — the report page, a picture not taken in picture mode, a file that isn't text
+    it can read whole. Make the zip keeps those as they are, (bytes, NOT_CHECKED)."""
+    low = e.name.lower()
+    if low.startswith("reports/") and low.endswith(".png"):
+        if e.scrubbed:
+            return data, None
+        return (None, LEFT_PICTURE) if send else (data, NOT_CHECKED)
+    page = low.endswith((".html", ".htm"))
+    if send and (page or not SEND_TEXT.search(low)):
+        return None, LEFT_PAGE if page else LEFT_KIND
+    out = scrubbing.clean(data, language, ident)
+    if out is None:
+        return (None, LEFT_UNREAD) if send else (data, NOT_CHECKED)
+    return out, (NOT_CHECKED if page else None)
+
+
+def _tail(data, tail):
+    """A log's last `tail` bytes, from its first whole line."""
+    cut = data[-tail:]
+    at = cut.find(b"\n")
+    if 0 <= at < len(cut) - 1:
+        return cut[at + 1:]
+    return cut.lstrip(bytes(range(0x80, 0xC0)))                      # no whole line: from a whole character
+
+
+def _write(p, part, language, send=False, tail=None, ident=None, found=None):
+    """Write the plan's zip at `part`, every entry through `_entry_bytes`; then the guard. -> {rid: report.json's
+    ORIGINAL sha256} (`_clear` compares the file on disk with it), MANIFEST naming each entry's sha256 as zipped (the
+    scrubbed bytes: open_report checks them). `tail`: logs over it keep their last `tail` bytes (said in Left out).
+    Send: a guard hit raises Unsafe. Make the zip: its hits are named in the list and given to `found`."""
     import hashlib
+    ident = ident or scrubbing.identity()
+    hashes, originals, names = {}, {}, set()
+    with zipfile.ZipFile(part, "x", zipfile.ZIP_DEFLATED) as z:
+        for e in p.entries:
+            try:
+                data = e.data if e.data is not None else _read_shared(e.source)
+            except OSError as err:
+                if e.name.startswith("reports/"):
+                    raise                                            # a report not read whole: no zip
+                p.left_out.append(f"{e.name}: couldn't be read ({err})")
+                continue
+            if e.rid is not None:
+                originals[e.rid] = hashlib.sha256(data).hexdigest()
+            data, note = _entry_bytes(e, data, language, send, ident)
+            if data is None:
+                if e.rid is not None:
+                    raise OSError(f"{e.name} couldn't be read as text")   # a report's own record: no zip
+                p.left_out.append(f"{e.name}: {note}")
+                continue
+            if tail and e.name.startswith("logs/") and len(data) > tail:
+                data = _tail(data, tail)
+                p.left_out.append(f"{e.name}: only its last {_mb(tail)} (to keep the report small enough to send)")
+            name, n = e.name, 2
+            while name in names:                                     # two names the scrub made one: x-2.log
+                stem, dot, ext = e.name.rpartition(".")
+                name, n = (f"{stem}-{n}.{ext}" if dot and "/" not in ext else f"{e.name}-{n}"), n + 1
+            e.name = name
+            names.add(name)
+            if note:
+                p.unchecked.append(name)
+            e.size = len(data)
+            hashes[name] = hashlib.sha256(data).hexdigest()
+            z.writestr(name, data)
+    p.entries = [e for e in p.entries if e.name in hashes]
+    p.left_out = [ident.scrub(x) for x in p.left_out]                # (a line added here may quote a path)
+    hits = [] if send else scrubbing.leaks(part, ident, language)
+    p.flagged = [h for h in hits if h not in p.unchecked]
+    with zipfile.ZipFile(part, "a", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("MANIFEST.txt", ident.scrub(_manifest(p, hashes).decode("utf-8")).encode("utf-8"))
+    with zipfile.ZipFile(part) as z:                                   # read back: every file whole
+        if z.testzip() is not None or set(z.namelist()) != set(hashes) | {"MANIFEST.txt"}:
+            raise OSError("the zip didn't read back whole")
+    if send:
+        hits = scrubbing.leaks(part, ident, language)
+    if hits:
+        path_utils.write_app_log(f"report: the scrub's check found what may name you in {len(hits)} file(s) of "
+                                 f"{'the zip to send' if send else 'a made zip'}: {', '.join(hits)}")
+        if send:
+            raise Unsafe(hits)
+        if found is not None:
+            found.extend(p.flagged)
+    return originals
+
+
+def make_zip(dest, language, include_results=True, library=None, root=None, extra=None, now=None, found=None):
+    """The zip, in `dest` (made if missing): written as `<name>.zip.part`, every entry scrubbed (`_write`), read back
+    whole (every name, every CRC), renamed into place — and only then are its reports taken off the list (and
+    `removed/`, the `.part` folders a crash left, cleared). A failure part-way leaves no zip and the list as it was.
+    `found`, a list: given the files the guard says may still name the tester (never a reason to stop: its list says
+    so). -> the zip's path."""
     root = root or folder()
     p = plan(language, include_results, library, root, extra)
     if not p.reports:
@@ -686,25 +824,8 @@ def make_zip(dest, language, include_results=True, library=None, root=None, extr
     os.makedirs(dest, exist_ok=True)
     final = zip_name(dest, now)
     part = final + PART
-    hashes = {}
     try:
-        with zipfile.ZipFile(part, "x", zipfile.ZIP_DEFLATED) as z:
-            for e in p.entries:
-                try:
-                    data = e.data if e.data is not None else _read_shared(e.source)
-                except OSError as err:
-                    if e.name.startswith("reports/"):
-                        raise                                        # a report not read whole: no zip
-                    p.left_out.append(f"{e.name}: couldn't be read ({err})")
-                    continue
-                e.size = len(data)
-                hashes[e.name] = hashlib.sha256(data).hexdigest()
-                z.writestr(e.name, data)
-            p.entries = [e for e in p.entries if e.name in hashes]
-            z.writestr("MANIFEST.txt", _manifest(p, hashes))
-        with zipfile.ZipFile(part) as z:                               # read back: every file whole
-            if z.testzip() is not None or set(z.namelist()) != set(hashes) | {"MANIFEST.txt"}:
-                raise OSError("the zip didn't read back whole")
+        zipped = _write(p, part, language, found=found)
         os.replace(part, final)
     except BaseException:
         try:
@@ -712,9 +833,39 @@ def make_zip(dest, language, include_results=True, library=None, root=None, extr
         except OSError:
             pass
         raise
-    zipped = {rid: hashes.get(f"reports/{rid}/{REPORT_FILE}") for rid in p.reports}
     _clear(root, zipped, p.removed)
     return final
+
+
+class Sendable:
+    """A zip `make_send_zip` wrote: `path`, `zipped` ({rid: report.json's original sha256}, for `_clear` once it is
+    sent), `removed` (the removed reports it clears), `left_out` (its list's lines), `entries` ([(name, size)])."""
+
+    def __init__(self, path, zipped, removed, left_out, entries):
+        self.path, self.zipped, self.removed, self.left_out, self.entries = path, zipped, removed, left_out, entries
+
+
+def make_send_zip(path, language, include_results=True, library=None, root=None, extra=None, tail=None,
+                  results_why=None):
+    """The zip Send report sends, at `path` (its folder made): text only, every entry scrubbed, then the guard — a hit
+    raises Unsafe and leaves no zip. The list is NOT cleared: that waits for the receiver's answer (`_clear` with
+    `zipped`). -> a Sendable."""
+    root = root or folder()
+    p = plan(language, include_results, library, root, extra, results_why)
+    if not p.reports:
+        raise ValueError("there are no saved reports to send")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    part = path + PART
+    try:
+        zipped = _write(p, part, language, send=True, tail=tail)
+        os.replace(part, path)
+    except BaseException:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
+    return Sendable(path, zipped, list(p.removed), list(p.left_out), [(e.name, e.size) for e in p.entries])
 
 
 def _unchanged(path, digest):

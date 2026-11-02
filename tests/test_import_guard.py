@@ -49,6 +49,19 @@ def test_the_arrivals_worker_brings_in_no_qt_or_tk(tmp_path):
     assert json.loads(proc.stdout.strip().splitlines()[-1]) == []
 
 
+@pytest.mark.parametrize("module", ["app.scrub", "app.send_report", "app.instance_name", "app.report"])
+def test_send_reports_scrub_and_request_bring_in_no_qt_tk_or_pandas(module, tmp_path):
+    """Send report (SR-1 / SR-4a): the scrub runs on the window's workers and its identity asks the window lock's name
+    (`app/instance_name.py`, out of `qt/single.py` for this) — the scrub itself, and what it reads, never pull in Qt."""
+    probe = (f"import sys, json; import {module}; from app import scrub; scrub.read_identity(); "
+             f"print(json.dumps([m for m in {list(FORBIDDEN)!r} if m in sys.modules]))")
+    env = dict(os.environ, PYTHONPATH=ROOT, SURASURA_TEST_ROOT=str(tmp_path))
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env, capture_output=True, text=True,
+                          timeout=120)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert json.loads(proc.stdout.strip().splitlines()[-1]) == [], module
+
+
 @pytest.mark.parametrize("module", _services_modules())
 def test_importing_a_service_brings_in_no_qt_tk_or_pandas(module):
     probe = (f"import sys, json; import {module}; "

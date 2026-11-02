@@ -1039,8 +1039,17 @@ class ItemActions(QObject):
         d = self.moves.running
         if d is None or self._resting is None or self._resting[0] is not d:
             return
+        hit = self._over(d, d.at)                    # asked before it counts as held: the row still under the hand
+        if hit is None or hit[0].key != self._resting[1]:
+            self._resting = None                     # (the next move starts its hold again)
+            return
         self._rested = self._resting
         self.moves._follow(d.at)
+
+    def ended(self):
+        """The drag is over: its hold let go (`DragController._end`; a drop still reads `_ep_at`)."""
+        self._rest.stop()
+        self._resting = self._rested = None
 
     def show(self, key):
         self.lst.set_join(key, strings.JOIN_GROUP_LABEL if key is not None and key == self._group_key else None)

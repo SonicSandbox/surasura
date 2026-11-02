@@ -133,9 +133,9 @@ def hover(lst, pos):
 
 
 def middle_point(win, i):
-    """The global point over the middle of row `i` (where a part joins; its edges are a move)."""
-    lst = lst_of(win)
-    return lst.viewport().mapToGlobal(lst.visualRect(lst.model().index(i, 0)).center())
+    """The global point over the middle of row `i` where a hold joins a part dragged up to it, or from outside: 60 %
+    down its slab, the half that stays under the hand (its centre is the halves' line; its edges are a move)."""
+    return slab_point(win, i, 0.6)
 
 
 def lit(lst, rect, colour, tolerance=40):
@@ -519,14 +519,14 @@ def test_a_drag_over_another_title_is_a_move_never_a_join(world):
 
 
 def test_a_parts_top_and_bottom_edges_place_it_beside_the_other_part_never_join(world):
-    # its edges stay a move: a part can still be put right next to its other part
+    # its edges stay a move, however long the hand holds there: a part can still be put right next to its other part
     _seed, win, writer = world()
     a, b = split_parts(win)
     lift(win, b)
-    move_global(win, row_point(win, a))                              # its upper quarter
-    assert win.moves.running.target[0] == "list" and lst_of(win).join_key is None
-    move_global(win, row_point(win, a, lower=True))
-    assert win.moves.running.target[0] == "list"
+    for frac in (0.1, 0.9):                                          # its top edge (the gap's half), its bottom edge
+        move_global(win, slab_point(win, a, frac))
+        rest()
+        assert win.moves.running.target[0] == "list" and lst_of(win).join_key is None, frac
     win.moves.cancel()
     assert writer.calls == []
 
@@ -631,6 +631,20 @@ def test_a_hold_shorter_than_the_threshold_shows_no_label(world):
     assert win.moves.running.target[0] == "list" and lst.join_key is None
     rest()
     assert lst.join_key == rows_of(win)[a].key
+    win.moves.cancel()
+    assert writer.calls == []
+    assert win.items._resting is None and win.items._rested is None   # the drag's end lets its hold go
+
+
+def test_the_hold_counts_only_if_the_row_is_still_under_the_hand_as_it_ends(world):
+    # the rows can move under a still hand while it holds (a wheel scroll sends no move): asked again as the hold ends
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    lift(win, b)
+    move_global(win, slab_point(win, a, 0.6))
+    win.moves.running.at = slab_point(win, a, 0.4)                   # (no move: the gap's half now under the hand)
+    rest()
+    assert lst_of(win).join_key is None and win.moves.running.target[0] == "list"
     win.moves.cancel()
     assert writer.calls == []
 

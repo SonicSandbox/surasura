@@ -1658,6 +1658,7 @@ class DragController(QObject):
             tab.set_drop_lit(False)
         if self.joins is not None:                   # --- W3.2 Q8
             self.joins.show(None)
+            self.joins.ended()
         self.win.toasts.set_dragging(False)
         if d.holding:                                # (a lift that failed before its holds holds nothing)
             d.holding = False

@@ -375,7 +375,7 @@ def open_goal_sheet(window):
 
 def close_open_row(lst):
     """A row left open closed, as a click on it closes it (`RowsView.toggle`) — before a moment's row is chosen, never
-    inside a repetition (the rows' places are read through `visualRect`, which lays the list out first). A drop on another part of the same title joins them and opens
+    inside a repetition (the rows' places are read through `visualRect`, which lays the list out first). A held drop on another part of the same title joins them and opens
     the result (`item_menu.join`); left open at 150 % it filled the list, no row was whole on screen, and the menu and
     key moments after it found none (M4.1 A, the key case at 11ff1bc). -> whether one was open."""
     model = lst.model()

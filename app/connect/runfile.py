@@ -52,6 +52,7 @@ BOLD_TARGET = "bold-target"                     # Z-5: `bold_target_in_sentence`
 WORD_FROM_LINE = "word-from-line"               # Z-2: a named word made from its line; `surface`, `reading`
 DRY_RUN = "dry-run"                             # Z-7: `dry_run` in the run file
 READING = "reading"                             # Z-9 (round 2): an episode naming `reading_file`; `unit_index`
+AUDIO = "audio-episodes"                        # Z-16 (round 2, 3.11): an episode naming `audio_file`
 
 # IS:271–275: every filter off. `use_whitelist` stays the profile's own: before Z-1 the "Surasura" profile's whitelist
 # is how the named words pass his name lists (N10, P1.5-14); from 3.7 every named word is whitelisted, any profile.
@@ -169,11 +170,19 @@ def word_requests(words, features=(), book=False):
     return out
 
 
-def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0):
+def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0, audio=False):
     """One episode of a run: its video and subtitle (absolute paths), the words, the job's tags, and the subtitle's
-    offset from the fit check (0 until tsubasa's check is wired, P2.4) — always sent (IS:269)."""
-    return {"run_id": run_id, "video_file": os.path.abspath(video), "subtitle_file": os.path.abspath(subtitle),
-            "subtitle_offset": float(subtitle_offset), "tags": tags, "words": list(words)}
+    offset from the fit check (0 until tsubasa's check is wired, P2.4) — always sent (IS:269). `audio` (Z-16): `video`
+    is an audio file (`audio_file`, the clips cut from it), and the cards' Source names it as a video's does —
+    `<its folder> — <its name>` (`series_name_override`: Anki Miner's own series for audio, `Audio`, names no show,
+    so 順's one source-name rule couldn't tie the card to its file)."""
+    out = {"run_id": run_id, ("audio_file" if audio else "video_file"): os.path.abspath(video),
+           "subtitle_file": os.path.abspath(subtitle), "subtitle_offset": float(subtitle_offset), "tags": tags,
+           "words": list(words)}
+    folder = os.path.basename(os.path.dirname(os.path.abspath(video))) if audio else ""
+    if folder.strip():
+        out["series_name_override"] = folder
+    return out
 
 
 def reading_episode(run_id, reading_file, words, tags=""):

@@ -76,6 +76,11 @@ ANKI_CLOSED = "Waiting for Anki: it isn't open."
 # one that holds every episode
 ANKI_SLOW = "Waiting for Anki: it didn't answer in time."
 NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)."
+# Z-16 (Michi-AB A1/A5, PROVISIONAL): an audiobook's or a podcast's episode while Anki Miner mines audio — its audio file
+# isn't found (`Steps.audio`), or one transcript spans several audio files (its lines can't be told apart by file)
+NO_AUDIO = "No audio: its audio file isn't on this computer."
+SEVERAL_FILES = ("One transcript for {n} audio files: Connect can't tell which file each line is in, so its cards "
+                 "wait. A subtitle file for each audio file, named like it, is mined.")
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
 # still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
 # its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
@@ -896,6 +901,8 @@ def _pick(steps, ledger, lang, job, record=True):
     ledger.set_state(jid, "picking")
     book = _reading_source(steps, lang, job)        # Z-9: a book or a text, once Anki Miner reads them
     video = steps.video(lang, job) if book is None else None
+    if book is None and video is None:
+        video = _audio(steps, lang, job)            # Z-16: an audio file, once Anki Miner mines audio (or a Wait)
     if book is None and video is None and job.get("kind") == LEVEL and not job.get("asked_at"):
         # laptop round 8 #49 (LF4-1 ⭐ A): a level raise never asks for a video — an episode already mined whose video
         # is gone waits quietly (its own reason: never *Needs you*'s *No video*), and goes on at a start that finds the
@@ -937,6 +944,19 @@ def _pick(steps, ledger, lang, job, record=True):
         return None
     ledger.set_state(jid, "fit-check", picked=picked)
     return picked
+
+
+def _audio(steps, lang, job):
+    """Z-16: the audio file an episode with no video is cut from while Anki Miner mines audio (`steps.audio`, A1) ->
+    its path, or None (a video's *No video* follows). An audio item with nothing to cut from waits with its own line
+    (`NO_AUDIO`, `SEVERAL_FILES`), never *No video*."""
+    audio, mines = getattr(steps, "audio", None), getattr(steps, "mines", None)
+    if audio is None or mines is None or not mines(lang, "audio"):
+        return None
+    path, wait = audio(lang, job)
+    if path is None and wait:
+        raise Wait(wait)
+    return path
 
 
 def _reading_source(steps, lang, job):
@@ -1621,6 +1641,32 @@ class Steps:
         moved = moved_video(was()) if pairing.get("producer") == "source" else None    # a source record's own
         return beside(subtitle) or beside_origin(pairing) or moved or self._videos(lang).find(names)
 
+    def audio(self, lang, job):
+        """Z-16 (Michi-AB A1, PROVISIONAL): the audio file an episode with no video is cut from -> (path, None); else
+        (None, the wait line for an audio item — `NO_AUDIO`, `SEVERAL_FILES` — or None for any other item: its *No
+        video*). One rule: an audiobook's own item reading its transcript (Hon a6) is cut from its audiobook when that
+        is one file (`library.audiobook_file`; several: `SEVERAL_FILES`, A5); any other item from an audio file with
+        the subtitle's own name beside it, or beside the file it was copied from (`beside` / `beside_origin`, the
+        audio extensions: a subtitle for each audio file). A cloud placeholder is never one (`_on_disk`)."""
+        from app.audiobooks import AUDIO_EXTENSIONS
+        from app.connect import library
+        with _held():                       # the store's reads, one open; the disk is looked at after
+            pairing = self.pairing(lang, job) or {}
+            subtitle = self.subtitle(lang, job)
+            with self._open(lang) as store:
+                item = store.item(job["item_id"]) or {}
+                heard = library.waits_for(item, library.media_of(store, item)) == "audio"
+                own, n = library.audiobook_file(store, job["item_id"])
+        if n:                               # an audiobook's own item: its record names its files (its origin is
+            if n > 1:                       # its first file: never looked for beside, A5)
+                return None, SEVERAL_FILES.format(n=n)
+            return (own, None) if _on_disk(own) else (None, NO_AUDIO)
+        found = (beside(subtitle, AUDIO_EXTENSIONS) if subtitle else None) or \
+            beside_origin(pairing, AUDIO_EXTENSIONS)
+        if found:
+            return found, None
+        return None, (NO_AUDIO if heard else None)
+
     def moved_videos(self, lang, job):
         """D5 (MV-A5): (path, size) of the videos the item's origins marked moved named (`library.moved_videos`);
         () with no store to read (nothing marked there). A busy store is a Wait."""
@@ -2158,6 +2204,10 @@ class Steps:
                 from app.connect import setup   # the record told what is installed (or it is queued again at once)
                 setup.note_anki_miner(e.verdict)
                 raise Skip(BOOKS_WAIT) from None
+            if e.kind == "no-audio":            # Z-16: the same for audio — it waits as audio does
+                from app.connect import setup
+                setup.note_anki_miner(e.verdict)
+                raise Skip(AUDIO_WAIT) from None
             if e.kind == "unreadable" and picked.get("reading"):
                 title = self.title(lang, job) or os.path.basename(picked["reading"])
                 raise Needs("book-unreadable", BOOK_UNREADABLE.format(title=title, why=e.message)) from None

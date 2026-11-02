@@ -38,17 +38,20 @@ def _record(features):
 # --------------------------------------------------------------------------- #
 # The feature: one answer, everywhere
 # --------------------------------------------------------------------------- #
-def test_books_are_mined_only_with_an_anki_miner_that_names_reading_and_audio_still_waits():
-    """`mines_now`: this Surasura knows Z-9 now, so books and texts open with the Anki Miner its setup record last found
-    naming `reading` — never without a record, never with one that doesn't name it; audio (Z-16) stays shut."""
-    assert anki_miner.mines("books") and not anki_miner.mines("audio")
+def test_books_are_mined_only_with_an_anki_miner_that_names_reading_and_audio_only_with_its_own_name():
+    """`mines_now`: this Surasura knows Z-9 (and Z-16 since Michi-AB), so books and texts open with the Anki Miner its
+    setup record last found naming `reading` — never without a record, never with one that doesn't name it; audio
+    opens only with `audio-episodes`, never with `reading`."""
+    assert anki_miner.mines("books") and anki_miner.mines("audio")
     assert not anki_miner.mines_now("books"), "no record yet: no"
     _record(["word-from-line", "dry-run"])
     assert not anki_miner.mines_now("books")
-    _record(["word-from-line", "reading", "audio-episodes"])
+    _record(["word-from-line", "reading"])
     assert anki_miner.mines_now("books") and not anki_miner.mines_now("audio")
+    _record(["word-from-line", "reading", "audio-episodes"])
+    assert anki_miner.mines_now("books") and anki_miner.mines_now("audio")
     _record(["word-from-line"])                         # another Anki Miner found since: read again
-    assert not anki_miner.mines_now("books")
+    assert not anki_miner.mines_now("books") and not anki_miner.mines_now("audio")
 
 
 def test_without_reading_the_rows_the_gaps_and_the_mine_press_are_as_before(tmp_path):

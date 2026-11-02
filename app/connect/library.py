@@ -82,6 +82,21 @@ def waits_for(item, media=None):
     return "audio" if item and media in AUDIO_TYPES else None
 
 
+def audiobook_file(store, item_id):
+    """Z-16 (Michi-AB A1, PROVISIONAL): the audio file an audiobook's own item reading its transcript (Hon a6: alone,
+    `audiobooks.TEXT`) is cut from -> (its path, n): its audiobook's one file and 1; None and the number of files when
+    it is several (one transcript's times span them: it can't be cut, A5); (None, 0) for any other item (no audiobook,
+    no transcript, paired with its book: the book is the content)."""
+    from app import audiobooks
+    with store._reading():
+        rows = store._audiobook_rows(item_id)
+    ab = (rows[0][2].get("audiobook") or {}) if rows else {}
+    files = [f for f in ab.get("files") or () if isinstance(f, str) and f]
+    if not files or audiobooks.transcript_use(ab) != audiobooks.TEXT:
+        return None, 0
+    return (files[0] if len(files) == 1 else None), len(files)
+
+
 def book_parts(store, epub):
     """{item id: chapter record} of every part of `epub` the store holds (its live origins `<epub>#<n>`, Hon's
     `chapter` key: `connect.reading.place`); a part from before the record (no `chapter`) is left out. One range read

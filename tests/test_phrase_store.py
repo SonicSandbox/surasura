@@ -7,6 +7,8 @@ neither knows nor ignores, taking a bound word's uses inside its phrase off the 
 the known-words cache keeps its old key. The GUI process never needs the tokenizer for any of it.
 """
 
+import csv
+import io
 import json
 import os
 import shutil
@@ -68,6 +70,11 @@ def _generate(root):
     return (results / "priority_learning_list.csv").read_text(encoding="utf-8-sig")
 
 
+def _words(listed):
+    """The Word column of a priority list's text."""
+    return {row["Word"] for row in csv.DictReader(io.StringIO(listed))}
+
+
 def test_the_store_counts_each_phrase_as_generate_lists_it(library):
     """After an index: 気を付ける met 3 times (気をつけて folds into it), 気が付く twice (never across the comma), and
     the uses 手っ取り and 眉根 give their phrases."""
@@ -98,8 +105,32 @@ def test_off_the_store_counts_no_phrase_and_the_known_cache_keeps_its_key(librar
     store = token_index.open_store("ja")
     try:
         from app import phrase_data
-        assert store._known_key('[true, 1, 2]').endswith(f"|phrase_rows={phrase_data.REVISION}"), \
-            "on: a known phrase reads differently, by the phrases this data holds"
+        assert store._known_key('[true, 1, 2]').endswith(
+            f"|phrase_rows={phrase_data.REVISION}/{phrases.MATCHER_VERSION}"), \
+            "on: a known phrase reads differently, by the phrases this data holds and the finder that finds them"
+    finally:
+        store.close()
+
+
+def test_a_known_sentences_phrases_leave_the_list_and_a_new_finder_reads_the_known_words_again(library, monkeypatch):
+    """A sentence synced from an Anki card's sentence field marks its set phrases known, as it marks its words: 気が付く
+    (met twice in the library) leaves the list once a known sentence holds it — read by Generate's own finder, so a
+    sentence holding its words across a comma marks nothing. The store keeps it (the Rarity slider and Junban read
+    the store's known words), keyed on the finder: a new MATCHER_VERSION reads KnownWord.json again."""
+    known = library / "User Files" / "ja" / "KnownWord.json"
+    _switch(library, True)
+    known.write_text(json.dumps({"words": [{"dictForm": "気が、ついたら朝だった", "knownStatus": "KNOWN"}]},
+                                ensure_ascii=False), encoding="utf-8")
+    assert "気が付く" in _words(_generate(library)), "its words across a comma: no phrase there, the row stays"
+    known.write_text(json.dumps({"words": [{"dictForm": "やっと気がついた。", "knownStatus": "KNOWN"}]},
+                                ensure_ascii=False), encoding="utf-8")
+    assert "気が付く" not in _words(_generate(library))
+    store = token_index.open_store("ja")
+    try:
+        sig = token_index.known_signature(str(known))
+        assert "気が付く" in store.get_cached_known(sig)[1]
+        monkeypatch.setattr(phrases, "MATCHER_VERSION", phrases.MATCHER_VERSION + 1)
+        assert store.get_cached_known(sig) is None, "another finder: the known words are read again"
     finally:
         store.close()
 

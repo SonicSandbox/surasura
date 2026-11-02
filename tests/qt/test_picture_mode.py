@@ -302,6 +302,9 @@ DRAWN = {
     ("phase_strip.py", "PhaseStrip._paint_circle", "strings.PHASE_MARKS[circle]"): "a constant mark",
     ("report.py", "BugButton.paintEvent", "str(self.count)"): "a count",
     ("rows.py", "Text.draw", "st"): "made by Text.static, which scrubs the whole text before it cuts",
+    ("sort_screen.py", "Clamp.paintEvent", "text"): "its lines, laid out by Clamp._lay from scrub.shown(self.text())",
+    ("sort_screen.py", "PadKey.paintEvent", "self.glyph"): "a choice's key: S or an arrow",
+    ("sort_screen.py", "PadKey.paintEvent", "self.text()"): "a choice's word (Soon, Current …)",
     ("rows.py", "cover", "text"): "cover_label of the title, scrubbed at the top of cover()",
     ("rows.py", "cover", "ch"): "a character of that scrubbed title",
     ("search.py", "HitRow.paintEvent", "text"): "the parts of the title, scrubbed (`whole`) before it is cut",
@@ -313,6 +316,7 @@ DRAWN = {
     ("shell.py", "TabButton.paintEvent", "self.name"): "a tab's name",
     ("shell.py", "TabButton.paintEvent", "text"): "a tab's count",
     ("sort_screen.py", "_FadeLine.paintEvent", "self.text()"): "a QLabel's own text: picture mode swaps it",
+    ("tool_icons.py", "ToolIcon.paintEvent", "self.mark"): "a tool's constant mark, else its window's name's letter",
     ("wizard.py", "StepList.paintEvent", "mark"): "a step's mark",
     ("wizard.py", "StepList.paintEvent", "S.STEPS[pid]"): "a step's name",
     ("wizard.py", "Choice.paintEvent", "title"): "scrub.shown(self.title) just above",
@@ -343,6 +347,7 @@ CUT = {
     ("rows.py", "cover_label", "t"): "the title cover() scrubbed first",
     ("rows.py", "Text.static", "text"): "scrub.shown(text) at the top of static()",
     ("search.py", "HitRow.paintEvent", "whole"): "scrub.shown(self.hit.title) just above",
+    ("sort_screen.py", "Clamp._lay", "text[start:]"): "text = scrub.shown(self.text()) at the top of _lay()",
 }
 
 

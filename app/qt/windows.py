@@ -13,6 +13,12 @@ the Settings tab's waiting page lists them** (`launchers`, the shell's one hook)
 while `available` says so and its module (when it names one) imports — the Tk dashboard's visibility rules. W3.3 and
 W3.2 attach the same openers to their rows and **retire the list** (IK-16: it never ships by default).
 `show(shell, name, make)`: one window of a kind per main window, kept and raised if open.
+
+**A minimised window goes into its icon** (try a9 #5, Sonic: "When I minimize the Junban screen, it goes to the bottom
+left"): a window owned by the main window has no taskbar button of its own, so Windows parked it minimised in the
+desktop's corner as a bare title bar. Every secondary window's minimise now hides it into its icon in the main window's
+bottom bar instead (`tool_icons.ToolIcons`: one per open window, turning while it works) — the icon, or its door
+again, brings it back (`bring_back`). The main window minimised takes its windows with it, as Windows does.
 """
 import contextlib
 import importlib.util
@@ -83,6 +89,7 @@ class SecondaryWindow(QWidget):
     def __init__(self, shell, name, language=None):
         super().__init__(shell, Qt.WindowType.Window)
         self.shell = shell
+        self.tool_name = name                             # its name in the bottom bar's icon (try a9 #5)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle(strings.SECONDARY_TITLE.format(name=name))
         self.setObjectName("secondary")
@@ -111,6 +118,7 @@ class SecondaryWindow(QWidget):
         self.presses = press_service.Presses()           # round 8 row 45: its presses; the status line is its bar —
         self._holds, self._unheld = {}, ""               # ... a press's words held there (`say(…, hold=)`), and the
         self.bar_arc = qpress.BarArc(self, corner=True)  # ... bar's arc in its corner (a menu's press, IK-2)
+        self.presses.subscribe(lambda _press: self.tell_icon())     # its icon turns while a press of its runs
         self.setMinimumWidth(round(theme.size("pop", style.current()[1])))
         heard = getattr(shell, "bridge", None)
         if heard is not None:
@@ -146,6 +154,7 @@ class SecondaryWindow(QWidget):
         self.status.setText(text)
         self.status.setVisible(bool(text))
         self.status_paints += 1
+        self.tell_icon()                                  # (its icon's hover says what it is doing)
 
     def alive(self, fn):
         """`fn`, dropped once the window closed: a worker's answer arriving after it is never painted."""
@@ -167,11 +176,13 @@ class SecondaryWindow(QWidget):
 
     def begin_write(self):
         self._writes += 1
+        self.tell_icon()
 
     def end_write(self, result=None):
         """A write ended (`result`: its line). A language switch that waited for it happens now, and the result goes
         to the bottom bar as well (the window is about to show the other language)."""
         self._writes = max(0, self._writes - 1)
+        self.tell_icon()
         if self._writes or self._language_waiting is None or self.gone:
             return
         language, self._language_waiting = self._language_waiting, None
@@ -198,11 +209,76 @@ class SecondaryWindow(QWidget):
     def language_changed(self, language):
         """A subclass re-reads for `language` (the window is idle)."""
 
+    def at_work(self):
+        """Whether work it started is under way — a write (`begin_write`) or a press of its — for its icon's arc."""
+        return self.busy() or self.presses.any_live()
+
+    def tucked(self):
+        """Hidden into its icon (minimised, try a9 #5), still open."""
+        return not self.gone and not self.isVisible()
+
+    def tell_icon(self):
+        """Its icon in the main window's bottom bar looks again (opened, closed, tucked, at work, said something)."""
+        try:
+            icons = getattr(main_of(self), "tool_icons", None)
+            if icons is not None:
+                icons.refresh()
+        except RuntimeError:                              # the main window is going
+            pass
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized() and not self.gone:
+            QTimer.singleShot(0, self._tuck)              # (after the system's own minimise has settled)
+
+    def _tuck(self):
+        """Minimised: hidden into its icon instead (no bare title bar in the desktop's corner) — unless the main window
+        went down too (it takes its windows with it), or there is no bar to hold the icon."""
+        if self.gone or not self.isMinimized():
+            return
+        main = main_of(self)
+        if main.isMinimized() or getattr(main, "tool_icons", None) is None:
+            return
+        self.hide()                                       # first, still minimised: never restored on screen
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)   # (kept maximised if it was)
+        self.tell_icon()
+
     def closeEvent(self, event):
         """A subclass that refuses a close calls `event.ignore()` before this (QWidget's own would accept it again)."""
         if event.isAccepted():
             self._closed = True
             self.closed.emit()
+            self.tell_icon()
+
+
+def main_of(win):
+    """The main window a secondary window (or one it opened: Backfill's Fields) belongs to."""
+    while isinstance(win, SecondaryWindow):
+        win = win.shell
+    return win
+
+
+def bring_back(win):
+    """`win` shown again where it was — out of its icon, or from behind — raised and focused."""
+    win.setWindowState(win.windowState() & ~Qt.WindowState.WindowMinimized)
+    win.show()
+    win.raise_()
+    win.activateWindow()
+    win.tell_icon()
+
+
+def open_tools(shell):
+    """The secondary windows open now under `shell`, in the order they opened, a window's own after it:
+    [(name, window)] (the bottom bar's icons, try a9 #5)."""
+    out = []
+
+    def walk(owner):
+        for name, win in list(owner.__dict__.get("_secondary_windows", {}).items()):
+            if win is not None and not win.gone:
+                out.append((name, win))
+                walk(win)
+    walk(shell)
+    return out
 
 
 def say_in_bar(shell, text):
@@ -219,9 +295,7 @@ def show(shell, name, make):
     opened = shell.__dict__.setdefault("_secondary_windows", {})
     win = opened.get(name)
     if win is not None and not win.gone:
-        win.show()
-        win.raise_()
-        win.activateWindow()
+        bring_back(win)                                   # (out of its icon too)
         return win
     win = make(shell)
     opened[name] = win
@@ -230,6 +304,7 @@ def show(shell, name, make):
     win.show()
     win.raise_()
     win.activateWindow()
+    win.tell_icon()
     return win
 
 

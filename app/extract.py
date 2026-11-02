@@ -198,7 +198,7 @@ def convert_epub_to_text(epub_path):
 
 # --- an EPUB's documents, as Anki Miner reads them -------------------------------------------------------------- #
 # Its reading documents in the spine's order (the manifest's order scrambled some books) and its chapters' labels,
-# by Anki Miner 3.10.1's rules (`services/reading/epub_source.py`), so both name a book's chapters alike and its
+# by Anki Miner 3.11.0's rules (`services/reading/epub_source.py`), so both name a book's chapters alike and its
 # results (`location_label`: a TOC label, else `ch.<n>`, n = the document's place among these) map onto the parts.
 Doc = namedtuple("Doc", "href label text")      # href: its zip entry; label: the TOC's for it, or None
 
@@ -357,7 +357,7 @@ def _clean_text(raw):
 
 
 def epub_documents(epub_path):
-    """The EPUB's reading documents -> ([Doc], None) or (None, why), as Anki Miner 3.10.1 reads them: the spine in
+    """The EPUB's reading documents -> ([Doc], None) or (None, why), as Anki Miner 3.11.0 reads them: the spine in
     order (`linear="no"` skipped), only (X)HTML documents; skipped: a cover / toc / colophon / caution / `p-ad-` file
     name, a cover-typed document, and front or back matter (landmarks, the `<guide>`, the body's own `epub:type`)
     within 15% of either end. Each Doc's `label` is its TOC label (the EPUB3 nav, else the NCX; 表紙 / 目次 / 奥付 /

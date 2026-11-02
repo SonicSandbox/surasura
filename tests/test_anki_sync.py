@@ -445,7 +445,7 @@ def test_changing_decks_or_fields_forces_a_full_resync(ja_words, change):
         assert _anki_forms() == [ja_words[0], ja_words[1]]
     else:
         result = _sync(fake, fields=["Sentence"])
-        # The field is read as the one word it holds (`anki_match.card_word`): its stop is punctuation.
+        # A word field holding a sentence is read as "Also read" reads one (`anki_match.holds_sentence`): whole.
         assert f"{ja_words[0]}の例文です" in _anki_forms()
     assert result.mode == "full"
 
@@ -656,6 +656,101 @@ def test_a_note_type_without_the_word_field_still_reads_also_read_line_by_line_a
                                             "Sentence": {"value": "駅前の本屋で辞書を買った。", "order": 1}}}
     assert anki_sync._backlog_entry(note, ["Expression", "Sentence"], "ja") is None
     assert anki_sync._backlog_entry(note, [], "ja")["word"] == "辞書"
+
+
+def test_a_word_field_holding_a_sentence_is_read_as_also_read_reads_one(monkeypatch):
+    """Sonic's alpha 9 try: his Word field is the card's Sentence, with nothing under Also read. Read as one word, でも、
+    そんな気がする marked only でも. A word field that holds a sentence (`anki_match.holds_sentence`) is read as "Also
+    read" reads one — the whole line, each line a term — so every word in it is known, and its set phrases (気がする's
+    row, 気が為る) with Idioms and set phrases on. Each line loses the punctuation around it, as a word does. A second
+    line in English holds no Japanese and is no term."""
+    from app import analyzer
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "気"), ("Sentence", "でも、そんな気がする。")])
+    fake.add("", fields=[("Expression", "行く"), ("Sentence", "そうか。じゃあ、行こう<br>Okay, let's go then.")])
+    fake.add("", fields=[("Expression", "遅い"), ("Sentence", "もう遅い気がする。<div>帰ろうか。</div>")])
+    _sync(fake, fields=["Sentence"])
+    assert _anki_forms() == ["でも、そんな気がする", "そうか。じゃあ、行こう", "もう遅い気がする", "帰ろうか"]
+
+    monkeypatch.setattr(analyzer, "SANITIZE_JA", True)
+    monkeypatch.setitem(analyzer.LOGIC, "phrase_rows", True)
+    _tuples, lemmas = analyzer.load_known_words(_known_path(), analyzer.JapaneseTokenizer(library=False))
+    assert {"でも", "そんな", "気", "為る", "気が為る", "遅い", "行く"} <= lemmas
+
+
+def test_a_one_word_or_set_phrase_word_field_is_still_its_one_word():
+    """What must not change: a word field holding one word — its reading on a second line or after a space or a comma,
+    in brackets, after a stop, a list of dictionary words — is that word, as `card_word` reads it; a set-phrase card
+    (気がする, 腑に落ちる) is the phrase, never read as a sentence; a field of one clause and no stop is read whole either
+    way (そんな気がする)."""
+    fake = FakeCollection()
+    for value in ("撒く<br>まく", "「冒険」", "仰ぐ（あおぐ）", "撒く まく", "準備、じゅんび", "上層部、首脳部", "危険。",
+                  "素晴らしい・すばらしい", "気がする", "腑に落ちる", "そんな気がする"):
+        fake.add("", fields=[("Expression", value), ("Sentence", "昨日、友達と映画を見に行きました。")])
+    _sync(fake, fields=["Expression"])
+    assert _anki_forms() == ["撒く", "冒険", "仰ぐ", "準備", "上層部", "危険", "素晴らしい", "気がする", "腑に落ちる",
+                             "そんな気がする"]
+
+
+def test_notes_read_before_a_word_field_sentence_was_read_whole_are_read_again_once():
+    """A sync state saved before this reading (no "reading" in it) makes the next sync a full one, once: the cards
+    already seen give their whole sentence (append-only: the でも they gave before stays known). The sync after it is a
+    delta again — nothing read twice."""
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "気"), ("Sentence", "でも、そんな気がする。")])
+    _sync(fake, fields=["Sentence"])
+    state = json.loads(open(_state_path(), encoding="utf-8").read())
+    assert state["reading"] == anki_sync.READING_VERSION
+    del state["reading"]                                  # as 3.0's alphas saved it, the first clause read alone
+    _write_json(_state_path(), state)
+    _write_json(_known_path(), {"words": [anki_sync._entry("でも", 1, "ja", "2026-11-01T00:00:00")]})
+    _write_json(_state_path(), dict(state, known_sig=anki_sync.known_signature(_known_path())))
+
+    again = _sync(fake, fields=["Sentence"])
+    assert again.mode == "full" and _anki_forms() == ["でも", "でも、そんな気がする"]
+    assert _sync(fake, fields=["Sentence"]).mode == "delta"
+
+
+def test_a_word_typed_with_a_stop_stays_the_entry_it_was_and_chinese_is_never_read_again():
+    """A one-word card typed with a stop or an exclamation (ありがとう！ — kana, no JMdict kanji spelling) reads as a
+    sentence of one clause: it is still the entry it was, ありがとう, so the one full re-read adds nothing beside it.
+    Chinese read every line whole already: an old Chinese state is never read again in full for this."""
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "ありがとう！"), ("Sentence", "本当にありがとう。")])
+    fake.add("", fields=[("Expression", "すみません。")])
+    _sync(fake)
+    assert _anki_forms() == ["ありがとう", "すみません"]
+
+    zh = FakeCollection()
+    zh.add("", deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", "冒险")])
+    _sync(zh, decks=["中文"], language="zh")
+    state = json.loads(open(_state_path("zh"), encoding="utf-8").read())
+    del state["reading"]
+    _write_json(_state_path("zh"), state)
+    assert _sync(zh, decks=["中文"], language="zh").mode == "delta"
+
+
+def test_replace_records_the_reading_so_the_next_sync_is_a_delta():
+    """Replace reads every card with today's reading: it records it, so the sync after it reads nothing in full again."""
+    fake = FakeCollection()
+    fake.add("", fields=[("Expression", "気"), ("Sentence", "でも、そんな気がする。")])
+    _sync(fake, fields=["Sentence"])
+    state = json.loads(open(_state_path(), encoding="utf-8").read())
+    del state["reading"]
+    _write_json(_state_path(), state)
+    assert _replace(fake, fields=["Sentence"]).error is None
+    assert json.loads(open(_state_path(), encoding="utf-8").read())["reading"] == anki_sync.READING_VERSION
+    assert _sync(fake, fields=["Sentence"]).mode == "delta"
+
+
+def test_a_chinese_word_field_holding_a_sentence_is_read_whole_as_before():
+    """Chinese: every field, the word field too, is read line by line already — a sentence there marks every word in
+    it known (the analyzer cuts the line), and a word with its pinyin after a space stays one term. Nothing changed."""
+    fake = FakeCollection()
+    fake.add("", deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", "我觉得，这次的冒险很有意思。")])
+    fake.add("", deck="中文::词汇", model="Chinese (basic)", fields=[("Hanzi", "挑战 tiǎozhàn")])
+    _sync(fake, decks=["中文"], language="zh")
+    assert _anki_forms("zh") == ["我觉得，这次的冒险很有意思。", "挑战 tiǎozhàn"]
 
 
 def test_a_chinese_field_still_gives_one_term_per_line():

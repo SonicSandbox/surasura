@@ -489,7 +489,7 @@ class ElidedLabel(QLabel):
 
 # --- the window --------------------------------------------------------------------------------------------------- #
 class ReportWindow(SecondaryWindow):
-    FORM, OPENED, CONTENTS, GOES = 0, 1, 2, 3
+    FORM, OPENED, CONTENTS, GOES, SENT = 0, 1, 2, 3, 4
 
     def __init__(self, shell, pictures=(), scrubbed=False):
         super().__init__(shell, strings.REPORT_WINDOW_NAME)
@@ -504,6 +504,7 @@ class ReportWindow(SecondaryWindow):
         self.outbox = None                                        # the zip the What goes page shows (send_report.Outbox)
         self.waiting = None                                       # a zip kept after a send that didn't go
         self.sent_id = None                                       # the last report sent (#ID), for Copy
+        self.sent_opened = None                                   # the sent report its page shows (#ID, zip path)
         self.name_filled = False                                  # the remembered Discord name filled in (once)
         self.goes_name_value = ""                                 # the name What goes said goes
         self._thumbs = None                                       # the form's thumbnails, made once per set of pictures
@@ -514,6 +515,8 @@ class ReportWindow(SecondaryWindow):
         self.pages.addWidget(self._opened_page())
         self.pages.addWidget(self._contents_page())
         self.pages.addWidget(self._goes_page())
+        self.pages.addWidget(self._sent_page())
+        self.pages.currentChanged.connect(self._page_changed)
         self.body.addWidget(self._heading(strings.REPORT_LIST_HEADING.format(n=0)))
         self.list_heading = self.body.itemAt(self.body.count() - 1).widget()
         self.list = QListWidget(self)
@@ -536,6 +539,9 @@ class ReportWindow(SecondaryWindow):
         self.issues_button.setCursor(Qt.CursorShape.PointingHandCursor)
         where.setAlignment(self.issues_button, Qt.AlignmentFlag.AlignBottom)
         self.body.addLayout(where)
+        for w in (self.send_where, self.issues_button):           # try a9 #6: GitHub only on the zip's path, never
+            w.setVisible(False)                                    # ... beside Send (it goes privately to Sonic)
+        self.dest_row += [self.send_where, self.issues_button]
         self.setMinimumWidth(round(560 * f))
         self._show_pictures()
         self._restore_draft()
@@ -694,6 +700,33 @@ class ReportWindow(SecondaryWindow):
         box.addLayout(row)
         return page
 
+    def _sent_page(self):
+        """A sent #ID opened (try a9 #6): the reports it held — each one's words, then its pictures at the page's
+        width — read from the zip kept on this PC, as they went; *Open the zip* shows that zip in its folder."""
+        page = QWidget(self)
+        box = QVBoxLayout(page)
+        box.setContentsMargins(0, 0, 0, 0)
+        self.sent_opened_heading = self._heading("")
+        box.addWidget(self.sent_opened_heading)
+        scroll = QScrollArea(page)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setToolTip(strings.REPORT_SENT_OPENED_TIP)
+        inner = QWidget(scroll)
+        self.sent_lines = QVBoxLayout(inner)
+        self.sent_lines.setContentsMargins(0, 0, 0, 0)
+        scroll.setWidget(inner)
+        self.sent_scroll = scroll
+        box.addWidget(scroll, 1)
+        row = QHBoxLayout()
+        self.sent_back = self._button(strings.REPORT_BACK, strings.REPORT_BACK_TIP, self.back, row)
+        row.addStretch(1)
+        self.sent_zip = self._button(strings.REPORT_SENT_ZIP, strings.REPORT_SENT_ZIP_TIP, self.open_sent_zip, row,
+                                     presses=True)
+        box.addLayout(row)
+        return page
+
     def _send_row(self):
         """The name field, then *Include my last lists* · *Show me what's in it* · *Make a zip instead* · **Send
         report**, the promise under it, always, and a second line once a Discord name is typed."""
@@ -739,8 +772,9 @@ class ReportWindow(SecondaryWindow):
         return box
 
     def _after_rows(self):
-        """The sender code and *New code*; after a send, the #ID with *Copy* and the invite; a report waiting to send
-        with *Send now* · *Don't send*; the zip's folder (after *Make a zip instead*); *Sent reports*."""
+        """The sender code and *New code*; after a send, the #ID with *Copy* and the invite, and *Sent reports* right
+        under it (try a9 #6: where the reports went); a report waiting to send with *Send now* · *Don't send*; the
+        zip's folder (after *Make a zip instead*)."""
         box = QVBoxLayout()
         code = QHBoxLayout()
         self.sender_line = self._line("")
@@ -762,6 +796,15 @@ class ReportWindow(SecondaryWindow):
         for w in self.done_row:
             w.setVisible(False)
         box.addLayout(done)
+        self.sent_box = QWidget(self)                             # (one switch: held while What goes is up)
+        sent = QVBoxLayout(self.sent_box)
+        sent.setContentsMargins(0, 0, 0, 0)
+        self.sent_heading = self._heading(strings.REPORT_SENT_HEADING)
+        sent.addWidget(self.sent_heading)
+        self.sent_rows = QVBoxLayout()
+        sent.addLayout(self.sent_rows)
+        self.sent_box.setVisible(False)
+        box.addWidget(self.sent_box)
         wait = QHBoxLayout()
         self.waiting_line = self._line(strings.REPORT_WAITING)
         wait.addWidget(self.waiting_line, 1)
@@ -782,11 +825,6 @@ class ReportWindow(SecondaryWindow):
             w.setVisible(False)
         box.addLayout(where)
         self._show_dest()
-        self.sent_heading = self._heading(strings.REPORT_SENT_HEADING)
-        self.sent_heading.setVisible(False)
-        box.addWidget(self.sent_heading)
-        self.sent_rows = QVBoxLayout()
-        box.addLayout(self.sent_rows)
         return box
 
     def _show_dest(self):
@@ -994,6 +1032,7 @@ class ReportWindow(SecondaryWindow):
         if r is None:
             return
         self.opened_id = rid
+        self.sent_opened = None
         self.opened_heading.setText(_when(r.created))
         parts = [r.what]
         if r.expected:
@@ -1048,6 +1087,7 @@ class ReportWindow(SecondaryWindow):
     def back(self):
         """Back to the form. From What goes: its zip is deleted unsent (the reports stay on the list)."""
         self.opened_id = None
+        self.sent_opened = None
         if self.outbox is not None and not qpress.live(self, "report:send"):
             sha, self.outbox = self.outbox.sha256, None
             qpress.run(None, "report:send", discard, sha, win=self, then=self.alive(lambda _g: self.read_send()),
@@ -1183,7 +1223,7 @@ class ReportWindow(SecondaryWindow):
         """The What goes page for `outbox`, its pictures (QImages read from the zip) at the page's width. The Discord
         name and the sender code it shows are the ones that go: the row under it waits while it's up (`_goes_hold`)."""
         self.outbox = outbox
-        self.opened_id = None
+        self.opened_id = self.sent_opened = None
         self.goes_name_value = " ".join(self.name_field.text().split())       # (as send_report cleans it)
         name = self.goes_name_value
         self.goes_name.setText(strings.REPORT_GOES_NAME.format(name=name) if name else strings.REPORT_GOES_NO_NAME)
@@ -1215,6 +1255,7 @@ class ReportWindow(SecondaryWindow):
             w.setEnabled(not on)
         for w in (self.list_heading, self.list, self.hint):       # (the page's room: the list is in the zip it shows)
             w.setVisible(not on)
+        self.sent_box.setEnabled(not on)                          # (a sent #ID opens once What goes is left)
         if not on:
             self.new_code_button.setEnabled(bool(self.sender_line.text()))
             self._send_ready()
@@ -1251,8 +1292,7 @@ class ReportWindow(SecondaryWindow):
                 self.sent_id = result.id
                 self.last_removed = None
                 self.say_undo(False)
-                self._done_row(strings.REPORT_SENT_ID.format(id=result.id), copy=True,
-                               invite=strings.REPORT_INVITE)
+                self._done_row(sent_where(result.id, len(outbox.zipped)), copy=True, invite=strings.REPORT_INVITE)
             if self.pages.currentIndex() == self.GOES:
                 self.back()
             self.read(then_say=words)
@@ -1314,23 +1354,80 @@ class ReportWindow(SecondaryWindow):
         for rid, when, path in sent[:SENT_SHOWN]:
             self.sent_rows.addWidget(self._sent_row(rid, when, path))
         self.sent_heading.setVisible(bool(sent))
+        self.sent_box.setVisible(bool(sent))
         if line is not None:
             self.say(line)
 
     def _sent_row(self, rid, when, path):
-        w = QWidget(self)
+        """A sent #ID: *Open* (the reports it held, try a9 #6) and *Open the zip* (selected in its folder)."""
+        w = QWidget(self.sent_box)
         box = QHBoxLayout(w)
         box.setContentsMargins(0, 0, 0, 0)
-        label = self._line(strings.REPORT_SENT_ROW.format(id=rid, when=when.strftime("%Y-%m-%d %H:%M")))
+        when = when.strftime("%Y-%m-%d %H:%M")
+        label = self._line(strings.REPORT_SENT_ROW.format(id=rid, when=when))
         box.addWidget(label, 1)
-        b = QPushButton(strings.REPORT_SENT_OPEN, w)
-        b.setToolTip(strings.REPORT_SENT_OPEN_TIP)
-        b.setAccessibleName(strings.REPORT_ROW_BUTTON_NAME.format(action=strings.REPORT_SENT_OPEN, what=f"#{rid}"))
-        b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        b.setProperty("kind", "chip")
-        b.clicked.connect(lambda _c=False, p=path, c=b: show_zip(self, p, control=c))
-        box.addWidget(b)
+        for text, tip, slot in (
+                (strings.REPORT_SENT_OPEN, strings.REPORT_SENT_OPEN_TIP.format(id=rid),
+                 lambda c: self.open_sent(rid, when, path, control=c)),
+                (strings.REPORT_SENT_ZIP, strings.REPORT_SENT_ZIP_TIP, lambda c: show_zip(self, path, control=c))):
+            b = QPushButton(text, w)
+            b.setToolTip(tip)
+            b.setAccessibleName(strings.REPORT_ROW_BUTTON_NAME.format(action=text, what=f"#{rid}"))
+            b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            b.setProperty("kind", "chip")
+            qpress.room(b)
+            b.clicked.connect(lambda _c=False, s=slot, c=b: s(c))
+            box.addWidget(b)
         return w
+
+    def open_sent(self, rid, when, path, control=None):
+        """A sent #ID's reports on their page: read from its zip on a worker (their pictures scaled there, to the
+        page's width), shown when they arrive — unless Back or another page came meanwhile."""
+        dpr = self.devicePixelRatioF()
+        width = max(1, self.pages.width() - 24)
+        self.sent_opened = (rid, path)
+
+        def shown(got):
+            if self.sent_opened != (rid, path):
+                return
+            self._show_sent_reports(rid, when, got, dpr)
+
+        def failed(info):
+            if self.sent_opened == (rid, path):
+                self.sent_opened = None
+            self.say(strings.REPORT_SENT_READ_FAILED.format(id=rid, why=info[0]))
+        qpress.run(control, f"report:sent:{rid}", sent_contents, path, round(width * dpr), win=self,
+                   then=self.alive(shown), failed=self.alive(failed))
+
+    def _page_changed(self, index):
+        """Any other page shown (Show me, What goes, a saved report, Back): a sent #ID still being read shows nothing."""
+        if index != self.SENT:
+            self.sent_opened = None
+
+    def _show_sent_reports(self, rid, when, got, dpr):
+        if not got:                                                # (a zip with no reports in it: said, no blank page)
+            self.sent_opened = None
+            self.say(strings.REPORT_SENT_EMPTY.format(id=rid))
+            return
+        self.opened_id = None
+        self.sent_opened_heading.setText(strings.REPORT_SENT_OPENED.format(id=rid, when=when))
+        self._clear(self.sent_lines)
+        for _report_id, text, images in got:
+            words = self._line(text.rstrip("\n"))
+            words.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.sent_lines.addWidget(words)
+            for img in images:
+                pm = QPixmap.fromImage(img)
+                pm.setDevicePixelRatio(dpr)
+                self.sent_lines.addWidget(self._thumb(pm, strings.REPORT_SENT_PICTURE_TIP))
+        self.sent_lines.addStretch(1)
+        self.pages.setCurrentIndex(self.SENT)
+        self.sent_back.setFocus()
+
+    def open_sent_zip(self):
+        """The opened sent report's zip, selected in its folder."""
+        if self.sent_opened is not None:
+            show_zip(self, self.sent_opened[1], control=self.sent_zip)
 
     def new_code(self):
         def made(code):
@@ -1474,6 +1571,48 @@ def zip_checked(dest, language, include, library, extra):
     found = []
     path = core.make_zip(dest, language, include, library, None, extra, found=found)
     return path, found
+
+
+def sent_where(rid, n):
+    """The done line after a send (try a9 #6): its #ID, and where the reports it held are now."""
+    if n > 1:
+        return strings.REPORT_SENT_WHERE_MANY.format(id=rid, n=n)
+    return strings.REPORT_SENT_WHERE_ONE.format(id=rid)
+
+
+def sent_contents(path, width):
+    """(A worker.) The reports a sent zip held, oldest first: [(report id, its report.txt, [QImage])], each picture
+    scaled down to `width` device pixels when wider. Only `reports/<id>/report.txt` and its `.png`s are read."""
+    from PyQt6.QtGui import QImage
+    found = {}
+    with zipfile.ZipFile(path) as z:
+        for name in z.namelist():
+            parts = name.split("/")
+            if len(parts) != 3 or parts[0] != core.REPORTS_DIR or not parts[1]:
+                continue
+            entry = found.setdefault(parts[1], {"text": "", "pictures": []})
+            if parts[2] == "report.txt":
+                entry["text"] = z.read(name).decode("utf-8", errors="replace")
+            elif parts[2].lower().endswith(".png"):
+                entry["pictures"].append(name)
+        out = []
+        for rid in sorted(found):
+            images = []
+            for name in sorted(found[rid]["pictures"], key=_picture_order):
+                img = QImage.fromData(z.read(name), "PNG")
+                if img.isNull():
+                    continue
+                if img.width() > width:
+                    img = img.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+                images.append(img)
+            out.append((rid, found[rid]["text"], images))
+    return out
+
+
+def _picture_order(name):
+    """picture-2.png before picture-10.png."""
+    digits = re.findall(r"\d+", os.path.basename(name))
+    return (int(digits[-1]) if digits else 0, name)
 
 
 def _send_words(result):

@@ -47,7 +47,8 @@ the lemmas joined (気が付く, 若しか為るた) and the dictionary's readin
 (`before_a_noun`), else 0."""
 
 # What `find` finds: bump it whenever a change here finds other phrases in the same words — the token store then counts
-# every file's phrases again (token_index.Store._update_phrases), as it does for new phrase data.
+# every file's phrases again (token_index.Store._update_phrases), as it does for new phrase data, and reads the known
+# words again (a known sentence's phrases are known: analyzer.load_known_words, Store._known_key).
 MATCHER_VERSION = 4
 
 # Phrase.prenoun: a pre-noun adjectival JMdict says is usually written in kana (its "uk" on every sense).

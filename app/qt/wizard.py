@@ -3556,6 +3556,29 @@ class SetupWizard(QWidget):
         if old is not None and old is not widget and not sip.isdeleted(old):
             old.hide()
             old.deleteLater()
+        QApplication.postEvent(self, QEvent(QEvent.Type.LayoutRequest))   # the window's room asked again (`_Cover`)
+
+    def minimumSizeHint(self):
+        """Its own, and the room of what covers it (the load and sort screens are placed by geometry, outside its
+        layout): the window's minimum makes room for both (`first_run._Cover`)."""
+        hint = super().minimumSizeHint()
+        covered = getattr(self, "covered", None)
+        if covered is not None and not sip.isdeleted(covered):
+            hint = hint.expandedTo(covered.minimumSizeHint())
+        return hint
+
+    def _covered_wraps(self):
+        covered = getattr(self, "covered", None)
+        return covered if covered is not None and not sip.isdeleted(covered) and covered.hasHeightForWidth() else None
+
+    def hasHeightForWidth(self):
+        return super().hasHeightForWidth() or self._covered_wraps() is not None
+
+    def heightForWidth(self, width):
+        """(As `minimumSizeHint`: the height its own words and its cover's take at `width`.)"""
+        own = super().heightForWidth(width) if super().hasHeightForWidth() else -1
+        covered = self._covered_wraps()
+        return own if covered is None else max(own, covered.heightForWidth(width))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

@@ -27,13 +27,13 @@ import pytest
 pytest.importorskip("PyQt6")
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, Qt
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt
 from PyQt6.QtGui import QImage, QKeyEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QPushButton
+from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
 from app import theme
-from app.qt import arrivals, freeze, motion, sort_screen, strings
+from app.qt import arrivals, first_run, freeze, motion, sort_screen, strings
 from app.qt import wizard_strings as S
 from app.services import view_rows
 from tests.fixtures import window_seed
@@ -182,17 +182,148 @@ def test_sort_them_all_closes_the_tray_and_opens_one_screen_with_every_arrival_t
         assert b.toolTip(), b.text()
 
 
-def test_soon_is_on_the_left_of_the_choices_and_of_the_keys_strip(world):
-    """Sonic 2026-10-30: Soon first — the one key that isn't an arrow — then the arrows' four."""
+def _at(screen, name):
+    b = screen.choice_buttons[name]
+    return b.mapTo(screen, b.rect().center())
+
+
+def test_the_choices_are_an_arrow_pad_with_soon_beside_it_and_no_key_strip(world):
+    """Mado-P (Sonic's alpha 9 try: "a up down left right keypad like you normally see"): Finished above Goal, Ignore
+    on its left, Current on its right — each key where the arrow keys sit — and Soon's S a key of its own beyond
+    Current; each key is its button (glyph and word, its tip naming the key). The foot's legend is gone: the pad is it."""
     _seed, win, _writer = world()
     screen = open_sort(win)
     settle()
-    order = sorted(screen.choice_buttons, key=lambda n: screen.choice_buttons[n].mapTo(screen, screen.choice_buttons[n]
-                                                                                       .rect().topLeft()).x())
-    assert order == ["soon", "now", "goal", "finished", "ignore"]
-    strip = sorted((w for w in screen.findChildren(sort_screen.QLabel) if w.objectName() == "sortkey"),
-                   key=lambda w: w.mapTo(screen, w.rect().topLeft()).x())
-    assert [w.text() for w in strip] == ["S", "→", "↓", "↑", "←", "Ctrl+Z"]
+    up, left, down, right, s = (_at(screen, n) for n in ("finished", "ignore", "goal", "now", "soon"))
+    assert up.x() == down.x() and up.y() < down.y()
+    assert left.y() == down.y() == right.y() == s.y()
+    assert left.x() < down.x() < right.x() < s.x()
+    assert s.x() - right.x() > right.x() - down.x(), "Soon stands apart from the cross"
+    for name, label, tip, key in S.SORT_CHOICES:
+        b = screen.choice_buttons[name]
+        assert (b.glyph, b.text(), b.accessibleName()) == (key, label, label) and b.toolTip().endswith(f"• {key}")
+    assert not [w for w in screen.findChildren(sort_screen.QLabel) if w.objectName() in ("sortkey", "sortkeyword")]
+    assert "Ctrl+Z" in screen.btn_undo.toolTip()
+
+
+def test_a_key_press_shows_its_pad_key_pressed_at_once_and_lets_it_go(world):
+    """The press rule: the key pressed on the keyboard shows on its pad key at once (down), then lets go."""
+    _seed, win, _writer = world()
+    screen = open_sort(win)
+    settle()
+    press(screen, Qt.Key.Key_Down)
+    assert screen.choice_buttons["goal"].isDown() and not screen.choice_buttons["now"].isDown()
+    press(screen, Qt.Key.Key_Right)                                   # a second press: its key down, the first up
+    assert screen.choice_buttons["now"].isDown() and not screen.choice_buttons["goal"].isDown()
+    assert wait_until(lambda: not screen.choice_buttons["now"].isDown(), 3)
+
+
+@pytest.mark.parametrize("setting", ["full", "reduced"])
+def test_a_pressed_keys_pad_key_flashes_only_with_motion_on(world, monkeypatch, setting):
+    """With motion on, the pad key also flashes (the window's wash, short); Reduced motion: the pressed look alone."""
+    _seed, win, _writer = world()
+    screen = open_sort(win)
+    settle()
+    washed = []
+    monkeypatch.setattr(motion, "wash", lambda w, radius=0.0, ms=None: washed.append((w, ms)))
+    motion.clock().mode.set_setting(setting)
+    try:
+        press(screen, Qt.Key.Key_Up)
+    finally:
+        motion.clock().mode.set_setting("follow")
+    assert screen.choice_buttons["finished"].isDown()
+    assert washed == ([] if setting == "reduced" else [(screen.choice_buttons["finished"], theme.MOTION["pad-flash"])])
+
+
+def test_an_arrow_pressed_while_a_pad_key_has_the_focus_sorts_and_never_moves_the_focus(world):
+    """Tab onto a key, then an arrow: the arrow is the screen's (it sorts the top title), never the button's own focus
+    move — on an arrow pad, ← on Goal moving the focus to a key on its right would read as broken."""
+    _seed, win, writer = world()
+    screen = open_sort(win)
+    settle()
+    top = screen.top_arrival()
+    goal = screen.choice_buttons["goal"]
+    goal.setFocus(Qt.FocusReason.TabFocusReason)
+    assert wait_until(goal.hasFocus, 3)
+    QApplication.sendEvent(goal, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Left, Qt.KeyboardModifier.NoModifier))
+    assert goal.hasFocus() and calls(writer, "place") == []
+    assert screen.history and screen.history[-1]["name"] == "ignore" and screen.history[-1]["keys"] == (top.key,)
+
+
+LONG_TITLES = ("ようこそ実力至上主義の教室へ4 (MF文庫J) (衣笠 彰梧 , トモセシュンサク) (z-library.sk, 1lib.sk, z-lib.sk)",
+               "世界の終りとハードボイルド・ワンダーランド（上） (新潮文庫) (村上 春樹) (z-library.sk, 1lib.sk, z-lib.sk)",
+               "ぼくはイエローでホワイトで、ちょっとブルー（新潮文庫） (ブレイディみかこ) (z-library.sk, 1lib.sk, z-lib.sk)")
+
+
+def _nothing_cut(screen):
+    """Every control shows its whole words, every label the lines it asks for, all inside the screen."""
+    cut = []
+    for w in screen.findChildren(QWidget):
+        if not w.isVisibleTo(screen) or w.width() <= 0:
+            continue
+        r = w.rect().translated(w.mapTo(screen, w.rect().topLeft()))
+        if not screen.rect().contains(r) or not w.parentWidget().rect().contains(w.geometry()):
+            cut.append(("outside", w.objectName(), r))
+        if isinstance(w, QPushButton) and (w.width() < w.sizeHint().width() or w.height() < w.minimumSizeHint().height()):
+            cut.append(("button", w.text(), w.size(), w.sizeHint()))
+        if isinstance(w, sort_screen.Clamp):
+            if w.height() < w.heightForWidth(w.width()):
+                cut.append(("lines", w.text(), w.size(), w.heightForWidth(w.width())))
+        elif isinstance(w, QLabel) and w.text() and (w.width() < w.minimumSizeHint().width()
+                                                      or w.height() < w.minimumSizeHint().height()):
+            cut.append(("label", w.text(), w.size(), w.minimumSizeHint()))
+    return cut
+
+
+def test_at_the_windows_smallest_size_nothing_on_the_sort_screen_is_cut_off(world, monkeypatch):
+    """Mado-P (Sonic's alpha 9 try, not maximised: "Text is cut off"). The screen covers the window by its geometry,
+    so the window never knew its room: made smaller, the foot's buttons showed less than their words and the title's
+    second line was cut. Now the window's minimum makes room for the screen (`first_run._Cover`): at the smallest
+    window, no button is narrower than its words, no label shorter than its lines, a long title stops at its lines with
+    "…" (whole on hover), the just-done line is cut first — and the window's own minimum comes back when it closes."""
+    _seed, win, _writer = world()
+    own = win.minimumSize()
+    monkeypatch.setattr(first_run, "_room", lambda _win: QSize(4000, 3000))   # (the test screen is small: 800 × 800)
+    rows = tuple(_arrival(i) for i in range(12))
+    rows = tuple(a._replace(title=LONG_TITLES[i % 3] if i < 3 else a.title) for i, a in enumerate(rows))
+    screen = open_sort(win)
+    screen.set_groups((view_rows.ArrivalGroup("new", "New", rows, tuple(a.key for a in rows)),))
+    screen.said.setText(S.SORT_PLACED["now"].format(title=LONG_TITLES[1]))
+    for size in ((300, 200), (1920, 1000), (1000, 620)):
+        for _ in range(3):                      # (as a hand drags: the pad going under the words lets it go smaller)
+            win.resize(*size)
+            settle()
+        assert win.minimumSize().width() >= own.width() and screen.size() == win.centralWidget().size()
+        assert screen.width() >= screen.minimumSizeHint().width(), (size, screen.size(), screen.minimumSizeHint())
+        assert screen.height() >= screen.minimumSizeHint().height(), (size, screen.size(), screen.minimumSizeHint())
+        assert _nothing_cut(screen) == [], size
+        if size == (300, 200):
+            assert win.size() == win.minimumSize(), "the window stops at the size where everything fits"
+            assert not screen._pad_beside, "narrow: the pad goes under the title's words"
+            assert screen.said.toolTip() == screen.said.text(), "the just-done line is cut first, whole on hover"
+            name = screen.top_name
+            assert name.text() == LONG_TITLES[0] and name.toolTip() == LONG_TITLES[0], "cut: the whole title on hover"
+            shown = name._lay(name.contentsRect().width())
+            assert len(shown) == sort_screen.TITLE_LINES[1] and shown[-1][0].endswith("…")
+        if size == (1920, 1000):
+            assert screen._pad_beside, "wide: the pad beside the title's words"
+    screen.finish("done")
+    settle()
+    assert wait_until(lambda: win.minimumSize() == own, 3), "the window's own minimum back once the screen goes"
+
+
+def test_the_window_never_needs_more_than_its_screen_holds(world, monkeypatch):
+    """A cover asking more room than the screen has (a small laptop screen at 175 %) grows the window's minimum only to
+    the screen's room: a window bigger than its screen can't be used."""
+    _seed, win, _writer = world()
+    own = win.minimumSize()
+    monkeypatch.setattr(first_run, "_room", lambda _win: own + QSize(40, 30))
+    screen = open_sort(win)
+    screen.said.setText(S.SORT_PLACED["now"].format(title=LONG_TITLES[1]))
+    settle()
+    assert screen.minimumSizeHint().width() > own.width() + 40 or screen.minimumSizeHint().height() > own.height() + 30
+    assert wait_until(lambda: win.minimumSize() == (own + QSize(40, 30)).boundedTo(
+        screen.minimumSizeHint().expandedTo(own)), 3)
 
 
 # --- a choice ------------------------------------------------------------------------------------------------------- #

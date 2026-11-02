@@ -608,11 +608,12 @@ class _Wash(QWidget):
         p.end()
 
 
-def wash(widget, radius=0.0):
+def wash(widget, radius=0.0, ms=None):
     """a7 (Sonic 2026-10-29: a decision waiting is opened "highlighted"): `widget` washed once, as Settings washes the
     row it reveals (`SettingsPage._wash`: the same colour; its fade over `row-wash` on the clock, Reduced motion steady
     for `row-wash-steady`) — an overlay over it that lets every click through and goes when done; a wash still showing
-    on it gives way. -> the overlay."""
+    on it gives way. `ms`: its fade's length when not `row-wash`'s (the sort screen's pad key: a short flash). -> the
+    overlay."""
     for old in widget.findChildren(_Wash, options=Qt.FindChildOption.FindDirectChildrenOnly):
         old.hide()
         old.deleteLater()
@@ -627,7 +628,7 @@ def wash(widget, radius=0.0):
     if clock().mode.reduced:
         QTimer.singleShot(theme.SETTINGS_MOTION["row-wash-steady"], gone)
     else:
-        clock().animate(theme.SETTINGS_MOTION["row-wash"], lambda v: w.set_level(1.0 - v), gone, kind="fade",
+        clock().animate(ms or theme.SETTINGS_MOTION["row-wash"], lambda v: w.set_level(1.0 - v), gone, kind="fade",
                         points="linear", owner=w, on_end=gone)
     return w
 

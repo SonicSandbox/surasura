@@ -321,7 +321,7 @@ def test_an_error_naming_a_path_is_scrubbed_in_the_zips_list_and_in_show_me(worl
     from app.connect import status
 
     def unlistable(left_out=None):
-        raise PermissionError(f"[WinError 5] Access is denied: '{world.home}\AppData\Local\Houseki'")
+        raise PermissionError(f"[WinError 5] Access is denied: '{world.home}\\AppData\\Local\\Houseki'")
     monkeypatch.setattr(status, "log_files", unlistable)
     report.save("もう一つ", "")
     words = report.describe(report.plan("ja"))
@@ -357,11 +357,12 @@ def test_a_mostly_utf8_log_with_a_stray_byte_never_hides_the_name_as_garbled_tex
     for view in (data.decode("utf-8"), data.decode("utf-8").encode(encoding, "replace").decode("utf-8", "replace")):
         assert probe_person.FOLDER not in view and "Zo" + "ë" not in view
     assert b"\\Users\\<you>\\Videos" in data
-    garbled = f"opened {world.home}".encode("utf-8").decode(encoding, "replace")      # what the old read sent
+    garbled = "opened C:\\Users\\Zoë Tanaka-Probe".encode("utf-8").decode(encoding, "replace")  # the old read
     bad = tmp_path / "bad.zip"
     with zipfile.ZipFile(bad, "w") as z:
         z.writestr("logs/mixed.log", garbled.encode("utf-8"))
-    assert scrub.leaks(str(bad), language=language) == ["logs/mixed.log"]       # the guard reads garbling back
+    ident = scrub.Identity(homes=["C:\\Users\\Zoë Tanaka-Probe"])           # (only the garbled name to find)
+    assert scrub.leaks(str(bad), ident, language) == ["logs/mixed.log"]     # the guard reads garbling back
 
 
 def test_an_anki_profile_set_up_after_the_window_opened_is_scrubbed(world, tmp_path):
@@ -378,7 +379,7 @@ def test_a_line_added_while_the_zip_is_written_is_scrubbed_in_what_goes_too(worl
 
     def held(path):
         if path.endswith("chore.log"):
-            raise PermissionError(f"[WinError 32] in use: '{path}'")
+            raise PermissionError(f"[WinError 32] in use: '{world.home}' (via '{path}')")
         return real(path)
     monkeypatch.setattr(report, "_read_shared", held)
     made = report.make_send_zip(str(tmp_path / "send.zip"), "ja", library=world.library)

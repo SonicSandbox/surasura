@@ -379,7 +379,7 @@ def test_a_line_added_while_the_zip_is_written_is_scrubbed_in_what_goes_too(worl
 
     def held(path):
         if path.endswith("chore.log"):
-            raise PermissionError(f"[WinError 32] in use: '{path}'")
+            raise PermissionError(f"[WinError 32] in use: '{world.home}' (via '{path}')")
         return real(path)
     monkeypatch.setattr(report, "_read_shared", held)
     made = report.make_send_zip(str(tmp_path / "send.zip"), "ja", library=world.library)

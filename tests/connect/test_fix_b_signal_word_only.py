@@ -85,3 +85,20 @@ def test_signal_marks_the_word_field_and_never_the_sentence_words(anki, known_fi
     forms = _known_forms(known_file)
     assert "撒く" in forms                                                        # marked in KnownWord.json
     assert "種を撒く" not in forms and "種" not in forms                          # the Sentence's words stay unknown
+
+
+def test_a_word_field_holding_a_sentence_marks_the_sentence_as_the_sync_reads_it(anki, known_file):
+    """Sonic's alpha 9 try: Sentence chosen as the word field. The signal reads the word field as the known-words sync
+    reads it (`anki_sync._terms_from_notes`): a sentence there is read whole — every word in it known — never its first
+    clause alone (でも). A one-word field (撒く<br>まく) is still its one word."""
+    anki.found = []
+    known_signal.read("ja", URL, ["DevTest"], ["Sentence"], SETTINGS)              # the baseline: no cards yet
+
+    anki.add(201, 11, "気", "でも、そんな気がする。")
+    anki.add(202, 12, "撒く", "撒く<br>まく")
+    anki.found = [201, 202]
+    out = known_signal.read("ja", URL, ["DevTest"], ["Sentence"], SETTINGS)
+
+    assert out["marked"] == ["でも、そんな気がする。", "撒く"]
+    forms = _known_forms(known_file)
+    assert "でも" not in forms and "まく" not in forms

@@ -156,6 +156,45 @@ def card_word(raw, language=None):
     return ""
 
 
+# --- a word field that holds a sentence ----------------------------------------------------------- #
+# Some decks keep a sentence where the word goes (Sonic, alpha 9: his Word field is the card's Sentence). A sentence is
+# no card's one word: the known-words sync reads it as it reads an "Also read" line — every word in it known — and the
+# Anki window says so. What makes one is Japanese's own marks, never a deck's: a sentence end (。！？), or clauses
+# parted by a comma (、，) or a space, unless every part is a word of its own — a word with its reading (撒く まく,
+# 撒く、まく) or a list of dictionary words (上層部、首脳部, 撒く。, JMdict's kanji spellings). A list mark (・ ／ ；) parts
+# words, never clauses. A field of one clause and no stop is read whole by `card_word` already (そんな気がする, 気がする):
+# no sentence. Chinese: the same marks but never a space (学习 xuéxí is a word and its pinyin), no dictionary.
+_SENTENCE_END_RE = re.compile(r'[。．!！?？‼⁇⁈⁉]')
+_CLAUSE_RE = re.compile(r'[、，,。．!！?？‼⁇⁈⁉\s]')
+_ZH_CLAUSE_RE = re.compile(r'[、，,。．!！?？‼⁇⁈⁉]')
+
+
+def holds_sentence(raw, language=None):
+    """Does a card's word field hold a sentence rather than a word? Its first line is read as `card_word` reads it (in
+    NFKC, its notes in brackets dropped), then parted into clauses (`_CLAUSE_RE`). Japanese: a sentence when it holds a
+    sentence end or two clauses or more, unless its clauses are a word and its readings in kana (撒く まく) or each a
+    JMdict kanji spelling (上層部、首脳部, 撒く。); with the dictionary unread, every clause counts as no word. Chinese:
+    a sentence end or two clauses holding a Chinese character (`_ZH_CLAUSE_RE`). Any other language: never."""
+    if language not in ("ja", "zh") or not isinstance(raw, str):
+        return False
+    line = next((text for text in (normalize_word(part) for part in _LINE_TAG_RE.split(raw)) if text), "")
+    line = unicodedata.normalize("NFKC", line)
+    line = _NOTE_RE.sub("", line) or line
+    script = re.compile(f'[{HAN}]' if language == "zh" else f'[{KANA}{HAN}]')
+    clauses = [c for c in (_bare(p) for p in (_ZH_CLAUSE_RE if language == "zh" else _CLAUSE_RE).split(line))
+               if script.search(c)]
+    stop = bool(_SENTENCE_END_RE.search(line))
+    if not clauses or (len(clauses) < 2 and not stop):
+        return False
+    if language == "zh":
+        return True
+    han = re.compile(f'[{HAN}]')
+    if not stop and han.search(clauses[0]) and all(_KANA_ONLY_RE.match(c) for c in clauses[1:]):
+        return False                                    # a word and its readings: 撒く まく
+    entries = _dictionary_entries()
+    return entries is None or not all(entries[0].get(c) for c in clauses)
+
+
 def fold_kana(text):
     """Katakana to hiragana, everything else as it is: スルリ -> するり, ピカピカ -> ぴかぴか.
 

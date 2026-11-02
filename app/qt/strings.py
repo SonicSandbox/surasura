@@ -1083,6 +1083,10 @@ ANKI_RESOLVED = "{model} → {fields}"
 ANKI_RESOLVED_JOIN = "   ·   "
 ANKI_FIELDS_JOIN = " + "
 ANKI_SKIPPED = "{model} → (no such field — skipped)"
+ANKI_SENTENCES = ("This field holds sentences: every word in it counts as known. For the card's own word, choose "
+                  "{field}.")                                       # a9r2: a word field holding sentences (⭐ lead)
+ANKI_SENTENCES_PLAIN = ("This field holds sentences: every word in it counts as known. For the card's own word, choose "
+                        "the field that holds it.")
 ANKI_SUSPENDED = "Include suspended cards"
 ANKI_SUSPENDED_TIP = ("Cards you studied and then suspended count as known. Off by default — a suspended card is "
                       "often one you struggled with. New cards you suspend count only with Count as known in Anki, in "

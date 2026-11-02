@@ -41,7 +41,7 @@ from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, pyqt
 from PyQt6.QtGui import QActionGroup, QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QSizePolicy, QWidget
 
-from app import theme
+from app import scrub, theme
 from app.qt import freeze, motion, style
 from app.qt.settings_strings import ADD, CROSS, PICKED_NONE, RANGE_TO, REMOVE_NAME, STATUS_NAME, TICK
 
@@ -551,7 +551,7 @@ class Cards(Choice):
             else:
                 p.setPen(_c(theme.SETTINGS_TEXT["chosen-line" if chosen else "help"]))
             p.drawText(QRectF(text.left(), text.top() + bold.height(), text.width(), text.height() - bold.height()),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, self._lines[i])
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, scrub.shown(self._lines[i]))
             if self.hasFocus() and i == self._cursor:
                 paint_ring(p, r, radius)
         if self.isEnabled():
@@ -1673,7 +1673,7 @@ class Select(_Control):
         p.setPen(_c(theme.SETTINGS_TEXT["value"]) if self.isEnabled() else _c(theme.SETTINGS_TEXT["greyed"]))
         chev = 8 * _f()
         p.drawText(r.adjusted(pad, 0, -(pad + chev + 6), 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   self._options[self._index][1])
+                   scrub.shown(self._options[self._index][1]))
         pen = QPen(self._ink(False), max(1.4, 1.5 * _f()))
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -1769,5 +1769,5 @@ class StatusMark(QWidget):
         p.setPen(_c(theme.SETTINGS_TEXT["status" if self._lit else "status-off"]))
         x = stone + 7 * _f()
         p.drawText(QRectF(x, 0, self.width() - x, self.height()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   self._words)
+                   scrub.shown(self._words))
         p.end()

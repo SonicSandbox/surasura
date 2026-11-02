@@ -43,7 +43,7 @@ from PyQt6.QtGui import (QBrush, QColor, QCursor, QFont, QFontMetrics, QLinearGr
                          QPixmap, QStaticText, QTextOption)
 from PyQt6.QtWidgets import QAbstractItemView, QListView, QStyle, QStyledItemDelegate
 
-from app import theme, unicode_ranges
+from app import scrub, theme, unicode_ranges
 from app.qt import motion, stones, strings, style
 from app.qt import covers as qcovers                 # --- W3.2 Q6: a title's own picture, decoded off the GUI thread
 from app.services import stone_plan, view_rows
@@ -109,8 +109,10 @@ class Text:
 
     def static(self, text, role, width, weight=None, dpr=1.0, elide=True):
         """(QStaticText, its width, whether it was cut) of `text` in `role`, elided to `width` px (`elide=False`:
-        never cut — a number, whose figures' tabular widths `elidedText` measures wider than `horizontalAdvance`)."""
+        never cut — a number, whose figures' tabular widths `elidedText` measures wider than `horizontalAdvance`).
+        While a picture is taken, the whole text scrubbed first (`scrub.shown`): never half a name."""
         self._check(dpr)
+        text = scrub.shown(text)
         k = (text, role, weight, int(width) if elide else None)
         hit = self._static.get(k)
         if hit is None:
@@ -216,6 +218,7 @@ def cover(title, w, h, dpr, large=False, ref=None):
     if real is not None:
         return real
     # --- end W3.2 Q6
+    title = scrub.shown(title)                          # (a picture being taken: its own cover, scrubbed)
     key = (title, int(w), int(h), dpr, large)
     pix = _COVERS.get(key)
     if pix is not None:

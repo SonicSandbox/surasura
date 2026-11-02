@@ -35,7 +35,7 @@ from PyQt6.QtGui import (QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QK
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QMenu, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
-from app import path_utils, theme
+from app import path_utils, scrub, theme
 from app.qt import applog, bridge, frame, hud, motion, strings, style, titlebar, toast, tooltip
 from app.services import jobs as jobs_module
 from app.services import press as press_service
@@ -1018,9 +1018,12 @@ class ElidingLabel(QLabel):
         self._fit()
 
     def _fit(self):
-        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(0, self.width()))
+        """(Report a problem's picture mode fits it again with the whole line scrubbed: `scrub.shown`.)"""
+        shown = self.fontMetrics().elidedText(scrub.shown(self._full), Qt.TextElideMode.ElideRight, max(0, self.width()))
         if shown != self.text():
             self.setText(shown)
+
+    shown_fit = _fit                # (Report a problem's picture mode: `report.PictureMode`)
 
 
 class TabButton(QToolButton):

@@ -3,6 +3,12 @@ window's `app/qt/start_gate.py` asks `state()` before the window's services open
 worker.
 
 `state()` -> a dict whose `state` is, checked in this order:
+  * `profile-move` — this install's journal (`profile_reset.pending()`, Fresh library 3.0.1): a *Start over completely*
+    or *Put back* asked for (`asked`, `journal`: its action and backup), or one a kill left part way. Comes first: the
+    move runs before anything opens a place it moves. An `asked` one waits behind `library-missing` (the library folder
+    offline: it moves a part of it); one left part way never does (rolled back first, so the window never opens on a
+    half-moved profile). `run(..., move=True)` runs an asked one — only on the restart's own start (the shell's
+    `restart_mark`) or the learner's yes; otherwise `run` answers `asked` and the gate asks (P16).
   * `library-missing` — an installed program whose library folder isn't there, though it was there before (this note
     names it, or the import's note brought a library into it): a NAS or OneDrive folder offline, a drive unplugged.
     Refused, never made again by itself (D3); *Try again* looks again; only the user's own *Start with a new, empty
@@ -49,6 +55,7 @@ from app import graduated_merge, import_2x, path_utils
 NOTE = "first_run.json"
 NOTE_VERSION = 1
 
+PROFILE_MOVE = "profile-move"
 LIBRARY_MISSING = "library-missing"
 HOLDS_PROGRAM = "library-holds-program"
 IMPORT_UNFINISHED = "import-unfinished"
@@ -56,7 +63,7 @@ IMPORT = "import"
 ASK_FOLDER = "ask-folder"
 LIBRARY_NEW = "library-new"
 READY = "ready"
-STATES = (LIBRARY_MISSING, HOLDS_PROGRAM, IMPORT_UNFINISHED, IMPORT, ASK_FOLDER, LIBRARY_NEW, READY)
+STATES = (PROFILE_MOVE, LIBRARY_MISSING, HOLDS_PROGRAM, IMPORT_UNFINISHED, IMPORT, ASK_FOLDER, LIBRARY_NEW, READY)
 
 LANGUAGES = import_2x.LANGUAGES
 ASIDE = "Unfinished import from Surasura 2 ({stamp})"     # a fresh start's folder for an unfinished import's copy
@@ -157,7 +164,14 @@ def state():
     library = installed or path_utils.get_user_data_path()
     note = import_2x.read_import_note()
     out = {"state": READY, "library": library, "installed": bool(installed), "create": False, "recorded": True,
-           "source": None, "installs": [], "note": note, "lists": [], "elsewhere": None, "lost": False}
+           "source": None, "installs": [], "note": note, "lists": [], "elsewhere": None, "lost": False,
+           "journal": None}
+    from app import profile_reset
+    journal = profile_reset.pending()
+    if journal is not None and (journal.get("status") != profile_reset.ASKED or not installed
+                                or os.path.isdir(library)):
+        out.update(state=PROFILE_MOVE, journal=journal)
+        return out
     seen = None
     if installed:
         seen = _seen(library)
@@ -267,15 +281,29 @@ def _abandon(library):
         import_2x._write_json(import_2x.note_path(), dict(note, abandoned=import_2x._now()))
 
 
-def run(st, progress=None, cancel=None, source=None, fresh=False, restart=False):
+def run(st, progress=None, cancel=None, source=None, fresh=False, restart=False, move=False, on_wait=None):
     """Do what `state()` said, on a worker -> {status, reason, message, import, graduated}. `status`: done; refused
     (`reason` library_missing or library_new — never made without the user's `fresh` —, holds_program, set_aside
     (`message`: the OSError's words), or the import's refusal); blocked (the write check: `message` is CFA_MESSAGE
     when Windows' folder access denied it); cancelled or failed (the import's: its note says unfinished). `source`:
     the old folder the user chose; `fresh`: the user starts fresh instead (a missing or new library made, empty; an
-    unfinished import's copy set aside). `restart` is `run_import`'s. The merge runs only once the library is safe."""
+    unfinished import's copy set aside). `restart` is `run_import`'s. The merge runs only once the library is safe.
+    `profile-move`: a move left part way (or done, or undone) settled (`profile_reset.recover`); an asked one run only
+    with `move` (the restart's own start, or the learner's yes; `on_wait(holders)` while another Surasura program is
+    waited for, `cancel` ends that wait), else {"status": "asked"} — the result's `move` holds `profile_reset.run`'s
+    answer (`status`: done, refused, undone, stuck, rolled-back). After any of them the gate asks `state()` again."""
     library = st["library"]
     kind = st["state"]
+    if kind == PROFILE_MOVE:
+        from app import profile_reset
+        journal = st.get("journal") or {}
+        if journal.get("status") == profile_reset.ASKED and not move:
+            return _result("asked", "profile_move", None)
+        answer = profile_reset.run(on_wait=on_wait, cancel=cancel)
+        out = _result("done" if answer["status"] in ("done", "rolled-back", "undone", "none") else answer["status"],
+                      answer["reason"], answer["words"])
+        out["move"] = answer
+        return out
     if kind == HOLDS_PROGRAM:
         return _result("refused", "holds_program", None)
     if kind == LIBRARY_MISSING and not fresh:

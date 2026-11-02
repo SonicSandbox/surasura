@@ -40,7 +40,8 @@ def _run(tmp_path, argv, hide_qt=False, fake_window=True, beats=False):
         sys.modules["app.telemetry"] = tele
         if {fake_window!r} and not {hide_qt!r}:
             win = types.ModuleType("app.qt.shell")
-            win.main = lambda argv=None: opened.append("window") or 0
+            # the window's start: its gate first, then `after_gate` (app_entry's heartbeat), then the window
+            win.main = lambda argv=None, after_gate=None: (after_gate and after_gate()) or opened.append("window") or 0
             import app.qt
             sys.modules["app.qt.shell"] = win
             app.qt.shell = win
@@ -74,9 +75,10 @@ def test_the_default_start_opens_the_window(tmp_path):
 
 
 def test_the_window_route_sends_the_heartbeat_once_before_the_window(tmp_path):
-    """IK-27 (W3.5 RUNBOOK row 6: the heartbeat stays where it is — `app_entry.py` sends it before either window
-    opens): the window's route sends it once, before the window; nothing in the window or its services starts another
-    (the update's own event, `send_update_event`, is the reconcile's)."""
+    """IK-27 (W3.5 RUNBOOK row 6: `app_entry.py` sends the heartbeat before either window opens; Fresh library R2: for
+    the 3.0 window, after its start gate — handed in as `after_gate`, since it reads settings.json, which a Start over
+    moves there): the window's route sends it once, before the window; nothing in the window or its services starts
+    another (the update's own event, `send_update_event`, is the reconcile's)."""
     code, opened, _qt, _log = _run(tmp_path, [], beats=True)
     assert opened == ["heartbeat", "window"] and code in (0, None)
     for folder in (os.path.join(ROOT, "app", "qt"), os.path.join(ROOT, "app", "services")):

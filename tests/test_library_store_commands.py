@@ -1900,6 +1900,124 @@ def test_a_title_sent_to_soon_still_goes_first_in_soon_when_the_line_falls_betwe
     store.close()
 
 
+def _cut_third(language):
+    """3 shows of 4 and the line inside the third: 2 of its files NOW, 2 in Soon (its NOW and Soon halves)."""
+    store = migrated(language, shows=3, episodes=4)
+    third = [i for i in store.ids("now") if store.item(i)["work_id"] == store.item(store.ids("now")[8])["work_id"]]
+    store.set_soon_line(10)
+    assert store.ids("now")[-2:] == third[:2] and store.ids("soon")[:2] == third[2:]
+    return store, third
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_soons_top_stops_at_the_cut_shows_first_soon_piece_never_past_the_learners_own_split(language):
+    """Review M2: the view joins only Soon's FIRST piece to the row the line runs through (`view_rows.build`); a
+    learner's own split after it is a row of its own. A title sent to Soon lands between the two — never after the
+    split, which would leave that row above the title it was below."""
+    store, third = _cut_third(language)
+    store.split(store.item(third[2])["piece_id"], third[3])
+    assert store.item(third[2])["piece_id"] != store.item(third[3])["piece_id"]
+    soon = store.ids("soon")
+    sent = store.ids("goal")[:4]
+    store.place(sent, "soon")
+    assert store.ids("soon") == [third[2]] + sent + soon[1:] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_soon_row_sent_to_soons_top_lands_past_the_cut_show_with_nothing_leaving_now(language):
+    """Review L5: NOW already holds the line's count (nothing leaves it: `need` ≤ 0) and the row sent is itself a Soon
+    row — skipped while the cut show's Soon files are read, so it lands after them, not on its own old place."""
+    store, third = _cut_third(language)
+    soon = store.ids("soon")
+    sent = soon[3]
+    store.place([sent], "soon")
+    assert store.ids("soon") == third[2:] + [sent] + [i for i in soon[2:] if i != sent] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_demote_of_many_works_out_soons_top_once(language):
+    """Review L4: Demote / Graduate's `set_tier` places each item with no row of its folder there at the tier's top —
+    worked out once a call (nothing is placed before every item has its place), and all land together past the cut
+    show, in the order given."""
+    store, third = _cut_third(language)
+    goal = store.ids("goal")
+    picked = [goal[0], goal[4], goal[8]]                   # three titles' first files: no folder of theirs in Soon
+    asked = []
+    top = store._tier_top
+    store._tier_top = lambda tier, excl: asked.append(tier) or top(tier, excl)
+    store.set_tier(picked, "soon")
+    assert asked == ["soon"]
+    assert store.ids("soon")[:5] == third[2:] + picked and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_soon_item_put_back_with_its_neighbours_gone_lands_past_the_cut_show(language):
+    """Review L3: Put back finds its place by its old neighbours; with both gone from Soon it falls back to Soon's top —
+    `_tier_top`'s, past the show the line runs through, never between its halves."""
+    store, third = _cut_third(language)
+    soon = store.ids("soon")
+    gone = soon[2]                                         # the loose file right after the cut show
+    removed = store.remove([gone])
+    store.move([third[3], soon[3]], "goal")                # its old neighbours leave Soon
+    store.restore(list(removed.trash_ids))
+    assert store.ids("soon")[:2] == [third[2], gone] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_put_back_row_never_reads_itself_as_the_show_after_the_line(language):
+    """Review L3 (mutant S11): the row put back is in Soon already, at the order's middle (0.0), while its place is
+    worked out; where the cut show's Soon files sort after that (a line moved down one: the files keep their order
+    numbers), it must not read itself as Soon's first row (another show: Soon's very top, inside the cut show)."""
+    store = migrated(language, shows=3, episodes=4)
+    store.set_soon_line(len(store.ids("now")) + 1)        # the line takes one file of the next show up
+    soon = store.ids("soon")
+    cut = [i for i in soon if store.item(i)["work_id"] == store.item(store.ids("now")[-1])["work_id"]]
+    assert len(cut) == 3 and soon[:3] == cut and store.item(cut[0])["ord"] > 0
+    gone = soon[3]                                         # the next show's first file
+    removed = store.remove([gone])
+    store.move([cut[-1], soon[4]], "goal")                 # its old neighbours leave Soon
+    store.restore(list(removed.trash_ids))
+    assert store.ids("soon")[:3] == cut[:2] + [gone] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_row_sent_to_soon_from_between_the_line_and_the_cut_shows_soon_files_lands_past_them(language):
+    """Mutant S4: the row sent is read as gone while the place is worked out — a title sitting right below the line,
+    before the Soon files of the show the line runs through, sent to Soon goes after them (the view then joins the
+    show into one row) rather than staying between the halves."""
+    store, third = _cut_third(language)
+    sent = store.ids("goal")[0]
+    store.move([sent], "soon", before_id=third[2])         # a title between the cut show's halves (a drag's doing)
+    assert store.ids("soon")[:3] == [sent] + third[2:]
+    store.place([sent], "soon")
+    assert store.ids("soon")[:3] == third[2:] + [sent] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_sent_to_soon_goes_first_after_a_group_that_ends_at_the_line(language):
+    """Mutant S1: a group the line doesn't run through (it ends at the line) is no row Soon's first piece joins — the
+    title goes to Soon's very top, before the next show, as the view shows them apart."""
+    store = migrated(language, shows=3, episodes=4)
+    runs = []
+    for i in store.ids("now"):
+        if runs and runs[-1][0] == store.item(i)["piece_id"]:
+            runs[-1][1].append(i)
+        else:
+            runs.append((store.item(i)["piece_id"], [i]))
+    store.join([runs[-2][0], runs[-1][0]], how="group")   # NOW's last two runs, one group, the line right after it
+    first = store.ids("soon")[0]
+    sent = store.ids("goal")[0]
+    store.place([sent], "soon")
+    assert store.ids("soon")[:2] == [sent, first] and _line_holds(store)
+    store.close()
+
+
 def test_generate_parity_line_at_the_tier_boundary(ja_resources_dir):
     """K3 (08 §8.1 #1): weights by position need no engine change — with the line at NOW's count the analyzer's output
     is `expected_output.csv`, byte for byte; dragging the line changes the weights through the tiers, and dragging it

@@ -62,8 +62,10 @@ def test_a_show_anilist_has_not_answered_for_yet_waits_with_its_reason():
     """Alpha 9 #JNFJ8Q (Chii Fuyo, still airing, every episode marked at once before AniList had answered): no answer
     yet for a show AniList can be asked about is never "nothing known" — it asks, and says why."""
     row = _row("p1", 1, 1, _at_once(3), title="夜明けの旅団")
-    assert drag.when_done(_aired(_view([row]), 1, {"status": A.PENDING}), row, NOW) ==         ("offer", strings.DONE_WHY_ASKING)
-    assert drag.offer_text(("offer", strings.DONE_WHY_ASKING), row) ==         "✓ All 3 watched · Still asking AniList whether it's airing — finished with it?"
+    assert drag.when_done(_aired(_view([row]), 1, {"status": A.PENDING}), row, NOW) == \
+        ("offer", strings.DONE_WHY_ASKING)
+    assert drag.offer_text(("offer", strings.DONE_WHY_ASKING), row) == \
+        "✓ All 3 watched · Still asking AniList whether it's airing — finished with it?"
 
 
 @pytest.mark.parametrize("status", ["RELEASING", "NOT_YET_RELEASED", "HIATUS"])     # AniList's own names
@@ -289,30 +291,187 @@ def test_window_the_last_done_of_a_show_anilist_holds_offers_with_its_reason_and
     assert win.toasts.card.base == strings.DONE_ALL_WHY.format(n=len(row.episodes), why=strings.DONE_WHY_AIRING)
 
 
-def test_window_mark_all_watched_before_anilist_answered_offers_and_writes_only_the_marks(world):
-    """Alpha 9 #JNFJ8Q, the window's own path (⋯ *Mark all watched*, `done_many`): a show with an id whose answer
-    hasn't come yet (the asker switched on) is marked watched and asked about — never moved to Finished."""
-    from tests.qt.test_drag import calls
+class _Asker:
+    on_change = None
 
-    class Asker:
-        on_change = None
+    def want(self, ids):
+        return 0
 
-        def want(self, ids):
-            return 0
+    def on(self):
+        return True
 
-        def on(self):
-            return True
+
+def _marked_all_before_the_answer(world, aid):
+    """⋯ *Mark all watched* on a show with AniList id `aid` whose answer hasn't come (the asker switched on)."""
     seed, win, writer = world()
     row = rows_of(win)[4]
-    seed.library.commit(works=[{"id": row.work_id, "anilist_id": 424243}])
+    seed.library.commit(works=[{"id": row.work_id, "anilist_id": aid}])
     reader = win.services.library
     reader._airing_kept.shows()                     # (its path, under the test's local folder: nothing kept)
-    reader.follow_airing(Asker())
+    reader.follow_airing(_Asker())
     reader.airing_moved()
     assert wait_until(lambda: win.page_widgets["current"].view_model.airing.get(row.work_id) == {"status": A.PENDING},
                       3)
     row = rows_of(win)[4]
     win.moves.done_many(row, list(row.episodes))
+    return seed, win, writer, row
+
+
+def test_window_mark_all_watched_before_anilist_answered_offers_and_writes_only_the_marks(world):
+    """Alpha 9 #JNFJ8Q, the window's own path (⋯ *Mark all watched*, `done_many`): a show with an id whose answer
+    hasn't come yet (the asker switched on) is marked watched and asked about — never moved to Finished."""
+    from tests.qt.test_drag import calls
+    _seed, win, writer, row = _marked_all_before_the_answer(world, 424243)
     assert [c[0] for c in calls(writer)] == ["set_watched"]
     assert win.toasts.card.base == strings.DONE_ALL_WHY.format(n=len(row.episodes), why=strings.DONE_WHY_ASKING)
     assert row.key in [r.key for r in rows_of(win)]
+
+
+@pytest.mark.parametrize("answer, finishes", [("FINISHED", True), ("RELEASING", False)])
+def test_window_a_show_offered_still_asking_is_asked_again_when_anilist_answers(world, answer, finishes):
+    """Alpha 9 (review M1): the offer *Still asking AniList* waits for the answer, then L6.3's one rule runs again — an
+    ended show (a whole season marked at once, which 3.0's dates finish) finishes by itself once AniList says so, as
+    it would have without AniList; one still airing stays in Current with its offer. Never sooner, never twice."""
+    from tests.qt.test_drag import calls
+    _seed, win, writer, row = _marked_all_before_the_answer(world, 424244)
+    assert wait_until(lambda: not win.moves.tickets, 3)
+    reader = win.services.library
+    A._write(reader._airing_kept.path, {"424244": {"status": answer, "episodes": len(row.episodes), "next_at": None,
+                                                   "asked_at": time.time()}})
+    reader.airing_moved()
+    if finishes:
+        assert wait_until(lambda: (settle() or True) and calls(writer, "set_tier"), 3)
+        assert win.toasts.card.base == strings.DONE_FINISHED.format(title=row.title)
+        assert len(calls(writer, "set_tier")) == 1
+    else:
+        assert wait_until(lambda: (settle() or True) and
+                          (win.page_widgets["current"].view_model.airing.get(row.work_id) or {}).get("status") == answer,
+                          3)
+        settle(30)
+        assert calls(writer, "set_tier") == [] and row.key in [r.key for r in rows_of(win)]
+    assert not win.moves._airing_asking
+    reader.airing_moved()                           # another view: nothing is asked again
+    settle(30)
+    assert len(calls(writer, "set_tier")) == (1 if finishes else 0)
+
+
+@pytest.mark.parametrize("busy", ["store", "write", "drag"])
+def test_window_an_answer_that_comes_while_the_window_is_busy_is_acted_on_at_a_later_view(world, busy):
+    """Alpha 9 (review round 2, L-a / L-b / L-d): the answer lands while the store can't take a move, a write is on its
+    way or a drag runs — nothing finishes then and nothing is said on the bar; the show stays asked about, and the next
+    view (the busy spell over) finishes it by itself."""
+    from tests.qt.test_drag import calls
+    _seed, win, writer, row = _marked_all_before_the_answer(world, 424246)
+    assert wait_until(lambda: not win.moves.tickets, 3)
+    said = []
+    win.moves.say = said.append
+    ticket = drag.Ticket("…")
+    if busy == "store":
+        writer.writable = False
+    elif busy == "write":
+        win.moves.tickets.append(ticket)
+    else:
+        win.moves.running = object()
+    reader = win.services.library
+    A._write(reader._airing_kept.path, {"424246": {"status": "FINISHED", "episodes": len(row.episodes),
+                                                   "next_at": None, "asked_at": time.time()}})
+    reader.airing_moved()
+    if busy == "drag":                              # a drag holds every view: the answer is read, never shown
+        assert wait_until(lambda: (settle() or True) and win.moves._airing_again is False and
+                          (getattr(win.moves.held, "airing", None) or {}).get(row.work_id, {}).get("status") ==
+                          "FINISHED", 3)
+    else:                                           # shown: the window's view carries the answer
+        assert wait_until(lambda: (settle() or True) and
+                          (win.page_widgets["current"].view_model.airing.get(row.work_id) or {}).get("status") ==
+                          "FINISHED", 3)
+    settle(30)
+    assert calls(writer, "set_tier") == [] and said == [] and row.work_id in win.moves._airing_asking
+    writer.writable = True
+    if ticket in win.moves.tickets:
+        win.moves.tickets.remove(ticket)
+    win.moves.running = None
+    reader.airing_moved()                           # the next view
+    assert wait_until(lambda: (settle() or True) and calls(writer, "set_tier"), 3)
+    assert not win.moves._airing_asking
+
+
+def test_window_two_shows_still_asking_each_waits_for_its_own_answer(world):
+    """Review round 2 (mutant D6): one show's answer coming never lets go another still being asked about — it finishes
+    by itself only at its own answer."""
+    from tests.qt.test_drag import calls
+    seed, win, writer, row = _marked_all_before_the_answer(world, 424249)
+    others = [r for r in rows_of(win) if r.key != row.key and r.work_id not in (None, row.work_id) and not r.group]
+    seed.library.commit(works=[{"id": row.work_id, "anilist_id": 424249}] +
+                        [{"id": r.work_id, "anilist_id": 424250 + n} for n, r in enumerate(others)])
+    win.services.library.airing_moved()
+    assert wait_until(lambda: (settle() or True) and all(
+        win.page_widgets["current"].view_model.airing.get(r.work_id) == {"status": A.PENDING} for r in others), 3)
+    view = win.page_widgets["current"].view_model
+    n, other = next((n, r) for n, r in enumerate(others)       # one the dates would finish: AniList alone holds it
+                    if drag.when_done(view, r._replace(episodes=tuple(e._replace(watched=True) for e in r.episodes)))
+                    == ("offer", strings.DONE_WHY_ASKING))
+    other = next(r for r in rows_of(win) if r.key == other.key)
+    assert wait_until(lambda: not win.moves.tickets, 3)
+    win.moves.done_many(other, list(other.episodes))
+    assert set(win.moves._airing_asking) == {row.work_id, other.work_id}
+    assert wait_until(lambda: not win.moves.tickets, 3)
+    reader = win.services.library
+    entry = {"status": "FINISHED", "next_at": None, "asked_at": time.time()}
+    A._write(reader._airing_kept.path, {"424249": dict(entry, episodes=len(row.episodes))})
+    reader.airing_moved()
+    assert wait_until(lambda: (settle() or True) and len(calls(writer, "set_tier")) == 1, 3)
+    assert set(win.moves._airing_asking) == {other.work_id}
+    A._write(reader._airing_kept.path, {"424249": dict(entry, episodes=len(row.episodes)),
+                                        str(424250 + n): dict(entry, episodes=len(other.episodes))})
+    reader.airing_moved()
+    assert wait_until(lambda: (settle() or True) and len(calls(writer, "set_tier")) == 2, 3)
+    assert not win.moves._airing_asking
+
+
+def test_window_a_held_view_shown_later_as_the_window_s_own_still_brings_its_answer(world):
+    """Review round 2 (L-a): a reader's view held while the window's order was ahead is shown later as the window's own
+    (`view_in`'s first return) — its answer is still read, so the show waits for no further view."""
+    _seed, win, _writer, row = _marked_all_before_the_answer(world, 424248)
+    view = win.moves.page.view_model._replace(airing={row.work_id: {"status": "FINISHED"}})
+    win.moves._own = True
+    try:
+        assert win.moves.view_in(view) is view
+    finally:
+        win.moves._own = False
+    assert win.moves._airing_again
+
+
+def test_window_move_to_finished_pressed_on_the_offer_is_never_asked_again(world):
+    """Review round 2 (L-c): *Move to Finished* on the *Still asking* offer ends the asking — an Undo of that move,
+    then the answer, never finishes the show by itself against the learner's Undo."""
+    _seed, win, _writer, row = _marked_all_before_the_answer(world, 424247)
+    assert row.work_id in win.moves._airing_asking
+    win.moves.to_finished(row)
+    assert row.work_id not in win.moves._airing_asking
+
+
+def test_window_download_covers_switched_builds_the_airing_answers_again(world):
+    """Review L1: AniList's *Still asking* follows the covers switch — a write of `covers_download` asks the reader for
+    a view with the airing answers read again (switched off: no show waits for an answer that will never come)."""
+    _seed, win, _writer = world()
+    reader = win.services.library
+    moved = []
+    reader.airing_moved = lambda: moved.append(1)
+    win._settings_written(["app_motion"])
+    assert moved == []
+    win._settings_written(["covers_download"])
+    assert moved == [1]
+
+
+def test_window_with_the_switch_turned_off_before_the_answer_nothing_finishes_by_itself(world):
+    """Alpha 9 (review M1): no answer will come (Download covers turned off) — the offer stands, AniList's absence
+    never finishes a show; the show is let go."""
+    from tests.qt.test_drag import calls
+    _seed, win, writer, row = _marked_all_before_the_answer(world, 424245)
+    reader = win.services.library
+    reader.follow_airing(None)                      # no asker: `asking` False, the PENDING entry goes
+    reader.airing_moved()
+    assert wait_until(lambda: (settle() or True) and
+                      row.work_id not in (win.page_widgets["current"].view_model.airing or {}), 3)
+    settle(30)
+    assert calls(writer, "set_tier") == [] and not win.moves._airing_asking

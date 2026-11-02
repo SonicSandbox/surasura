@@ -1008,6 +1008,8 @@ class DragController(QObject):
         self._closed = False                         # H-T1: let go by the window (its close, a language switch)
         self.held = None                             # the reader's newest view, not shown yet
         self.tickets = []                            # commands given, not settled yet (oldest first)
+        self._airing_asking = {}                     # alpha 9 M1: work_id -> row key offered *Still asking AniList*
+        self._airing_again = False                   # ... its `_again` on its way
         self.saving_keys = frozenset()
         self.toasted = None                          # the ticket whose toast shows
         self.toast_for = ()                          # round 8 row 45: the tickets the shown toast stands for …
@@ -1124,6 +1126,8 @@ class DragController(QObject):
     def view_in(self, view):
         """-> the view to show now, or None (held): every view while a drag runs (E6); while the window's own order is
         ahead of the store, a view of the same rows in that order (its numbers fresh), else held until it settles."""
+        if self._airing_asking:
+            self._answered(view)                     # (a view held, shown later as the window's own: its answer too)
         if self._own:
             return view
         if self._replay_owed and getattr(view, "mode", None) == "store":
@@ -2465,6 +2469,7 @@ class DragController(QObject):
             if verdict is not None and verdict[0] != "offer":
                 self._by_itself(row, verdict)
             elif verdict is not None:
+                self._ask_again(view, row, verdict)
                 self.win.toasts.show(offer_text(verdict, row), buttons=[
                     (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
             elif not finishes(row):
@@ -2532,6 +2537,7 @@ class DragController(QObject):
             ticket = Ticket(offer_text(verdict, row), (row.key,), tuple(ids))
             if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
+            self._ask_again(view, row, verdict)
             self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
                                           lambda: self.to_finished(row))])
             return
@@ -2604,6 +2610,7 @@ class DragController(QObject):
         own words for a finish by itself)."""
         if self.refused() is not None:
             return
+        self._airing_asking.pop(row.work_id, None)  # (alpha 9 M1: its finish is asked no more)
         base = self.base()
         if base is not None and any(r.key == row.key for r in base.rows):
             self._ahead(without(base, row.key, FINISHED), gone=(row.key, FINISHED))
@@ -2619,6 +2626,47 @@ class DragController(QObject):
         _kind, pieces, ahead, ids, line = verdict
         text = (strings.DONE_JOINED if ahead else strings.DONE_CAME_UP).format(line=line)   # ahead: a Current part
         self._give(Ticket(text, (row.key,), ids), lambda t: self.writer.join(pieces, label=t, ahead=ahead))
+
+    def _ask_again(self, view, row, verdict):
+        """Alpha 9 (M1): an offer made only because AniList hasn't answered yet (`airing.PENDING`, *Still asking*) is
+        asked again when the answer comes (`_answered`) — the show was handed to the asker by the mark itself (all
+        watched is near its end, `airing.near_end`)."""
+        entry = (getattr(view, "airing", None) or {}).get(row.work_id)
+        if len(verdict) > 1 and isinstance(entry, dict) and entry.get("status") == airing.PENDING:
+            self._airing_asking[row.work_id] = row.key
+
+    def _answered(self, view):
+        """Alpha 9 (M1; the window's thread, each view of the reader's): when a show offered *Still asking AniList* has
+        an answer in `view` — or none any more — L6.3's one rule is asked again just after it shows (`_again`)."""
+        answers = getattr(view, "airing", None) or {}
+        if not self._airing_again and any(not (isinstance(answers.get(w), dict) and
+                                               answers[w].get("status") == airing.PENDING) for w in self._airing_asking):
+            self._airing_again = True
+            QTimer.singleShot(0, self._again)
+
+    def _again(self):
+        """Alpha 9 (M1): each show offered *Still asking AniList*, read on the view shown — still asking: kept; its
+        answer come: `when_done` again, so it finishes by itself when nothing holds it now (an ended show marked all at
+        once, as before AniList), else its offer stands; no answer any more (the switch turned off) or the show gone
+        from Current: let go (AniList never finishes a show, only its answer does). Kept for a later view, silently,
+        while a drag runs, the store can't take a move or a write is still on its way."""
+        self._airing_again = False
+        view = self.page.view_model
+        if view is None or getattr(view, "cached", False):
+            return
+        answers = getattr(view, "airing", None) or {}
+        busy = self.running is not None or bool(self.blocked) or bool(self.tickets) or not self.writer.can_write()
+        for work_id, key in list(self._airing_asking.items()):
+            entry = answers.get(work_id)
+            if isinstance(entry, dict) and (entry.get("status") == airing.PENDING or busy):
+                continue                             # still asking, or asked at a later view
+            del self._airing_asking[work_id]
+            row = next((r for r in view.rows if r.key == key), None)
+            if row is None or not isinstance(entry, dict):
+                continue
+            verdict = when_done(view, row)           # L6.3: the one rule
+            if verdict is not None and verdict[0] != "offer":
+                self._by_itself(row, verdict)
 
     def finish_show(self, row, show, ids):
         """LM11b G5: *Move {show} to Finished* (the Done's toast) — the finish of that show's episodes in the group alone

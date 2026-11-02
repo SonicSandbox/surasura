@@ -68,6 +68,7 @@ def test_picks_to_soon_land_together_below_the_line_as_one_change(lib, make_writ
     # just below the line — after the Soon files of the show the line then runs through, never between its halves
     # (B2-1's rule in the store, alpha 9 #JNFJ8Q)
     work = lambda i: lib.store.item(i)["work_id"]      # noqa: E731
+    assert at > 0, "the setup: the line runs through a show once the picks leave NOW"
     assert all(work(i) == work(lib.ids("now")[-1]) for i in soon[:at])
 
 

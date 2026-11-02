@@ -200,8 +200,8 @@ def test_a_newer_release_is_a_notice_and_catching_up_clears_it_with_no_fetch():
     approved = {"version": am_release.APPROVED, "url": am_release.approved_page()}
     assert am_release.notice("3.7.0") == approved, "alpha 4 M5: the approved version, never the kept 3.8.0 itself"
     assert am_release.notice(am_release.APPROVED) is None, "Anki Miner updated by hand: the notice goes at once"
-    assert am_release.notice("3.10.1.0") is None, "3.10.1.0 is 3.10.1"
-    assert am_release.notice("3.11.0") is None
+    assert am_release.notice(am_release.APPROVED + ".0") is None, "3.11.0.0 is 3.11.0"
+    assert am_release.notice("3.12.0") is None, "a newer one installed by hand: no notice"
     assert am_release.notice(None) is None, "Anki Miner not known to be installed: no notice"
     assert fetch.calls == 1
 

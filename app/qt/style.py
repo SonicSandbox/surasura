@@ -269,6 +269,7 @@ QPushButton#windowlink:hover {{ color: {c['ink']}; }}
 QPushButton#windowlink:focus {{ border-color: {c['accent']}; }}
 QLabel#confirmtitle {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#confirmline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
+QLabel#confirmhead {{ color: {c['ink']}; {font('body')} font-weight: 600; }}
 QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; border: 0; }}
 QPushButton[kind="danger"]:focus {{ border: 2px solid {c['ink']}; }}
 QScrollArea#foldersscroll, QWidget#foldersbody {{ background: transparent; border: 0; }}

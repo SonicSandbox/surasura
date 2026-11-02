@@ -59,8 +59,8 @@ class SeamLooks(Looks):
         self.let_gos.append((root_id, on, language, writes))
         return True
 
-    def fresh(self, forget_known=False, then=None):
-        self.fresh_calls.append(forget_known)
+    def fresh(self, then=None, folders=None, progress=None, stop=None, scanned=None):
+        self.fresh_calls.append(folders)
         threading.Thread(target=then, args=(dict(self.fresh_answer),), daemon=True).start()
         return True
 
@@ -152,33 +152,38 @@ def test_a_library_with_no_folder_to_read_shows_its_card_once_listed(world, lang
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_start_fresh_asks_with_settings_own_sheet_then_the_looks_start_it_keeping_known_words(world, language):
+def test_start_fresh_opens_settings_own_sheet_sort_again_first_then_the_looks_sort_it_again(world, language):
+    # Fresh library 3.0.1: the one sheet (Sort again first, no known-words box: Q3), open at once; its Sort again
+    # is the looks' `fresh` over the window — never the window's writer
     looks = SeamLooks(counts={"added": 2, "suspended": 3})
     seed, win, writer, ny = world(language, looks=looks)
     entries = service.entries(many(language, 40), settled=True)
     hand_in(ny, entries)
     win.show_tab("needs")
     card = entries[0]
-    fresh = _button(ny, card.key, "start_fresh")
-    fresh.click()
-    assert qpress.live(win, ny._press_key("start_fresh", card))          # its arc at the press, while it counts
-    assert wait_until(lambda: getattr(ny, "confirming", None) is not None, 5)
+    _button(ny, card.key, "start_fresh").click()
     sheet = ny.confirming
-    assert sheet.title.text() == S.FRESH_ASK and sheet.body.text() == settings_sources.fresh_body(looks.counts)
-    assert sheet.default is sheet.no and not sheet.check.isChecked()      # Enter is No; known words kept
+    assert sheet is not None and sheet.title.text() == S.FRESH_SHEET and sheet.check is None
+    lay = sheet.layout()
+    order = [lay.itemAt(i).widget() for i in range(lay.count()) if lay.itemAt(i).widget() is not None]
+    assert order.index(sheet.sheet.sort_part) < order.index(sheet.sheet.over_part)
+    assert wait_until(lambda: S.FRESH_GONE_ADDED.format(n=2, s="s") in sheet.sheet.counts_line.text(), 5)
+    _button(ny, card.key, "start_fresh").click()                          # one sheet at a time
+    assert ny.confirming is sheet
     sheet.no.click()
     _pump()
-    assert looks.fresh_calls == [] and writer.calls == []
+    assert ny.confirming is None and looks.fresh_calls == [] and writer.calls == []
     _button(ny, card.key, "start_fresh").click()
-    assert wait_until(lambda: getattr(ny, "confirming", None) is not None and ny.confirming is not sheet, 5)
-    ny.confirming.yes.click()
-    assert wait_until(lambda: looks.fresh_calls == [False], 5)
-    assert wait_until(lambda: win.bar_line.full() == S.FRESH_DONE, 5)
+    assert ny.confirming is not sheet
+    ny.confirming.sheet.btn_sort.click()
+    assert wait_until(lambda: looks.fresh_calls == [None], 5)
     assert writer.calls == []                                             # the looks wrote it, never the window
+    run = win.__dict__.get(settings_sources.RUNNING)
+    assert run == S.FRESH_RUNNING_TIP
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_start_fresh_refused_keeps_the_card_says_why_and_can_be_pressed_again(world, language):
+def test_start_fresh_refused_says_why_and_can_be_pressed_again(world, language):
     looks = SeamLooks(fresh_answer={"refused": "busy"})
     seed, win, writer, ny = world(language, looks=looks)
     entries = service.entries(many(language, 40), settled=True)
@@ -186,12 +191,12 @@ def test_start_fresh_refused_keeps_the_card_says_why_and_can_be_pressed_again(wo
     win.show_tab("needs")
     card = entries[0]
     _button(ny, card.key, "start_fresh").click()
-    assert wait_until(lambda: getattr(ny, "confirming", None) is not None, 5)
-    ny.confirming.yes.click()
+    ny.confirming.sheet.btn_sort.click()
     assert wait_until(lambda: win.bar_line.full() == settings_sources.fresh_said({"refused": "busy"}), 5)
-    assert wait_until(lambda: not qpress.live(win, ny._press_key("start_fresh", card)), 5)
+    assert settings_sources.running(win) is None
     _button(ny, card.key, "start_fresh").click()                          # pressed again: it asks again
-    assert wait_until(lambda: looks.counted == 2, 5)
+    assert ny.confirming is not None and ny.confirming.answer is None
+    ny.confirming.no.click()
 
 
 def test_start_fresh_on_a_real_library_sets_it_aside_in_one_backup_and_the_card_goes(world):
@@ -206,12 +211,15 @@ def test_start_fresh_on_a_real_library_sets_it_aside_in_one_backup_and_the_card_
     win.show_tab("needs")
     _button(ny, entries[0].key, "start_fresh").click()
     assert wait_until(lambda: getattr(ny, "confirming", None) is not None, 10)
-    ny.confirming.yes.click()
+    ny.confirming.sheet.btn_sort.click()
     trash = os.path.join(user_files_dir, ".trash")
     assert wait_until(lambda: os.path.isdir(trash) and [n for n in os.listdir(trash) if n.startswith(ls.RESET_PREFIX)],
                       30)
-    assert wait_until(lambda: win.bar_line.full() == S.FRESH_DONE, 10)
+    from app.qt import sort_screen
+    assert wait_until(lambda: isinstance(win.__dict__.get("_sort_screen"), sort_screen.SortScreen), 30)
     assert looks.idle(30)
+    win.__dict__["_sort_screen"].finish("done")                           # Done: Current, the toast
+    assert wait_until(lambda: settings_sources.running(win) is None, 10)
     del ny.refresh                                                        # (hand_in held the gathers: let them run)
     ny.find_offline = lambda _lang, _rels, _data: []
     n = ny.gathers
@@ -780,9 +788,9 @@ def test_a5k2_the_reader_note_is_the_first_card_its_two_answers_with_tips_and_st
     assert [b.text() for b in buttons] == ["Sort my library again…", "Keep my old library"]
     assert all(b.toolTip() for b in buttons)
     _button(ny, card.key, "start_fresh").click()
-    assert wait_until(lambda: getattr(ny, "confirming", None) is not None, 5)
-    ny.confirming.yes.click()
-    assert wait_until(lambda: looks.fresh_calls == [False], 5)
+    assert getattr(ny, "confirming", None) is not None
+    ny.confirming.sheet.btn_sort.click()
+    assert wait_until(lambda: looks.fresh_calls == [None], 5)
     assert writer.calls == []                                             # the looks reset it, never the window
 
 

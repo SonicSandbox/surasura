@@ -75,7 +75,8 @@ FILLED_BY = {
     "new_cards_a_day": _CONNECT_ROWS, "connect_enabled": _CONNECT_ROWS, "anki_miner": _CONNECT_ROWS,
     "placing_rules": _RULES,
     "library_folders": "app.qt.settings_sources",          # --- SRC W1b: the folders read where they are
-    "fresh_library": "app.qt.settings_sources",            # --- K7: *Start a fresh library…*
+    "fresh_library": "app.qt.settings_sources",            # --- K7: *Sort again or start over…*
+    "start_over": "app.qt.settings_sources",               # --- Fresh library 3.0.1: *Start over completely…*
     "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
     "settings_file": "app.qt.settings_io",                 # --- a6: *Export settings…* · *Import settings…*
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
@@ -378,6 +379,7 @@ ROWS = (
     _row("version", "app", "custom"),
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
+    _row("start_over", "app", "custom"),                         # Fresh library 3.0.1: the sheet, Start over first
 )
 ROW = {row.id: row for row in ROWS}
 

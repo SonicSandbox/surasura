@@ -9,11 +9,14 @@
   only what changed (S19).
 - **`SortScreen`**: every title in New arrivals (the reader's `arrival_groups`, followed as the window gets each view —
   `set_groups`), large: the title at the top is the one the keys act on — it looks picked (the window's `row-picked`
-  wash, the accent edge) with a gap under it — then the next few, then *and N more*. Its five choices **Soon · Current
-  · Goal · Finished · Ignore** (buttons on the top title, keys **S → ↓ ↑ ←**, shown on screen), *Put the rest in…*,
-  *Undo* (Ctrl+Z), *Done*. A choice takes the title off at once (pending — the press rule) and the next comes up; a
-  refused one comes back. **It decides nothing:** every placement is New arrivals' own (`arrivals.give_place`,
-  `item_menu.give_skip`, `MovesController.undo_last`), through the window's writer. Opened by setup (after the load
+  wash, the accent edge) with a gap under it — then as many of the next few as the room holds, then *and N more*. Its
+  five choices **Soon · Current · Goal · Finished · Ignore** are an arrow pad on the top title (Mado-P: Finished ↑,
+  Ignore ←, Goal ↓, Current →, the S key of Soon beside them; each key its button, flashing as its key is pressed),
+  *Put the rest in…*, *Undo* (Ctrl+Z), *Done*. Nothing is cut off at any window size: a long title wraps to
+  `TITLE_LINES` (3 lines, 2 with the pad under it) then ends with "…", the just-done line is cut first, and the
+  window's minimum makes room for the rest (`first_run._Cover`). A choice takes the title off at once (pending — the
+  press rule) and the next comes up; a refused one comes back. **It decides nothing:** every placement is New
+  arrivals' own (`arrivals.give_place`, `item_menu.give_skip`, `MovesController.undo_last`), through the window's writer. Opened by setup (after the load
   screen), by New arrivals' *Sort them all…* (`open_over(win)`) and by *Sort my library again* (after its load
   screen): one screen, three doors.
 - **`LoadRun`** (Fresh library 3.0.1, P12): the load's steps in one sequence for both its callers — the setup wizard
@@ -24,11 +27,12 @@ import os
 import time
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, QPointF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPainter, QPainterPath, QPixmap, QPolygonF
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFontMetricsF, QPainter, QPainterPath, QPalette, QPixmap, QPolygonF, QTextLayout, QTextOption
+from PyQt6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QStyle,
+                             QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget)
 
-from app import theme
+from app import scrub, theme
 from app.qt import motion, style
 from app.qt import wizard_strings as S
 
@@ -39,6 +43,13 @@ NEXT_SHOWN = 6                  # titles shown under the top one; the rest are "
 COVER_W, COVER_H = 132, 186     # the top title's cover (× the text size); the next ones' are a third of it
 KEYS = {Qt.Key.Key_Right: "now", Qt.Key.Key_S: "soon", Qt.Key.Key_Down: "goal", Qt.Key.Key_Up: "finished",
         Qt.Key.Key_Left: "ignore"}
+# The arrow pad (Mado-P, Sonic's alpha 9 try: "a up down left right keypad like you normally see"): each choice's key at
+# its place on a keyboard's arrow cross — (row, column) — and Soon's S a key of its own beside it, after a gap column.
+PAD_AT = {"finished": (0, 1), "ignore": (1, 0), "goal": (1, 1), "now": (1, 2), "soon": (1, 4)}
+PAD_DOWN_MS = 140               # a key pressed on the keyboard shows its pad key down this long (the press rule)
+TITLE_LINES = (3, 2)            # the top title's most lines (the pad beside it, under it), then "…" (whole on hover)
+WORDS_BESIDE = 300              # the top title's words keep at least this room (× the text size) with the pad beside
+                                # them; less, and the pad goes under them (still a cross)
 PLACE_OF = {"now": "top", "soon": "soon", "goal": "goal", "finished": "finished"}   # `moves.PLACES`' names
 
 
@@ -77,9 +88,6 @@ QLabel#sortname {{ color: {c['ink']}; {font('first-run-heading', 600, 1.05)} }}
 QLabel#sortsub {{ color: {c['ink-dim']}; {font('row-sub')} }}
 QLabel#sortnext {{ color: {c['ink-dim']}; {font('row-title', 500)} }}
 QLabel#sortsaid {{ color: {c['ink-dim']}; {font('footer')} }}
-QLabel#sortkey {{ color: {c['ink']}; background: {c['raised']}; border: 1px solid {c['line-hi']};
-  border-radius: {round(4 * f)}px; padding: 0 {round(6 * f)}px; {font('key-hint')} }}
-QLabel#sortkeyword {{ color: {c['ink-dim']}; {font('footer')} }}
 QWidget#sorttop {{ background: {picked}; border-left: {max(2, round(3 * f))}px solid {c['accent']};
   border-radius: {round(8 * f)}px; }}
 QPushButton#loadstop, QPushButton#sortquiet {{ background: transparent; border: 0; color: {c['ink-dim']};
@@ -87,20 +95,173 @@ QPushButton#loadstop, QPushButton#sortquiet {{ background: transparent; border: 
 QPushButton#loadstop:hover, QPushButton#sortquiet:hover {{ color: {c['ink']}; }}
 QPushButton#loadstop:focus, QPushButton#sortquiet:focus {{ border: 2px solid {c['accent']}; border-radius: 6px; }}
 QPushButton#loadstop:disabled {{ color: {c['ink-faint']}; }}
-QPushButton#sortchoice {{ min-width: {round(96 * f)}px; min-height: {round(38 * f)}px; {font('button', 650)} }}
+QPushButton#sortchoice {{ {font('button', 650)} }}
 """
 
 
-def _label(name, text="", parent=None, wrap=False):
-    lab = QLabel(text, parent)
+def _label(name, text="", parent=None, wrap=False, lines=None):
+    """A label; with `lines`, one that never asks for more room than that many lines (`Clamp`: cut with "…")."""
+    lab = QLabel(text, parent) if lines is None else Clamp(text, lines, parent)
     lab.setObjectName(name)
     lab.setTextFormat(Qt.TextFormat.PlainText)
-    lab.setWordWrap(wrap)
+    if lines is None:
+        lab.setWordWrap(wrap)
     return lab
 
 
-def _button(text, tip, slot, parent, name=None):
-    b = QPushButton(text, parent)
+class Clamp(QLabel):
+    """Words wrapped to at most `lines` lines, the last cut with "…" (then the whole words on hover), laid out and
+    painted here: the height it asks for is the height its lines take (each line's own, a fallback font's taller
+    glyphs included), and it never asks for its whole words' width — a long title is cut, never the window widened.
+    `text()` stays the whole words (screen readers, the tests); what it draws is read through `scrub.shown` (Send
+    report's picture: `shown_fit`)."""
+
+    def __init__(self, text="", lines=1, parent=None):
+        super().__init__(text, parent)
+        self.lines = lines
+        self._at = None                 # (width, text, font) its lines were laid out for
+        self._shown, self._cut = (), False
+        self.setWordWrap(lines > 1)     # (a wrapping label is asked its height for a width)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored if lines == 1 else QSizePolicy.Policy.Preferred,
+                           QSizePolicy.Policy.Preferred)
+
+    def _lay(self, width, tip=False):
+        """((line, its height), …) at `width` px: at most `lines`, the last cut with "…" when there is more. `tip`: the
+        width is its own (not a layout's question): the whole words on hover when they're cut."""
+        text = scrub.shown(self.text())
+        key = (round(width), text, self.font().key())
+        if key == self._at:
+            if tip:
+                self.setToolTip(self.text() if self._cut else "")
+            return self._shown
+        fm = QFontMetricsF(self.font())
+        out, cut = [], False
+        if text and width > 0:
+            lay = QTextLayout(text, self.font())
+            opt = QTextOption()
+            opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere if self.lines > 1
+                            else QTextOption.WrapMode.NoWrap)
+            lay.setTextOption(opt)
+            spans = []
+            lay.beginLayout()
+            while True:
+                line = lay.createLine()
+                if not line.isValid():
+                    break
+                line.setLineWidth(width)
+                spans.append((line.textStart(), line.textLength(), max(line.height(), fm.lineSpacing())))
+            lay.endLayout()
+            for i, (start, n, h) in enumerate(spans[:self.lines]):
+                last = i == self.lines - 1
+                if last and (len(spans) > self.lines or fm.horizontalAdvance(text[start:]) > width):
+                    out.append((fm.elidedText(text[start:], Qt.TextElideMode.ElideRight, width), h))
+                    cut = True
+                else:
+                    out.append((text[start:start + n].rstrip(), h))
+        self._at, self._shown, self._cut = key, tuple(out), cut
+        if tip:
+            self.setToolTip(self.text() if cut else "")
+        return self._shown
+
+    def shown_fit(self):
+        """(Send report's picture mode, `report.PictureMode`: drawn again from its words as `scrub.shown` reads them.)"""
+        self.update()
+
+    def heightForWidth(self, width):
+        m = self.contentsMargins()
+        return round(sum(h for _t, h in self._lay(width - m.left() - m.right()))) + m.top() + m.bottom()
+
+    def sizeHint(self):
+        fm, m = QFontMetricsF(self.font()), self.contentsMargins()
+        w = fm.horizontalAdvance(self.text())
+        if self.lines > 1:
+            w = min(w, fm.averageCharWidth() * 60)
+        w = round(w) + m.left() + m.right()
+        one = round(fm.lineSpacing()) + m.top() + m.bottom()
+        return QSize(w, max(one, self.heightForWidth(w)))
+
+    def minimumSizeHint(self):
+        fm, m = QFontMetricsF(self.font()), self.contentsMargins()
+        return QSize(round(fm.averageCharWidth() * 4) + m.left() + m.right(),
+                     round(fm.lineSpacing()) + m.top() + m.bottom())
+
+    def setText(self, text):
+        super().setText(text)
+        self._lay(self.contentsRect().width(), tip=True)    # its tooltip follows its words at once
+        self.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._lay(self.contentsRect().width(), tip=True)
+
+    def paintEvent(self, _event):
+        r = self.contentsRect()
+        p = QPainter(self)
+        p.setFont(self.font())
+        p.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        shown = self._lay(r.width())
+        spare = max(0.0, r.height() - sum(h for _t, h in shown))
+        down = self.alignment() & Qt.AlignmentFlag.AlignVertical_Mask
+        y = r.top() + (spare / 2 if down == Qt.AlignmentFlag.AlignVCenter else
+                       spare if down == Qt.AlignmentFlag.AlignBottom else 0.0)
+        across = self.alignment() & Qt.AlignmentFlag.AlignHorizontal_Mask
+        for text, h in shown:
+            p.drawText(QRectF(r.left(), y, r.width(), h), int(across | Qt.AlignmentFlag.AlignVCenter), text)
+            y += h
+        p.end()
+
+
+class PadKey(QPushButton):
+    """One key of the arrow pad: its glyph large above its word, on the window's button (the sheet's frame, hover,
+    pressed and focus looks). Every key the size of the widest word's, so the pad reads as a keypad."""
+
+    def __init__(self, glyph, word, parent=None):
+        super().__init__(word, parent)
+        self.glyph = glyph
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def _fonts(self):
+        big = self.font()
+        big.setPointSizeF(big.pointSizeF() * 1.35)
+        return big, self.font()
+
+    def sizeHint(self):
+        big, small = self._fonts()
+        w = max(QFontMetricsF(small).horizontalAdvance(word) for _n, word, _t, _k in S.SORT_CHOICES) + _px(28)
+        h = QFontMetricsF(big).lineSpacing() + QFontMetricsF(small).lineSpacing() + _px(12)
+        return QSize(round(w), round(h))
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def event(self, event):
+        done = super().event(event)
+        if event.type() in (QEvent.Type.Polish, QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            # the window's sheet gives every button a `min-height` (one line's), and an explicit minimum is what a
+            # layout squeezes a button down to — under its two lines here: its own size is its minimum
+            self.setMinimumSize(self.sizeHint())
+        return done
+
+    def paintEvent(self, _event):
+        p = QStylePainter(self)
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        opt.text = ""
+        p.drawControl(QStyle.ControlElement.CE_PushButton, opt)
+        big, small = self._fonts()
+        hb, hs = QFontMetricsF(big).lineSpacing(), QFontMetricsF(small).lineSpacing()
+        top = (self.height() - hb - hs) / 2
+        centre = int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+        p.setPen(_c("ink") if self.isEnabled() else _c("ink-faint"))
+        p.setFont(big)
+        p.drawText(QRectF(0, top, self.width(), hb), centre, self.glyph)
+        p.setFont(small)
+        p.drawText(QRectF(0, top + hb, self.width(), hs), centre, self.text())
+        p.end()
+
+
+def _button(text, tip, slot, parent, name=None, glyph=None):
+    b = QPushButton(text, parent) if glyph is None else PadKey(glyph, text, parent)
     b.setToolTip(tip)
     b.setAccessibleName(text)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -385,6 +546,18 @@ class _Cover(QWidget):
             self.update()
 
 
+class _Room(QWidget):
+    """The next titles' room under the top one: it asks only for its *and N more* line (its minimum height) — the
+    titles it shows are as many as the room it is given holds (`SortScreen._fit_rows`), never a reason for the window
+    to be taller."""
+
+    def sizeHint(self):
+        return QSize(super().sizeHint().width(), self.minimumHeight())
+
+    def minimumSizeHint(self):
+        return QSize(super().minimumSizeHint().width(), self.minimumHeight())
+
+
 def _rows_of(groups):
     """[(group kind, arrival)] in New arrivals' order (its groups, each newest first)."""
     return [(g.kind, a) for g in groups or () for a in g.rows]
@@ -439,7 +612,7 @@ class SortScreen(QWidget):
     # --- building ------------------------------------------------------------------------------------------------ #
     def _build(self):
         box = QVBoxLayout(self)
-        box.setContentsMargins(_px(56), _px(36), _px(56), _px(24))
+        box.setContentsMargins(_px(56), _px(28), _px(56), _px(20))
         box.setSpacing(0)
         head = QHBoxLayout()
         words = QVBoxLayout()
@@ -450,7 +623,7 @@ class SortScreen(QWidget):
         self.count = _label("sortcount", "", self)
         head.addWidget(self.count, 0, Qt.AlignmentFlag.AlignBottom)
         box.addLayout(head)
-        box.addSpacing(_px(24))
+        box.addSpacing(_px(18))
         # the top title: picked (the window's wash, the accent edge), its cover, words and the five choices
         self.top = QWidget(self)
         self.top.setObjectName("sorttop")
@@ -464,60 +637,71 @@ class SortScreen(QWidget):
         tw.setSpacing(_px(6))
         self.top_group = _label("sortgroup", "", self.top)
         tw.addWidget(self.top_group)
-        self.top_name = _label("sortname", "", self.top, wrap=True)
+        self.top_name = _label("sortname", "", self.top, lines=TITLE_LINES[0])
         tw.addWidget(self.top_name)
-        self.top_sub = _label("sortsub", "", self.top, wrap=True)
+        self.top_sub = _label("sortsub", "", self.top, lines=2)
         tw.addWidget(self.top_sub)
         tw.addStretch(1)
-        choices = QHBoxLayout()
-        choices.setSpacing(_px(10))
+        self.top_words = tw
+        tl.addLayout(tw, 1)
+        # the five choices: the arrow pad (the keys where a keyboard has them; each key is its button) — beside the
+        # words, vertically centred, while they keep `WORDS_BESIDE`; under them when the window is narrower (`_place_pad`)
+        self.pad = QWidget(self.top)
+        grid = QGridLayout(self.pad)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(_px(6))
+        grid.setColumnMinimumWidth(3, _px(10))
         self.choice_buttons = {}
         for name, label, tip, key in S.SORT_CHOICES:
-            b = _button(f"{label}   {key}", f"{tip}\n• {key}", lambda n=name: self.choose(n), self.top,
-                        name="sortchoice")
-            b.setAccessibleName(label)
-            choices.addWidget(b)
+            b = _button(label, f"{tip}\n• {key}", lambda n=name: self.choose(n), self.pad, name="sortchoice",
+                        glyph=key)
+            grid.addWidget(b, *PAD_AT[name])
             self.choice_buttons[name] = b
-        choices.addStretch(1)
-        tw.addLayout(choices)
-        tl.addLayout(tw, 1)
+        self.top_row = tl
+        self._pad_beside = True
+        self._key_up = QTimer(self)
+        self._key_up.setSingleShot(True)
+        self._key_up.timeout.connect(lambda: [b.setDown(False) for b in self.choice_buttons.values()])
+        tl.addWidget(self.pad, 0, Qt.AlignmentFlag.AlignVCenter)
         box.addWidget(self.top)
         box.addSpacing(_px(18))     # the gap that sets the top title apart
-        self.next_box = QVBoxLayout()
+        self.empty = _label("sortname", S.SORT_EMPTY, self)
+        self.empty.setVisible(False)
+        box.addWidget(self.empty)
+        # the next few: as many as the room under the top title holds (never squeezed: `_fit_rows`), then "and N more"
+        self.next_area = _Room(self)
+        self.next_area.installEventFilter(self)
+        self.next_box = QVBoxLayout(self.next_area)
+        self.next_box.setContentsMargins(0, 0, 0, 0)
         self.next_box.setSpacing(_px(8))
         self.next_rows = []
         for _i in range(NEXT_SHOWN):
-            w = QWidget(self)
+            w = QWidget(self.next_area)
             line = QHBoxLayout(w)
             line.setContentsMargins(_px(25), 0, 0, 0)
             line.setSpacing(_px(14))
             cov = _Cover(COVER_W // 3, COVER_H // 3, w)
             line.addWidget(cov)
-            name = _label("sortnext", "", w)
+            name = _label("sortnext", "", w, lines=1)
             line.addWidget(name, 1)
             w.setVisible(False)
             self.next_box.addWidget(w)
             self.next_rows.append((w, cov, name))
-        self.more = _label("sortmore", "", self)
+        self._fits = NEXT_SHOWN
+        self.more = _label("sortmore", "", self.next_area)
         self.more.setContentsMargins(_px(25), 0, 0, 0)
         self.next_box.addWidget(self.more)
-        box.addLayout(self.next_box)
-        self.empty = _label("sortname", S.SORT_EMPTY, self)
-        self.empty.setVisible(False)
-        box.addWidget(self.empty)
-        box.addStretch(1)
-        # the foot: the keys, what was just done with Undo, Put the rest in…, Done
+        self.next_box.addStretch(1)
+        self.more.ensurePolished()
+        self.next_area.setMinimumHeight(self.more.sizeHint().height())     # "and N more" always has its line
+        box.addWidget(self.next_area, 1)
+        # the foot: what was just done (cut first when the room is short), Start over, Undo, Put the rest in…, Done.
+        # (The keys' legend it had is the pad now; Ctrl+Z is on Undo's tooltip.)
         foot = QHBoxLayout()
         foot.setSpacing(_px(8))
-        for _name, label, _tip, key in S.SORT_CHOICES:
-            foot.addWidget(_label("sortkey", key, self))
-            foot.addWidget(_label("sortkeyword", label, self))
-            foot.addSpacing(_px(10))
-        foot.addWidget(_label("sortkey", "Ctrl+Z", self))
-        foot.addWidget(_label("sortkeyword", S.SORT_UNDO, self))
-        foot.addStretch(1)
-        self.said = _label("sortsaid", "", self)
-        foot.addWidget(self.said)
+        self.said = _label("sortsaid", "", self, lines=1)
+        self.said.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        foot.addWidget(self.said, 1)
         self.btn_over = _button(S.SORT_OVER, S.SORT_OVER_TIP, self.ask_over, self, name="sortquiet")
         self.btn_over.setEnabled(False)
         foot.addWidget(self.btn_over)
@@ -530,8 +714,67 @@ class SortScreen(QWidget):
                                 lambda: self.finish("done"), self)
         self.btn_done.setProperty("kind", "primary")
         foot.addWidget(self.btn_done)
+        for b in self.findChildren(QPushButton):
+            b.installEventFilter(self)
         box.addSpacing(_px(12))
         box.addLayout(foot)
+
+    # --- room (Mado-P: nothing cut off at any window size) ------------------------------------------------------- #
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_pad()
+
+    def _place_pad(self):
+        """The pad beside the top title's words while they keep `WORDS_BESIDE` px (× the text size), else under them
+        — by the width alone, so the screen's minimum (the window's: `first_run._Cover`) never holds it beside."""
+        m, tm = self.layout().contentsMargins(), self.top_row.contentsMargins()
+        room = (self.width() - m.left() - m.right() - tm.left() - tm.right() - self.top_cover.width()
+                - 2 * self.top_row.spacing() - self.pad.sizeHint().width())
+        beside = room >= _px(WORDS_BESIDE)
+        if beside == self._pad_beside:
+            return
+        self._pad_beside = beside
+        self.top_name.lines = TITLE_LINES[0 if beside else 1]
+        self.top_name._at = None
+        self.top_name._lay(self.top_name.contentsRect().width(), tip=True)
+        self.top_name.updateGeometry()
+        if beside:
+            self.top_words.removeWidget(self.pad)
+            self.top_row.addWidget(self.pad, 0, Qt.AlignmentFlag.AlignVCenter)
+        else:
+            self.top_row.removeWidget(self.pad)
+            self.top_words.insertWidget(self.top_words.count() - 1, self.pad, 0, Qt.AlignmentFlag.AlignLeft)
+        self.updateGeometry()                               # its minimum changed: the window's cover asks again
+
+    def eventFilter(self, obj, event):
+        if obj is self.next_area and event.type() == QEvent.Type.Resize:
+            self._fit_rows()
+        elif event.type() == QEvent.Type.KeyPress and isinstance(obj, QPushButton) and self._mine(event) is not None:
+            self.keyPressEvent(event)                       # a button with the focus (Tab) never keeps the screen's
+            return True                                     # keys: an arrow sorts, it doesn't move the focus
+        return False
+
+    def _fit_rows(self):
+        """How many of the next titles the room under the top one holds (each row whole; "and N more" counts the rest):
+        a short window shows fewer, never squeezed ones."""
+        h = self.next_area.height()
+        row = self.next_rows[0][0].sizeHint().height() + self.next_box.spacing()
+        fits = max(0, min(NEXT_SHOWN, (h - self.more.sizeHint().height()) // max(1, row)))
+        if fits != self._fits:
+            self._fits = fits
+            self._paint()
+
+    def _flash(self, name):
+        """A key pressed on the keyboard: its pad key shows pressed at once (the press rule), a moment; with motion on,
+        it also flashes (the window's wash, short) — Reduced motion: the pressed look alone."""
+        b = self.choice_buttons.get(name)
+        if b is None:
+            return
+        for other in self.choice_buttons.values():
+            other.setDown(other is b)
+        self._key_up.start(PAD_DOWN_MS)                     # (a second press restarts it: each key down its while)
+        if not motion.clock().mode.reduced:
+            motion.wash(b, _px(9), ms=theme.MOTION["pad-flash"])
 
     # --- what it shows ------------------------------------------------------------------------------------------- #
     def set_groups(self, groups):
@@ -569,7 +812,7 @@ class SortScreen(QWidget):
         key = tuple((kind, a.key, a.title, getattr(a, "folder", None), len(a.item_ids), getattr(a, "cover", None),
                      getattr(a, "line", None), getattr(a, "media_word", None))
                     for kind, a in rows) + (n, bool(self.history), self.heard, self._can_start_over(),
-                                            self._over_flight is not None)
+                                            self._over_flight is not None, self._fits)
         if key == self._shown:
             return                                  # nothing it shows changed (S19)
         self._shown = key
@@ -586,13 +829,14 @@ class SortScreen(QWidget):
             _set(self.top_name, a.title)
             _set(self.top_sub, _sub_line(a))
             self.top_cover.set_arrival(a)
+        fits = min(self._fits, max(0, len(rows) - 1))
         for i, (w, cov, name) in enumerate(self.next_rows):
-            r = rows[i + 1] if i + 1 < len(rows) else None
+            r = rows[i + 1] if i < fits else None
             w.setVisible(r is not None)
             if r is not None:
                 _set(name, r[1].title)
                 cov.set_arrival(r[1])
-        more = n - 1 - NEXT_SHOWN
+        more = n - 1 - fits
         _set(self.more, S.SORT_MORE.format(n=more) if more > 0 else "")
         self.more.setVisible(more > 0)
 
@@ -924,6 +1168,7 @@ class SortScreen(QWidget):
         elif what == "close":
             self.finish("closed")
         else:
+            self._flash(what)
             self.choose(what)
 
     def finish(self, how="done"):

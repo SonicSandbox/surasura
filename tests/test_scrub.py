@@ -629,3 +629,8 @@ def test_a_name_placeholder_is_never_a_hit_either():
     ident = scrub.Identity(users=["you"])
     assert scrub.name("anki-miner/you-run/x.json", ident) == "anki-miner/(you)-run/x.json"
     assert not ident.found("anki-miner/(you)-run/x.json") and ident.found("anki-miner/you-run/x.json")
+
+
+def test_a_non_ascii_name_goes_even_beside_ascii_letters_or_digits():
+    ident = scrub.Identity(users=["田中", "Zoë"])
+    assert ident.scrub("田中2号 and Zoëlle, xZoë") == "<you>2号 and <you>lle, x<you>"

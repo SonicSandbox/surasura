@@ -514,3 +514,51 @@ def test_window_with_the_switch_turned_off_before_the_answer_nothing_finishes_by
                       row.work_id not in (win.page_widgets["current"].view_model.airing or {}), 3)
     settle(30)
     assert calls(writer, "set_tier") == [] and not win.moves._airing_asking
+
+
+# --- alpha 9 try: a show with no AniList id is asked by its title (Sonic 2026-11-02, item 2) -------------------------- #
+class _TitleAsker(_Asker):
+    """An asker that asks titles too (`find`, `want_titles`), as the covers fetcher's does."""
+    find = staticmethod(lambda title: None)
+
+    def want_titles(self, titles):
+        return 0
+
+
+@pytest.mark.parametrize("answer, finishes", [("none found", True), ("FINISHED", True), ("RELEASING", False)])
+def test_window_a_show_with_no_id_marked_all_watched_waits_for_its_title_s_answer(world, answer, finishes):
+    """Chii Fuyo's case (its cover from its own folder: no id): marked all watched while its title is asked, it is
+    offered *Still asking* — then AniList's answer decides as for a show with an id: none found leaves its dates to
+    decide (a season marked at once: finished by itself, as 3.0 would), an id found that ended finishes it, one still
+    airing keeps it."""
+    from tests.qt.test_drag import calls
+    seed, win, writer = world()
+    row = rows_of(win)[4]
+    seed.library.commit(works=[{"id": row.work_id, "anilist_id": None, "media_type": "anime"}])  # (a light novel here)
+    reader = win.services.library
+    reader._airing_kept.shows()
+    reader.follow_airing(_TitleAsker())
+    reader.airing_moved()
+    assert wait_until(lambda: win.page_widgets["current"].view_model.airing.get(row.work_id) == {"status": A.PENDING},
+                      3), "no id, a name AniList may know: asked by its title"
+    row = rows_of(win)[4]
+    win.moves.done_many(row, list(row.episodes))
+    assert [c[0] for c in calls(writer)] == ["set_watched"]
+    assert win.toasts.card.base == strings.DONE_ALL_WHY.format(n=len(row.episodes), why=strings.DONE_WHY_ASKING)
+    assert wait_until(lambda: not win.moves.tickets, 3)
+    title = reader._works[row.work_id]["title"]
+    found = None if answer == "none found" else 424250
+    shows = {} if found is None else {"424250": {"status": answer, "episodes": len(row.episodes), "next_at": None,
+                                                 "asked_at": time.time()}}
+    A._write(reader._airing_kept.path, shows, {title: {"id": found, "asked_at": time.time()}})
+    reader.airing_moved()
+    if finishes:
+        assert wait_until(lambda: (settle() or True) and calls(writer, "set_tier"), 3)
+        assert win.toasts.card.base == strings.DONE_FINISHED.format(title=row.title)
+    else:
+        assert wait_until(lambda: (settle() or True) and
+                          (win.page_widgets["current"].view_model.airing.get(row.work_id) or {}).get("status") == answer,
+                          3)
+        settle(30)
+        assert calls(writer, "set_tier") == [] and row.key in [r.key for r in rows_of(win)]
+    assert not win.moves._airing_asking

@@ -24,6 +24,7 @@ def test_the_full_signature_is_the_base_digest_on_fixed_inputs(tmp_path):
     """Two Japanese orders, a Chinese run in Simplified and an empty library with its own args: each digest equals the
     one the code before the split computed — the iterencode digest is json.dumps', and nothing joined or left the
     parts."""
+    # Re-pinned on purpose for ENGINE_REVISION 34 (a known sentence's set phrases are known); ENGINE 33 gives the old pins
     assert cases.signatures(str(tmp_path / "empty")) == _base()["signatures"]
 
 

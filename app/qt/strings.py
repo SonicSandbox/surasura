@@ -170,7 +170,7 @@ ITEM_REMOVE_YES_TIP = "Take it out of your library: its files go to the trash fo
 ITEM_REMOVED = "Removed {title}"
 SEAM_LABEL = "✂ Split here"
 SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
-JOIN_LABEL = "Drop to join"
+JOIN_LABEL = "Join as one show"                  # only after the hand holds on the part (`item_menu.JOIN_REST_MS`)
 # LM11b G2: another show dropped on a show once the hand rests on it (`item_menu.JOIN_REST_MS`): one row of both
 JOIN_GROUP_LABEL = "Drop to group"
 ITEM_GROUPED_WITH = "Grouped {other} with {title}"

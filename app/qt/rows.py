@@ -1760,8 +1760,8 @@ class RowDelegate(QStyledItemDelegate):
         p.restore()
 
     def paint_join(self, p, r, label=None):
-        """The part a dragged part would join (G3): a green dashed outline and `label` (*Drop to join*; LM11b G2:
-        *Drop to group* on another show)."""
+        """The part a dragged part would join, once held on (G3; Sonic 2026-11-01): a green tint, a green dashed outline
+        and `label` (*Join as one show*; LM11b G2: *Drop to group* on another show)."""
         label = label or strings.JOIN_LABEL
         f = fz()
         p.save()
@@ -1769,7 +1769,7 @@ class RowDelegate(QStyledItemDelegate):
         pen = QPen(c("ok"), max(1.5, round(2 * f)))
         pen.setStyle(Qt.PenStyle.DashLine)
         p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setBrush(faded("ok", theme.DRAG["join-fill-alpha"]))
         radius = theme.DRAG["placeholder-radius"]
         p.drawRoundedRect(QRectF(r).adjusted(1.5, 1.5, -1.5, -1.5), radius, radius)
         w = TEXT.metrics("status-pill").horizontalAdvance(label) + round(16 * f)
@@ -3247,7 +3247,7 @@ class RowsView(QListView):
         self._q8_update(seam)
 
     def set_join(self, key, label=None):
-        """The part a drag would join (or None): its outline and `label` (None: *Drop to join*), that row alone
+        """The part a drag would join (or None): its outline and `label` (None: *Join as one show*), that row alone
         repainted."""
         label = label or strings.JOIN_LABEL
         if key == self.join_key and label == self.join_label:

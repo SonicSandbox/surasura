@@ -133,9 +133,9 @@ def hover(lst, pos):
 
 
 def middle_point(win, i):
-    """The global point over the middle of row `i` (where a part joins; its edges are a move)."""
-    lst = lst_of(win)
-    return lst.viewport().mapToGlobal(lst.visualRect(lst.model().index(i, 0)).center())
+    """The global point over the middle of row `i` where a hold joins a part dragged up to it, or from outside: 60 %
+    down its slab, the half that stays under the hand (its centre is the halves' line; its edges are a move)."""
+    return slab_point(win, i, 0.6)
 
 
 def lit(lst, rect, colour, tolerance=40):
@@ -463,7 +463,7 @@ def test_S5_a_command_that_landed_as_nothing_settles_its_ticket_so_ctrl_z_takes_
     writer.free()
 
 
-def test_a_part_dragged_over_the_other_part_holds_the_rows_still_and_outlines_it(world):
+def test_a_part_held_over_the_other_part_holds_the_rows_still_and_outlines_it(world):
     _seed, win, writer = world()
     a, b = split_parts(win)
     lst = lst_of(win)
@@ -472,8 +472,10 @@ def test_a_part_dragged_over_the_other_part_holds_the_rows_still_and_outlines_it
     to = middle_point(win, a)
     move_global(win, to)
     settle()
+    assert win.moves.running.target[0] == "list" and lst.join_key is None, "no hold yet: a move"
+    rest()
     d = win.moves.running
-    assert d.target == ("join", rs[a].key)
+    assert d.target == ("join", rs[a].key) and lst.join_label == strings.JOIN_LABEL == "Join as one show"
     parting = d.parting
     assert parting.slot == parting.src and all(parting.target(r) == 0 for r in range(len(rs)))   # no gap opens
     assert lst.join_key == rs[a].key
@@ -498,11 +500,13 @@ def test_the_drop_on_the_other_part_joins_them_opens_the_result_and_toasts_with_
     lift(win, b)
     to = middle_point(win, a)
     move_global(win, to)
+    rest()
     release_global(win, to)
     assert calls(writer) == [("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id], "ahead": False})]
     assert lst_of(win).join_key is None and win.moves.running is None
     assert lst_of(win).model().open_key == rs[a].key
     assert wait_until(lambda: win.toasts.card.message == strings.ITEM_JOINED.format(range="Ep 1–8"), 5)
+    assert win.toasts.card.buttons, "its Undo"
 
 
 def test_a_drag_over_another_title_is_a_move_never_a_join(world):
@@ -515,16 +519,178 @@ def test_a_drag_over_another_title_is_a_move_never_a_join(world):
 
 
 def test_a_parts_top_and_bottom_edges_place_it_beside_the_other_part_never_join(world):
-    # its edges stay a move: a part can still be put right next to its other part
+    # its edges stay a move, however long the hand holds there: a part can still be put right next to its other part
     _seed, win, writer = world()
     a, b = split_parts(win)
     lift(win, b)
-    move_global(win, row_point(win, a))                              # its upper quarter
-    assert win.moves.running.target[0] == "list" and lst_of(win).join_key is None
-    move_global(win, row_point(win, a, lower=True))
-    assert win.moves.running.target[0] == "list"
+    for frac in (0.1, 0.9):                                          # its top edge (the gap's half), its bottom edge
+        move_global(win, slab_point(win, a, frac))
+        rest()
+        assert win.moves.running.target[0] == "list" and lst_of(win).join_key is None, frac
     win.moves.cancel()
     assert writer.calls == []
+
+
+# --- Sonic 2026-11-01 ("It's always been too easy to combine"): a drop lands by halves; a join only after a hold ---- #
+def slab_point(win, i, frac):
+    """The global point `frac` of the way down row `i`'s slab (the row without its gap's halves and its lines)."""
+    lst = lst_of(win)
+    kind, _row, lines = lst.model().entries[i]
+    slab = lst.delegate.slot_rect(kind, lst.visualRect(lst.model().index(i, 0)), lines)
+    return lst.viewport().mapToGlobal(QPoint(slab.center().x(), slab.top() + round(frac * (slab.height() - 1))))
+
+
+def test_holds_on_counts_only_the_middle_and_before_the_hold_only_where_the_row_stays_under_the_hand():
+    # a 40 px slab: its top and bottom 25 % (10 px) never hold; the middle 10…29 does — still, or once held
+    assert item_menu.JOIN_EDGE == 0.25 and item_menu.JOIN_REST_MS == 500       # (PROVISIONAL: one place)
+    for y, want in ((9, False), (10, True), (20, True), (29, True), (30, False)):
+        assert item_menu.holds_on(100 + y, 100, 139, True, False) is want, y
+        assert item_menu.holds_on(100 + y, 100, 139, False, True) is want, y
+    assert not item_menu.holds_on(120, 100, 139, False, False)      # the half the gap opens under: never a hold
+    assert item_menu.holds_on(110, 100, 139, True, True)
+
+
+def test_part_offset_moves_only_the_rows_between_the_dragged_rows_place_and_its_slot():
+    h = 50
+    # from below (src 6) to slot 2: rows 2…5 move down; from above (src 1) to slot 4: rows 2…4 move up
+    assert [drag.part_offset(6, 2, r, h) for r in range(8)] == [0, 0, h, h, h, h, 0, 0]
+    assert [drag.part_offset(1, 4, r, h) for r in range(7)] == [0, 0, -h, -h, -h, 0, 0]
+    # from outside the list (New arrivals): every row from the slot on moves down
+    assert [drag.part_offset(None, 3, r, h) for r in range(6)] == [0, 0, 0, h, h, h]
+    # no slot, or the slot on its own place: nothing moves
+    assert {drag.part_offset(3, None, r, h) for r in range(6)} == {0}
+    assert {drag.part_offset(3, 3, r, h) for r in range(6)} == {0}
+
+
+@pytest.mark.parametrize("frac, below", [(0.15, False), (0.85, True)])
+def test_a_drop_over_a_rows_upper_half_places_it_above_and_its_lower_half_below_with_the_gap_shown(world, frac, below):
+    _seed, win, writer = world()
+    b, a = two_shows(win)                                            # b below a, another show
+    rs = rows_of(win)
+    slot, after = (a + 1, rs[a]) if below else (a, rs[a - 1])
+    lift(win, b)
+    to = slab_point(win, a, frac)
+    move_global(win, to)
+    settle()
+    d = win.moves.running
+    assert d.target == ("list", slot) and d.parting.slot == slot     # the rows part: the gap shows where it lands
+    release_global(win, to)
+    assert [c[0] for c in writer.calls] == ["move"] and calls(writer)[-1][2]["after_id"] == after.episodes[-1].id
+
+
+def test_a_quick_release_over_a_rows_middle_without_the_hold_inserts_and_never_joins(world):
+    # the hand on another part's middle, and on another show's (where the row stays under it): let go before the hold
+    _seed, win, writer = world()
+    a, b = split_parts(win)
+    lift(win, b)
+    to = middle_point(win, a)
+    move_global(win, to)
+    settle()
+    assert win.moves.running.target[0] == "list"
+    release_global(win, to)                                          # let go at once
+    rest()                                                           # (the hold's timer finds no drag)
+    assert "join" not in [c[0] for c in writer.calls] and win.moves.running is None and lst_of(win).join_key is None
+    QTest.qWait(theme_swallow())
+    b2, a2 = two_shows(win)
+    rs = rows_of(win)
+    lift(win, b2)
+    to = slab_point(win, a2, 0.6)
+    move_global(win, to)
+    release_global(win, to)
+    rest()
+    assert calls(writer)[-1][0] == "move" and calls(writer)[-1][2]["after_id"] == rs[a2].episodes[-1].id   # below it
+    assert "join" not in [c[0] for c in writer.calls]
+
+
+@pytest.mark.parametrize("pick", ["same show", "another show"])
+def test_a_hold_where_the_gap_opens_under_the_hand_never_joins_and_places_it_above(world, pick):
+    # dragged up, the hand on a row's upper middle opens the gap there (the row slides down from under it): a gap's
+    # centre is the row's resting middle, so aiming at it and waiting must never join (Sonic's README clip)
+    _seed, win, writer = world()
+    b, a = split_parts(win)[::-1] if pick == "same show" else two_shows(win)
+    assert 0 < a < b
+    rs = rows_of(win)
+    lift(win, b)
+    to = slab_point(win, a, 0.4)
+    move_global(win, to)
+    rest()
+    rest()
+    d = win.moves.running
+    assert d.target == ("list", a) and lst_of(win).join_key is None and d.parting.target(a) != 0
+    release_global(win, to)
+    assert [c[0] for c in writer.calls] == ["move"] and calls(writer)[-1][2]["after_id"] == rs[a - 1].episodes[-1].id
+
+
+def test_a_hold_shorter_than_the_threshold_shows_no_label(world):
+    _seed, win, writer = world()
+    a, b = split_parts(win)
+    lst = lst_of(win)
+    lift(win, b)
+    move_global(win, middle_point(win, a))
+    QTest.qWait(item_menu.JOIN_REST_MS - 250)
+    assert win.moves.running.target[0] == "list" and lst.join_key is None
+    rest()
+    assert lst.join_key == rows_of(win)[a].key
+    win.moves.cancel()
+    assert writer.calls == []
+    assert win.items._resting is None and win.items._rested is None   # the drag's end lets its hold go
+
+
+def test_the_hold_counts_only_if_the_row_is_still_under_the_hand_as_it_ends(world):
+    # the rows can move under a still hand while it holds (a wheel scroll sends no move): asked again as the hold ends
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    lift(win, b)
+    move_global(win, slab_point(win, a, 0.6))
+    win.moves.running.at = slab_point(win, a, 0.4)                   # (no move: the gap's half now under the hand)
+    rest()
+    assert lst_of(win).join_key is None and win.moves.running.target[0] == "list"
+    win.moves.cancel()
+    assert writer.calls == []
+
+
+def test_held_the_whole_middle_keeps_the_join_and_moving_off_it_lets_go_then_a_release_places_it(world):
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    rs = rows_of(win)
+    lst = lst_of(win)
+    lift(win, b)
+    move_global(win, slab_point(win, a, 0.6))
+    rest()
+    assert lst.join_key == rs[a].key
+    move_global(win, slab_point(win, a, 0.35))                       # the rows are still: its whole middle holds it
+    settle()
+    assert win.moves.running.target == ("join", rs[a].key) and lst.join_key == rs[a].key
+    to = slab_point(win, a, 0.9)                                     # off the middle: the hold goes, the gap opens
+    move_global(win, to)
+    settle()
+    assert win.moves.running.target == ("list", a + 1) and lst.join_key is None
+    release_global(win, to)
+    assert [c[0] for c in writer.calls] == ["move"] and calls(writer)[-1][2]["after_id"] == rs[a].episodes[-1].id
+
+
+def test_reduced_motion_holds_and_joins_the_same(world):
+    # the hold is the hand's, not motion: it counts under Reduced motion too, and the gap jumps as always
+    from app.qt import freeze, motion
+    _seed, win, writer = world()
+    freeze.set_frozen(False)
+    mode = motion.clock().mode
+    was = mode.setting
+    mode.set_setting("reduced")
+    try:
+        a, b = split_parts(win)
+        rs = rows_of(win)
+        lift(win, b)
+        to = middle_point(win, a)
+        move_global(win, to)
+        assert win.moves.running.parting.springs == {}
+        rest()
+        assert lst_of(win).join_key == rs[a].key
+        release_global(win, to)
+        assert calls(writer) == [("join", [], {"piece_ids": [rs[a].piece_id, rs[b].piece_id], "ahead": False})]
+        assert wait_until(lambda: not win.moves.ghost.isVisible(), 5)   # (its short fade ends before the window goes)
+    finally:
+        mode.set_setting(was)
 
 
 # --- Remove… ---------------------------------------------------------------------------------------------------------- #
@@ -674,13 +840,16 @@ def test_G2_another_show_is_outlined_drop_to_group_only_after_the_hand_rests_and
     assert writer.calls == []
 
 
-def test_G2_the_same_shows_other_part_still_joins_at_once_with_drop_to_join(world):
+def test_G2_the_same_shows_other_part_waits_for_the_hold_too_then_reads_join_as_one_show(world):
+    # Sonic 2026-11-01: "It's always been too easy to combine" — one show's parts no longer join at once
     _seed, win, writer = world()
     a, b = split_parts(win)
     lst = lst_of(win)
     lift(win, b)
     move_global(win, middle_point(win, a))
     settle()
+    assert win.moves.running.target[0] == "list" and lst.join_key is None
+    rest()
     assert win.moves.running.target == ("join", rows_of(win)[a].key) and lst.join_label == strings.JOIN_LABEL
     win.moves.cancel()
     assert writer.calls == []
@@ -2403,5 +2572,47 @@ def test_G2_a_rest_on_a_stale_finished_row_is_never_a_group_target(world):
     move_global(win, to)
     rest()
     assert win.moves.running.target[0] == "list" and lst_of(win).join_key is None
+    win.moves.cancel()
+    assert writer.calls == []
+
+
+@pytest.mark.parametrize("frac, joins", [(0.4, True), (0.6, False)])
+def test_dragged_down_a_hold_joins_on_the_upper_middle_where_the_row_stays_never_on_the_lower_where_it_moves(
+        world, frac, joins):
+    # dragged down from above, the gap opens above a row's upper half and the row stays under the hand, so a hold there
+    # counts; its lower half moves the row up from under the hand, so the same hold there is never a join
+    _seed, win, writer = world()
+    b, a = two_shows(win)                                            # b below a, another show
+    assert a < b
+    rs = rows_of(win)
+    lift(win, a)                                                     # dragged down onto b
+    move_global(win, slab_point(win, b, frac))
+    settle()
+    assert win.moves.running is not None                             # the drag is live, so the hold below is the rule's
+    rest()
+    if joins:
+        assert lst_of(win).join_key == rs[b].key
+    else:
+        assert lst_of(win).join_key is None and win.moves.running.target[0] == "list"
+    win.moves.cancel()
+    assert writer.calls == []
+
+
+def test_leaving_the_middle_lets_the_hold_go_and_coming_back_needs_a_new_hold(world):
+    # held on a row, the hand moves to the row's bottom edge (no row is joined there): the hold goes. Straight back to
+    # the middle is not the old hold again — the label waits for a new rest, as a hand that just came back has not held
+    _seed, win, writer = world()
+    b, a = two_shows(win)
+    lift(win, b)
+    move_global(win, slab_point(win, a, 0.6))
+    rest()
+    assert lst_of(win).join_key == rows_of(win)[a].key
+    move_global(win, slab_point(win, a, 0.9))
+    settle()
+    move_global(win, slab_point(win, a, 0.6))
+    settle()
+    assert lst_of(win).join_key is None and win.moves.running.target[0] == "list"
+    rest()
+    assert lst_of(win).join_key == rows_of(win)[a].key
     win.moves.cancel()
     assert writer.calls == []

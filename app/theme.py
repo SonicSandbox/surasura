@@ -579,6 +579,7 @@ DRAG = MappingProxyType({
     "placeholder-ring": 1.5,        # the slot left behind: its fill and an inset accent ring at 60 %
     "placeholder-ring-alpha": 0.6,
     "placeholder-radius": 8,
+    "join-fill-alpha": 0.14,        # a held join's target: its tint under the dashed outline (Sonic 2026-11-01: clear)
     "settle-ms": 300,               # the window's own order stands until the writer has been idle this long
     "message-ms": 4000,             # a line said in the footer's slot holds it this long (over the update chip)
     "near": 3,                      # painted neighbours on each side handed to the writer (an anchor gone meanwhile)

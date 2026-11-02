@@ -571,8 +571,10 @@ def _current_group(win, i, other_work=987654):
 
 
 def _middle(win, i):
+    """60 % down row `i`: the half that stays under a hand from outside the list (the gap opens above the other)."""
     lst = win.page_widgets["current"].list
-    return lst.viewport().mapToGlobal(lst.visualRect(lst.model().index(i, 0)).center())
+    r = lst.visualRect(lst.model().index(i, 0))
+    return lst.viewport().mapToGlobal(QPoint(r.center().x(), r.top() + round(0.6 * r.height())))
 
 
 def _rest():

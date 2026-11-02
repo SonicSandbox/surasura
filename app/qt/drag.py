@@ -511,6 +511,21 @@ class _Resting(QObject):
 
 
 # --- the parting rows ------------------------------------------------------------------------------------------ #
+def part_offset(src, slot, r, h):
+    """The offset place `r` rests at while a drag from place `src` (None: from outside the list) has its slot at
+    `slot`, the slot `h` high: the rows between the dragged row's place and the slot moved by it (one rule: the parting
+    paints it, and a hold to join counts only where it is 0 — `item_menu.holds_on`)."""
+    if slot is None or r == src:
+        return 0.0
+    if src is None:
+        return float(h) if r >= slot else 0.0
+    if slot < src:
+        return float(h) if slot <= r < src else 0.0
+    if slot > src:
+        return -float(h) if src < r <= slot else 0.0
+    return 0.0
+
+
 class Parting:
     """What the list paints while a drag runs (`rows.RowsView.parting`): each row's offset as the slot travels (the
     rows between the dragged row's place and its slot moved by the slot's height, on `drag-part` springs while on
@@ -535,16 +550,7 @@ class Parting:
 
     def target(self, r):
         """The offset place `r` rests at for the current slot."""
-        s, t = self.src, self.slot
-        if t is None or r == s:
-            return 0.0
-        if s is None:
-            return float(self.h) if r >= t else 0.0
-        if t < s:
-            return float(self.h) if t <= r < s else 0.0
-        if t > s:
-            return -float(self.h) if s < r <= t else 0.0
-        return 0.0
+        return part_offset(self.src, self.slot, r, self.h)
 
     def offset(self, r):
         spring = self.springs.get(r)
@@ -1674,6 +1680,7 @@ class DragController(QObject):
             tab.set_drop_lit(False)
         if self.joins is not None:                   # --- W3.2 Q8
             self.joins.show(None)
+            self.joins.ended()
         self.win.toasts.set_dragging(False)
         if d.holding:                                # (a lift that failed before its holds holds nothing)
             d.holding = False

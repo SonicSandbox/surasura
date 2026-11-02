@@ -1278,6 +1278,7 @@ class ShellWindow(QMainWindow):
         self._jobs = ()                                   # the registry's newest snapshot (E20: what the close waits for)
         self._quit = None                                 # None · "waiting" (E20: an Anki write ends first) · "ready"
         self.restart_asked = False                        # *Restart now* (text size): main starts the program again
+        self.restart_move = False                         # … for a Start over / Put back (its start runs the move)
         self._quit_line = strings.QUIT_FINISHING          # the bar's one line while it waits
         self._quit_timer = None
         self._detached_card = None                        # row 35: the close's *Still finishing* sheet, while open
@@ -2968,12 +2969,14 @@ class ShellWindow(QMainWindow):
         self.update()
         return ms
 
-    def restart(self):
+    def restart(self, move=False):
         """*Restart now* (Settings › Text size; laptop fixes row 15): the window closes the quit's way — what can't
         stop part-way ends first (E20), the window state is saved (size, place, this tab), the settings written — and
         `main` starts the same program again once the quit is over, the store's close included (`relaunch`). Offered
-        only while no Generate runs (`generating`)."""
+        only while no Generate runs (`generating`). `move` (Fresh library: *Start over*, a Started-over *Put back*,
+        the request written first): that start's gate runs the move (`MOVE_START`, P16)."""
         self.restart_asked = True
+        self.restart_move = self.restart_move or bool(move)
         self.close()
 
     def generating(self):
@@ -3670,7 +3673,10 @@ def main(argv=None, after_gate=None):
         return 0
     hud.mark("claimed")
     from app.qt import start_gate
-    if not start_gate.gate(app):                      # W3.5: the 2.x import, the refusals, the merge — before the store
+    restarted = restart_mark()                        # alpha 4 M6: *Restart now*'s start (`relaunch`) — read before
+    moving = move_mark()                              # the gate: a Start over asked runs only on its own restart (P16)
+    if not (start_gate.gate(app, move=True) if moving else start_gate.gate(app)):     # W3.5: the 2.x import, the
+        #                                           refusals, the merge — before the store
         instance.release()
         return 0
     if after_gate is not None:
@@ -3678,7 +3684,6 @@ def main(argv=None, after_gate=None):
     # W3.2 P0: the library and its writer (nothing read yet). A4 P-gil: the reader freezes Python's collector after each
     # view (a full collection walking the library held the window 40-75 ms at 20,000 files); its stop thaws it, so a
     # library a language switch let go is still freed (`library_reader`'s *Python's collector*)
-    restarted = restart_mark()                        # alpha 4 M6: *Restart now*'s start (`relaunch`)
     try:
         services = open_services(freeze_gc=True)
         services.restarted = restarted
@@ -3711,7 +3716,10 @@ def main(argv=None, after_gate=None):
         finally:
             instance.release()                            # (once: done already unless the quit failed before it)
             if window.restart_asked:                      # *Restart now* (`ShellWindow.restart`): the new start only
-                relaunch(argv)                            # once the store's close has ended (or its wait ran out, B2-4)
+                (relaunch(argv, move=True) if window.restart_move else relaunch(argv))   # once the store's close
+                #                                           has ended (or its wait ran out, B2-4)
+                #                                           (a move's start that failed: its request stays asked, and
+                #                                           the next start asks about it — never run unasked, P16)
             if meter is not None:                         # the HUD's native filter taken off here, on the GUI thread:
                 try:                                      # left to the collector, it can go on a worker, where Qt's
                     meter.stop()                          # removal misses and the next message crashes (0xC0000005)
@@ -3735,10 +3743,34 @@ def restart_mark():
     return os.environ.pop(RESTARTED, None) == "1"
 
 
-def relaunch(argv):
+# Fresh library 3.0.1: a restart asked by *Start over* / a Started-over *Put back* (its request already written): only
+# that start's gate runs the move; any other start that finds the request asks first (P16)
+MOVE_START = "SURASURA_MOVE_START"
+
+
+def move_mark():
+    """Was this start a Start over's own restart (`relaunch(move=True)`)? Read once, taken out of the environment."""
+    return os.environ.pop(MOVE_START, None) == "1"
+
+
+def relaunch_refused(argv=None):
+    """Why the program couldn't be started again now (the file it would run isn't there), or None — asked before a
+    Start over closes the window, so a restart that can't come is said while the window is still up."""
+    argv = list(sys.argv if argv is None else argv)
+    exe = sys.executable
+    if not exe or not os.path.isfile(exe):
+        return f"{exe or 'the program'} isn't there"
+    if not getattr(sys, "frozen", False) and argv and os.path.abspath(argv[0]) != os.path.abspath(__file__) and \
+            not os.path.isfile(os.path.abspath(argv[0])):
+        return f"{argv[0]} isn't there"
+    return None
+
+
+def relaunch(argv, move=False):
     """The same program started again, detached (laptop fixes row 15: *Restart now*): the frozen program with its own
     arguments, or this Python with the script `argv` names (app_entry.py from source), from the same folder, marked
-    `RESTARTED` (alpha 4 M6). -> the Popen, or None (logged: the window just doesn't come back)."""
+    `RESTARTED` (alpha 4 M6), and `MOVE_START` too for a move's restart (`move`). -> the Popen, or None (logged: the
+    window just doesn't come back)."""
     import subprocess
     if getattr(sys, "frozen", False):
         args = [sys.executable] + list(argv[1:])
@@ -3750,7 +3782,8 @@ def relaunch(argv):
     try:
         return subprocess.Popen(args, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                start_new_session=(sys.platform != "win32"), env=dict(os.environ, **{RESTARTED: "1"}))
+                                start_new_session=(sys.platform != "win32"),
+                                env=dict(os.environ, **{RESTARTED: "1"}, **({MOVE_START: "1"} if move else {})))
     except (OSError, ValueError) as e:
         applog.log("shell", f"restart: the new start failed: {e!r}")
         return None

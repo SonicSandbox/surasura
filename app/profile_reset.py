@@ -725,7 +725,7 @@ def backups(places=None):
             kind = PUT_BACK_OVER if record.get("kind") == library_store.RESET_KIND_OVER else SORTED_AGAIN
             out.append({"kind": kind, "scope": "library", "folder": folder, "stamp": name,
                         "date": record.get("started_at"), "status": status, "stopped": stopped, "language": lang,
-                        "app_version": record.get("app_version"), "forgot_known": bool(record.get("known"))})
+                        "app_version": record.get("app_version"), "forgot_known": isinstance(record.get("known"), dict)})   # (a forget records where; a keep says "kept")
     out.sort(key=lambda b: str(b["date"] or ""), reverse=True)
     out.sort(key=lambda b: not b["stopped"])
     return out

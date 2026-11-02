@@ -156,6 +156,14 @@ def test_a_30_backup_without_kind_or_version_and_one_made_with_forget_my_known_w
     assert _bytes(known) == today and os.path.exists(os.path.join(backup, "KnownWord.json"))
 
 
+def test_a_sorted_again_backup_that_kept_known_words_never_says_it_forgot_them():
+    # review F4 (window half): the store records "kept" for every Sort again that keeps them — that is no forget,
+    # and the Put back's confirm must not say the known words from then are in the backup
+    store, data_dir, user_files_dir, backup, _before = _sorted_again("ja")
+    assert _record(backup)["known"] == "kept"
+    assert not [b for b in profile_reset.backups() if b["folder"] == backup][0]["forgot_known"]
+
+
 def test_a_backup_from_an_older_store_is_brought_up_to_date_on_a_scratch_copy_and_its_bytes_never_change(
         monkeypatch, tmp_path):
     """A copy older than this program's schema is migrated on a scratch copy beside the store; the backup's file is

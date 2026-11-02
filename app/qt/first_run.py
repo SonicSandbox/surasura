@@ -53,13 +53,16 @@ def host(shell, api=None, miner=None):
         return None
 
 
-def open_again(shell, api=None, miner=None, page=None):
+def open_again(shell, api=None, miner=None, page=None, resort=None):
     """Settings' *Set up again*: the wizard, preselected from the settings now (finished or not); `page` (a page id,
     `wizard.PAGES`) shown first. -> the wizard, or None (never raises into Settings' click: a wizard that can't open
-    leaves the window as it is, and says why in the log)."""
+    leaves the window as it is, and says why in the log). `resort(changes)` (Fresh library's *Change folders…*): the
+    folders page alone, its *Next* handing back {"add", "stop", "skip"} — it never reads a folder itself (P11)."""
     try:
         back = shell.current_tab() if hasattr(shell, "current_tab") else "current"
-        wiz = _open(shell, api, miner, back=back)
+        wiz = _open(shell, api, miner, back=back, resort=resort)
+        if resort is not None:
+            return wiz
     except Exception as e:
         applog.log("wizard", f"the setup wizard didn't open again: {e}")
         return None
@@ -71,17 +74,17 @@ def open_again(shell, api=None, miner=None, page=None):
     return wiz
 
 
-def _open(shell, api, miner, back="current"):
+def _open(shell, api, miner, back="current", resort=None):
     wiz = opened(shell)
     if wiz is not None:
         wiz.raise_()
-        return wiz
+        return wiz if resort is None else None            # (setup up: *Change folders…* waits for it)
     area = shell.centralWidget()
     held = _hold(area)
     _say_held(shell, True)
     wiz = None
     try:
-        wiz = wizard_module.SetupWizard(shell, parent=area, api=api, miner=miner)
+        wiz = wizard_module.SetupWizard(shell, parent=area, api=api, miner=miner, resort=resort)
         wiz.setGeometry(area.rect())
         _Cover(wiz, area)
         wiz.finished.connect(lambda how, w=wiz: _closed(shell, w, held, how, back))

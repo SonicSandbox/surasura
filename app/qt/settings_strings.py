@@ -410,11 +410,13 @@ ROWS = {
                         "The folders Surasura reads where they are", "library folders source read where they are "
                                                                      "stop reading look again manage skipped "
                                                                      "read again"),
-    # A7O-6 (Sonic 2026-10-30): named for what it does — the same files, the order cleared (was *Start a fresh library*)
-    "fresh_library": ("Sort my library again",
-                      "Clears your order and tiers into a backup and reads every folder again into Current",
-                      "Clear your order and read your folders again; the old order is kept in a backup",
-                      "sort library again order tiers fresh reset start over clear read again"),
+    # A7O-6 (Sonic 2026-10-30): named for what it does (was *Start a fresh library*); Fresh library 3.0.1: two choices
+    "fresh_library": ("Sort again or start over",
+                      "Sort your library again from scratch, or start Surasura over as on a new PC. Either can be put "
+                      "back",
+                      "Sort your library again, or start over completely; both can be put back",
+                      "sort library again order tiers fresh reset start over clear read again put back backup "
+                      "restore"),
     "split_books_by": ("Split books by", "Each book you add: its chapters, each cut into parts; or even parts across "
                                          "the book. Books already in keep their parts",
                        "How a book is cut into parts when you add it", "split books chapters even parts epub"),
@@ -538,6 +540,10 @@ ROWS = {
     "version": ("Version {version}", "", "Opens the data folder", "version data folder"),
     "set_up_again": ("Set up again", "Walks through the first steps again", "Opens the setup again",
                      "set up again wizard setup"),
+    "start_over": ("Start over completely", "Everything Surasura keeps into one dated backup, then setup from the "
+                                            "beginning, as on a new PC. It can be put back",
+                   "Start Surasura over as on a new PC; it can be put back",
+                   "start over reset everything new pc fresh backup put back restore"),
     "settings_file": ("Your settings", "Save them to a file, or bring them in from one: for the next version or a new "
                       "computer", "Export or import every setting",
                       "settings export import save backup move new computer pc file"),
@@ -832,38 +838,98 @@ SOURCES_SKIPPED_N = "{n:,} skipped"
 FOLDERS_NAME = "Library folders"
 FOLDERS_LINE = "Surasura reads these folders where they are and looks in them again for new episodes."
 
-# --- K7: *Sort my library again…* (settings_sources.py: FreshRow; the store's `start_fresh`; A7O-6: wording only) --- #
-FRESH_OPEN = "Sort my library again…"
-FRESH_TIP = ("Kept: your folders, your skipped folders and, unless you choose to forget them, your known words\n"
-             "Cleared into one dated backup in User Files' .trash: your order, tiers, New arrivals and subtitle "
-             "pairings\nThen every folder is read again into Current")
-FRESH_RUNNING_TIP = "Clearing your order into a backup…"
-FRESH_ASK = "Sort your library again?"
-FRESH_BODY = ("Kept: your folders and your skipped folders, your settings, your cards in Anki (a card you deleted "
-              "is never made again) and, unless you tick the box, your known words.\n\n"
-              "Cleared into one dated backup (User Files › .trash › library-reset-…; its reset.json says how to put "
-              "it back): your order, tiers, New arrivals, subtitle pairings and the copies Surasura keeps of your "
-              "files.\n\n"
-              "Then every folder is read again into Current, in name order — episodes you removed too. A video "
-              "still waiting for its subtitles waits in New arrivals; a book's text comes back only when its folder "
-              "is read.")
+# --- K7 + Fresh library 3.0.1: *Sort again or start over…* (settings_sources.py: FreshRow, StartOverRow, the sheet) - #
+FRESH_OPEN = "Sort again or start over…"
+FRESH_TIP = ("Sort your library again from scratch, or start Surasura over as on a new PC.\n"
+             "Either can be put back.")
+START_OVER_OPEN = "Start over completely…"
+START_OVER_TIP = ("Put everything Surasura keeps into one dated backup and start setup again, as on a new PC.\n"
+                  "Anki and your own folders and files are never touched. It can be put back.")
+FRESH_RUNNING_TIP = "Sorting your library again…"
+FRESH_SETTING_ASIDE = "Setting your order aside…"
+FRESH_GENERATING = "A Generate is running: once it has finished, this can go on."
+FRESH_UPDATING = "An update is being installed: once it has finished, this can go on."
+FRESH_SHEET = "Sort again or start over"
+FRESH_CLOSE = "Close"
+FRESH_CLOSE_TIP = "Close. Nothing is changed.\n• Esc"
+FRESH_BACK = "Back"
+FRESH_BACK_TIP = "Back. Nothing is changed.\n• Esc"
+FRESH_SORT_HEAD = "Sort my library again"
+FRESH_SORT_BODY = ("Your folders, known words and settings stay. Your order, tiers, Finished and New arrivals go into "
+                   "a backup. Surasura reads your folders again and you sort each title.")
+FRESH_SORT_CARDS = "Shows you sort into your top 20 get cards, as when you drag them there."      # FL-1, Connect on
+FRESH_SORT = "Sort again"
+FRESH_SORT_TIP = ("Set your order aside in a backup, read your folders again and sort each title.\n"
+                  "Your known words, settings and Anki stay as they are.")
+FRESH_FOLDERS = "Change folders…"
+FRESH_FOLDERS_TIP = ("Add, remove or skip folders first, then sort again.\n"
+                     "Nothing changes until you press Sort again there.")
+FRESH_FOLDERS_BUSY = "Setup is open: finish it or close it first."
+FRESH_FOLDERS_REFUSED = "A folder you changed wasn't changed: {why}"
+FRESH_OVER_HEAD = "Start over completely"
+FRESH_OVER_BODY = ("Your library, settings, known words and everything Surasura worked out go into one dated backup. "
+                   "Anki and your own folders and files are never touched. Surasura opens again and setup starts "
+                   "from the beginning.")
+FRESH_OVER = "Start over…"
+FRESH_OVER_TIP = "Put everything Surasura keeps into one backup and start setup again. It asks once more first."
+FRESH_OVER_ASK = "Start over completely?"
+FRESH_OVER_ASK_BODY = ("Surasura will close and open again, then setup starts from the beginning. Everything it keeps "
+                       "goes into one dated backup, and Put back brings it back.")
+FRESH_OVER_YES = "Start over"
+FRESH_OVER_YES_TIP = "Close Surasura, set everything aside in one backup and start setup again"
+FRESH_OVER_GENERATING = "A Generate is running: start over once it has finished."
+FRESH_RESTART_FAILED = "Nothing was changed: Surasura couldn't start itself again ({why})."
+FRESH_BACKUPS = "Backups"
+FRESH_LOOKING = "Looking for backups…"
+FRESH_KINDS = {"sorted-again": "Sorted again", "started-over": "Started over", "put-back-over": "Put back over"}
+FRESH_STOPPED = "stopped part way"
+FRESH_SIZE_WAIT = "…"
+FRESH_SIZE_MB = "{mb:,} MB"
+FRESH_SIZE_GB = "{gb:,.1f} GB"
+FRESH_PUT_BACK = "Put back…"
+FRESH_PUT_BACK_TIP = "Bring this back. What you have now goes into a backup of its own first, so you can switch back."
+FRESH_PUT_IT_BACK = "Put it back"
+FRESH_PUT_IT_BACK_TIP = "This one was stopped part way: put your library back as it was before. It asks first."
+FRESH_SHOW = "Show in folder"
+FRESH_SHOW_TIP = "Open this backup's folder"
+FRESH_SHOW_ALL = "Show all {n:,}"
+FRESH_SHOW_ALL_TIP = "List every backup, oldest last"
+FRESH_PB_ASK = "Put back your library from {date}?"
+FRESH_PB_BODY = ("Comes back: your order, tiers, Finished and New arrivals as they were on {date}, and the folder list "
+                 "then. Your library now goes into a backup of its own, so you can switch back.")
+FRESH_PB_KNOWN = "Your known words stay as they are now; the ones from then are in the backup."          # P9
+FRESH_PB_STOPPED_ASK = "Put your library back as it was?"
+FRESH_PB_STOPPED_BODY = ("Sorting your library again was stopped part way on {date}. This puts your library back as "
+                         "it was before.")
+FRESH_PB_FINISH_BODY = ("Putting your library back was stopped part way on {date}, after the library itself came back. "
+                        "This finishes it.")
+FRESH_OVER_STOPPED_TIP = ("This Start over was stopped part way. Its start-over.json, in the library folder's part, "
+                          "names every part and where it is: put them back by hand.")
+FRESH_PB_OVER_ASK = "Put back everything from {date}?"
+FRESH_PB_OVER_BODY = ("Surasura will close and open again with everything as it was on {date}: library, settings, "
+                      "known words. What you have now goes into a backup of its own.")
+FRESH_PB_YES = "Put back"
+FRESH_PB_YES_TIP = "Put this back. What you have now goes into a backup of its own first"
+FRESH_PB_RUNNING = "Putting your library back…"
+FRESH_PB_DONE = "Your library from {date} is back"
+FRESH_PB_DONE_PLAIN = "Your library is back"
+FRESH_PB_REFUSED = "Nothing was put back. {reason}"
+FRESH_PB_FAILED = "Nothing was put back: {reason}"
+FRESH_SORTED = "Library sorted again"
+FRESH_SORTED_NOTHING = "Library sorted again: nothing to sort"
+FRESH_SORTED_STOPPED = "Library sorted again: your folders come in as New arrivals"
+FRESH_TOAST_PUT_BACK = "Put back"
+FRESH_TOAST_PUT_BACK_TIP = "Put back the library you had before sorting again"
 # The sheet's counts (the store's `fresh_counts`), each line only when its count isn't 0
 FRESH_GONE = "Only in the backup, never back: {parts}."
 FRESH_GONE_ADDED = "{n} file{s} you added with + Add from outside your folders"
 FRESH_GONE_YOUTUBE = "{n} YouTube transcript{s}"
 FRESH_GONE_OTHER = "{n} other text{s} with no folder to read again (pasted, hato's, from before 3.0)"
-FRESH_SUSPENDED = ("{n} card{s} Surasura took out of your learning order stay suspended in Anki: unsuspend them "
-                   "there if you want them back.")
+FRESH_SUSPENDED_OVER = "{n} card{s} Surasura took out of your learning order stay suspended in Anki."
 FRESH_NOT_ALL_BACK = "Not all of your library could be put back: the rest is in {folder}"
-FRESH_UNFINISHED = ("Sorting your library again stopped part way: your old library may be in its backup, {folder} "
-                    "(reset.json there says how to put it back)")
-FRESH_YES = "Sort again"
-FRESH_YES_TIP = "Clear your order into a backup and read your folders again"
-FRESH_KNOWN = "Also forget my known words"
-FRESH_KNOWN_TIP = ("KnownWord.json is kept in the backup and replaced by an empty one\nWords from your Anki cards come "
-                   "back at the next Anki sync")
+FRESH_UNFINISHED = ("Sorting your library again stopped part way: put it back from Settings › Content › Sort again "
+                    "or start over ({folder})")
 FRESH_DONE = "Your order is in the backup: reading your folders again…"
-FRESH_DONE_KNOWN_KEPT = "Your order is in the backup: reading your folders again… Your known words were kept: {why}"
 FRESH_REFUSED = "Nothing was changed. {reason}"
 FRESH_FAILED = "Nothing was changed: {reason}"
 FRESH_NOT_WRITABLE = "Your library can't be written now: {reason}"

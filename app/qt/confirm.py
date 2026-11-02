@@ -183,7 +183,9 @@ class Confirm(motion.Overlay):
         """Tab and Shift+Tab go round the two buttons (and the check, the field), never out to the window behind the
         scrim."""
         now = QApplication.focusWidget()
-        ring = [w for w in (self.check, self.field, self.no, self.yes) if w is not None]
+        own = getattr(self, "ring", None)                 # a card's own buttons (Fresh library's sheet), in order
+        ring = [w for w in [self.check, self.field] + (own() if callable(own) else []) + [self.no, self.yes]
+                if w is not None]
         if now in ring:
             target = ring[(ring.index(now) + (1 if next_ else -1)) % len(ring)]
         else:
@@ -194,7 +196,8 @@ class Confirm(motion.Overlay):
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             now = QApplication.focusWidget()
-            (now if now is not None and now in (self.no, self.yes) else self.default).click()
+            mine = isinstance(now, QPushButton) and self.isAncestorOf(now)    # (the card's own buttons too)
+            (now if mine else self.default).click()
             event.accept()
             return
         super().keyPressEvent(event)

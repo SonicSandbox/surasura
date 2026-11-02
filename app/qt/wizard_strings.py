@@ -17,6 +17,16 @@ SKIP = "Skip"
 SKIP_TIP = "Leave this step for now: nothing is changed. You can set it in Settings later."
 NEXT = "Next"
 NEXT_TIP = "Keep these choices and go on.\n• Enter"
+# Fresh library 3.0.1: *Change folders…* (the folders page alone, from Settings' *Sort again or start over…*)
+RESORT_NEXT = "Sort again"
+RESORT_NEXT_TIP = ("Set your library's order aside in a backup, read these folders again and sort each title.\n"
+                   "• Your known words and settings stay\n• Enter")
+RESORT_BACK = "Back"
+PUT_BACK_LINK_NAME = "Put back what you had"
+PUT_BACK_LINK = "Put back what you had (from {date})"                       # page 1, after a Start over (Q2)
+PUT_BACK_LINK_TIP = ("Bring back your library, settings and known words as they were before you started over.\n"
+                     "• Surasura closes and opens again. What you've set up since goes into a backup of its own.")
+RESORT_BACK_TIP = "Back to Sort again or start over. Nothing is changed."
 GENERATE = "Generate"
 GENERATE_TIP = "Make your list from your shows now, and open it when it's ready.\n• Enter"
 KEY_ENTER = "Enter"
@@ -377,6 +387,8 @@ SORT_REST_TIP = "Every title still here in one place, at once. One Undo brings t
 SORT_DONE = "Done"
 SORT_DONE_TIP = "Go on. Anything still here waits in New arrivals."
 SORT_CLOSE_TIP = "Close. Anything still here waits in New arrivals.\n• Esc"
+SORT_RESORT_DONE_TIP = "Done sorting: on to Current. Anything still here waits in New arrivals.\n• Esc"   # Sort again
+SORT_DONE_TIPS = {"setup": SORT_DONE_TIP, "arrivals": SORT_CLOSE_TIP, "resort": SORT_RESORT_DONE_TIP}
 SORT_MORE = "and {n:,} more"
 SORT_EMPTY = "All sorted."
 SORT_PLACED = {"now": "{title} → Current", "soon": "{title} → Soon", "goal": "{title} → Goal",

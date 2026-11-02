@@ -1623,75 +1623,24 @@ class NeedsYou(QObject):
         bridge.run_in_worker(write, lang, keys, then=lambda n: finish(then, n),
                              failed=lambda info: finish(failed, info))
 
-    # K1: the library mostly gone — *Start fresh* (`SourceLooks.fresh`, with Settings' own sheet)
+    # K1: the library mostly gone — *Start fresh* (Settings' own sheet: Sort again first; Fresh library 3.0.1)
     def _do_start_fresh(self, entry, _line):
-        """*Start fresh*: Settings' *Start a fresh library?* sheet (`settings_sources.fresh_sheet`: what goes, what
-        stays, the store's counts read on the looks' worker first; *Also forget my known words* off; Enter, Esc or a
-        click outside is No), then `SourceLooks.fresh` on the looks' worker — the old library in one dated backup in
-        the trash, never deleted — and the bar says how it went (Settings' words). The arc turns from the press while
-        the counts are read, and from Yes until the reset answers."""
+        """*Start fresh*: Settings' one sheet (`settings_sources.open_fresh`, *Sort my library again* first, no
+        known-words box: Q3), open at once; its press acts over the window (`settings_sources.act`: the load screen
+        and the sort screen, or Start over's restart) — the old library in one dated backup, never deleted. Esc, Back
+        or a click outside closes it, nothing done; the card goes with the fresh library's view."""
+        from PyQt6 import sip
         from app.qt import settings_sources
-        looks = getattr(self.win, "looks", None)
-        if looks is None:
+        if getattr(self.win, "looks", None) is None:
             self._say(strings.NEEDS_FIND_CLOSED)
             return
-        p = qpress.begin(self._control("start_fresh", entry), self._press_key("start_fresh", entry), win=self.win)
-        if p is None:
-            return                                   # one press: its counts or its reset under way
+        sheet = getattr(self, "confirming", None)
+        if sheet is not None and not sip.isdeleted(sheet) and sheet.answer is None:
+            return                                   # one sheet: the press that opened it is still up
 
-        def ask(counts):
-            if p.live():
-                qpress.end(p, self.win)
-                p.release()                          # (the sheet is up: its Yes presses again, or No asks again)
-            if not self._alive():
-                return
-
-            def answered(yes):
-                card, self.confirming = self.confirming, None
-                if yes:
-                    forget = bool(card is not None and card.checked)
-                    self._looks_press("start_fresh", entry, lambda then: looks.fresh(forget, then))
-            self.confirming = settings_sources.fresh_sheet(self.win, counts, answered)
-        counts = getattr(looks, "fresh_counts", None)
-        if counts is None:
-            ask(None)
-            return
-        relay = bridge.Relay(self.win)
-
-        def counted(found):
-            relay.deleteLater()
-            ask(found)
-        relay.said.connect(counted)
-        if not counts(relay.call):
-            relay.deleteLater()
-            ask(None)
-
-    def _looks_press(self, name, entry, call):
-        """`SourceLooks.fresh` on the looks' worker, its button's arc turning until it answers; the bar says how it
-        went (`settings_sources.fresh_said`). Done, the card goes with the fresh library's view; refused or failed,
-        it stays (pressed again, it asks again)."""
-        from app.qt import settings_sources
-        p = qpress.begin(self._control(name, entry), self._press_key(name, entry), win=self.win, goes=True)
-        if p is None:
-            return
-        relay = bridge.Relay(self.win)
-
-        def answered(answer):
-            relay.deleteLater()
-            answer = answer or {}
-            failed = not answer.get("done")
-            if p.live():
-                qpress.end(p, self.win, failed=failed)
-            if failed:
-                self._stays(name, entry)
-            self._say(settings_sources.fresh_said(answer))
-            self.refresh()
-        relay.said.connect(answered)
-        if not call(relay.call):
-            relay.deleteLater()
-            qpress.end(p, self.win, failed=True)
-            self._stays(name, entry)
-            self._say(strings.NEEDS_FIND_CLOSED)
+        def closed():
+            self.confirming = None
+        self.confirming = settings_sources.open_fresh(self.win, self.win, first="sort", done=closed)
 
     # Connect's entries (each on a worker; the window never makes Connect's ledger)
     def _do_mine_anyway(self, entry, _line):

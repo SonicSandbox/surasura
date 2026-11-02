@@ -71,6 +71,16 @@ def _backup_roots(folder):
         conn.close()
 
 
+def _distinct(name, show, start, episodes=2):
+    """A source folder whose subtitles differ from every other folder's (`_source` numbers each folder from 1: the
+    same bytes in two folders are one item's copies)."""
+    from tests.qt.test_window_sources import _subtitle
+    root = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", name)
+    for e in range(1, episodes + 1):
+        _subtitle(os.path.join(root, show), f"{show} - {e:02d}.ja.srt", start + e)
+    return root
+
+
 def _looks(opener):
     return source_looks.SourceLooks(opener, "ja", kind=lambda _p: "network")
 
@@ -149,7 +159,7 @@ def test_a_folder_change_the_store_refuses_is_named_and_the_others_still_land():
     looks = _looks(opener)
     good = _source("Anime", shows=SHOWS[:1])
     try:
-        answer, _scanned, _said = _fresh(looks, folders={"add": [good, data_dir], "stop": [], "skip": []})
+        answer, _scanned, _said = _fresh(looks, folders={"add": [data_dir, good], "stop": [], "skip": []})
     finally:
         looks.close()
     folders = answer["folders"]
@@ -439,3 +449,57 @@ def test_change_folders_hides_setups_samples_covers_and_cores_and_esc_is_back(ma
     assert page.btn_samples.isHidden() and page.covers.isHidden() and page.every_core.isHidden()
     QTest.keyClick(wiz, Qt.Key.Key_Escape)
     assert wiz._gone and handed == []
+
+
+# --- the mutants' round (W05, W07, W11) --------------------------------------------------------------------------- #
+def test_stop_inside_one_folder_stops_between_its_shows(monkeypatch):
+    # W05: the load screen's Stop reaches the read of the folder under way, not only the next folder
+    opener, data_dir, user_files_dir = _library()
+    looks = _looks(opener)
+    stop = threading.Event()
+    try:
+        _added(looks, _source("Anime", shows=SHOWS))                       # one folder, two shows
+        real = ls.Store.take_in
+
+        def take_in(self, *a, **kw):
+            change = real(self, *a, **kw)
+            stop.set()
+            return change
+        monkeypatch.setattr(ls.Store, "take_in", take_in)
+        _answer, scanned, _said = _fresh(looks, stop=stop.is_set)
+    finally:
+        looks.close()
+    rows = _tiers(data_dir, user_files_dir)
+    assert scanned["stopped"] and 0 < len(rows) < 4
+
+
+def test_the_ids_of_every_folder_read_reach_the_sort_screen():
+    # W07: the scanned answer holds the items of every folder, not only the last one's
+    opener, data_dir, user_files_dir = _library()
+    looks = _looks(opener)
+    try:
+        _added(looks, _source("Anime", shows=SHOWS[:1]))
+        _added(looks, _distinct("Dramas", SHOWS[1], start=10))           # (never the same bytes as Anime's)
+        _answer, scanned, _said = _fresh(looks)
+    finally:
+        looks.close()
+    assert len(scanned["ids"]) == 4 and scanned["found"] == 4
+
+
+def test_put_back_looks_at_every_folder_after_so_a_file_new_since_comes_in():
+    # W11: the library from then, then a full look: an episode that arrived after the Sort again isn't lost
+    opener, data_dir, user_files_dir = _library()
+    looks = _looks(opener)
+    try:
+        folder = _source(shows=SHOWS[:1])
+        _added(looks, folder)
+        _fresh(looks)
+        from tests.qt.test_window_sources import _subtitle
+        _subtitle(os.path.join(folder, SHOWS[0]), f"{SHOWS[0]} - 09.ja.srt", 9)
+        answers = []
+        assert looks.put_back(_backups(user_files_dir)[0], answers.append)
+        assert looks.idle(60)
+    finally:
+        looks.close()
+    assert answers[0]["done"]
+    assert any(r.endswith("09.ja.srt") for _t, r in _tiers(data_dir, user_files_dir)), "read by the look after"

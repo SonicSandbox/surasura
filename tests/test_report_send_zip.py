@@ -357,11 +357,12 @@ def test_a_mostly_utf8_log_with_a_stray_byte_never_hides_the_name_as_garbled_tex
     for view in (data.decode("utf-8"), data.decode("utf-8").encode(encoding, "replace").decode("utf-8", "replace")):
         assert probe_person.FOLDER not in view and "Zo" + "ë" not in view
     assert b"\\Users\\<you>\\Videos" in data
-    garbled = f"opened {world.home}".encode("utf-8").decode(encoding, "replace")      # what the old read sent
+    garbled = "opened C:\\Users\\Zoë Tanaka-Probe".encode("utf-8").decode(encoding, "replace")  # the old read
     bad = tmp_path / "bad.zip"
     with zipfile.ZipFile(bad, "w") as z:
         z.writestr("logs/mixed.log", garbled.encode("utf-8"))
-    assert scrub.leaks(str(bad), language=language) == ["logs/mixed.log"]       # the guard reads garbling back
+    ident = scrub.Identity(homes=["C:\\Users\\Zoë Tanaka-Probe"])           # (only the garbled name to find)
+    assert scrub.leaks(str(bad), ident, language) == ["logs/mixed.log"]     # the guard reads garbling back
 
 
 def test_an_anki_profile_set_up_after_the_window_opened_is_scrubbed(world, tmp_path):

@@ -75,6 +75,7 @@ def _settings_like(main, person):
     w["narrow"] = report_ui.ElidedLabel(f"{home}\\Videos\\葬送のフリーレン\\第01話.srt", other)
     w["mark"] = sc.StatusMark(True, f"Anki is open on the profile {probe_person.PROFILE}", parent=other)
     w["anime"] = QLabel("葬送のフリーレン 第01話", other)                   # a title: stays
+    w["folders"] = sc.Tablets(value=[f"{home}\\Videos\\アニメ", "D:\\Anime"], parent=other)   # Connect's video folders
     for x in w.values():
         other.body.addWidget(x)
     other.resize(700, 600)
@@ -134,6 +135,47 @@ def test_every_name_and_path_is_drawn_scrubbed_while_the_picture_is_taken(main, 
         assert all(_names_in(t, person) == [] for t in got["items"]) and "<you>" in got["items"][0]
         assert got["items"][1] == "D:\\Anime\\薬屋のひとりごと"            # a folder off home: a title, kept
         assert got["anime"] == "葬送のフリーレン 第01話"                   # titles stay (Sonic's call)
+        stands = [x for x in other.findChildren(QWidget)
+                  if x.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents) and x.isVisible()]
+        assert stands == []                                            # (gone after; their place checked below)
+    finally:
+        other.close()
+
+
+def test_painted_words_reach_the_painter_scrubbed_a_folder_list_included(main, person, monkeypatch):
+    # The adversary's 3: Settings' folder list (Connect's video folders) draws each folder as a tablet; every word a
+    # painter draws during the grab is caught here, and none holds the probe person.
+    from PyQt6.QtGui import QPainter
+    other, w = _settings_like(main, person)
+    try:
+        drawn, real = [], QPainter.drawText
+
+        def spy(self, *a):
+            drawn.append(str(a[-1]))
+            return real(self, *a)
+        monkeypatch.setattr(QPainter, "drawText", spy)
+        report_ui.take_pictures(main)
+        assert any("<you>" in d for d in drawn) and "D:\\Anime" in drawn            # the folders were painted
+        assert [d for d in drawn if _names_in(d, person)] == []
+    finally:
+        other.close()
+
+
+def test_each_stand_in_lies_exactly_over_its_field_and_on_top(main, person, monkeypatch):
+    other, w = _settings_like(main, person)
+    try:
+        def placed():
+            out = []
+            for field in (w["field"], w["log"], w["combo"]):
+                kin = [x for x in field.parentWidget().children() if isinstance(x, QWidget)]
+                stand = [x for x in kin if x is not field
+                         and x.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                         and x.geometry() == field.geometry() and x.isVisible()]
+                out.append(bool(stand) and kin.index(stand[0]) > kin.index(field))     # raised: drawn after it
+            return out
+        seen = _during_grab(monkeypatch, other, placed)
+        report_ui.take_pictures(main)
+        assert seen == [[True, True, True]]
     finally:
         other.close()
 
@@ -264,9 +306,6 @@ DRAWN = {
     ("rows.py", "cover", "ch"): "a character of that scrubbed title",
     ("search.py", "HitRow.paintEvent", "text"): "the parts of the title, scrubbed (`whole`) before it is cut",
     ("settings_controls.py", "paint_tick", "TICK"): "a constant mark",
-    ("settings_controls.py", "Choice.paintEvent", "label"): "an option's label (the code's own words)",
-    ("settings_controls.py", "Cards.paintEvent", "label"): "an option's label (the code's own words)",
-    ("settings_controls.py", "Tablets.paintEvent", "label"): "an option's label (the code's own words)",
     ("settings_controls.py", "Tablets.paintEvent", "CROSS"): "a constant mark",
     ("settings_controls.py", "LevelSlider.paintEvent", "name"): "a band's name",
     ("shell.py", "Wordmark.paintEvent", "first"): "the wordmark",

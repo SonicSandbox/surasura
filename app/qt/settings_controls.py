@@ -482,7 +482,7 @@ class Choice(_Control):
         p.setFont(_font("segmented"))
         for i, ((_v, label, _t), r) in enumerate(zip(self._options, rects)):
             p.setPen(self._ink(i == self._index))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, scrub.shown(label))
         if self.isEnabled():
             paint_vein(p, self._vein_rect(self.vein()))
         if self.hasFocus():
@@ -544,7 +544,7 @@ class Cards(Choice):
             p.setFont(bold_font)
             p.setPen(self._ink(chosen))
             p.drawText(QRectF(text.left(), text.top(), text.width(), bold.height()),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, scrub.shown(label))
             p.setFont(small_font)
             if not self.isEnabled():
                 p.setPen(_c(theme.SETTINGS_TEXT["greyed"]))
@@ -820,6 +820,7 @@ class Tablets(_Control):
         x = y = 0.0
         out = []
         for kind, key, label in self._entries():
+            label = scrub.shown(label)                  # (a folder list's items are paths: scrubbed in a picture)
             w = math.ceil(fm.horizontalAdvance(label) + 2 * pad + (cross_w if kind == "item" else 0) +
                           (tick_w if kind == "option" else 0))
             if x > 0 and width > 0 and x + w > width:
@@ -932,7 +933,7 @@ class Tablets(_Control):
             if kind == "bed":
                 paint_cut(p, r, radius)
                 p.setPen(self._ink(False))
-                p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+                p.drawText(r, Qt.AlignmentFlag.AlignCenter, scrub.shown(label))
             else:
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(_c("settings-tablet-on" if lit and enabled else "settings-tablet"))
@@ -941,7 +942,7 @@ class Tablets(_Control):
                 text = QRectF(r.left() + pad + tick, r.top(),
                               r.width() - 2 * pad - tick - (cross.width() if cross else 0), r.height())
                 p.setPen(self._ink(lit))
-                p.drawText(text, Qt.AlignmentFlag.AlignCenter, label)
+                p.drawText(text, Qt.AlignmentFlag.AlignCenter, scrub.shown(label))
                 if tick and lit:                        # Q31: a multi-pick's lit tablet, ticked
                     paint_tick(p, QRectF(r.left() + pad, r.top(), fm.horizontalAdvance(TICK), r.height()),
                                self._ink(True))

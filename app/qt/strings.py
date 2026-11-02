@@ -1568,6 +1568,7 @@ REPORT_GOES_BACK_TIP = "Back to your list. Nothing is sent"
 REPORT_SENDING = "Sending… {size}"
 REPORT_SENT_ID = "Sent. Your report is #{id}"
 REPORT_COPY = "Copy"
+REPORT_ID = "#{id}"                                              # a sent report's #ID, as copied
 REPORT_COPY_TIP = "Copy #{id}, to quote it on Discord"
 REPORT_COPIED = "Copied #{id}"
 REPORT_INVITE = "Join us on Discord to follow it"

@@ -675,3 +675,119 @@ def test_the_invite_and_issues_links_are_the_ones_checked():
     assert settings_strings.LINK_URLS["discord"] == settings_strings.DISCORD_URL
     assert settings_strings.LINK_URLS["website"] == settings_strings.WEBSITE_URL
     assert settings_strings.ISSUES_URL == "https://github.com/SonicSandbox/surasura/issues"
+
+
+# --- the review's round (tracks/window/reviews/send-report-adversary.md) ------------------------------------------- #
+def test_esc_while_the_report_is_made_keeps_nothing_waiting_and_sends_nothing(main, receiver, monkeypatch):
+    # The adversary's 1: closed before What goes, the zip it made is deleted — never offered as "waiting" to Send now.
+    import threading
+    from app import send_report
+    gate = threading.Event()
+    real = send_report.build
+
+    def slow(*a, **k):
+        gate.wait(10)
+        return real(*a, **k)
+    monkeypatch.setattr(send_report, "build", slow)
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.send_button.click()
+    QTest.keyClick(w, Qt.Key.Key_Escape)
+    assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
+    gate.set()
+    assert wait_until(lambda: not any(t.name == "report-discard" for t in threading.enumerate()) and _outbox_empty())
+    w = _press(main)
+    assert wait_until(lambda: w.sender_line.text() != "")
+    assert w.waiting_line.isHidden() and receiver.got == [] and len(core.listed()) == 1
+
+
+def test_a_refused_press_never_deletes_a_report_already_waiting(main, receiver, monkeypatch):
+    # The adversary's 6a: the 6th send of a day makes nothing; a zip already waiting from a failed send stays.
+    import datetime
+    import json
+    from app import path_utils, send_report
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.close()
+    ob = send_report.build(windows.language_of(main), include_results=False)
+    with open(os.path.join(path_utils.get_persistent_user_data_path(), send_report.STATE_FILE), "w",
+              encoding="utf-8") as f:
+        json.dump({"day": datetime.datetime.now().astimezone().date().isoformat(), "sent": 5}, f)
+    w = _press(main)
+    w.send_button.click()
+    QTest.keyClick(w, Qt.Key.Key_Escape)                               # closed before the answer, too
+    assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
+    for _ in range(30):
+        QApplication.processEvents()
+    assert send_report.waiting() is not None and send_report.waiting().sha256 == ob.sha256
+
+
+def test_a_cleared_discord_name_stays_cleared_and_what_goes_says_what_goes(main, receiver):
+    # The adversary's 2: the remembered name filled once, never again over the tester's edit; while What goes is up
+    # the name can't change, so the page's "No Discord name" is what is sent.
+    from app import send_report
+    send_report.remember_name("yuki0429")
+    w = _press(main)
+    assert wait_until(lambda: w.name_field.text() == "yuki0429")
+    w.name_field.setFocus()
+    w.name_field.selectAll()
+    QTest.keyClick(w.name_field, Qt.Key.Key_Backspace)                 # the tester clears it
+    _save(w, ZH_WHAT)
+    _look(w)
+    assert w.goes_name.text() == strings.REPORT_GOES_NO_NAME
+    assert not w.name_field.isEnabled() and not w.send_button.isEnabled() and not w.zip_button.isEnabled()
+    for _ in range(30):
+        QApplication.processEvents()
+    assert w.name_field.text() == ""                                   # no read filled it back
+    w.goes_send.click()
+    assert wait_until(lambda: len(receiver.got) == 1, 15)
+    assert "x-discord-name" not in {k.lower() for k in receiver.got[0]["headers"]}
+    assert wait_until(lambda: w.pages.currentIndex() == w.FORM and w.name_field.isEnabled())
+
+
+def test_back_puts_the_row_back_and_the_code_on_the_page_is_the_one_sent(main, receiver):
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    shown = w.goes_sender.text().rsplit(" ", 1)[1]
+    assert not w.new_code_button.isEnabled()                           # the code that goes can't change under it
+    w.goes_send.click()
+    assert wait_until(lambda: len(receiver.got) == 1, 15)
+    assert {k.lower(): v for k, v in receiver.got[0]["headers"].items()}["x-report-sender"] == shown
+    assert wait_until(lambda: w.new_code_button.isEnabled() and w.send_button.isEnabled() is False)   # (list empty)
+
+
+def test_what_goes_shows_the_pictures_at_the_pages_width(main, receiver):
+    # The adversary's 4: at full width, the tester's eyes being the only check on a picture.
+    from app import scrub
+    scrub.identity()
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.resize(760, 900)
+    _look(w)
+    shown = [w.goes_pictures.itemAt(i).widget() for i in range(w.goes_pictures.count())]
+    assert shown, "a scrubbed picture goes and is shown"
+    room = w.goes_scroll.viewport().width()
+    for label in shown:
+        pm = label.pixmap()
+        assert pm.width() / pm.devicePixelRatio() >= min(room - 30, main.width() - 2), (pm.width(), room)
+
+
+def test_another_windows_newer_report_is_never_deleted_by_a_late_close(main, receiver):
+    # The adversary's 6b: a delete only of the zip this window showed.
+    from app import send_report
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    shown = w.outbox.sha256
+    _save(w, ZH_WHAT)                                                  # (another report: the next build differs)
+    newer = send_report.build(windows.language_of(main), include_results=False)
+    assert newer.sha256 != shown
+    w.close()
+    for _ in range(30):
+        QApplication.processEvents()
+    import threading
+    for t in threading.enumerate():
+        if t.name == "report-discard":
+            t.join(5)
+    assert send_report.waiting() is not None and send_report.waiting().sha256 == newer.sha256

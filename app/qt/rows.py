@@ -1070,7 +1070,7 @@ class RowDelegate(QStyledItemDelegate):
         name = "ep" if kind == "ep" else "row"
         cache, kept = self._sprites[name], EPISODES_KEPT if kind == "ep" else SPRITES_KEPT
         key = (kind, payload.key if ident is None else ident, size.width(), size.height(), dpr, style.current(),
-               hovered, extra)
+               hovered, extra, scrub.drawing())        # (a picture being taken: its own, scrubbed)
         hit = cache.get(key)
         if hit is not None and (hit[0] is payload or _same_face(hit[0], payload, kind)):
             if hit[0] is not payload:

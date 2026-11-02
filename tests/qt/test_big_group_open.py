@@ -163,19 +163,23 @@ def test_the_hand_over_an_opened_300_part_group_finds_what_every_part_scanned_wo
 
 def test_the_hand_moving_over_the_group_works_out_its_own_line_never_every_seams_tip(opened, monkeypatch):
     """Each ✂ seam's tip says the rest of the row from it (`_rest_of`, a walk to the row's end): a move over a 300-part
-    group worked out 300 of them (O(n²), 5.65 ms a move at 336 parts). Now one or two, the seams by the hand's line."""
+    group worked out 300 of them (O(n²), 5.65 ms a move at 336 parts) and every line's buttons. Now the seams and the
+    buttons by the hand's line alone."""
     view, row = _group()
     lst, i = opened(view, row.key, whole=True)
-    walked = []
-    real = rows._rest_of
+    walked, laid = [], []
+    real, real_cols = rows._rest_of, rows.RowDelegate._episode_cols
     monkeypatch.setattr(rows, "_rest_of", lambda r, k: (walked.append(k), real(r, k))[1])
     lines = lst.delegate.episode_lines(lst.model().entries[i], _rect(lst, i))
+    monkeypatch.setattr(rows.RowDelegate, "_episode_cols", lambda self, r: (laid.append(r), real_cols(self, r))[1])
     on_screen = [r for r, _item in lines if lst.viewport().rect().contains(r.center())]
     assert len(on_screen) > 10
     for r in on_screen:
         walked.clear()
+        laid.clear()
         lst.part_at(r.center())
         assert len(walked) <= 2, len(walked)
+        assert len(laid) <= 3, len(laid)                                     # its line's buttons, not every line's
 
 
 def test_the_seam_under_the_hand_is_outlined_where_the_full_scan_puts_it(opened, monkeypatch):

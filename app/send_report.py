@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import threading
+import urllib.parse
 
 from app import __version__, path_utils, report, telemetry
 
@@ -218,7 +219,9 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
             except FileNotFoundError:
                 pass
             raise
-        meta = {"nonce": secrets.token_hex(16), "sha256": digest, "size": size, "language": language,
+        was = waiting()                                              # the same reports again: the same nonce, so a
+        same = was is not None and was.zipped == made.zipped and was.removed == made.removed   # sent one keeps its #ID
+        meta = {"nonce": was.nonce if same else secrets.token_hex(16), "sha256": digest, "size": size, "language": language,
                 "created": (now or datetime.datetime.now().astimezone()).isoformat(timespec="seconds"),
                 "zipped": made.zipped, "removed": made.removed, "left_out": made.left_out, "entries": made.entries}
         try:
@@ -261,6 +264,13 @@ def headers(ob, name="", sender=None):
     return out
 
 
+def _endpoint(receiver):
+    """`<receiver's origin>/report`: a kept address with a path (the heartbeat's /hb) or a query names the same
+    Worker."""
+    parts = urllib.parse.urlsplit(receiver)
+    return f"{parts.scheme}://{parts.netloc}/report"
+
+
 def _outcome(status):
     if status == 413:
         return TOO_BIG
@@ -273,15 +283,16 @@ def _outcome(status):
     return REFUSED
 
 
-def send(name="", url=None, root=None, now=None):
+def send(name="", url=None, root=None, now=None, nonce=None):
     """*Send* (the What goes page's) or *Send now*: the waiting zip to the receiver, once. `name`: the Discord name in
-    the field as pressed (remembered; empty forgets it). The 6th send of a day is refused before any request. Raises
-    ValueError when nothing is waiting. -> a Result."""
+    the field as pressed (remembered; empty forgets it); `nonce`: the Outbox the page showed (another one waiting
+    instead is never sent). The 6th send of a day is refused before any request. Raises ValueError when nothing (or
+    another zip) is waiting. -> a Result."""
     import requests
     with _BUSY:
         ob = waiting()
-        if ob is None:
-            raise ValueError("no report is waiting to be sent")
+        if ob is None or (nonce is not None and ob.nonce != nonce):
+            raise ValueError("no report is waiting to be sent" if ob is None else "another report is waiting now")
         name = _clean_name(name)
         remember_name(name)
         if sent_today(now) >= PER_DAY:
@@ -291,7 +302,7 @@ def send(name="", url=None, root=None, now=None):
         if hashlib.sha256(body).hexdigest() != ob.sha256:
             raise ValueError("the waiting zip changed since it was made")
         try:
-            got = requests.post((url or telemetry.report_receiver(env())).rstrip("/") + "/report", data=body,
+            got = requests.post(_endpoint(url or telemetry.report_receiver(env())), data=body,
                                 headers=headers(ob, name), timeout=TIMEOUT, allow_redirects=False)
         except requests.RequestException:
             return Result(OFFLINE)

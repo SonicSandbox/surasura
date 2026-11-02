@@ -431,3 +431,36 @@ def test_a_redirect_is_never_followed_with_the_zip(saved, receiver):
         assert other.got == [] and send_report.waiting() is not None
     finally:
         other.close()
+
+
+# --- the review's findings (register 2026-11-01) ------------------------------------------------------------------ #
+def test_pressing_send_report_again_for_the_same_reports_keeps_the_nonce(saved, receiver):
+    """A send that timed out after the Worker kept it, then a fresh press: the same nonce, so the same #ID."""
+    first = send_report.build("ja")
+    again = send_report.build("ja")
+    assert again.nonce == first.nonce
+    report.save("もう一つ", "")
+    assert send_report.build("ja").nonce != first.nonce                       # other reports: another report
+
+
+def test_send_sends_only_the_zip_the_page_showed(saved, receiver):
+    shown = send_report.build("ja")
+    report.save("もう一つ", "")
+    send_report.build("ja")                                                    # replaced meanwhile
+    with pytest.raises(ValueError):
+        send_report.send(nonce=shown.nonce)
+    assert receiver.got == []
+    assert send_report.send(nonce=send_report.waiting().nonce).outcome == send_report.SENT
+
+
+@pytest.mark.parametrize("kept", ["https://surasura-telemetry.example/hb", "https://surasura-telemetry.example/?x=1",
+                                  "https://surasura-telemetry.example/"])
+def test_the_request_goes_to_the_receivers_origin(kept):
+    assert send_report._endpoint(kept) == "https://surasura-telemetry.example/report"
+
+
+def test_a_name_whose_base64_would_pad_goes_unpadded(saved, receiver):
+    send_report.build("ja")
+    send_report.send(name="ぞえ_probe1")                                        # 13 bytes: base64 would end ==
+    sent = receiver.got[0]["headers"]["X-Discord-Name"]
+    assert "=" not in sent and base64.urlsafe_b64decode(sent + "==").decode("utf-8") == "ぞえ_probe1"

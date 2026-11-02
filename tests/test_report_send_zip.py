@@ -259,7 +259,7 @@ def test_show_me_names_the_files_as_the_zip_will_hold_them(world, tmp_path):
     run = os.path.join(os.path.dirname(ledger.path()), "runs", f"{probe_person.FOLDER}-run", "result.json")
     _write(run, b'{"state": "done"}')
     words = report.describe(report.plan("ja", library=world.library))
-    assert "anki-miner/<you>-run/result.json" in words
+    assert "anki-miner/(you)-run/result.json" in words
     assert probe_person.FOLDER not in words and not scrub.found(words)
 
 
@@ -326,3 +326,75 @@ def test_an_error_naming_a_path_is_scrubbed_in_the_zips_list_and_in_show_me(worl
     report.save("もう一つ", "")
     words = report.describe(report.plan("ja"))
     assert "logs: couldn't be listed" in words and probe_person.FOLDER not in words and not scrub.found(words)
+
+
+# --- the review's findings (register 2026-11-01) ------------------------------------------------------------------ #
+def _open_report_accepts(name):
+    """open_report's name rules (the Worker's tree): no control character or `<>:"|?*`, a known suffix."""
+    import re
+    return not re.search(r'[\x00-\x1f<>:"|?*]', name) and bool(
+        name == "MANIFEST.txt" or re.search(r"\.(txt|log|json|jsonl|csv|png)(\.(\d{1,3}|old))?$", name, re.I))
+
+
+def test_a_scrubbed_entry_name_is_one_open_report_and_windows_accept(world, tmp_path):
+    from app.connect import ledger
+    for run in (f"{probe_person.FOLDER}-run", f"{probe_person.ACCOUNT}-run"):    # two names the scrub makes one
+        _write(os.path.join(os.path.dirname(ledger.path()), "runs", run, "result.json"), b'{"state": "done"}')
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "ja", library=world.library)
+    names = list(_entries(made.path))
+    assert "anki-miner/(you)-run/result.json" in names and "anki-miner/(you)-run/result-2.json" in names
+    assert all(_open_report_accepts(n) for n in names), [n for n in names if not _open_report_accepts(n)]
+
+
+@pytest.mark.parametrize("language, encoding", [("ja", "cp932"), ("zh", "gb18030")])
+def test_a_mostly_utf8_log_with_a_stray_byte_never_hides_the_name_as_garbled_text(world, tmp_path, language,
+                                                                                    encoding):
+    """One byte that isn't UTF-8 made the whole file read as CP932 / GB18030, garbling a UTF-8 Zoë past the scrub."""
+    logs = os.path.join(path_utils.get_local_data_path(), "logs")
+    _write(os.path.join(logs, "mixed.log"), f"opened {world.home}\\Videos\n".encode("utf-8") + b"stderr: \x81\x40 ok\n")
+    made = report.make_send_zip(str(tmp_path / "send.zip"), language, library=world.library)
+    data = _entries(made.path)["logs/mixed.log"]
+    for view in (data.decode("utf-8"), data.decode("utf-8").encode(encoding, "replace").decode("utf-8", "replace")):
+        assert probe_person.FOLDER not in view and "Zo" + "ë" not in view
+    assert b"\\Users\\<you>\\Videos" in data
+    garbled = f"opened {world.home}".encode("utf-8").decode(encoding, "replace")      # what the old read sent
+    bad = tmp_path / "bad.zip"
+    with zipfile.ZipFile(bad, "w") as z:
+        z.writestr("logs/mixed.log", garbled.encode("utf-8"))
+    assert scrub.leaks(str(bad), language=language) == ["logs/mixed.log"]       # the guard reads garbling back
+
+
+def test_an_anki_profile_set_up_after_the_window_opened_is_scrubbed(world, tmp_path):
+    scrub.identity()                                                             # the window opened
+    _write(os.path.join(os.environ["APPDATA"], "Anki2", "Kenji", "collection.anki2"), b"")
+    path_utils.write_app_log("connect: Anki is open on the profile Kenji")
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "ja", library=world.library)
+    log = _entries(made.path)["logs/app_debug_log.txt"].decode("utf-8")
+    assert "Kenji" not in log and "<anki profile" in log
+
+
+def test_a_line_added_while_the_zip_is_written_is_scrubbed_in_what_goes_too(world, tmp_path, monkeypatch):
+    real = report._read_shared
+
+    def held(path):
+        if path.endswith("chore.log"):
+            raise PermissionError(f"[WinError 32] in use: '{path}'")
+        return real(path)
+    monkeypatch.setattr(report, "_read_shared", held)
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "ja", library=world.library)
+    assert any("chore.log: couldn't be read" in x for x in made.left_out)
+    assert not any(probe_person.FOLDER in x for x in made.left_out)
+
+
+def test_a_crash_padded_log_is_read_without_its_nuls(world, tmp_path):
+    logs = os.path.join(path_utils.get_local_data_path(), "logs")
+    _write(os.path.join(logs, "crashed.log"), f"Traceback in {world.home}\n".encode("utf-8") + b"\x00" * 4096)
+    made = report.make_send_zip(str(tmp_path / "send.zip"), "ja", library=world.library)
+    data = _entries(made.path)["logs/crashed.log"]
+    assert data.startswith(b"Traceback in ") and b"\x00" not in data and probe_person.FOLDER.encode() not in data
+
+
+def test_a_log_cut_with_no_whole_line_starts_at_a_whole_character():
+    data = ("あ" * 4000).encode("utf-8")
+    cut = report._tail(data, 1001)                                               # 1001 is no multiple of 3
+    assert cut.decode("utf-8") == "あ" * (len(cut) // 3)

@@ -650,9 +650,9 @@ def plan(language, include_results=True, library=None, root=None, extra=None, re
         p.left_out.append(f"results\\: left out ({results_why or 'Include my last lists was unticked'})")
     p.left_out.append("never taken: your subtitle and book files, Anki's cards, keys and tokens, the library's "
                       "database; Connect's titles and words and Anki Miner's sentences are counted, never copied")
-    ident = scrubbing.identity()                                   # every name and line as the zip will hold it
+    ident = scrubbing.identity(fresh=True)                         # every name and line as the zip will hold it
     for e in p.entries:
-        e.name = ident.scrub(e.name)
+        e.name = scrubbing.name(e.name, ident)
     p.left_out = [ident.scrub(x) for x in p.left_out]
     return p
 
@@ -736,17 +736,19 @@ def _entry_bytes(e, data, language, send, ident):
     page = low.endswith((".html", ".htm"))
     if send and (page or not SEND_TEXT.search(low)):
         return None, LEFT_PAGE if page else LEFT_KIND
-    text = scrubbing.decode(data, language)
-    if text is None:
+    out = scrubbing.clean(data, language, ident)
+    if out is None:
         return (None, LEFT_UNREAD) if send else (data, NOT_CHECKED)
-    return ident.scrub(text).encode("utf-8"), (NOT_CHECKED if page else None)
+    return out, (NOT_CHECKED if page else None)
 
 
 def _tail(data, tail):
     """A log's last `tail` bytes, from its first whole line."""
     cut = data[-tail:]
     at = cut.find(b"\n")
-    return cut[at + 1:] if 0 <= at < len(cut) - 1 else cut
+    if 0 <= at < len(cut) - 1:
+        return cut[at + 1:]
+    return cut.lstrip(bytes(range(0x80, 0xC0)))                      # no whole line: from a whole character
 
 
 def _write(p, part, language, send=False, tail=None, ident=None, found=None):
@@ -778,8 +780,9 @@ def _write(p, part, language, send=False, tail=None, ident=None, found=None):
                 data = _tail(data, tail)
                 p.left_out.append(f"{e.name}: only its last {_mb(tail)} (to keep the report small enough to send)")
             name, n = e.name, 2
-            while name in names:                                     # two names the scrub made one
-                name, n = f"{e.name}-{n}", n + 1
+            while name in names:                                     # two names the scrub made one: x-2.log
+                stem, dot, ext = e.name.rpartition(".")
+                name, n = (f"{stem}-{n}.{ext}" if dot and "/" not in ext else f"{e.name}-{n}"), n + 1
             e.name = name
             names.add(name)
             if note:
@@ -788,6 +791,7 @@ def _write(p, part, language, send=False, tail=None, ident=None, found=None):
             hashes[name] = hashlib.sha256(data).hexdigest()
             z.writestr(name, data)
     p.entries = [e for e in p.entries if e.name in hashes]
+    p.left_out = [ident.scrub(x) for x in p.left_out]                # (a line added here may quote a path)
     hits = [] if send else scrubbing.leaks(part, ident, language)
     p.flagged = [h for h in hits if h not in p.unchecked]
     with zipfile.ZipFile(part, "a", zipfile.ZIP_DEFLATED) as z:

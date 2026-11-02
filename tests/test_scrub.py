@@ -516,3 +516,110 @@ def test_each_install_key_source_is_its_own(probe, monkeypatch, missing):
     monkeypatch.setattr(owner, missing, broken)
     got = set(scrub.read_identity().keys)
     assert got and got < want                   # (a library's key is in its bell's database name: both go with it)
+
+
+@pytest.mark.parametrize("written, scrubbed", [
+    (r"C:\Users\z\Videos", r"C:\Users\<you>\Videos"),
+    ("C:\\Users\\z\\Videos", "C:\\Users\\<you>\\Videos"),                 # JSON: a run of backslashes
+    ("C:%5CUsers%5Cz%5CVideos", "C:%5CUsers%5C<you>%5CVideos"),
+    ("C:%5cUsers%5cz%5cVideos", "C:%5cUsers%5c<you>%5cVideos"),
+    ("C:\x5cUsers\x5cz\x5cVideos", "C:\x5cUsers\x5c<you>\x5cVideos"),
+    ("C:\u005cUsers\u005cz\u005cVideos", "C:\u005cUsers\u005c<you>\u005cVideos"),
+    ("C:%2FUsers%2Fz%2FVideos", "C:%2FUsers%2F<you>%2FVideos"),
+    ("/c/Users/z/Videos", "/c/Users/<you>/Videos"),                                   # Git Bash
+    ("file:///C:/Users/z/Videos", "file:///C:/Users/<you>/Videos"),
+])
+def test_a_one_letter_home_is_found_through_every_separator_and_drive_form(written, scrubbed):
+    """A one-letter name is no user name of its own: only the home's pattern (its separators, its drive) finds it."""
+    ident = scrub.Identity(homes=[r"C:\Users\z"])
+    assert ident.users == []
+    assert ident.scrub(written) == scrubbed
+    assert ident.scrub("a z alone") == "a z alone"
+
+
+def test_the_longer_home_is_tried_first_so_a_home_inside_another_is_found_whole():
+    ident = scrub.Identity(homes=[r"C:\Users\michaelx", r"C:\Users\michaelx\Temp\Users\z"])
+    assert ident.scrub(r"C:\Users\michaelx\Temp\Users\z\a.srt") == r"C:\Users\<you>\Temp\Users\<you>\a.srt"
+
+
+def test_a_redirected_home_drive_is_a_home_beside_the_profile(monkeypatch, tmp_path):
+    """HOMEDRIVE + HOMEPATH can name a network home apart from USERPROFILE: both are homes."""
+    _only(monkeypatch, tmp_path, USERPROFILE=r"C:\Users\zlocal", HOMEDRIVE="H:", HOMEPATH=r"\Profiles\zoeprobe")
+    homes = {os.path.normcase(h) for h in scrub.read_identity().homes}
+    assert {os.path.normcase(r"C:\Users\zlocal"), os.path.normcase(r"H:\Profiles\zoeprobe")} <= homes
+
+
+def test_a_new_test_root_is_a_new_identity(monkeypatch, tmp_path):
+    """The cache is per test root: another root's install keys are other keys (a test never scrubs with the last's)."""
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(tmp_path / "a"))
+    first = scrub.identity()
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(tmp_path / "b"))
+    second = scrub.identity()
+    assert second is not first and path_utils.install_key() in second.keys and set(first.keys) != set(second.keys)
+
+
+@pytest.mark.parametrize("raw", [codecs.BOM_UTF8 + b"log\x00line", codecs.BOM_UTF16_LE + "a\x00b".encode("utf-16-le"),
+                                 "ab\x00\x00cd".encode("utf-16-le")])
+def test_text_holding_a_nul_is_not_text(raw):
+    assert scrub.decode(raw, "ja") is None
+
+
+def test_an_anki_profile_named_like_a_deck_word_keeps_the_deck_names():
+    ident = scrub.Identity(profiles=["Japanese", "Mining"])
+    decks = '"decks": ["Japanese::Core 2k", "日本語::Mining"]'
+    assert ident.scrub(decks) == decks
+    assert ident.scrub("Anki is open on the profile Japanese") == "Anki is open on the profile <anki profile 1>"
+
+
+def test_a_folder_starting_with_an_escape_letter_is_no_escape():
+    ident = scrub.Identity(users=["ed"])
+    assert ident.scrub(r"D:\Anime\Ted Lasso\ep1.mkv and \\Ted") == r"D:\Anime\Ted Lasso\ep1.mkv and \\Ted"
+    assert ident.scrub("x\\ted") == "x\\t<you>"                                     # \t (a tab's escape) is a gap
+
+
+@pytest.mark.parametrize("written", ["mailto:zoe.probe%40example.co.jp", '"zoe.probe\\u0040example.co.jp"',
+                                     "zoe.probe\\x40example.co.jp"])
+def test_an_escaped_at_still_makes_an_email(written):
+    out = person().scrub(written)
+    assert "<email>" in out and "example" not in out
+
+
+def test_an_entra_id_sid_is_a_sid():
+    assert person().scrub(r"C:\$Recycle.Bin\S-1-12-1-1234567890-1234567890-1234567890-1234567890\x") == \
+        r"C:\$Recycle.Bin\<sid>\x"
+
+
+def test_onedrive_personal_is_no_organisation(monkeypatch, tmp_path):
+    home = tmp_path / "Users" / "zoe"
+    (home / "OneDrive - Personal").mkdir(parents=True)
+    (home / "OneDrive - Probe Org").mkdir()
+    _only(monkeypatch, tmp_path, USERPROFILE=str(home))
+    assert scrub.read_identity().orgs == ["Probe Org"]
+
+
+def test_a_picture_with_bytes_after_its_end_or_an_unknown_chunk_is_not_checked(tmp_path):
+    png = _png()
+    odd_chunk = struct.pack(">I", 3) + b"zzZz" + b"abc" + b"\x00" * 4
+    for bad in (png + "C:\\Users\\Zoë".encode("utf-8"), png[:-12] + odd_chunk + png[-12:]):
+        assert scrub.leaks(_zip(tmp_path, {"reports/a/picture-1.png": bad}), person()) == ["reports/a/picture-1.png"]
+
+
+def test_png_text_alone_is_read(tmp_path):
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+           + chunk(b"tEXt", b"Comment\x00ztanprobe") + chunk(b"IEND", b""))
+    assert scrub.leaks(_zip(tmp_path, {"reports/a/picture-1.png": png}), person()) == ["reports/a/picture-1.png"]
+
+
+def test_utf16_big_endian_without_a_bom_is_read_as_big_endian():
+    assert scrub.decode("error at C:\\x".encode("utf-16-be")) == "error at C:\\x"
+
+
+def test_picture_mode_never_uses_another_test_roots_identity(monkeypatch, tmp_path):
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(tmp_path / "a"))
+    scrub.reset(person())
+    monkeypatch.setenv("SURASURA_TEST_ROOT", str(tmp_path / "b"))
+    assert not scrub.ready()
+    with scrub.picture_mode():
+        assert scrub.shown(r"C:\Users\Zoë Tanaka-Probe") == r"C:\Users\Zoë Tanaka-Probe"

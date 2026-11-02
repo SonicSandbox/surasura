@@ -49,17 +49,28 @@ YOU, PC, ORG, KEY, TELEMETRY, EMAIL, SID = ("<you>", "<pc>", "<org>", "<install 
 PROFILE = "<anki profile {n}>"
 ANKI_DEFAULT = "User 1"                     # Anki's own first profile: names no one
 ANKI_MINER_DEFAULT = "Surasura"             # connect_anki_miner_profile's default (app/connect/anki_miner.py)
-_PLACEHOLDER = re.compile(r"<(?:you|pc|org|install key|telemetry id|email|sid|anki profile \d+)>")
-_EMAIL = r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"
-_SID = r"S-1-5-21(?:-\d+){3,4}"
-# a gap before a whole word: no ASCII letter or digit, or the end of an escape (`%20`, `\n`, `\xe9`, `\u00e9`)
-_BEFORE = (r"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{2})|(?<=\\[nrtbfav])|(?<=\\x[0-9A-Fa-f]{2})"
+_PLACEHOLDER = re.compile(r"<(?:you|pc|org|install key|telemetry id|email|sid|anki profile \d+)>"
+                          r"|\((?:you|pc|org|install key|telemetry id|email|sid|anki profile \d+)\)")
+_EMAIL = r"[\w.+-]+(?:@|%40|\\u0040|\\x40)[\w-]+(?:\.[\w-]+)+"            # (and its escaped @)
+_SID = r"S-1-(?:5-21|12-1)(?:-\d+){3,4}"                                   # a local / domain account, an Entra ID one
+_SIDS = ("s-1-5-21", "s-1-12-1")
+_ATS = ("@", "%40", "\\u0040", "\\x40")
+# a gap before a whole word: no ASCII letter or digit, or the end of an escape (`%20`, `\n`, `\xe9`, `\u00e9`); a
+# backslash-letter only in its own case (`\T` in `\Ted Lasso` is a folder's T, `\t` a tab)
+_BEFORE = (r"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{2})|(?-i:(?<=\\[nrtbfav]))|(?<=\\x[0-9A-Fa-f]{2})"
            r"|(?<=\\u[0-9A-Fa-f]{4})|(?<=\\U[0-9A-Fa-f]{8}))")
+# an Anki profile is never replaced against a deck's `::` (a profile named `Japanese` keeps `Japanese::Mining`)
+_NOT_DECK = (r"(?<!::)", r"(?!::)")
+_NOT_ORGS = {"personal"}            # `OneDrive - Personal`: the consumer folder beside a business one, no organisation
 _AFTER = r"(?![A-Za-z0-9])"
 _SEP = r"(?:\\x5c|\\u005c|%5c|%2f|\\+|/+)"
 _WORD = re.compile(r"[A-Za-z0-9]+")
 _LOCK_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 _ESCAPE = re.compile(r"\\x[0-9a-fA-F]{2}|%[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}")
+_NUL_RUN = re.compile(rb"\x00{4,}")
+# the PNG chunks a picture may hold (what Qt writes, and the text ones the guard reads)
+_PNG_KINDS = {b"IHDR", b"PLTE", b"IDAT", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"iCCP", b"sBIT", b"pHYs", b"bKGD",
+              b"tIME", b"tEXt", b"zTXt", b"iTXt"}
 
 
 # --- every form a string can be written in ---------------------------------------------------------------------- #
@@ -184,8 +195,8 @@ class _Matcher:
         low = s.casefold()
         homes = tuple(i for i, (_src, lasts) in enumerate(self.homes) if any(f in low for f in lasts))
         lits = tuple(i for i, (f, _p, _c, _w) in enumerate(self.literals) if f.casefold() in low)
-        email = "@" in s
-        sid = "s-1-5-21" in low
+        email = any(a in low for a in _ATS)
+        sid = any(x in low for x in _SIDS)
         if not (homes or lits or email or sid):
             return None
         key = (homes, lits, email, sid)
@@ -202,7 +213,7 @@ class _Matcher:
                     f, _p, case, whole = self.literals[i]
                     one = re.escape(f)
                     if case:
-                        one = f"(?-i:{one})"
+                        one = f"{_NOT_DECK[0]}(?-i:{one}){_NOT_DECK[1]}"
                     alts.append(f"{_BEFORE}{one}{_AFTER}" if whole else one)
                 parts.append("(?P<lit>" + "|".join(alts) + ")")
             rx = re.compile("|".join(parts), re.IGNORECASE)
@@ -330,7 +341,8 @@ def _orgs(homes):
     seen = [os.environ.get(n) for n in ("OneDriveCommercial", "OneDrive", "OneDriveConsumer")]
     for h in homes:
         seen += _quiet(lambda h=h: os.listdir(h)) if os.path.isdir(h) else []
-    return [m.group(1) for m in (org.match(_last_part(s or "")) for s in seen) if m]
+    return [m.group(1) for m in (org.match(_last_part(s or "")) for s in seen)
+            if m and m.group(1).strip().casefold() not in _NOT_ORGS]
 
 
 def _anki_folder():
@@ -406,20 +418,26 @@ _CACHING = threading.Lock()
 _PICTURES = False
 
 
-def identity():
-    """This PC's Identity, worked out once for the session (on the caller's thread when `prepare`'s worker hasn't
-    yet: a zip is built on a worker)."""
+def identity(fresh=False):
+    """This PC's Identity, kept for the window's pictures (`shown`). `fresh` (every zip, on its worker): read again
+    now, so an Anki profile or Connect setup made since the window opened is known too."""
     global _CACHED, _CACHED_ROOT
     with _CACHING:
         root = os.environ.get("SURASURA_TEST_ROOT")                 # (a test's own folders: its own keys)
-        if _CACHED is None or root != _CACHED_ROOT:
+        if fresh or _CACHED is None or root != _CACHED_ROOT:
             _CACHED, _CACHED_ROOT = read_identity(), root
         return _CACHED
 
 
+def _current():
+    """The kept Identity when it is this test root's (else None): never read here."""
+    got = _CACHED
+    return got if got is not None and _CACHED_ROOT == os.environ.get("SURASURA_TEST_ROOT") else None
+
+
 def prepare():
     """Work the Identity out on a worker (the report window, as it opens). -> the thread, or None when ready."""
-    if _CACHED is not None:
+    if _current() is not None:
         return None
     t = threading.Thread(target=lambda: identity().matcher(), name="scrub-identity", daemon=True)
     t.start()
@@ -427,7 +445,7 @@ def prepare():
 
 
 def ready():
-    return _CACHED is not None
+    return _current() is not None
 
 
 def reset(ident=None):
@@ -435,6 +453,12 @@ def reset(ident=None):
     global _CACHED, _CACHED_ROOT
     with _CACHING:
         _CACHED, _CACHED_ROOT = ident, os.environ.get("SURASURA_TEST_ROOT")
+
+
+def name(s, ident=None):
+    """A zip entry's name scrubbed, its placeholders written `(you)`: a file name may not hold `<` or `>` (Windows
+    can't extract it; open_report refuses it)."""
+    return re.sub(r"<([a-z0-9 ]+)>", r"(\1)", (ident or identity()).scrub(s))
 
 
 def text(s, ident=None):
@@ -460,9 +484,8 @@ def picture_mode():
 
 def shown(s):
     """What a painted widget draws: `s` scrubbed while a picture is taken (never waiting for the Identity), else `s`."""
-    if not _PICTURES or _CACHED is None or not isinstance(s, str):
-        return s
-    return _CACHED.scrub(s)
+    ident = _current() if _PICTURES and isinstance(s, str) else None
+    return s if ident is None else ident.scrub(s)
 
 
 # --- reading an entry as text ----------------------------------------------------------------------------------- #
@@ -471,6 +494,10 @@ def decode(raw, language=None):
     as UTF-16 (LE or BE by where the NULs sit; BOM-less UTF-16 is valid UTF-8 full of NULs), never a text with a NUL
     in it; else UTF-8, then CP932 (ja) / GB18030, cp950 (zh) — `path_utils`' order. Line ends are kept."""
     from app import path_utils
+    if b"\x00\x00\x00\x00" in raw and not path_utils._bom_encoding(raw):
+        padded = _NUL_RUN.sub(b"", raw)                              # a log a crash left NUL-padded: its text
+        if b"\x00" not in padded:
+            raw = padded
     if path_utils._bom_encoding(raw):
         text = path_utils._decoding(raw, language)[0]
     elif b"\x00" in raw:
@@ -486,6 +513,33 @@ def decode(raw, language=None):
     if text is None or "\x00" in text:
         return None
     return text
+
+
+def clean(raw, language=None, ident=None):
+    """A text entry's bytes scrubbed -> UTF-8 bytes, or None when they aren't text (`decode`). Bytes that aren't
+    UTF-8 whole are scrubbed as UTF-8 first (each undecodable byte kept as it is), then read in the language's
+    encoding and scrubbed again: a log of mostly UTF-8 with one stray byte would otherwise be read whole as CP932 /
+    GB18030, and a UTF-8 `Zoë` or `田中` in it would be garbled past the scrub (its garbling undone gives it back)."""
+    from app import path_utils
+    ident = ident or identity()
+    if b"\x00" not in raw and not path_utils._bom_encoding(raw):
+        try:
+            raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raw = ident.scrub(raw.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape")
+    text = decode(raw, language)
+    return None if text is None else ident.scrub(text).encode("utf-8")
+
+
+def _views(text, language):
+    """`text` and the UTF-8 its legacy-encoding reading garbled (for the guard: a garbled name read back)."""
+    from app import path_utils
+    out = [text]
+    for encoding in path_utils.LEGACY_ENCODINGS.get(language) or sum(path_utils.LEGACY_ENCODINGS.values(), ()):
+        back = text.encode(encoding, "replace").decode("utf-8", "replace")
+        if back and back != text:
+            out.append(back)
+    return out
 
 
 def _both(raw):
@@ -515,7 +569,9 @@ def _png_text(data):
                 value = zlib.decompress(value) if flag else value
                 out.append(" ".join(p.decode("utf-8", "replace") for p in (k, lang, tkey, value)))
             elif kind == b"IEND":
-                return "\n".join(out)
+                return "\n".join(out) if at + 12 + n == len(data) else None      # (nothing after its end)
+            elif kind not in _PNG_KINDS:
+                return None                                               # a chunk it can't read: not checked
             at += 12 + n
     except (struct.error, zlib.error, IndexError):
         return None
@@ -541,7 +597,7 @@ def leaks(zip_path, ident=None, language=None):
                     hits.append(name)
                 continue
             text = decode(data, language)
-            if text is None or ident.found(text) or any(
+            if text is None or any(ident.found(v) for v in _views(text, language)) or any(
                     ident.found(codecs.decode(data[i:len(data) - ((len(data) - i) % 2)], "utf-16-le", "ignore"))
                     for i in (0, 1)):
                 hits.append(name)

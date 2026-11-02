@@ -9782,6 +9782,7 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
         gaps = self._waiting_videos() if any(_video_keys(f) for f in found) else None
         stamp, exact = (self.conn.execute("PRAGMA data_version").fetchone()[0], gaps is not None)
         gaps = {} if gaps is None else gaps
+        tracked = {}                 # Michi-ST: the items filled from their video's own track, read once if asked
         for f in order:
             origin = os.path.abspath(f["origin"])
             key = origin_key(origin)
@@ -9808,6 +9809,11 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
             # an EPUB's part records its book's sha256 (K1b, K4): two parts of one book are never "the same bytes"
             same = None if _EPUB_PART.search(origin) else f.get("sha256")
             item_id = f.get("item_id")
+            if item_id is not None and is_content_name(os.path.basename(origin)) and                     item_id in self._track_items(tracked).values():
+                # Michi-ST: a subtitle file of an episode whose text is its video's own track (`fill_track`) is another
+                # version of it (LM1b) — never a live origin, whose next change a look would copy over the track's text
+                self._take_version(cmd, change, root_id, origin, key, f, out)
+                continue
             if item_id is None and not is_content_name(p[1]):  # H9: a video whose subtitle came earlier in this batch
                 item_id = next((taken[k] for k in _video_keys(f) if k in taken), None)
             if item_id is None:
@@ -9823,6 +9829,14 @@ def _store_take_in(self, root_id, found, first=False, rules=None):
                     if gap is not None and other and f.get("video_path"):
                         self._as_versions(gap)               # the subtitle's own video is the episode's from now
                     exact = exact and gap is not None        # its row gone (P1): a new item, the videos read again
+                filled = None if held is not None or gap is not None or not is_content_name(p[1]) else next(
+                    (self._track_items(tracked)[k] for k in _video_keys(f) if k in self._track_items(tracked)), None)
+                if filled is None and held is None and gap is None and f.get("gap") is not None and                         f["gap"] in self._track_items(tracked).values():
+                    filled = f["gap"]
+                if filled is not None:               # Michi-ST: its video's waiting item took its own track meanwhile
+                    spare[p[1]] = p[2]               # (a fill between the look's read and this write): a version of it
+                    self._take_version(cmd, change, root_id, origin, key, dict(f, item_id=filled), out)
+                    continue
                 if held is None and gap is None and same and same in by_bytes:   # the same bytes in this batch (A5)
                     item_id = by_bytes[same]
                     spare[p[1]] = p[2]
@@ -10056,6 +10070,82 @@ def _store_fill_gap(self, cmd, item_id, prepared, gaps):
     for k in [k for k, v in gaps.items() if v == item_id]:
         del gaps[k]
     return item_id
+
+
+def _store_waiting_tracks(self):
+    """Michi-ST (`app/tracks.py`): [(item_id, rel_path, its origin record)] of the items waiting for their subtitle
+    (K5) whose record names a video — one record an item, its live one (as `connect.library.pairing_of` reads it: an
+    origin whose video moved, D3 (a), after the one naming its new place); never an audiobook's own (Hon, H-7) nor a
+    version's row."""
+    out, seen = [], set()
+    with self._reading():
+        rows = self.conn.execute(f"SELECT i.id, i.rel_path, i.source_type, p.pairing FROM items i CROSS JOIN pairings p "
+                                 f"ON p.item_id = i.id WHERE i.availability = 'waiting' AND {_ORIGIN_ROW} AND NOT "
+                                 f"{_VERSION_ROW} ORDER BY i.id, {_MOVED_ROW}, p.rowid").fetchall()
+    for item_id, rel, source_type, text in rows:
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        record = _json_dict(text) or {}
+        if source_type == "audio" or record.get("audiobook") or not isinstance(record.get("video_path"), str) or \
+                is_content_name(rel or ""):
+            continue
+        out.append((item_id, rel, record))
+    return out
+
+
+def _store_fill_track(self, item_id, rel, sha256, track, video_key=None):
+    """Michi-ST: a waiting video's own subtitle track, copied to `rel` (in `Library`, by the caller) — the item takes
+    it in place (K5's fill, `_fill_gap`: its id, place and records kept, no placement event) and its video's origin
+    record says where the text came from: `verdict` "extracted", `subtitle_sha256` (the copy's bytes:
+    `fit_check.track_timed`), `subtitle_source` (hato's shape: the provider `video-track`) and `track` (`tracks._take`'s
+    index, codec, language, title). -> True; False, nothing written, when the item no longer waits on that video
+    (filled, removed, or its video changed: `video_key` is no longer its record's)."""
+    rel = library_rel(self.data_dir, rel)
+    parts = rel.split("/") if rel else []
+    if len(parts) < 2 or path_key(parts[0]) != path_key(CONTENT_FOLDER):
+        raise ValueError(f"a copy outside the content folder: {rel!r}")
+    prepared = self._prepare([rel], None, "Source")[0]
+    with self._command("fill_track", SOURCE_PRODUCER) as cmd:
+        row = self.conn.execute(f"SELECT p.content_key, p.pairing FROM items i JOIN pairings p ON p.item_id = i.id "
+                                f"WHERE i.id = ? AND i.availability = 'waiting' AND {_ORIGIN_ROW} AND NOT "
+                                f"{_VERSION_ROW} ORDER BY {_MOVED_ROW}, p.rowid LIMIT 1", (item_id,)).fetchone()
+        record = _json_dict(row[1]) if row else None
+        if record is None or (video_key and record.get("video_key") != video_key):
+            return False
+        if self._fill_gap(cmd, item_id, prepared, {}) is None:
+            return False
+        self._keep_hash(item_id, prepared[4], sha256)
+        record.update(verdict="extracted", subtitle_sha256=sha256, track=dict(track or {}),
+                      subtitle_source={"provider": "video-track", "file_name": (track or {}).get("title")})
+        self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                          (json.dumps(record, sort_keys=True, ensure_ascii=False), row[0]))
+        self._copy_dirty()
+    return True
+
+
+def _store_track_items(self, held):
+    """Michi-ST, inside `take_in`: {video key or path key: item id} of the items whose text is their video's own track
+    (`fill_track`'s live record, `verdict` "extracted") — read once a batch into `held` (a dict the caller keeps)."""
+    if "items" not in held:
+        held["items"] = {}
+        for item_id, text in self.conn.execute(
+                f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND "
+                f"json_valid(p.pairing) AND json_extract(p.pairing, '$.verdict') = 'extracted'"):
+            for k in _video_keys(_json_dict(text) or {}):
+                held["items"][k] = item_id
+    return held["items"]
+
+
+def _store_refeed(self, item_ids):
+    """Michi-ST: these rows drawn again — nothing of theirs in the store changed, only what a row reads beside it
+    (`tracks.note`): their `feed_in` takes a new version, one short write."""
+    ids = sorted({int(i) for i in item_ids or ()})
+    if not ids:
+        return
+    with self._command("refeed", SOURCE_PRODUCER) as cmd:
+        cmd.feed(ids)
+        cmd.touch()
 
 
 def _store_source_work(self, rel, record, cmd, cache):
@@ -11887,6 +11977,10 @@ Store.origins_back = _store_origins_back
 Store._take_new = _store_take_new
 Store._waiting_videos = _store_waiting_videos
 Store._fill_gap = _store_fill_gap
+Store.waiting_tracks = _store_waiting_tracks
+Store.fill_track = _store_fill_track
+Store.refeed = _store_refeed
+Store._track_items = _store_track_items
 Store._as_versions = _store_as_versions
 Store._source_work = _store_source_work
 Store._source_spot = _store_source_spot

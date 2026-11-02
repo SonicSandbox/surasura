@@ -24,8 +24,9 @@ from PyQt6.QtWidgets import QApplication, QWidget                       # noqa: 
 
 from app.qt import rows                                         # noqa: E402
 from app.services import view_rows as vr                                # noqa: E402
-from tests.qt.test_drag import (_stones_sheet, calls, lift, lst_of, move_global, release_global,  # noqa: E402,F401
-                                rows_of, title_point, well_point, world)
+from app import theme                                                   # noqa: E402
+from tests.qt.test_drag import (_stones_sheet, calls, lift, lst_of, move, move_global, press,  # noqa: E402,F401
+                                release_global, rows_of, title_point, well_point, world)
 from tests.test_view_rows import WORKS, _works, eps, items_of, work     # noqa: E402,F401
 
 BOOKS = ("霧の港", "灯りの番", "嵐の夜")
@@ -237,6 +238,97 @@ def test_a_strip_of_the_opened_group_repainted_is_the_full_paints_strip_and_work
         box = QRect(0, round(top * dpr), round(vp.width() * dpr), round(h * dpr))
         assert part.copy(box.translated(0, -box.top())) == full.copy(box)   # (`render` sets the strip at the top)
         assert made and max(made) <= 3, made                          # the lines the strip meets, not ~300
+
+
+class _MovedAside:
+    """A drag's parting as the view and the delegate read it: the opened row (place `opened`) moved by `shift`."""
+
+    def __init__(self, opened, shift):
+        self.opened, self.shift, self.src = opened, shift, None
+
+    def offset(self, r):
+        return float(self.shift) if r == self.opened else 0.0
+
+    def paint_over(self, lst, event):
+        pass
+
+
+@pytest.mark.parametrize("shift", [60, -45])
+def test_a_strip_of_an_opened_group_a_drag_moved_aside_is_painted_as_the_whole_screen_has_it(opened, shift):
+    """The adversary's S: while a drag parts the rows the opened group is painted shifted, so a strip's rect must be
+    read in the painter's own place — else the auto-scroll's new strip, a turning *Mine now* or a toast's strip over
+    the group came out blank."""
+    view, row = _group()
+    lst, i = opened(view, row.key, whole=True)
+    lst.verticalScrollBar().setValue(lst.verticalScrollBar().maximum() // 2)
+    _settle()
+    lst.parting = _MovedAside(i, shift)
+    try:
+        full = _grab(lst)
+        vp = lst.viewport().rect()
+        for top in range(100, vp.height() - 100, 37):
+            strip = QRect(0, top, vp.width(), 20)
+            assert _grab(lst, QRegion(strip)).copy(QRect(0, 0, vp.width(), 20)) == full.copy(strip), top
+    finally:
+        lst.parting = None
+
+
+def test_an_opened_row_lifted_closed_near_the_lists_end_keeps_its_place_till_the_hand_travels(world):
+    """The adversary's B: an opened row near the list's end, its head near the top — closing it at the lift shrinks
+    the list, the scroll clamps and the row drops from under the hand. A release right there moved it (11th → 6th);
+    now its slot stays its own till the hand travels, and a release there writes nothing. Once the hand travels, the
+    slot follows it as in any drag."""
+    seed, win, writer = world()
+    lst = lst_of(win)
+    entries = lst.model().entries
+    cur = [n for n, e in enumerate(entries) if e[0] == rows.ROW]
+    i = max(cur[-6:], key=lambda n: len(entries[n][1].episodes))     # a row near the end with the most parts
+    lst.toggle(lst.model().index(i, 0))
+    _settle()
+    bar = lst.verticalScrollBar()
+    bar.setValue(bar.value() + _rect(lst, i).top() - 40)               # its head 40 px from the top
+    _settle()
+    at = title_point(lst, i)
+    press(lst, at)
+    hand = at + QPoint(0, theme.MOTION["drag-start-px"])
+    move(lst, hand)
+    d = win.moves.running
+    assert d is not None and lst.model().open_key is None
+    assert _rect(lst, i).top() > at.y() + 100                          # the row dropped from under the hand
+    assert lst.indexAt(hand).row() != i
+    gp = lst.viewport().mapToGlobal(hand)
+    assert win.moves.target_at(gp) == ("list", d.src)
+    assert win.moves.target_at(gp + QPoint(2, 3)) == ("list", d.src)  # a wobble is no travel
+    release_global(win, gp + QPoint(2, 3))
+    _settle()
+    assert calls(writer) == [] and lst.model().open_key is None
+
+
+def test_the_hand_that_travelled_from_a_closed_rows_lift_leaves_its_slot_to_the_hand(world):
+    """After the clamp, the hand's travel hands the slot back to the hand: wherever it then goes, the slot is the row
+    under it (`slot_at`), never the row's own place again — even back over the lift's point."""
+    seed, win, writer = world()
+    lst = lst_of(win)
+    entries = lst.model().entries
+    cur = [n for n, e in enumerate(entries) if e[0] == rows.ROW]
+    i = max(cur[-6:], key=lambda n: len(entries[n][1].episodes))
+    lst.toggle(lst.model().index(i, 0))
+    _settle()
+    bar = lst.verticalScrollBar()
+    bar.setValue(bar.value() + _rect(lst, i).top() - 40)
+    _settle()
+    at = title_point(lst, i)
+    press(lst, at)
+    hand = at + QPoint(0, theme.MOTION["drag-start-px"])
+    move(lst, hand)
+    d = win.moves.running
+    gp = lst.viewport().mapToGlobal(hand)
+    far = gp + QPoint(0, 3 * theme.MOTION["drag-start-px"])
+    assert win.moves.target_at(far) == ("list", win.moves.slot_at(hand.y() + 3 * theme.MOTION["drag-start-px"]))
+    assert d.home is None
+    assert win.moves.target_at(gp) == ("list", win.moves.slot_at(hand.y()))
+    assert win.moves.slot_at(hand.y()) != d.src
+    win.moves.cancel()
 
 
 def test_an_opened_row_lifts_closed_and_a_drop_on_goal_moves_every_one_of_its_files(world):

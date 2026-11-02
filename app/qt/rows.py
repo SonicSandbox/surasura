@@ -2594,11 +2594,15 @@ class RowDelegate(QStyledItemDelegate):
         for a, b in zip(cuts, cuts[1:] + [len(rows_)]):
             p.fillRect(QRectF(stone_x - 0.5, rows_[a][0].top() + 8, 1, rows_[b - 1][0].bottom() - rows_[a][0].top() -
                               16), c("string"))
+        # on screen: the paint event's rect only (a9 try #2: a toast's frame or a press's ring repaints a strip, never
+        # every line on screen) — a pixel wider (at 150 % a strip's edge rounds into the next line's first pixel row),
+        # in the painter's own place (a row a drag moved aside is painted shifted)
         clip = None
-        if p.device() is self.view.viewport():       # on screen: the paint event's rect only (a9 try #2: a toast's
-            clip = QRectF(self.view.painting or self.view.viewport().rect())     # frame or a press's ring repaints a
-        split = next((ln.split for ln in (lines or ()) if ln.kind == "top" and ln.split), None)     # strip, never every
-        split_at = None                                                                             # line on screen)
+        if p.device() is self.view.viewport():
+            clip = QRectF(self.view.painting or self.view.viewport().rect()).adjusted(-1, -1, 1, 1)
+            clip = p.transform().inverted()[0].mapRect(clip)
+        split = next((ln.split for ln in (lines or ()) if ln.kind == "top" and ln.split), None)
+        split_at = None
         hot = self.view.hot_eps(row.key) if clip is not None else ()     # row 28: as a row's line, its hover look
         shows = self._show_lines(row, layout)         # LM11b: a group's show lines
         above = {r.bottom() + 1: r.top() for r, _show in shows}

@@ -348,11 +348,15 @@ def _remember(cache, v, outcome):
         cache["notes"].pop(v.rel, None)
 
 
-def _failed(cache, v, out):
-    """A video's own failure this time (a run that failed now, a copy that couldn't be taken in): asked again — and
-    after FAILS of them at the same stats, remembered as failed, so a failure that holds never costs a whole-video read
-    every look (S19). A call that gave no answer at all is never counted here: it says nothing of the video."""
+def _failed(cache, v, out, own=True):
+    """A failure this time: the video asked again. `own` (the video's own: Anki Miner couldn't copy its track, its
+    copy outlasted EXTRACT_TIMEOUT, the store refused its copy): after FAILS of them at the same stats it is remembered
+    as failed, so a failure that holds never costs a whole-video read every look (S19). Anything else — ffprobe or
+    ffmpeg missing, the window closing, a call with no answer, a busy library, a disk that took no copy — says nothing
+    of the video and is never counted."""
     out["failed"] += 1
+    if not own:
+        return
     held = cache["videos"].get(v.key)
     fails = held.get("fails", 0) + 1 if isinstance(held, dict) and held.get("stats") == v.stats else 1
     cache["videos"][v.key] = {"stats": v.stats, "fails": fails}
@@ -406,7 +410,7 @@ def _chunk(store, language, miner, run_dir, todo, cache, out, stop):
             if isinstance(source, dict) and source.get("error") == "VIDEO_UNREADABLE":
                 _remember(cache, v, UNREADABLE)     # no video in it (API.md § inspect)
             else:                                   # ffprobe missing, a file it couldn't read now: asked again
-                _failed(cache, v, out)
+                _failed(cache, v, out, own=False)
             continue
         tracks, v.pictures = choose(source.get("tracks"), language)
         if not tracks:
@@ -428,13 +432,13 @@ def _extract(store, language, exe, profile, run_dir, v, tracks, cache, out, stop
                                  timeout=EXTRACT_TIMEOUT, on_poll=_poll(run_dir, list(runs), stop))
     except (anki_miner.AnkiMinerError, OSError) as e:
         log.warning("Anki Miner couldn't copy a video's subtitle tracks (asked again later): %s", e)
-        _failed(cache, v, out)
+        _failed(cache, v, out, own=getattr(e, "kind", None) == "timeout")
         return
     if not verdict.get("runs") and not verdict.get("ok"):    # refused as a whole (SETUP_ERROR: no ffmpeg)
         log.warning("Anki Miner refused to copy the tracks (asked again later): %s", verdict.get("message"))
         out["failed"] += 1
         return
-    extracted, failed = [], False
+    extracted, failed, own = [], False, False
     for run in verdict.get("runs") or ():
         track = runs.get(run.get("run_id")) if isinstance(run, dict) else None
         if track is None:
@@ -444,17 +448,20 @@ def _extract(store, language, exe, profile, run_dir, v, tracks, cache, out, stop
             extracted.append((track, path))
         elif run.get("error") not in ("TRACK_NOT_FOUND", "TRACK_NOT_TEXT"):
             failed = True                           # CANCELLED, VIDEO_UNREADABLE (the copy failed too): asked again
+            own = own or run.get("error") != "CANCELLED"    # (a window closing says nothing of the video)
     chosen = pick(extracted, language)
     if chosen is None and failed:
-        _failed(cache, v, out)
+        _failed(cache, v, out, own=own)
     elif chosen is None:                            # none of its text in the library's language
         _remember(cache, v, PICTURES if v.pictures else NONE)
         out["pictures" if v.pictures else "none"] += 1
-    elif _take(store, language, v, chosen, extracted):
-        _remember(cache, v, EXTRACTED)
-        out["filled"] += 1
     else:
-        _failed(cache, v, out)
+        took = _take(store, language, v, chosen, extracted)
+        if took is True:
+            _remember(cache, v, EXTRACTED)
+            out["filled"] += 1
+        elif took is not None:                      # None: the item no longer waits on it (filled, removed): done
+            _failed(cache, v, out, own=took == "own")
 
 
 def _extracted(run_dir, run):
@@ -477,7 +484,8 @@ def _extracted(run_dir, run):
 
 def _take(store, language, v, chosen, extracted):
     """The chosen track's text copied into the waiting item's folder in `Library` and the item filled in place. ->
-    True; False when it couldn't be (the copy is removed again: no item holds it)."""
+    True; None when the item no longer waits on that video (nothing to do); "own" when the store refused the copy,
+    "later" when the disk or a busy library held it (the copy is removed again: no item holds it)."""
     from app import library_store as ls
     track, path, data = chosen
     ext = ".srt" if path.lower().endswith(".vtt") else os.path.splitext(path)[1].lower()
@@ -498,15 +506,18 @@ def _take(store, language, v, chosen, extracted):
             os.replace(part, full)
     except OSError as e:
         log.warning("A subtitle track couldn't be copied into the library (%s): %r", full, e)
-        return False
+        return "later"
     info = {"index": track["index"], "codec": track.get("codec"), "language": track.get("language"),
             "title": track.get("title"), "tried": len(extracted)}
     try:
-        filled = store.fill_track(v.item_id, target, sha, info, v.record.get("video_key"))
-    except Exception as e:                          # busy, or anything: asked again at a later look
+        filled = True if store.fill_track(v.item_id, target, sha, info, v.record.get("video_key")) else None
+    except ls.StoreError as e:                      # busy: asked again at a later look
+        log.info("A video's subtitle track waits for the library (asked again later): %r", e)
+        filled = "later"
+    except Exception as e:                          # anything else: asked again, remembered after FAILS
         log.warning("A video's subtitle track couldn't be taken in (asked again later): %r", e)
-        filled = False
-    if not filled and not reuse:
+        filled = "own"
+    if filled is not True and not reuse:
         try:
             os.remove(full)                         # ours, made a moment ago, held by no item
         except OSError:

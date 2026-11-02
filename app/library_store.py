@@ -11079,7 +11079,10 @@ def _store_switch_versions(self, item_ids, by=SOURCE_PRODUCER, stop=None):
     self.settle_switches()
     plans, held, works = [], [], {}
     with self._reading():
+        tracked = set(self._track_items({}).values()) if item_ids else set()
         for item_id in dict.fromkeys(item_ids):
+            if item_id in tracked:               # Michi-ST: its text is its video's own track — kept (a file come later,
+                continue                         # even one named like the video, is a spare version: never switched to)
             row = self.conn.execute("SELECT rel_path, availability, work_id, size, mtime_ns FROM items WHERE id = ?",
                                     (item_id,)).fetchone()
             copies = _group_copies(self, item_id) if row is not None else None

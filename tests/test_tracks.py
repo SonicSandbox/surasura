@@ -251,14 +251,14 @@ def test_no_anki_miner_says_so_remembers_nothing_and_never_fails(fake):
 
 
 def test_one_videos_failure_never_holds_the_others(fake):
-    """Why: a run that failed now (cancelled, an error Anki Miner may get past) is asked again — remembered only after
+    """Why: a run that failed now (the copy failed: VIDEO_UNREADABLE from extract) is asked again — remembered only after
     FAILS of them at the same stats, so a failure that holds never costs a whole-video read every look; one whose
     track Anki Miner says is no text is remembered at once; the third video is filled."""
     text, _codec = _full("ja")
     store, data_dir, src, videos = _library("ja", names=("ep01", "ep02", "ep03"))
     a, b, c = (os.path.basename(v) for v in videos)
     fake.set(tracks={n: [_track(2, "jpn")] for n in (a, b, c)}, track_files={f"{c}#2": text},
-             track_errors={f"{a}#2": "CANCELLED", f"{b}#2": "TRACK_NOT_TEXT"})
+             track_errors={f"{a}#2": "VIDEO_UNREADABLE", f"{b}#2": "TRACK_NOT_TEXT"})
     try:
         out = _fill(store, "ja")
         assert (out["filled"], out["failed"]) == (1, 1) and _waiting(store) == 2
@@ -313,7 +313,8 @@ def test_an_item_no_longer_waiting_takes_nothing_and_leaves_no_copy(fake, monkey
                                 video_key="another video") is False       # the video changed: nothing written
         assert _waiting(store) == 1
         monkeypatch.setattr(type(store), "fill_track", lambda *a, **k: False)
-        assert _fill(store, "ja")["failed"] == 1
+        out = _fill(store, "ja")                       # no longer waiting: nothing to do, nothing failed
+        assert (out["filled"], out["failed"], out["asked"]) == (0, 0, 1)
         assert _copies(data_dir) == []
     finally:
         store.__exit__(None, None, None)
@@ -496,5 +497,60 @@ def test_picture_subtitles_beside_an_english_text_track_are_said(fake):
         assert _fill(store, "ja")["pictures"] == 1
         (_i, rel, _a), = _item(store)
         assert tracks.note(rel) == tracks.PICTURES
+    finally:
+        store.__exit__(None, None, None)
+
+
+# --- the second pass (st-tracks-adversary.md § Second pass: N1, N2) ---------------------------------------------- #
+def test_an_english_subtitle_named_like_the_video_never_replaces_its_japanese_track(fake):
+    """Why (N1): a file matched through its video skips the look's language check, and LM3's switch ranks a file named
+    like the video first — so a later English `.srt` would have become the episode's text. An episode whose text is its
+    video's own track is never switched: the file is a spare version, the Japanese stays."""
+    text, codec = _full("ja")
+    store, data_dir, src, (video,) = _library("ja")
+    name = os.path.basename(video)
+    fake.set(tracks={name: [_track(3, "jpn", codec)]}, track_files={f"{name}#3": text})
+    try:
+        assert _fill(store, "ja")["filled"] == 1
+        (item_id, rel, _a), = _item(store)
+        copy = os.path.join(data_dir, *rel.split("/"))
+        before = open(copy, "rb").read()
+        sub = os.path.splitext(video)[0] + ".srt"
+        english = [  # the episode's dialogue in English, a full subtitle (never thin beside the Japanese: A6)
+            "The song from the opening.", "Across the far-off sky.", "City Library.",
+            "Excuse me, I'd like to borrow this book.", "Do you have a library card?",
+            "No... this is my first time here.", "In that case, on this form,", "please write your name and address.",
+            "I see. May I borrow a pen?", "Here you are.", "Thank you very much.",
+            "You can borrow it for up to two weeks. You can extend it, too.", "When is it due back?",
+            "On the twentieth.", "I'll come back before then."]
+        with open(sub, "w", encoding="utf-8", newline="\n") as f:
+            f.write("".join(f"{i}\n00:01:{i + 30:02d},000 --> 00:01:{i + 30:02d},900\n{line}\n\n"
+                            for i, line in enumerate(english, 1)))
+        t = time.time() - 60
+        os.utime(sub, (t, t))
+        got = _look(store, "ja", _root(store), full=True)
+        assert got["switched"] == 0 and got["added"] == 0 and _item(store) == [(item_id, rel, "available")]
+        assert open(copy, "rb").read() == before
+        assert fit_check.track_timed(library.pairing_of(store, item_id), copy)
+    finally:
+        store.__exit__(None, None, None)
+
+
+def test_failures_that_are_not_the_videos_own_never_retire_it(fake):
+    """Why (N2): ffprobe missing (inspect's SETUP_ERROR on each source) or a window closing mid-copy says nothing of
+    the video — however many looks see it, the video is asked again once Anki Miner can answer."""
+    text, codec = _full("ja")
+    store, data_dir, src, (video,) = _library("ja")
+    name = os.path.basename(video)
+    try:
+        fake.set(tracks={name: "SETUP_ERROR"})
+        for _ in range(tracks.FAILS + 1):
+            assert _fill(store, "ja")["failed"] == 1
+        fake.set(tracks={name: [_track(3, "jpn", codec)]}, track_errors={f"{name}#3": "CANCELLED"})
+        for _ in range(tracks.FAILS + 1):
+            assert _fill(store, "ja")["failed"] == 1
+        assert all(not v.get("outcome") for v in _remembered("ja").values())
+        fake.set(tracks={name: [_track(3, "jpn", codec)]}, track_files={f"{name}#3": text})
+        assert _fill(store, "ja")["filled"] == 1                         # back: it comes in
     finally:
         store.__exit__(None, None, None)

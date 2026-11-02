@@ -79,6 +79,7 @@ NO_VIDEO = "No video: its video isn't on this computer (or isn't downloaded yet)
 # Z-16 (Michi-AB A1/A5, PROVISIONAL): an audiobook's or a podcast's episode while Anki Miner mines audio — its audio file
 # isn't found (`Steps.audio`), or one transcript spans several audio files (its lines can't be told apart by file)
 NO_AUDIO = "No audio: its audio file isn't on this computer."
+NO_TEXT = "Nothing to cut its cards from yet: this audiobook has no text of its own (its book's, or a question open)."
 SEVERAL_FILES = ("One transcript for {n} audio files: Connect can't tell which file each line is in, so its cards "
                  "wait. A subtitle file for each audio file, named like it, is mined.")
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
@@ -901,13 +902,16 @@ def _pick(steps, ledger, lang, job, record=True):
     ledger.set_state(jid, "picking")
     book = _reading_source(steps, lang, job)        # Z-9: a book or a text, once Anki Miner reads them
     video = steps.video(lang, job) if book is None else None
+    heard = None                                    # Z-16: an audio item's own wait line, when nothing is found
     if book is None and video is None:
-        video = _audio(steps, lang, job)            # Z-16: an audio file, once Anki Miner mines audio (or a Wait)
+        video, heard = _audio(steps, lang, job)     # an audio file, once Anki Miner mines audio
     if book is None and video is None and job.get("kind") == LEVEL and not job.get("asked_at"):
         # laptop round 8 #49 (LF4-1 ⭐ A): a level raise never asks for a video — an episode already mined whose video
         # is gone waits quietly (its own reason: never *Needs you*'s *No video*), and goes on at a start that finds the
         # video again (review A8: its new words aren't lost); your ask on it asks for the video as any (A1)
-        raise Wait(LEVEL_NO_VIDEO, look=False)
+        raise Wait(heard or LEVEL_NO_VIDEO, look=False)
+    if book is None and video is None and heard:
+        raise Wait(heard, look=False)               # parked as *No video* is: looked at again at the next start
     if book is None and video is None:
         folder = steps.video_moved(lang, job)
         raise Wait(MOVED.format(folder=folder) if folder else NO_VIDEO, look=False)
@@ -948,15 +952,13 @@ def _pick(steps, ledger, lang, job, record=True):
 
 def _audio(steps, lang, job):
     """Z-16: the audio file an episode with no video is cut from while Anki Miner mines audio (`steps.audio`, A1) ->
-    its path, or None (a video's *No video* follows). An audio item with nothing to cut from waits with its own line
-    (`NO_AUDIO`, `SEVERAL_FILES`), never *No video*."""
+    (its path or None, an audio item's own wait line or None). With no path, an audio item waits with its line
+    (`NO_AUDIO`, `SEVERAL_FILES`, `NO_TEXT`), parked as *No video* is (looked at again at the next start, never every
+    look: review AB-1), never *No video*; any other item's *No video* follows as before."""
     audio, mines = getattr(steps, "audio", None), getattr(steps, "mines", None)
     if audio is None or mines is None or not mines(lang, "audio"):
-        return None
-    path, wait = audio(lang, job)
-    if path is None and wait:
-        raise Wait(wait)
-    return path
+        return None, None
+    return audio(lang, job)
 
 
 def _reading_source(steps, lang, job):
@@ -1643,11 +1645,15 @@ class Steps:
 
     def audio(self, lang, job):
         """Z-16 (Michi-AB A1, PROVISIONAL): the audio file an episode with no video is cut from -> (path, None); else
-        (None, the wait line for an audio item — `NO_AUDIO`, `SEVERAL_FILES` — or None for any other item: its *No
-        video*). One rule: an audiobook's own item reading its transcript (Hon a6) is cut from its audiobook when that
-        is one file (`library.audiobook_file`; several: `SEVERAL_FILES`, A5); any other item from an audio file with
-        the subtitle's own name beside it, or beside the file it was copied from (`beside` / `beside_origin`, the
-        audio extensions: a subtitle for each audio file). A cloud placeholder is never one (`_on_disk`)."""
+        (None, the wait line for an audio item — `NO_AUDIO`, `SEVERAL_FILES`, `NO_TEXT` — or None for any other item:
+        its *No video*). One rule: an audiobook's own item is cut from its record's one file while its transcript is
+        its text (`library.audiobook_file`; several files: `SEVERAL_FILES`, A5; no text of its own: `NO_TEXT`), never
+        from a file looked for beside anything (its origin is its own first file: review AB-2); any other item from an
+        audio file with the subtitle's own name beside it, or beside the file it was copied from (`beside` /
+        `beside_origin`, the audio extensions) — only when the item is audio (`library.waits_for`: an audiobook's or
+        a podcast's title) or that file is an audiobook's the library knows (one subtitle per audio file): an anime
+        episode whose video is gone is never mined from an audio file beside it (review AB-3). A cloud placeholder is
+        never one (`_on_disk`)."""
         from app.audiobooks import AUDIO_EXTENSIONS
         from app.connect import library
         with _held():                       # the store's reads, one open; the disk is looked at after
@@ -1656,14 +1662,16 @@ class Steps:
             with self._open(lang) as store:
                 item = store.item(job["item_id"]) or {}
                 heard = library.waits_for(item, library.media_of(store, item)) == "audio"
-                own, n = library.audiobook_file(store, job["item_id"])
-        if n:                               # an audiobook's own item: its record names its files (its origin is
-            if n > 1:                       # its first file: never looked for beside, A5)
-                return None, SEVERAL_FILES.format(n=n)
-            return (own, None) if _on_disk(own) else (None, NO_AUDIO)
+                own = library.audiobook_file(store, job["item_id"])
+                known = library.audiobook_files(store) if own is None and not heard else None
+        if own is not None:
+            path, n = own
+            if path:
+                return (path, None) if _on_disk(path) else (None, NO_AUDIO)
+            return None, (SEVERAL_FILES.format(n=n) if n > 1 else NO_TEXT)
         found = (beside(subtitle, AUDIO_EXTENSIONS) if subtitle else None) or \
             beside_origin(pairing, AUDIO_EXTENSIONS)
-        if found:
+        if found and (heard or os.path.normcase(os.path.abspath(found)) in known):
             return found, None
         return None, (NO_AUDIO if heard else None)
 
@@ -2085,6 +2093,10 @@ class Steps:
         from app.connect import media_names
         if picked.get("reading"):
             return None                     # Z-9: a book's cards have no clip; their picture is the book's cover
+        from app.connect.anki_miner import is_audio
+        # Z-16: an audio episode's picture is the audio's cover, one file for every card — never renamed per line (a
+        # copy per card: review AB-4); its clip is
+        audio = is_audio(picked.get("video"))
         fields = getattr(self._job_mapping(job), "fields", None) or self._export_fields(lang, job)
         if not lines or not fields:
             return None
@@ -2095,7 +2107,7 @@ class Steps:
                 key = (store.item(job["item_id"]) or {}).get("rel_key") or f"item-{job['item_id']}"
         try:
             return media_names.rename(media_names.AnkiConnectMedia(self.url), lines, key, fields.get("audio"),
-                                      fields.get("picture"))
+                                      None if audio else fields.get("picture"))    # the clip renamed (review AB-4)
         except media_names.Reviewing:
             raise Wait(REVIEWING, resume="mining") from None
         except locks.Busy:

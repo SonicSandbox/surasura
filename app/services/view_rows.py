@@ -307,6 +307,10 @@ STRINGS = {
     # Michi-AB (Z-16, PROVISIONAL): the same while Anki Miner mines audio
     "tip_audio_transcript_mined": "🎧 Audiobook 「{title}」 with its transcript\n{files}\nIts transcript is its text: "
                                   "its words count as an episode's do, and its cards' sentence audio is cut from it.",
+    "tip_audio_transcript_several": "🎧 Audiobook 「{title}」 with its transcript\n{files}\nIts transcript is its "
+                                    "text: its words count as an episode's do. Its cards wait: one transcript covers "
+                                    "its {n} files, so which file each line is in can't be told. A subtitle file for "
+                                    "each audio file, named like it, is mined.",
     "audio_transcript_timing":"Its transcript stays with the audio for timing: the book's words count, never twice.",
     "audio_transcript_other": "The transcript beside it isn't this book's, so it isn't used.",
     "play_audio_wait": "Its audio is in your folder; it holds no words until Anki Miner gives its text",
@@ -828,8 +832,9 @@ def audio_tip(piece):
     length = length_text(said.get("seconds"))
     files = " · ".join(x for x in (files, length) if x)
     if heard[0].get("availability") not in (None, "waiting"):     # a6: its transcript is its content
-        tip = STRINGS["tip_audio_transcript_mined" if _mines("audio") else "tip_audio_transcript"].format(
-            title=title, files=files)
+        # Z-16: its clips are cut from it only when its audiobook is one file (several: its cards wait, review AB-5)
+        mined = "tip_audio_transcript_several" if n > 1 else "tip_audio_transcript_mined"
+        tip = STRINGS[mined if _mines("audio") else "tip_audio_transcript"].format(title=title, files=files, n=n)
     else:
         tip = STRINGS["tip_audio_alone" if len(heard) == len(piece) else "tip_audio_paired"].format(title=title,
                                                                                                   files=files)

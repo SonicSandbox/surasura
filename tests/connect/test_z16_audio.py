@@ -24,7 +24,7 @@ from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (a
 from tests.connect.fake_anki_miner import LAPIS_EXPORT
 from tests.connect.test_p41_asked import StoreSteps, _library, _place_top, _mined, _jobs, _run, _srt as _srt_items
 from tests.test_audiobook_items import _audio_folder, _audio_items, _lines, _settle
-from tests.test_audiobook_transcripts import _alone, _srt
+from tests.test_audiobook_transcripts import _alone, _other_lines, _srt
 from tests.test_sources_scan import _drive, _empty, _look
 
 RESOURCES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Test Resources")
@@ -216,6 +216,38 @@ def test_an_audio_episode_with_nothing_to_cut_from_waits_with_its_own_line_never
     assert out["needs"] == [] and _mined(steps) == []
 
 
+def test_an_audio_wait_is_parked_until_the_next_start_never_looked_at_every_look(tmp_path):
+    """Review AB-1: an audio item's wait (no audio, one transcript over several files) only you or a new file clears —
+    parked as *No video* is: three looks ask for its audio once, Connect's run ends (never a look every 2 minutes,
+    each re-reading the store and writing the ledger)."""
+    episode = _audio_title("audiobook")
+    steps = AudioSteps(str(tmp_path), {"words": {str(episode): [WORDS[1]]}, "videos": {str(episode): None}},
+                       audio={episode: (None, runner.SEVERAL_FILES.format(n=3))})
+    asked = []
+    looked = steps.audio
+    steps.audio = lambda lang, job: asked.append(job["id"]) or looked(lang, job)
+    steps.can = {"books", "audio"}
+    _place_top(episode)
+    _run(steps, looks=3)
+    assert len(asked) == 1 and _jobs(episode)[-1]["reason"] == runner.SEVERAL_FILES.format(n=3)
+
+
+def test_an_audio_episodes_cover_is_never_renamed_per_card_its_clip_is(tmp_path, monkeypatch):
+    """Review AB-4: Anki Miner gives every card of an audio episode the same cover file; renaming the picture by the
+    line would store one copy per card. Only the clip is renamed; a video's picture still is."""
+    from app.connect import media_names
+    seen = []
+    monkeypatch.setattr(media_names, "rename", lambda media, lines, key, audio, picture: seen.append((audio, picture)))
+    steps = runner.Steps({})
+    steps._job_mapping = lambda job: fields.from_export(LAPIS_EXPORT)
+    steps.pairing = lambda lang, job: {"content_key": "k"}
+    mapping = fields.from_export(LAPIS_EXPORT).fields
+    for media in ("a.mp3", "a.mkv"):
+        steps.name_media("ja", {"id": 1, "item_id": 7}, {"video": str(tmp_path / media)}, [(1, 1.0, 2.0, "x")])
+    assert seen == [(mapping.get("audio"), None), (mapping.get("audio"), mapping.get("picture"))]
+    assert mapping.get("picture") and mapping.get("audio")
+
+
 def test_a_video_episode_never_asks_for_audio_and_is_mined_as_before(tmp_path):
     """A video found first: never an audio look-up, mined from the video exactly as before (the feature on or off)."""
     ids, kinds = _library()
@@ -273,6 +305,19 @@ def test_an_audiobook_of_several_files_with_one_transcript_waits_never_cut_from_
     assert _steps_audio(item["id"]) == (None, runner.SEVERAL_FILES.format(n=3))
 
 
+def test_an_audiobook_with_no_text_of_its_own_is_never_cut_from_its_first_file():
+    """Review AB-2: an audiobook with no transcript (H-7: it waits) asked anyway (*Mine now*), or one paired with its
+    book: no text of its own — its own wait, never cut from the file its origin names (its first)."""
+    store, _data_dir = _empty("ja")
+    src = _drive("driveA")
+    _audio_folder(os.path.join(src, STAR), STAR, 3600, n=3)
+    with store:
+        _look(store, "ja", store.add_source(src))
+        [item] = _audio_items(store)
+        assert library.audiobook_file(store, item["id"]) == (None, 0)
+    assert _steps_audio(item["id"]) == (None, runner.NO_TEXT)
+
+
 def test_an_audiobook_whose_one_file_is_gone_waits_for_its_audio():
     store, _data_dir, src, m4b, _srt_path = _alone("ja", STAR)
     with store:
@@ -282,27 +327,67 @@ def test_an_audiobook_whose_one_file_is_gone_waits_for_its_audio():
     assert _steps_audio(item["id"]) == (None, runner.NO_AUDIO)
 
 
-def test_a_subtitle_with_its_audio_file_beside_its_original_is_cut_from_that_file():
-    """A subtitle for each audio file (`01.srt` beside `01.mp3`): the item's original's folder holds the audio of its
-    own name — that file, as a video beside its subtitle is found (`beside_origin`, the audio extensions)."""
+def _per_file(folder, n, seconds=None):
+    """A folder of `n` chapter MP3s (`01.mp3`… an audiobook's when `seconds` is long enough: Hon's MIN_SECONDS), each
+    with the SRT timed to it beside it (`01.srt`…): a learner's "one subtitle per audio file". Settled."""
+    os.makedirs(folder, exist_ok=True)
+    if seconds:
+        mp3s = _audio_folder(folder, STAR, seconds, n=n)
+    else:
+        mp3s = []
+        for i in range(1, n + 1):
+            mp3s.append(os.path.join(folder, f"{i:02d}.mp3"))
+            with open(mp3s[-1], "wb") as f:
+                f.write(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\0" * 2048)
+    subs = [_srt(os.path.join(folder, f"{i:02d}.srt"), _other_lines("ja")[(i - 1) * 3:i * 3]) for i in range(1, n + 1)]
+    _settle(*mp3s, *subs)                   # a file written just now is one still arriving: the look waits for it
+    return mp3s
+
+
+def _subtitle_items(store):
+    rows = store.conn.execute("SELECT id, rel_path FROM items WHERE source_type = 'subtitle' ORDER BY rel_path")
+    return {rel.rsplit("/", 1)[-1]: i for i, rel in rows}
+
+
+def test_an_audiobooks_files_each_with_its_own_subtitle_are_cut_from_their_own_file():
+    """A1: an audiobook of three MP3s (an hour) with a subtitle named like each beside it — each subtitle an item of its
+    own (Hon: several subtitles are no one transcript), each cut from its own MP3 (`beside_origin`, the audio
+    extensions), never another chapter's; the audiobook itself has no text of its own and waits."""
     store, _data_dir = _empty("ja")
     src = _drive("driveA")
-    folder = os.path.join(src, "ポッドキャスト")
-    os.makedirs(folder)
-    files = []
-    for n in (1, 2):
-        mp3 = os.path.join(folder, f"第{n}回.mp3")
-        with open(mp3, "wb") as f:
-            f.write(b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\0" * 2048)
-        files += [mp3, _srt(os.path.join(folder, f"第{n}回.srt"), _lines("ja")[n * 4:n * 4 + 4])]
-    _settle(*files)                         # a file written just now is one still arriving: the look waits for it
+    mp3s = _per_file(os.path.join(src, STAR), 3, seconds=3600)
     with store:
         _look(store, "ja", store.add_source(src))
-        rows = store.conn.execute("SELECT id, rel_path FROM items WHERE source_type = 'subtitle' ORDER BY rel_path")
-        items = {rel.rsplit("/", 1)[-1]: i for i, rel in rows}
-    assert set(items) >= {"第1回.srt", "第2回.srt"}
-    for n in (1, 2):
-        assert _steps_audio(items[f"第{n}回.srt"]) == (os.path.join(folder, f"第{n}回.mp3"), None)
+        items = _subtitle_items(store)
+        [audiobook] = _audio_items(store)
+    assert sorted(items) == ["01.srt", "02.srt", "03.srt"]
+    for n, mp3 in enumerate(mp3s, 1):
+        assert _steps_audio(items[f"{n:02d}.srt"]) == (mp3, None)
+    assert _steps_audio(audiobook["id"]) == (None, runner.NO_TEXT), "never cut from anything beside its first file"
+
+
+def test_a_podcasts_episode_is_cut_from_the_audio_file_beside_it():
+    """A title you marked a podcast (short episodes: no audiobook): each subtitle cut from the MP3 of its name."""
+    store, _data_dir = _empty("ja")
+    src = _drive("driveA")
+    mp3s = _per_file(os.path.join(src, "ポッドキャスト"), 2)
+    with store:
+        _look(store, "ja", store.add_source(src))
+        items = _subtitle_items(store)
+        store.set_media_type([store.item(items["01.srt"])["work_id"]], "podcast")
+    assert [_steps_audio(items[f"{n:02d}.srt"]) for n in (1, 2)] == [(mp3s[0], None), (mp3s[1], None)]
+
+
+def test_an_anime_episode_whose_video_is_gone_is_never_cut_from_an_audio_file_beside_it():
+    """Review AB-3: a video title's subtitle with an audio file of its name beside it (an extracted track), no
+    audiobook and no audio title: never mined from it (no pictures, maybe another cut) — its *No video* as before."""
+    store, _data_dir = _empty("ja")
+    src = _drive("driveA")
+    _per_file(os.path.join(src, "星降る街の小さな工房"), 2)
+    with store:
+        _look(store, "ja", store.add_source(src))
+        items = _subtitle_items(store)
+    assert [_steps_audio(items[f"{n:02d}.srt"]) for n in (1, 2)] == [(None, None), (None, None)]
 
 
 def test_a_subtitle_with_no_audio_and_no_audio_title_is_left_to_its_video_wait():
@@ -360,3 +445,16 @@ def test_an_audiobook_with_no_text_still_waits_and_its_hover_says_what_it_waits_
         _record(features)
         st, _mark = view_rows.status_of([ep], "audio", 20)
         assert (st.kind, st.tip) == ("books", view_rows.STRINGS[tip])
+
+
+def test_an_audiobooks_transcript_hover_promises_clips_only_for_one_file():
+    """Review AB-5: with audio mined, one file: its cards' audio is cut from it; several files: its cards wait (A5)."""
+    piece = [{"source_type": "audio", "availability": "available", "title": "x",
+              "audio": {"title": STAR, "transcript": "text", "n": 1, "first": "01.m4b", "seconds": 3600}}]
+    _record(AUDIO_311)
+    assert "cut from it" in view_rows.audio_tip(piece)
+    piece[0]["audio"].update(n=3, last="03.mp3")
+    tip = view_rows.audio_tip(piece)
+    assert "Its cards wait" in tip and "3 files" in tip and "cut from it" not in tip
+    _record(["reading"])
+    assert "until Anki Miner mines audio" in view_rows.audio_tip(piece)

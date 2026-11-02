@@ -8,9 +8,10 @@ keeps only its last 1 MB; still over: TooBig.
 
 **Send** (`send`): `POST <receiver>/report` with the zip's bytes and these headers, nothing else (no telemetry id, no
 cookie; it goes with telemetry off too — the press is its own consent): `X-Surasura-Version`, `X-Surasura-Language`,
-`X-Surasura-Env` (`test` from source and from a dev build: the receiver keeps it a day and posts nothing),
+`X-Surasura-Env` (`test` from source and from a dev build or an alpha: the receiver keeps it a day and posts nothing),
 `X-Report-Nonce` (32 hex), `X-Report-Sha256` (the zip's), `X-Report-Sender` (this PC's sender code, below) and, only
-when typed, `X-Discord-Name` (the name's UTF-8 in base64url, unpadded). The receiver: `telemetry.report_receiver()`.
+when typed, `X-Discord-Name` (the name's UTF-8 in base64url, unpadded). The receiver: `telemetry.report_receiver(env)`
+(a test report: the test Worker).
 Its answer: 201 (or 200 for a nonce it knows) with `{"id": "K3Q7PM"}` → sent: the reports in the zip leave the list
 (`report._clear`, only those unchanged since) and the zip moves to `<persistent>/report_sent/<id>.zip`, kept 90 days.
 Anything else keeps the outbox zip for *Send now* — never sent again by itself (Q4).
@@ -290,7 +291,7 @@ def send(name="", url=None, root=None, now=None):
         if hashlib.sha256(body).hexdigest() != ob.sha256:
             raise ValueError("the waiting zip changed since it was made")
         try:
-            got = requests.post((url or telemetry.report_receiver()).rstrip("/") + "/report", data=body,
+            got = requests.post((url or telemetry.report_receiver(env())).rstrip("/") + "/report", data=body,
                                 headers=headers(ob, name), timeout=TIMEOUT, allow_redirects=False)
         except requests.RequestException:
             return Result(OFFLINE)

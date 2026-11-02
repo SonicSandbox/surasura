@@ -303,3 +303,26 @@ def test_a_report_saved_with_scrubbed_pictures_says_so_in_format_2(tmp_path, mon
     assert json.load(open(os.path.join(r.path, report.REPORT_FILE), encoding="utf-8"))["scrubbed"] == 1
     plain = report.save("古い", "", [PNG])
     assert "scrubbed" not in json.load(open(os.path.join(plain.path, report.REPORT_FILE), encoding="utf-8"))
+
+
+def test_an_error_naming_a_path_is_scrubbed_in_the_zips_list_and_in_show_me(world, tmp_path, monkeypatch):
+    """A file that can't be read while the zip is written, and logs that can't be listed: their errors quote paths."""
+    real = report._read_shared
+
+    def held(path):
+        if path.endswith("chore.log"):
+            raise PermissionError(f"[WinError 32] in use: '{path}'")
+        return real(path)
+    monkeypatch.setattr(report, "_read_shared", held)
+    path = report.make_zip(str(tmp_path / "Downloads"), "ja", library=world.library)
+    manifest = _entries(path)["MANIFEST.txt"].decode("utf-8")
+    assert "logs/nested/deeper/chore.log: couldn't be read" in manifest
+    assert probe_person.FOLDER not in manifest and not scrub.found(manifest)
+    from app.connect import status
+
+    def unlistable(left_out=None):
+        raise PermissionError(f"[WinError 5] Access is denied: '{world.home}\AppData\Local\Houseki'")
+    monkeypatch.setattr(status, "log_files", unlistable)
+    report.save("もう一つ", "")
+    words = report.describe(report.plan("ja"))
+    assert "logs: couldn't be listed" in words and probe_person.FOLDER not in words and not scrub.found(words)

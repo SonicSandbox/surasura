@@ -382,3 +382,137 @@ def test_every_short_hash_in_the_app_is_an_install_key_identity_knows_or_hashes_
     unknown = found - IDENTITY_KEYS - set(NOT_AN_INSTALL)
     assert not unknown, f"a new short hash: if it hashes a path, scrub.identity() asks it; else say why: {unknown}"
     assert IDENTITY_KEYS <= found                                    # (each still made where identity() asks)
+
+
+# --- what the mutants asked for (one rule, one test) ------------------------------------------------------------- #
+@pytest.mark.parametrize("sep", ["\x5c", "\u005c", "%2F", "\\\\\\\\"])
+def test_a_home_written_with_escaped_separators_loses_its_name(sep):
+    ident = person(users=[])
+    out = ident.scrub(sep.join(["C:", "Users", "Zoë Tanaka-Probe", "Videos"]))
+    assert out == sep.join(["C:", "Users", "<you>", "Videos"])
+
+
+def test_a_home_inside_another_homes_path_loses_both_names():
+    """A test root (or a roaming profile) under a real home: the kept parent is scrubbed in its turn."""
+    ident = scrub.Identity(homes=[r"C:\Users\michaelx", r"C:\Users\michaelx\Temp\Users\Zoë Tanaka-Probe"])
+    assert ident.scrub(r"C:\Users\michaelx\Temp\Users\Zoë Tanaka-Probe\a.srt") == r"C:\Users\<you>\Temp\Users\<you>\a.srt"
+
+
+def test_a_profile_written_with_upper_case_hex_escapes_still_goes():
+    ident = scrub.Identity(profiles=["Zoë Anki"])
+    assert ident.scrub('"Zo\\u00EB Anki" "Zo\\xEB Anki"') == '"<anki profile 1>" "<anki profile 1>"'
+    assert ident.scrub("Zo%C3%AB%20Anki and Zo%c3%ab%20Anki") == "<anki profile 1> and <anki profile 1>"
+
+
+def test_a_name_in_utf16_inside_other_bytes_is_found_by_the_guard(tmp_path):
+    """UTF-16 of 田中 has no NUL byte: only the raw UTF-16LE scan sees it among UTF-8 bytes."""
+    ident = scrub.Identity(users=["田中"])
+    for lead in (b"log 0", b"log 01"):
+        path = _zip(tmp_path, {"logs/mixed.log": lead + "田中".encode("utf-16-le") + b"\n"})
+        assert scrub.leaks(path, ident) == ["logs/mixed.log"]
+
+
+@pytest.mark.parametrize("chunk", ["zTXt", "iTXt", "iTXt-z"])
+def test_the_guard_reads_each_kind_of_png_text_chunk(tmp_path, chunk):
+    def make(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+    text = r"C:\Users\Zoë Tanaka-Probe".encode("utf-8")
+    body = {"zTXt": b"Source\x00\x00" + zlib.compress(text),
+            "iTXt": b"Source\x00\x00\x00ja\x00\x00" + text,
+            "iTXt-z": b"Source\x00\x01\x00ja\x00\x00" + zlib.compress(text)}[chunk]
+    png = (b"\x89PNG\r\n\x1a\n" + make(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+           + make(chunk[:4].encode("ascii"), body) + make(b"IEND", b""))
+    assert scrub.leaks(_zip(tmp_path, {"reports/a/picture-1.png": png}), person()) == ["reports/a/picture-1.png"]
+
+
+def _only(monkeypatch, tmp_path, **env):
+    """No home source but `env` (and the test root's own folders)."""
+    for name in ("USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "USERNAME", "USER",
+                 "LOGNAME", "COMPUTERNAME", "USERDOMAIN", "OneDriveCommercial", "OneDrive", "OneDriveConsumer"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr("socket.gethostname", lambda: "")
+    monkeypatch.setattr("platform.node", lambda: "")
+    monkeypatch.setattr("getpass.getuser", lambda: "")
+    monkeypatch.setattr(scrub, "_short", lambda path: None)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+
+HOME = r"C:\Users\Zoë Tanaka-Probe"
+
+
+@pytest.mark.parametrize("env", [dict(USERPROFILE=HOME), dict(HOME=HOME), dict(HOMEDRIVE="C:", HOMEPATH=HOME[2:]),
+                                 dict(APPDATA=HOME + r"\AppData\Roaming"), dict(LOCALAPPDATA=HOME + r"\AppData\Local")])
+def test_each_home_source_alone_names_the_home(monkeypatch, tmp_path, env):
+    _only(monkeypatch, tmp_path, **env)
+    ident = scrub.read_identity()
+    assert any(os.path.normcase(h) == os.path.normcase(HOME) for h in ident.homes), ident.homes
+    assert "Zoë Tanaka-Probe" in ident.users
+
+
+def test_the_short_form_alone_comes_from_a_home(monkeypatch, tmp_path):
+    _only(monkeypatch, tmp_path, USERPROFILE=HOME)
+    monkeypatch.setattr(scrub, "_short", lambda path: r"C:\Users\ZOTANA~1" if path == HOME else None)
+    assert r"C:\Users\ZOTANA~1" in scrub.read_identity().homes
+
+
+@pytest.mark.parametrize("source", ["USERNAME", "USER", "LOGNAME", "getuser"])
+def test_each_user_name_source_alone_names_the_user(monkeypatch, tmp_path, source):
+    _only(monkeypatch, tmp_path)
+    if source == "getuser":
+        monkeypatch.setattr("getpass.getuser", lambda: "ztanprobe")
+    else:
+        monkeypatch.setenv(source, "ztanprobe")
+    assert "ztanprobe" in scrub.read_identity().users
+
+
+@pytest.mark.parametrize("source", ["COMPUTERNAME", "gethostname", "node", "dotted"])
+def test_each_machine_name_source_alone_names_the_pc(monkeypatch, tmp_path, source):
+    _only(monkeypatch, tmp_path)
+    if source == "COMPUTERNAME":
+        monkeypatch.setenv("COMPUTERNAME", "DESKTOP-PROBE7")
+    elif source == "gethostname":
+        monkeypatch.setattr("socket.gethostname", lambda: "DESKTOP-PROBE7")
+    elif source == "node":
+        monkeypatch.setattr("platform.node", lambda: "DESKTOP-PROBE7")
+    else:
+        monkeypatch.setattr("socket.gethostname", lambda: "desktop-probe7.probe.example")
+    ident = scrub.read_identity()
+    assert "desktop-probe7" in {m.casefold() for m in ident.machines}
+    assert ident.scrub(r"\DESKTOP-PROBE7\share") == r"\<pc>\share"
+
+
+@pytest.mark.parametrize("where", ["env", "folder"])
+def test_onedrives_organisation_comes_from_its_variable_or_a_home_folder(monkeypatch, tmp_path, where):
+    home = tmp_path / "Users" / "zoe"
+    (home / "OneDrive - Probe Org").mkdir(parents=True)
+    if where == "env":
+        _only(monkeypatch, tmp_path, OneDriveCommercial=str(tmp_path / "x" / "OneDrive - Probe Org"))
+    else:
+        _only(monkeypatch, tmp_path, USERPROFILE=str(home))
+    assert scrub.read_identity().orgs == ["Probe Org"]
+
+
+def test_an_anki_folder_without_a_collection_is_no_profile(monkeypatch, tmp_path):
+    roaming = tmp_path / "Roaming"
+    for name, collection in (("家族", True), ("addons21", False), ("logs", False)):
+        (roaming / "Anki2" / name).mkdir(parents=True)
+        if collection:
+            (roaming / "Anki2" / name / "collection.anki2").write_bytes(b"")
+    _only(monkeypatch, tmp_path, APPDATA=str(roaming))
+    assert scrub.read_identity().profiles == ["家族"]
+
+
+@pytest.mark.parametrize("missing", ["install_key", "install_part", "library_key", "bell_key"])
+def test_each_install_key_source_is_its_own(probe, monkeypatch, missing):
+    """Each of the four is read on its own: the other three are still there when one fails."""
+    from app import instance_name, library_store, library_watch
+    owner = {"install_key": path_utils, "install_part": instance_name, "library_key": library_store,
+             "bell_key": library_watch}[missing]
+    want = set(scrub.read_identity().keys)
+
+    def broken(*a):
+        raise OSError("gone")
+    monkeypatch.setattr(owner, missing, broken)
+    got = set(scrub.read_identity().keys)
+    assert got and got < want                   # (a library's key is in its bell's database name: both go with it)

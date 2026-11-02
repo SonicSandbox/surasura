@@ -61,6 +61,7 @@ _WORD = re.compile(r"[A-Za-z0-9]+")
 _LOCK_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]")
 _ESCAPE = re.compile(r"\\x[0-9a-fA-F]{2}|%[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\U[0-9a-fA-F]{8}")
 
+
 # --- every form a string can be written in ---------------------------------------------------------------------- #
 def _hex_cases(forms):
     """Each escaped form in lower- and upper-case hex (a profile is matched case by case: its escapes must be too)."""
@@ -136,13 +137,6 @@ class Identity:
         self._matcher = None
         self._lock = threading.Lock()
 
-    def strings(self):
-        """Every (kind, string): for a log line that counts them (never one that shows them)."""
-        return ([("home", h) for h in self.homes] + [("user", u) for u in self.users]
-                + [("machine", m) for m in self.machines] + [("org", o) for o in self.orgs]
-                + [("profile", p) for p in self.profiles] + [("key", k) for k in self.keys]
-                + [("telemetry", t) for t in self.telemetry])
-
     def matcher(self):
         with self._lock:
             if self._matcher is None:
@@ -166,9 +160,8 @@ class _Matcher:
 
     def __init__(self, ident):
         self.literals = []                  # (form, placeholder, case_sensitive, whole_word)
-        for kind, values, place in (("key", ident.keys, KEY), ("telemetry", ident.telemetry, TELEMETRY),
-                                    ("machine", ident.machines, PC), ("org", ident.orgs, ORG),
-                                    ("user", ident.users, YOU)):
+        for values, place in ((ident.keys, KEY), (ident.telemetry, TELEMETRY), (ident.machines, PC),
+                              (ident.orgs, ORG), (ident.users, YOU)):
             for v in values:
                 whole = v.isascii()
                 for f in forms(v):
@@ -381,12 +374,14 @@ def _keys():
         return instance_name.install_part()
     keys += _quiet(instance)
     for language in ("ja", "zh"):
-        def store(language=language):
+        def library(language=language):
+            from app import library_store
+            return library_store.library_key(path_utils.get_data_path(language))
+
+        def bell(language=language):
             from app import library_store, library_watch
-            data_dir = path_utils.get_data_path(language)
-            return [library_store.library_key(data_dir),
-                    library_watch.bell_key(library_store.library_db_path(language, data_dir))]
-        keys += _quiet(store)
+            return library_watch.bell_key(library_store.library_db_path(language, path_utils.get_data_path(language)))
+        keys += _quiet(library) + _quiet(bell)
     return keys
 
 

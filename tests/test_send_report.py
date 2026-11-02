@@ -23,6 +23,7 @@ from tests import scrub_probe as probe_person
 
 WHAT = "「甄嬛传」第五集を見終わったのに、単語表が更新されなかった。"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REAL_RECEIVER = telemetry.report_receiver                 # (the receiver fixture puts a fake in its place)
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +73,7 @@ class Receiver:
 @pytest.fixture
 def receiver(monkeypatch):
     r = Receiver()
-    monkeypatch.setattr(telemetry, "report_receiver", lambda: r.url)
+    monkeypatch.setattr(telemetry, "report_receiver", lambda env="production": r.url)
     yield r
     r.close()
 
@@ -250,7 +251,7 @@ def test_no_connection_keeps_the_report_waiting(saved, monkeypatch):
     r = Receiver()
     url = r.url
     r.close()                                                                    # nothing listens there now
-    monkeypatch.setattr(telemetry, "report_receiver", lambda: url)
+    monkeypatch.setattr(telemetry, "report_receiver", lambda env="production": url)
     send_report.build("ja")
     assert send_report.send().outcome == send_report.OFFLINE
     assert send_report.waiting() is not None and len(report.listed()) == 1
@@ -360,6 +361,17 @@ def test_the_built_in_receiver_is_the_builds_and_is_used_when_none_is_kept(monke
     assert telemetry.report_receiver() == "https://example.invalid/hb"
 
 
+def test_a_test_report_goes_to_the_test_worker_never_the_live_one(saved, receiver, monkeypatch):
+    """From source, a dev build or an alpha (env test): the test Worker, whatever address update.json kept."""
+    monkeypatch.setattr(telemetry, "_cached_url", lambda: "https://surasura-telemetry.sonicswain.workers.dev")
+    assert REAL_RECEIVER("test") == telemetry.BUILT_IN_TEST_URL != telemetry.BUILT_IN_URL
+    asked = []
+    monkeypatch.setattr(telemetry, "report_receiver", lambda env="production": asked.append(env) or receiver.url)
+    send_report.build("zh")
+    assert send_report.send().outcome == send_report.SENT and asked == ["test"]
+    assert receiver.got[0]["headers"]["X-Surasura-Env"] == "test"
+
+
 def test_the_heartbeat_in_dev_still_sends_nothing(monkeypatch):
     import requests
     calls = []
@@ -383,3 +395,39 @@ def test_a_sent_copy_is_kept_90_days_then_removed(tmp_path, monkeypatch):
     open(os.path.join(folder, "notes.txt"), "w").write("x")
     assert [rid for rid, _w, _p in send_report.sent_reports(now)] == ["K3Q7PM"]
     assert sorted(os.listdir(folder)) == ["K3Q7PM.zip", "notes.txt"]
+
+
+def test_a_waiting_zip_changed_since_it_was_made_is_never_sent(saved, receiver):
+    ob = send_report.build("ja")
+    with open(ob.path, "ab") as f:
+        f.write(b"\x00")
+    assert send_report.waiting() is None                                         # its size no longer matches
+    with pytest.raises(ValueError):
+        send_report.send()
+    assert receiver.got == []
+
+
+def test_dont_send_removes_the_zip_itself(saved):
+    ob = send_report.build("ja")
+    send_report.discard()
+    assert not os.path.exists(ob.path)
+    assert os.listdir(os.path.dirname(ob.path)) == []
+
+
+def test_a_redirect_is_never_followed_with_the_zip(saved, receiver):
+    """A 307 / 308 would post the zip again to wherever it points: never."""
+    other = Receiver()
+    try:
+        receiver.answer = (307, b"")
+        real = receiver.server.RequestHandlerClass.send_response
+
+        def to_other(handler, status, message=None):
+            real(handler, status, message)
+            if status == 307:
+                handler.send_header("Location", other.url + "/report")
+        receiver.server.RequestHandlerClass.send_response = to_other
+        send_report.build("ja")
+        assert send_report.send().outcome == send_report.REFUSED
+        assert other.got == [] and send_report.waiting() is not None
+    finally:
+        other.close()

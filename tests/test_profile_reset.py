@@ -677,6 +677,19 @@ def test_no_journal_runs_nothing():
     assert profile_reset.run()["status"] == "none" and profile_reset.recover()["status"] == "none"
 
 
+def test_a_readable_journal_is_never_set_aside():
+    """Set-aside is for an unreadable file only: an asked request and a move in flight stay where they are (False,
+    the journal byte-for-byte unchanged, no .unreadable- copy), since setting a move in flight aside strands it."""
+    journal = profile_reset.journal_path()
+    for status in ("asked", "moving"):
+        text = json.dumps({"action": "start-over", "status": status, "moves": []})
+        _write(journal, text)
+        assert profile_reset.set_aside_journal() is False
+        with open(journal, encoding="utf-8") as f:
+            assert f.read() == text
+        assert not [name for name in os.listdir(os.path.dirname(journal)) if ".unreadable-" in name]
+
+
 # --- the network opt-outs (P7, F1) ---------------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("settings, carried", [
@@ -1038,3 +1051,38 @@ def test_a_started_over_record_that_moved_nothing_is_never_offered():
     assert profile_reset.backups() == []
     _write(_in_backup(places, stamp, "library", "results/x.html"), names("ja")[1])     # one part did move
     assert [(b["stamp"], b["stopped"]) for b in profile_reset.backups()] == [(stamp, False)]
+
+
+def test_renewal_writes_nothing_while_another_holder_has_the_maintenance_lock_and_renews_once_let_go():
+    """P4's renewal writes a store only under its maintenance lock: while another holder (Connect, Piyo's server, a
+    rebuild in another window) has it, the renewal answers False and the store's store_id and epoch stay as they
+    were; once let go, the same call renews both. Writing under a holder's feet could tear its batch."""
+    _profile()
+    lang = "ja"
+    data_dir = path_utils.get_data_path(lang)
+    user_files_dir = path_utils.get_user_files_path(lang)
+    store = ls.open_store(lang, data_dir, user_files_dir)
+    try:
+        db_path = store.db_path
+        before = store.meta()
+    finally:
+        store.close()
+    holder = ls.MaintenanceLock(db_path)
+    assert holder.try_acquire()
+    try:
+        assert ls.renew_after_put_back(lang, data_dir, user_files_dir) is False
+        store = ls.open_store(lang, data_dir, user_files_dir)
+        try:
+            meta = store.meta()
+            assert meta["store_id"] == before["store_id"] and int(meta["epoch"]) == int(before["epoch"])
+        finally:
+            store.close()
+    finally:
+        holder.close()
+    assert ls.renew_after_put_back(lang, data_dir, user_files_dir) is True
+    store = ls.open_store(lang, data_dir, user_files_dir)
+    try:
+        meta = store.meta()
+        assert meta["store_id"] != before["store_id"] and int(meta["epoch"]) == int(before["epoch"]) + 1
+    finally:
+        store.close()

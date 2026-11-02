@@ -511,3 +511,43 @@ def test_a_never_again_row_only_the_backup_holds_comes_back_with_it():
             store.conn.execute("DELETE FROM made_words")
         ls.put_back_library(store, backup)
         assert set(made) <= set(_made(store))
+
+
+def test_short_stores_drive_refuses_the_put_back_naming_that_drive_though_the_backup_drive_has_room(monkeypatch):
+    """P3 across drives: the stores' folder on another drive needs its own room (its copy and growth, the data entries
+    already counted on the backup's drive taken off), so a short stores drive refuses the Put back and names that drive,
+    while the backup's drive has plenty; exactly that much free and the Put back goes through."""
+    store, data_dir, user_files_dir, backup, _before = _sorted_again("ja")
+    stores = os.path.dirname(store.db_path)
+    here = os.path.normcase(os.path.abspath(stores))
+    drive = os.path.splitdrive(os.path.abspath(stores))[0] or os.path.abspath(stores)
+    need = ls.room_for(store) - ls._cross_volume(store)
+    real_stat, real_usage = os.stat, shutil.disk_usage
+    plenty = real_usage(user_files_dir)._replace(free=1 << 60)
+
+    def stat_on_another_drive(path, *args, **kwargs):
+        st = real_stat(path, *args, **kwargs)
+        if os.path.normcase(os.path.abspath(path)) != here:
+            return st
+        # the same folder, reported on another volume (only its st_dev differs)
+        return os.stat_result((st.st_mode, st.st_ino, st.st_dev + 1, st.st_nlink, st.st_uid, st.st_gid, st.st_size,
+                               int(st.st_atime), int(st.st_mtime), int(st.st_ctime)))
+
+    def free_space(path):
+        if os.path.normcase(os.path.abspath(path)) != here:
+            return plenty
+        return real_usage(user_files_dir)._replace(free=free_now[0])
+
+    free_now = [need - 1024 * 1024]
+    with monkeypatch.context() as patched:
+        patched.setattr(os, "stat", stat_on_another_drive)
+        patched.setattr(shutil, "disk_usage", free_space)
+        with store:
+            rows = _rows(store)
+            with pytest.raises(ls.ResetRefused) as e:
+                ls.put_back_library(store, backup)
+            assert f"on {drive}" in e.value.reason and "MB free" in e.value.reason
+            assert _rows(store) == rows
+            free_now[0] = need
+            ls.put_back_library(store, backup)
+            assert _rows(store) != rows

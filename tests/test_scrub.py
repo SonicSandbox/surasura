@@ -623,3 +623,9 @@ def test_picture_mode_never_uses_another_test_roots_identity(monkeypatch, tmp_pa
     assert not scrub.ready()
     with scrub.picture_mode():
         assert scrub.shown(r"C:\Users\Zoë Tanaka-Probe") == r"C:\Users\Zoë Tanaka-Probe"
+
+
+def test_a_name_placeholder_is_never_a_hit_either():
+    ident = scrub.Identity(users=["you"])
+    assert scrub.name("anki-miner/you-run/x.json", ident) == "anki-miner/(you)-run/x.json"
+    assert not ident.found("anki-miner/(you)-run/x.json") and ident.found("anki-miner/you-run/x.json")

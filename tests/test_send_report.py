@@ -464,3 +464,14 @@ def test_a_name_whose_base64_would_pad_goes_unpadded(saved, receiver):
     send_report.send(name="ぞえ_probe1")                                        # 13 bytes: base64 would end ==
     sent = receiver.got[0]["headers"]["X-Discord-Name"]
     assert "=" not in sent and base64.urlsafe_b64decode(sent + "==").decode("utf-8") == "ぞえ_probe1"
+
+
+def test_a_waiting_zip_changed_in_place_at_the_same_size_is_never_sent(saved, receiver):
+    ob = send_report.build("ja")
+    data = bytearray(open(ob.path, "rb").read())
+    data[-30] ^= 0xFF
+    open(ob.path, "wb").write(bytes(data))
+    assert send_report.waiting() is not None                                     # its size still matches …
+    with pytest.raises(ValueError):
+        send_report.send()                                                       # … its sha256 doesn't
+    assert receiver.got == []

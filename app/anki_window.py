@@ -34,7 +34,7 @@ LANGUAGES = ("ja", "zh")
 ACTIONABLE = ("permission", "grant", "missing", "update", "stopped answering")
 _BACKUP_RE = re.compile(r"KnownWord\.(\d{8}-\d{6})(?:-\d+)?\.json$")
 
-Probe = namedtuple("Probe", "report decks preselected counts models")
+Probe = namedtuple("Probe", "report decks preselected counts models sentences", defaults=((),))
 Known = namedtuple("Known", "total last_sync last_added backup backlog")
 RestorePoint = namedtuple("RestorePoint", "name when now then")
 
@@ -110,6 +110,19 @@ def field_lines(models, chosen):
     return resolved, skipped
 
 
+def sentence_hint(models, chosen, sentences):
+    """The line under the fields when the word field holds sentences (`anki_sync.word_field_sentences`: every word in
+    them known) -> None when it holds none, else the field to choose for the card's own word: the first such note
+    type's first field when that isn't the word field read now (Lapis: Expression), or "" when there is none to name.
+    A note type no longer in scope (another language's, a deck removed) says nothing."""
+    for model in sentences or ():
+        names = list((models or {}).get(model) or ())
+        word = anki_sync.word_field(names, chosen)
+        if word:
+            return names[0] if names[0] != word[0] else ""
+    return None
+
+
 def controls(connected, busy, decks, chosen):
     """Which controls are live: Sync and Replace need Anki, a deck and the window idle; adding a deck and the word
     field need Anki; *Also read* a named word field; ⟳, removing a deck, the switches and Restore only that the window
@@ -133,10 +146,10 @@ def connection(report):
     return "closed", error
 
 
-def read_probe(url, decks, suspended):
+def read_probe(url, decks, suspended, chosen=(), language="ja"):
     """(A worker.) Is Anki there, which decks has it, and — with no deck chosen yet — the first open's pick; the
-    studied counts and the note types of the decks in scope. -> Probe. Never raises: an Anki that answered the probe
-    and went away mid-read is a report that says so."""
+    studied counts, the note types of the decks in scope and those whose word field (`chosen`) holds sentences.
+    -> Probe. Never raises: an Anki that answered the probe and went away mid-read is a report that says so."""
     report = anki_connect.probe(url)
     if not report.get("ok"):
         return Probe(report, [], None, {}, {})
@@ -145,19 +158,21 @@ def read_probe(url, decks, suspended):
         picked = None
         if not decks:
             picked = preselect(anki_sync.deck_study_counts(url, names, suspended))
-        chosen = picked if picked is not None else list(decks)
-        counts, models = read_scope(url, chosen, suspended)
+        scope = picked if picked is not None else list(decks)
+        counts, models, sentences = read_scope(url, scope, suspended, chosen, language)
     except anki_connect.AnkiError as e:
         return Probe({"ok": False, "error": f"Anki stopped answering: {e}"}, [], None, {}, {})
-    return Probe(report, names, picked, counts, models)
+    return Probe(report, names, picked, counts, models, sentences)
 
 
-def read_scope(url, decks, suspended):
-    """(A worker.) -> ({deck: studied notes}, {note type: [fields]}) for `decks`. Raises AnkiError."""
+def read_scope(url, decks, suspended, chosen=(), language="ja"):
+    """(A worker.) -> ({deck: studied notes}, {note type: [fields]}, [note types whose word field holds sentences])
+    for `decks`. Raises AnkiError."""
     if not decks:
-        return {}, {}
-    return (anki_sync.deck_study_counts(url, decks, suspended),
-            anki_sync.models_in_scope(url, decks, suspended))
+        return {}, {}, []
+    models = anki_sync.models_in_scope(url, decks, suspended)
+    return (anki_sync.deck_study_counts(url, decks, suspended), models,
+            anki_sync.word_field_sentences(url, decks, suspended, list(chosen or ()), language, models))
 
 
 def known_view(language):

@@ -241,6 +241,29 @@ def test_a_named_field_that_a_note_type_lacks_is_named_as_skipped(main, anki):
     assert w.box_field2.isEnabled(), "Also read waits for a named word field: here there is one"
 
 
+def test_a_word_field_holding_sentences_is_said_under_the_fields(main, anki):
+    """Sonic's alpha 9 try (Word field = Sentence): one plain line under the fields says every word in it counts as
+    known and names the field for the card's own word; choosing Expression takes it away once Anki is read again."""
+    _choose(main, **{"anki_sync_fields": {"ja": ["Sentence"]}})
+    w = _open(main)
+    assert not w.sentences.isHidden() and w.sentences.text() == strings.ANKI_SENTENCES.format(field="Expression")
+    w.box_field1.activated.emit(w.box_field1.findData("Expression"))
+    assert w.sentences.isHidden(), "cleared at once for the field chosen now"
+    assert wait_until(lambda: w._scope_press is None)
+    assert w.sentences.isHidden() and w.resolved.text() == "Lapis → Expression"
+
+
+def test_the_sentences_line_goes_with_the_language_it_was_read_for(main, anki):
+    """The line names the Japanese decks' word field: the window switched to Chinese (Anki not read again yet) never
+    keeps saying it (the adversary's finding 2)."""
+    _choose(main, **{"anki_sync_fields": {"ja": ["Sentence"]}})
+    w = _open(main)
+    assert not w.sentences.isHidden()
+    w._connected = False                                  # Anki closed meanwhile: nothing reads the new scope
+    w.language_changed("zh")
+    assert w.sentences.isHidden() and w._sentences == []
+
+
 # --- nothing written by opening (S16, IK-13) ------------------------------------------------------------------- #
 def test_the_first_open_pick_is_shown_and_saved_only_on_the_first_action(main, anki):
     w = _open(main)
@@ -766,8 +789,9 @@ def test_a_scope_changed_while_the_first_probe_runs_is_the_scope_shown(main, ank
     _choose(main, decks=("TheBank", "Grammar"))
     w = _open(main, connect=False)
     gate, real, calls = threading.Event(), QAW.AW.read_probe, []
-    monkeypatch.setattr(QAW.AW, "read_probe", lambda url, decks, sus: (calls.append((list(decks), sus)),
-                                                                       gate.wait(10), real(url, decks, sus))[2])
+    monkeypatch.setattr(QAW.AW, "read_probe", lambda url, decks, sus, *more: (calls.append((list(decks), sus)),
+                                                                              gate.wait(10), real(url, decks, sus,
+                                                                                                  *more))[2])
     w.refresh_connection()
     assert wait_until(lambda: calls)
     w.chk_suspended.click()

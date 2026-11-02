@@ -171,6 +171,62 @@ def test_the_probe_offline_or_anki_gone_mid_read_is_a_report_never_a_raise(ja_wo
     assert AW.connection(gone.report)[0] == "problem" and "stopped answering" in gone.report["error"]
 
 
+def test_the_scope_read_names_the_note_types_whose_word_field_holds_sentences(ja_words):
+    """Sonic's alpha 9 try: Sentence chosen as the word field. The scope read looks at the newest studied notes' word
+    field (two requests, reads only) and names the note types where most hold a sentence (`anki_match.holds_sentence`);
+    the word field Expression holds none. A Kiku note type's one-word Sentence field is none either."""
+    fake = FakeAnki([{"word": w, "deck": "TheBank"} for w in ja_words[:4]])
+    fake.add("", deck="TheBank", model="Kiku", fields=[("Word", "辞書"), ("Sentence", "辞書")])
+    with mock.patch("urllib.request.urlopen", fake):
+        counts, models, sentences = AW.read_scope(URL, ["TheBank"], False, ["Sentence"], "ja")
+        assert AW.read_scope(URL, ["TheBank"], False, ["Expression"], "ja")[2] == []
+        fake.requests.clear()
+        probe = AW.read_probe(URL, ["TheBank"], False, ["Sentence"], "ja")
+    assert counts == {"TheBank": 5} and sentences == ["Lapis"] and probe.sentences == ["Lapis"]
+    assert sum(r["action"] == "notesInfo" for r in fake.requests) == 1, "one sample read, never every note"
+    assert not any(r["action"].startswith(("add", "update", "delete", "change")) for r in fake.requests)
+
+
+def test_the_sentence_read_fails_quietly_and_reads_nothing_without_decks(ja_words):
+    """The line is only a word to the user: an Anki gone mid-read gives no note type, never a failed scope read."""
+    assert anki_sync.word_field_sentences(URL, ["TheBank"], False, ["Sentence"], "ja", []) == []
+    with mock.patch("urllib.request.urlopen", FakeAnki([{"word": ja_words[0]}], fail_after_probe=True)):
+        assert anki_sync.word_field_sentences(URL, ["TheBank"], False, ["Sentence"], "ja") == []
+    with mock.patch("urllib.request.urlopen", FakeAnki(offline=True)):
+        assert anki_sync.word_field_sentences(URL, [], False, ["Sentence"], "ja") == []
+        assert AW.read_scope(URL, [], False, ["Sentence"], "ja") == ({}, {}, [])
+
+
+def test_each_note_type_is_judged_on_its_own_newest_notes_by_most_of_them(ja_words):
+    """Each note type in scope is sampled on its own (an older one is judged too), on its newest notes, and named only
+    when most of them hold a sentence: Kiku's 2 old sentence cards under its 10 newest words, Migaku's 1 in 3, no line."""
+    fake = FakeAnki([{"word": ja_words[0], "deck": "TheBank"}])
+    for i in range(12):
+        fake.add("", model="Kiku", fields=[("Word", "辞書"), ("Sentence", "駅前で辞書を買った。" if i < 2 else "辞書")])
+    for value in ("辞書を買った。", "冒険", "準備"):
+        fake.add("", model="Migaku Japanese", fields=[("Sentence", value), ("Word", "辞書")])
+    with mock.patch("urllib.request.urlopen", fake):
+        models = anki_sync.models_in_scope(URL, ["TheBank"])
+        assert anki_sync.word_field_sentences(URL, ["TheBank"], False, ["Sentence"], "ja", models) == ["Lapis"]
+        assert anki_sync.word_field_sentences(URL, ["TheBank"], False, ["Sentence"], "ja", models, sample=12) == \
+            ["Lapis"], "Kiku: 2 in 12 is no majority either"
+        assert anki_sync.word_field_sentences(URL, ["TheBank"], False, ["Sentence"], "ja", ["Kiku"], sample=2) == \
+            [], "the newest two, never the oldest"
+        assert anki_sync.word_field_sentences(URL, ["TheBank"], False, ["Sentence"], "ja", ["Kiku"], sample=12) == \
+            [], "2 in 12 is no majority"
+
+
+def test_the_sentence_hint_names_the_field_to_choose_for_the_cards_own_word():
+    """Lapis with Sentence chosen: choose Expression (its first field). Auto reads the first field — holding sentences
+    itself, there is no other to name. No note type holding sentences: no line."""
+    models = {"Lapis": ["Expression", "Sentence", "Meaning"], "Kiku": ["Word", "Sentence"]}
+    assert AW.sentence_hint(models, ["Sentence"], ["Lapis"]) == "Expression"
+    assert AW.sentence_hint(models, [], ["Lapis"]) == ""
+    assert AW.sentence_hint(models, ["Sentence"], []) is None
+    assert AW.sentence_hint(models, ["Sentence"], ["Gone"]) is None, "a note type out of scope says nothing"
+    assert AW.sentence_hint(models, ["Hanzi"], ["Lapis"]) is None, "the field isn't on it: nothing read there"
+
+
 def test_known_view_counts_real_known_words_and_the_backlog(ja_resources_dir):
     with open(os.path.join(ja_resources_dir, "KnownWord.json"), encoding="utf-8") as f:
         data = json.load(f)

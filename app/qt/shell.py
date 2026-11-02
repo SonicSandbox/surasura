@@ -3655,8 +3655,10 @@ def connect_instance(window, instance):
     window.closing.connect(instance.stop_listening)
 
 
-def main(argv=None):
-    """The window's start: one per session (`single.py`), the look before the first paint, the HUD when asked."""
+def main(argv=None, after_gate=None):
+    """The window's start: one per session (`single.py`), the look before the first paint, the HUD when asked.
+    `after_gate()` (app_entry's telemetry start) runs once the start gate let the window open: nothing before the gate
+    reads a place a Start over moves there (Fresh library, R2)."""
     argv = list(sys.argv if argv is None else argv)
     hud.mark("main")                                  # the probe's phases (M2.1 row D); nothing when it is off
     from app.qt import single as single_module
@@ -3671,6 +3673,8 @@ def main(argv=None):
     if not start_gate.gate(app):                      # W3.5: the 2.x import, the refusals, the merge — before the store
         instance.release()
         return 0
+    if after_gate is not None:
+        after_gate()
     # W3.2 P0: the library and its writer (nothing read yet). A4 P-gil: the reader freezes Python's collector after each
     # view (a full collection walking the library held the window 40-75 ms at 20,000 files); its stop thaws it, so a
     # library a language switch let go is still freed (`library_reader`'s *Python's collector*)

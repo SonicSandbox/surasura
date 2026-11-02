@@ -791,6 +791,160 @@ def _rename_dated(src, trash, stem, stamp, ext):
             time.sleep(0.1)
 
 
+# --- Fresh library (3.0.1): every place Surasura keeps files, and what Start over does with each ----------------- #
+# `profile_parts()` is the one list (the Fresh library spec §4.1-4.4; D31: a profile is these places, never one
+# language or a global): every entry of each data place, marked by what *Start over completely* does with it (MOVES:
+# into that place's `Backups/start-over-<stamp>/`, by rename; STAYS) and by what *Sort my library again* does (PART:
+# some of it goes into the Sorted-again backup, `library_store.start_fresh`'s own steps; STAYS). Each is named by its
+# role and its path inside its place, so a record names a part by role and Put back works its path out again here.
+# tests/test_profile_parts.py fails when code writes a place this table doesn't name (as `PLACED` does for settings).
+MOVES, STAYS, PART = "moves", "stays", "part"
+BACKUPS = "Backups"                     # in each place: `Backups/start-over-<stamp>/` (never purged, never moved)
+PROFILE_JOURNAL = "profile-move.json"   # in this install's folder: a Start over / Put back in flight (profile_reset)
+_INSTALL_DIR = re.compile(r"[0-9a-f]{16}\Z")     # an install's own folder in the local root (`_install_key`)
+
+# (place, name or fnmatch pattern, role, Start over, Sort again). The places, in the order a Start over renames them:
+#   install  this install's local folder (`get_local_data_path`): logs, locks, Connect's folder, the window's files
+#   roaming  the Houseki roaming root (`persistent_root`): word stores, パターン, Koe, reports, the telemetry id
+#   local    the Houseki local root (`local_data_root`): the stores (`libraries`), the installer's and the start
+#            gate's notes, every install's folder
+#   index    a test root only (`<root>/index`): the word stores and the library stores, where tests keep both
+#   library  the library folder (`get_user_data_path`): User Files, data, results (settings.json when portable)
+# The library folder is a program's or a checkout's own folder when portable or run from source, so only the names
+# below are ever Surasura's there; in every other place an entry the table doesn't name MOVES and is named (`unlisted`).
+PARTS = (
+    ("install", "logs", "logs", STAYS, STAYS),                   # a problem report needs them
+    ("install", "locks", "locks", STAYS, STAYS),                 # the running programs' own (the running marks too)
+    ("install", "window-*.lock", "window_lock", STAYS, STAYS),   # one window per sign-in (app/qt/single.py): held now
+    ("install", "update_state.json", "update_state", STAYS, STAYS),
+    ("install", PROFILE_JOURNAL, "journal", STAYS, STAYS),
+    ("install", PROFILE_JOURNAL + ".tmp", "journal", STAYS, STAYS),
+    ("install", BACKUPS, "backups", STAYS, STAYS),
+    ("install", "connect", "connect", MOVES, PART),              # Connect's ledger, whitelist, known signal, folder times
+    ("install", "window_state.json", "window_state", MOVES, STAYS),
+    ("install", "window_cache_*.json", "window_cache", MOVES, STAYS),
+    ("install", "window_pending_*.json", "window_pending", MOVES, STAYS),
+    ("install", "needs_seen_*.json", "needs_seen", MOVES, STAYS),
+    ("install", "covers", "covers", MOVES, STAYS),
+    ("install", "settings_import.json", "settings_import", MOVES, STAYS),
+    ("install", "backlog_shows_*.json", "junban_backlog_shows", MOVES, STAYS),
+    ("install", "anki-miner-install", "staging", MOVES, STAYS),
+    ("install", "anki-miner-setup", "staging", MOVES, STAYS),
+    ("roaming", "settings.json", "settings", MOVES, STAYS),      # installed: here; portable: in the library folder
+    ("roaming", "telemetry_id.json", "telemetry_id", STAYS, STAYS),     # P7: one install counts once
+    ("roaming", "telemetry_url.json", "telemetry_url", STAYS, STAYS),   # stays with the id
+    ("roaming", "bin", "tools", STAYS, STAYS),                   # yt-dlp's own program: never a learner's state
+    ("roaming", BACKUPS, "backups", STAYS, STAYS),
+    ("roaming", "token_store_*", "token_store", MOVES, STAYS),
+    ("roaming", "patterns_*", "patterns", MOVES, STAYS),
+    ("roaming", "koe_credentials.json", "koe_key", MOVES, STAYS),       # Q5: Koe's key goes too
+    ("roaming", "koe_usage.json", "koe_usage", MOVES, STAYS),
+    ("roaming", "reports", "reports", MOVES, STAYS),
+    ("roaming", "youtube_rest_*.json", "youtube_rest", MOVES, STAYS),
+    ("local", "library.json", "library_note", STAYS, STAYS),     # P8: the installer's and the start gate's notes
+    ("local", "installs.json", "installs_note", STAYS, STAYS),
+    ("local", "installs.lock", "installs_note", STAYS, STAYS),
+    ("local", "first_run.json*", "first_run_note", STAYS, STAYS),
+    ("local", "import.json", "import_note", STAYS, STAYS),
+    ("local", "locks", "locks", STAYS, STAYS),
+    ("local", UPDATE_DIRNAME, "update", STAYS, STAYS),
+    ("local", "tools", "tools", STAYS, STAYS),
+    ("local", BACKUPS, "backups", STAYS, STAYS),
+    ("local", "libraries", "libraries", STAYS, STAYS),           # every install's stores: only this one's move (below)
+    ("index", "token_store_*", "token_store", MOVES, STAYS),
+    ("index", "library_*", "libraries", STAYS, STAYS),           # the stores' test folder: only this install's move
+    ("index", BACKUPS, "backups", STAYS, STAYS),
+    ("library", "User Files", "user_files", MOVES, PART),        # known words, lists, the manifest, its own backups
+    ("library", "data", "data", MOVES, PART),
+    ("library", "results", "results", MOVES, STAYS),
+    ("library", "settings.json", "settings", MOVES, STAYS),
+    ("library", BACKUPS, "backups", STAYS, STAYS),
+)
+# A store's lock files beside its database stay (whoever holds one holds it open); its other files move with it
+STORE_FILE_LOCKS = (".lock", ".wlock")
+
+
+def profile_places():
+    """{place: folder} of this profile, in the order a Start over renames them (`PARTS`' comment); nothing made but
+    this install's folder (`get_local_data_path` makes it). Under SURASURA_TEST_ROOT every place is inside the test
+    root, and `index` is the stores' test folder."""
+    places = {"install": get_local_data_path(), "roaming": persistent_root(), "local": local_data_root()}
+    root = os.environ.get("SURASURA_TEST_ROOT")
+    if root:
+        places["index"] = os.path.join(root, "index")
+    places["library"] = get_user_data_path()
+    return places
+
+
+def _store_files():
+    """This install's library stores' file names (`library_store.library_db_path`, one per language)."""
+    from app import library_store
+    return [os.path.basename(library_store.library_db_path(lang, get_data_path(lang))) for lang in ("ja", "zh")]
+
+
+def _rule(place, name):
+    import fnmatch
+    for where, pattern, role, start_over, sort_again in PARTS:
+        if where == place and fnmatch.fnmatchcase(name, pattern):
+            return role, start_over, sort_again
+    return None
+
+
+def _part(place, folder, rel, role, start_over, sort_again, unlisted=False):
+    return {"place": place, "role": role, "rel": rel, "path": os.path.join(folder, *rel.split("/")),
+            "start_over": start_over, "sort_again": sort_again, "unlisted": unlisted}
+
+
+def _own_store(name, stores):
+    return any(name.startswith(store) for store in stores) and not name.endswith(STORE_FILE_LOCKS)
+
+
+def profile_parts(places=None):
+    """Every entry Surasura keeps in this profile's places (`profile_places()`), each a dict {place, role, rel (its
+    path inside its place, '/'-separated), path, start_over (MOVES / STAYS), sort_again (PART / STAYS), unlisted},
+    place by place in their order. A place that isn't there has none. In the library folder only the names `PARTS`
+    lists are Surasura's (anything else there is never touched); elsewhere an entry `PARTS` doesn't name MOVES,
+    `unlisted` (never left behind silently: the record names it). Another install's folder in the local root stays;
+    of the stores only this install's files move (`library_<lang>_<key>.db` and its -wal, -shm, .bak…, never its lock
+    files). Reads folders only: never makes or writes anything."""
+    places = places or profile_places()
+    stores = _store_files()
+    own = {os.path.normcase(os.path.normpath(p)) for p in places.values()}
+    out = []
+    for place, folder in places.items():
+        try:
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(folder, name)
+            if os.path.normcase(os.path.normpath(path)) in own:
+                continue                                # another place inside this one (a test root's layout)
+            rule = _rule(place, name)
+            if rule is None and place == "library":
+                continue                                # never Surasura's: a program's or a checkout's own files
+            if rule is None and place == "local" and _INSTALL_DIR.match(name) and os.path.isdir(path):
+                out.append(_part(place, folder, name, "other_install", STAYS, STAYS))
+            elif rule is None:
+                out.append(_part(place, folder, name, "unlisted", MOVES, STAYS, unlisted=True))
+            elif rule[0] != "libraries":
+                out.append(_part(place, folder, name, *rule))
+            elif place == "index":                      # the test folder holds the store files themselves
+                mine = _own_store(name, stores)
+                out.append(_part(place, folder, name, "library_store" if mine else "other_store",
+                                 MOVES if mine else STAYS, PART if mine else STAYS))
+            else:
+                try:
+                    inside = sorted(os.listdir(path))
+                except OSError:
+                    continue
+                for entry in inside:
+                    mine = _own_store(entry, stores)
+                    out.append(_part(place, folder, f"{name}/{entry}", "library_store" if mine else "other_store",
+                                     MOVES if mine else STAYS, PART if mine else STAYS))
+    return out
+
+
 # --- Reading a file the user supplies or can edit ------------------------------------------------ #
 # A file's encoding is a property of the FILE, not of its text. A BOM
 # names it: UTF-8's (Notepad's "UTF-8 with BOM", Excel's "CSV UTF-8"), UTF-16's (Notepad's "Unicode") or

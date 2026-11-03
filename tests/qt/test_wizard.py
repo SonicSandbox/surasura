@@ -2122,7 +2122,13 @@ def test_a_scan_that_found_nothing_waits_for_the_youtube_videos_still_coming(mak
 
 
 # --- alpha 8 (A8P-L6, Sonic "Yes do that"): *Choose a file…* given a video ------------------------------------- #
-_CUE = "1\n00:00:01,000 --> 00:00:03,500\nひとりちゃん、今日もギター持ってきたの？\n"
+# (a few lines: the library's one language rule wants MIN_SCRIPT kana letters of a subtitle, as the look does)
+_CUE = ("1\n00:00:01,000 --> 00:00:03,500\nひとりちゃん、今日もギター持ってきたの？\n\n"
+        "2\n00:00:03,800 --> 00:00:06,200\nうん、放課後にスタジオで練習するんだ。\n\n"
+        "3\n00:00:06,600 --> 00:00:09,000\nじゃあ、帰りにみんなでなにか食べに行こうよ。\n")
+_ENGLISH_CUE = ("1\r\n00:00:01,000 --> 00:00:03,500\r\nHitori, did you bring your guitar again today?\r\n\r\n"
+                "2\r\n00:00:03,800 --> 00:00:06,200\r\nYeah, I'm practising at the studio after school.\r\n\r\n"
+                "3\r\n00:00:06,600 --> 00:00:09,000\r\nThen let's all go get something to eat on the way home.\r\n")
 
 
 def _episode_folder(root, names):
@@ -2178,6 +2184,31 @@ def test_a_video_with_several_subtitles_brings_in_the_best_one_and_says_how_many
     assert wait_until(lambda: page.files == [best])
     assert S.VIDEO_SUBTITLE_BEST.format(name="[Grp] Bocchi - 05 [1080p].mkv",
                                         subtitle="[Grp] Bocchi - 05 [1080p].ja.srt", n=2) in wiz.say_line.text()
+
+
+def test_an_untagged_english_subtitle_named_like_the_video_is_never_brought_in(make, tmp_path):
+    """The English `.srt` named exactly like the video (no tag says it isn't ours) holds none of the library's
+    language: the look's one rule refuses it, so the Japanese one is the one brought in — and with the English alone,
+    the page says no subtitle was found and nothing is listed."""
+    wiz, shell, *_ = make()
+    shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    folder = _episode_folder(tmp_path, ["Episode 05.mkv", "Episode 05.ja.srt"])
+    (folder / "Episode 05.srt").write_bytes(_ENGLISH_CUE.encode("utf-8"))
+    _pick_video(wiz, page, folder / "Episode 05.mkv")
+    assert wait_until(lambda: page.files == [os.path.normpath(str(folder / "Episode 05.ja.srt"))])
+    assert S.VIDEO_SUBTITLE.format(name="Episode 05.mkv", subtitle="Episode 05.ja.srt") in wiz.say_line.text()
+    wiz, shell, *_ = make()
+    shell.adder = FakeAdder()
+    go_to(wiz, "shows")
+    page = wiz.page
+    (tmp_path / "english").mkdir()
+    alone = _episode_folder(tmp_path / "english", ["Episode 06.mkv"])
+    (alone / "Episode 06.srt").write_bytes(_ENGLISH_CUE.encode("utf-8"))
+    _pick_video(wiz, page, alone / "Episode 06.mkv")
+    assert wait_until(lambda: S.VIDEO_NO_SUBTITLE_PLAIN.format(name="Episode 06.mkv") in page.refused_line.text())
+    assert page.files == []
 
 
 def test_a_dual_copy_gets_its_episodes_subtitle(make, tmp_path):

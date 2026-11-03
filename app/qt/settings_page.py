@@ -167,6 +167,21 @@ class _Scroll(QScrollArea):
         return moved
 
 
+class _Body(QWidget):
+    """The scrolled body, opaque: it paints its own ground (the stylesheet's `settingsbody` colour), so a scroll moves
+    what is already on screen and paints only the strip it uncovers — Qt moves a widget that way only when it is
+    opaque; before, every wheel notch and glide frame painted the whole page in view (a9.1)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(event.rect(), style.qcolor(style.colours()["content"]))
+        p.end()
+
+
 class Search(QWidget):
     """The big search (the mock's `.set-top .find`): a cut with the search icon, the field and its `/` hint. Esc in it
     clears it first; empty, Esc goes on (the shell's router)."""
@@ -360,6 +375,34 @@ class HelpMark(QLabel):
             self._ask()
 
 
+class Words(QLabel):
+    """A row's word-wrapped label or help line whose height for a width is worked out once per (width, its minimum
+    width, text) — the minimum moves as a row stacks (`RowView.arrange`), and Qt answers at the larger of the two: Qt lays
+    the text out again on every ask, and the page's every layout asks each of its ~270 lines at two widths or more
+    (~5 ms a pass at 250 %, a9.1). Forgotten when the font, the style or the margins change."""
+
+    FORGETS = (QEvent.Type.FontChange, QEvent.Type.StyleChange, QEvent.Type.ContentsRectChange,
+               QEvent.Type.LayoutDirectionChange)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._heights = {}
+
+    def heightForWidth(self, width):
+        key = (width, self.minimumWidth(), self.text())
+        height = self._heights.get(key)
+        if height is None:
+            if len(self._heights) >= 8:
+                self._heights.clear()
+            height = self._heights[key] = super().heightForWidth(width)
+        return height
+
+    def changeEvent(self, event):
+        if event.type() in self.FORGETS:
+            self._heights.clear()
+        super().changeEvent(event)
+
+
 class RowView(QWidget):
     """One setting row (the mock's `.srow`): its label (its ? beside it: `HelpMark`) and help on the left, its control
     (and doors) on the right, in `slot`; when the row is too narrow for both side by side (text size L in a narrow
@@ -377,10 +420,10 @@ class RowView(QWidget):
         self.doors = {}                       # opener name -> Door
         self.links = {}                       # a `links` block's page name -> its button (a9.1)
         self.stacked = None                   # the words above the control (True) or beside it (False)
-        self.label = QLabel(self)
+        self.label = Words(self)
         self.label.setObjectName("settingssublabel" if row.sub else "settingslabel")
         self.label.setWordWrap(True)
-        self.help = QLabel(self)
+        self.help = Words(self)
         self.help.setObjectName("settingshelp")
         self.help.setWordWrap(True)
         self.mark = HelpMark(self)
@@ -649,7 +692,7 @@ class SettingsPage(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.body = style.styled(QWidget(), "settingsbody")
+        self.body = style.styled(_Body(), "settingsbody")
         outer = QHBoxLayout(self.body)
         self.column = QWidget(self.body)
         outer.addWidget(self.column, 1)
@@ -780,12 +823,17 @@ class SettingsPage(QWidget):
         with self._keeping(self._anchor_for_build(), fallback=False):
             settings, ctx = self._settings(), self._ctx()
             matches = self._matches(settings, ctx)
+            shown = False
+            openers = {op.name: op for op in windows.OPENERS}
             while self._queue and (time.perf_counter() - t0) * 1000 < BUILD_MS:
                 if not _WARMED and _WARM_ROWS(self._queue[0][1]):
                     break                     # its module is still being imported on the worker: never raced here
                 index, row = self._queue.pop(0)
-                if self._build_guarded(index, row, settings):
-                    self._show_section(row.section, settings, ctx, matches)   # shown in the slice that built it
+                if self._build_guarded(index, row, settings):                # shown in the slice that built it
+                    self._show_section(row.section, settings, ctx, matches, openers, tint=False)
+                    shown = True
+            if shown:
+                self._tint()
             self._show_nothing(matches)
         self._aim()
         self._slice_end = time.perf_counter()
@@ -1073,8 +1121,9 @@ class SettingsPage(QWidget):
         label.setVisible(bool(decks))
 
     # --- doors ---------------------------------------------------------------------------------------------------- #
-    def _show_doors(self, view, settings):
-        openers = {op.name: op for op in windows.OPENERS}
+    def _show_doors(self, view, settings, openers=None):
+        if openers is None:
+            openers = {op.name: op for op in windows.OPENERS}
         if view.row.id == "anki_decks":
             self._show_decks(view, settings)
         for name, door in view.doors.items():
@@ -1084,15 +1133,11 @@ class SettingsPage(QWidget):
                 door.setVisible(shows)
 
     def refresh(self):
-        """The doors asked again (`windows._found`: the modules were looked for; a write that can move a door)."""
+        """The doors asked again (`windows._found`: the modules were looked for; a write that can move a door), the
+        rows with them in the same pass: a door row shows once one of its doors is there (S1)."""
         if not _alive(self):
             return
-        settings = self._settings()
-        with self._keeping(self._last):
-            for view in self.rows.values():
-                if view.doors:
-                    self._show_doors(view, settings)
-        self._refresh_visibility(anchor=self._last)       # a door row shows once one of its doors is there (S1)
+        self._refresh_visibility(anchor=self._last, doors=True)
 
     def open_door(self, name):
         """A door's click: its window, through the shell (`windows.launch`: a failure said in the bar), or `door_asked`."""
@@ -1168,9 +1213,7 @@ class SettingsPage(QWidget):
                 continue
             if self._show_value(view, settings):
                 self.paints[row_id] += 1
-        if windows._moves_doors(keys):
-            self.refresh()
-        self._refresh_visibility(anchor=self._last)
+        self._refresh_visibility(anchor=self._last, doors=windows._moves_doors(keys))
 
     def set_language(self, language):
         """The main window's language changed: every row asked again for it (the Japanese / Chinese rows), the
@@ -1181,8 +1224,7 @@ class SettingsPage(QWidget):
         for view in self.rows.values():
             if self._show_value(view, settings):
                 self.paints[view.row.id] += 1
-        self._refresh_visibility(anchor=self._last)
-        self.refresh()
+        self._refresh_visibility(anchor=self._last, doors=True)
         self.language_set.emit(language)
 
     # --- what shows ------------------------------------------------------------------------------------------------ #
@@ -1191,36 +1233,74 @@ class SettingsPage(QWidget):
             return None
         return set(catalog.find(self._query, settings, self.language, ctx))
 
-    def _row_shows(self, row, settings, ctx, matches):
-        return self._visible(row, settings, ctx) and (matches is None or row.id in matches)
-
-    def _visible(self, row, settings, ctx):
+    def _visible(self, row, settings, ctx, openers=None):
         """The catalog's `when`, and for a door row at least one of its doors there (registered in `windows.OPENERS`
-        and available): a door row with no door never shows as a bare label (RUNBOOK 🧭 2)."""
+        and available): a door row with no door never shows as a bare label (RUNBOOK 🧭 2). `openers`: the
+        registry by name, made once per pass by the caller (else here)."""
         if not catalog.visible(row, settings, self.language, ctx):
             return False
         if row.kind != "door":
             return True
-        openers = {op.name: op for op in windows.OPENERS}
+        if openers is None:
+            openers = {op.name: op for op in windows.OPENERS}
         return any(name in openers and windows.available(openers[name], settings, self.language) for name in row.door)
 
-    def _section_shows(self, section_id, settings, ctx):
-        return any(self._visible(row, settings, ctx) for row in catalog.rows(section_id))
+    def _section_shows(self, section_id, settings, ctx, openers=None):
+        return any(self._visible(row, settings, ctx, openers) for row in catalog.rows(section_id))
 
-    def _refresh_visibility(self, anchor=None, fallback=True):
+    def _refresh_visibility(self, anchor=None, fallback=True, doors=False):
         """Every row's `when` (and the search) asked again; only what changed is shown or hidden; the anchor keeps its
-        place in the viewport."""
+        place in the viewport. `doors`: each door asked again first (`refresh`), in the same pass."""
         settings, ctx = self._settings(), self._ctx()
         matches = self._matches(settings, ctx)
-        with self._keeping(anchor, fallback=fallback):
+        openers = {op.name: op for op in windows.OPENERS}
+        with self._keeping(anchor, fallback=fallback), self._paused():
+            if doors:
+                for view in self.rows.values():
+                    if view.doors:
+                        self._show_doors(view, settings, openers)
             for section in catalog.SECTIONS:
-                self._show_section(section.id, settings, ctx, matches)
+                self._show_section(section.id, settings, ctx, matches, openers, tint=False)
+            self._tint()
             self._show_nothing(matches)
         self._light_nav()
 
-    def _show_section(self, section_id, settings, ctx, matches):
+    @contextmanager
+    def _paused(self):
+        """Rows shown and hidden with the page's layouts paused, laid out once as the pass ends: Qt lays out every
+        ancestor of a widget it shows at once, so each row shown laid the whole page out again — a search cleared
+        showed 126 rows in ~100 ms at 250 % (a9.1). Resumed deepest first, each shown one laid out at once (a hidden
+        one is laid out as it shows; the scroll area's own range follows in the settle, or the loop's turn). Nested:
+        the outermost resumes."""
+        if getattr(self, "_pausing", False):
+            yield
+            return
+        layouts = []
+        for slab in self.slabs.values():
+            layouts += [slab.main_box, slab.adv.layout(), slab.layout()]
+        layouts += [self.column_box, self.body.layout()]
+        self._pausing = True
+        for layout in layouts:
+            layout.setEnabled(False)
+        try:
+            yield
+        finally:
+            self._pausing = False
+            for layout in layouts:
+                layout.setEnabled(True)
+            for layout in layouts:
+                if layout.parentWidget().isVisible():
+                    layout.activate()             # nothing to do when nothing in it moved
+
+    def _show_section(self, section_id, settings, ctx, matches, openers=None, tint=True):
+        """`section_id`'s nav button, slab, rows, group names and fold shown as the rules (and the search) say — each
+        row's rule asked once. `tint`: the slabs tinted again after (a pass over every section tints once, at its
+        end)."""
+        if openers is None:
+            openers = {op.name: op for op in windows.OPENERS}
+        visible = {row.id: self._visible(row, settings, ctx, openers) for row in catalog.rows(section_id)}
         nav = self.nav[section_id]
-        nav_shows = self._section_shows(section_id, settings, ctx)
+        nav_shows = any(visible.values())
         if nav.isHidden() == nav_shows:
             nav.setVisible(nav_shows)
         slab = self.slabs.get(section_id)
@@ -1228,7 +1308,7 @@ class SettingsPage(QWidget):
             return
         any_main = adv_count = 0
         groups = {False: [], True: []}                       # per container: [group label, any row under it shown]
-        shown = {row.id: self._row_shows(row, settings, ctx, matches) for row in catalog.rows(section_id)
+        shown = {row.id: visible[row.id] and (matches is None or row.id in matches) for row in catalog.rows(section_id)
                  if row.id in self.rows}
         if not any(shown.values()) and not slab.isHidden():
             slab.setVisible(False)                           # hidden first: its rows then change unseen (S3)
@@ -1258,7 +1338,8 @@ class SettingsPage(QWidget):
         slab_shows = bool(any_main or adv_count)
         if slab.isHidden() == slab_shows:
             slab.setVisible(slab_shows)
-        self._tint()
+        if tint:
+            self._tint()
 
     def _tint(self):
         """Every other shown section tinted (the mock's `nth-of-type(even)`), counted over the slabs shown."""
@@ -1297,7 +1378,7 @@ class SettingsPage(QWidget):
     # --- search ---------------------------------------------------------------------------------------------------- #
     def _searched(self, text):
         """A keystroke: rows hidden and shown, nothing rebuilt. With the search in view nothing above it can move, so
-        the layout is left to the loop's own turn (no settle on the keystroke: S3)."""
+        nothing is settled or corrected on the keystroke (S3); the rows are laid out once as the pass ends (`_paused`)."""
         self._query = text
         self._refresh_visibility(anchor=None if self._in_view(self.search) else self.search,
                                  fallback=not self._in_view(self.search))
@@ -1352,7 +1433,7 @@ class SettingsPage(QWidget):
             return
         self._prioritise(section_id)
         settings = self._settings()
-        with self._keeping(self._anchor_for_build()):
+        with self._keeping(self._anchor_for_build()), self._paused():
             while self._queue and self._queue[0][1].section == section_id:
                 index, row = self._queue.pop(0)
                 self._build_guarded(index, row, settings)

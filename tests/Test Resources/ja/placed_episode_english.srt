@@ -1,0 +1,40 @@
+1
+00:00:01,000 --> 00:00:03,200
+We've only got three days left until the school festival.
+
+2
+00:00:03,500 --> 00:00:06,000
+Were you actually listening in second period?
+
+3
+00:00:06,400 --> 00:00:08,800
+Sorry, I was spacing out and didn't notice.
+
+4
+00:00:09,200 --> 00:00:11,600
+Will you help me get ready for the festival?
+
+5
+00:00:12,000 --> 00:00:14,500
+I might be late today, actually.
+
+6
+00:00:15,000 --> 00:00:17,400
+Two cannons for the display stood in a row in the schoolyard.
+
+7
+00:00:18,000 --> 00:00:20,300
+I finally understood what the teacher meant.
+
+8
+00:00:21,000 --> 00:00:23,500
+I'll paint the festival sign, okay?
+
+9
+00:00:24,000 --> 00:00:26,600
+Let's all decide on the colour of the sign together.
+
+10
+00:00:27,000 --> 00:00:29,400
+Before I knew it, it was already dark outside.
+

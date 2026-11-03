@@ -49,6 +49,7 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
 """
 import collections
 import os
+import threading
 import time
 
 from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
@@ -864,7 +865,8 @@ class NeedsYou(QObject):
                                   settled=gone_judged is not None,            # K1: every folder had its look
                                   emptied=emptied,                            # A5K-2: the folder emptied
                                   settings_folders=_settings_folders(settings, lang),     # a6: imported, not here
-                                  backlog=service.backlog_offer(lang, settings))   # Michi-C: the backlog's shows
+                                  backlog=service.backlog_offer(lang, settings),   # Michi-C: the backlog's shows
+                                  miner_update=service.miner_update(view))    # Michi-U: Anki Miner out of date
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -1663,6 +1665,47 @@ class NeedsYou(QObject):
         backfill, lang, read_settings = self.connect_calls["ask_hato"], self.language, self.read_settings
         self._press("ask_hato", entry, lambda: backfill(lang, read_settings() or {}),
                     then=lambda _s: self._connect_done(strings.NEEDS_ASKED_HATO), goes=False)
+
+    def _do_update_miner(self, entry, _line):
+        """Michi-U: *Update* on Anki Miner's line — asked first in the window (the wizard's words: nothing is
+        downloaded before the yes), then `_update_miner`."""
+        from app.qt import confirm
+        from app.qt import wizard_strings as W
+        version = (entry.data or {}).get("version") or ""
+        self.confirming = confirm.ask(
+            self.win, strings.NEEDS_UPDATE_MINER_ASK.format(version=version), W.INSTALL_ASK_BODY, W.INSTALL_ASK_YES,
+            W.INSTALL_ASK_YES_TIP, no=W.INSTALL_ASK_NO, no_tip=W.INSTALL_ASK_NO_TIP,
+            on_answer=lambda yes: yes and self._update_miner(entry))
+
+    def _update_miner(self, entry):
+        """Surasura's own install route on a worker (`anki_miner_setup.install_as_job`: the approved release, checked
+        by its sha256, its installer opened and waited for; the bar lists it with its Cancel), then the update followed
+        (`setup.follow_install`, forced: the checks run again and Connect is kicked — it starts on the waiting titles).
+        The arc turns until the route ends; the line goes once Anki Miner is updated (the page gathers again); the bar
+        says how it ended."""
+        registry = getattr(getattr(self.win, "services", None), "registry", None)
+        lang, read_settings, cancel = self.language, self.read_settings, threading.Event()
+
+        def run():
+            from app.connect import am_release, setup
+            from app.services import anki_miner_setup as route
+            from app.services.settings import thaw
+            result = route.install_as_job(registry, lambda _done, _total: None, cancel, lambda _r: None,
+                                          confirm=lambda: True)          # (asked above, before any byte)
+            if result == route.INSTALLER_CLOSED:
+                setup.follow_install(thaw(read_settings() or {}), lang, force=True)
+            version = am_release.installed()
+            return result, am_release.known(version) and am_release._key(version) >= am_release._key(
+                am_release.APPROVED)
+
+        def done(answer):
+            from app.qt import wizard_strings as W
+            result, updated = answer
+            self._say(strings.NEEDS_MINER_UPDATED if updated else {
+                "busy": W.INSTALL_BUSY, "opened-releases": W.INSTALL_OPENED, "cancelled": W.INSTALL_STOPPED}.get(
+                result, strings.NEEDS_MINER_NOT_UPDATED))
+            self.refresh()
+        self._press("update_miner", entry, run, then=done, goes=False)
 
     def _do_open_anki(self, entry, _line):
         """A3W-6: *Open Anki* on the Anki line — Anki started on Connect's profile, on a worker; the line stays until

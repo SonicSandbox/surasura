@@ -276,3 +276,49 @@ def notice(installed_version, state=None):
         return {"version": APPROVED, "url": approved_page()}
     except Exception:
         return None
+
+
+# Michi-U (alpha 9.1 try, Sonic 2026-11-02: "if anki miner has an update, it would show in needs you right?"): what
+# an update to the approved release opens. `_OPENS` keeps the last look's inputs (the setup record's stamp and the
+# installer's version), so a view of many waiting rows reads the record once (S19).
+_OPENS = {}
+KIND_WORDS = {"books": "books and texts", "audio": "audiobooks and podcasts"}
+
+
+def _record_stamp():
+    try:
+        from app.connect import setup
+        st = os.stat(setup.record_path())
+        return st.st_mtime_ns, st.st_size
+    except (OSError, ValueError, ImportError):
+        return None
+
+
+def opens(kind):
+    """Would updating Anki Miner to the approved release (`APPROVED`) let Connect make cards from `kind` ("books",
+    "audio": `anki_miner.WAITS`)? -> APPROVED, or None. Yes only when this Surasura knows the kind's ask
+    (`anki_miner.mines(kind)`), the Anki Miner Connect last found doesn't name it (`mines_now`) and the one installed
+    (`installed()`) is known and older than APPROVED — the release Surasura approves answers every ask it knows. The
+    one answer for *Needs you*'s line (`update_for`) and the rows' tip (`view_rows`). Never raises."""
+    try:
+        from app.connect import anki_miner
+        if not anki_miner.mines(kind) or anki_miner.mines_now(kind):
+            return None
+        stamp = (_record_stamp(), anki_miner.installed_version())
+        if _OPENS.get("stamp") != stamp:
+            _OPENS.update(stamp=stamp, installed=installed())
+        version = _OPENS["installed"]
+        return APPROVED if known(version) and _key(version) < _key(APPROVED) else None
+    except Exception:
+        return None
+
+
+def update_for(kinds):
+    """*Needs you*'s line (Michi-U): {"version": APPROVED, "kinds": the kinds of `kinds` an update opens, in
+    `anki_miner.WAITS`' order} when there is one, else None. `kinds`: what the view's unmined items wait on."""
+    try:
+        from app.connect import anki_miner
+        opened = tuple(k for k in anki_miner.WAITS if k in set(kinds or ()) and opens(k))
+    except Exception:
+        return None
+    return {"version": APPROVED, "kinds": opened} if opened else None

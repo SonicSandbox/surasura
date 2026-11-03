@@ -220,6 +220,7 @@ class Provider:
         try:
             from app.connect import status
             now = (self._stamp or status.stamp)(languages=[self.language])
+            self._follow(settings, now)
             if self._last is not None and self._last[0] == now:
                 return self._last[1]
             record = (self._read or status.read)(languages=[self.language]) or {}
@@ -230,6 +231,20 @@ class Provider:
             print(f"Connect's status wasn't read: {e}")      # the last good read stays keyed on its own stamp
             return Feed(on=True, mining=frozenset(), items={}, line=UNREADABLE, state="waiting", unseen=0,
                         updating=False)
+
+    def _follow(self, settings, stamp):
+        """Michi-U: an Anki Miner updated by hand is followed at once — the stamp's last part is its installer's version
+        (`status.stamp`), and one the setup record doesn't hold yet has the checks run again on a thread and Connect
+        kicked (`setup.follow_in_background`: in memory each look, no Settings visit, no 15-minute wait)."""
+        if not isinstance(stamp, (list, tuple)) or not stamp or not isinstance(stamp[-1], str):
+            return                                  # no installer's version (none installed, a test's stand-in)
+        try:
+            from app.connect import setup
+            if setup.to_follow(stamp[-1]):          # in memory each look; the settings copied only then
+                from app.services.settings import thaw
+                setup.follow_in_background(thaw(settings), self.language, stamp[-1])
+        except Exception as e:
+            print(f"Connect's feed couldn't follow Anki Miner's update: {e}")
 
     def mining(self):
         """`LibraryReader`'s hook: the item ids whose cards are being made."""

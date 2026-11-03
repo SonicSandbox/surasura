@@ -53,6 +53,11 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   backlog_shows`' last offer, read-only) — *Your 2,300 new cards come from 14 shows; 12 are on this PC. Add the 3
   that aren't in your list yet?* · *Add them* (the window's writer, `place(ids, "soon")`: one Undo) · *Leave them*
   (answered; a show placed since, or a new one waiting, asks again).
+- **Anki Miner out of date** (Michi-U, alpha 9.1 try): ONE line while titles wait only because the Anki Miner installed
+  is older than the approved one (`miner_update(view)`: `am_release.update_for` the kinds the view's unmined items wait
+  on — books and texts, audiobooks and podcasts) — *Update Anki Miner to 3.11.0 to make cards from your books and
+  texts* · *Update* (Surasura's own install route: the approved release, checked by its sha256; it asks first). No
+  *Dismiss*: it goes by itself once Anki Miner is updated, by that button or by hand (`setup.follow_install`).
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
   logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
   (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
@@ -114,11 +119,13 @@ AUDIOBOOK_FIND = "audiobook-find"     # Hon (a5-2): after a *No*, find its book 
 AUDIOBOOK_TRANSCRIPT = "audiobook-transcript"   # Hon (a6, H-13): an audiobook's transcript isn't its book's: not used
 BACKLOG_SHOWS = "backlog-shows"       # Michi-C (A7B-3): the shows behind 順's deck's new cards, on this PC, not listed
 SETTINGS_FOLDER = "settings-folder"   # a6 settings import (SI-3): a video folder the imported settings name isn't here
+# Michi-U (alpha 9.1 try): titles wait only because the Anki Miner installed is older than the approved one
+MINER_UPDATE = "miner-update"
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS)
+         BACKLOG_SHOWS, MINER_UPDATE)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
@@ -156,6 +163,11 @@ STRINGS = {
     "anki_no_addon_title": ankiconnect_addon.NO_CONNECT + ": {n} wait for it",
     "anki_unsure_title": ankiconnect_addon.UNSURE + ": {n} wait for it",
     "anki_one": "1 episode", "anki_n": "{n:,} episodes",
+    # Michi-U (alpha 9.1 try, Sonic: "if anki miner has an update, it would show in needs you right?")
+    "miner_update_title": "Update Anki Miner to {version} to make cards from your {what}",
+    "miner_update_say": "{n} for it. Surasura downloads Anki Miner {version} from its own GitHub release, checks it "
+                        "and opens its installer: it asks first. Connect makes their cards by itself once it's updated.",
+    "miner_update_one": "1 title waits", "miner_update_n": "{n:,} titles wait",
     "bulk_title_files": "{n:,} files are gone in {m:,} shows",
     "bulk_title_videos": "{n:,} episodes in {m:,} shows have no video",
     "bulk_title_both": "{m:,} shows are missing files or videos",
@@ -299,7 +311,7 @@ def item_key(item_id):
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
-            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None):
+            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -314,7 +326,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     `settings_folders` (a6, SI-3): the video folders an imported settings file names that this PC lacks
     (`settings_io.missing_folders`), one card each beside the gone source folders';
     `backlog` (Michi-C): `backlog_offer`'s record — one card while a show behind 順's deck's new cards waits in New
-    arrivals (only the files New arrivals still holds), until *Leave them* (a new show asks again)."""
+    arrivals (only the files New arrivals still holds), until *Leave them* (a new show asks again); `miner_update`
+    (Michi-U): `miner_update(view)`'s answer — ONE line while titles wait only for the approved Anki Miner."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -375,6 +388,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
+    update = _miner_entry(miner_update, rows, seen) if miner_update else None
+    if update is not None:
+        out.append(update)
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
@@ -483,6 +499,54 @@ def _anki_entry(connect, seen):
                  say="" if closed else reason,
                  data={"episodes": n, "reason": reason, "closed": closed, "steps": steps,
                        "running": look.get("running", False)})
+
+
+def _waiting(e):
+    """What an unmined, present episode waits for Anki Miner to mine — "books", "audio" (the rows' `Episode.text`,
+    Connect's `library.waits_for`) — else None."""
+    if e.cards or getattr(e, "mined", False) or getattr(e, "deleted", False) or e.missing:
+        return None
+    return getattr(e, "text", None) or None
+
+
+def waiting_kinds(view):
+    """The kinds the view's unmined items wait on (Michi-U) -> a set; empty for no store view."""
+    if view is None or view.mode != "store":
+        return set()
+    return {k for r in view.rows for e in r.episodes for k in (_waiting(e),) if k}
+
+
+def miner_update(view):
+    """(A worker.) Michi-U: `am_release.update_for` the kinds the view's items wait on — {"version", "kinds"} when
+    the approved Anki Miner would let Connect make their cards, else None. Never raises."""
+    kinds = waiting_kinds(view)
+    if not kinds:
+        return None
+    try:
+        from app.connect import am_release
+        return am_release.update_for(kinds)
+    except Exception:
+        return None
+
+
+def _miner_entry(update, rows, seen):
+    """Michi-U: ONE line while titles wait only because the Anki Miner installed is older than the approved one —
+    *Update Anki Miner to 3.11.0 to make cards from your books and texts* · *Update* (Surasura's own install route:
+    the approved release, its sha256). No *Dismiss*: it goes by itself once Anki Miner is updated (`am_release.opens`
+    says no more). Its key holds the version and the kinds: a later approved release counts again."""
+    kinds = tuple(k for k in update.get("kinds") or () if k)
+    n = sum(1 for r in rows if any(_waiting(e) in kinds for e in r.episodes))
+    if not kinds or not n:
+        return None
+    from app.connect import am_release
+    version = update.get("version") or am_release.APPROVED
+    what = " and ".join(am_release.KIND_WORDS.get(k, k) for k in kinds)
+    key = f"{MINER_UPDATE}:{version}:{'+'.join(kinds)}"
+    wait = STRINGS["miner_update_one"] if n == 1 else STRINGS["miner_update_n"].format(n=n)
+    return Entry(key=key, kind=MINER_UPDATE, title=STRINGS["miner_update_title"].format(version=version, what=what),
+                 lines=(), actions=("update_miner",), unseen=key not in seen,
+                 say=STRINGS["miner_update_say"].format(n=wait, version=version),
+                 data={"version": version, "kinds": kinds, "titles": n})
 
 
 def _gone_entry(group, hits, seen):

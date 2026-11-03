@@ -346,6 +346,8 @@ NOT_AN_INSTALL = {
     ("app/analyzer.py", "_template_fingerprint"): "the two report templates' bytes",
     ("app/connect/fit_check.py", "version"): "one video's pairing record (its subtitle's size, time and sha256 with "
                                              "its path): one per video, kept in a job's pick, which no zip takes",
+    ("app/connect/lineup.py", "spot_key"): "one subtitle's bytes with its audio's size and time: one per pair, kept "
+                                          "in the spot-check's record and its run folder's name",
     ("app/connect/media_names.py", "fingerprint"): "a subtitle line's words",
     ("app/connect/media_names.py", "line_name"): "a line's key, times and fingerprint",
     ("app/library_store.py", "line_fingerprint"): "a subtitle line's words",

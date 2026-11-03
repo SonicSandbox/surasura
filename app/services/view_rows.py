@@ -260,8 +260,8 @@ STRINGS = {
     "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
                                                 "Mine anyway: in Needs you",
     # Michi-AB Stage B (AB-Q3, PROVISIONAL): a book lined up with its audiobook before its cards are made
-    "tip_lining_up": "Anki Miner listens to its audiobook and finds each of the book's sentences in it (about 20–30 "
-                     "minutes an hour of audio), so its cards come with their sentence audio\n• Stop: its cards "
+    "tip_lining_up": "Anki Miner listens to its audiobook and finds each of the book's sentences in it, about 20–30 "
+                     "minutes an hour of audio, so its cards come with their sentence audio\n• Stop: its cards "
                      "wait until you press Mine now",
     # T2 (alpha 2's try, Sonic's correction): a refusal whose Needs you entry you dismissed — skipped, no waiting
     "tip_skipped": "Not timed to its video: skipped, as you dismissed it\n• Checked again when its subtitle or video "

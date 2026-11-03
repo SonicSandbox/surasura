@@ -38,6 +38,22 @@ reading episode adds `unit_index` and `location`, its `line_start` / `start` / `
     {"cover": true, "chapters": [{"title": "一", "index": 0}]}   # `inspect` (Z-19, with `inspect` in features):
                                                            # each source's answer; "units": true writes inspect-<n>.json
 
+Round 2's Z-16 (`audio-episodes` in `features`, 3.11.0 `cli/api/files.py`): an episode may name `audio_file` instead of
+`video_file` (with its `subtitle_file`; exactly one of the three), as a video episode's keys otherwise:
+
+    {"mine": "audio-unreadable"}                           # AUDIO_UNREADABLE before any Anki write, no result
+
+Z-24 (`extract`, 3.11; Michi-ST): a video named in "tracks" is inspected as a video (its `tracks`, API.md § inspect),
+and `extract` copies a track's text as the plan gives it into `<run_dir>/<run_id>/extract-1/` with `extract-1.json`:
+
+    {"tracks": {"<video file name>": [{"index": 2, "kind": "subtitle", "codec": "ass", "language": "jpn",
+                                       "title": null, "default": true, "forced": false, "text": true}, ...]
+                                      | "VIDEO_UNREADABLE"},       # that source's error
+     "track_files": {"<video file name>#<index>": "<the track's text>"},   # .ass unless the codec says srt / webvtt
+     "track_errors": {"<video file name>#<index>": "TRACK_NOT_TEXT"},      # that run's error
+     "extract": "setup-error",                             # the whole call refused (no ffmpeg)
+     "extract_warning": "…"}                               # ffmpeg's note on every run (a damaged source)
+
 Every call is appended to FAKE_ANKI_MINER_LOG (one JSON line: argv, and the run file's bytes' facts for `mine`), so a
 test can see what was asked and in what order; so is each progress step it couldn't write (`progress_skipped`, as
 Anki Miner warns and goes on). The run file is checked as Anki Miner checks it: strict UTF-8 with no
@@ -53,6 +69,7 @@ EPISODE_KEYS = {"run_id", "video_file", "subtitle_file", "subtitle_offset", "aud
                 "source_label_override", "secondary_subtitle_file", "secondary_subtitle_offset", "series_name_override",
                 "episode_name_override", "tags", "words"}
 WORD_KEYS = {"word", "line_start", "line_text", "line_expansion"}
+AUDIO_EPISODE_KEYS = EPISODE_KEYS - {"video_file"} | {"audio_file"}
 READING_EPISODE_KEYS = {"run_id", "reading_file", "source_label_override", "series_name_override",
                         "episode_name_override", "tags", "words"}
 # 3.7.0 (contract.py FEATURES): what each name adds to what the run file may hold
@@ -129,6 +146,10 @@ def _read_run_file(path, plan):
     for episode in data["episodes"]:
         if "reading" in features and "reading_file" in episode:
             if set(episode) - READING_EPISODE_KEYS or not {"run_id", "reading_file", "words"} <= set(episode):
+                raise ValueError("unknown or missing episode keys")
+        elif "audio-episodes" in features and "audio_file" in episode:
+            if set(episode) - AUDIO_EPISODE_KEYS or not {"run_id", "audio_file", "subtitle_file", "words"} <= \
+                    set(episode):
                 raise ValueError("unknown or missing episode keys")
         elif set(episode) - EPISODE_KEYS or not {"run_id", "video_file", "subtitle_file", "words"} <= set(episode):
             raise ValueError("unknown or missing episode keys")
@@ -209,6 +230,11 @@ def _mine(argv, plan):
     if how == "video-unreadable":       # refused at its own check, before any Anki write: no result file
         runs = [{"run_id": e["run_id"], "ok": False, "error": "VIDEO_UNREADABLE",
                  "message": f"The video cannot be opened: {e['video_file']}", "file": None} for e in data["episodes"]]
+        return {**_ok("mine", runs=runs), "ok": False}
+    if how == "audio-unreadable":       # Z-16: the audio file doesn't open, before any Anki write: no result file
+        runs = [{"run_id": e["run_id"], "ok": False, "error": "AUDIO_UNREADABLE",
+                 "message": f"The audio file cannot be opened: {e.get('audio_file')}", "file": None}
+                for e in data["episodes"]]
         return {**_ok("mine", runs=runs), "ok": False}
     readings = {e["run_id"]: _units(e["reading_file"], plan) for e in data["episodes"] if "reading_file" in e}
     if how == "source-unreadable" or any(units is None for units in readings.values()):
@@ -309,6 +335,15 @@ def _inspect(argv, plan):
         data = json.load(f)
     out = []
     for n, source in enumerate(data.get("sources") or (), 1):
+        tracks = (plan.get("tracks") or {}).get(os.path.basename(source["path"]))
+        if isinstance(tracks, str):                 # Z-24: a source's own error, the call still ok
+            out.append({"path": source["path"], "kind": None, "error": tracks, "message": "cannot read it"})
+            continue
+        if tracks is not None:
+            out.append({"path": source["path"], "kind": "video", "title": os.path.splitext(os.path.basename(
+                source["path"]))[0], "units": None, "chapters": [], "needs": [], "warnings": [], "duration": 1420,
+                "tracks": tracks, "file": None, "error": None, "message": None})
+            continue
         units = _units(source["path"], plan)
         if units is None:
             return _failed("inspect", "SOURCE_UNREADABLE", f"Cannot read {source['path']}")
@@ -319,6 +354,44 @@ def _inspect(argv, plan):
             with open(os.path.join(data["run_dir"], f"inspect-{n}.json"), "w", encoding="utf-8") as f:
                 json.dump({"units": units}, f, ensure_ascii=False)
     return {**_ok("inspect"), "result": {"sources": out}}
+
+
+_SUFFIX = {"ass": ".ass", "ssa": ".ass", "subrip": ".srt", "srt": ".srt", "webvtt": ".vtt"}
+
+
+def _extract(argv, plan):
+    """Z-24: each episode's track copied as the plan gives its text, or that run's error."""
+    if plan.get("extract") == "setup-error":
+        return _failed("extract", "SETUP_ERROR", "ffmpeg was not found")
+    with open(argv[1], encoding="utf-8") as f:
+        data = json.load(f)
+    runs = []
+    for episode in data.get("episodes") or ():
+        run_id, video, index = episode["run_id"], episode["video_file"], episode["track"]
+        name = f"{os.path.basename(video)}#{index}"
+        tracks = (plan.get("tracks") or {}).get(os.path.basename(video))
+        track = next((t for t in tracks if t.get("index") == index), None) if isinstance(tracks, list) else None
+        error = (plan.get("track_errors") or {}).get(name) or (None if track is not None else "TRACK_NOT_FOUND")
+        folder = os.path.join(data["run_dir"], run_id)
+        if error is None and os.path.exists(os.path.join(folder, "cancel")):
+            error = "CANCELLED"
+        if error:
+            runs.append({"run_id": run_id, "ok": False, "error": error, "message": error, "file": None,
+                         "failure_is_transient": False})
+            continue
+        out_dir = os.path.join(folder, "extract-1")
+        os.makedirs(out_dir, exist_ok=True)
+        tag = f".{track['language']}" if track.get("language") not in (None, "und") else ""
+        dest = os.path.join(out_dir, os.path.splitext(os.path.basename(video))[0] + tag +
+                            _SUFFIX.get(track.get("codec"), ".srt"))
+        with open(dest, "w", encoding="utf-8", newline="\n") as f:
+            f.write((plan.get("track_files") or {}).get(name, ""))
+        with open(os.path.join(folder, "extract-1.json"), "w", encoding="utf-8") as f:
+            json.dump({"subtitle_file": dest, "language": track.get("language"), "codec": track.get("codec"),
+                       "warning": plan.get("extract_warning")}, f, ensure_ascii=False)
+        runs.append({"run_id": run_id, "ok": True, "error": None, "message": None, "file": "extract-1.json",
+                     "failure_is_transient": False})
+    return {**_ok("extract"), "ok": all(r["ok"] for r in runs), "runs": runs}
 
 
 def _cancel_seen(folder, wait=5.0):
@@ -370,8 +443,10 @@ def main(argv):
         verdict = _ok("settings-export")
     elif command == "mine":
         verdict = _mine(argv, plan)
-    elif command == "inspect" and "inspect" in plan.get("features", []):
+    elif command == "inspect" and ("inspect" in plan.get("features", []) or "tracks" in plan):
         verdict = _inspect(argv, plan)
+    elif command == "extract":
+        verdict = _extract(argv, plan)
     else:
         verdict = _failed(command, "BAD_ARGUMENTS", "unknown command")
     if plan.get("schema", 1) != 1:

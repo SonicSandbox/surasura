@@ -70,7 +70,8 @@ def test_an_anki_miner_older_than_the_approved_one_that_cant_read_books_is_opene
     Surasura doesn't know its ask."""
     _record(OLD, NO_READING)
     assert am_release.opens("books") == am_release.APPROVED
-    assert am_release.update_for({"books", "audio"}) == {"version": am_release.APPROVED, "kinds": ("books",)}
+    known = ("books", "audio") if anki_miner.mines("audio") else ("books",)      # (Michi-AB's Z-16: audio known)
+    assert am_release.update_for({"books", "audio"}) == {"version": am_release.APPROVED, "kinds": known}
     if not anki_miner.mines("audio"):
         assert am_release.opens("audio") is None, "no Anki Miner opens audio in a Surasura that doesn't mine it"
 

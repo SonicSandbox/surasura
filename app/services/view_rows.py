@@ -212,6 +212,9 @@ Episode = namedtuple("Episode", Episode._fields + ("new_faded",), defaults=tuple
 # --- Michi-ST (PROVISIONAL): `tracks`, what a waiting video's own tracks say (`app/tracks.note`): "pictures" — its only
 # subtitles are drawn as pictures, not read yet; "no-miner" — no Anki Miner here to read a track inside it; else None
 Episode = namedtuple("Episode", Episode._fields + ("tracks",), defaults=tuple(Episode._field_defaults.values()) + (None,))
+# --- try a9.1 (Mado-Y): `online`, an online video's `source_type` ("youtube" · "bilibili"): ▶ opens its page in the
+# browser (`play.online_link`); None for a file on disk and in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("online",), defaults=tuple(Episode._field_defaults.values()) + (None,))
 Arrival = namedtuple("Arrival", Arrival._fields + ("audio",), defaults=tuple(Arrival._field_defaults.values()) + ("",))
 
 
@@ -267,7 +270,7 @@ STRINGS = {
     "mark_missing": "{eps}: {gone}",                  # R55-C (Sonic): Up Next's own words, which episodes first
     "mark_removed": "{Word} deleted after mining: {eps}\nThe cards keep their pictures and audio; only ▶ can't play it",
     "play": "{verb} {name} in your {player}\nThe {word} beside its subtitle file",
-    "play_online": "Its video is online: opening it from here comes in a later build",
+    "play_online": "Watch it on {site} in your browser\nIts video's own page, from what the downloader kept",
     # row 55: ▶'s own lookup found nothing to open (PROVISIONAL words)
     "play_not_found": "No {word} found for it on this computer, so there is nothing to {verb_l} from here",
     # R55-A (Sonic): before the check has answered, Up Next says *Looking…*; its tip says only that (A-11)
@@ -927,7 +930,9 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     mined = c > 0
     word = MEDIA_WORD.get(media, "video")
     verb = VERB[word]
-    online = item.get("source_type") in ("youtube", "bilibili")      # its video is online: no address for it yet
+    # its video is online (try a9.1, Sonic: "the play button for a youtube video should be the video"): ▶ opens its
+    # page in the browser (`play.online_link`, on the click's worker) — always shown, never looked for on disk
+    online = item.get("source_type") in ("youtube", "bilibili")
     said = connect.get(item["id"]) if connect is not None else None
     # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): ▶ only where ▶'s own lookup
     # (`play.Looks`, its answers `playable`) found the file — never asked where it can't be, nor where Connect says
@@ -936,7 +941,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     no_video = said is not None and said.kind == connect_feed.NO_VIDEO and word == "video"
     ask = None if missing or waiting or online or no_video else (item.get("rel_path"), media)
     looking = ask is not None and playable is not None and item["id"] not in playable
-    can_play = ask is not None and (playable is None or bool(playable.get(item["id"])))
+    can_play = online or (ask is not None and (playable is None or bool(playable.get(item["id"]))))
     # mining: Connect is making its cards now — an episode already in Anki that a level raise mines again too (alpha 2's
     # try, T3: its row showed only ✓, so no row said where the strip's arc was); a level job that waits keeps ✓
     ep = Episode(id=item["id"], label=label, number=number, title=name if audio else stem(name),
@@ -947,7 +952,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
                  ask=ask, looking=looking, text=_waits_for(item, media), added=item.get("added_at"),
-                 disk=item.get("mtime_ns"), media=media, tracks=tracks_said)
+                 disk=item.get("mtime_ns"), media=media, tracks=tracks_said,
+                 online=item.get("source_type") if online else None)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -962,7 +968,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
         from app.connect.runner import MOVED
         st = st._replace(moved=left, tip=STRINGS["tip_connect_moved"].format(tip=MOVED.format(folder=left)))
     if online:
-        tip = STRINGS["play_online"]
+        from app.services.play import SITES
+        tip = STRINGS["play_online"].format(site=SITES[item["source_type"]])
     elif waiting and audio:
         tip = STRINGS["play_audio_wait"]
     elif waiting and tracks_said == tracks.PICTURES:

@@ -526,7 +526,7 @@ def subtitles_for_video(path, language):
         v, _by = video_for(name, vids, language, keyed=lambda: keys)
         if v != me and (v is None or mine is None or episode_key(v, language) != mine):
             continue
-        if file_refusal(full, language, name):           # K6, the look's one rule: an untagged English `.srt` is
+        if _file_refusal(full, language):                # K6, the look's one rule: an untagged English `.srt` is
             continue                                     # never its text
         rank = (subtitle_rank(name, language, named=_tag(name)[0] == stem), full)
         (found if v == me else episode).append(rank)
@@ -787,17 +787,17 @@ def _refusal(data, language, loose=False, head=False):
     return None
 
 
-def file_refusal(path, language, name=None):
-    """`_refusal` of the file at `path` (`name`: the original's, for its kind; a `.part` is named for its original),
-    judged by the bytes `_read_text` judges — all of a text up to IN_MEMORY, else its first HEAD — never hashed: why
-    it is not the library's content, or None. A file that can't be read is refused ("unread")."""
+def _file_refusal(path, language):
+    """`_refusal` of the file at `path`, judged by the bytes `_read_text` judges — all of a text up to IN_MEMORY, else
+    its first HEAD — never hashed: why it is not the library's content, or None. A file that can't be read is refused
+    ("unread")."""
     try:
         with open(path, "rb") as f:
             data = f.read(IN_MEMORY + 1)
     except OSError:
         return "unread"
     big = len(data) > IN_MEMORY
-    return _refusal(data[:HEAD] if big else data, language, (name or path).lower().endswith(_LOOSE), big)
+    return _refusal(data[:HEAD] if big else data, language, path.lower().endswith(_LOOSE), big)
 
 
 def _locked(path):
@@ -1713,10 +1713,12 @@ class _Look:
             if self._recent(st) or st.st_size == 0:
                 self._wait(os.path.dirname(path))
                 return
-            data, sha, _head = _read_text(path, st)
+            data, sha, head = _read_text(path, st)
             if sha is None or not self._same(path, st):
                 self._wait(os.path.dirname(path))
                 return
+            if _refusal(head, self.language, False, data is None):   # K6: an original saved over with another
+                return                                                # language's text is never copied back
             rel = self._copy(path, st, said["rel"].split("/")[1], said["rel"].rsplit("/", 1)[-1], sha, data)
             if rel is None:
                 self._wait(os.path.dirname(path))
@@ -3270,10 +3272,11 @@ class _Look:
 
     def _recopy(self, rel, old_sha, path, st):
         """S5: the original's new text over Surasura's copy at `rel` -> ('done' | 'same' | 'refused' | 'wait', sha).
-        Refused (`_refuses`, or new bytes the one language rule refuses: K6). Wait: it changed while read, or the trash
-        couldn't take the old copy."""
-        if self._refuses(rel, st):
-            return "refused", None
+        Refused (`_refuses`, or an original the one language rule refuses, judged before anything is written: K6;
+        the copy is checked against the original's listed stats, so the bytes copied are the bytes judged). Wait: it
+        changed while read, or the trash couldn't take the old copy."""
+        if self._refuses(rel, st) or _file_refusal(path, self.language):   # K6: an English `.srt` saved over the
+            return "refused", None                                         # original never becomes the item's text
         full = self._inside(rel)
         part = full + ".part"
         sha = self._checked_copy(path, st, part)
@@ -3282,9 +3285,6 @@ class _Look:
         if sha == old_sha:
             _drop(part)
             return "same", sha
-        if file_refusal(part, self.language, os.path.basename(path)):   # K6: an English `.srt` saved over the
-            _drop(part)                                                   # original never becomes the item's text
-            return "refused", None
         try:                                                 # (a7) new bytes dated as the copy they replace — a v2
             new, old = os.stat(part), os.stat(full)          # from the same archive, the same size — would read as
             if (new.st_size, new.st_mtime_ns) == (old.st_size, old.st_mtime_ns):    # unchanged to the disk sync:
@@ -3325,7 +3325,7 @@ class _Look:
             if o is None or o.version or o.availability != "missing" or _key(path) in self.ex_paths:
                 continue                                     # LM1b: a version's bytes are never the item's copy
             rank = (_episode_of(os.path.basename(path))[1], o.paired_at or "")
-            if (o.item_id not in chosen or rank > chosen[o.item_id][0]) and not file_refusal(path, self.language):
+            if (o.item_id not in chosen or rank > chosen[o.item_id][0]) and not _file_refusal(path, self.language):
                 chosen[o.item_id] = (rank, o, folder, path, st)   # (K6: never an original none of ours copied back)
         back, records, placed, handled = [], {}, {}, set()
         try:
@@ -3376,7 +3376,7 @@ class _Look:
     def _changed(self, folder, path, st):
         """A known original in a folder listed (its stats from the listing, H2): when its size or time moved, its text
         followed (S5) and its record's stats rewritten; a refused one is left as it is (looked at again the next time
-        its folder is listed, by its stats alone)."""
+        its folder is listed: by its stats alone, or by its first bytes when the one language rule refused it, K6)."""
         o = self.origins.get(_key(path))
         if o is None or (st.st_size, st.st_mtime_ns) == (o.size, o.mtime_ns):
             return

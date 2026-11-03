@@ -10450,7 +10450,9 @@ def _read_into_part(self, plan, token):
     """A switch's bytes, outside the lock: the plan's own (`plan["data"]`: a book's new edition's part, LM3), else the
     first of `plan["origins"]` (then the trashed copy, `plan["trash"]`) whose bytes are `plan["sha256"]`, written beside
     the copy as `<copy>.<token>.part` (its own name: two switches never share one) -> True, else False. Never written
-    where `Library` leads out of the data folder."""
+    where `Library` leads out of the data folder, nor from an original the look's one language rule refuses
+    (`sources._refusal`, K6: every switch — a better version, *Use [B]'s subtitles*, an Undo — goes this one way)."""
+    from app import sources
     full = os.path.join(self.data_dir, _strip(plan["rel"]))
     if not _ours_to_move(self.data_dir, plan["rel"], full):
         return False
@@ -10467,6 +10469,8 @@ def _read_into_part(self, plan, token):
             continue
         if not plan["sha256"] or hashlib.sha256(data).hexdigest() != plan["sha256"]:
             continue
+        if path in plan["origins"] and sources._refusal(data, self.language):   # K6, the look's one rule: an
+            continue                                         # original saved over with English is never switched in
         try:
             with open(part, "wb") as f:
                 f.write(data)

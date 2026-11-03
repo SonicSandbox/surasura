@@ -290,6 +290,51 @@ def test_a_version_saved_over_with_english_is_never_switched_in(language):
             assert f.read() == before
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_use_another_groups_subtitles_never_switches_in_an_english_file(language):
+    """*Use [B]'s subtitles* (LM2's switch, the learner's own): group B's episode 1 saved over with English after the
+    look recorded it is never switched in — that episode keeps A's text, B's episode 2 is switched as asked."""
+    from tests.test_sources_groups import _group_b, _show, _work
+    store, data_dir = _empty(language)
+    src = _drive("Anime")
+    _show_name, a, b, _v = _show(language, src)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root, first=True)
+        rows = store.conn.execute("SELECT id, rel_path FROM items ORDER BY id").fetchall()
+        _copy(ENGLISH[language], b[1], age=30)
+        _look(store, language, root, full=True)                    # (its record follows the file: LM3)
+        store.switch_group(_work(store), _group_b(store))
+        held = {}
+        for item_id, _rel in rows:
+            rel = store.item(item_id)["rel_path"]
+            with open(os.path.join(data_dir, *rel.split("/")), "rb") as f:
+                held[item_id] = f.read()
+        with open(os.path.join(RESOURCES, ENGLISH[language]), "rb") as f:
+            english = f.read()
+        with open(a[1], "rb") as f1, open(b[2], "rb") as f2:
+            assert [held[i] for i, _r in rows[:2]] == [f1.read(), f2.read()]
+        assert english not in held.values()
+
+
+@pytest.mark.parametrize("language,title", (("ja", "星屑の剣士になりたくて！"), ("zh", "西游记")))
+def test_an_audiobooks_transcript_is_never_copied_back_from_an_english_original(language, title):
+    """Item 8a for an audiobook's transcript: its copy gone and its original saved over with English — nothing is
+    copied back (the item waits for its text), never the English."""
+    from tests.test_audiobook_transcripts import _alone
+    store, data_dir, src, _m4b, srt = _alone(language, title)
+    with store:
+        root = store.add_source(src)
+        _look(store, language, root)
+        (item_id,) = [r[0] for r in store.conn.execute("SELECT id FROM items")]
+        copy = os.path.join(data_dir, *store.item(item_id)["rel_path"].split("/"))
+        os.remove(copy)
+        store.sync_disk()
+        _copy(ENGLISH[language], srt, age=30)
+        assert _look(store, language, root, full=True)["restored"] == 0
+        assert not os.path.exists(copy)
+
+
 # --- 3 · setup's *Choose a file…* with a video ------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)

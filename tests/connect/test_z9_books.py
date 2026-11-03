@@ -325,8 +325,9 @@ class BookSteps(StoreSteps):
         return super().pick(lang, job, video)
 
 
-def _parts_in_store(tmp_path, lang="ja"):
-    """Two parts of a real EPUB (its first chapter's first two) added with their origin records (`<epub>#<n>` + Hon's `chapter`), as Extract does."""
+def _parts_in_store(tmp_path, lang="ja", chapter=True):
+    """Two parts of a real EPUB (its first chapter's first two) added with their origin records (`<epub>#<n>` + Hon's `chapter`), as Extract does
+    (`chapter` False: parts from before Hon's record)."""
     epub = _novel(tmp_path)
     docs, _ = extract.epub_documents(epub)
     pieces = extract.book_split(docs, 1500)[1:3]         # the first chapter's first two parts: one document shared
@@ -339,7 +340,7 @@ def _parts_in_store(tmp_path, lang="ja"):
         with open(files[-1], "w", encoding="utf-8") as f:
             f.write(p.text)
     origins = {f: {"origin": f"{epub}#{n}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": "0" * 64,
-                   "show": "旅の記録", "episode": n, "chapter": p.chapter}
+                   "show": "旅の記録", "episode": n, **({"chapter": p.chapter} if chapter else {})}
                for n, (f, p) in enumerate(zip(files, pieces), 1)}
     with c.store(lang) as s:
         added = s.insert(files, "now", origins=origins).added
@@ -366,12 +367,22 @@ def test_once_anki_miner_reads_books_a_book_in_the_line_is_mined_from_its_epub_w
     _run(steps)
     assert ("reading", episode, os.path.join(str(tmp_path), f"episode-{episode}.mkv"), None) in steps.log
     assert ("fit", episode) in steps.log, "a video's job is checked for timing as before"
-    assert ("reading", parts[0], None, epub) in steps.log
+    assert _named(steps, parts[0]) == _copy_of(steps, epub, parts[0]), "a part names its own copy (Michi-BK)"
     assert ("reading", text, None, os.path.join(c.dirs("ja")[0], *_rel(text).split("/"))) in steps.log
     assert ("fit", parts[0]) not in steps.log and ("fit", text) not in steps.log
     assert _jobs(parts[0])[-1]["state"] == "done" and parts[0] in _mined(steps)
     with c.store("ja") as s:
         assert library.book_parts(s, epub) == records
+
+
+def _named(steps, item_id):
+    """The file the item's last pick was told Anki Miner reads."""
+    return [e[3] for e in steps.log if e[:3] == ("reading", item_id, None)][-1]
+
+
+def _copy_of(steps, epub, item_id):
+    """A book's part's own copy of its EPUB: the job's run folder, `book/<the EPUB's name>` (`reading.part_book`)."""
+    return os.path.join(steps.run_dir(_jobs(item_id)[-1]), "book", os.path.basename(epub))
 
 
 def _rel(item_id):
@@ -444,9 +455,10 @@ def test_with_the_ledger_a_book_set_aside_before_is_queued_again_and_mined_as_a_
     steps.can = frozenset({"books"})
     _run(steps)
     assert len(_jobs(parts[0])) == 1 and _jobs(parts[0])[-1]["state"] == "done"
-    assert ("reading", parts[0], None, epub) in steps.log
+    assert _named(steps, parts[0]) == _copy_of(steps, epub, parts[0])
     with Ledger() as ledger:
-        assert ledger.picked(_jobs(parts[0])[-1]["id"])["reading"] == epub
+        picked = ledger.picked(_jobs(parts[0])[-1]["id"])
+        assert (picked["reading"], picked["book"]) == (_copy_of(steps, epub, parts[0]), epub)
 
 
 def test_a_books_cards_keep_anki_miners_media_names(tmp_path):

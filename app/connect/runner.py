@@ -1597,7 +1597,8 @@ class Steps:
     def reading(self, lang, job):
         """Z-9: (the file Anki Miner reads, the EPUB or None) when the job's item is a book or a text
         (`library.waits_for`), else None (`connect.reading.source`: the EPUB a part was cut from, else the item's own
-        text). A busy store is a Wait."""
+        text). A book's part names its own copy of the EPUB (`reading.part_book`: Anki Miner reads that part, never the
+        whole book again); one it can't be made for, the whole EPUB as before. A busy store is a Wait."""
         from app.connect import library, reading
         with _held():
             with self._open(lang) as store:
@@ -1609,6 +1610,14 @@ class Steps:
         if not path:
             return None
         found, book = reading.source(path, pairing)
+        if book is not None and found == book and reading.chapter(pairing) is not None:
+            try:
+                part, why = reading.part_book(book, reading.chapter(pairing), self.run_dir(job))
+            except Exception as e:      # never a reason not to mine: the whole book, as before
+                part, why = None, f"{type(e).__name__}: {e}"
+            if part is None:
+                log.info("Connect: job %s reads the whole book %s (%s)", job["id"], os.path.basename(book), why)
+            found = part or found
         return reading.as_text(found, self.run_dir(job), lang), book
 
     def subtitle(self, lang, job):

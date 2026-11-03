@@ -2307,6 +2307,9 @@ class ShellWindow(QMainWindow):
         if "covers_download" in keys:                   # --- W3.2 L3: turned on, what is on screen now is asked
             qcovers.ask_again()                         # (titles dropped while it was off too: N1)
             self.ask_shown_covers()
+            moved = getattr(self._reader_shown, "airing_moved", None)
+            if moved is not None:                       # alpha 9 (L1): AniList's *Still asking* follows the switch
+                moved()
         if "connect_enabled" in keys or "logic.automation" in keys:     # Connect's tick is skipped while off (its
             # switch or D29's automation, `connect_on`: P4.1 WF, review B1): its line asked now
             refresh = getattr(self.services.status, "refresh_soon", None)

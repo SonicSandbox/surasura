@@ -4,17 +4,20 @@ network call, specified there and named in `CLAUDE.md` §1. Qt-free, Tk-free, st
 
 **Nothing leaves the machine unless `covers_download` is True** (settings.json, read only — never written here; asked
 again before every request). What is sent, and nothing else: an AniList id (`id_in`, up to `BATCH` a query), or — only
-when no id is known — a cleaned title (`clean_title`: no release group, episode, resolution, hash or path); YouTube gets
+when no id is known — a cleaned title (`clean_title`: no release group, episode, resolution, hash or path; asked again
+without its season when that finds no sure answer, `search_text`); YouTube gets
 a video id (`i.ytimg.com/vi/<id>/hqdefault.jpg`: a video already in the library, C5). Every request says
 `User-Agent: Surasura/<version>` and sends no `Referer` (AniList's image server refuses some by it) and no cookie.
 TMDB is skipped in 3.0's first cut (no key in source, CI or tests: the seam is `paste`'s *no_key*).
 
 - **`Fetcher(language, writer)`**: `want(wants)` — the titles that arrived or first show (never a sweep of the
   library: the window asks for what it paints) — returns at once; its own thread (never the window's) fetches them:
-  ids first, batched, then a title search behind the confidence gate (`gate`: one candidate's romaji, English, native
-  or synonym title, folded as one show (`episode_names.show_key`), equals the cleaned name's, and the season — and the
-  year, when the name holds one — agrees; else nothing: the generated cover stays and *Change cover…* offers
-  `candidates`). AniList's API is asked at most `PER_MINUTE` times a minute (its degraded limit), its images
+  ids first, batched, then a title search — the cleaned name, then, when the gate takes none of its answers, the name
+  without its season (`search_text`; `Fetcher._lookup`) — behind the confidence gate (`gate`: one candidate's romaji,
+  English, native or synonym title, folded as one show (`episode_names.show_key`), equals the cleaned name's, and the
+  season — and the year, when the name holds one — agrees; none: a TV show or film whose title is the name and a
+  subtitle; none either: season 1's TV sequels walked to the season the name says, alpha 9 try (*Mushoku Tensei* S01 /
+  S02); else nothing: the generated cover stays and *Change cover…* offers `candidates`). AniList's API is asked at most `PER_MINUTE` times a minute (its degraded limit), its images
   `IMAGES_PER_MINUTE`. Each image is written into the covers cache (`.part`, then renamed) and recorded
   `writer.set_cover(work, "anilist" | "youtube", ref=<id>, path="cache:<name>", auto=True)` — a background cover:
   never on the user's Undo stack — and only over no cover or an unlocked generated one (or its own source's after
@@ -60,9 +63,9 @@ NOT_ANIME = ("drama", "youtube", "podcast", "audiobook", "book", "lightnovel", "
 _OPEN = (None, "generated")         # an unlocked cover a fetch may write over
 
 Q_IDS = ("query ($ids: [Int]) { Page(perPage: 50) { media(id_in: $ids) { id coverImage { extraLarge large } } } }")
-Q_SEARCH = ("query ($search: String) { Page(perPage: 10) { media(search: $search, type: ANIME) { id format "
-            "seasonYear startDate { year } title { romaji english native } synonyms coverImage { extraLarge large } "
-            "} } }")
+Q_SEARCH = ("query ($search: String) { Page(perPage: 10) { media(search: $search, type: ANIME) { id format episodes "
+            "seasonYear startDate { year } title { romaji english native } synonyms relations { edges { relationType "
+            "node { id format } } } coverImage { extraLarge large } } } }")
 
 Want = namedtuple("Want", "id title anilist_id video_id kind media_type cover_source cover_ref cover_path cover_locked "
                          "rel_paths own_folders own_books own_away", defaults=((), (), (), False))
@@ -121,6 +124,13 @@ _SEASONS = (re.compile(r"(?i)\b(?:season|series)\s*(\d{1,2})\b"), re.compile(r"(
             re.compile(r"(?i)\bs(\d{1,2})\b"), re.compile(r"第\s*([0-9一二三四五六七八九十]+)\s*[期季]"),
             re.compile(r"シーズン\s*([0-9]+)"))
 _KANJI_NUMBERS = {c: i for i, c in enumerate("一二三四五六七八九十", 1)}
+_PARTS = (re.compile(r"(?i)\b(?:part|cour)\s*(\d{1,2})\b"), re.compile(r"(?i)\b(\d{1,2})(?:st|nd|rd|th)\s+(?:part|cour)\b"),
+          re.compile(r"第\s*([0-9一二三四五六七八九十]+)\s*クール"))
+_SUBTITLE = re.compile(r":\s|\s[-–—]\s|~")      # where a title's subtitle starts (NFKC: ： is :, ～ is ~)
+_TITLE_YEAR = re.compile(r"\(\s*((?:19|20)\d{2})\s*\)")
+MAIN_FORMATS = ("TV", "TV_SHORT", "MOVIE")  # a name + subtitle is taken on these only: never a special, OVA or ONA
+SEQUEL_FORMATS = ("TV", "TV_SHORT")         # the seasons a sequel walk counts
+LONG_SEASON = 30                            # episodes: a season longer (a long-runner) is never walked past
 
 
 def clean_title(raw):
@@ -149,16 +159,41 @@ def clean_title(raw):
     return s, year
 
 
-def _season(title):
-    """(the title without its season, the season's number or None): `進撃の巨人 Season 2` → (`進撃の巨人`, 2)."""
+def _numbered(title, patterns):
+    """(the title without the first of `patterns`' marks, its number or None)."""
     t = unicodedata.normalize("NFKC", title or "")
-    for pattern in _SEASONS:
+    for pattern in patterns:
         m = pattern.search(t)
         if m:
             n = m.group(1)
             number = _KANJI_NUMBERS.get(n) if n in _KANJI_NUMBERS else int(n) if n.isdigit() else None
             return t[:m.start()] + " " + t[m.end():], number
     return t, None
+
+
+def _season(title):
+    """(the title without its season, the season's number or None): `進撃の巨人 Season 2` → (`進撃の巨人`, 2)."""
+    return _numbered(title, _SEASONS)
+
+
+def _reading(title, years=True):
+    """(base, season, part, year) of a title as the gate reads it: its season (`_season`), its part or cour (`Part 2`,
+    `Cour 2`, `第2クール`: a season AniList splits in two) and a year in round brackets (`HUNTER×HUNTER (2011)`) taken
+    off the base (`years`; else the year stays in it); each None when it says none."""
+    t = unicodedata.normalize("NFKC", title or "")
+    m = _TITLE_YEAR.search(t)
+    year = int(m.group(1)) if m else None
+    t, season = _season(_TITLE_YEAR.sub(" ", t) if years else t)
+    t, part = _numbered(t, _PARTS)
+    return t, season, part, year
+
+
+def search_text(name):
+    """A cleaned name without its season or part (`Mushoku Tensei Season 1` → `Mushoku Tensei`: AniList finds nothing
+    for the first), asked when the name as it is finds no sure answer (`Fetcher._lookup`) — the gate then picks the
+    season among the show's entries; the name itself when nothing is left."""
+    base = re.sub(r"\s+", " ", _reading(name)[0]).strip(" -–—~._:|")
+    return base or name
 
 
 def _titles(media):
@@ -170,20 +205,82 @@ def _year_of(media):
     return media.get("seasonYear") or (media.get("startDate") or {}).get("year")
 
 
+def _passes(media, key, season, part, year, whole):
+    """Whether one of `media`'s titles is the name (`key`, `season`, `part`, `year`): `whole` — the whole title, its
+    season, part and bracketed year taken off; else the name followed by a subtitle (`: …`, ` - …`, `～…～`). Their
+    seasons and parts agree (none said is the first); a bracketed year in a title counts only for a name of that
+    year."""
+    if year is not None and _year_of(media) != year:
+        return False
+    for title in _titles(media):
+        base, s, p, y = _reading(title)
+        if (s or 1) != (season or 1) or (p or 1) != (part or 1):
+            continue
+        if whole and y is not None and show_key(_reading(title, years=False)[0]) == key:
+            return True                         # its year said as the name says it (`Hunter x Hunter 2011`)
+        if y is not None and y != year:
+            continue
+        if whole and show_key(base) == key:
+            return True
+        if not whole and any(show_key(base[:m.start()]) == key for m in _SUBTITLE.finditer(base)):
+            return True
+    return False
+
+
+def _later_part(media):
+    """A season's later part or cour (`Part 2`, `Cour 2`, `第2クール`): AniList's second entry of one season."""
+    return any((_reading(t)[2] or 1) > 1 for t in _titles(media))
+
+
+def _sequel(media, base, season, year):
+    """Season `season` (2 or more) as season 1's TV sequels walked through AniList's `relations` (SEQUEL, `TV` /
+    `TV_SHORT`) among this search's answers: season 1 is the gate's answer for `base`; a later part of a season
+    (`_later_part`) is that season still. None when a step has two sequels or none, or one not among the answers; when
+    a season walked past has no episode count or more than `LONG_SEASON` (a long-runner, which file names split into
+    seasons of their own: `Naruto` S02 is never `NARUTO: Shippuuden`); or, with a year, when the season isn't of it."""
+    at = gate(base, media)
+    if at is None or at.get("format") not in SEQUEL_FORMATS:
+        return None
+    by_id = {m.get("id"): m for m in media}
+    number, length, seen = 1, at.get("episodes"), {at.get("id")}
+    while True:
+        edges = (at.get("relations") or {}).get("edges") or () if isinstance(at.get("relations"), dict) else ()
+        nxt = [e["node"].get("id") for e in edges if isinstance(e, dict) and e.get("relationType") == "SEQUEL"
+               and isinstance(e.get("node"), dict) and e["node"].get("format") in SEQUEL_FORMATS]
+        if len(nxt) != 1 or nxt[0] not in by_id or nxt[0] in seen:
+            return None
+        at = by_id[nxt[0]]
+        seen.add(nxt[0])
+        count = at.get("episodes")
+        if _later_part(at):                     # the same season's next cour: its episodes add up
+            length = length + count if isinstance(length, int) and isinstance(count, int) else None
+            continue
+        if not isinstance(length, int) or length > LONG_SEASON:
+            return None
+        number, length = number + 1, count
+        if number == season:
+            return at if year is None or _year_of(at) == year else None
+
+
 def gate(name, media, year=None):
-    """The one AniList answer (`media`: the search's) that is this title, or None: a candidate passes when one of its
-    titles, its season taken off and folded as one show (`show_key`), equals the cleaned name's, their seasons agree
-    (none said is the first), and — when the name holds a year — its year is that year. Two or more passing: none (a
-    wrong cover is worse than the generated one)."""
-    base, season = _season(name)
+    """The one AniList answer (`media`: the search's) that is this title, or None. A candidate passes when one of its
+    titles, its season and part taken off and folded as one show (`show_key`), equals the cleaned name's, their seasons
+    and parts agree (none said is the first), and — when the name holds a year — its year is that year. None passing:
+    one whose title is the name followed by a subtitle (`Mushoku Tensei: Isekai Ittara Honki Dasu` for `Mushoku
+    Tensei`), a TV show, a short or a film only (`MAIN_FORMATS`); none of those either, and the name says a season past
+    the first: season 1's TV sequels walked to it (`_sequel`). Two or more passing at a step: none (a wrong cover, and
+    a wrong airing answer, is worse than the generated one)."""
+    base, season, part, _year = _reading(name)
     key = show_key(base)
     if not key:
         return None
-    hits = []
-    for m in media or ():
-        ok = any(show_key(b) == key and (s or 1) == (season or 1) for b, s in map(_season, _titles(m)))
-        if ok and (year is None or _year_of(m) == year):
-            hits.append(m)
+    media = [m for m in media or () if isinstance(m, dict)]
+    hits = [m for m in media if _passes(m, key, season, part, year, whole=True)]
+    if not hits:
+        hits = [m for m in media if m.get("format") in MAIN_FORMATS and _passes(m, key, season, part, year, whole=False)]
+    if not hits and (season or 1) > 1 and part is None:
+        found = _sequel(media, base, season, year)
+        hits = [found] if found is not None else []
     return hits[0] if len(hits) == 1 else None
 
 
@@ -335,7 +432,7 @@ class Fetcher:
         self._thread = None
         # 3.0.1 item 5: whether a show near its end is still airing — asked through this fetcher's own `_post` (its
         # throttle: one AniList budget; its headers; its switch), made and stopped with it (`app/services/airing.py`)
-        self.airing = airing.Airing(language, self._post, self.on, background=background)
+        self.airing = airing.Airing(language, self._post, self.on, background=background, find=self._match)
 
     # --- the window's side (any thread; returns at once) ----------------------------------------------------------- #
     def on(self):
@@ -506,11 +603,10 @@ class Fetcher:
         if not self._go():
             return 0
         try:
-            media = self._find(name)
+            match = self._lookup(name, year)
         except _Failed:
             self._failed(w)
             return 0
-        match = gate(name, media, year)
         if match is None or not _cover_url(match):
             self._finished(w)                       # no sure match: *Change cover…* offers the candidates
             return 0
@@ -545,6 +641,26 @@ class Fetcher:
     def _find(self, name, first=False):
         data = self._post({"search": name}, Q_SEARCH, first)
         return [m for m in (data.get("Page") or {}).get("media") or () if isinstance(m, dict)]
+
+    def _lookup(self, name, year, first=False):
+        """The gate's one answer for a cleaned name, or None: AniList asked the name as it is (a season's own title can
+        sit past a franchise's first page without it), then — only when the gate takes none of those answers and the
+        name says a season or part — the name without it (`search_text`: AniList finds nothing for `Mushoku Tensei
+        Season 1`). Raises when AniList didn't answer (`_post`)."""
+        match = gate(name, self._find(name, first), year)
+        text = search_text(name)
+        if match is None and text != name:
+            match = gate(name, self._find(text, first), year)
+        return match
+
+    def _match(self, title):
+        """(Airing's thread; Sonic 2026-11-02, item 2) A title's AniList id by its cleaned name — the covers' own search
+        and gate (`_lookup`) — or None: no name to ask by, or no one sure answer. Raises when AniList didn't answer."""
+        name, year = clean_title(title)
+        if not name:
+            return None
+        match = self._lookup(name, year)
+        return match.get("id") if match is not None and isinstance(match.get("id"), int) else None
 
     def _post(self, variables, query, first=False):
         """AniList's answer's `data` for `query` with `variables` (the only values sent: ids, or a cleaned title).
@@ -609,6 +725,8 @@ class Fetcher:
             return []
         try:
             media = self._find(name, first=True)
+            if not media and search_text(name) != name:     # nothing for `… Season 1`: the show's entries
+                media = self._find(search_text(name), first=True)
         except _Failed as e:
             if not self._go():                      # switched off or stopped while it waited: nothing was asked
                 return None
@@ -688,7 +806,13 @@ def fetchable(want):
         return False
     if want.anilist_id or want.video_id:
         return True
-    return (want.kind == "subtitle" and want.media_type not in NOT_ANIME and bool(clean_title(want.title)[0]))
+    return want.kind == "subtitle" and by_title(want.title, want.media_type)
+
+
+def by_title(title, media_type):
+    """Whether AniList may be asked a title by its name: a name it cleans to, of a title not called something other
+    than anime (`NOT_ANIME`) — the covers' rule, and the airing asks' for a show with no id (`airing.title_of`)."""
+    return media_type not in NOT_ANIME and bool(clean_title(title)[0])
 
 
 def _gone(path):

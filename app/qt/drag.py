@@ -207,8 +207,9 @@ def when_done(view, row, now=None, pending=False):
       in on its own lately, `view_rows.still_arriving`, or it already has files in Finished: a show still airing), R5
       a file still to come (a hole in its numbers, one in New arrivals, a video waiting for its subtitle); it is
       ("offer", why) when nothing of these holds it but AniList's kept answer (`view.airing`, 3.0.1 item 5): still
-      airing (R4), or more episodes listed than its files reach (R5) — asked only after 3.0's own checks, so AniList
-      never finishes one sooner; R6 *Keep
+      airing (R4), or more episodes listed than its files reach (R5), or no answer yet for a show AniList can be asked
+      about (`airing.PENDING`: it waits for the answer, alpha 9 #JNFJ8Q) — asked only after 3.0's own checks, so
+      AniList never finishes one sooner; R6 *Keep
       studying watched episodes* on (nothing moves by itself), a write still on its way (`pending`: the view may not
       hold it yet), a group, a row of no title, the first screen's cache (Goal, New arrivals and Finished not read).
     - None — nothing is offered (the plain ✓; Up Next's Done says why): hato's mix; a part of a title whose other part waits in Current, in Goal or inside a
@@ -267,6 +268,8 @@ def _why(hold, entry, eps):
     """AA-3 (PROVISIONAL): the few words the offer says when AniList held the show back."""
     if hold == "airing":
         return strings.DONE_WHY_AIRING
+    if hold == "asking":
+        return strings.DONE_WHY_ASKING
     return strings.DONE_WHY_MORE.format(n=int(entry["episodes"]), m=max(e.number for e in eps if e.number is not None))
 
 
@@ -949,7 +952,7 @@ def _aside(settings, language):
 class _Drag:
     """One drag in progress."""
     __slots__ = ("src", "key", "row", "ids", "title", "source", "grab", "target", "parting", "at", "external",
-                 "holding", "many", "keys", "every")
+                 "holding", "many", "keys", "every", "home")
 
     def __init__(self):
         self.src = self.key = self.row = self.title = self.source = None
@@ -963,6 +966,7 @@ class _Drag:
         self.at = QPoint()
         self.external = False
         self.holding = False                         # the writer and the reader held (released once, at its end)
+        self.home = None                             # (where the hand lifted, the slot it keeps there): a9 try #4
 
 
 class DragController(QObject):
@@ -1005,6 +1009,8 @@ class DragController(QObject):
         self._closed = False                         # H-T1: let go by the window (its close, a language switch)
         self.held = None                             # the reader's newest view, not shown yet
         self.tickets = []                            # commands given, not settled yet (oldest first)
+        self._airing_asking = {}                     # alpha 9 M1: work_id -> row key offered *Still asking AniList*
+        self._airing_again = False                   # ... its `_again` on its way
         self.saving_keys = frozenset()
         self.toasted = None                          # the ticket whose toast shows
         self.toast_for = ()                          # round 8 row 45: the tickets the shown toast stands for …
@@ -1121,6 +1127,8 @@ class DragController(QObject):
     def view_in(self, view):
         """-> the view to show now, or None (held): every view while a drag runs (E6); while the window's own order is
         ahead of the store, a view of the same rows in that order (its numbers fresh), else held until it settles."""
+        if self._airing_asking:
+            self._answered(view)                     # (a view held, shown later as the window's own: its answer too)
         if self._own:
             return view
         if self._replay_owed and getattr(view, "mode", None) == "store":
@@ -1341,13 +1349,27 @@ class DragController(QObject):
         kind, row, lines = model.entries[src]
         rect = self.lst.visualRect(model.index(src, 0))
         slot = self.lst.delegate.slot_rect(kind, rect, lines)
+        grab = QPointF(press[3] - slot.topLeft())
+        home = None
+        if model.open_key == row.key:                # a9 try #4: an opened row lifts closed — its ghost and its slot
+            top = rect.top()                         # the closed row's, never a picture of every part (a 300-part
+            self.lst.toggle(model.index(src, 0))     # group's was 13,000 px tall: 2 s on the window's thread here)
+            self.lst.executeDelayedItemsLayout()
+            rect = self.lst.visualRect(model.index(src, 0))
+            slot = self.lst.delegate.slot_rect(kind, rect, lines)
+            if rect.top() != top:                    # near the list's end its scroll clamped: the row moved from
+                home = (QPoint(global_pos), src)     # under the hand — its slot stays its own till the hand travels
         picked = self.lst.picked_rows
         if row.key in picked and len(picked) > 1:        # --- A4: a picked row's drag carries every pick
-            return self._begin_picks(picked, global_pos, slot.size())
+            ok = self._begin_picks(picked, global_pos, slot.size())
+            if ok and self.running is not None:
+                self.running.home = home
+            return ok
         d = _Drag()
         d.src, d.key, d.row, d.ids, d.title = src, row.key, row, ids_of(row), row.title
         d.source = "current"
-        d.grab = QPointF(press[3] - slot.topLeft())
+        d.grab = grab
+        d.home = home
         height = rect.height() - self.lst.delegate._lines_h(lines)
         pix = self._row_picture(kind, row, lines, rect, slot)
         unlit = None
@@ -1442,7 +1464,7 @@ class DragController(QObject):
             return
         kind, row, lines = model.entries[r]
         if kind not in (rows.HERO, rows.ROW) or model.open_key == row.key:
-            return                                   # (an opened row's picture is the screen's, taken at the lift)
+            return                                   # (an opened row lifts closed: its picture is baked at the lift)
         rect = lst.visualRect(model.index(r, 0))
         slot = lst.delegate.slot_rect(kind, rect, lines)
         dpr = lst.viewport().devicePixelRatioF() or 1.0
@@ -1586,8 +1608,13 @@ class DragController(QObject):
         tab = self.win.tab_buttons.get("finished")
         if tab is not None and tab.isVisible() and tab.rect().contains(tab.mapFromGlobal(global_pos)):
             return "tab", "finished"
-        if self.joins is not None and self.running is not None:     # --- W3.2 Q8: over another part of the same title
-            key = self.joins.target(self.running, global_pos)
+        d = self.running
+        if d is not None and d.home is not None:     # a9 try #4: the opened row closed under the hand: till the hand
+            if (global_pos - d.home[0]).manhattanLength() < theme.MOTION["drag-start-px"]:     # travels, its own slot
+                return "list", d.home[1]             # (a release right there moves nothing, a rest there joins
+            d.home = None                            # nothing: no hold starts on the row the close put under it)
+        if self.joins is not None and d is not None:     # --- W3.2 Q8: over another part of the same title
+            key = self.joins.target(d, global_pos)
             if key is not None:
                 return "join", key
         return "list", self.slot_at(self.lst.viewport().mapFromGlobal(global_pos).y())
@@ -1874,6 +1901,8 @@ class DragController(QObject):
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False,
                       anki=on_bar) is None:
             return None
+        for work_id in [w for w, k in self._airing_asking.items() if k in keys]:
+            del self._airing_asking[work_id]         # alpha 9 M1: sent to Finished — never again by itself (its Undo)
 
         def choose(keep):
             choice = Ticket((strings.PICKS_TAKEN_OUT if many else strings.DRAG_TAKEN_OUT).format(title=title), keys,
@@ -2462,6 +2491,7 @@ class DragController(QObject):
             if verdict is not None and verdict[0] != "offer":
                 self._by_itself(row, verdict)
             elif verdict is not None:
+                self._ask_again(view, row, verdict)
                 self.win.toasts.show(offer_text(verdict, row), buttons=[
                     (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
             elif not finishes(row):
@@ -2529,6 +2559,7 @@ class DragController(QObject):
             ticket = Ticket(offer_text(verdict, row), (row.key,), tuple(ids))
             if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
+            self._ask_again(view, row, verdict)
             self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
                                           lambda: self.to_finished(row))])
             return
@@ -2616,6 +2647,51 @@ class DragController(QObject):
         _kind, pieces, ahead, ids, line = verdict
         text = (strings.DONE_JOINED if ahead else strings.DONE_CAME_UP).format(line=line)   # ahead: a Current part
         self._give(Ticket(text, (row.key,), ids), lambda t: self.writer.join(pieces, label=t, ahead=ahead))
+
+    def _ask_again(self, view, row, verdict):
+        """Alpha 9 (M1): an offer made only because AniList hasn't answered yet (`airing.PENDING`, *Still asking*) is
+        asked again when the answer comes (`_answered`) — the show was handed to the asker by the mark itself (all
+        watched is near its end, `airing.near_end`)."""
+        entry = (getattr(view, "airing", None) or {}).get(row.work_id)
+        if len(verdict) > 1 and isinstance(entry, dict) and entry.get("status") == airing.PENDING:
+            self._airing_asking[row.work_id] = row.key
+
+    def _answered(self, view):
+        """Alpha 9 (M1; the window's thread, each view of the reader's): when a show offered *Still asking AniList* has
+        an answer in `view` — or none any more — L6.3's one rule is asked again just after it shows (`_again`)."""
+        answers = getattr(view, "airing", None) or {}
+        if not self._airing_again and any(not (isinstance(answers.get(w), dict) and
+                                               answers[w].get("status") == airing.PENDING) for w in self._airing_asking):
+            self._airing_again = True
+            QTimer.singleShot(0, self._again)
+
+    def _again(self):
+        """Alpha 9 (M1): each show offered *Still asking AniList*, read on the view shown — still asking: kept; its
+        answer come: `when_done` again, so it finishes by itself when nothing holds it now (an ended show marked all at
+        once, as before AniList), else its offer stands; no answer any more (the switch turned off) or the show gone
+        from Current, or a file of it unwatched again (an Undo of the mark): let go (AniList never finishes a show, only
+        its answer does, and only one still all watched). Kept for a later view, silently, while a drag runs, the store
+        can't take a move or a write is still on its way; nothing once the controller is let go (a close)."""
+        self._airing_again = False
+        if self._closed or sip.isdeleted(self):
+            return
+        view = self.page.view_model
+        if view is None or getattr(view, "cached", False):
+            return
+        answers = getattr(view, "airing", None) or {}
+        busy = self.running is not None or bool(self.blocked) or bool(self.tickets) or not self.writer.can_write()
+        for work_id, key in list(self._airing_asking.items()):
+            entry = answers.get(work_id)
+            if isinstance(entry, dict) and (entry.get("status") == airing.PENDING or busy):
+                continue                             # still asking, or asked at a later view
+            del self._airing_asking[work_id]
+            row = next((r for r in view.rows if r.key == key), None)
+            if row is None or not isinstance(entry, dict) or \
+                    any(not e.watched for e in view_rows.to_finish(row.episodes)):
+                continue
+            verdict = when_done(view, row)           # L6.3: the one rule
+            if verdict is not None and verdict[0] != "offer":
+                self._by_itself(row, verdict)
 
     def finish_show(self, row, show, ids):
         """LM11b G5: *Move {show} to Finished* (the Done's toast) — the finish of that show's episodes in the group alone
@@ -2865,6 +2941,7 @@ class DragController(QObject):
             self.cancel()
         self._closed = True
         self._settle.stop()
+        self._airing_asking.clear()                  # (alpha 9 M1: nothing asked again past it)
         self.expect_marks, self._mark_undos = {}, []
         self._anki_let_go()
         self._filter(False)

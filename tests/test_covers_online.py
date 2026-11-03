@@ -312,9 +312,11 @@ def test_an_exact_title_with_the_right_season_and_year_is_accepted(anilist):
 def test_a_near_miss_a_wrong_season_or_a_wrong_year_is_refused(anilist):
     anilist.add(900202, "Arashikabe no Kyohei", "嵐壁の巨兵", year=2013)
     anilist.add(900203, "Arashikabe no Kyohei Season 2", "嵐壁の巨兵 Season2", year=2017)
-    anilist.add(900104, "Hoshiokuri no Riefen: ●● no Mahou", "星送りのリーフェン ～●●の魔法～", year=2023)
+    anilist.add(900104, "Hoshiokuri no Riefen: ●● no Mahou", "星送りのリーフェン ～●●の魔法～", year=2023, fmt="ONA")
     media = list(anilist.media.values())
-    assert O.gate("星送りのリーフェン", media) is None, "a near miss"
+    assert O.gate("星送りのリーフェン", media) is None, "a near miss: the show's name and a subtitle, on a side ONA"
+    tv = [dict(anilist.media[900104], format="TV")]
+    assert O.gate("星送りのリーフェン", tv)["id"] == 900104, "the name and a subtitle, a TV show: taken (alpha 9 try)"
     assert O.gate("嵐壁の巨兵", [anilist.media[900203]]) is None, "the name says no season: the second isn't it"
     assert O.gate("嵐壁の巨兵 Season 3", media) is None, "no third season among the answers"
     assert O.gate("嵐壁の巨兵", media, 2019) is None, "the wrong year"
@@ -324,12 +326,152 @@ def test_a_near_miss_a_wrong_season_or_a_wrong_year_is_refused(anilist):
 
 
 def test_a_search_with_no_sure_match_records_nothing_and_isnt_asked_again(anilist):
-    anilist.add(900104, "Hoshiokuri no Riefen: ●● no Mahou", "星送りのリーフェン ～●●の魔法～", search="星送りのリーフェン")
+    anilist.add(900104, "Hoshiokuri no Riefen: ●● no Mahou", "星送りのリーフェン ～●●の魔法～", fmt="ONA",
+                search="星送りのリーフェン")        # the show's side ONA (`_riefen`): the name and a subtitle, never taken
     pen = Pen()
     f = fetcher(pen, anilist)
     f.want([want(1, "星送りのリーフェン")])
     assert f.run_once() == 0 and pen.covers == [] and anilist.gets == []
     assert f.want([want(1, "星送りのリーフェン")]) == 0, "the generated cover stays; Change cover… offers the top 5"
+
+
+# --- alpha 9 try: subtitles and seasons as sequels (Sonic 2026-11-02: Mushoku Tensei S01 / S02 never recognised) ---- #
+# AniList's own answers, recorded once from graphql.anilist.co with `Q_SEARCH` (tests/Test Resources/anilist): real
+# titles, relations and episode counts, so the gate is judged on what AniList really says — never a live call here.
+RECORDED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Test Resources", "anilist", "search_answers.json")
+with open(RECORDED, encoding="utf-8") as _f:
+    _RECORDED = json.load(_f)
+ANSWERS = {text: a["data"]["Page"]["media"] for text, a in _RECORDED["answers"].items()}
+
+
+def _named(name):
+    """The gate's answer's id for a work called `name`, as `Fetcher._lookup` asks: AniList's recorded answer to the
+    cleaned name (none recorded: read as no answer), then — none taken — to the name without its season."""
+    cleaned, year = O.clean_title(name)
+    match = O.gate(cleaned, ANSWERS.get(cleaned, []), year)
+    if match is None and O.search_text(cleaned) != cleaned:
+        match = O.gate(cleaned, ANSWERS[O.search_text(cleaned)], year)
+    return match and match["id"]
+
+
+def _serve(fake, text):
+    """The fake AniList answers `text` as AniList did (its images on the fake server)."""
+    for m in ANSWERS[text]:
+        fake.media[m["id"]] = dict(m, coverImage={"extraLarge": f"{fake.base}/img/{m['id']}.jpg", "large": None})
+        fake.found.setdefault(text, []).append(m["id"])
+
+
+def test_the_recorded_answers_are_the_search_the_app_sends():
+    assert _RECORDED["query"] == O.Q_SEARCH, "re-record the answers when the search asks other fields"
+    assert ANSWERS["Mushoku Tensei Season 1"] == [], "AniList finds nothing for a name with its season in it"
+
+
+def test_the_search_is_sent_the_name_without_its_season_or_part():
+    assert O.search_text("Mushoku Tensei Season 1") == "Mushoku Tensei"
+    assert O.search_text("Mushoku Tensei S2") == "Mushoku Tensei"
+    assert O.search_text("無職転生 第2期") == "無職転生"
+    assert O.search_text("Mushoku Tensei Part 2") == "Mushoku Tensei"
+    assert O.search_text("Sousou no Frieren") == "Sousou no Frieren"
+    assert O.search_text("Season 2") == "Season 2", "nothing left: the name as it is"
+
+
+def test_mushoku_tensei_s01_and_s02_each_find_their_own_season():
+    """Sonic's library (S01 / S02 folders: `Mushoku Tensei Season 1` / `Season 2`): AniList calls season 1 `Mushoku
+    Tensei: Isekai Ittara Honki Dasu` and splits each season in two entries (`… Part 2`, `第2クール`)."""
+    assert _named("Mushoku Tensei Season 1") == 108465, "the name and a subtitle; its Part 2 isn't season 1's start"
+    assert _named("Mushoku Tensei S01") == _named("Mushoku Tensei") == 108465
+    assert _named("Mushoku Tensei Season 2") == 146065, "`…: Jobless Reincarnation Season 2`, never its Part 2"
+    assert _named("[SubsPlease] Mushoku Tensei S2 - 01 (1080p) [EC64C8B1].ja.ass") == 146065, "a release's name"
+    assert _named("Mushoku Tensei Season 3") == 178789
+    assert _named("Mushoku Tensei Part 2") == 127720, "a name that says its part: that part"
+
+
+def test_a_japanese_name_walks_season_1_s_tv_sequels_with_a_season_s_parts_as_one_season():
+    """無職転生 第2期: no title of season 2 says 第2期 (its native is 無職転生Ⅱ), so season 1 (無職転生 ～…～) is walked:
+    its sequel 第2クール is season 1 still, the next one is season 2."""
+    assert _named("無職転生") == 108465
+    assert _named("無職転生 第2期") == 146065
+    assert _named("無職転生 第3期") == 178789, "a synonym says 第3期: no walk needed"
+
+
+def test_a_full_title_a_film_and_a_remake_with_its_year():
+    assert _named("Sousou no Frieren") == 154587, "the name is the whole title: its side ONA (●● no Mahou) never"
+    assert _named("Sousou no Frieren Season 2") == 182255
+    assert _named("[Group] Koe no Katachi (2016) [1080p].mkv") == 20954, "a film (its specials are other titles)"
+    assert _named("Hunter x Hunter") == 136, "no year: the title of that name"
+    assert _named("Hunter x Hunter (2011)") == 11061, "HUNTER×HUNTER (2011): its bracketed year counts for 2011 only"
+    assert _named("Fruits Basket (2019)") == 105334
+    for name in ("Hunter x Hunter 2011", "Hunter.x.Hunter.2011.S01E01.1080p.mkv"):   # (review M1: the gate, on the
+        cleaned, year = O.clean_title(name)                                        # show's own recorded answers)
+        assert year is None and O.gate(cleaned, ANSWERS["Hunter x Hunter"])["id"] == 11061, \
+            "a year written without brackets: the title as AniList writes it, year and all"
+    assert O.gate("Fruits Basket 2019", ANSWERS["Fruits Basket"])["id"] == 105334
+
+
+def test_two_passing_is_still_none():
+    """One confident answer or none: a wrong cover is a wrong airing answer too."""
+    assert _named("Fruits Basket") is None, "2001's Fruits Basket and 2019's Fruits Basket: 1st Season"
+    assert _named("Kimi no Na wa") is None, "the film and a commercial special of the same title"
+
+
+def test_a_long_runner_s_season_2_is_never_walked_to_its_sequel():
+    """File names split a long-runner into seasons of their own (Naruto S02 is episodes 27–52), never AniList's next
+    show: a season walked past runs longer than `LONG_SEASON`."""
+    assert _named("Naruto") == 20 and _named("Bleach") == 269
+    assert _named("Naruto Season 2") is None, "not NARUTO: Shippuuden"
+    assert _named("Bleach S02") is None, "not BLEACH: Sennen Kessen-hen"
+
+
+def test_the_walk_stops_at_a_missing_step_two_sequels_or_a_wrong_year():
+    media = ANSWERS["無職転生"]
+    gone = [m for m in media if m["id"] != 127720]
+    assert O.gate("無職転生 第2期", gone) is None, "season 1's sequel isn't among the answers: never guessed"
+    root = next(m for m in media if m["id"] == 108465)
+    twin = {"relationType": "SEQUEL", "node": {"id": 999999, "format": "TV"}}
+    forked = [dict(root, relations={"edges": root["relations"]["edges"] + [twin]})] + \
+        [m for m in media if m["id"] != 108465]
+    assert O.gate("無職転生 第2期", forked) is None, "two TV sequels: which is season 2 isn't sure"
+    assert O.gate("無職転生 第2期", media, 2023)["id"] == 146065
+    assert O.gate("無職転生 第2期", media, 2021) is None, "the name's year isn't season 2's"
+    assert O.gate("無職転生 Part 2 第2期", media) is None, "a name that says a part is never walked"
+    film = [dict(root, format="MOVIE")] + [m for m in media if m["id"] != 108465]
+    assert O.gate("無職転生", film)["id"] == 108465 and O.gate("無職転生 第2期", film) is None, \
+        "season 1 a film: its TV sequel isn't its season 2 (mutant M18)"
+
+
+def test_a_name_and_a_subtitle_is_taken_on_a_tv_show_or_film_only():
+    frieren = ANSWERS["Sousou no Frieren"]
+    side = [m for m in frieren if m["format"] == "ONA"]
+    assert O.gate("Sousou no Frieren", side) is None, "●● no Mahou (an ONA) is the show's side piece"
+    special = [m for m in ANSWERS["Mushoku Tensei"] if m["format"] == "SPECIAL"]
+    assert O.gate("Mushoku Tensei", special) is None
+
+
+def test_mushoku_tensei_s01_and_s02_land_their_covers_the_name_asked_first_then_without_its_season(anilist):
+    for text in ("Mushoku Tensei", "Mushoku Tensei Season 1", "Mushoku Tensei Season 2"):
+        _serve(anilist, text)
+    pen = Pen()
+    f = fetcher(pen, anilist)
+    f.want([want(1, "Mushoku Tensei Season 1"), want(2, "Mushoku Tensei Season 2")])
+    assert f.run_once() == 2
+    assert sorted(c[1:3] for c in pen.covers) == [("anilist", "108465"), ("anilist", "146065")]
+    assert [b["variables"]["search"] for b, _h in anilist.posts] == \
+        ["Mushoku Tensei Season 1", "Mushoku Tensei", "Mushoku Tensei Season 2"], \
+        "the cleaned name; its season off only when that found nothing sure (Season 2's own search did)"
+    found = f.candidates(want(1, "Mushoku Tensei Season 1"))
+    assert found and found[0].id == 108465, "Change cover…: nothing for the name, the show's entries then"
+
+
+def test_a_season_its_own_search_finds_is_never_lost_to_the_shows_first_page(anilist):
+    """Review M2: a franchise of 20+ entries can push a season off the 10 answers a search of the show alone gets; the
+    name as it is reaches it, so it is asked first and its sure answer is taken without a second search."""
+    _serve(anilist, "Mushoku Tensei Season 2")
+    anilist.found["Mushoku Tensei"] = []            # the show's own page, the season fallen off it
+    pen = Pen()
+    f = fetcher(pen, anilist)
+    f.want([want(2, "Mushoku Tensei Season 2")])
+    assert f.run_once() == 1 and pen.covers[0][1:3] == ("anilist", "146065")
+    assert [b["variables"] for b, _h in anilist.posts] == [{"search": "Mushoku Tensei Season 2"}]
 
 
 # --- the library: a real store through the window's writer ---------------------------------------------------------- #

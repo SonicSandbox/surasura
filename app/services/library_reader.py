@@ -355,15 +355,26 @@ class LibraryReader:
 
     def _ask_airing(self, view):
         """(The reader's thread.) Current's titles near their end (`airing.near_end`), handed to the asker, which keeps
-        only the due ones and returns at once — every build, none too: an id no longer near its end is never sent."""
+        only the due ones and returns at once — every build, none too: an id no longer near its end is never sent.
+        A show with no id near its end is handed by its title (`airing.near_end_titles`, Sonic 2026-11-02 item 2) to
+        an asker that asks titles (`find`). -> (whether AniList can be asked now — an asker, its switch on: a show with
+        an id and no answer yet waits for it, `airing.of_rows`' `asking` — and the kept title answers when titles are
+        asked, else None)."""
         with self._lock:
             service = self._airing
         if service is None or view.cached:
-            return
+            return False, None
         try:
-            service.want(airing_module.near_end(view.rows, self._works))   # (none: the last ones let go)
+            asks_titles = getattr(service, "find", None) is not None and hasattr(service, "want_titles")
+            titles = self._airing_kept.titles() if asks_titles else None
+            service.want(airing_module.near_end(view.rows, self._works, titles))   # (none: the last ones let go)
+            if asks_titles:
+                service.want_titles(airing_module.near_end_titles(view.rows, self._works, titles))
+            on = getattr(service, "on", None)
+            return (bool(on()) if on is not None else False), titles
         except Exception as e:                          # never in the way of a view
             print(f"Library reader: airing wasn't asked: {e!r}")
+            return False, None
     # --- end 3.0.1 item 5
 
     def _ask_folders(self, view):
@@ -1092,9 +1103,10 @@ class LibraryReader:
                                pieces=self._pieces,           # LM11b G1
                                playable=self._playable,       # row 55
                                folders=folders)               # A4B-8
-        view = view._replace(epoch=self._epoch,         # LM11b: a library rebuilt or reset lets the window's picks go
-                             airing=airing_module.of_rows(view.rows, self._works, self._airing_kept.shows()))  # 3.0.1 5
-        self._ask_airing(view)                          # 3.0.1 item 5
+        view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
+        asking, titles = self._ask_airing(view)         # 3.0.1 item 5
+        view = view._replace(airing=airing_module.of_rows(view.rows, self._works, self._airing_kept.shows(),
+                                                          asking=asking, titles=titles))
         if self.play is not None:
             self._ask_play(view)                        # row 55
         self._ask_folders(view)                         # A4B-8

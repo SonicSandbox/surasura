@@ -197,10 +197,11 @@ def waiting():
         return None
 
 
-def build(language, include_results=True, library=None, root=None, extra=None, now=None):
+def build(language, include_results=True, library=None, root=None, extra=None, now=None, step=None):
     """The press: the saved reports' zip, scrubbed and checked, as the outbox's (a zip waiting before it is replaced:
     its reports are still on the list, so they are in this one too). Raises ValueError (no reports), report.Unsafe
-    (the guard's hit: no zip), TooBig. -> the Outbox."""
+    (the guard's hit: no zip), TooBig. `step(done, total)`: each file as it is gathered (`report._write`; a try
+    again smaller counts again). -> the Outbox."""
     with _BUSY:
         folder, path, meta_path = _outbox_paths()
         building = os.path.join(folder, BUILDING)
@@ -211,7 +212,8 @@ def build(language, include_results=True, library=None, root=None, extra=None, n
                           results_why=RESULTS_TOO_BIG if include_results else None))
         try:
             for opts in tries:
-                made = report.make_send_zip(building, language, library=library, root=root, extra=extra, **opts)
+                made = report.make_send_zip(building, language, library=library, root=root, extra=extra, step=step,
+                                            **opts)
                 size = os.path.getsize(building)
                 if size <= MAX_ZIP:
                     break

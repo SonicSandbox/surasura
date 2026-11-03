@@ -585,8 +585,7 @@ class SearchCut(QWidget):
         if self.results is not None:
             self.results.hide()
         if hit.group in ("current", "finished"):
-            self.shell.show_tab(hit.group)
-            QTimer.singleShot(0, lambda: self._scroll_to(hit.group, hit.key))
+            self.show_row(hit.group, hit.key)
             return
         if hit.group == "arrivals":
             show = getattr(self.shell, "show_arrival", None)            # Q1's tray, opened at it
@@ -603,6 +602,11 @@ class SearchCut(QWidget):
         dock = getattr(self.shell, "dock", None)
         if dock is not None and dock.isVisible():
             self._wash(dock.parentWidget(), lambda: dock.geometry() if _alive(dock) else None)
+
+    def show_row(self, group, key):
+        """The row `key` of Current or Finished shown in place and washed: a hit's click, a phase circle's *Show*."""
+        self.shell.show_tab(group)
+        QTimer.singleShot(0, lambda: self._scroll_to(group, key))
 
     def _wash(self, parent, rect_of):
         self.washed_at = rect_of()                       # where the last wash went (tests: its fade may be over)

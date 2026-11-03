@@ -32,6 +32,13 @@
   the circles in `opens` take a press and show the hand; one with no settings does nothing. A double-click or a held
   key opens once. The keyboard: one Tab stop, ← → between the circles that open, Enter or Space opens, an accent wash
   inside the one in focus (PROVISIONAL, the lead 2026-10-24), its hover shown when Tab brought it there.
+- **What's spinning, said and shown** (try a9.1, Sonic's report: "junban and anki miner are spinning but i don't know
+  what they are doing"): a running circle whose work can be seen somewhere (`SHOWS`: Anki Miner — the title it makes
+  cards for; 順 — its window) opens there on a press (`showing`; else its settings, as before) and its hover says so.
+  Its hover names the job with its step — Anki Miner's title and step, or *Stopping…*; a job with no step of its own
+  is followed by the circle's own line (順: *tomorrow's 20 cards placed · moving 281 more…*). **A right-click** (or
+  the menu key) is the bottom bar's one icon menu (`tool_icons.menu_of`, the open windows' too): *Show* · *Stop* (only
+  while its work can be stopped: the shell's `stops`) · *Settings* — each asked of the shell (`asked`).
 - **S19:** the strip repaints only the circle whose look changed (`paints` counts them); the arc's clock (`motion.Turn`)
   runs only while one turns and stops the moment none does; one single-shot timer wakes it for the next automatic
   job to show (Q6's 1 s) or a tick's end — never a frame's pace.
@@ -66,6 +73,7 @@ FOCUS_WASH = 0.30               # the circle in the keyboard's focus: an accent 
 SETTINGS = {phase.ARRIVALS: "library_folders", phase.SURASURA: "level", phase.MINER: "connect_enabled",
             phase.JUNBAN: "junban", phase.ANKI: "known"}
 STANDING = {phase.JUNBAN: "replan", phase.MINER: "connect"}   # a circle -> its standing line's snapshot field
+SHOWS = frozenset({phase.MINER, phase.JUNBAN})   # the circles whose running work can be seen somewhere (try a9.1)
 
 
 def _named(view):
@@ -90,6 +98,7 @@ def _mix(a, b, t):
 
 class PhaseStrip(QWidget):
     opened = pyqtSignal(str)                   # a circle pressed (or Enter / Space on it): its settings, please
+    asked = pyqtSignal(str, str)               # its right-click menu's item: (circle, "show" · "stop" · "settings")
 
     def __init__(self, parent=None, now=None):
         super().__init__(parent)
@@ -123,6 +132,7 @@ class PhaseStrip(QWidget):
         self._hand = False                     # the pointer shows the hand (over a circle that opens)
         self._asks = None                      # 順's line when it is a part of its own (a decision or a fault), or None
         self.lands = None                      # Go -> whether its place holds the decision now (the shell's, a7)
+        self.stops = None                      # circle -> whether its work can be stopped now (the shell's, try a9.1)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.refresh)
@@ -175,10 +185,26 @@ class PhaseStrip(QWidget):
         """What a press on `circle` does, as its hover's last line says it: while it is amber, what to decide and where."""
         go = self.go(circle)
         if go is None:
-            return strings.PHASE_PRESS
+            return strings.PHASE_PRESS_SHOW if self.showing(circle) else strings.PHASE_PRESS
         if go.place == "junban":
             return strings.PHASE_PRESS_RESTORE if go.at == "restore" else strings.PHASE_PRESS_DECK
         return strings.PHASE_PRESS_NEEDS
+
+    def showing(self, circle):
+        """Whether a press shows where `circle`'s work is seen (try a9.1): it runs, and it is one that can be seen."""
+        return circle in SHOWS and self.states[circle].running
+
+    def menu_entries(self, circle):
+        """`circle`'s right-click menu: [((words, tip), what)] — *Show* while `showing`, *Stop* while the shell says its
+        work can be stopped, *Settings* when it has some."""
+        out = []
+        if self.showing(circle):
+            out.append((strings.PHASE_SHOW, "show"))
+        if self.stops is not None and self.stops(circle):
+            out.append((strings.PHASE_STOP, "stop"))
+        if circle in self.opens:
+            out.append((strings.PHASE_SETTINGS, "settings"))
+        return out
 
     def set_opens(self, circles):
         """The circles whose press opens their settings (the shell's: those with settings to show)."""
@@ -425,6 +451,8 @@ class PhaseStrip(QWidget):
         out = [f'<b>{esc(strings.PHASE_NAMES[circle])}</b> '
                f'<span style="color:{dim}">· {esc(strings.PHASE_ABOUT[circle])}</span>']
         now = list(st.lines)
+        if now and not st.stepped and self._standing.get(circle) and self._standing[circle] not in now:
+            now.append(self._standing[circle])         # (try a9.1: a bare job name, then the circle's own counted line)
         if not now and (st.running or st.waiting):      # lit by a press with no job yet (A3A-1): its words
             said = [p.words for p in self._shown if p.live() and phase.press_circle(p.key) == circle and p.words]
             now = said[:1] or [strings.PHASE_STARTING]
@@ -449,9 +477,13 @@ class PhaseStrip(QWidget):
                 out.append(esc(strings.PHASE_STOPPED.format(what=what, time=at)))
             else:
                 out.append(esc(strings.PHASE_DONE.format(what=what, time=at)))
-        if circle in self.opens or self.go(circle) is not None:
+        if self._pressable(circle):
             press = self.press_words(circle)
             out.append(f'<span style="color:{dim}">{esc(press)}</span>')
+        entries = self.menu_entries(circle)
+        if len(entries) > 1:                            # (one item is the press's own: said once, above)
+            items = " · ".join(words for (words, _tip), _what in entries)
+            out.append(f'<span style="color:{dim}">{esc(strings.PHASE_MENU_TIP.format(items=items))}</span>')
         return '<p style="margin:0">' + "<br>".join(out) + "</p>"
 
     def summary(self):
@@ -472,7 +504,7 @@ class PhaseStrip(QWidget):
 
     # --- the press: a circle's settings (alpha 3) --------------------------------------------------------------- #
     def _pressable(self, circle):
-        return circle is not None and (circle in self.opens or self.go(circle) is not None)
+        return circle is not None and (circle in self.opens or self.go(circle) is not None or self.showing(circle))
 
     def _under_mouse(self):
         return self.circle_at(self.mapFromGlobal(QCursor.pos())) if self.underMouse() else None
@@ -519,6 +551,24 @@ class PhaseStrip(QWidget):
         if self.tooltips is not None:
             self.tooltips.hide()
         self.opened.emit(circle)
+
+    def contextMenuEvent(self, e):
+        """The right-click (or the menu key, on the circle in focus): `circle`'s menu (`menu_entries`), each item asked
+        of the shell; none for a circle with nothing to offer."""
+        mouse = e.reason() == e.Reason.Mouse
+        circle = self.circle_at(e.pos()) if mouse else self._focus
+        entries = self.menu_entries(circle) if circle is not None else []
+        if not entries:
+            e.ignore()
+            return
+        from app.qt import tool_icons
+        if self.tooltips is not None:
+            self.tooltips.hide()
+        menu = tool_icons.menu_of(self, [(pair, lambda what=what: self.asked.emit(circle, what))
+                                         for pair, what in entries])
+        self.last_menu = menu                  # (a test reads what it offered)
+        at = e.globalPos() if mouse else self.mapToGlobal(self.rect_of(circle).center().toPoint())
+        menu.exec(at)
 
     def keyPressEvent(self, e):
         key = e.key()

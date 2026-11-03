@@ -28,6 +28,10 @@ of the five circles at the bar's bottom left each piece of work lights, and in w
 - **A run is a job that ran** (`ran`): one that ended before it started (cancelled while queued, a queued automatic
   job absorbed by yours) or while it waited (a recorded wait that went: an episode now mined) is no *Done*, no tick
   and no failure.
+- **What a circle's Stop stops** (try a9.1, Sonic's report: "junban and anki miner are spinning but i don't know what
+  they are doing"; `stoppable`): its live jobs that can be cancelled and aren't past the point they can stop at —
+  the update's *Stop it* rule (`updates._busy_entries`). `stepped`: a live job says its step, so the hover needs no
+  other words (a bare *Re-ordering Anki's new cards* is followed by 順's own line, which counts the cards).
 """
 import time
 from collections import namedtuple
@@ -73,7 +77,7 @@ NEEDS_GO = {
     "mine-anki": Go("needs", ("anki-wait",)),
 }
 
-Circle = namedtuple("Circle", "running waiting needs failed done lines last go", defaults=(None,))
+Circle = namedtuple("Circle", "running waiting needs failed done lines last go stepped", defaults=(None, False))
 IDLE = Circle(False, False, None, None, None, (), None)
 Ended = namedtuple("Ended", "state words at id")       # the hover's last line: `state` "done" · "stopped" · "failed"
 
@@ -87,6 +91,21 @@ def press_circle(key):
     """The circle a press of `key` lights, or None."""
     word = key[0] if isinstance(key, tuple) and key else str(key).split(":", 1)[0]
     return PRESSES.get(word)
+
+
+def stoppable(views, circle):
+    """The ids of `circle`'s live jobs a Stop may cancel (its owner's cancel; try a9.1): one with a cancel, not past the
+    point it can stop at (`on_quit` "wait": an Anki write finishing its batch, Generate writing your list) and not
+    stopping already — the update's *Stop it* rule. -> a tuple, oldest first."""
+    return tuple(v.id for v in views if circle_of(v) == circle and v.can_cancel and v.on_quit != "wait"
+                 and v.state in (jobs_module.QUEUED, jobs_module.WAITING, jobs_module.RUNNING))
+
+
+def _stepped(view):
+    """Whether a live job's line says more than its name: a step, a count, a reason, or that it is stopping."""
+    progress = view.progress
+    return (view.state != jobs_module.RUNNING or bool(view.reason)
+            or (progress is not None and bool(progress.step or progress.total)))
 
 
 def ran(view):
@@ -152,8 +171,8 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
     wall clock (time.time())."""
     now = time.time() if now is None else now
     last = last or {}
-    got = {c: {"running": False, "waiting": False, "needs": [], "failed": None, "lines": [], "go": None}
-           for c in CIRCLES}
+    got = {c: {"running": False, "waiting": False, "needs": [], "failed": None, "lines": [], "go": None,
+               "stepped": False} for c in CIRCLES}
     live = {c: False for c in CIRCLES}
     for v in views:
         circle = circle_of(v)
@@ -161,6 +180,7 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
             continue
         g = got[circle]
         g["lines"].append(job_line(v))
+        g["stepped"] = g["stepped"] or _stepped(v)
         if not shown(v, now):
             continue
         live[circle] = True
@@ -196,6 +216,7 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
             go = go[0] if go else None
             if words and state != "failed":     # (a fault's words are its `failed`: said once)
                 g["lines"].append(words)
+                g["stepped"] = True
             if state == "needs" and go is not None:
                 g["needs"].append(words)
                 g["go"] = g["go"] or go
@@ -228,5 +249,5 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
         if live[circle]:
             failed = None                       # the next run under way: the failure before it is over (Q3)
         out[circle] = Circle(g["running"], g["waiting"] and not g["running"], "; ".join(needs) or None, failed,
-                             done, tuple(g["lines"]), tail, go if needs else None)
+                             done, tuple(g["lines"]), tail, go if needs else None, g["stepped"])
     return out

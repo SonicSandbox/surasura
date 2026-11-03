@@ -508,6 +508,9 @@ class ReportWindow(SecondaryWindow):
         self.name_filled = False                                  # the remembered Discord name filled in (once)
         self.goes_name_value = ""                                 # the name What goes said goes
         self._thumbs = None                                       # the form's thumbnails, made once per set of pictures
+        self.gathering = False                                    # What goes is up, its zip still being made (try a9.1)
+        self.gathered = bridge.Relay(self)                        # ... the worker's count of the files gathered so far
+        self.gathered.said.connect(self._gathered)
         f = theme.text_factor(style.current()[1])
         self.pages = QStackedWidget(self)
         self.body.addWidget(self.pages, 1)
@@ -669,6 +672,9 @@ class ReportWindow(SecondaryWindow):
         inner = QWidget(scroll)
         lines = QVBoxLayout(inner)
         lines.setContentsMargins(0, 0, 0, 0)
+        self.goes_gathering = self._line(strings.REPORT_GATHERING)              # (try a9.1: shown while it's made)
+        self.goes_gathering.setVisible(False)
+        lines.addWidget(self.goes_gathering)
         self.goes_placeholders = self._line(strings.REPORT_GOES_PLACEHOLDERS)
         self.goes_name = self._line("")
         self.goes_sender = self._line("")
@@ -975,7 +981,7 @@ class ReportWindow(SecondaryWindow):
         if not hasattr(self, "send_button"):                      # (the form is built before the send row)
             return
         ready = bool(self.reports) or self.save_button.isEnabled() or self.sending
-        self.send_button.setEnabled(ready)
+        self.send_button.setEnabled(ready and not self.gathering)    # (What goes is up, gathering: pressed already)
         self.send_button.setToolTip(strings.REPORT_SEND_TIP if ready else strings.REPORT_SEND_NONE_TIP)
 
     def _name_changed(self, text):
@@ -1085,7 +1091,9 @@ class ReportWindow(SecondaryWindow):
                    failed=self.alive(lambda info: self.say(strings.REPORT_NOTE_FAILED.format(why=info[0]))))
 
     def back(self):
-        """Back to the form. From What goes: its zip is deleted unsent (the reports stay on the list)."""
+        """Back to the form. From What goes: its zip is deleted unsent (the reports stay on the list); while it is still
+        being made, it is deleted once made (`_build`)."""
+        self.gathering = False
         self.opened_id = None
         self.sent_opened = None
         if self.outbox is not None and not qpress.live(self, "report:send"):
@@ -1165,11 +1173,58 @@ class ReportWindow(SecondaryWindow):
             return
         if self.save_button.isEnabled():
             self._sending(True)
+            self._gather()
             if self.save(then=lambda: self._build(saved=True), control=self.send_button,
-                         broke=lambda: self._sending(False)) is None:
-                self._sending(False)
+                         broke=self._not_gathered) is None:
+                self._not_gathered()
         elif self.reports:
+            self._gather()
             self._build()
+
+    def _gather(self):
+        """Send report's press, in its frame (try a9.1, Sonic: "it lagged when i hit the button, just hung there until it
+        got to the screen of exactly what goes. need something to indicate that it's thinking"): What goes opens now,
+        saying it is gathering, and counts the files in as the worker scrubs them (`_gathered`); filled in once the
+        zip is made (`_show_goes`). The window's thread never waited (measured: the press returns in 2 ms, its longest
+        stall while a 17 MB zip is made 50 ms) — only the page came at the end, after seconds of a small arc."""
+        self.outbox = None
+        self.opened_id = self.sent_opened = None
+        self.gathering = True
+        self.goes_gathering.setText(strings.REPORT_GATHERING)
+        self.goes_gathering.setVisible(True)
+        for w in (self.goes_placeholders, self.goes_name, self.goes_sender, self.goes_kept, self.goes_files,
+                  self.goes_pictures_line):
+            w.setVisible(False)
+        self._clear(self.goes_pictures)
+        self.goes_send.setEnabled(False)
+        self.goes_open.setEnabled(False)
+        self.pages.setCurrentIndex(self.GOES)
+        self._goes_hold(True)
+        self.goes_back.setFocus()
+
+    def _gathered(self, count):
+        """(The window's thread.) The worker's count, `(done, total)` files gathered: said only while What goes still
+        waits for its zip, and only when the words changed."""
+        if not self.gathering:
+            return
+        done, total = count
+        if not total:
+            words = strings.REPORT_GATHERING
+        elif done >= total:
+            words = strings.REPORT_GATHERING_CHECK
+        else:
+            words = strings.REPORT_GATHERING_N.format(done=done + 1, total=total)
+        if self.goes_gathering.text() != words:
+            self.goes_gathering.setText(words)
+
+    def _not_gathered(self):
+        """The press made nothing (its save failed, nothing to save, the zip refused): back to the form; the bar says
+        why."""
+        was, self.gathering = self.gathering, False
+        self._sending(False)
+        if was and self.pages.currentIndex() == self.GOES and self.outbox is None:
+            self.pages.setCurrentIndex(self.FORM)
+            self._goes_hold(False)
 
     def _sending(self, on):
         self.sending = on
@@ -1183,13 +1238,18 @@ class ReportWindow(SecondaryWindow):
             return
         language, include = self.language, self.include_results.isChecked()
         library, extra = library_summary(self.shell), about_extra(self)
+        relay = self.gathered
+        width = round(self._goes_width() * self.devicePixelRatioF())
 
         def built(got):
-            if self.gone:                                          # closed before it was looked at: never kept
+            if self.gone or not self.gathering:                    # closed, or Back, before it was looked at: never kept
                 self.sending = False
                 if got[0] == "built":                              # (only the zip this press made)
                     threading.Thread(target=discard, args=(got[1].sha256,), name="report-discard",
                                      daemon=True).start()
+                if not self.gone:
+                    self._sending(False)
+                    self._hold(False)
                 return
             self._sending(False)
             self._hold(False)
@@ -1198,17 +1258,20 @@ class ReportWindow(SecondaryWindow):
         def broke(info):
             self.sending = False
             if not self.gone:
-                self._sending(False)
+                self._not_gathered()
                 self._hold(False)
                 self.say(strings.REPORT_SEND_FAILED.format(why=info[0]))
         self._hold(True)
-        p = qpress.run(self.send_button, "report:send", prepare_send, language, include, library, extra, win=self,
-                       busy=strings.REPORT_BUILDING, then=built, failed=broke)
+        # (no words in the bar: What goes says it, counting — try a9.1, nothing said twice)
+        p = qpress.run(self.send_button, "report:send", prepare_send, language, include, library, extra,
+                       lambda done, total: relay.call((done, total)), width, win=self, then=built, failed=broke)
         if p is None:
             self._hold(False)
-            self._sending(False)
+            self._not_gathered()
 
     def _built(self, kind, outbox, pictures, code=None):
+        if kind != "built":
+            self._not_gathered()
         if kind == "limit":
             self.say(strings.REPORT_SEND_LIMIT)
         elif kind == "too big":
@@ -1219,11 +1282,21 @@ class ReportWindow(SecondaryWindow):
             self._show_goes(outbox, pictures, code)
         self.read_send()
 
+    def _goes_width(self):
+        """The What goes page's width for a picture (logical px)."""
+        return max(1, self.goes_scroll.viewport().width() - 4, self.pages.width() - 24)
+
     def _show_goes(self, outbox, pictures, code=None):
         """The What goes page for `outbox`, its pictures (QImages read from the zip) at the page's width. The Discord
         name and the sender code it shows are the ones that go: the row under it waits while it's up (`_goes_hold`)."""
         self.outbox = outbox
         self.opened_id = self.sent_opened = None
+        self.gathering = False
+        self.goes_gathering.setVisible(False)
+        for w in (self.goes_placeholders, self.goes_name, self.goes_kept, self.goes_files):
+            w.setVisible(True)
+        self.goes_send.setEnabled(True)
+        self.goes_open.setEnabled(True)
         self.goes_name_value = " ".join(self.name_field.text().split())       # (as send_report cleans it)
         name = self.goes_name_value
         self.goes_name.setText(strings.REPORT_GOES_NAME.format(name=name) if name else strings.REPORT_GOES_NO_NAME)
@@ -1236,11 +1309,11 @@ class ReportWindow(SecondaryWindow):
         self.pages.setCurrentIndex(self.GOES)
         self._goes_hold(True)
         self.pages.currentWidget().layout().activate()            # (laid out: the pictures' width is the page's)
-        width = max(1, self.goes_scroll.viewport().width() - 4, self.pages.width() - 24)
+        width = self._goes_width()
         dpr = self.devicePixelRatioF()
-        for img in pictures:
-            pm = QPixmap.fromImage(img)
-            if pm.width() > width * dpr:
+        for img in pictures:                                       # (scaled on the worker to the page's width at the
+            pm = QPixmap.fromImage(img)                            # ... press: here only when the window grew since)
+            if pm.width() > round(width * dpr) + 1:
                 pm = pm.scaledToWidth(round(width * dpr), Qt.TransformationMode.SmoothTransformation)
             pm.setDevicePixelRatio(dpr)
             self.goes_pictures.addWidget(self._thumb(pm, strings.REPORT_GOES_PICTURE_TIP))
@@ -1521,16 +1594,17 @@ class ReportWindow(SecondaryWindow):
 SENT_SHOWN = 5                  # *Sent reports*: the newest shown (each kept 90 days)
 
 
-def prepare_send(language, include, library, extra):
+def prepare_send(language, include, library, extra, step=None, width=None):
     """(A worker.) *Send report*'s press: refused before anything is made on the 6th send of a day; else the outbox
-    zip (`send_report.build`) and its pictures as QImages. -> (kind, Outbox or None, [QImage], the sender code that
-    goes, when built): kind `built`,
+    zip (`send_report.build`, `step(done, total)` told each file as it is gathered) and its pictures as QImages, each
+    scaled down to `width` device pixels when wider (never on the window's thread). -> (kind, Outbox or None,
+    [QImage], the sender code that goes, when built): kind `built`,
     `limit`, `too big` (over 10 MB even trimmed) or `unsafe` (the guard's hit: no zip offered)."""
     from PyQt6.QtGui import QImage
     if send_report.sent_today() >= send_report.PER_DAY:
         return "limit", None, []
     try:
-        ob = send_report.build(language, include, library, None, extra)
+        ob = send_report.build(language, include, library, None, extra, step=step)
     except send_report.TooBig:
         return "too big", None, []
     except core.Unsafe:
@@ -1541,6 +1615,8 @@ def prepare_send(language, include, library, extra):
             if name.lower().endswith(".png"):
                 img = QImage.fromData(z.read(name), "PNG")
                 if not img.isNull():
+                    if width and img.width() > width:
+                        img = img.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
                     pictures.append(img)
     return "built", ob, pictures, send_report.sender_code()
 

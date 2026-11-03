@@ -18,7 +18,7 @@ by clicking it if it's running. And if it's not running it wouldn't show"; PROVI
 from PyQt6 import sip
 from PyQt6.QtCore import QRectF, QSize, Qt
 from PyQt6.QtGui import QFont, QPainter, QPen
-from PyQt6.QtWidgets import QAbstractButton, QHBoxLayout, QWidget
+from PyQt6.QtWidgets import QAbstractButton, QHBoxLayout, QMenu, QWidget
 
 from app import theme
 from app.qt import logos, motion, strings, style, windows
@@ -34,6 +34,19 @@ def mark_of(name, title):
         return mark
     title = (title or name or "?").strip()
     return title[:1].upper() or "?"
+
+
+def menu_of(parent, entries):
+    """The bottom bar's one right-click menu (try a9.1), for its icons on both sides — the open windows' here and the
+    phase strip's circles: `entries` [((words, tip), do), …] in order, each an item with its tip; a press runs `do()`.
+    -> the QMenu (Esc closes it; nothing runs)."""
+    m = QMenu(parent)
+    m.setToolTipsVisible(True)
+    for (words, tip), do in entries:
+        act = m.addAction(words)
+        act.setToolTip(tip)
+        act.triggered.connect(lambda _c=False, do=do: do())
+    return m
 
 
 class ToolIcon(QAbstractButton):

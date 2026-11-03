@@ -3430,6 +3430,11 @@ class RowsView(QListView):
 
     # entries ---------------------------------------------------------------------------------------------------- #
     # --- round 8 row 45: *Mine now* pressed (`mine_actions._ask`) --------------------------------------------- #
+    def key_of(self, file_id):
+        """The key of the row this list shows `file_id` in, or None (try a9.1: Anki Miner's circle's *Show* goes there)."""
+        found = self._where([file_id]).get(file_id)
+        return None if found is None else self.model().entries[found[0]][1].key
+
     def _where(self, ids, keys=None):
         """{id: (row index, its episode)} of the files `ids` this list shows. `keys` ({id: the row's key it was in}):
         looked up in those rows alone, the whole list walked only for one not found there (A-12: a view while one is

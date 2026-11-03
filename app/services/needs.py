@@ -248,7 +248,7 @@ REASONS = {ASK: "reason_ask", FOLDER_GONE: "reason_folder", OFFLINE: "reason_off
            "repick": "reason_cards", "mine-failed": "reason_cards", "error": "reason_cards", GAP: "reason_gap"}
 REASON_AT = 3                       # cards of one reason that bring its line (the bulk answer's own: two shows)
 # the cards whose own two answers both end them: no ⋯ (its *Not now* would say the same as their own)
-NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS))
+NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS, MINER_UPDATE))   # (Michi-U: the rows' tip points here)
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -388,7 +388,7 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
-    update = _miner_entry(miner_update, rows, seen) if miner_update else None
+    update = _miner_entry(miner_update, rows, seen) if miner_update and cards_on else None    # Connect may run
     if update is not None:
         out.append(update)
     bulk = _bulk(shows)

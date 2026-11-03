@@ -279,19 +279,10 @@ def notice(installed_version, state=None):
 
 
 # Michi-U (alpha 9.1 try, Sonic 2026-11-02: "if anki miner has an update, it would show in needs you right?"): what
-# an update to the approved release opens. `_OPENS` keeps the last look's inputs (the setup record's stamp and the
-# installer's version), so a view of many waiting rows reads the record once (S19).
+# an update to the approved release opens. `_OPENS` keeps the last look's inputs (the setup record's stamp `mines_now`
+# took and the installer's version), so a view of many waiting rows reads the record once (S19).
 _OPENS = {}
 KIND_WORDS = {"books": "books and texts", "audio": "audiobooks and podcasts"}
-
-
-def _record_stamp():
-    try:
-        from app.connect import setup
-        st = os.stat(setup.record_path())
-        return st.st_mtime_ns, st.st_size
-    except (OSError, ValueError, ImportError):
-        return None
 
 
 def opens(kind):
@@ -304,7 +295,7 @@ def opens(kind):
         from app.connect import anki_miner
         if not anki_miner.mines(kind) or anki_miner.mines_now(kind):
             return None
-        stamp = (_record_stamp(), anki_miner.installed_version())
+        stamp = (anki_miner._NOW.get("stamp"), anki_miner.installed_version())     # (`mines_now` just took it)
         if _OPENS.get("stamp") != stamp:
             _OPENS.update(stamp=stamp, installed=installed())
         version = _OPENS["installed"]

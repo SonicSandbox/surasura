@@ -775,7 +775,8 @@ def status_of(eps, word, line_n):
         # alpha 4 M1 / A4M1-3: only books, texts or audio left to mine while Anki Miner mines none of them — nothing to
         # press: Connect sets their jobs aside, and mines them by itself once it can (no *Mine*, no *Waiting*, never
         # Anki Miner's window)
-        st = Status("books", STRINGS["books_wait"], _wait_tip({e.text for e in ready + heard}), "faint")
+        st = Status("books", STRINGS["books_wait"], _wait_tip({e.text for e in ready + heard}, line_n is not None),
+                    "faint")
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
@@ -853,14 +854,14 @@ def _waits_for(item, media):
     return library.waits_for(item, media) or False
 
 
-def _wait_tip(kinds):
+def _wait_tip(kinds, connect=True):
     """Michi-U: the *Waits for Anki Miner* tip for items waiting on `kinds` ("books", "audio") — what's true now, by
     Connect's one rule (`am_release.opens`): the approved update that opens them, Update in *Needs you* (its line,
-    `services.needs`' MINER_UPDATE, reads the same rule); else the Anki Miner they wait for; audio before this Surasura
-    mines it, that."""
+    `services.needs`' MINER_UPDATE, reads the same rule — and shows only while Connect is on: `connect`, the row's
+    `line_n` known); else the Anki Miner they wait for; audio before this Surasura mines it, that."""
     from app.connect import am_release, anki_miner
     kinds = [k for k in anki_miner.WAITS if k in kinds] or ["books"]
-    opened = [k for k in kinds if am_release.opens(k)]
+    opened = [k for k in kinds if am_release.opens(k)] if connect else []
     if opened:
         return STRINGS["tip_wait_update"].format(version=am_release.APPROVED, what=" and ".join(
             am_release.KIND_WORDS[k] for k in opened))

@@ -132,8 +132,9 @@ def _record_app():
 def to_follow(installed):
     """Is `installed` (the installer's version, `anki_miner.installed_version` — `status.stamp`'s last part) an Anki
     Miner this process should look at again: one with digits, not the one it last followed (or that one, its look
-    not taken, FOLLOW_RETRY_S on), and not the one the setup record holds? In memory first; the record read only for a
-    version not followed yet. Never raises."""
+    not taken, FOLLOW_RETRY_S on), and newer than the one the setup record holds (or the record holds none) — an
+    update, never a downgrade or a Connect pointed at another Anki Miner (review r1 #4)? In memory first; the record
+    read only for a version not followed yet. Never raises."""
     try:
         from app.connect import am_release
         if not am_release.known(installed):
@@ -143,7 +144,7 @@ def to_follow(installed):
                                                  or time.monotonic() - last["at"] < FOLLOW_RETRY_S):
             return False
         app = _record_app()
-        if am_release.known(app) and am_release._key(app) == am_release._key(installed):
+        if am_release.known(app) and am_release._key(app) >= am_release._key(installed):
             _FOLLOWED.update(version=installed, at=time.monotonic(), ok=True, tries=0)
             return False
         return True
@@ -173,7 +174,7 @@ def follow_install(settings, language, installed=None, force=False, kick=True):
         result = checks(settings, language)
         app = str((result.get("anki_miner") or {}).get("app") or "")
         _FOLLOWED["ok"] = bool(am_release.known(app) and am_release.known(installed)
-                               and am_release._key(app) == am_release._key(installed))
+                               and am_release._key(app) >= am_release._key(installed))
         if kick:
             from app.connect import kick as kicking
             kicking.kick(settings)

@@ -110,7 +110,7 @@ def test_opens_reads_the_record_again_only_once_it_changed(monkeypatch):
     monkeypatch.setattr(setup, "read_record", lambda: reads.append(1) or real())
     for _ in range(50):
         assert am_release.opens("books") == am_release.APPROVED
-    assert len(reads) <= 3, f"read {len(reads)} times for 50 rows"
+    assert len(reads) <= 2, f"read {len(reads)} times for 50 rows (once for `mines_now`, once for `installed`)"
     time.sleep(0.02)
     _record(am_release.APPROVED, NO_READING)        # (a found Anki Miner at the approved version: nothing to offer)
     assert am_release.opens("books") is None
@@ -151,8 +151,8 @@ def test_audio_before_surasura_mines_it_says_so_and_a_paired_title_names_only_wh
 # --------------------------------------------------------------------------- #
 # Needs you: one line, gone once updated
 # --------------------------------------------------------------------------- #
-def _entries(view, **kw):
-    return service.entries(view, miner_update=service.miner_update(view), **kw)
+def _entries(view, cards_on=True, **kw):
+    return service.entries(view, miner_update=service.miner_update(view), cards_on=cards_on, **kw)
 
 
 def test_needs_you_has_one_update_line_while_books_wait_on_an_old_anki_miner(monkeypatch):
@@ -176,6 +176,22 @@ def test_the_line_goes_once_anki_miner_is_updated_by_hand_before_any_check(monke
     _registry(monkeypatch, am_release.APPROVED)
     assert not any(e.kind == service.MINER_UPDATE for e in _entries(view))
     assert "Needs you" not in {r.title: r for r in _view(BOOK).rows}["白銀の書庫番"].status.tip
+
+
+def test_with_connect_off_no_line_and_no_tip_sends_you_to_one(monkeypatch):
+    """Review r1 #2: Connect off (or never set up) makes no card whatever Anki Miner can do — no 180 MB offer, and the
+    rows' tip names no button in Needs you (`line_n` None: Connect off)."""
+    _record(OLD, NO_READING)
+    view = _view(BOOK)
+    assert not any(e.kind == service.MINER_UPDATE for e in _entries(view, cards_on=False))
+    off = vr.build(items_of([BOOK]), dict(WORKS), {"mine_line": 20}, connect=feed._off({}))
+    tip = {r.title: r for r in off.rows}["白銀の書庫番"].status.tip
+    assert "Needs you" not in tip and tip == vr.STRINGS["tip_books_wait"].format(version=am_release.APPROVED)
+
+
+def test_the_line_offers_no_not_now_or_stop_asking():
+    """Review r1 #3: the rows' tip points at it — hidden, the tip would send you to nothing."""
+    assert service.MINER_UPDATE in service.NO_LATER
 
 
 def test_no_line_without_a_title_waiting_or_for_a_book_already_mined(monkeypatch):
@@ -254,6 +270,16 @@ def test_a_look_that_didnt_find_the_new_version_is_tried_again_a_few_times_never
     assert setup.to_follow("3.12.0"), "another version installed: followed again"
 
 
+@pytest.mark.parametrize("installed", ["3.9.0", OLD])
+def test_a_downgrade_or_the_same_version_is_never_followed(follow, installed):
+    """Review r1 #4: Connect pointed at another Anki Miner (a newer one by path), or one downgraded by hand: the
+    installer's version is no update — no checks at every start, no kicks."""
+    checks, kicks = follow
+    _record(OLD, NO_READING)
+    assert not setup.to_follow(installed)
+    assert not setup.follow_install({}, "ja", installed) and checks.calls == [] and kicks == []
+
+
 def test_the_update_buttons_end_forces_the_follow(follow):
     checks, kicks = follow
     _record(am_release.APPROVED, READING)
@@ -285,8 +311,10 @@ def test_the_feed_follows_the_installers_version_in_its_stamp_without_reading_tw
     monkeypatch.setattr(setup, "follow_in_background", lambda s, lang, v: started.append((dict(s), lang, v)))
     _record(OLD, NO_READING)
     stamp = [[1, 2], None, False, "2026-11-02", None, None, None, None, OLD]
-    provider = feed.Provider("ja", lambda: {"connect_enabled": True}, stamp=lambda languages: list(stamp),
-                             read=lambda languages: {"languages": {"ja": {}}})
+    from app.connect import status
+    monkeypatch.setattr(status, "stamp", lambda languages=None: list(stamp))     # (Connect's own stamp: a stand-in
+    monkeypatch.setattr(status, "read", lambda languages=None: {"languages": {"ja": {}}})     # handed in follows nothing)
+    provider = feed.Provider("ja", lambda: {"connect_enabled": True})
     provider.feed()
     assert started == [], "the record holds the installer's version: nothing to follow"
     stamp[-1] = am_release.APPROVED
@@ -298,6 +326,26 @@ def test_the_feed_follows_the_installers_version_in_its_stamp_without_reading_tw
     stamp[-1] = None                                     # an Anki Miner its installer didn't put in place
     provider.feed()
     assert len(started) == 1
+
+
+def test_the_feed_moves_when_the_anki_miner_connect_knows_of_does(monkeypatch):
+    """Review r1 #1: a hand update followed rewrites the setup record — the Feed carries it (`miner`), so a Feed that
+    is otherwise the same tells its listener (the reader builds the rows' tip again, Needs you gathers again)."""
+    from app import settings_manager
+    monkeypatch.setattr(settings_manager, "connect_on", lambda s: True)
+    monkeypatch.setattr(setup, "follow_in_background", lambda *a: None)     # (no record: OLD would be followed)
+    stamp = [[1, 2], None, False, "2026-11-02", None, None, None, [10, 100], OLD]
+    provider = feed.Provider("ja", lambda: {}, stamp=lambda languages: list(stamp),
+                             read=lambda languages: {"languages": {"ja": {}}, "stamp": list(stamp)})
+    told = []
+    provider.on_change = lambda: told.append(1)
+    first = provider.feed()
+    assert first.miner == ((10, 100), OLD) and len(told) == 1
+    stamp[0] = [1, 3]                                   # the ledger moved, nothing Anki Miner: the same Feed
+    assert provider.feed() is first and len(told) == 1
+    stamp[-2] = [11, 140]                               # the follow's checks wrote the record
+    assert provider.feed().miner == ((11, 140), OLD) and len(told) == 2
+    assert feed.miner_of(None) is None and feed.miner_of([1]) is None
 
 
 def test_a_book_set_aside_for_an_old_anki_miner_is_mined_once_the_hand_update_is_followed(follow, tmp_path):

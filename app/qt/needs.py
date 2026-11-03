@@ -638,6 +638,7 @@ class NeedsYou(QObject):
         self.view = None
         self.data_dir = None                     # None: the language's data folder (looked up on the worker)
         self.connect_line = None
+        self._miner = None                       # Michi-U: the Anki Miner the last gather knew of (the feed's `miner`)
         self.gathers = 0                         # entries worked out (tests: N9)
         self.gone_folders = None                 # T6: the looks' gone rows (None: no look has said yet)
         self._gone_judged = False                # ... and whether every folder was looked at (else no key is pruned)
@@ -721,7 +722,8 @@ class NeedsYou(QObject):
         old, self.view = self.view, view
         if view is None:
             return
-        if old is not None and old.mode == view.mode and old.loading == view.loading:
+        miner, self._miner = self._miner, self._miner_now()
+        if old is not None and old.mode == view.mode and old.loading == view.loading and miner == self._miner:
             if _same(old.rows, view.rows):
                 return                               # another tab's change: these entries can't have moved
             if not self._running and _reads_same(old.rows, view.rows) and self._in_order(view.rows):
@@ -752,6 +754,16 @@ class NeedsYou(QObject):
             return
         self.connect_line = key
         self.refresh()
+
+    def _miner_now(self):
+        """Michi-U: the Anki Miner Connect's feed last saw (`feed.Feed.miner`: the setup record's stat, the installer's
+        version) — no read. When it moves (an update by hand, followed), the view's rows read alike yet the Anki Miner
+        line may go: the entries are gathered again."""
+        try:
+            from app.qt.shell import connect_feed
+            return connect_feed(self.language, self.win.services.settings).latest().miner
+        except Exception:
+            return None
 
     def _anki_waiting(self):
         """The feed's episodes waiting on Anki for you, as (item, reason)s — no read (`Provider.latest`)."""
@@ -1702,7 +1714,8 @@ class NeedsYou(QObject):
             from app.qt import wizard_strings as W
             result, updated = answer
             self._say(strings.NEEDS_MINER_UPDATED if updated else {
-                "busy": W.INSTALL_BUSY, "opened-releases": W.INSTALL_OPENED, "cancelled": W.INSTALL_STOPPED}.get(
+                "busy": strings.NEEDS_MINER_BUSY, "opened-releases": W.INSTALL_OPENED,
+                "cancelled": W.INSTALL_STOPPED}.get(
                 result, strings.NEEDS_MINER_NOT_UPDATED))
             self.refresh()
         self._press("update_miner", entry, run, then=done, goes=False)

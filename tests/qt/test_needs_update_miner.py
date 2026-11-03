@@ -51,8 +51,11 @@ def _said(win, got):
     win.say = lambda text, hold=None: got["said"].append(text) or real(text, hold)
 
 
+ON = {"jobs": [], "gaps": [], "needs": []}             # Connect on, nothing in its record
+
+
 def test_the_card_offers_update_alone_with_its_tip_and_asks_before_any_byte(world, stood_in):
-    seed, win, writer, ny = world()
+    seed, win, writer, ny = world(connect=ON)
     entry = entry_of(ny, service.MINER_UPDATE)
     assert entry.title == f"Update Anki Miner to {am_release.APPROVED} to make cards from your books and texts"
     assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"update_miner"}
@@ -67,7 +70,7 @@ def test_the_card_offers_update_alone_with_its_tip_and_asks_before_any_byte(worl
 
 
 def test_yes_runs_the_route_on_a_worker_follows_the_update_and_the_card_goes(world, stood_in):
-    seed, win, writer, ny = world()
+    seed, win, writer, ny = world(connect=ON)
     _said(win, stood_in)
     entry = entry_of(ny, service.MINER_UPDATE)
     button(ny, entry.key, "update_miner").click()
@@ -79,13 +82,13 @@ def test_yes_runs_the_route_on_a_worker_follows_the_update_and_the_card_goes(wor
     assert wait_until(lambda: not any(e.kind == service.MINER_UPDATE for e in ny.entries), 5)
 
 
-@pytest.mark.parametrize("result, line", [(route.BUSY, W.INSTALL_BUSY), (route.OPENED_RELEASES, W.INSTALL_OPENED),
+@pytest.mark.parametrize("result, line", [(route.BUSY, strings.NEEDS_MINER_BUSY), (route.OPENED_RELEASES, W.INSTALL_OPENED),
                                           (route.CANCELLED, W.INSTALL_STOPPED),
                                           (route.INSTALLER_CLOSED, strings.NEEDS_MINER_NOT_UPDATED)])
 def test_a_route_that_didnt_update_says_why_and_the_card_stays(world, stood_in, result, line):
     stood_in["result"] = result
     stood_in["installed"] = "3.10.1"                     # (the installer closed before it finished: still the old one)
-    seed, win, writer, ny = world()
+    seed, win, writer, ny = world(connect=ON)
     _said(win, stood_in)
     entry = entry_of(ny, service.MINER_UPDATE)
     button(ny, entry.key, "update_miner").click()
@@ -95,3 +98,28 @@ def test_a_route_that_didnt_update_says_why_and_the_card_stays(world, stood_in, 
     stood_in["updated"] = False
     settle(ny)
     assert any(e.kind == service.MINER_UPDATE for e in ny.entries)
+
+
+def test_the_card_has_no_not_now_and_is_absent_while_connect_is_off(world, stood_in):
+    """Review r1 #2 / #3: Connect off, no card (nothing would be mined); on, no ⋯ (Not now / Stop asking would leave
+    the rows' tip pointing at nothing)."""
+    seed, win, writer, ny = world()                     # (the world's Connect: off)
+    assert not any(e.kind == service.MINER_UPDATE for e in ny.entries)
+    seed, win, writer, ny = world(connect={"jobs": [], "gaps": [], "needs": []})
+    entry = entry_of(ny, service.MINER_UPDATE)
+    assert not ny.cards.has_more(entry)
+
+
+def test_an_anki_miner_followed_gathers_again_though_the_rows_read_the_same(world, stood_in):
+    """Review r1 #1: a hand update followed moves the feed's `miner` — the view's rows read alike (its titles and
+    files), yet the page gathers again and the line goes."""
+    seed, win, writer, ny = world(connect={"jobs": [], "gaps": [], "needs": []})
+    assert any(e.kind == service.MINER_UPDATE for e in ny.entries)
+    stood_in["updated"] = True                          # Anki Miner updated by hand: the rule says no more
+    n = ny.gathers
+    ny.view_in(ny.view)                                 # the same rows: nothing to gather
+    assert ny.gathers == n and not ny._running
+    ny._miner_now = lambda: ((11, 140), am_release.APPROVED)
+    ny.view_in(ny.view)
+    assert wait_until(lambda: ny.gathers > n and not ny._running, 5)
+    assert wait_until(lambda: not any(e.kind == service.MINER_UPDATE for e in ny.entries), 5)

@@ -244,6 +244,8 @@ STRINGS = {
     "tip_mining": "Making its cards now",
     # R47 (laptop rows 47 + 56, PROVISIONAL words): Stop's states, and an ask Connect has read (its own status)
     "stopping": "Stopping…", "tip_stopping": "Stopping: the cards made so far are kept",
+    # #BS0A1K (PROVISIONAL words): Stop pressed while Anki Miner writes its cards — never ended mid-card
+    "tip_stopping_cards": "Adding the cards it has ready to Anki, then it stops: the cards made so far are kept",
     "tip_finishing": "\nFinishing its cards: too far along to stop", "asked": "Asked",
     "tip_asked": "Its cards come next",
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
@@ -1010,7 +1012,8 @@ def _connected(st, item, word):
         # R47 (laptop rows 47 + 56): *Stop* pressed, the job not stopped yet -> *Stopping…*; while it can be stopped
         # its *Stop* (`stop`: the job); past the stop point (naming its clips) its hover says it is finishing
         if item.stopping:
-            return Status("mining", STRINGS["stopping"], STRINGS["tip_stopping"], "accent")
+            return Status("mining", STRINGS["stopping"],
+                          STRINGS["tip_stopping_cards" if item.writing_cards else "tip_stopping"], "accent")
         stop = item.job if item.stoppable else None
         if item.progress is not None:       # Anki Miner's run, as it goes (laptop round 5 #23, PROVISIONAL text: lean A)
             tip = STRINGS["tip_mining_doing"].format(doing=item.doing)

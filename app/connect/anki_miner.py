@@ -24,7 +24,8 @@ Failures are AnkiMinerError with a `kind` the runner (P2.4) acts on: `busy` (its
 retry later, E8), `writer-busy` (another Surasura program writes Anki), `reviewing` (you're reviewing: E2), `anki-closed` (E1), `quarantined` (Windows Security blocked it: WinError 225, never retried
 silently, W1), `crashed` / `timeout` (the batch is `uncertain`: checked in Anki by the job's tag before any retry,
 E11/E14), `unknown-version` (a schema Surasura wasn't built for, E12), `too-old` (a build before 3.5.0, never run), `refused` (a run file it refused), `no-reading` (a book's batch for an
-Anki Miner that doesn't name `reading`, Z-9: never sent), `unreadable` (a video, subtitle or book it can't read), `setup` (its
+Anki Miner that doesn't name `reading`, Z-9: never sent), `no-audio` (the same for an audio file and `audio-episodes`, Z-16),
+`unreadable` (a video, audio file, subtitle or book it can't read), `setup` (its
 setup is incomplete: `check`'s items name what), `absent`.
 """
 import json
@@ -86,29 +87,29 @@ STAGE_SHARES = (0.05, 0.01, 0.57, 0.01, 0.36)
 FEATURES = {"named-words-whitelisted": "Z-1", runfile.WORD_FROM_LINE: "Z-2", "settings-import": "Z-3",
             runfile.SENTENCE_RULES_OFF: "Z-4", runfile.BOLD_TARGET: "Z-5", "filter-names": "Z-6",
             runfile.DRY_RUN: "Z-7", "fetch": "Z-8", "render": "Z-10", "media": "Z-10", "setup": "Z-11",
-            "script-fold": "Z-12", "beside-window": "Z-13", runfile.READING: "Z-9"}
+            "script-fold": "Z-12", "beside-window": "Z-13", runfile.READING: "Z-9", runfile.AUDIO: "Z-16"}
 # Round 2's Z-9 (books and text in `mine`, 2026-10-28: Sonic, a must for 3.0): an episode naming `reading_file`. In
 # FEATURES: `mines("books")` is True with an Anki Miner whose `version` names it, False with any other (alpha 4 M1)
 READING = runfile.READING
-# Round 2's Z-16 (an episode naming `audio_file`): its `features` name. Not in FEATURES until Surasura mines audio:
-# `mines("audio")` is False with every Anki Miner until then (alpha 4 A4M1-3)
-AUDIO = "audio-episodes"
+# Round 2's Z-16 (an episode naming `audio_file`, Anki Miner 3.11; Sonic 2026-11-02: "audiobook mining must work for
+# this release"): in FEATURES, so `mines("audio")` is True with an Anki Miner whose `version` names it, as books are
+AUDIO = runfile.AUDIO
 # What Connect sets aside until Anki Miner mines it (`library.waits_for`'s kinds) -> the Z-ask that opens it
 WAITS = {"books": "Z-9", "audio": "Z-16"}
 
 # A verdict's error code -> the kind Surasura acts on
 KINDS = {"BUSY": "busy", "ANKI_UNREACHABLE": "anki-closed", "SETUP_ERROR": "setup", "PROFILE_UNREADABLE": "setup",
          "BAD_RUN_FILE": "refused", "BAD_ARGUMENTS": "refused", "SUBTITLE_UNREADABLE": "unreadable",
-         "VIDEO_UNREADABLE": "unreadable", "SOURCE_UNREADABLE": "unreadable", "MINING_FAILED": "failed", "CANCELLED": "cancelled",
-         "INTERNAL": "crashed"}
+         "VIDEO_UNREADABLE": "unreadable", "SOURCE_UNREADABLE": "unreadable", "AUDIO_UNREADABLE": "unreadable",
+         "MINING_FAILED": "failed", "CANCELLED": "cancelled", "INTERNAL": "crashed"}
 
 # The outcome of each status (IS §4.4)
 OUTCOMES = {"created": "made", "duplicate": "duplicate", "not_found": "not_found", "no_definition": "no_definition",
             "media_failed": "media_failed", "refused": "refused", "not_attempted": "not_attempted",
             "uncertain": "uncertain", "ready": "ready"}       # ready: a dry run would make it (Z-7)
 # A run that stopped with one of these and wrote no result never reached Anki: refused, never uncertain
-BEFORE_ANKI = frozenset(("VIDEO_UNREADABLE", "SUBTITLE_UNREADABLE", "SOURCE_UNREADABLE", "ANKI_UNREACHABLE", "SETUP_ERROR",
-                         "PROFILE_UNREADABLE", "BAD_RUN_FILE", "CANCELLED"))
+BEFORE_ANKI = frozenset(("VIDEO_UNREADABLE", "SUBTITLE_UNREADABLE", "SOURCE_UNREADABLE", "AUDIO_UNREADABLE",
+                         "ANKI_UNREACHABLE", "SETUP_ERROR", "PROFILE_UNREADABLE", "BAD_RUN_FILE", "CANCELLED"))
 # When a word went as two entries (its card front, and Surasura's Word), the better outcome is the word's
 _BEST = ("made", "ready", "duplicate", "uncertain", "media_failed", "refused", "no_definition", "not_attempted",
          "not_found")
@@ -362,6 +363,13 @@ def version(path):
                              "checked with. Update Surasura, or wait for an update that knows it.")
     result.setdefault("features", [])
     return result
+
+
+def is_audio(path):
+    """Z-16: is the file an episode is cut from an audio file (`audiobooks.AUDIO_EXTENSIONS`, Anki Miner's own list),
+    so it goes as `audio_file`? A video, or no file, is not."""
+    from app.audiobooks import AUDIO_EXTENSIONS
+    return isinstance(path, str) and path.lower().endswith(AUDIO_EXTENSIONS)
 
 
 def features(info):
@@ -749,7 +757,8 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     (an AnkiMinerError `cancelled` too, its `stopped` set). `show` (laptop round 8 #50, LF4-3): the title of the show
     the episode belongs to: every card it makes also carries `runfile.from_tag(show)`. `reading` (Z-9): the book's or
     the text's file Anki Miner reads (an Anki Miner naming `reading` only): `video` and `subtitle` unused, each word
-    named by its sentence."""
+    named by its sentence. `video` an audio file (`is_audio`, Z-16: an audiobook's, a podcast's): mined as Anki Miner's
+    audio episode, the clips cut from it (an Anki Miner naming `audio-episodes` only)."""
     from app import anki_connect, locks
     try:
         held = anki_connect.writer("Connect's mine step", wait=wait)
@@ -788,13 +797,17 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         # an Anki Miner that no longer names `reading` (another one installed since the pick): nothing sent; the job
         # waits as a book does (`runner.Steps.mine`)
         raise AnkiMinerError("no-reading", "This Anki Miner can't read books or texts.", verdict=info)
+    audio = reading is None and is_audio(video)
+    if audio and AUDIO not in (named or ()):
+        # Z-16: the same for an audio file (an audiobook's, a podcast's) with an Anki Miner that doesn't mine audio
+        raise AnkiMinerError("no-audio", "This Anki Miner can't mine audio.", verdict=info)
     run_id = f"{job}-{attempt}"
     tags = " ".join(t for t in (runfile.job_tag(job), runfile.from_tag(show)) if t)
     if reading is not None:
         episode = runfile.reading_episode(run_id, reading, runfile.word_requests(words, named, book=True), tags)
     else:
         episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named), tags=tags,
-                                  subtitle_offset=subtitle_offset)
+                                  subtitle_offset=subtitle_offset, audio=audio)
     data = runfile.build(run_dir, language, [episode], profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)

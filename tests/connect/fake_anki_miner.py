@@ -38,6 +38,11 @@ reading episode adds `unit_index` and `location`, its `line_start` / `start` / `
     {"cover": true, "chapters": [{"title": "一", "index": 0}]}   # `inspect` (Z-19, with `inspect` in features):
                                                            # each source's answer; "units": true writes inspect-<n>.json
 
+Round 2's Z-16 (`audio-episodes` in `features`, 3.11.0 `cli/api/files.py`): an episode may name `audio_file` instead of
+`video_file` (with its `subtitle_file`; exactly one of the three), as a video episode's keys otherwise:
+
+    {"mine": "audio-unreadable"}                           # AUDIO_UNREADABLE before any Anki write, no result
+
 Z-24 (`extract`, 3.11; Michi-ST): a video named in "tracks" is inspected as a video (its `tracks`, API.md § inspect),
 and `extract` copies a track's text as the plan gives it into `<run_dir>/<run_id>/extract-1/` with `extract-1.json`:
 
@@ -64,6 +69,7 @@ EPISODE_KEYS = {"run_id", "video_file", "subtitle_file", "subtitle_offset", "aud
                 "source_label_override", "secondary_subtitle_file", "secondary_subtitle_offset", "series_name_override",
                 "episode_name_override", "tags", "words"}
 WORD_KEYS = {"word", "line_start", "line_text", "line_expansion"}
+AUDIO_EPISODE_KEYS = EPISODE_KEYS - {"video_file"} | {"audio_file"}
 READING_EPISODE_KEYS = {"run_id", "reading_file", "source_label_override", "series_name_override",
                         "episode_name_override", "tags", "words"}
 # 3.7.0 (contract.py FEATURES): what each name adds to what the run file may hold
@@ -140,6 +146,10 @@ def _read_run_file(path, plan):
     for episode in data["episodes"]:
         if "reading" in features and "reading_file" in episode:
             if set(episode) - READING_EPISODE_KEYS or not {"run_id", "reading_file", "words"} <= set(episode):
+                raise ValueError("unknown or missing episode keys")
+        elif "audio-episodes" in features and "audio_file" in episode:
+            if set(episode) - AUDIO_EPISODE_KEYS or not {"run_id", "audio_file", "subtitle_file", "words"} <= \
+                    set(episode):
                 raise ValueError("unknown or missing episode keys")
         elif set(episode) - EPISODE_KEYS or not {"run_id", "video_file", "subtitle_file", "words"} <= set(episode):
             raise ValueError("unknown or missing episode keys")
@@ -220,6 +230,11 @@ def _mine(argv, plan):
     if how == "video-unreadable":       # refused at its own check, before any Anki write: no result file
         runs = [{"run_id": e["run_id"], "ok": False, "error": "VIDEO_UNREADABLE",
                  "message": f"The video cannot be opened: {e['video_file']}", "file": None} for e in data["episodes"]]
+        return {**_ok("mine", runs=runs), "ok": False}
+    if how == "audio-unreadable":       # Z-16: the audio file doesn't open, before any Anki write: no result file
+        runs = [{"run_id": e["run_id"], "ok": False, "error": "AUDIO_UNREADABLE",
+                 "message": f"The audio file cannot be opened: {e.get('audio_file')}", "file": None}
+                for e in data["episodes"]]
         return {**_ok("mine", runs=runs), "ok": False}
     readings = {e["run_id"]: _units(e["reading_file"], plan) for e in data["episodes"] if "reading_file" in e}
     if how == "source-unreadable" or any(units is None for units in readings.values()):

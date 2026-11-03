@@ -299,13 +299,14 @@ def test_waits_for_reads_a_books_file_type_and_an_audio_titles_type(item, media,
     assert library.waits_for(item, media) == kind
 
 
-def test_books_open_only_with_reading_and_audio_waits_whatever_anki_miner_names():
-    """This Surasura sends books (Z-9, 2026-10-28) but not audio (Z-16): books open only with an Anki Miner naming
-    `reading`; audio waits even with one that names it; one kind never opens the other."""
+def test_books_open_only_with_reading_and_audio_only_with_audio_episodes():
+    """This Surasura sends books (Z-9, 2026-10-28) and audio (Z-16, Michi-AB 2026-11-02): books open only with an Anki
+    Miner naming `reading`, audio only with one naming `audio-episodes`; one kind never opens the other."""
     named = {"features": ["reading", "audio-episodes"]}
     assert anki_miner.mines("books") and anki_miner.mines("books", named)
     assert not anki_miner.mines("books", {"features": ["audio-episodes"]})
-    assert not anki_miner.mines("audio") and not anki_miner.mines("audio", named)
+    assert anki_miner.mines("audio") and anki_miner.mines("audio", named)
+    assert not anki_miner.mines("audio", {"features": ["reading"]}) and not anki_miner.mines("audio", {"features": []})
 
 
 def test_a_kind_opens_only_with_its_own_ask(monkeypatch):

@@ -6,7 +6,7 @@ Please read these terms. To install Surasura, choose "I accept the agreement".
 
 Surasura provides no content. It works only with what you give it: your own subtitles, videos, books, audiobooks, texts, word lists and Anki decks, and anything you get with the tools and sites it can open or call (YouTube and bilibili through yt-dlp, jimaku, Anki Miner).
 
-You are responsible for the content you use with Surasura. Use only content you own or have the right to use, and follow the law and the terms of the sites and services you get it from. Surasura does not host or share your content: it stays on your computer, except what you choose to send to a service you connect.
+You are responsible for the content you use with Surasura. Use only content you own or have the right to use, and follow the law and the terms of the sites and services you get it from. Surasura does not host or share your content: it stays on your computer, except what you choose to send: to a service you connect, or in a problem report you send.
 
 2. NO WARRANTY
 

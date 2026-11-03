@@ -184,6 +184,22 @@ def test_a_program_folder_without_its_licence_is_no_installer(tmp_path, monkeypa
     assert "LICENSE" in capsys.readouterr().out
 
 
+def test_iscc_is_handed_the_agreement_written_from_the_programs_licence(tmp_path, monkeypatch):
+    # Without the define the .iss falls back to build\installer_agreement.txt, which a hand compile may have left stale.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(package_app, "find_iscc", lambda: str(tmp_path / "ISCC.exe"))
+    seen = []
+    monkeypatch.setattr(package_app.subprocess, "run",
+                        lambda cmd, **k: seen.append(cmd) or subprocess.CompletedProcess(cmd, 1))
+    program = tmp_path / "dist" / "Surasura"
+    program.mkdir(parents=True)
+    (program / "LICENSE").write_text("GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n", encoding="utf-8")
+    package_app.build_installer(str(program), "3.0.0", "Surasura-test", "Surasura")
+    agreement = str(tmp_path / "build" / "installer_agreement.txt")
+    assert len(seen) == 1 and f"/DAgreementFile={agreement}" in seen[0]
+    assert open(agreement, encoding="utf-8-sig").read().rstrip().endswith("Version 3, 29 June 2007")
+
+
 def test_the_agreement_terms_say_the_same_as_readmes_your_content():
     """The installer's terms and README's *Your content* are one notice: its sentences, line breaks aside, in both."""
     with open(package_app.AGREEMENT_HEAD, encoding="utf-8") as f:
@@ -196,7 +212,7 @@ def test_the_agreement_terms_say_the_same_as_readmes_your_content():
                      "use only content you own or have the right to use, and follow the law and the terms of the "
                      "sites and services you get it from.",
                      "Surasura does not host or share your content: it stays on your computer, except what you "
-                     "choose to send to a service you connect."):
+                     "choose to send: to a service you connect, or in a problem report you send."):
         assert sentence.lower() in head.lower() and sentence.lower() in section.lower(), sentence
     assert head.isascii()                                          # plain text whatever the page's font
 

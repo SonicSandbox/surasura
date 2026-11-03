@@ -11084,8 +11084,9 @@ def _thin_switch(self, plan):
     """A6 for a better version (outside the lock), each file read once -> (thin, the version's bytes or None): does the
     version hold under 1/THIN of the dialogue lines of the item's copy (`sources.dialogue_lines`) — a signs track the
     look would never have picked (B4: one with none is thin while the copy holds some; neither holding any — a text,
-    not a subtitle — is no thin one)? The bytes go to the swap (`plan["data"]`, checked by their sha256 there). One
-    that can't be read is not judged here (its swap holds it)."""
+    not a subtitle — is no thin one)? A version the look's one language rule refuses (`sources._refusal`, K6) counts
+    as thin: passed over. The bytes go to the swap (`plan["data"]`, checked by their sha256 there). One that can't be
+    read is not judged here (its swap holds it)."""
     from app import sources
     try:
         with open(plan["origins"][0], "rb") as f:
@@ -11094,6 +11095,8 @@ def _thin_switch(self, plan):
             old = f.read()
     except OSError:
         return False, None
+    if sources._refusal(new, self.language):         # K6, the look's one rule: never another language's bytes
+        return True, None                            # (an English `.srt` saved over a version) — passed over
     lines = lambda data: sources.dialogue_lines(decode_text(data, self.language))      # noqa: E731
     return lines(new) * sources.THIN < lines(old), new
 

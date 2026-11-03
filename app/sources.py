@@ -500,7 +500,8 @@ def video_for(name, vids, language, keyed=None):
 def subtitles_for_video(path, language):
     """(A worker; alpha 8, setup's *Choose a file…* given a video.) The subtitles beside the video `path` that the one
     pairing rule (`video_for`) gives to it, best first (`subtitle_rank`: named like it, our language, plain…); a
-    loose text or one tagged for another language is never one. None given to it, but its episode's subtitles given
+    loose text, one tagged for another language or one the look's language rule refuses (`_refusal`, K6: an untagged
+    English `.srt`) is never one. None given to it, but its episode's subtitles given
     to another release of the same episode (A5: the plain one, never a Dual / Dub copy) -> those (the learner picked
     the copy they watch). Only the video's own folder is read (its `Subs/` folder: *Choose its folder*). -> [paths];
     [] when none (or the folder can't be read)."""
@@ -523,11 +524,12 @@ def subtitles_for_video(path, language):
         if name.lower().endswith(_LOOSE) or _tag(name)[1] not in (None, language):
             continue
         v, _by = video_for(name, vids, language, keyed=lambda: keys)
+        if v != me and (v is None or mine is None or episode_key(v, language) != mine):
+            continue
+        if file_refusal(full, language, name):           # K6, the look's one rule: an untagged English `.srt` is
+            continue                                     # never its text
         rank = (subtitle_rank(name, language, named=_tag(name)[0] == stem), full)
-        if v == me:
-            found.append(rank)
-        elif v is not None and mine is not None and episode_key(v, language) == mine:
-            episode.append(rank)
+        (found if v == me else episode).append(rank)
     return [full for _rank, full in sorted(found or episode)]
 
 
@@ -783,6 +785,19 @@ def _refusal(data, language, loose=False, head=False):
     if loose and _count(_BOOK_SCRIPT.get(language, _BOOK_SCRIPT["ja"]), text, BOOK_MIN_CHARS) < BOOK_MIN_CHARS:
         return "short"
     return None
+
+
+def file_refusal(path, language, name=None):
+    """`_refusal` of the file at `path` (`name`: the original's, for its kind; a `.part` is named for its original),
+    judged by the bytes `_read_text` judges — all of a text up to IN_MEMORY, else its first HEAD — never hashed: why
+    it is not the library's content, or None. A file that can't be read is refused ("unread")."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read(IN_MEMORY + 1)
+    except OSError:
+        return "unread"
+    big = len(data) > IN_MEMORY
+    return _refusal(data[:HEAD] if big else data, language, (name or path).lower().endswith(_LOOSE), big)
 
 
 def _locked(path):
@@ -2636,12 +2651,15 @@ class _Look:
             f["video_path"], f["video_size"] = os.path.abspath(video[0]), video[1].st_size
             if vkey:
                 f["video_key"] = vkey
-        item = (self._video_item(vkey) if vkey else None) or self._same_bytes(st.st_size, sha) or forced
+        known = self._same_bytes(st.st_size, sha) or forced  # these bytes are an item's already: the rule passed them
+        item = (self._video_item(vkey) if vkey else None) or known
         if item is None:                                     # a waiting item of its episode (another release's
             gap = next((g for g in map(self._waits(show).get, keys) if g is not None), None)   # video) takes it in place
             if gap is not None:
                 f["gap"] = gap
-        why = None if item is not None else _refusal(head, self.language, name.lower().endswith(_LOOSE), data is None)
+        # K6's one rule for every text new to the library, whatever it pairs with: its video vouches for its episode,
+        # never for its language (an English `.srt` named like a movie already in is never that movie's text)
+        why = None if known is not None else _refusal(head, self.language, name.lower().endswith(_LOOSE), data is None)
         if why:                                              # K6: a skin config, an English .srt, a Chinese fansub,
             self._pass_over(path, st, why)                   # a readme: no new text and no v2's — not read again
             rest = self.runners_up.pop(path, None)           # until it changes; B5: the episode's next file (the
@@ -3252,7 +3270,8 @@ class _Look:
 
     def _recopy(self, rel, old_sha, path, st):
         """S5: the original's new text over Surasura's copy at `rel` -> ('done' | 'same' | 'refused' | 'wait', sha).
-        Refused (`_refuses`). Wait: it changed while read, or the trash couldn't take the old copy."""
+        Refused (`_refuses`, or new bytes the one language rule refuses: K6). Wait: it changed while read, or the trash
+        couldn't take the old copy."""
         if self._refuses(rel, st):
             return "refused", None
         full = self._inside(rel)
@@ -3263,6 +3282,9 @@ class _Look:
         if sha == old_sha:
             _drop(part)
             return "same", sha
+        if file_refusal(part, self.language, os.path.basename(path)):   # K6: an English `.srt` saved over the
+            _drop(part)                                                   # original never becomes the item's text
+            return "refused", None
         try:                                                 # (a7) new bytes dated as the copy they replace — a v2
             new, old = os.stat(part), os.stat(full)          # from the same archive, the same size — would read as
             if (new.st_size, new.st_mtime_ns) == (old.st_size, old.st_mtime_ns):    # unchanged to the disk sync:
@@ -3303,8 +3325,8 @@ class _Look:
             if o is None or o.version or o.availability != "missing" or _key(path) in self.ex_paths:
                 continue                                     # LM1b: a version's bytes are never the item's copy
             rank = (_episode_of(os.path.basename(path))[1], o.paired_at or "")
-            if o.item_id not in chosen or rank > chosen[o.item_id][0]:
-                chosen[o.item_id] = (rank, o, folder, path, st)
+            if (o.item_id not in chosen or rank > chosen[o.item_id][0]) and not file_refusal(path, self.language):
+                chosen[o.item_id] = (rank, o, folder, path, st)   # (K6: never an original none of ours copied back)
         back, records, placed, handled = [], {}, {}, set()
         try:
             for _rank, o, folder, path, st in chosen.values():

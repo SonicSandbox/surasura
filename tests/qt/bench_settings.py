@@ -3,6 +3,7 @@ fold, a switch landing — Junban's —, a search keystroke, the page's build sl
 offscreen, never timed).
 
     python tests/qt/bench_settings.py [--rounds 10] [--scales 100,125,150,175,200,250] [--reduced] [--json OUT.json]
+                                      [--settings FILE]
 
 Not collected by pytest (no `test_` prefix). A timed run: start it through `locks/with-lock.sh timed …` from the copy.
 
@@ -21,7 +22,12 @@ and every GUI-thread step, `--rounds` times each (>= 10 for a timed run):
   - `slider-release`: the level slider (Settings › Level) pressed on its band's chamber and dragged to the next before
     the repetition, then let go: its `changed` and the page's refresh and write at the release (Gap 2: the choice and
     its save at the action), through the gem's settle into its chamber;
-  - `search-key`: a keystroke in the search (a word typed letter by letter, then taken back).
+  - `search-key`: a keystroke in the search (a word typed letter by letter, then taken back);
+  - `open-tab`: the Settings tab shown again from Current (the page built and kept);
+  - `scroll-wheel`: the page turned by the wheel, a burst of notches 50 ms apart (down, back up at the end);
+  - `report-open`: the bug's press with Settings in view (the pictures taken, the report window opened; closed
+    outside the repetition) — Sonic's "debug screen" (a9.1 report 3).
+`--settings FILE`: that settings.json in each run's root (a learner's own shape: which sections and rows show).
 After each moment's last repetition the clock's wake-ups are counted once it is still.
 """
 import argparse
@@ -44,6 +50,13 @@ def main_parent(a):
     def one_run(scale, root, env, i):
         out_path = os.path.join(os.path.dirname(root), "result.json")
         env["SURASURA_INSTANCE_NAME"] = f"surasura-bench-settings-{os.getpid()}-{os.path.basename(os.path.dirname(root))}"
+        if a.settings:                                   # a learner's settings shape (reduced motion kept)
+            with open(a.settings, encoding="utf-8") as f:
+                shape = json.load(f)
+            if a.reduced:
+                shape["app_motion"] = "reduced"
+            with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+                json.dump(shape, f)
         cmd = [sys.executable, os.path.abspath(__file__), "--child", "--rounds", str(a.rounds), "--out", out_path]
         proc = subprocess.run(cmd, env=env, cwd=root, timeout=1200, check=False, capture_output=True, text=True,
                               encoding="utf-8", errors="replace")
@@ -57,10 +70,10 @@ def main_parent(a):
 
 
 def main_child(a):
-    from PyQt6.QtCore import QEvent, QPointF, Qt, QTimer
-    from PyQt6.QtGui import QKeyEvent, QMouseEvent
+    from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
+    from PyQt6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent
     from PyQt6.QtWidgets import QApplication
-    from app.qt import hud as hud_module, settings_catalog as catalog, settings_page as sp, shell
+    from app.qt import hud as hud_module, report, settings_catalog as catalog, settings_page as sp, shell
 
     app = QApplication([sys.argv[0]])
     shell.prepare_process()
@@ -272,6 +285,53 @@ def main_child(a):
         at(220, go)
         at(30, lambda: moments.end())
 
+    # --- the tab shown again ------------------------------------------------------------------------------------------ #
+    def open_tab(c):
+        at(250, lambda: window.show_tab("current"))
+
+        def go():
+            moments.begin("open-tab")
+            window.show_tab("settings")
+        at(250, go)
+        at(0, lambda: moments.end())
+
+    # --- the wheel ----------------------------------------------------------------------------------------------------- #
+    def wheel(c):
+        def notch():
+            p = page()
+            bar = p.scroll.verticalScrollBar()
+            if bar.value() >= bar.maximum():
+                state["wheel"] = 120
+            elif bar.value() <= bar.minimum():
+                state["wheel"] = -120
+            vp = p.scroll.viewport()
+            pos = QPointF(vp.width() / 2, vp.height() / 2)
+            QApplication.sendEvent(vp, QWheelEvent(pos, QPointF(vp.mapToGlobal(pos.toPoint())), QPoint(),
+                                                   QPoint(0, state.get("wheel", -120)), Qt.MouseButton.NoButton,
+                                                   Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
+
+        def go():
+            moments.begin("scroll-wheel")
+            notch()
+        at(50, go)
+        for _k in range(4):
+            at(50, notch)
+        at(200, lambda: moments.end())
+
+    # --- the bug's press (the debug screen) ---------------------------------------------------------------------------- #
+    def bug(c):
+        def go():
+            moments.begin("report-open")
+            report.open_report(window)
+        at(500, go)
+
+        def close():
+            moments.end()
+            w = report.windows.opened(window, report.NAME)
+            if w is not None:
+                w.close()
+        at(400, close)
+
     def still(name):
         return lambda: (lambda then: moments.still(name, then))
 
@@ -312,6 +372,16 @@ def main_child(a):
             k += 1
         at(0, lambda: page().search.edit.clear())
         at(0, still("search-key"))
+        for c in range(n):
+            open_tab(c)
+        at(0, still("open-tab"))
+        at(0, lambda: page().scroll.verticalScrollBar().setValue(0))
+        for c in range(n):
+            wheel(c)
+        at(0, still("scroll-wheel"))
+        for c in range(n):
+            bug(c)
+        at(0, still("report-open"))
         run()
 
     def finish():
@@ -339,6 +409,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=10, help="repetitions of each moment (>= 10 for a timed run)")
     ap.add_argument("--runs", type=int, default=1)
+    ap.add_argument("--settings", help="a settings.json copied into each run's root (a learner's shape)")
     bench_moments.add_arguments(ap)
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()

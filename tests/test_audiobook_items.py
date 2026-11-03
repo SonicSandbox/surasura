@@ -412,7 +412,7 @@ def test_a_book_row_with_its_audiobook_shows_one_headphones_row_waiting_quietly(
     row = view_rows._row(0, "now", parts + [audio], works, {}, {}, set(), set(), 20)
     heard = row.episodes[-1]
     assert heard.label == "🎧 With its audiobook" and heard.number is None and heard.text == "audio"
-    assert heard.status.kind == "books" and heard.status.tip == view_rows._wait_tip({"audio"})
+    assert heard.status.kind == "books" and heard.status.tip == view_rows.STRINGS["tip_heard_wait"]
     assert heard.play_tip == view_rows.STRINGS["play_audio_wait"] and not heard.can_play
     # a5-2: the book's own line; 🎧 before its title says the rest in its hover (`audio`), the chip's the same
     assert row.line == "Parts 1–2" and row.audio.startswith(f"🎧 With its audiobook 「{NEKO}」")

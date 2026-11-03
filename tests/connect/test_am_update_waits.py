@@ -111,7 +111,7 @@ def test_opens_reads_the_record_again_only_once_it_changed(monkeypatch):
     monkeypatch.setattr(setup, "read_record", lambda: reads.append(1) or real())
     for _ in range(50):
         assert am_release.opens("books") == am_release.APPROVED
-    assert len(reads) <= 2, f"read {len(reads)} times for 50 rows (once for `mines_now`, once for `installed`)"
+    assert len(reads) == 2, f"read {len(reads)} times for 50 rows (once for `mines_now`, once for `installed`)"
     time.sleep(0.02)
     _record(am_release.APPROVED, NO_READING)        # (a found Anki Miner at the approved version: nothing to offer)
     assert am_release.opens("books") is None
@@ -371,3 +371,58 @@ def test_a_book_set_aside_for_an_old_anki_miner_is_mined_once_the_hand_update_is
     assert ("reading", parts[0], None, epub) in steps.log
     with Ledger() as ledger:
         assert not ledger.skipped_for("ja", runner.BOOKS_WAIT)
+
+
+# --------------------------------------------------------------------------- #
+# Review r2: an audiobook with no text, and the row cache
+# --------------------------------------------------------------------------- #
+NEKO = "吾輩は猫である"
+
+
+def _item(i, title, source_type, rel, waiting=False, work=7):
+    return {"id": i, "tier": "now", "ord": float(i), "rel_path": rel, "title": title, "source_type": source_type,
+            "availability": "waiting" if waiting else "available", "work_id": work, "piece_id": 1}
+
+
+def _neko(with_book=True):
+    parts = [_item(i, f"{NEKO}_0{i} (1-{i}) 第一章.txt", "epub", f"Library/{NEKO}/{NEKO}_0{i}.txt") for i in (1, 2)]
+    audio = _item(3, NEKO, "audio", f"Library/{NEKO}/01.mp3", waiting=True)
+    items = {it["id"]: it for it in (parts if with_book else []) + [audio]}
+    return vr.build(items, {7: {"id": 7, "title": NEKO, "media_type": "book"}}, {"mine_line": 20})
+
+
+def test_an_audiobook_with_no_text_is_never_offered_the_update_that_makes_no_card_of_it(monkeypatch):
+    """Review r2 #2: an audiobook alone, no transcript — the update opens nothing for it (it waits on its text):
+    no Needs you line, its tip the text it waits on; beside its book, the line and the tip name the book only."""
+    monkeypatch.setitem(anki_miner.FEATURES, "audio-episodes", anki_miner.WAITS["audio"])
+    _record(OLD, NO_READING)
+    alone = _neko(with_book=False)
+    assert service.miner_update(alone) is None
+    heard = alone.rows[0].episodes[-1]
+    assert heard.status.tip == vr.STRINGS["tip_heard_wait"]
+    paired = _neko()
+    assert service.miner_update(paired) == {"version": am_release.APPROVED, "kinds": ("books",)}
+    row = paired.rows[0]
+    assert row.status.tip == vr.STRINGS["tip_wait_update"].format(version=am_release.APPROVED, what="books and texts")
+    assert row.episodes[-1].status.tip == vr.STRINGS["tip_heard_wait"]
+
+
+def test_the_rows_cache_builds_a_waiting_book_again_once_the_anki_miner_connect_knows_of_moves(monkeypatch):
+    """Review r2 #3: the same items, the same numbers, one row cache — the update followed moves only the feed's
+    `miner`; the book's row is built again: no more "Update in Needs you", and it can be mined."""
+    _record(OLD, NO_READING)
+    items, works = items_of([BOOK]), dict(WORKS)
+    cache = vr.RowCache()
+    on = dict(on=True, mining=frozenset(), items={}, line="", state="idle", unseen=0, updating=False)
+    before = vr.build(items, works, {"mine_line": 20}, numbers=(1, {}), cache=cache, connect=feed.Feed(**on, miner=((1, 1), OLD)))
+    assert before.rows[0].status.kind == "books" and "Update in Needs you" in before.rows[0].status.tip
+    hits = cache.hits
+    vr.build(items, works, {"mine_line": 20}, numbers=(1, {}), cache=cache, connect=feed.Feed(**on, miner=((1, 1), OLD)))
+    assert cache.hits > hits, "nothing moved: the cached row"
+    misses = cache.misses
+    time.sleep(0.02)
+    _record(am_release.APPROVED, READING)
+    after = vr.build(items, works, {"mine_line": 20}, numbers=(1, {}), cache=cache,
+                     connect=feed.Feed(**on, miner=((2, 2), am_release.APPROVED)))
+    assert cache.misses > misses, "the miner moved: built again"
+    assert after.rows[0].status.kind != "books" and "Needs you" not in after.rows[0].status.tip

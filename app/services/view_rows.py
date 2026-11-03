@@ -800,9 +800,11 @@ def status_of(eps, word, line_n):
         # press: Connect sets their jobs aside, and mines them by itself once it can (no *Mine*, no *Waiting*, never
         # Anki Miner's window). An audiobook's own item with no text (Hon, H-7) waits so whatever Anki Miner mines;
         # the rest say what's true (Michi-U, `_wait_tip`)
-        audio = all(e.text == "audio" for e in ready + heard)
-        tip = STRINGS["tip_heard_wait"] if audio and _mines("audio") else \
-            _wait_tip({e.text for e in ready + heard}, line_n is not None)
+        if ready:
+            tip = _wait_tip({e.text for e in ready}, line_n is not None)
+        else:                                       # only its own item, no text: an update makes no card of it
+            from app.connect import anki_miner
+            tip = STRINGS["tip_heard_wait"] if anki_miner.mines("audio") else _wait_tip({"audio"}, line_n is not None)
         st = Status("books", STRINGS["books_wait"], tip, "faint")
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
@@ -1315,6 +1317,7 @@ class RowCache:
         self.same_global = False                      # set by `begin`: nothing global moved since the last build
         self._glob = self._cards = None
         self._connect = None                          # P4.1 L2: the Connect feed's items the last build read
+        self._miner = None                            # Michi-U: the Anki Miner Connect knew of (`Feed.miner`)
         self._next = {}
         self.guess_seen, self.guess_counts = {}, {}   # `_Guesses`: each row counted once, kept while it is the same object
         # the ids changed since the counts were last brought up to date, kept until a build counts (a build with no
@@ -1330,8 +1333,13 @@ class RowCache:
         else:
             self.guess_pending |= set(changed)
 
-    def begin(self, version, cards=None, mining=None, in_top=None, line_n=None, changed=None, connect=None):
-        """`changed`: the item ids the numbers changed since the cache's version (None: unknown — every row again)."""
+    def begin(self, version, cards=None, mining=None, in_top=None, line_n=None, changed=None, connect=None,
+              miner=None):
+        """`changed`: the item ids the numbers changed since the cache's version (None: unknown — every row again).
+        `miner` (Michi-U): the Anki Miner Connect knows of (`feed.Feed.miner`) — moved (an update followed), every
+        row is built again once: what *Waits for Anki Miner* says, and whether a book can be mined, read it."""
+        if miner != self._miner:
+            self.rows, self._miner = {}, miner
         if version != self.version:
             changed = None if changed is None else set(changed)
             self.rows = {} if changed is None else \
@@ -1944,7 +1952,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             if r["id"] == last:
                 break
     if cache is not None:
-        cache.begin(cache_version, cards, mining, in_top, line_n, numbers_changed, feed_items)
+        cache.begin(cache_version, cards, mining, in_top, line_n, numbers_changed, feed_items,
+                    getattr(connect, "miner", None))
     if cache is not None:
         cache.note_changed(changed)
     guessed = _Guesses(items, cache)

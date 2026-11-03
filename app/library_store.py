@@ -12341,6 +12341,103 @@ def _store_audiobook_no_book(self, item_id):
         return self.pair_audiobook(item_id, mark={"no_book": True}, by="user")
 
 
+# --- Michi-AB Stage B (Sonic 2026-11-02, PROVISIONAL): a paired audiobook Anki Miner couldn't line up with its book at
+# all — its records' `lineup` mark {key: the pair's answer key, status: `none` (asked) / `kept`}; the one question per
+# pair: *Keep them together* (listen alongside, cards without audio, never lined up again) or *Separate them* (its own
+# title again, one Undo). No table, no schema: taking the key out of the records undoes it.
+def _store_mark_audiobook_lineup(self, item_id, key, status, by=SOURCE_PRODUCER):
+    """Connect's mark (`none`: nothing lined up — *Needs you* asks) or your *Keep them together* (`kept`) on every live
+    record of the audiobook item still paired with that pair (`key`); the same mark already there writes nothing
+    (S19). -> True when written."""
+    with self._command("audiobook", by) as cmd:
+        rows = self._audiobook_rows(item_id)
+        wrote = False
+        for content_key, _i, rec in rows:
+            ab = rec.get("audiobook") or {}
+            book = ab.get("book")
+            if not isinstance(book, dict) or book.get("key") != key or ab.get("lineup") == {"key": key, "status": status}:
+                continue
+            one = dict(ab, lineup={"key": key, "status": status})
+            self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                              (json.dumps(dict(rec, audiobook=one), sort_keys=True, ensure_ascii=False), content_key))
+            wrote = True
+        if wrote:
+            cmd.feed([item_id])
+            cmd.touch()
+        return wrote
+
+
+def _store_audiobook_mismatches(self):
+    """The one question's cards: [{item_id, key, title (the audiobook's), book (the book's title), files, seconds}] —
+    an audiobook item still paired with the book its line-up found nothing in (`none` for that pair), unanswered. One an
+    item; one read."""
+    out, seen = [], set()
+    with self._reading():
+        for _k, item_id, rec in self._audiobook_rows():
+            ab = rec.get("audiobook") or {}
+            book, mark = ab.get("book"), ab.get("lineup")
+            if item_id in seen or not isinstance(book, dict) or not isinstance(mark, dict):
+                continue
+            seen.add(item_id)
+            if mark.get("status") == "none" and mark.get("key") == book.get("key") and \
+                    self.conn.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone():
+                out.append({"item_id": item_id, "key": mark["key"], "title": ab.get("title") or "",
+                            "book": book.get("title") or "", "files": list(ab.get("files") or ()),
+                            "seconds": ab.get("seconds")})
+    return out
+
+
+def _store_audiobook_keep_together(self, item_id, key, by="user"):
+    """*Keep them together*: the pair stays (listen alongside; the book's cards without sentence audio), never lined up
+    again — an answer kept (`kept`), nothing to undo. -> True when that question was still open."""
+    with self._reading():
+        rows = self._audiobook_rows(item_id)
+    ab = (rows[0][2].get("audiobook") or {}) if rows else {}
+    if (ab.get("lineup") or {}).get("status") != "none" or (ab.get("book") or {}).get("key") != key:
+        return False
+    return self.mark_audiobook_lineup(item_id, key, "kept", by=by)
+
+
+def _store_audiobook_separate(self, item_id, key=None, by="user"):
+    """*Separate them*: the audiobook isn't that book's — its records' `book` off and the pair's answer kept *No* (no
+    look pairs them again; never *Find its book…*: you said where it belongs), the item in a title of its own (its
+    audiobook's title, yours: kept as named), alone again (`_audio_state`: a transcript of its own is its content). ONE
+    command whose Change (`audiobook_pick`'s shape) Undo takes back as it takes back a pick: the records, the answer and
+    the title as they were, the title it made gone once empty. `key`: the pair the card asked about (another since:
+    nothing). -> the Change, or None."""
+    with self._command("audiobook_pick", by) as cmd:
+        rows = self._audiobook_rows(item_id)
+        ab = (rows[0][2].get("audiobook") or {}) if rows else {}
+        book = ab.get("book")
+        if not isinstance(book, dict) or not book.get("key") or (key is not None and book["key"] != key):
+            return None
+        found = self.conn.execute("SELECT work_id FROM items WHERE id = ?", (item_id,)).fetchone()
+        if found is None:
+            return None
+        change = self._change(cmd, "audiobook_pick")
+        self._before(change, list(self._rows([item_id]).values()))
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (AUDIOBOOK_ANSWERS,)).fetchone()
+        said = (_json_dict(row[0]) if row else None) or {}
+        change.audiobook = {"records": [(k, json.dumps(r, sort_keys=True, ensure_ascii=False)) for k, _i, r in rows],
+                            "answer": (book["key"], said.get(book["key"])), "item": item_id, "separated": True}
+        new = self._new_work(str(ab.get("title") or "").strip() or "Audiobook", None, cmd)
+        self.conn.execute("UPDATE works SET title_by_user = 1 WHERE id = ?", (new,))
+        change.works = {"rows": [], "items": [(item_id, found[0], new)], "fields": [], "created": [new]}
+        said[book["key"]] = False
+        self._set_meta({AUDIOBOOK_ANSWERS: _dumps(said), "copy_dirty": self._meta().get("copy_dirty", 0) + 1})
+        for content_key, _i, rec in rows:
+            one = dict(rec.get("audiobook") or {}, book=None, ask=None)
+            self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                              (json.dumps(dict(rec, audiobook=one), sort_keys=True, ensure_ascii=False), content_key))
+        self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (new, item_id))
+        cmd.reworked.add(item_id)
+        cmd.fed_works.update(w for w in (found[0], new) if w is not None)
+        cmd.feed([item_id])
+        self._audio_state(cmd, item_id)
+        cmd.touch()
+        return change
+
+
 def _store_undo_audiobook_pick(self, cmd, change):
     """Undo of *Find its book…*'s pick, by the value check (§6.11). The item first: still in the title the pick gave it
     (else nothing is undone, with the note — never records saying *alone* for an item sitting in a book). Then only
@@ -12358,7 +12455,10 @@ def _store_undo_audiobook_pick(self, cmd, change):
     for content_key, _i, rec in self._audiobook_rows(said["item"]):
         live += 1
         now = rec.get("audiobook") or {}
-        if not (isinstance(now.get("book"), dict) and now["book"].get("key") == key):
+        if said.get("separated"):           # Stage B's *Separate them*: a record still alone, as it left it
+            if now.get("book") is not None or now.get("ask") is not None:
+                continue
+        elif not (isinstance(now.get("book"), dict) and now["book"].get("key") == key):
             continue
         was = before.get(content_key) or next(iter(before.values()), {})
         ab = dict(now, book=was.get("book"), ask=was.get("ask"))
@@ -12605,6 +12705,10 @@ Store.library_books = _store_library_books
 Store.pick_audiobook_book = _store_pick_audiobook_book
 Store._undo_audiobook_pick = _store_undo_audiobook_pick
 Store.audiobook_no_book = _store_audiobook_no_book
+Store.mark_audiobook_lineup = _store_mark_audiobook_lineup
+Store.audiobook_mismatches = _store_audiobook_mismatches
+Store.audiobook_keep_together = _store_audiobook_keep_together
+Store.audiobook_separate = _store_audiobook_separate
 Store._audio_state = _store_audio_state
 Store._transcript_found = _store_transcript_found
 Store._transcript_checked = _store_transcript_checked

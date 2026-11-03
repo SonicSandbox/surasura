@@ -259,6 +259,10 @@ STRINGS = {
     "play_moved": "{tip}\n• Find its folder: in its ⋯ menu, or on its No {word}",
     "not_timed": "Not timed", "tip_not_timed": "{words}: its cards wait for you\n• Check it plays in time, then "
                                                 "Mine anyway: in Needs you",
+    # Michi-AB Stage B (AB-Q3, PROVISIONAL): a book lined up with its audiobook before its cards are made
+    "tip_lining_up": "Anki Miner listens to its audiobook and finds each of the book's sentences in it (about 20–30 "
+                     "minutes an hour of audio), so its cards come with their sentence audio\n• Stop: its cards "
+                     "wait until you press Mine now",
     # T2 (alpha 2's try, Sonic's correction): a refusal whose Needs you entry you dismissed — skipped, no waiting
     "tip_skipped": "Not timed to its video: skipped, as you dismissed it\n• Checked again when its subtitle or video "
                    "changes",
@@ -1007,6 +1011,12 @@ def _connected(st, item, word):
         tip = STRINGS["tip_mining"]
         return Status("mining", label, tip if stop is not None or item.job is None else tip + STRINGS["tip_finishing"],
                       "accent", stop)
+    if item.kind == getattr(connect_feed, "LINING_UP", None):
+        # Michi-AB Stage B (AB-Q3, PROVISIONAL): its audiobook lined up first — the runner's line on the pill (*Lining
+        # up its audiobook… file 2 of 6*), its *Stop* while it can be stopped, *Stopping…* from that press
+        if item.stopping:
+            return Status("mining", STRINGS["stopping"], STRINGS["tip_stopping"], "accent")
+        return Status("mining", item.tip, STRINGS["tip_lining_up"], "accent", item.job if item.stoppable else None)
     if item.kind == connect_feed.ASKED:     # R47: asked, and Connect has read the ask — its own status, its reason
         return Status("asked", STRINGS["asked"], STRINGS["tip_asked"] if item.tip == item.words else item.tip, "accent")
     if item.kind == connect_feed.NO_VIDEO:

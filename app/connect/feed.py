@@ -43,7 +43,10 @@ Item = namedtuple("Item", "kind words tip job made total progress doing stoppabl
 # skipped until its timing, subtitle or video changes (or *Mine anyway*): no waiting episode (T2, Sonic's correction)
 MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED = (
     "mining", "waiting", "anki", "anki_wait", "no_video", "not_timed", "held", "skipped", "battery", "asked")
-KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED)
+# Michi-AB Stage B (AB-Q3): a book waiting while Anki Miner lines it up with its audiobook (`runner.lining_up`) — its
+# line is the stone's words (*Lining up its audiobook… file 2 of 6*), with *Stop* while it can be stopped
+LINING_UP = "lining_up"
+KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED, LINING_UP)
 # A7N-3 (Sonic 2026-10-30): Connect's needs that are faults, nothing to decide — its own Generate failed. Red, never
 # amber: ス says it as a Generate you start does (the window, `shell._connect_fault`); its card stays on *Needs you*,
 # and an episode it holds is a plain wait (never HELD)
@@ -61,6 +64,7 @@ WORDS = {
     SKIPPED: "Skipped: not timed to its video",
     BATTERY: "Waiting: on battery",
     ASKED: "Asked: its cards come next",
+    LINING_UP: "Lining up its audiobook",
 }
 # *Mine anyway* on a pairing hato placed by its name only (`verdict: untimed`, 09-hato-layer v2 §1.2; hato's
 # wrong-episode finding): the warning W3.2's *Needs you* entry carries (row 4.1.9)
@@ -115,6 +119,8 @@ def build(record, language):
             kind = HELD
         elif reason == runner.ON_BATTERY:
             kind = BATTERY
+        elif runner.lining_up(reason):          # Stage B: its audiobook lined up first (the row's line, *Stop*)
+            kind = LINING_UP
         elif runner.anki_wait(reason):                  # the runner's one rule (laptop round 5 #24) …
             kind = ANKI if runner.anki_needs_you(reason) else ANKI_WAIT     # … and its one rule for amber (T1)
         elif job.get("kind") == "asked":

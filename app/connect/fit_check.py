@@ -15,6 +15,11 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   Its offset (`_offset`: the answer's `offset`, else its one [start, offset] segment's) is the shift Anki Miner cuts
   the lines by (`subtitle_offset`, RUNBOOK-P1.3 1.3.4); none readable → not timed (never cut at 0.0): tsubasa
   checks with `--dry-run`, so the copy itself is never re-timed.
+- **An audio file's own subtitle, heard** (Michi-AB AB-Q5, Sonic 2026-11-02, PROVISIONAL: `spot`, the runner's
+  `lineup.spot_check` through Anki Miner's speech model): a few places of it heard and compared with its lines —
+  they match → mine at its own times (no shift); they don't → not timed (never a wrong clip: *Mine anyway* stays
+  yours); the model's question passed on as it is; no answer now → the rules below, as before (tsubasa has no
+  reference inside an audio file). *Trust my subtitles' timing* is asked first: you said they are synced.
 - **Neither** → not timed. 2.x lists it once in *Needs you*, with no button (E16; 3.0: *Mine anyway*, G1.3-6).
 - **Trust my subtitles' timing** (`connect_trust_timing`, off by default; laptop try row 9, P-LF-9): with nothing to
   check it — no tsubasa on this PC, or tsubasa's ERROR for a video with no subtitle track inside (a raw; P0.2) — and no
@@ -52,6 +57,9 @@ NO_TRACK = "no subtitle track"   # tsubasa's ERROR for a raw video: nothing insi
 TRUST_LABEL = "Trust my subtitles’ timing"                         # Settings → Anki & mining (settings_strings)
 NO_CHECKER = ("Nothing on this PC can check its timing (no tsubasa), so no cards yet. If your subtitles are synced, "
               f"turn on {TRUST_LABEL} in Settings → Anki & mining.")
+SPOT_MATCHED, SPOT_NOT_MATCHED = "match", "no-match"      # `lineup.MATCHED` / `NOT_MATCHED`
+SPOT_NO_MATCH = ("Its subtitle doesn't match its audio where Connect listened, so no cards: a card's audio would hold "
+                 "another line. Mine anyway only if you know it plays in time.")
 
 
 def version(pairing):
@@ -138,13 +146,22 @@ def others(pairing):
     return str(pairing.get("producer") or "hato").strip() not in OWN_PRODUCERS
 
 
-def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False):
+def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False, spot=None):
     """`check`, with the shift to cut by -> (verdict, who, why, offset in seconds: tsubasa's one segment's, else
-    0.0)."""
+    0.0). `spot()`: an audio file's spot-check (AB-Q5) -> SPOT_MATCHED / SPOT_NOT_MATCHED / None (no answer now), or a
+    whole answer of its own (the speech model's question), passed on."""
     if hato_timed(pairing, subtitle):
         return TIMED, "hato", None, 0.0
     if track_timed(pairing, subtitle):
         return TIMED, "track", None, 0.0
+    if spot is not None and _media(video) == "audio":
+        heard = spot()
+        if heard == SPOT_MATCHED:
+            return TIMED, "spot-check", None, 0.0
+        if heard == SPOT_NOT_MATCHED:
+            return NOT_TIMED, "spot-check", SPOT_NO_MATCH, 0.0
+        if isinstance(heard, tuple):
+            return heard
     exe = tsubasa if tsubasa is not None else find_tsubasa()
     if not exe:
         if others(pairing):         # a pairing program paired it but didn't time it: the switch never releases that

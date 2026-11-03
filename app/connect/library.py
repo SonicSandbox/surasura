@@ -109,6 +109,32 @@ def audiobook_files(store):
             for f in (r.get("audiobook") or {}).get("files") or () if isinstance(f, str) and f}
 
 
+def audiobook_of_book(store, epub):
+    """Michi-AB Stage B: the audiobook Hon paired with the book `epub` (its record's `book`, sure or answered, naming
+    that EPUB) -> {item_id, key (the pair's answer key: the line-up's), files (in order), title (the book's, as the
+    pairing named it), lineup (the store's mark: `none` / `kept`, or None)}; None when no audiobook reads it (or its
+    record holds no file). The first such item when two do. One read of the records."""
+    from app import library_store
+    want = library_store.path_key(os.path.abspath(epub)) if epub else None
+    if not want:
+        return None
+    with store._reading():
+        rows = store._audiobook_rows()
+    for _k, item_id, rec in sorted(rows, key=lambda r: r[1]):
+        ab = rec.get("audiobook") or {}
+        book = ab.get("book")
+        files = [f for f in ab.get("files") or () if isinstance(f, str) and f]
+        if not isinstance(book, dict) or not files or not isinstance(book.get("epub"), str) or \
+                library_store.path_key(os.path.abspath(book["epub"])) != want:
+            continue
+        mark = ab.get("lineup") if isinstance(ab.get("lineup"), dict) else {}
+        key = book.get("key")
+        return {"item_id": item_id, "key": key if isinstance(key, str) and key else None, "files": files,
+                "title": book.get("title") or ab.get("title") or os.path.splitext(os.path.basename(epub))[0],
+                "lineup": mark.get("status") if mark.get("key") == key else None}
+    return None
+
+
 def book_parts(store, epub):
     """{item id: chapter record} of every part of `epub` the store holds (its live origins `<epub>#<n>`, Hon's
     `chapter` key: `connect.reading.place`); a part from before the record (no `chapter`) is left out. One range read

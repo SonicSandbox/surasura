@@ -119,6 +119,9 @@ JOURNALLED += ("relink_many",)
 KEPT += ("pairs",)
 # --- a5-2 (Hon): an audiobook's *Find its book…* (its book's EPUB `path`) and *It has no book*
 JOURNALLED += ("audiobook_pick", "audiobook_no_book")
+# --- Michi-AB Stage B: a paired audiobook nothing of which lined up with its book — *Keep them together* (an answer)
+# and *Separate them* (its own title again, one Undo)
+JOURNALLED += ("audiobook_keep", "audiobook_separate")
 # --- Mado-O (alpha 8): the sort screen's *Start sorting over* (`placed`: its placements' records)
 JOURNALLED += ("start_over",)
 KEPT += ("placed",)
@@ -450,6 +453,16 @@ class Writer:
         """`Store.audiobook_no_book` (Hon, a5-2): *It has no book* — the audiobook stays alone, never asked about a
         book again; kept, as an answer is (never on the Undo stack, `on_reread`)."""
         return self._put({"op": "audiobook_no_book", "ids": [item_id], "label": label})
+
+    def audiobook_keep(self, item_id, key, label=None):
+        """`Store.audiobook_keep_together` (Michi-AB Stage B): *Keep them together* — the pair stays, its cards without
+        sentence audio, never lined up again; an answer kept (never on the Undo stack, `on_reread`)."""
+        return self._put({"op": "audiobook_keep", "ids": [item_id], "key": key, "label": label})
+
+    def audiobook_separate(self, item_id, key, label=None):
+        """`Store.audiobook_separate` (Michi-AB Stage B): *Separate them* — the audiobook its own title again, one
+        command with its Undo (the pair, the answer and the title back as they were)."""
+        return self._put({"op": "audiobook_separate", "ids": [item_id], "key": key, "label": label})
 
     def link_video(self, item_id, video_path, label=None):
         """Connect's *Link…* (`app/connect/link.link`): the episode's video, as a pairing on the existing item —
@@ -1055,6 +1068,11 @@ class Writer:
         if op == "audiobook_no_book":               # a5-2: an answer kept, nothing to undo
             store.audiobook_no_book(ids[0])
             return None
+        if op == "audiobook_keep":                  # Stage B: an answer kept, nothing to undo
+            store.audiobook_keep_together(ids[0], cmd.get("key"))
+            return None
+        if op == "audiobook_separate":              # Stage B: undone as one change (a pick's Undo)
+            return store.audiobook_separate(ids[0], key=cmd.get("key"))
         if op == "stop_source":                     # T6: None when it wasn't being read (a replay that landed)
             return store.stop_source(cmd["root"])
         if op == "link_video":

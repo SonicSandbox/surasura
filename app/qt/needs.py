@@ -244,7 +244,8 @@ def _label(text, name, parent, wrap=True):
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
-           "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows")
+           "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
+           "no_speech_model", "keep_together", "separate_them")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs",
                      "open_anki", "find_book", "choose_video", "choose_file")      # a7: a picker's start looked for
 
@@ -675,7 +676,8 @@ class NeedsYou(QObject):
                               "dismiss": _connect_callable("status", "dismiss"),
                               "save_logs": _connect_callable("status", "save_logs"),
                               "kick": _connect_callable("kick", "kick"),
-                              "open_anki": _connect_callable("open_anki", "for_you")}     # A3W-6
+                              "open_anki": _connect_callable("open_anki", "for_you"),     # A3W-6
+                              "speech_model": _connect_callable("actions", "speech_model")}   # Michi-AB Stage B
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.has_more = lambda e: e.kind not in service.NO_LATER
@@ -933,7 +935,8 @@ class NeedsYou(QObject):
 
     # --- the actions ------------------------------------------------------------------------------------------- #
     WRITES = frozenset(("choose_file", "choose_folder", "choose_video", "link_these", "remove", "remove_episode",
-                        "remove_all", "this_one", "its_new", "same_book", "not_book", "find_book", "no_book"))
+                        "remove_all", "this_one", "its_new", "same_book", "not_book", "find_book", "no_book",
+                        "keep_together", "separate_them"))
 
     def available(self, name, entry=None, line=None):
         """Whether `name` has a callable here (its button shown)."""
@@ -943,6 +946,8 @@ class NeedsYou(QObject):
             return getattr(self.win, "moves", None) is not None
         if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki"):
             return self.connect_calls.get(name) is not None
+        if name in ("get_speech_model", "no_speech_model"):
+            return self.connect_calls.get("speech_model") is not None
         if name == "stop_reading":                   # T6: through the window's writer (its Undo)
             return getattr(self.win, "moves", None) is not None
         if name == "find_folder":                    # ... and the looks read the folder picked
@@ -1374,6 +1379,48 @@ class NeedsYou(QObject):
         if self._give(entry.title, (item_id,), lambda t: writer.audiobook_no_book(item_id, label=t),
                       toast_it=False) is not None:
             self._say(strings.NEEDS_NO_BOOK)
+
+    # Michi-AB Stage B (PROVISIONAL): nothing of an audiobook lined up with its book — keep them together (an answer)
+    # or separate them (its own title again: the toast's Undo)
+    def _do_keep_together(self, entry, _line):
+        writer = self.win.services.writer
+        item_id, key = entry.data["item_id"], entry.data["key"]
+        if self._give(entry.title, (item_id,), lambda t: writer.audiobook_keep(item_id, key, label=t),
+                      toast_it=False) is not None:
+            self._say(strings.NEEDS_KEPT_TOGETHER)
+
+    def _do_separate_them(self, entry, _line):
+        writer = self.win.services.writer
+        item_id, key = entry.data["item_id"], entry.data["key"]
+        if self._give(entry.title, (item_id,), lambda t: writer.audiobook_separate(item_id, key, label=t)) \
+                is not None:
+            self._say(strings.NEEDS_SEPARATED)
+
+    # Michi-AB Stage B (AB-Q2): the speech model's one question, Connect's (on a worker; Connect kicked after)
+    def _do_get_speech_model(self, entry, _line):
+        self._speech_model(entry, True)
+
+    def _do_no_speech_model(self, entry, _line):
+        self._speech_model(entry, False)
+
+    def _speech_model(self, entry, yes):
+        answer, kick, lang, read_settings = (self.connect_calls["speech_model"], self.connect_calls.get("kick"),
+                                             self.language, self.read_settings)
+        need_id = entry.data["need_id"]
+        name = "get_speech_model" if yes else "no_speech_model"
+
+        def run():
+            ok = answer(lang, need_id, yes)
+            if ok and kick is not None:
+                kick(read_settings() or {})
+            return ok
+
+        def done(ok):
+            if not ok:
+                self._stays(name, entry)
+            self._connect_done((strings.NEEDS_SPEECH_YES if yes else strings.NEEDS_SPEECH_NO) if ok else
+                               strings.NEEDS_MINE_ANYWAY_NOT)
+        self._press(name, entry, run, then=done)
 
     # T6: a source folder that is gone
     def _do_find_folder(self, entry, _line):

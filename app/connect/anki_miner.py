@@ -87,7 +87,8 @@ STAGE_SHARES = (0.05, 0.01, 0.57, 0.01, 0.36)
 FEATURES = {"named-words-whitelisted": "Z-1", runfile.WORD_FROM_LINE: "Z-2", "settings-import": "Z-3",
             runfile.SENTENCE_RULES_OFF: "Z-4", runfile.BOLD_TARGET: "Z-5", "filter-names": "Z-6",
             runfile.DRY_RUN: "Z-7", "fetch": "Z-8", "render": "Z-10", "media": "Z-10", "setup": "Z-11",
-            "script-fold": "Z-12", "beside-window": "Z-13", runfile.READING: "Z-9", runfile.AUDIO: "Z-16"}
+            "script-fold": "Z-12", "beside-window": "Z-13", runfile.READING: "Z-9", runfile.AUDIO: "Z-16",
+            "sync": "Z-17", "transcribe": "Z-18", "setup-speech-ocr": "Z-22"}
 # Round 2's Z-9 (books and text in `mine`, 2026-10-28: Sonic, a must for 3.0): an episode naming `reading_file`. In
 # FEATURES: `mines("books")` is True with an Anki Miner whose `version` names it, False with any other (alpha 4 M1)
 READING = runfile.READING
@@ -96,6 +97,16 @@ READING = runfile.READING
 AUDIO = runfile.AUDIO
 # What Connect sets aside until Anki Miner mines it (`library.waits_for`'s kinds) -> the Z-ask that opens it
 WAITS = {"books": "Z-9", "audio": "Z-16"}
+# Michi-AB Stage B (round 2's Z-17 `sync`, Z-22 `setup --speech-model`, Z-18 `transcribe`; Anki Miner 3.11): a book
+# lined up with its audiobook (`connect.lineup`) needs audio episodes, `sync` and the speech model's setup; the
+# spot-check of an audiobook's own subtitles needs audio episodes, `media` (Z-10) and `transcribe`
+LINE_UP = frozenset(("Z-16", "Z-17", "Z-22"))
+SPOT_CHECK = frozenset(("Z-16", "Z-10", "Z-18", "Z-22"))
+# Its speech models (3.11 `config.py`'s `asr_model`), and the one Surasura installs (AB-Q1, Sonic 2026-11-02: `small`
+# — 0.5 GB, about 20–30 min an audio hour on a CPU, as good as large-v3 on 杜子春): one it has already is used as it is
+SPEECH_MODELS = ("small", "large-v3")
+SPEECH_MODEL = "small"
+SPEECH_TIMEOUT = 3 * 60 * 60.0  # one `setup --speech-model` (0.5 GB, and on an NVIDIA PC a 1.8 GB graphics pack)
 
 # A verdict's error code -> the kind Surasura acts on
 KINDS = {"BUSY": "busy", "ANKI_UNREACHABLE": "anki-closed", "SETUP_ERROR": "setup", "PROFILE_UNREADABLE": "setup",
@@ -329,9 +340,14 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True):
         _stop(proc)
         raise AnkiMinerError("timeout", f"Anki Miner didn't answer within {int(timeout)} s, so it was stopped.") \
             from None
-    lines = [line for line in stdout.decode("ascii", "replace").splitlines() if line.strip()]
-    if proc.returncode != 0 or not lines:
-        raise AnkiMinerError("crashed", f"Anki Miner stopped without an answer (exit code {proc.returncode}).")
+    return _verdict(proc.returncode, stdout)
+
+
+def _verdict(returncode, stdout):
+    """A finished call's verdict from its exit code and its stdout's bytes (`api`, `ended`)."""
+    lines = [line for line in (stdout or b"").decode("ascii", "replace").splitlines() if line.strip()]
+    if returncode != 0 or not lines:
+        raise AnkiMinerError("crashed", f"Anki Miner stopped without an answer (exit code {returncode}).")
     try:
         verdict = json.loads(lines[-1])
     except ValueError:
@@ -340,6 +356,41 @@ def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True):
         raise AnkiMinerError("unknown-version", "This Anki Miner isn't one Surasura has been checked with. "
                              "Update Surasura, or wait for an update that knows it.", verdict=verdict)
     return verdict
+
+
+def start(path, args, out):
+    """A long call left running while Connect goes on (Michi-AB Stage B: `sync`, `setup --speech-model` — hours, never
+    a look's wait): `<path> --api <args…>` started with its stdout written to the file `out` (its folder must exist),
+    stderr nowhere, no window, and bound to this process (`_bind`: it ends with Connect; Anki Miner keeps each audio
+    file it finished, so the next start goes on from there). -> the Popen (`ended` reads its verdict). Raises
+    AnkiMinerError `absent` / `quarantined` / `crashed` as `api` does."""
+    flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    try:
+        with open(out, "wb") as f:
+            proc = subprocess.Popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=f,
+                                    stderr=subprocess.DEVNULL, creationflags=flags)
+    except FileNotFoundError:
+        raise AnkiMinerError("absent", "Anki Miner isn't installed where Surasura looked.") from None
+    except OSError as e:
+        if getattr(e, "winerror", None) == WINERROR_VIRUS:
+            raise AnkiMinerError("quarantined", "Windows Security blocked Anki Miner. Check Windows Security → "
+                                 "Protection history, then allow it if you trust it.") from None
+        raise AnkiMinerError("crashed", f"Anki Miner couldn't be started: {e}") from None
+    _bind(proc)
+    return proc
+
+
+def ended(proc, out):
+    """A started call (`start`) -> None while it runs; once it has ended, its verdict (as `api` returns it). Raises
+    AnkiMinerError `crashed` (no verdict: it was killed, or crashed) or `unknown-version`."""
+    if proc.poll() is None:
+        return None
+    try:
+        with open(out, "rb") as f:
+            stdout = f.read()
+    except OSError:
+        stdout = b""
+    return _verdict(proc.returncode, stdout)
 
 
 def _result(verdict):
@@ -409,6 +460,18 @@ def mines_now(kind):
         _NOW.update(stamp=stamp, info=(setup.read_record().get("anki_miner") if stamp is not None else None))
     info = _NOW["info"]
     return mines(kind, info if isinstance(info, dict) else {"features": []})
+
+
+def can(asks, info):
+    """Does this Anki Miner (`info`, a `version` answer) answer every one of `asks` (Z-asks, `LINE_UP`, `SPOT_CHECK`)?"""
+    return bool(asks) and set(asks) <= features(info or {})
+
+
+def can_now(asks):
+    """`can` for the Anki Miner Connect's setup record last found (`mines_now`'s record, read as it reads it)."""
+    mines_now("audio")                  # the record read again only once its file changed (S19)
+    info = _NOW.get("info")
+    return can(asks, info if isinstance(info, dict) else {})
 
 
 def can_set_up(info, items):
@@ -492,6 +555,59 @@ def run_setup(path, language, profile, progress_path, on_poll=None):
     failed = [f"{name}: {r.get('message') or 'not installed'}" for name, r in pieces
               if isinstance(r, dict) and r.get("status") == "failed"]
     raise AnkiMinerError("failed", "Anki Miner's setup didn't finish" + (" — " + "; ".join(failed) if failed else "."))
+
+
+_SPEECH = {}            # `speech_ready`'s yes: {(path, language, profile): True}, for this Connect run
+SPEECH_ITEM = "speech_model"
+
+
+def speech_ready(path, language, profile, folder):
+    """Can this Anki Miner listen in `language` under `profile` now — a speech model it already has, for the profile
+    Connect mines with (AB-Q2 (a), Sonic 2026-11-02: one it has is used as it is, never a second download, never
+    asked)? `check`'s `speech_model` item; not ok, each of SPEECH_MODELS set on that profile in turn
+    (`settings_import`'s `asr_model`: Surasura's own profile only — the window's is refused, never changed) and checked
+    again, so a model downloaded for the other size is found. -> True / False. Kept True for this run (a check a look
+    costs nothing once it is there); False is asked again (a model installed since is seen). Raises AnkiMinerError
+    from `check` (busy, setup …)."""
+    key = (path, language, profile)
+    if _SPEECH.get(key):
+        return True
+    ok = _speech_ok(check(path, language, profile))
+    for model in SPEECH_MODELS if not ok and profile else ():
+        try:
+            settings_import(path, language, {"asr_model": model}, folder, profile=profile)
+        except AnkiMinerError:
+            break                       # the window's profile, or a busy Anki Miner: as it is
+        ok = _speech_ok(check(path, language, profile))
+        if ok:
+            break
+    if ok:
+        _SPEECH[key] = True
+    return ok
+
+
+def _speech_ok(answer):
+    items = {item.get("name"): item for item in (answer or {}).get("items") or () if isinstance(item, dict)}
+    return bool((items.get(SPEECH_ITEM) or {}).get("ok"))
+
+
+def speech_setup_args(language, profile, progress_path, model=SPEECH_MODEL):
+    """The arguments of Anki Miner's own `setup --speech-model` (Z-22; AB-Q2 (b): installed only through it, into its
+    own folder, so its window sees the model too): `model` (`small`) for `language` under `profile`, its progress file
+    `progress_path` (its folder must exist; a `cancel` file there stops it at the end of the model's download)."""
+    return ["setup", "--language", language, "--progress", str(progress_path), "--speech-model", "--model", model] + \
+        (["--profile", profile] if profile else [])
+
+
+def speech_setup_done(verdict):
+    """`setup --speech-model`'s verdict -> None when its speech model installed (or was there); else the reason in
+    plain words (a refusal, the model's failure — a resource that failed beside it is no matter here)."""
+    if not verdict.get("ok") and verdict.get("error"):
+        return verdict.get("message") or verdict["error"]
+    item = (verdict.get("result") or {}).get(SPEECH_ITEM) or {}
+    if item.get("status") in ("installed", "already_installed"):
+        return None
+    return item.get("message") or "its speech model didn't install"
 
 
 def settings_import(path, language, values, folder, name=None, profile=None):

@@ -41,6 +41,7 @@ from itertools import chain
 from app.connect import feed as connect_feed     # P4.1 L2: Connect's kinds (a light module: no Qt, no Tk)
 from app.episode_names import identity           # LM1a: the one reading of a file name (pure)
 from app.path_utils import infer_source_type
+from app import tracks                            # Michi-ST: a waiting video's tracks (standard library only)
 from app.services import stone_plan
 
 CACHE_ROWS = 40                         # the first screen's rows kept in window_cache_<lang>.json
@@ -208,6 +209,9 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("audio", "s
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("new_faded", "string"),
                  defaults=tuple(Row._field_defaults.values())[:-1] + (False, None))
 Episode = namedtuple("Episode", Episode._fields + ("new_faded",), defaults=tuple(Episode._field_defaults.values()) + (False,))
+# --- Michi-ST (PROVISIONAL): `tracks`, what a waiting video's own tracks say (`app/tracks.note`): "pictures" — its only
+# subtitles are drawn as pictures, not read yet; "no-miner" — no Anki Miner here to read a track inside it; else None
+Episode = namedtuple("Episode", Episode._fields + ("tracks",), defaults=tuple(Episode._field_defaults.values()) + (None,))
 # --- try a9.1 (Mado-Y): `online`, an online video's `source_type` ("youtube" · "bilibili"): ▶ opens its page in the
 # browser (`play.online_link`); None for a file on disk and in a cache from before
 Episode = namedtuple("Episode", Episode._fields + ("online",), defaults=tuple(Episode._field_defaults.values()) + (None,))
@@ -289,6 +293,15 @@ STRINGS = {
     "tip_no_subs": "Its {word} is in your folder, its subtitle file isn't yet: nothing to read or mine until one "
                    "arrives. Surasura fills it in by itself",
     "arr_no_subs": "no subtitles yet",
+    # Michi-ST (PROVISIONAL): a waiting video whose only subtitles are pictures inside it (PGS, VobSub): never a silent miss
+    "pictures": "Subtitles drawn as pictures: not read yet", "pictures_n": "Subtitles drawn as pictures: not read yet · {n}",
+    "tip_pictures": "Its {word}'s subtitles are drawn as pictures inside it, and Surasura can't read pictures yet. A "
+                    "subtitle file for it is read as soon as one arrives in its folder",
+    "play_pictures": "Subtitles drawn as pictures: not read yet\nIts {word} is in your folder; its subtitles are "
+                     "pictures inside it, which Surasura can't read yet",
+    "arr_pictures": "subtitles drawn as pictures: not read yet",
+    # … and no Anki Miner on this computer: a subtitle track inside the video can't be read
+    "no_miner_tracks": "A subtitle track inside the {word} is read once Anki Miner is installed: Settings → Anki & mining",
     # Hon (H-6, H-7 PROVISIONAL): an audiobook — paired, one row of its book's title; alone, its own waiting item
     "with_audiobook": "🎧 With its audiobook",
     "tip_with_audiobook": "🎧 With its audiobook 「{title}」 — the book's cards get its audio once Anki Miner mines "
@@ -784,9 +797,15 @@ def status_of(eps, word, line_n):
     elif ready:
         st = Status("mine", STRINGS["mine"], STRINGS["tip_mine" if line_n is not None else "tip_mine_off"].format(
             line=line_n), "ink")
+    elif no_subs and len(no_subs) == len(unmined) and all(getattr(e, "tracks", None) == "pictures" for e in no_subs):
+        label = STRINGS["pictures"] if len(no_subs) == 1 else STRINGS["pictures_n"].format(n=len(no_subs))
+        return Status("no_subs", label, STRINGS["tip_pictures"].format(word=word), "faint"), None   # Michi-ST
     elif no_subs and len(no_subs) == len(unmined):                  # SRC W1b: only videos waiting for subtitles
         label = STRINGS["no_subs"] if len(no_subs) == 1 else STRINGS["no_subs_n"].format(n=len(no_subs))
-        return Status("no_subs", label, STRINGS["tip_no_subs"].format(word=word), "faint"), None
+        tip = STRINGS["tip_no_subs"].format(word=word)
+        if any(getattr(e, "tracks", None) == "no-miner" for e in no_subs):                     # Michi-ST
+            tip += "\n" + STRINGS["no_miner_tracks"].format(word=word)
+        return Status("no_subs", label, tip, "faint"), None
     else:                                                          # nothing left that could be mined
         top = any(e.in_top for e in unmined)
         label = STRINGS["no_media"].format(word=word) if len(unmined) == 1 else \
@@ -883,6 +902,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     known, counted, n_new = numbers.get(item["id"], (0, 0, None))
     missing = item.get("availability") == "missing"
     waiting = item.get("availability") == "waiting"          # SRC W1b: a video with no subtitle yet
+    tracks_said = tracks.note(item.get("rel_path")) if waiting else None     # Michi-ST: its own tracks, when said
     c = cards.get(item["id"], 0)
     # in Anki only while its cards are there (Sonic, 2026-10-07): the receipt `mined_at` outlives a card the learner
     # deleted, so it never shows ✓, a mined chip or "the cards keep their pictures and audio" on its own
@@ -911,7 +931,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
                  ask=ask, looking=looking, text=_waits_for(item, media), added=item.get("added_at"),
-                 disk=item.get("mtime_ns"), media=media, online=item.get("source_type") if online else None)
+                 disk=item.get("mtime_ns"), media=media, tracks=tracks_said,
+                 online=item.get("source_type") if online else None)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -930,8 +951,12 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
         tip = STRINGS["play_online"].format(site=SITES[item["source_type"]])
     elif waiting and audio:
         tip = STRINGS["play_audio_wait"]
+    elif waiting and tracks_said == tracks.PICTURES:
+        tip = STRINGS["play_pictures"].format(word=word)
     elif waiting:
         tip = STRINGS["play_waiting"].format(word=word)
+        if tracks_said == tracks.NO_MINER:
+            tip += "\n" + STRINGS["no_miner_tracks"].format(word=word)
     elif missing:
         tip = (STRINGS["play_removed"] if mined else STRINGS["play_missing_plain"] if deleted else
                STRINGS["play_missing"]).format(word=word, verb_l=verb.lower())
@@ -1027,7 +1052,7 @@ def _row_connected(st, eps, connect, word):
 class _Shim:
     """An episode as `status_of` reads it (`mined`: its cards are in Anki — never the receipt alone)."""
     __slots__ = ("label", "cards", "mined", "missing", "removed", "in_top", "mining", "deleted", "waiting", "text",
-                 "rel_path")
+                 "rel_path", "tracks")
 
     def __init__(self, ep, mined):
         self.label, self.cards, self.mined, self.deleted = ep.label, ep.cards, mined, ep.deleted
@@ -1035,6 +1060,7 @@ class _Shim:
         self.waiting = getattr(ep, "waiting", False)
         self.text = getattr(ep, "text", False)          # alpha 4 M1
         self.rel_path = getattr(ep, "rel_path", None)   # Hon: an audiobook's own item (`_heard`)
+        self.tracks = getattr(ep, "tracks", None)       # Michi-ST
 
 
 def _media(work, files, guessed):
@@ -1581,7 +1607,10 @@ def _arrival(piece, works, cards, estimates, guessed):
         parts += ((STRINGS["arr_no_media_one" if no_media == 1 else "arr_no_media"].format(n=no_media), "warn"),)
     waiting = sum(1 for e in eps if e.waiting)                      # SRC W1b: K5's videos with no subtitle yet
     heard = sum(1 for e in eps if _heard(e))                        # Hon (H-7): an audiobook waits for Anki Miner
-    if waiting > heard:
+    pictures = sum(1 for e in eps if e.waiting and getattr(e, "tracks", None) == "pictures")      # Michi-ST
+    if waiting > heard and pictures == waiting - heard:
+        parts += ((STRINGS["arr_pictures"], "dim"),)
+    elif waiting > heard:
         parts += ((STRINGS["arr_no_subs"], "dim"),)
     if heard and heard < n:                                         # a5-2: alone, its line says it already
         parts += ((STRINGS["arr_audio_wait"], "dim"),)

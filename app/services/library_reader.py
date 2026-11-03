@@ -175,7 +175,8 @@ class LibraryReader:
         self._version_subscribers = []     # finish-pending: told every move of the versions (the planned ones too)
         self._hold = threading.Event()     # a drag holds the view (E6)
         self._held_dirty = False           # something came in while held: built and published at the release
-        self._republish = False            # the drag's settle asked for the store's view (`republish`)
+        self._asks = 0                     # the window's asks for the store's view (`republish`), numbered
+        self._answered = (0, None)         # ... the newest one answered, and the view that answered it
         self._thread = None
         self._view = None
         # the reader thread's own copy of the library (touched only there)
@@ -494,11 +495,23 @@ class LibraryReader:
         return self._emptied
 
     def republish(self):
-        """The window let go of its own order once every write landed: the next look builds and publishes the store's
+        """The window lets go of its own order once every write landed: the next look builds and publishes the store's
         view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4): the last
-        one built, the same object, when nothing changed since (M4.1 B1: no build)."""
-        self._republish = True
+        one built, the same object, when nothing changed since (M4.1 B1: no build). -> the ask's number. The view that
+        answers it (`answered`) comes from a look begun after the ask, so it holds every write landed by then — never a
+        build begun before (alpha 9.1, report 1: a view a busy reader began before a drop's write, shown once the window
+        let go, put the row back where it was until the next build put it forward again). Any thread."""
+        with self._lock:
+            self._asks += 1
+            n = self._asks
         self._wake.set()
+        return n
+
+    def answered(self):
+        """(the newest ask answered, the view published for it) — the store's own view the window lets its order go
+        for (`drag.DragController.view_in`). Any thread."""
+        with self._lock:
+            return self._answered
 
     def start(self):
         """The thread started — never once `stop()` was asked (W3.2 P0: a reader a second language switch let go)."""
@@ -572,6 +585,8 @@ class LibraryReader:
         self._overlaid, self._overlay_tiers = {}, {}
         self.row_cache = view_rows.RowCache()
         self._cache_due = None
+        with self._lock:
+            self._answered = (self._answered[0], None)     # (its view let go with the rest)
 
     def _handle(self):
         """(mode, reason, handle). The mode is asked of the opener at the start, after a failed read, and every few
@@ -596,6 +611,8 @@ class LibraryReader:
             self._folders_owed = False
             if self._view is not None:
                 self._ask_folders(self._view)
+        with self._lock:
+            asked = self._asks                          # alpha 9.1: the window's asks this look answers (read after)
         mode, reason, h = self._handle()
         changed_mode = (mode, reason) != self._mode
         self._mode = (mode, reason)
@@ -604,12 +621,11 @@ class LibraryReader:
         version, numbers = self.numbers()
         held = self._hold.is_set()
         released = self._held_dirty and not held        # the drop: what came in during the drag, built once now
-        again = self._republish and not held            # M4.1 B1: the settle's ask, taken before the store is read
-        if again:
-            self._republish = False
+        again = asked > self._answered[0] and not held  # M4.1 B1: the settle's ask, until a view answers it
         if h is None:                                   # nothing to read: the last rows stay, under the mode's bar
             owed, self._view_owed = self._view_owed, False  # fix round (A4A-2): a view owed is this build (or the drop's)
-            if changed_mode or self._view is None or version != self._numbers_version or released or again or owed:
+            # (alpha 9.1: a look that read nothing answers no ask — its rows are the copy's, maybe from before a write)
+            if changed_mode or self._view is None or version != self._numbers_version or released or owed:
                 self._numbers_version = version         # the numbers' own version: a new one empties the row cache
                 if held:
                     self._held_dirty = True
@@ -634,7 +650,7 @@ class LibraryReader:
                 and self._view is not None and not self._view.busy and not cards_due and not released \
                 and not estimates_new and not owed:     # W3.2 Q1
             if again:                                   # M4.1 B1: nothing changed since the last build
-                self._publish(self._view)
+                self._publish(self._view, asked)
             self._flush_cache()
             return
         feed = h.read_feed(self._seen, self._epoch)
@@ -677,13 +693,13 @@ class LibraryReader:
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)
             self.skipped += 1
             if again:                                   # M4.1 B1
-                self._publish(self._view)
+                self._publish(self._view, asked)
             self._flush_cache()                         # a look with nothing new: as quiet as one that read nothing
             return
         if self.coalesce and not urgent and self._hold_back(now, numbers_only, dv, estimates_only):
             return                                      # a4: built once it falls due (`_timeout` wakes the reader)
         view = self._build(numbers, mode, reason, rows_known=True)
-        self._publish(view)
+        self._publish(view, asked)
         self._view_owed, self._numbers_at = False, None     # a4
         if not estimates_only:                          # fix round (IK-2): a burst is the store's commits — a view of
             self._built_at = time.monotonic()           # the arrivals' numbers alone never holds the next commit back
@@ -1200,9 +1216,13 @@ class LibraryReader:
         elif view is None:
             self._publish(view_rows.build({}, {}, {}, language=self.language, mode="store", busy=True, loading=True))
 
-    def _publish(self, view):
+    def _publish(self, view, asked=None):
+        """`view` to every subscriber. `asked` (a look's): the window's asks it answers — those taken before the look read
+        the store (a busy store's last view again, the first screen's cache, answer none)."""
         with self._lock:
             self._view = view
+            if asked is not None and asked > self._answered[0]:
+                self._answered = (asked, view)
             subscribers = list(self._subscribers)
         for cb in subscribers:
             try:

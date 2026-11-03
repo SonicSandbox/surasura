@@ -355,15 +355,20 @@ class LibraryReader:
 
     def _ask_airing(self, view):
         """(The reader's thread.) Current's titles near their end (`airing.near_end`), handed to the asker, which keeps
-        only the due ones and returns at once — every build, none too: an id no longer near its end is never sent."""
+        only the due ones and returns at once — every build, none too: an id no longer near its end is never sent.
+        -> whether AniList can be asked now (an asker, its switch on): a show with an id and no answer yet waits for
+        it (`airing.of_rows`' `asking`)."""
         with self._lock:
             service = self._airing
         if service is None or view.cached:
-            return
+            return False
         try:
             service.want(airing_module.near_end(view.rows, self._works))   # (none: the last ones let go)
+            on = getattr(service, "on", None)
+            return bool(on()) if on is not None else False
         except Exception as e:                          # never in the way of a view
             print(f"Library reader: airing wasn't asked: {e!r}")
+            return False
     # --- end 3.0.1 item 5
 
     def _ask_folders(self, view):
@@ -1092,9 +1097,10 @@ class LibraryReader:
                                pieces=self._pieces,           # LM11b G1
                                playable=self._playable,       # row 55
                                folders=folders)               # A4B-8
-        view = view._replace(epoch=self._epoch,         # LM11b: a library rebuilt or reset lets the window's picks go
-                             airing=airing_module.of_rows(view.rows, self._works, self._airing_kept.shows()))  # 3.0.1 5
-        self._ask_airing(view)                          # 3.0.1 item 5
+        view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
+        asking = self._ask_airing(view)                 # 3.0.1 item 5
+        view = view._replace(airing=airing_module.of_rows(view.rows, self._works, self._airing_kept.shows(),
+                                                          asking=asking))
         if self.play is not None:
             self._ask_play(view)                        # row 55
         self._ask_folders(view)                         # A4B-8

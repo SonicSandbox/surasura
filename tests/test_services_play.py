@@ -267,3 +267,49 @@ def test_the_store_record_read_is_closed_and_never_written():
     assert "sha256" not in record                             # read as Connect reads it (`pairing_of`)
     assert (os.path.getsize(db), os.path.getmtime(db)) == before
     json.dumps(record)
+
+
+# --- try a9.1 (Mado-Y, Sonic: "the play button for a youtube video should be the video … opens up in the web
+# browser"): an online video's ▶ opens its own page — what a wrong answer costs: a ▶ that opens nothing, another
+# video, or a bilibili.tv page built from a guess
+def _transcript(name, sidecar=None):
+    """A downloader's transcript in the library's YouTube folder (`<title> [<id>].txt`) with its cue sidecar."""
+    folder = os.path.join(path_utils.get_data_path("ja"), "Library", "YouTube")
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+        f.write("朝ごはんの作り方\nTsubasa no Kitchen | 2026-10-12 | 12:34\n\n今日は卵焼きを作ります。\n")
+    if sidecar is not None:
+        with open(os.path.join(folder, os.path.splitext(name)[0] + path_utils.SIDECAR_SUFFIX), "w",
+                  encoding="utf-8") as f:
+            json.dump(sidecar, f, ensure_ascii=False)
+    return f"Library/YouTube/{name}"
+
+
+def test_an_online_videos_play_opens_its_youtube_page_from_the_record_the_sidecar_or_its_name():
+    rel = _transcript("朝ごはんの作り方 [dQw4w9WgXcQ].txt", {"video_id": "a1B2c3D4e5F", "cues": []})
+    record = {"producer": "youtube", "video_id": "Zx9_Yw8-Vu7", "content_key": "youtube:Zx9_Yw8-Vu7"}
+    assert play.online_link("ja", rel, record) == ("https://www.youtube.com/watch?v=Zx9_Yw8-Vu7", None)
+    # no record (a 2.x library, or the store busy: `pairing`'s {} / None): the sidecar the downloader wrote
+    assert play.online_link("ja", rel, None) == ("https://www.youtube.com/watch?v=a1B2c3D4e5F", None)
+    # no sidecar either (a transcript pulled before sidecars): the id its name ends with
+    bare = _transcript("お弁当を一週間作り続けてみた [dQw4w9WgXcQ] (1).txt")
+    assert play.online_link("ja", bare, {}) == ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", None)
+
+
+def test_a_bilibili_episode_opens_its_kept_page_and_one_never_kept_says_so():
+    rel = _transcript("第1話 旅立ちの朝 [bilibili-2009876].txt",
+                      {"video_id": "2009876", "url": "https://www.bilibili.tv/en/play/1048837/2009876#season"})
+    assert play.online_link("ja", rel, None) == ("https://www.bilibili.tv/en/play/1048837/2009876", None)
+    record = {"producer": "youtube", "content_key": "bilibili:2009876", "video_id": "2009876"}
+    bare = _transcript("第2話 雨の港町 [bilibili-2009877].txt")
+    assert play.online_link("ja", bare, record) == (None, "its video's address wasn't kept"), \
+        "never a YouTube page for a bilibili id, never a page guessed from the id"
+
+
+def test_an_online_video_with_no_id_says_why_and_to_open_takes_the_online_path(monkeypatch):
+    rel = _transcript("町の小さな図書館を紹介します.txt")
+    assert play.online_link("ja", rel, {}) == (None, "its video's address wasn't kept")
+    assert play.online_link("ja", None, None) == (None, "its video's address wasn't kept")
+    monkeypatch.setattr(play, "pairing", lambda language, item_id: {"video_id": "Zx9_Yw8-Vu7"})
+    monkeypatch.setattr(play, "_find", lambda *a, **k: pytest.fail("an online video is never looked for on disk"))
+    assert play.to_open("ja", 7, rel, "youtube", "youtube") == ("https://www.youtube.com/watch?v=Zx9_Yw8-Vu7", None)

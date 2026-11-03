@@ -49,6 +49,10 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   another folder) and `kept_out_ids` (those Removes' trash ids: *Bring back* is `Writer.restore(kept_out_ids)`) —
   from the look cache (`sources.notes`), so a quick look that lists nothing again keeps saying them.
   `look_at(root_id)`: one full look of that folder now (after a *Bring back*).
+- **A video's own subtitle track** (Michi-ST, `app/tracks.py`): after every look, the videos waiting for a subtitle
+  (K5) are asked of Anki Miner on a worker of their own (`_ask_tracks`): one fill at a time, an ask meanwhile folded
+  into one more after it; never on the looks' worker, so a long copy never holds a look or Refresh. The window closing
+  cancels the copy under way.
 - **Skipped folders** (K6): every summary carries `skipped` (`Store.skipped_folders`: Settings' list);
   `skippable(item_ids)` answers ⋯'s *Never read this folder* submenu (`Store.skip_choices`), `skip_refused(path)`
   Settings' *Skip a folder…* (`Store.skip_refused`, Q7); *Read again* (`read_again`) drops the skip
@@ -58,7 +62,7 @@ import os
 import threading
 import time
 
-from app import settings_manager, sources
+from app import settings_manager, sources, tracks
 from app.services.automation import Worker
 
 
@@ -159,6 +163,9 @@ class SourceLooks:
         self._kind = kind
         self._quiet = sources.SETTLE_S + AGAIN_S if quiet is None else quiet   # a watch's look, after its last report
         self._worker = Worker(f"window-sources-{language}")
+        self._tracks = Worker(f"window-tracks-{language}")   # Michi-ST: the waiting videos' tracks (`_ask_tracks`)
+        self._tracking = False                        # a fill queued or running
+        self._tracks_again = False                    # asked meanwhile: one more after it
         self._lock = threading.Lock()
         self._closing = threading.Event()             # the window closes: a look under way stops between files
         self._last = None                             # when the cadence's last look began (`sources.due`'s `last`)
@@ -356,10 +363,12 @@ class SourceLooks:
         self._wake.set()
         self._worker.put(self._let_go, watches)
         self._worker.close()
+        self._tracks.put(self._let_go)
+        self._tracks.close()
 
     def idle(self, timeout=None):
-        """(Tests.) Everything queued has run."""
-        return self._worker.idle(timeout)
+        """(Tests.) Everything queued has run (a look's track fill too: queued by the look, so waited for after it)."""
+        return self._worker.idle(timeout) and self._tracks.idle(timeout)
 
     # --- the worker -------------------------------------------------------------------------------------------- #
     def _queue(self, full, roots):
@@ -439,6 +448,7 @@ class SourceLooks:
                 from app import library_store as ls
                 totals["unfinished_reset"] = ls.unfinished_reset(store.user_files_dir, told=True)
             told = self._publish(store, totals)
+            self._ask_tracks()
         except Exception as e:                        # a look that failed waits for the next: never the window's fault
             print(f"Sources: the look stopped: {e!r}")
             why = str(e) or type(e).__name__
@@ -453,6 +463,39 @@ class SourceLooks:
                 again, self._again = self._again, None
                 if again is not None and not self._closing.is_set():
                     self._queue(*again)
+
+    def _ask_tracks(self):
+        """Michi-ST: the waiting videos' subtitle tracks filled (`tracks.fill`) on their own worker, one fill at a time."""
+        with self._lock:
+            if self._closing.is_set():
+                return
+            if self._tracking:
+                self._tracks_again = True
+                return
+            self._tracking = True
+        if not self._tracks.put(self._fill_tracks):
+            with self._lock:
+                self._tracking = False
+
+    def _fill_tracks(self):
+        """(The tracks' worker.) One fill with this thread's own store handle; whatever happens, the next look asks
+        again."""
+        try:
+            store = self._store()
+            if store is not None and not self._closing.is_set():
+                away = {root for root, reached in dict(self._reachable).items() if reached is False}
+                got = tracks.fill(store, self.language, settings_manager.load_settings(), stop=self._closing.is_set,
+                                  away=away)
+                if got.get("filled") or got.get("failed"):
+                    print(f"Sources: subtitle tracks inside videos: {got}")
+        except Exception as e:                        # never the window's fault: the next look asks again
+            print(f"Sources: the videos' subtitle tracks wait for the next look: {e!r}")
+        finally:
+            with self._lock:
+                self._tracking = False
+                again, self._tracks_again = self._tracks_again, False
+            if again:
+                self._ask_tracks()
 
     def _scan(self, store, row, full=False, first=False, progress=None, stop=None):
         path = row["path"]

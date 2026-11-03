@@ -135,6 +135,15 @@ In the app, the bug at the top right (**Report a problem**) gathers what's neede
 
 Surasura 2.x's README: [docs/legacy/README_2.x.md](docs/legacy/README_2.x.md).
 
+## 📂 Your content
+
+Surasura provides no content. It works only with what you give it: your own subtitles, videos, books, audiobooks,
+texts, word lists and Anki decks, and anything you get with the tools and sites it can open or call (YouTube and
+bilibili through yt-dlp, jimaku, Anki Miner). **You are responsible for the content you use with Surasura:** use only
+content you own or have the right to use, and follow the law and the terms of the sites and services you get it from.
+Surasura does not host or share your content: it stays on your computer, except what you choose to send to a service
+you connect. The installer asks you to accept this, with the licence below.
+
 ## 🙏 Data Credits
 
 Surasura's shared パターン data for Japanese is built from:

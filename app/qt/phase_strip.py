@@ -133,6 +133,7 @@ class PhaseStrip(QWidget):
         self._asks = None                      # 順's line when it is a part of its own (a decision or a fault), or None
         self.lands = None                      # Go -> whether its place holds the decision now (the shell's, a7)
         self.stops = None                      # circle -> whether its work can be stopped now (the shell's, try a9.1)
+        self.can_show = None                   # circle -> whether there is a place its work is seen now (the shell's)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.refresh)
@@ -191,8 +192,10 @@ class PhaseStrip(QWidget):
         return strings.PHASE_PRESS_NEEDS
 
     def showing(self, circle):
-        """Whether a press shows where `circle`'s work is seen (try a9.1): it runs, and it is one that can be seen."""
-        return circle in SHOWS and self.states[circle].running
+        """Whether a press shows where `circle`'s work is seen (try a9.1): it runs, it is one that can be seen, and the
+        shell has the place now (Anki Miner: an episode being mined — not its install, a press before Connect's job)."""
+        return (circle in SHOWS and self.states[circle].running
+                and (self.can_show is None or bool(self.can_show(circle))))
 
     def menu_entries(self, circle):
         """`circle`'s right-click menu: [((words, tip), what)] — *Show* while `showing`, *Stop* while the shell says its
@@ -480,9 +483,10 @@ class PhaseStrip(QWidget):
         if self._pressable(circle):
             press = self.press_words(circle)
             out.append(f'<span style="color:{dim}">{esc(press)}</span>')
-        entries = self.menu_entries(circle)
-        if len(entries) > 1:                            # (one item is the press's own: said once, above)
-            items = " · ".join(words for (words, _tip), _what in entries)
+        press_does = "show" if self.showing(circle) else "settings" if self._pressable(circle) else None
+        more = [words for (words, _tip), what in self.menu_entries(circle) if what != press_does]
+        if more:                                        # (the press's own item is said once, above)
+            items = " · ".join(more)
             out.append(f'<span style="color:{dim}">{esc(strings.PHASE_MENU_TIP.format(items=items))}</span>')
         return '<p style="margin:0">' + "<br>".join(out) + "</p>"
 
@@ -566,9 +570,10 @@ class PhaseStrip(QWidget):
             self.tooltips.hide()
         menu = tool_icons.menu_of(self, [(pair, lambda what=what: self.asked.emit(circle, what))
                                          for pair, what in entries])
-        self.last_menu = menu                  # (a test reads what it offered)
         at = e.globalPos() if mouse else self.mapToGlobal(self.rect_of(circle).center().toPoint())
         menu.exec(at)
+        if hasattr(menu, "deleteLater"):
+            menu.deleteLater()                 # (one a right-click: never kept for the session)
 
     def keyPressEvent(self, e):
         key = e.key()

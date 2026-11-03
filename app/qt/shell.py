@@ -1967,6 +1967,7 @@ class ShellWindow(QMainWindow):
         self.phase.opened.connect(self._circle_pressed)
         self.phase.asked.connect(self._circle_asked)       # try a9.1: its right-click's Show · Stop · Settings
         self.phase.stops = self._circle_stops
+        self.phase.can_show = self._circle_shows
         self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
         bridge.run_in_worker(_junban_here, then=self._junban_found)
         row.addWidget(self.phase)
@@ -2276,6 +2277,12 @@ class ShellWindow(QMainWindow):
         except Exception:
             return None
         return next(((i, it) for i, it in items.items() if it.kind == "mining"), None)
+
+    def _circle_shows(self, circle):
+        """Whether `circle`'s work has a place to be seen now: an episode Connect is mining; 順's window (Junban here)."""
+        if circle == phase_service.JUNBAN:
+            return phase_service.JUNBAN in self.phase.opens
+        return circle == phase_service.MINER and self._mining_now() is not None
 
     def _show_circle(self, circle):
         """Where `circle`'s running work is seen: Anki Miner — the title it makes cards for, in its list, washed (its

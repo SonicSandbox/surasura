@@ -939,8 +939,9 @@ class ReportWindow(SecondaryWindow):
             self.reports = reports
         n = len(reports)
         self.list_heading.setText(strings.REPORT_LIST_HEADING.format(n=n))
-        self.zip_button.setEnabled(n > 0)
-        self.show_button.setEnabled(n > 0)
+        held = self.pages.currentIndex() == self.GOES                # (What goes up, or gathering: `_goes_hold`'s)
+        self.zip_button.setEnabled(n > 0 and not held)
+        self.show_button.setEnabled(n > 0 and not held)
         self.zip_button.setToolTip(strings.REPORT_ZIP_TIP if n else strings.REPORT_ZIP_NONE_TIP)
         self._send_ready()
         button = getattr(self.shell, "report_button", None)
@@ -1168,14 +1169,14 @@ class ReportWindow(SecondaryWindow):
     def send_report(self):
         """*Send report*: what's typed saved first, then the scrubbed zip made and checked into the outbox, then the
         What goes page — nothing leaves the PC until its *Send*."""
-        if qpress.live(self, "report:zip") or qpress.live(self, "report:send"):    # a report under way: said why
+        if any(qpress.live(self, k) for k in ("report:zip", "report:send", "report:save")):   # under way: said why
             self.say(strings.REPORT_ZIP_BUSY)
             return
         if self.save_button.isEnabled():
             self._sending(True)
             self._gather()
-            if self.save(then=lambda: self._build(saved=True), control=self.send_button,
-                         broke=self._not_gathered) is None:
+            if self.save(then=lambda: self._build(saved=True) if self.gathering else self._sending(False),
+                         control=self.send_button, broke=self._not_gathered) is None:
                 self._not_gathered()
         elif self.reports:
             self._gather()
@@ -1198,6 +1199,8 @@ class ReportWindow(SecondaryWindow):
         self._clear(self.goes_pictures)
         self.goes_send.setEnabled(False)
         self.goes_open.setEnabled(False)
+        for w in self.waiting_row:                                 # (the zip this press makes replaces a waiting one)
+            w.setVisible(False)
         self.pages.setCurrentIndex(self.GOES)
         self._goes_hold(True)
         self.goes_back.setFocus()
@@ -1225,6 +1228,7 @@ class ReportWindow(SecondaryWindow):
         if was and self.pages.currentIndex() == self.GOES and self.outbox is None:
             self.pages.setCurrentIndex(self.FORM)
             self._goes_hold(False)
+            self.what.setFocus()
 
     def _sending(self, on):
         self.sending = on
@@ -1244,12 +1248,16 @@ class ReportWindow(SecondaryWindow):
         def built(got):
             if self.gone or not self.gathering:                    # closed, or Back, before it was looked at: never kept
                 self.sending = False
-                if got[0] == "built":                              # (only the zip this press made)
-                    threading.Thread(target=discard, args=(got[1].sha256,), name="report-discard",
-                                     daemon=True).start()
-                if not self.gone:
-                    self._sending(False)
-                    self._hold(False)
+                if self.gone:
+                    if got[0] == "built":                          # (only the zip this press made)
+                        threading.Thread(target=discard, args=(got[1].sha256,), name="report-discard",
+                                         daemon=True).start()
+                    return
+                self._sending(False)
+                self._hold(False)
+                if got[0] == "built":                              # Back: deleted, then what waits read again (it
+                    qpress.run(None, "report:send", discard, got[1].sha256, win=self,     # ... replaced a waiting one)
+                               then=self.alive(lambda _g: self.read_send()), failed=lambda _info: None)
                 return
             self._sending(False)
             self._hold(False)
@@ -1414,7 +1422,8 @@ class ReportWindow(SecondaryWindow):
         self.send_read = n                                        # (the read last shown: a test waits for it)
         waiting, sent, code, name = got
         self.waiting = waiting
-        shown = waiting is not None and self.outbox is None and not qpress.live(self, "report:send")
+        shown = (waiting is not None and self.outbox is None and not self.gathering
+                 and not qpress.live(self, "report:send"))
         for w in self.waiting_row:                                 # (never beside What goes, which shows that zip, nor
             w.setVisible(shown)                                    # ... while a send or a delete is under way)
         if code:

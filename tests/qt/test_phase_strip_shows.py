@@ -141,7 +141,12 @@ def test_a_spinning_circle_that_can_be_seen_says_a_press_shows_it_and_offers_sho
     assert [pair for pair, _w in entries] == [strings.PHASE_SHOW, strings.PHASE_STOP, strings.PHASE_SETTINGS]
     text = strip.hover_text(P.MINER)
     assert html.escape(TITLE) in text and html.escape(strings.PHASE_PRESS_SHOW) in text
-    assert html.escape(strings.PHASE_MENU_TIP.format(items="Show · Stop · Settings")) in text
+    assert html.escape(strings.PHASE_MENU_TIP.format(items="Stop · Settings")) in text    # (Show: the press's own)
+    strip.can_show = lambda c: False                                  # nothing to see now (its install, a press
+    assert not strip.showing(P.MINER)                                 # ... before Connect's job): no promise of it
+    assert strip.press_words(P.MINER) == strings.PHASE_PRESS
+    assert html.escape(strings.PHASE_MENU_TIP.format(items="Stop")) in strip.hover_text(P.MINER)
+    strip.can_show = None
     gen = registry.submit("generate", "Generating", lambda j: None)
     strip.set_jobs(registry.snapshot())
     assert not strip.showing(P.SURASURA)                               # ス has no place of its own: its settings
@@ -165,7 +170,7 @@ def test_the_right_click_is_the_bottom_bars_one_menu_and_each_item_asks_the_shel
     monkeypatch.setattr(tool_icons, "menu_of", menu_of)
     registry = JobRegistry()
     strip.set_opens({P.JUNBAN})
-    strip.stops = lambda c: False
+    strip.stops = lambda c: bool(P.stoppable(registry.live(), c))       # (the shell's rule, for jobs)
     replan = registry.record("replan", "Re-ordering Anki's new cards", automatic=False, on_quit="wait")
     strip.set_jobs(registry.snapshot())
     said = []
@@ -244,12 +249,16 @@ def test_in_the_window_junbans_press_while_it_reorders_opens_its_window(world, m
     win.open_setting = lambda target: settings.append(target) or True
     replan = world.registry.record("replan", "Re-ordering Anki's new cards", automatic=False, on_quit="wait")
     win.phase.set_jobs(world.registry.snapshot())
+    win.phase.set_opens(win.phase.opens - {P.JUNBAN})                  # Junban not here (the public checkout's look)
+    win._circle_pressed(P.JUNBAN)                                       # ... nothing to open, nothing done
+    assert opened == [] and settings == [] and not win.phase.showing(P.JUNBAN)
+    win.phase.set_opens(win.phase.opens | {P.JUNBAN})                  # Junban found
     win._circle_pressed(P.JUNBAN)
     assert opened == [None] and settings == []
     replan.finish()
     win.phase.set_jobs(world.registry.snapshot())
     win._circle_pressed(P.JUNBAN)                                       # at rest: its settings, as before (alpha 3)
-    assert opened == [None]
+    assert opened == [None] and settings == ["junban"]
 
 
 def test_on_the_seed_anki_miners_show_goes_to_its_row_washed_and_its_stop_marks_that_rows_pill(act, monkeypatch):

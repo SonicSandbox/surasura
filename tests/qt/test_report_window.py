@@ -1032,7 +1032,8 @@ def test_send_report_opens_what_goes_in_the_press_frame_saying_it_is_gathering(m
     assert all(x.isHidden() for x in (w.goes_placeholders, w.goes_name, w.goes_kept, w.goes_files))
     assert not w.goes_send.isEnabled() and not w.goes_open.isEnabled()  # nothing to send or open until it's made
     assert wait_until(lambda: w.reports is not None and len(w.reports) == 1)   # saved meanwhile: still no second press
-    assert not w.send_button.isEnabled()
+    assert not w.send_button.isEnabled()                               # ... nor Show me / Make a zip beside it
+    assert not w.show_button.isEnabled() and not w.zip_button.isEnabled()
     assert w.goes_back.isEnabled() and receiver.got == []
     gate.set()
     assert wait_until(lambda: w.outbox is not None, 15)                # made: the page fills in, the same page
@@ -1096,3 +1097,42 @@ def test_prepare_send_scales_wide_pictures_on_the_worker(main, receiver, monkeyp
     kind, _outbox, pictures, *_code = report_ui.prepare_send("ja", False, {"language": "ja"}, {})
     assert kind == "built" and [p.width() for p in pictures] == [3000]  # no width: as it went
     assert w is not None
+
+
+def test_back_while_gathering_reads_what_waits_again_and_never_shows_the_replaced_zip(main, receiver, monkeypatch):
+    """A zip left waiting (a send that didn't go) is replaced by the press's: its *Send now* row goes at the press and,
+    after Back deleted the new one, stays gone (nothing waits any more) — never a row for a zip that's gone."""
+    from app import send_report
+    w = _press(main)
+    _save(w, JA_WHAT)
+    send_report.build("ja")                                            # one waiting, as after a send that didn't go
+    w.read_send()
+    assert wait_until(lambda: not w.waiting_row[0].isHidden())
+    gate, made = _gated_build(monkeypatch)
+    w.send_button.click()
+    assert all(x.isHidden() for x in w.waiting_row)                     # never beside the gathering page
+    w.goes_back.click()
+    gate.set()
+    assert wait_until(lambda: made, 15) and wait_until(_outbox_empty, 15)
+    assert wait_until(lambda: w.waiting is None and all(x.isHidden() for x in w.waiting_row), 15)
+
+
+def test_back_during_the_save_makes_no_zip_and_a_second_press_meanwhile_says_why(main, receiver, monkeypatch):
+    import threading
+    from app import send_report
+    gate, real_save, built = threading.Event(), core.save, []
+    monkeypatch.setattr(core, "save", lambda *a, **k: (gate.wait(10), real_save(*a, **k))[1])
+    monkeypatch.setattr(send_report, "build", lambda *a, **k: built.append(a))
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    w.send_button.click()                                              # saving first
+    w.goes_back.click()
+    w.what.setPlainText(JA_WHAT + "。")
+    w.send_button.click()                                              # pressed again while the first save runs
+    assert w.status.text() == strings.REPORT_ZIP_BUSY and w.pages.currentIndex() == w.FORM
+    gate.set()
+    assert wait_until(lambda: w.reports is not None and len(w.reports) == 1, 15)
+    for _ in range(30):
+        QApplication.processEvents()
+    assert built == [] and w.pages.currentIndex() == w.FORM          # Back before the zip: none made for nothing
+    assert wait_until(lambda: w.send_button.isEnabled())

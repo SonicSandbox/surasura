@@ -580,10 +580,13 @@ def _media(argv, plan):
             while end < at + after and end + 1 < len(lines) and lines[end + 1][1] - lines[at][0] <= 30.0:
                 end += 1
             text = "".join(t for _s, _e, t in lines[at:end + 1])
-            with open(os.path.join(out, f"{k}.mp3"), "w", encoding="utf-8") as f:
-                f.write(text)
+            past = plan.get("audio_seconds") is not None and lines[at][0] > plan["audio_seconds"]
+            if not past:                    # a line past the audio's end is cut into no clip (its `audio` null)
+                with open(os.path.join(out, f"{k}.mp3"), "w", encoding="utf-8") as f:
+                    f.write(text)
             rows.append({"line_start": lines[at][0], "start": lines[at][0], "end": lines[end][1], "unit_index": None,
-                         "location": None, "text": text, "picture": None, "audio": f"media-1/{k}.mp3"})
+                         "location": None, "text": text, "picture": None,
+                         "audio": None if past else f"media-1/{k}.mp3"})
         with open(os.path.join(folder, "media-1.json"), "w", encoding="utf-8") as f:
             json.dump({"schema": 1, "run_id": run_id, "lines": rows}, f, ensure_ascii=False)
         runs.append({"run_id": run_id, "ok": True, "error": None, "message": None, "file": "media-1.json",
@@ -605,6 +608,10 @@ def _transcribe(argv, plan):
         os.makedirs(out, exist_ok=True)
         with open(episode["audio_file"], encoding="utf-8") as f:
             said = f.read()
+        if any(said.startswith(k) for k in plan.get("unreadable_clips") or ()):    # a clip of silence it refuses
+            runs.append({"run_id": run_id, "ok": False, "error": "AUDIO_UNREADABLE", "message": "no audio",
+                         "file": None, "failure_is_transient": False})
+            continue
         heard = "" if plan.get("deaf") else next((v for k, v in (plan.get("heard") or {}).items()
                                                    if said.startswith(k)), said)
         srt = os.path.join(out, os.path.splitext(os.path.basename(episode["audio_file"]))[0] + ".srt")

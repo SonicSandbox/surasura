@@ -533,27 +533,40 @@ def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT)
     # budget may hold fewer than asked: what was cut is what is compared)
     clips = [os.path.join(run_dir, "spot", line["audio"]) if isinstance(line.get("audio"), str) else None
              for line in lines]
-    if len(clips) != len(places) or not all(c and os.path.isfile(c) for c in clips):
+    if len(clips) != len(places):
         return None
+    # a line Anki Miner cut no clip for (the drill of record: another file's subtitle, its lines past this audio's end)
+    # is a place where nothing of it is heard — never a wrong clip, so it counts against it
+    clips = [c if c and os.path.isfile(c) else None for c in clips]
     places = [(s, a, line.get("text") if isinstance(line.get("text"), str) and line.get("text") else t)
               for (s, a, t), line in zip(places, lines)]
-    heard_job = dict(base, episodes=[{"run_id": f"heard-{k}", "audio_file": os.path.abspath(c)}
-                                     for k, c in enumerate(clips, 1)])
-    path = os.path.join(where, "transcribe.json")
-    _write_json(path, heard_job)
-    verdict = anki_miner.api(miner, ["transcribe", path], timeout=timeout, look_up=True)
-    if not verdict.get("runs") and not verdict.get("ok"):
-        anki_miner._result(verdict)                 # SETUP_ERROR (no speech model) and the like: raised
     shares = []
+    if any(clips):
+        heard_job = dict(base, episodes=[{"run_id": f"heard-{k}", "audio_file": os.path.abspath(c)}
+                                         for k, c in enumerate(clips, 1) if c])
+        path = os.path.join(where, "transcribe.json")
+        _write_json(path, heard_job)
+        verdict = anki_miner.api(miner, ["transcribe", path], timeout=timeout, look_up=True)
+        if not verdict.get("runs") and not verdict.get("ok"):
+            anki_miner._result(verdict)             # SETUP_ERROR (no speech model) and the like: raised
     for k, (_s, _a, said) in enumerate(places, 1):
+        if clips[k - 1] is None:
+            shares.append(0.0)
+            continue
         run = next((r for r in verdict.get("runs") or () if isinstance(r, dict) and r.get("run_id") == f"heard-{k}"),
                    None)
         if run is None or not run.get("ok"):
-            return None
+            # a clip it couldn't listen to (the drill of record: a clip of silence past this audio's end, refused as
+            # unreadable) is heard as nothing; every clip refused is no answer (looked at again)
+            shares.append(None)
+            continue
         made = _read_json(os.path.join(run_dir, f"heard-{k}", os.path.basename(str(run.get("file") or "")))) or {}
         heard = "".join(t for _s2, _e2, t in srt_cues(made["subtitle_file"])) \
             if isinstance(made.get("subtitle_file"), str) else ""
         shares.append(overlap(said, heard))
+    if any(clips) and all(s is None for s, c in zip(shares, clips) if c):
+        return None
+    shares = [0.0 if s is None else s for s in shares]
     need = min(MATCHES, len(shares))
     out = MATCHED if sum(1 for s in shares if s >= MATCH) >= need else NOT_MATCHED
     if key:

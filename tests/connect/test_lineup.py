@@ -958,3 +958,60 @@ def test_b18_b19_a_given_up_line_up_goes_again_after_a_newer_mine_now_compared_a
     assert not runner._newer(None, "2026-11-02T10:00:00Z")
     given_up = paired["steps"].line_up("ja", _job(asked_at="2026-11-02T09:00:00Z"), paired["book"])
     assert given_up["lineup"] is None and "no answer" in given_up["line"]
+
+
+def test_a_sentence_that_is_its_cue_but_never_holds_the_word_is_the_books_card(tmp_path):
+    """Mutant B-M02: the line IS a cue, yet the word's spelling isn't in it (the pick's surface written otherwise) — no
+    clip, never that cue's."""
+    state, _audio = _state_of_resources(tmp_path)
+    line = "唐の都洛陽の西の門の下に、ぼんやり空を仰いでゐる、一人の若者がありました。"
+    assert lineup.place(line, "若者", lineup.cues(state)) is not None
+    assert lineup.place(line, "老人", lineup.cues(state)) is None
+
+
+def test_a_poor_line_up_is_never_handed_to_the_pick(paired, fake_miner):
+    """Mutant B-M17: grade C — the part is mined as the book (no line-up on its pick) with AB-Q4's line."""
+    lineup.write(paired["key"], {"status": lineup.DONE, "grade": "C", "unheard": [], "files": [
+        {"audio_file": f, "subtitle_file": os.path.join(SYNCED, "toshisyun_01.srt"), "status": "synced"}
+        for f in paired["files"]]})
+    got = paired["steps"].line_up("ja", _job(), paired["book"])
+    assert got["lineup"] is None and "grade C" in got["line"] and got["item_id"] == paired["item"]
+
+
+def test_another_files_subtitle_running_past_the_audios_end_fails_the_spot_check(tmp_path, fake_miner):
+    """The drill of record's fail case: chapter 2's subtitle beside chapter 1's shorter MP3 — its later lines lie past
+    the audio's end, where Anki Miner cuts no clip: nothing heard there counts against it (never "couldn't check"),
+    so with the rest not its lines it is not matched; all past the end, not matched without listening at all."""
+    lines = _book_lines()
+    audio, sub = _subtitle(tmp_path, lines)
+    places = lineup.samples(lineup.srt_cues(sub))
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"}, audio_seconds=places[2][0] - 1,
+                    heard={p[2][:6]: "".join(_lines("ja")[:3]) for p in places[:2]})
+    assert lineup.spot_check(fake_miner.path, "ja", None, audio, sub) == lineup.NOT_MATCHED
+    with open(sub, "a", encoding="utf-8") as f:
+        f.write("\n")
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"}, audio_seconds=0.0)
+    before = fake_miner.commands().count("transcribe")
+    assert lineup.spot_check(fake_miner.path, "ja", None, audio, sub) == lineup.NOT_MATCHED
+    assert fake_miner.commands().count("transcribe") == before, "nothing cut: nothing to listen to"
+
+
+def test_a_clip_anki_miner_cant_listen_to_is_heard_as_nothing_and_all_refused_is_no_answer(tmp_path, fake_miner):
+    """The drill of record, run 2: chapter 2's subtitle beside chapter 1's MP3 — its last sample is a clip of silence
+    past the audio's end, which `transcribe` refuses (AUDIO_UNREADABLE): that place counts as nothing heard, so the
+    check answers (not matched), never "couldn't check". Every clip refused: no answer (asked again next look)."""
+    lines = _book_lines()
+    audio, sub = _subtitle(tmp_path, lines)
+    places = lineup.samples(lineup.srt_cues(sub))
+    other = "".join(_lines("ja")[:3])
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"}, unreadable_clips=[places[4][2][:6]],
+                    heard={p[2][:6]: other for p in places[:3]})
+    assert lineup.spot_check(fake_miner.path, "ja", None, audio, sub) == lineup.NOT_MATCHED
+    with open(sub, "a", encoding="utf-8") as f:
+        f.write("\n")
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"}, unreadable_clips=[places[4][2][:6]])
+    assert lineup.spot_check(fake_miner.path, "ja", None, audio, sub) == lineup.MATCHED, "4 of 5 heard: matched"
+    with open(sub, "a", encoding="utf-8") as f:
+        f.write("\n")
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"}, unreadable_clips=[p[2][:6] for p in places])
+    assert lineup.spot_check(fake_miner.path, "ja", None, audio, sub) is None

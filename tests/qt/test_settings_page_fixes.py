@@ -174,7 +174,10 @@ def test_at_text_size_large_no_control_runs_past_the_page_and_narrow_rows_stack(
     assert _cut(page) == []
     for view in page.rows.values():                          # a row side by side never squeezes its words
         if view.isVisibleTo(page) and view.stacked is False:
-            assert view.label.width() >= view._words_min() - 1, view.row.id
+            # (a9.1: the label is as wide as its words, its ? after them — the words' room is up to the control)
+            room = view.slot.geometry().left() - view.label.geometry().left()
+            assert room >= view._words_min() - 1, view.row.id
+            assert view.label.width() >= min(view.label.maximumWidth(), view._words_min()) - 1, view.row.id
     assert store.calls == []
 
 

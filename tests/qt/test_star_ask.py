@@ -141,11 +141,12 @@ def test_star_opens_the_repository_in_the_browser_and_not_now_does_nothing(monke
     assert all(len(tip) <= 50 for _label, tip, _cb in buttons)
 
 
-def test_settings_app_keeps_a_quiet_star_row_beside_the_version():
-    app = [r.id for r in settings_catalog.rows("app")]
-    assert app.index("star_github") == app.index("version") - 1
-    row = settings_catalog.ROW["star_github"]
-    assert row.kind == "link" and settings_strings.LINK_URLS["star_github"] == settings_strings.STAR_URL
+def test_settings_app_keeps_a_quiet_star_button_in_its_connect_with_us_block():
+    # a9.1: the star row went into App's *Connect with us* block — its first button, never prompted
+    row = settings_catalog.ROW["surasura"]
+    assert row.section == "app" and row.kind == "links" and row.options[0] == "github"
+    assert settings_strings.LINK_URLS["github"] == settings_strings.STAR_URL
+    assert "Star" in settings_strings.LINKS["github"][0]
 
 
 # --- the real window and reader ------------------------------------------------------------------------------------ #

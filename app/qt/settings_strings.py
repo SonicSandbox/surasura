@@ -59,13 +59,22 @@ NAV_NAME = "Settings sections"
 MORE_TIP = "Shows this section's other settings, the ones most people never change"
 FEWER_TIP = "Hides this section's other settings again"
 LINK_OPEN = "Open ↗"
+HELP_MARK = "?"                                       # a9.1: a row's description, behind its ? (`RowView`)
+HELP_MARK_NAME = "About {label}"
 HOW_PARSING_URL = "https://github.com/SonicSandbox/surasura/blob/main/docs/How%20Parsing%20Works.md"
 DISCORD_URL = "https://surasura.dev/app/discord"      # the server's invite, by redirect (in the browser, never an app call)
 WEBSITE_URL = "https://surasura.dev"                  # Surasura's website (in the browser, never an app call)
 ISSUES_URL = "https://github.com/SonicSandbox/surasura/issues"
 STAR_URL = "https://github.com/SonicSandbox/surasura"   # the star ask's and App's row (in the browser, never an app call)
-LINK_URLS = {"how_parsing_works": HOW_PARSING_URL, "discord": DISCORD_URL,   # a link row's page, by its id
-             "website": WEBSITE_URL, "star_github": STAR_URL}
+# a9.1 (Sonic: "a button for each that launches"; wording PROVISIONAL): App's *Connect with us* block, a button per
+# page, each saying what it does — label, tooltip, page
+LINKS = {"github": ("⭐ Star on GitHub", "Opens Surasura's GitHub page in your browser: free and made by one person, a "
+                                        "⭐ helps other learners find it", STAR_URL),
+         "discord": ("Join the community", "Opens Surasura's Discord server in your browser: questions, help, and a "
+                                           "place to report a problem", DISCORD_URL),
+         "website": ("Visit the website", "Opens surasura.dev, Surasura's home page, in your browser", WEBSITE_URL)}
+# a link's page, by its name: the block's buttons, and Parsing's *How parsing works* row
+LINK_URLS = dict({name: url for name, (_label, _tip, url) in LINKS.items()}, how_parsing_works=HOW_PARSING_URL)
 FOLDER_PICK_TITLE = "Where videos are looked for"
 
 # --- the controls' own words (settings_controls.py; moved here from its top, W3.3 P3) ------------------------------ #
@@ -98,10 +107,11 @@ DOORS = {
     "jiten": ("Jiten", "Import from Jiten"),
     "apkg_known": (".apkg", "Import an Anki deck file"),
     "word-lists": ("Ignore list · Blacklist", "Opens your Ignore list and Blacklist"),
-    "junban": ("Preview order",
-               "Shows the new order and why, before anything moves; Undo the last reorder is there too"),
+    "junban": ("Junban…", "Opens Junban’s window: choose the deck, preview the new order and why before anything "
+                          "moves, undo the last reorder"),
     "put-back": ("Put Anki back…", "Puts Anki's new cards back the way they were before Surasura first changed them"),
-    "backfill": ("Preview", "Shows exactly what goes into each card; Fill and Restore are there too"),
+    "backfill": ("Backfill…", "Opens Backfill’s window: choose the deck and each note type's fields, see exactly what "
+                              "goes into each card, Fill and Restore"),
     "extract": ("Extract…", "EPUBs and Anki decks, split into parts"),
     "youtube-downloader": ("YouTube…", "Download a video's captions straight into your library"),
     "youtube-preview": ("Preview a video…", "Score a video against your words before you add it"),
@@ -111,14 +121,9 @@ DOORS = {
     "library-folders": ("Manage folders…", "Opens your folders: stop reading one, read a skipped one again, or look "
                                            "in them all again"),
 }
-# A row whose door says something else than the opener's own words: row id -> {opener: (label, tooltip)}
-ROW_DOORS = {
-    "junban_scope": {"junban": ("Choose the deck…", "Opens Junban’s window, where the deck is chosen")},   # a6 #9
-    "junban_backfill_cards": {"backfill": ("Choose the deck…", "Opens Backfill’s window, where the deck is "
-                                                               "chosen")},                                # W4.1
-    "backfill_fields": {"backfill": ("Fields…", "Opens Backfill, where each fill's field and each note type's "
-                                                "language are set")},
-}
+# A row whose door says something else than the opener's own words: row id -> {opener: (label, tooltip)} (a9.1: none
+# — Junban's and Backfill's windows have one door each, on their *Which cards* row)
+ROW_DOORS = {}
 
 # --- the rows: row id -> (label, one-line help, tooltip, search words) --------------------------------------------- #
 ROWS = {
@@ -150,21 +155,21 @@ ROWS = {
     "use_every_core": ("Use every core", "Reads a big library faster; the computer is busier meanwhile",
                        "Off: reading and copying a library uses half your computer's cores, so it stays quick to use. "
                        "On: every core — a first read of thousands of books ends sooner", "cores speed faster cpu"),
-    # a7 (DIAGNOSIS 3): this row and *Count as known in Anki* under it answer one question two ways — each says so
-    # (A7S-1: the sync reads studied cards only — `anki_sync.scope_query`'s `-is:new`; the signal reads new ones too)
+    # a9.1 (Sonic: "anything redundant we don't want"): one question, one row — this one while Make cards for me is
+    # off (the sync's own answer), *Count as known in Anki* while it is on (A7S-1: the sync reads studied cards only —
+    # `anki_sync.scope_query`'s `-is:new`; the signal reads new ones too)
     "anki_sync_include_suspended": ("Count suspended cards as known", "Cards you studied, then suspended",
                                     "Cards you studied and then suspended count as known, whenever you suspended "
-                                    "them. Off by default: a suspended card is often one you struggled with. New cards "
-                                    "you suspend never count here — for those, use Count as known in Anki below",
-                                    "suspended known"),
+                                    "them. Off by default: a suspended card is often one you struggled with. New "
+                                    "cards you suspend never count",
+                                    "suspended known count as known in anki"),
     "known_from_anki": ("Count as known in Anki",
                         "A card counts only when it is in every state you pick, all at once",
                         "Suspend (or mark, or flag) a card in Anki to say “I know this”: its word turns known at the "
                         "next sync, and you can undo it. A card counts only when it is in every state you pick — "
                         "Suspended + Marked counts only cards both suspended and marked. Cards already suspended are "
-                        "asked about once. New cards count too. None picked: off. Count suspended cards as known, "
-                        "above, counts every studied card you've suspended, whenever",
-                        "known from anki suspended marked flag"),
+                        "asked about once. New cards count too. None picked: off",
+                        "known from anki suspended marked flag count suspended cards as known"),
 
     # Anki & mining
     "anki_connection": ("Connection", "Through the free AnkiConnect add-on", "Whether Surasura reaches Anki now",
@@ -254,7 +259,7 @@ ROWS = {
                       "Shows 順, which reorders the new cards already in your Anki into Surasura's learn order",
                       "junban reorder order backlog enable"),
     "junban_scope": ("Which cards", "This deck is chosen in Junban’s window", "This deck, or every deck with new cards",
-                     "scope deck all decks"),
+                     "scope deck all decks choose the deck preview order restore undo the last reorder"),
     "junban_order": ("Order", "", "As you'll meet the words in your content, or by leverage first",
                      "order leverage meet content priority"),
     "junban_unlisted": ("Cards too rare for your list go",
@@ -287,7 +292,6 @@ ROWS = {
     "junban_auto_actions": ("…and tag, flag or suspend then", "The automatic reorder applies Junban's marks too",
                             "Off, the automatic reorder moves cards only; on, it applies everything Junban has saved",
                             "auto actions tag flag suspend"),
-    "junban_door": ("", "", "Preview order · Undo the last reorder", "preview restore undo order"),
     "put_back": ("Put Anki back", "The way it was before Surasura first changed it",
                  "Puts Anki's new cards back in the order they had before Surasura first changed them, and takes "
                  "Surasura's tags, flags and suspensions off", "put back undo restore first touch"),
@@ -319,15 +323,13 @@ ROWS = {
                           "sentences examples fill 例文"),
     "junban_backfill_cards": ("Which cards", "The deck is chosen in Backfill’s window",
                               "All: every card except new ones whose word you know. New only: cards you haven't "
-                              "studied yet", "deck cards new all"),
+                              "studied yet", "deck cards new all choose the deck preview fill restore fields note "
+                                             "type lapis"),
     "junban_backfill_replace": ("Replace what’s already in the field", "Off: only empty fields are filled",
                                 "Overwrite what's in the field. Restore puts it back", "replace overwrite"),
     "junban_auto_backfill": ("Fill new cards by itself", "After each reorder",
                              "After a reorder, fill the new cards' empty fields — never a studied card, never a filled "
                              "field", "auto backfill automatic fill"),
-    "backfill_door": ("", "", "Preview · Fill · Restore", "preview fill restore"),
-    "backfill_fields": ("Fields, by note type", "Found by name; otherwise choose",
-                        "Which field each fill goes in, and each note type's language", "fields note type lapis"),
 
     # Level
     "level": ("Level", "", "Your level: your list holds the words at least as common as it",
@@ -415,20 +417,21 @@ ROWS = {
                       "Sort your library again from scratch, or start Surasura over as on a new PC. Either can be put "
                       "back",
                       "Sort your library again, or start over completely; both can be put back",
-                      "sort library again order tiers fresh reset start over clear read again put back backup "
-                      "restore"),
+                      "sort library again order tiers fresh reset start over completely everything new pc clear read "
+                      "again put back backup restore"),
     "split_books_by": ("Split books by", "Each book you add: its chapters, each cut into parts; or even parts across "
                                          "the book. Books already in keep their parts",
                        "How a book is cut into parts when you add it", "split books chapters even parts epub"),
     "split_length": ("Split books into parts of", "EPUBs and Anki decks, when you extract them",
-                     "The character limit for each part when a file is split", "split epub length"),
-    "enable_youtube_transcripts": ("YouTube transcripts", "Download a video’s captions straight into your library",
-                                   "Show the transcript downloader (YouTube and bilibili.tv)", "youtube transcripts"),
+                     "The character limit for each part when a file is split", "split epub length extract add from"),
+    # a9.1: *Add from* went — Extract… and YouTube… are in + Add; *Preview a video…* is on its switch's row
+    "enable_youtube_transcripts": ("YouTube transcripts", "Download a video’s captions straight into your library, "
+                                                          "from + Add",
+                                   "Show the transcript downloader (YouTube and bilibili.tv) in + Add",
+                                   "youtube transcripts download add from bilibili"),
     "enable_youtube_preview": ("YouTube preview", "Score a video against your words before you add it",
                                "Show 'Preview against library', and keep the library's word counts ready for it",
-                               "youtube preview score"),
-    "content_doors": ("Add from", "", "Extract a book or a deck, or download from YouTube",
-                      "extract youtube download preview"),
+                               "youtube preview score a video"),
 
     # New arrivals
     "placing_rules": ("Where new arrivals go", "A show's next episode joins it; the rest wait here, in New arrivals",
@@ -527,23 +530,20 @@ ROWS = {
                             "update automatic"),
     "telemetry_enabled": ("Anonymous usage counts", "No words, files or content — ever",
                           "Send anonymous usage counts", "telemetry anonymous usage"),
-    "logs": ("Processing log", "", "Opens the logs folder", "log logs processing"),
+    # a9.1: the one way to the logs (the bar's *Open the logs folder* went; Send report carries them), beside the
+    # data folder (the *Version* row's door until a9.1)
+    "logs": ("Folders", "Your library's data, and the logs Surasura keeps", "Opens the folder in your file manager",
+             "log logs processing log data folder files"),
     "data_credits": ("Data credits", "The dictionaries and word lists Surasura ships or is built from, each with its "
                      "licence", "Every data source, with its licence",
                      "data credits licence license jmdict jmnedict unidic cedict jpdb jiten"),
-    "discord": ("Join the Surasura Discord", "Questions, help, and a place to report a problem",
-                "Opens Surasura's Discord server in your browser", "discord community help chat support join server"),
-    "website": ("Surasura website", "Surasura's home page, surasura.dev", "Opens surasura.dev in your browser",
-                "website homepage home page site web download surasura.dev"),
-    "star_github": ("Star Surasura on GitHub", "Free and made by one person: a ⭐ helps other learners find it",
-                    "Opens Surasura's GitHub page in your browser", "star github stars support like repository source"),
-    "version": ("Version {version}", "", "Opens the data folder", "version data folder"),
+    # a9.1 (Sonic: "combine the rows for website, github, and discord into one"): a block, a button per page
+    "surasura": ("Connect with us", "", "Surasura's pages, each in your browser",
+                 "connect with us website homepage home page site web download surasura.dev discord community help "
+                 "chat support join server star github stars like repository source"),
+    "version": ("Version {version}", "", "Copies the version number, for a message or a report", "version copy about"),
     "set_up_again": ("Set up again", "Walks through the first steps again", "Opens the setup again",
                      "set up again wizard setup"),
-    "start_over": ("Start over completely", "Everything Surasura keeps into one dated backup, then setup from the "
-                                            "beginning, as on a new PC. It can be put back",
-                   "Start Surasura over as on a new PC; it can be put back",
-                   "start over reset everything new pc fresh backup put back restore"),
     "settings_file": ("Your settings", "Save them to a file, or bring them in from one: for the next version or a new "
                       "computer", "Export or import every setting",
                       "settings export import save backup move new computer pc file"),
@@ -563,12 +563,15 @@ ROWS = {
 # *Count as known in Anki* with two states or more picked: its line names them (`settings_catalog.help_line`)
 KNOWN_ALL_OF = "Counts only cards that are {states}, all at once"
 KNOWN_FLAGS = "A card has one flag at a time: {flags} counts no card"           # two flags picked (A7S-7)
+# a9.1: the sync's *Count suspended cards as known* on, beside picks that aren't Suspended alone (`help_line`)
+KNOWN_SYNC_TOO = "Studied cards you suspended count too, from before: change a pick here to stop it"
 
 # Backfill's fills by name (`junban_backfill_fills`' values): its two switches, and Your setup's line
 FILLS = {"patterns": "パターン", "sentence": "例文"}
 
 # --- the choices: row id -> {value: label}; choice cards also have a line under each -------------------------------- #
 OPTIONS = {
+    "surasura": {name: label for name, (label, _tip, _url) in LINKS.items()},      # its buttons (searched as choices)
     "known_road": {"anki": "Anki", "import": "Import a list"},
     "connect_mine_words": {value: label for value, label, _line in MINE_WORDS},
     "connect_open_anki": {False: "Wait for me", True: "Open Anki for me"},
@@ -641,9 +644,13 @@ CHECK_LIVE_TIP = ("Asks Anki now whether AnkiConnect answers\n"
                   "• While Anki isn’t in, Surasura also looks by itself every few seconds")
 INSTALLED_PLAIN = "installed"
 # App's rows
-LOGS_OPEN = "View"
+LOGS_OPEN = "Logs"
+LOGS_OPEN_TIP = "Opens the folder of Surasura's logs, to look at them or send them"
 DATA_FOLDER = "Data folder"
-DATA_FOLDER_TIP = "Opens the data folder"
+DATA_FOLDER_TIP = "Opens the folder your library's data is kept in"
+VERSION_COPY = "Copy"
+VERSION_COPIED = "Copied"
+VERSION_COPIED_LINE = "Surasura {version} is copied"
 CREDITS_VIEW = "View"
 CREDITS_TITLE = "Data credits"
 CREDITS_NAME = "Data credits: every source, with its licence"
@@ -841,13 +848,10 @@ SOURCES_SKIPPED_N = "{n:,} skipped"
 FOLDERS_NAME = "Library folders"
 FOLDERS_LINE = "Surasura reads these folders where they are and looks in them again for new episodes."
 
-# --- K7 + Fresh library 3.0.1: *Sort again or start over…* (settings_sources.py: FreshRow, StartOverRow, the sheet) - #
+# --- K7 + Fresh library 3.0.1: *Sort again or start over…* (settings_sources.py: FreshRow, the sheet) -------------- #
 FRESH_OPEN = "Sort again or start over…"
 FRESH_TIP = ("Sort your library again from scratch, or start Surasura over as on a new PC.\n"
              "Either can be put back.")
-START_OVER_OPEN = "Start over completely…"
-START_OVER_TIP = ("Put everything Surasura keeps into one dated backup and start setup again, as on a new PC.\n"
-                  "Anki and your own folders and files are never touched. It can be put back.")
 FRESH_RUNNING_TIP = "Sorting your library again…"
 FRESH_SETTING_ASIDE = "Setting your order aside…"
 FRESH_GENERATING = "A Generate is running: once it has finished, this can go on."

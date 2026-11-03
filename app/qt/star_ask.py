@@ -3,7 +3,7 @@ day): once, ever — the first time the window sees cards from the learner's own
 Surasura is free and made by one person, with **⭐ Star Surasura on GitHub** (the repository in the browser: a link
 opened, the app makes no call of its own) and **Not now**. Shown is never again, a click or not (settings.json's
 `hints_seen` holds `SEEN`, the window's one-time hints' list; once per install, never per library: a fresh library
-never asks again). Settings › App keeps a quiet *Star Surasura on GitHub* row, never prompted.
+never asks again). Settings › App keeps a quiet *⭐ Star on GitHub* button (its *Connect with us* block), never prompted.
 
 - **Landed** (`view_shown`): the reader counts an item that came back with more cards than when it last asked
   (`LibraryReader.cards_rose`, Current, Soon and Finished) — never an item's first count, so cards already there at the

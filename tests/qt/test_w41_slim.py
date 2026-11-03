@@ -41,4 +41,4 @@ def test_no_settings_section_shows_two_doors_with_the_same_words(qapp, language)
                          for d in page.rows[r.id].doors.values())
         assert not [w for w, n in labels.items() if n > 1], (section, labels)
     door = page.rows["junban_backfill_cards"].doors["backfill"]
-    assert door.text() == S.ROW_DOORS["junban_backfill_cards"]["backfill"][0] and "deck" in door.toolTip().lower()
+    assert door.text() == S.DOORS["backfill"][0] and "deck" in door.toolTip().lower()     # a9.1: its one door

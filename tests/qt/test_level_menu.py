@@ -1,6 +1,6 @@
 """The Level menu (W3.1b; the RUNBOOK `3.0/W3.1b-level-menu`): the header's level ▾ pop as the redesign's brief draws it
-— *Level* ? and *Automatic*'s toggle, Settings' level slider (one name), words · % · how often, Generate and a gear,
-*Open your journey*.
+— *Level* ? and *Automatic*'s toggle, Settings' level slider (one name), words · % · how often, Generate and a gear
+(a9.1: its *Open your journey* went — the header's *Journey ↗* is the one way in).
 
 What a wrong answer would cost:
   * a band picked in the pop that writes nothing (Sonic moves the slider and his list never changes), writes twice, or
@@ -84,13 +84,13 @@ def _rare_by_hand(world):
 
 
 # --- what the pop holds --------------------------------------------------------------------------------------------- #
-def test_the_pop_holds_level_automatic_the_slider_the_readout_generate_and_the_journey(world, reads):
+def test_the_pop_holds_level_automatic_the_slider_the_readout_and_generate(world, reads):
     _rare_by_hand(world)
     pop = world.d.pop
     _open(world)
     assert pop.heading.text() == strings.LEVEL_POP_HEADING and pop.auto_word.text() == strings.LEVEL_POP_AUTO_WORD
     assert pop.slider.value() == "rare" and not pop.auto_toggle.value()
-    assert pop.isAncestorOf(world.d.generate) and pop.isAncestorOf(world.d.journey) and pop.isAncestorOf(pop.gear)
+    assert pop.isAncestorOf(world.d.generate) and pop.isAncestorOf(pop.gear)
     assert not hasattr(pop, "band") and not hasattr(pop, "auto")         # the eyebrow and the sentence lines went
     for w in (pop.help, pop.auto_toggle, pop.slider, pop.gear):          # GUI rules: a tooltip on every control
         assert w.toolTip()

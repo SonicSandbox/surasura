@@ -171,6 +171,7 @@ QLabel#pageheading {{ color: {c['ink']}; {font('page-heading')} font-weight: 700
 QLabel#helpmark {{ color: {c['ink-faint']}; border: 1px solid {c['line-hi']}; border-radius: {px(8)};
   min-width: {px(16)}; max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; {font('key-hint')} }}
 QLabel#helpmark:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
+QLabel#helpmark:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; }}
 QWidget#statebar {{ background: {c['raised']}; border-radius: 7px; }}
 QLabel#statebartext {{ color: {c['ink-dim']}; padding: {px(5)} {px(10)}; {font('row-sub')} }}
 QListView#rows {{ background: {c['bg']}; border: 0; }}
@@ -213,8 +214,6 @@ QPushButton[size="sm"]:focus {{ padding: 0 {round(10 * f) - 1}px; }}
 QPushButton[presses="true"] {{ padding: 0 {room}px; }}
 QPushButton[presses="true"]:focus {{ padding: 0 {room - 1}px; }}
 QToolButton[presses="true"] {{ padding: {px(4)} {room}px; }}
-QWidget#levelpop QPushButton#popjourney[presses="end"] {{ padding: 0 {2 * room}px 0 0; }}
-QWidget#levelpop QPushButton#popjourney[presses="end"]:focus {{ padding: 0 {2 * room - 1}px 0 {px(4)}; }}
 QPushButton#settingsmore[presses="end"] {{ padding: 0 {2 * room}px 0 0; }}
 QPushButton#settingsmore[presses="end"]:focus {{ padding: 0 {2 * room - 2}px 0 2px; }}
 """
@@ -236,7 +235,7 @@ QLabel#needswhy[found="true"] {{ color: {c['ok']}; }}
 """
     # --- end W3.2 Q5
     # --- W3.1a: the frame (frame.py) — the current tab's line is the vein (painted); the level ▾'s pop (W3.1b): its words,
-    # Generate quiet (its stale and failed looks kept), *Open your journey* as a link
+    # Generate quiet (its stale and failed looks kept)
     rules += f"""
 QLabel#popheading {{ color: {c['ink']}; {font('settings-label')} }}
 QWidget#levelpop QToolButton#pophelp {{ background: transparent; color: {c['overlay-ink-faint']}; border: 0;
@@ -252,10 +251,6 @@ QWidget#levelpop QPushButton#generate[look="stale"] {{ border: 1px solid {c['gen
 QWidget#levelpop QPushButton#generate[look="failed"] {{ border: 1px solid {c['warn']}; color: {c['warn']}; }}
 QWidget#levelpop QPushButton#generate:disabled {{ color: {c['overlay-ink-faint']}; }}
 QWidget#levelpop QPushButton#generate:focus {{ border: 2px solid {c['accent']}; }}
-QWidget#levelpop QPushButton#popjourney {{ background: transparent; color: {c['accent']}; border: 0; padding: 0;
-  text-align: left; }}
-QWidget#levelpop QPushButton#popjourney:hover {{ color: {c['ink']}; }}
-QWidget#levelpop QPushButton#popjourney:focus {{ border: 2px solid {c['accent']}; padding: 0 {px(4)}; }}
 """
     # --- W3.4: the ported windows (windows.py, confirm.py, row 1's windows; looks to re-skin with W3.3's surfaces)
     rules += f"""

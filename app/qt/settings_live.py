@@ -19,9 +19,9 @@ functions at the top, Qt-free); the GUI thread only paints the answer, and repai
   quit's way and the same program starts again on this tab (the shell's `restart`), *Later* says *Restart to apply*
   (`LIVE_TEXT_SIZE` on: the shell's `set_text_size` or `set_look` — it saves — then `page.restyle()`). *Motion* saved
   by the page and set on the motion clock at once.
-  *Offer {version} again* beside *Update automatically* while `updates.skipped()` names a newer version. *Processing
-  log* and *Data folder* open their folders; **Data credits** opens a layer-3 card (Esc, the mouse's Back, a click
-  outside or *Done* close it; never modal: N6) with `credits.data_credits()` in read-only text, README's names it lacks
+  *Offer {version} again* beside *Update automatically* while `updates.skipped()` names a newer version. *Folders*'
+  *Data folder* and *Logs* open theirs; *Version*'s *Copy* puts the version on the clipboard (a9.1); **Data
+  credits** opens a layer-3 card (Esc, the mouse's Back, a click outside or *Done* close it; never modal: N6) with `credits.data_credits()` in read-only text, README's names it lacks
   (S11), and the licence line; the licence line also stands under the row (none → nothing).
 - **Export:** each row asks what `exports.NEEDS` names — the format in a small layer-2 pop under its button, 2.4's
   warning through `confirm.ask`, the file with `QFileDialog` — then runs on a worker; the bar says the outcome in
@@ -147,6 +147,11 @@ def read_credits():
             continue
     text = getattr(credits, "all_credits", credits.data_credits)()        # with the logos' credits once PL has them
     return text, missing, credits.licence_line()
+
+
+def _version():
+    from app import __version__
+    return __version__
 
 
 def logs_folder():
@@ -599,16 +604,19 @@ class Live(QObject):
             self._slot(row_id).layout().insertWidget(0, offer)
             self.parts[row_id] = {"offer": offer}
             self._paint_offer(self.facts.get("skipped", ""))
-        elif row_id == "logs":
-            door = qpress.room(sc.Door(S.LOGS_OPEN, tooltip=row.tip, name=row.label))
-            door.clicked.connect(lambda _c=False: self.open_logs())
+        elif row_id == "logs":                          # a9.1: *Data folder* · *Logs*, the one way to either
+            data = qpress.room(sc.Door(S.DATA_FOLDER, tooltip=S.DATA_FOLDER_TIP, name=S.DATA_FOLDER))
+            data.clicked.connect(lambda _c=False: self.open_data_folder())
+            logs = qpress.room(sc.Door(S.LOGS_OPEN, tooltip=S.LOGS_OPEN_TIP, name=S.LOGS_OPEN))
+            logs.clicked.connect(lambda _c=False: self.open_logs())
+            self._slot(row_id).layout().addWidget(data)
+            self._slot(row_id).layout().addWidget(logs)
+            self.parts[row_id] = {"data": data, "open": logs}
+        elif row_id == "version":                       # a9.1: the version, copied (the data folder went to *Folders*)
+            door = sc.Door(S.VERSION_COPY, tooltip=row.tip, name=f"{S.VERSION_COPY}: {_version()}")
+            door.clicked.connect(lambda _c=False: self.copy_version())
             self._slot(row_id).layout().addWidget(door)
-            self.parts[row_id] = {"open": door}
-        elif row_id == "version":
-            door = qpress.room(sc.Door(S.DATA_FOLDER, tooltip=S.DATA_FOLDER_TIP))
-            door.clicked.connect(lambda _c=False: self.open_data_folder())
-            self._slot(row_id).layout().addWidget(door)
-            self.parts[row_id] = {"open": door}
+            self.parts[row_id] = {"copy": door}
         elif row_id == "data_credits":
             door = qpress.room(sc.Door(S.CREDITS_VIEW, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.open_credits())
@@ -960,13 +968,32 @@ class Live(QObject):
         self.say(said, "practice_ai")
 
     def open_logs(self):
-        """*Processing log*: its folder found and opened on a worker (`press.open`), the door's arc turning by."""
+        """*Folders* › *Logs*: its folder found and opened on a worker (`press.open`), the door's arc turning by."""
         qpress.open(self.shell, logs_folder, control=self.parts.get("logs", {}).get("open"), key="settings:logs")
 
     def open_data_folder(self):
         language = self.page.language
-        qpress.open(self.shell, lambda: data_folder(language), control=self.parts.get("version", {}).get("open"),
+        qpress.open(self.shell, lambda: data_folder(language), control=self.parts.get("logs", {}).get("data"),
                     key="settings:data_folder")
+
+    def copy_version(self):
+        """*Version*'s *Copy* (a9.1): the version on the clipboard; the press shows *Copied* at once, back to its name
+        two seconds later (as *Practise with your AI*'s), and the bar says it. Writes nothing anywhere else."""
+        from PyQt6 import sip
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication
+        version = _version()
+        QApplication.clipboard().setText(version)
+        door = self.parts.get("version", {}).get("copy")
+        if door is not None:
+            door.setText(S.VERSION_COPIED)
+            self._copies["version"] = press = self._copies.get("version", 0) + 1
+
+            def back():
+                if not sip.isdeleted(door) and self._copies.get("version") == press:
+                    door.setText(S.VERSION_COPY)
+            QTimer.singleShot(2000, back)
+        self.say(S.VERSION_COPIED_LINE.format(version=version), "version")
 
     def _show_licence(self, line):
         self.facts["licence"] = line or ""

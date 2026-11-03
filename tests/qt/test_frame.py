@@ -197,7 +197,7 @@ def test_a_press_outside_the_pop_closes_it(world):
     assert not world.d.pop.isVisible()
 
 
-def test_the_pops_generate_and_journey_act_as_the_header_ones_did(world, monkeypatch):
+def test_the_pops_generate_and_the_headers_journey_act(world, monkeypatch):
     import os
     from app import path_utils, static_html_generator
     opened = []
@@ -212,8 +212,8 @@ def test_the_pops_generate_and_journey_act_as_the_header_ones_did(world, monkeyp
     with open(os.path.join(results, shell.JOURNEY_FILE), "w", encoding="utf-8") as f:
         f.write("<html></html>")
     world.start()
-    assert wait_until(lambda: not world.d.journey.isHidden())
-    world.d.journey.click()
+    assert wait_until(lambda: not world.d.journey_button.isHidden())     # a9.1: the header's, the one way in
+    world.d.journey_button.click()
     assert wait_until(lambda: opened)
 
 

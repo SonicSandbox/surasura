@@ -140,7 +140,6 @@ def test_a_command_line_failure_shows_in_the_bar_within_a_poll_and_never_as_a_di
                             "time": "2026-10-06T19:00:00"})
     assert wait_until(lambda: window.bar_failure.isVisibleTo(window), 5)
     assert window.bar_failure.full().startswith("⚠ Command line (status): Surasura's settings")
-    assert window.logs_button.isVisibleTo(window)
     assert not window.tab_buttons["needs"].isHidden()
     assert opened == [] and [w for w in QApplication.topLevelWidgets() if isinstance(w, QDialog)] == []
 
@@ -155,11 +154,12 @@ def test_the_ankiweb_mark_and_connects_line_show_only_when_they_exist(window):
 
 
 def test_open_the_logs_folder_goes_to_a_worker(window, monkeypatch):
+    # (a Needs-you card's *Open the logs folder* asks the window: a9.1 took the bar's own chip away)
     calls = []
     monkeypatch.setattr(shell.bridge, "run_in_worker", lambda fn, *a, **k: calls.append((fn, a)))
     monkeypatch.setattr(shell.sys, "platform", "win32")
     window.show_status(_snap(failure="Command line (x): it failed", logs="C:/logs"))
-    window.logs_button.click()
+    window.open_logs()
     assert len(calls) == 1                                     # one hand-over (round 8 row 45: `press.open`) …
     from app.qt import screens
     opened = []
@@ -363,9 +363,15 @@ def test_after_the_window_closes_none_of_its_app_wide_filters_act(qapp):
     other.close()
 
 
-def test_the_logs_button_needs_a_folder(window):
-    window.show_status(_snap(failure="Command line (x): it failed", logs=None))
-    assert window.bar_failure.isVisibleTo(window) and not window.logs_button.isVisibleTo(window)
+def test_a_failure_line_stands_alone_in_the_bar_the_logs_are_one_place_in_settings(window):
+    # a9.1 (Sonic: "Anything redundant we don't want"): the bar's *Open the logs folder* chip went — Settings › App ›
+    # *Folders* › *Logs* is the one way to them (Send report carries them too)
+    window.show_status(_snap(failure="Command line (x): it failed", logs="C:/logs"))
+    assert window.bar_failure.isVisibleTo(window) and window.bar_failure_cross.isVisibleTo(window)
+    footer = window.bar_failure.parentWidget()
+    from PyQt6.QtWidgets import QAbstractButton
+    texts = [b.text() for b in footer.findChildren(QAbstractButton) if b.isVisibleTo(window)]
+    assert "Open the logs folder" not in texts and not hasattr(window, "logs_button")
 
 
 def test_the_bars_lines_are_plain_text(window):

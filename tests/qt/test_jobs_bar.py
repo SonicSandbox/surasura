@@ -213,16 +213,19 @@ def test_header_generate_shows_each_state(world, changes, text, look, enabled, b
     assert g.button.toolTip()
 
 
-def test_header_holds_the_level_and_help_and_the_pop_holds_generate_and_the_journey(world):
-    """W3.1a (the RUNBOOK's *Level ▾*): the header holds the level ▾ and ?, no Generate of its own; Generate and *Open
-    your journey* moved into the ▾'s pop (W3.1b fills the rest of it). ? holds *Online guide* only until the tours."""
+def test_header_holds_the_level_help_and_the_journey_and_the_pop_holds_generate(world):
+    """W3.1a (the RUNBOOK's *Level ▾*): the header holds the level ▾ and ?, no Generate of its own; Generate moved into
+    the ▾'s pop (W3.1b fills the rest of it). a9.1 (Sonic: "Anything redundant we don't want"): the pop's *Open your
+    journey ↗* went — the header's *Journey ↗* is the one way in."""
     header = world.win.header
     in_header = header.findChildren(QAbstractButton)
-    assert world.d.level in in_header and world.d.help in in_header
-    assert world.d.generate.button not in in_header and world.d.journey not in in_header
+    assert world.d.level in in_header and world.d.help in in_header and world.d.journey_button in in_header
+    assert world.d.generate.button not in in_header and not hasattr(world.d, "journey")
     pop = world.d.pop
     assert world.d.generate.isAncestorOf(world.d.generate.button) and pop.isAncestorOf(world.d.generate)
-    assert pop.isAncestorOf(world.d.journey) and world.d.journey.text() == strings.LEVEL_JOURNEY
+    links = [b for b in pop.findChildren(QAbstractButton) if "journey" in b.text().lower()]
+    assert links == [] and not pop.isAncestorOf(world.d.journey_dot)
+    assert header.isAncestorOf(world.d.journey_dot)                  # its dot beside *Journey ↗* (review S5)
 
 
 def test_header_help_opens_the_online_guide_the_tk_dashboard_opens_too(world, monkeypatch):
@@ -233,10 +236,8 @@ def test_header_help_opens_the_online_guide_the_tk_dashboard_opens_too(world, mo
     opened = []
     monkeypatch.setattr(webbrowser, "open", lambda url, *a, **k: opened.append((url, threading.current_thread())))
     help_button = world.d.help
-    actions = help_button.menu().actions()
-    assert [a.text() for a in actions] == [strings.HELP_GUIDE]
-    assert help_button.toolTip()
-    actions[0].trigger()
+    assert help_button.menu() is None and help_button.toolTip()      # a9.1: one item, so a button — no menu
+    help_button.click()
     assert wait_until(lambda: opened)
     assert opened[0][0] == path_utils.GUIDE_URL and opened[0][1] is not threading.main_thread()
     from app import main as tk_dashboard
@@ -331,10 +332,10 @@ def test_header_the_journey_waits_for_a_journey_and_opens_on_a_worker(world, mon
     monkeypatch.setattr(static_html_generator, "open_report",
                         lambda app_mode=False, file=None: opened.append((app_mode, threading.current_thread())) or True)
     world.start()
-    journey = world.d.journey
+    journey = world.d.journey_button
     QTest.qWait(50)
     assert not journey.isEnabled() and journey.toolTip() == strings.JOURNEY_NONE_TIP
-    assert journey.isHidden()                            # W3.1a: in the ▾'s pop only while there is one to open
+    assert journey.isHidden()                            # W3.1a: in the header only while there is one to open
     report.write_text("<html></html>", encoding="utf-8")
     world.controller.push(state=G.RUNNING, step="Writing the journey")
     world.controller.push(state=G.CURRENT)               # a run ended: the journey is looked for again
@@ -829,13 +830,12 @@ def test_bar_replan_journey_dot_shows_while_the_sentences_are_owed_with_its_tool
     words; the store saying nothing is owed (False), or no store yet (None), shows none. *Your journey ↗* itself is
     untouched (it still opens the journey as it is: nothing waits for the sentences)."""
     win = world.win
-    dot, journey = world.d.journey_dot, world.d.journey
+    dot = world.d.journey_dot
     assert dot.isHidden()
     values = _provide(world, journey=True)
     _ask(world, "journey")
     assert wait_until(lambda: not dot.isHidden())
     assert dot.toolTip() == strings.JOURNEY_DOT_TIP and dot.accessibleName() == strings.JOURNEY_DOT_NAME
-    assert journey.text() == strings.LEVEL_JOURNEY
     for value in (False, True, None):
         values["journey"] = value
         _ask(world, "journey")
@@ -989,7 +989,7 @@ def _slot(world):
 
 
 def test_the_footers_one_slot_is_the_failure_then_the_update_chip_then_the_status_line(world):
-    """W31A-1: the update chip and the failure line (with *Open the logs folder*) take the status line's place while
+    """W31A-1: the update chip and the failure line take the status line's place while
     they apply — the failure first — and when they clear the status line is back as it was."""
     win, d = world.win, world.d
     # (a job no phase circle shows — the update's — keeps the status line, Q5)
@@ -1001,10 +1001,9 @@ def test_the_footers_one_slot_is_the_failure_then_the_update_chip_then_the_statu
         assert wait_until(lambda: _slot(world) == "update")
         world.controller.push(state=G.FAILED, message="Generate stopped (exit code 1).", log_path="gen.log")
         assert wait_until(lambda: _slot(world) == "failure")            # a failure wins over the chip
-        assert win.logs_button.isVisibleTo(win) and "exit code 1" in win.bar_failure.full()
+        assert "exit code 1" in win.bar_failure.full()
         world.controller.push(state=G.CURRENT)                          # the failure is over: the chip again
         assert wait_until(lambda: _slot(world) == "update")
-        assert not win.logs_button.isVisibleTo(win)
         world.updates.push(state=U.NONE)                                # nothing on offer: the status line, as it was
         assert wait_until(lambda: _slot(world) == "line")
         assert win.bar_line.full() == "Downloading the update"
@@ -1018,7 +1017,7 @@ def test_a_failure_with_nothing_else_takes_the_slot_and_gives_it_back(world):
     assert wait_until(lambda: _slot(world) == "failure")
     world.controller.push(state=G.CURRENT)
     assert wait_until(lambda: _slot(world) == "line")
-    assert not win.bar_failure.isVisibleTo(win) and not win.logs_button.isVisibleTo(win)
+    assert not win.bar_failure.isVisibleTo(win) and not win.bar_failure_cross.isVisibleTo(win)
 
 
 def test_while_the_close_waits_its_one_line_holds_the_slot_over_the_chip(world):
@@ -1040,7 +1039,7 @@ def test_the_slot_repaints_only_when_what_holds_it_changes(world):
     win, d = world.win, world.d
     _offer(world)
     assert wait_until(lambda: _slot(world) == "update")
-    parts = (win.bar_failure, win.logs_button, win.bar_line)
+    parts = (win.bar_failure, win.bar_failure_cross, win.bar_line)
     before = ({p: win.status_paints.get(p, 0) for p in parts}, d.paints.get(d.update_mark, 0))
     snap = world.status.snapshot()
     win.show_status(snap._replace(taken_at=snap.taken_at + 1))
@@ -1806,7 +1805,7 @@ def test_opening_needs_you_marks_a_generate_failure_seen_and_keeps_it_listed(wor
 
 def test_an_update_failures_logs_button_opens_the_folder_its_report_is_in(world, monkeypatch, tmp_path):
     """The update's report is written beside the install (`updater.report_path`), not in the logs folder: *Open the
-    logs folder* on its Needs you card, and the bar's while the failure is the bar's, open the report's folder."""
+    logs folder* on its Needs you card opens the report's folder (a9.1: the bar's own chip went)."""
     opened = []
     monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
     (tmp_path / "logs").mkdir()
@@ -1821,11 +1820,8 @@ def test_an_update_failures_logs_button_opens_the_folder_its_report_is_in(world,
     if os.name == "nt":                                         # (one press at a time: the first open ends first —
         assert wait_until(lambda: len(opened) == 1)             # opened on its worker, ended back on the window's thread)
     assert wait_until(lambda: not world.win.presses.any_live())
-    assert wait_until(lambda: world.win.logs_button.isVisibleTo(world.win))
-    world.win.logs_button.click()
     if os.name == "nt":
-        assert wait_until(lambda: len(opened) == 2)
-        assert opened == [str(tmp_path / "debug")] * 2
+        assert opened == [str(tmp_path / "debug")]
 
 
 def test_after_the_window_closed_a_duty_change_reaches_none_of_its_slots(world, monkeypatch):

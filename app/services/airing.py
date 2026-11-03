@@ -8,16 +8,21 @@ to decide, as 3.0 did. A show it can be asked about and hasn't answered for yet 
 kept answer) is "asking": it waits for the answer, never finishes by itself before it (alpha 9 try, #JNFJ8Q). AniList's "finished" never finishes a show sooner (`view_rows.still_arriving` gets `airing=True`
 or None, never False).
 
-**What is sent** (CLAUDE.md §1, *Covers*): AniList ids only (`Q_AIRING`, `BATCH` a query), through the covers fetcher's
+**What is sent** (CLAUDE.md §1, *Covers*): AniList ids (`Q_AIRING`, `BATCH` a query), through the covers fetcher's
 own `_post` — its throttle (one AniList budget, A3), its headers, its switch: nothing while `covers_download` is off
-(AA-1), asked again before every request. Never a title search. Only for the ids the library reader hands over: shows in
-Current with an id and at most one file left unwatched (`near_end`, A1), and only when their kept answer is due (`due`,
-A2). A refused, failed or timed-out ask keeps the old answer and is asked again `RETRY_S` later (A3).
+(AA-1), asked again before every request. Only for the ids the library reader hands over: shows in Current with an id
+and at most one file left unwatched (`near_end`, A1), and only when their kept answer is due (`due`, A2). A refused,
+failed or timed-out ask keeps the old answer and is asked again `RETRY_S` later (A3). **A show with no id** near its
+end (Sonic 2026-11-02, item 2: its cover from its own folder, say) is asked by its title once, through the covers' own
+search and gate (`find`: the cleaned name, no season, `covers_online.Fetcher._match`; `near_end_titles`, `title_of`) —
+an id found is asked as any other; none found (`NOT_FOUND`) leaves the files' dates to decide, and is asked again after
+`UNKNOWN_S`.
 
 **The cache** (A4): `<local data>/airing_<lang>.json` — `{"v": 1, "shows": {"<id>": {"status", "episodes", "next_at",
-"asked_at"}}}`, per install and per language, written whole (`.tmp`, then renamed); only the ids asked are touched; a
-file that can't be read is empty. Kept answers are used while the switch is off; *Remove downloaded covers* clears them
-(`Airing.clear`, A7). The reader reads it on its own thread, again only when the file moved (`Kept`).
+"asked_at"}}, "titles": {"<title>": {"id", "asked_at"}}}`, per install and per language, written whole (`.tmp`, then
+renamed); only the ids and titles asked are touched; a file that can't be read is empty. Kept answers are used while the
+switch is off; *Remove downloaded covers* clears them (`Airing.clear`, A7). The reader reads it on its own thread, again
+only when the file moved (`Kept`).
 """
 import json
 import math
@@ -30,6 +35,7 @@ from app.services import view_rows
 AIRING = ("RELEASING", "NOT_YET_RELEASED", "HIATUS")     # AniList's statuses that hold a show back
 ENDED = ("FINISHED", "CANCELLED")
 PENDING = "pending"                 # `of_rows`' entry for a show with an id and no kept answer while AniList can be asked
+NOT_FOUND = "not_found"             # `of_rows`' entry for a show with no id whose title AniList has no sure answer for
 BATCH = 50                          # ids a query (AniList's page)
 DAY_S = 24 * 3600                   # an airing show's answer is asked again after this …
 AIRED_S = 3600                      # … or this long after its next episode's air time, whichever comes first
@@ -43,17 +49,32 @@ Q_AIRING = ("query ($ids: [Int]) { Page(perPage: 50) { media(id_in: $ids) { id s
             "nextAiringEpisode { episode airingAt } } } }")
 
 
-def airing_id(work):
+def airing_id(work, titles=None):
     """A work's AniList id (A8): `anilist_id`, else an AniList cover's numeric `cover_ref` (a cover found by search, or
-    one the learner picked from AniList), else None. Never searched for."""
+    one the learner picked from AniList), else the id its title was found by (`titles`: the kept title answers), else
+    None."""
     if not work:
         return None
-    for value in (work.get("anilist_id"), work.get("cover_ref") if work.get("cover_source") == "anilist" else None):
+    kept = (titles or {}).get(work.get("title")) if titles and isinstance(work.get("title"), str) else None
+    for value in (work.get("anilist_id"), work.get("cover_ref") if work.get("cover_source") == "anilist" else None,
+                  kept.get("id") if isinstance(kept, dict) else None):
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             return value
         if isinstance(value, str) and value.isdigit() and value.isascii() and int(value) > 0:
             return int(value)
     return None
+
+
+def title_of(row, work):
+    """The title a show with no AniList id is asked by (Sonic 2026-11-02, item 2): its work's title, when the covers
+    would ask AniList by it (`covers_online.by_title`: a name it cleans to; not a book, a YouTube channel, a drama …
+    by the row's media type; never a row of YouTube or bilibili files, whatever it is called: `view_rows.source_of`)
+    — else None. A group, or a row of no title, never."""
+    if getattr(row, "group", False) or getattr(row, "source", None) == "youtube" or not work or \
+            not isinstance(work.get("title"), str):
+        return None
+    from app.services import covers_online          # (covers_online imports this module)
+    return work["title"] if covers_online.by_title(work["title"], getattr(row, "media", None)) else None
 
 
 def _number(value):
@@ -99,39 +120,80 @@ def due(entry, now):
     return now - asked > UNKNOWN_S
 
 
-def near_end(rows, works):
-    """The AniList ids of Current's titles near their end (A1): a row of one work with an id (`airing_id`) and at most
-    one of its files (`view_rows.to_finish`'s) left unwatched — in the rows' order, each once. A group, or a row of
-    no title, never."""
-    out = []
+def title_due(entry, now):
+    """Whether a title's kept answer (`{"id", "asked_at"}`, or None) is asked again at `now`: none kept, or no id found
+    and older than `UNKNOWN_S`. An id found is kept (until *Remove downloaded covers*)."""
+    if not isinstance(entry, dict):
+        return True
+    asked = _number(entry.get("asked_at"))
+    if asked is None or asked > now:
+        return True
+    return entry.get("id") is None and now - asked > UNKNOWN_S
+
+
+def _near(rows):
+    """Current's rows of one work with at most one of its files (`view_rows.to_finish`'s) left unwatched (A1)."""
     for r in rows:
         if getattr(r, "group", False) or r.work_id is None:
             continue
         eps = view_rows.to_finish(r.episodes)
-        if not eps or sum(1 for e in eps if not e.watched) > 1:
-            continue
-        aid = airing_id(works.get(r.work_id))
+        if eps and sum(1 for e in eps if not e.watched) <= 1:
+            yield r
+
+
+def near_end(rows, works, titles=None):
+    """The AniList ids of Current's titles near their end (A1): a row of one work with an id (`airing_id`, `titles`:
+    the kept title answers) and at most one of its files left unwatched — in the rows' order, each once. A group, or a
+    row of no title, never."""
+    out = []
+    for r in _near(rows):
+        aid = airing_id(works.get(r.work_id), titles)
         if aid is not None and aid not in out:
             out.append(aid)
     return out
 
 
-def of_rows(rows, works, shows, asking=False):
+def near_end_titles(rows, works, titles=None):
+    """The titles of Current's shows near their end with no id (`title_of`; `titles`: the kept title answers — a title
+    found is an id, `near_end`'s) — in the rows' order, each once."""
+    out = []
+    for r in _near(rows):
+        work = works.get(r.work_id)
+        if airing_id(work, titles) is None:
+            title = title_of(r, work)
+            if title is not None and title not in out:
+                out.append(title)
+    return out
+
+
+def of_rows(rows, works, shows, asking=False, titles=None):
     """{work_id: kept answer} for Current's `rows` (the view's `airing`): what `drag.when_done` reads. `asking`: AniList
     can be asked now (the asker's switch on) — a show with an id and no kept answer gets `{"status": PENDING}`, so a
-    show marked all watched before its answer came (or before it was near its end: a mark of many) waits for it."""
+    show marked all watched before its answer came (or before it was near its end: a mark of many) waits for it.
+    `titles`: the kept title answers, when shows with no id are asked by title (else None: never) — such a show gets
+    PENDING too while its title isn't answered (`title_of`), and `{"status": NOT_FOUND}` once AniList had no sure
+    answer: the files' dates decide."""
     out = {}
-    if not shows and not asking:
+    if not shows and not asking and not titles:
         return out
     for r in rows:
         if getattr(r, "group", False) or r.work_id is None:
             continue
-        aid = airing_id(works.get(r.work_id))
+        work = works.get(r.work_id)
+        aid = airing_id(work, titles)
         entry = (shows or {}).get(str(aid)) if aid is not None else None
         if isinstance(entry, dict):
             out[r.work_id] = entry
         elif aid is not None and asking:
             out[r.work_id] = {"status": PENDING}
+        elif aid is None and titles is not None:
+            title = title_of(r, work)
+            if title is None:
+                continue
+            if isinstance(titles.get(title), dict):
+                out[r.work_id] = {"status": NOT_FOUND}
+            elif asking:
+                out[r.work_id] = {"status": PENDING}
     return out
 
 
@@ -141,24 +203,34 @@ def cache_path(language):
     return os.path.join(path_utils.get_local_data_path(), f"airing_{language}.json")
 
 
-def read(path):
-    """The kept answers {"<id>": entry} at `path`; {} when there is none or it can't be read."""
+def read_all(path):
+    """The kept answers at `path`: ({"<id>": entry}, {"<title>": entry}); both {} when there is none or it can't be
+    read."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
-        return {}
-    shows = data.get("shows") if isinstance(data, dict) and data.get("v") == 1 else None
-    return {k: v for k, v in shows.items() if isinstance(v, dict)} if isinstance(shows, dict) else {}
+        return {}, {}
+    ok = isinstance(data, dict) and data.get("v") == 1
+    shows, titles = (data.get("shows"), data.get("titles")) if ok else (None, None)
+    return tuple({k: v for k, v in part.items() if isinstance(v, dict)} if isinstance(part, dict) else {}
+                 for part in (shows, titles))
 
 
-def _write(path, shows):
-    """`shows` to `path` whole (`.tmp`, then renamed). False when it couldn't be written."""
+def read(path):
+    """The kept answers {"<id>": entry} at `path`; {} when there is none or it can't be read."""
+    return read_all(path)[0]
+
+
+def _write(path, shows, titles=None):
+    """`shows` (and the title answers, when any) to `path` whole (`.tmp`, then renamed). False when it couldn't be
+    written."""
     tmp = path + ".tmp"
+    data = {"v": 1, "shows": shows, **({"titles": titles} if titles else {})}
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"v": 1, "shows": shows}, f, ensure_ascii=False, sort_keys=True)
+            json.dump(data, f, ensure_ascii=False, sort_keys=True)
             f.flush()
             os.fsync(f.fileno())
         for turn in range(REPLACE_TRIES):
@@ -186,6 +258,7 @@ class Kept:
         self.path = path
         self._stamp = None
         self._shows = {}
+        self._titles = {}
 
     def shows(self):
         try:
@@ -197,8 +270,13 @@ class Kept:
             stamp = None                            # none yet (or no local folder: a test with no root)
         if stamp != self._stamp:
             self._stamp = stamp
-            self._shows = read(self.path) if stamp is not None else {}
+            self._shows, self._titles = read_all(self.path) if stamp is not None else ({}, {})
         return self._shows
+
+    def titles(self):
+        """The kept title answers (read with `shows`, the same way)."""
+        self.shows()
+        return self._titles
 
 
 # --- the asks ------------------------------------------------------------------------------------------------------- #
@@ -206,12 +284,15 @@ class Airing:
     """`want(ids)` (the reader's thread; returns at once) keeps the due ones; its own thread asks them, `BATCH` a query,
     through `post(variables, query)` — the covers fetcher's `_post` (its throttle, headers and switch; it raises when
     nothing was answered) — and only while `on()` (the covers' `on`). Each answer is written into the cache; then
-    `on_change()` (the reader: the next view reads it, A6)."""
+    `on_change()` (the reader: the next view reads it, A6). `want_titles(titles)` likewise for shows with no id, each
+    asked through `find(title)` (the covers' search and gate: an id or None; it raises when nothing was answered)
+    before its id is; no `find`: titles are never asked."""
 
-    def __init__(self, language, post, on, path=None, clock=time.time, retry_s=RETRY_S, background=True):
+    def __init__(self, language, post, on, path=None, clock=time.time, retry_s=RETRY_S, background=True, find=None):
         self.language = language
         self.post = post
         self.on = on
+        self.find = find
         self.path = path
         self.clock = clock
         self.retry_s = retry_s
@@ -224,6 +305,10 @@ class Airing:
         self._later = {}                    # id -> when a failed ask is asked again
         self._wanted = set()                # the reader's last near-end ids: a queued or retried id no longer in
         #                                     them (finished, moved out of Current, watched back) is never sent
+        self._titles = None                 # the kept title answers (read with `_shows`)
+        self._tqueue = []                   # the same three for titles (`want_titles`)
+        self._tlater = {}
+        self._twanted = set()
         self._gen = 0                       # moved by `clear`: an answer asked before it is never kept after it
         self._stop = False
         self._thread = None
@@ -236,9 +321,9 @@ class Airing:
     def _known(self):
         if self._shows is None:
             try:
-                self._shows = read(self._path())
+                self._shows, self._titles = read_all(self._path())
             except RuntimeError:
-                self._shows = {}
+                self._shows, self._titles = {}, {}
         return self._shows
 
     def want(self, ids):
@@ -267,6 +352,32 @@ class Airing:
                 self._cond.notify_all()
         return n
 
+    def want_titles(self, titles):
+        """The titles of Current's shows near their end with no id (`near_end_titles`): each one whose kept answer is
+        due (`title_due`), not queued and not waiting for a retry, queued; they replace the last titles handed. -> how
+        many (0 with the switch off, or no `find`)."""
+        titles = list(titles or ())
+        with self._cond:
+            self._twanted = set(titles)
+        if not titles or self.find is None or not self.on():
+            return 0
+        now = self.clock()
+        n = 0
+        with self._cond:
+            if self._stop:
+                return 0
+            self._known()
+            for t in titles:
+                if t in self._tqueue or self._tlater.get(t, now) > now or not title_due(self._titles.get(t), now):
+                    continue
+                self._tlater.pop(t, None)
+                self._tqueue.append(t)
+                n += 1
+            if n:
+                self._start()
+                self._cond.notify_all()
+        return n
+
     def stop(self, timeout=5):
         with self._cond:
             self._stop = True
@@ -277,8 +388,9 @@ class Airing:
     def clear(self):
         """*Remove downloaded covers* (A7): the kept answers gone, the file removed; nothing asked is forgotten."""
         with self._cond:
-            self._shows = {}
+            self._shows, self._titles = {}, {}
             self._later.clear()
+            self._tlater.clear()
             self._gen += 1
         with self._disk:
             try:
@@ -295,8 +407,8 @@ class Airing:
     def _run(self):
         while True:
             with self._cond:
-                while not self._stop and not self._queue:
-                    soonest = min(self._later.values(), default=None)
+                while not self._stop and not self._queue and not self._tqueue:
+                    soonest = min((*self._later.values(), *self._tlater.values()), default=None)
                     if soonest is not None and soonest <= self.clock():
                         break
                     self._cond.wait(WAIT_S if soonest is not None else None)
@@ -308,22 +420,65 @@ class Airing:
                 print(f"Airing: a round failed: {e!r}")
 
     def run_once(self):
-        """One round: the queued ids and the retries that are due, `BATCH` a query. -> how many answers were kept."""
+        """One round: the queued titles, then the queued ids (and those the titles found), and the retries that are
+        due, `BATCH` ids a query. -> how many answers were kept."""
         with self._cond:
             now = self.clock()
-            for i, t in list(self._later.items()):
-                if i not in self._wanted:
-                    del self._later[i]              # no longer near its end in Current: never asked
-                elif t <= now and i not in self._queue:
-                    del self._later[i]
-                    self._queue.append(i)
+            for later, queue, wanted in ((self._later, self._queue, self._wanted),
+                                         (self._tlater, self._tqueue, self._twanted)):
+                for i, t in list(later.items()):
+                    if i not in wanted:
+                        del later[i]                # no longer near its end in Current: never asked
+                    elif t <= now and i not in queue:
+                        del later[i]
+                        queue.append(i)
             todo, self._queue = [i for i in self._queue if i in self._wanted], []
-        if not todo or not self.on():
+            titles, self._tqueue = [t for t in self._tqueue if t in self._twanted], []
+        if not (todo or titles) or not self.on():
             return 0                                # switched off: nothing asked, nothing kept (a later want asks)
+        found, moved = self._ask_titles(titles) if titles else ([], False)
+        todo += [i for i in found if i not in todo]
         kept = 0
         for at in range(0, len(todo), BATCH):
             kept += self._ask(todo[at:at + BATCH])
+        if moved:                                   # told after its id was asked: the view built then never asks it
+            self._changed()                         # again (a title none found: its PENDING goes, the dates decide)
         return kept
+
+    def _ask_titles(self, titles):
+        """Each title's id through `find`, kept in the cache (None: no sure answer). -> (the ids found whose own answer
+        is due, asked in this round; whether a title's answer moved — the caller tells the reader once they are)."""
+        if self.find is None:
+            return [], False
+        with self._cond:
+            gen = self._gen
+        answers = {}
+        for t in titles:
+            try:
+                found = self.find(t)
+            except Exception:
+                if self.on():                       # off or stopped: dropped (a later `want_titles` asks again)
+                    with self._cond:
+                        self._tlater[t] = self.clock() + self.retry_s
+                continue
+            answers[t] = found if isinstance(found, int) and not isinstance(found, bool) and found > 0 else None
+        if not answers:
+            return [], False
+        now = self.clock()
+        with self._cond:
+            if self._stop or gen != self._gen:
+                return [], False                    # stopped, or *Remove downloaded covers* came meanwhile
+            shows = self._known()
+            before = self._titles
+            titles_now = dict(before)
+            for t, found in answers.items():
+                titles_now[t] = {"id": found, "asked_at": now}
+            self._titles = titles_now
+            moved = any(_answer(before.get(t)) != _answer(titles_now[t]) for t in answers)
+        with self._disk:                            # (as `_ask`'s)
+            if gen == self._gen:
+                _write(self._path(), shows, titles_now)
+        return [i for i in answers.values() if i is not None and due(shows.get(str(i)), now)], moved
 
     def _ask(self, chunk):
         with self._cond:
@@ -354,10 +509,11 @@ class Airing:
                                  "next_at": _number(nxt.get("airingAt")) if isinstance(nxt, dict) else None,
                                  "asked_at": now}
             self._shows = shows
+            titles = self._titles
             moved = any(_answer(before.get(str(i))) != _answer(shows[str(i)]) for i in chunk)
         with self._disk:                            # never under `_cond`: the window's `stop` never waits on a disk
             if gen == self._gen:                    # (*Remove downloaded covers* meanwhile: its removal stands)
-                _write(self._path(), shows)
+                _write(self._path(), shows, titles)
         if moved:
             self._changed()                         # S19: an answer the same as before (only its time) builds nothing
         return len(chunk)

@@ -1442,9 +1442,11 @@ class RowDelegate(QStyledItemDelegate):
             out.append(("stone", QRect(round(room.left() + x - 13), round(mid - 15), 26, 30), tip, ep))
         return out
 
-    def parts(self, entry, rect):
+    def parts(self, entry, rect, near=None):
         """Every hit-testable part of an entry: [(name, QRect, tooltip, payload)] — the view's tooltips and clicks. A
-        part listed first wins where two overlap (the hover group over the string's end; ↑ ↓ over the number)."""
+        part listed first wins where two overlap (the hover group over the string's end; ↑ ↓ over the number).
+        `near` (a QRect, a9 try #2): an opened row's lines and seams only where they meet it — the hit test under the
+        hand works out the few lines there, never a 300-part group's every line, tip and seam at each move."""
         kind, payload, lines = entry
         out = []
         f = fz()
@@ -1467,8 +1469,9 @@ class RowDelegate(QStyledItemDelegate):
             out += _audio_part(payload, g["title"], "hero-title")                   # a5-2
             out.append(("title", g["title"], payload.title, None))
             if is_open:
-                out += self._episode_parts(payload, g["eps"], hero=True)
-                out += self._seam_parts(payload, g["eps"], hero=True)       # --- W3.2 Q8
+                layout = self._episode_layout(payload, g["eps"], hero=True)
+                out += self._episode_parts(payload, g["eps"], hero=True, layout=layout, near=near)
+                out += self._seam_parts(payload, g["eps"], hero=True, layout=layout, near=near)     # --- W3.2 Q8
             out.append(("open", g["main"], None, None))
         elif kind == ROW:
             slab = self.slab_of(rect)
@@ -1490,8 +1493,9 @@ class RowDelegate(QStyledItemDelegate):
                         payload.title + ("\n" + payload.line if payload.line else ""), None))
             if is_open:
                 area = self._open_area(rect, slab)
-                out += self._episode_parts(payload, area)
-                out += self._seam_parts(payload, area)                       # --- W3.2 Q8
+                layout = self._episode_layout(payload, area)
+                out += self._episode_parts(payload, area, layout=layout, near=near)
+                out += self._seam_parts(payload, area, layout=layout, near=near)     # --- W3.2 Q8
             out.append(("open", slab, None, None))
         elif kind == FINISHED:
             h = round(theme.SIZES["row"] * f)
@@ -1659,10 +1663,12 @@ class RowDelegate(QStyledItemDelegate):
             name, tip, ask = "status", view_rows.STRINGS["tip_stopping"], None
         return name, rect, tip, ask
 
-    def _episode_parts(self, row, area, hero=False):
+    def _episode_parts(self, row, area, hero=False, layout=None, near=None):
         out = []
         hot = self.view.hot_eps(row.key)
-        for r, ep in self._episode_rows(row, area, hero):
+        for r, ep, _k in self._episode_layout(row, area, hero) if layout is None else layout:
+            if near is not None and not r.intersects(near):
+                continue
             if isinstance(ep, view_rows.Fold):       # --- a8: its whole line folds its run or shows it — but the ✂
                 tip = "fold_tip_open" if self.view.fold_open(ep) else "fold_tip"     # seam's band either side of it
                 half = max(4, round(5 * fz()))                                      # (`_seam_parts`) stays the seam's
@@ -1685,26 +1691,30 @@ class RowDelegate(QStyledItemDelegate):
         return out
 
     # --- W3.2 Q8: the ✂ seam between two episodes of an opened row (A3 `split`), and drop-to-join's outline (G3) --- #
-    def _seam_parts(self, row, area, hero=False):
+    def _seam_parts(self, row, area, hero=False, layout=None, near=None):
         """An opened row's seams: one between each two of its episodes (a part of its own: a title's piece with 2+
         files, never hato's mix), clear of the stone and the buttons; its payload the episode that would start the new
-        part."""
+        part. `layout` / `near`: as `_episode_parts` (a seam is only worked out where its band meets `near`)."""
         if row.piece_id is None or row.source == "hato" or len(row.episodes) < 2:
             return []
-        eps = self._episode_layout(row, area, hero)
+        eps = self._episode_layout(row, area, hero) if layout is None else layout
         out = []
         half = max(4, round(5 * fz()))
         starts = show_starts(row)
         for j in range(1, len(eps)):
             r, _item, k = eps[j]
-            if k == eps[j - 1][2] or view_rows.split_piece(row, k) is None:    # a8: a fold shown whole and its first
-                continue                             # part are one place; B2-2: the Soon line parts the show there
-            ep = row.episodes[k]                     # a8: above a fold's line, its first part starts the new part
-            cols = self._episode_cols(r)
-            left = r.left() + EP_LABEL_IN
+            if k == eps[j - 1][2]:                   # a8: a fold shown whole and its first part are one place
+                continue
             y = eps[j - 1][0].bottom() + 1           # LM11b: under the run before, above a show line where one stands —
             if k in starts:                          # there wholly above it, so its ✂ chip never covers the show's name
                 y -= half                            # and its hover takes none of the show line (AD-5)
+            if near is not None and (y + half <= near.top() or y - half > near.bottom()):
+                continue                             # (a9 try #2: its band, y ± half, misses `near`)
+            if view_rows.split_piece(row, k) is None:      # B2-2: the Soon line parts the show there
+                continue
+            ep = row.episodes[k]                     # a8: above a fold's line, its first part starts the new part
+            cols = self._episode_cols(r)
+            left = r.left() + EP_LABEL_IN
             out.append(("seam", QRect(left, y - half, max(1, cols["more"].left() - 8 - left), 2 * half),
                         strings.SEAM_TIP.format(rest=_rest_of(row, k)), ep))
         return out
@@ -2542,15 +2552,18 @@ class RowDelegate(QStyledItemDelegate):
     def _paint_play_button(self, p, r):
         icon(p, "play", QRectF(r.center().x() - 7, r.center().y() - 7, 14, 14), c("ink-dim"))
 
-    def _episode_pictures(self, row, area, hero, dpr):
+    def _episode_pictures(self, row, area, hero, dpr, layout=None, clip=None):
         """Each episode line of an open row with how its picture is drawn: (rect, episode, draw, ident, extra). Its
         stone is the file's own on the string (`stone_plan`: state, variant, the next one big and ringed, dimmed when
-        it won't mine itself)."""
+        it won't mine itself). `layout`: `_episode_layout`'s, when the caller has it; `clip` (a9 try #2): only the lines
+        it meets — a repaint of a few lines of a 300-part group works out those lines, never every part's."""
         audio = row.media_word == "audio"
         sheet = stones.get(dpr, style.current()[1])
         plan = self._info(row)[0]
         out = []
-        for r, ep, i in self._episode_layout(row, area, hero):
+        for r, ep, i in self._episode_layout(row, area, hero) if layout is None else layout:
+            if clip is not None and not clip.intersects(QRectF(r)):
+                continue
             w, h = r.width(), r.height()
             if isinstance(ep, view_rows.Fold):       # --- a8: its line wears its run's last stone (cut)
                 item = stone_plan._stone(row.episodes[ep.end], ep.end, row.key, False)
@@ -2569,10 +2582,9 @@ class RowDelegate(QStyledItemDelegate):
         return out
 
     def _paint_episodes(self, p, row, area, dpr, hero=False, lines=()):
-        pictures = self._episode_pictures(row, area, hero, dpr)
-        if not pictures:
-            return
         layout = self._episode_layout(row, area, hero)
+        if not layout:
+            return
         rows_ = [(r, ep) for r, ep, _k in layout]
         stone_x = rows_[0][0].left() + 22             # the episodes' stones on a hairline, the string stood upright —
         at = {}                                       # LM11b: in a group, one per show, never through its show line
@@ -2582,18 +2594,22 @@ class RowDelegate(QStyledItemDelegate):
         for a, b in zip(cuts, cuts[1:] + [len(rows_)]):
             p.fillRect(QRectF(stone_x - 0.5, rows_[a][0].top() + 8, 1, rows_[b - 1][0].bottom() - rows_[a][0].top() -
                               16), c("string"))
-        clip = QRectF(self.view.viewport().rect()) if p.device() is self.view.viewport() else None
+        # on screen: the paint event's rect only (a9 try #2: a toast's frame or a press's ring repaints a strip, never
+        # every line on screen) — a pixel wider (at 150 % a strip's edge rounds into the next line's first pixel row),
+        # in the painter's own place (a row a drag moved aside is painted shifted)
+        clip = None
+        if p.device() is self.view.viewport():
+            clip = QRectF(self.view.painting or self.view.viewport().rect()).adjusted(-1, -1, 1, 1)
+            clip = p.transform().inverted()[0].mapRect(clip)
         split = next((ln.split for ln in (lines or ()) if ln.kind == "top" and ln.split), None)
         split_at = None
         hot = self.view.hot_eps(row.key) if clip is not None else ()     # row 28: as a row's line, its hover look
         shows = self._show_lines(row, layout)         # LM11b: a group's show lines
         above = {r.bottom() + 1: r.top() for r, _show in shows}
-        for i, (r, ep, draw, ident, extra) in enumerate(pictures):
-            if split is not None and i == at.get(split):    # the top-20 line runs through this row (A-12): drawn here
-                top = above.get(r.top(), r.top())      # too, above its show's line where one stands (LM11b)
-                split_at = QRect(r.left() - 8, top - 2, r.width() + 8, 4)
-            if clip is not None and not clip.intersects(QRectF(r)):
-                continue
+        if split is not None and split in at:         # the top-20 line runs through this row (A-12): drawn here too,
+            r = layout[at[split]][0]                  # above its show's line where one stands (LM11b)
+            split_at = QRect(r.left() - 8, above.get(r.top(), r.top()) - 2, r.width() + 8, 4)
+        for r, ep, draw, ident, extra in self._episode_pictures(row, area, hero, dpr, layout, clip):
             if isinstance(ep, view_rows.Fold):         # --- a8: a fold's line, its picture alone (a line's hover look)
                 if clip is not None:
                     on = ep.id in hot
@@ -3153,6 +3169,8 @@ class RowsView(QListView):
         self.drag = None                             # the drag controller (Current's list only)
         self._press = None                           # (row, part name, payload, pos, key): a press waiting for release
         self.parting = None                          # the running drag's parting (`drag.Parting`): offsets, the slot
+        self.painting = None                         # --- a9 try #2: the paint event's rect while it paints (the open
+        #                                              row draws its lines there only), else None
         self.landing = None                          # the key a drop's ghost is gliding onto: its slot shows meanwhile
         self.saving = frozenset()                    # keys whose moves wait for a busy store (*saving…*)
         self.pressed_ids = frozenset()               # round 8 row 45: file ids asked for (*Mine now*), not yet moved
@@ -3200,7 +3218,11 @@ class RowsView(QListView):
         p = QPainter(self.viewport())
         p.fillRect(event.rect(), c("bg"))
         p.end()
-        super().paintEvent(event)
+        self.painting = event.rect()
+        try:
+            super().paintEvent(event)
+        finally:
+            self.painting = None
         if self.parting is not None:                 # a drag: the rows it moved into view, and the slot it opens
             self.parting.paint_over(self, event)
         if self.seam is not None or self.join_key is not None:      # --- W3.2 Q8
@@ -3217,7 +3239,16 @@ class RowsView(QListView):
         rect = self.visualRect(model.index(i, 0))
         if not isinstance(what, tuple):
             return self.delegate.slot_rect(model.entries[i][0], rect, model.entries[i][2])
-        return next((pt[1] for pt in self.delegate.parts(model.entries[i], rect)
+        entry, near = model.entries[i], None
+        if entry[0] not in (HERO, ROW) or model.open_key != key:           # (a seam is an opened row's only)
+            return None
+        for r, _item, k in self.delegate.episode_layout(entry, rect):     # a9 try #2: its line's seam alone, never
+            if entry[1].episodes[k].id == what[1]:                          # every line's (a paint while it shows)
+                near = QRect(r.left(), r.top() - 2 * r.height(), r.width(), 2 * r.height() + r.height() // 2)
+                break
+        if near is None:
+            return None
+        return next((pt[1] for pt in self.delegate.parts(entry, rect, near=near)
                      if pt[0] == "seam" and pt[3].id == what[1]), None)
 
     def _paint_q8(self, event):
@@ -4206,7 +4237,7 @@ class RowsView(QListView):
             for part in self.delegate._line_parts(entries[idx.row() - 1][2], self.visualRect(above)):
                 if part[1].contains(pos):
                     return above, part
-        for part in self.delegate.parts(entries[idx.row()], self.visualRect(idx)):
+        for part in self.delegate.parts(entries[idx.row()], self.visualRect(idx), near=QRect(pos, QSize(1, 1))):
             if part[1].contains(pos):
                 return idx, part
         return idx, None

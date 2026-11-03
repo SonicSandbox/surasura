@@ -952,7 +952,7 @@ def _aside(settings, language):
 class _Drag:
     """One drag in progress."""
     __slots__ = ("src", "key", "row", "ids", "title", "source", "grab", "target", "parting", "at", "external",
-                 "holding", "many", "keys", "every")
+                 "holding", "many", "keys", "every", "home")
 
     def __init__(self):
         self.src = self.key = self.row = self.title = self.source = None
@@ -966,6 +966,7 @@ class _Drag:
         self.at = QPoint()
         self.external = False
         self.holding = False                         # the writer and the reader held (released once, at its end)
+        self.home = None                             # (where the hand lifted, the slot it keeps there): a9 try #4
 
 
 class DragController(QObject):
@@ -1348,13 +1349,27 @@ class DragController(QObject):
         kind, row, lines = model.entries[src]
         rect = self.lst.visualRect(model.index(src, 0))
         slot = self.lst.delegate.slot_rect(kind, rect, lines)
+        grab = QPointF(press[3] - slot.topLeft())
+        home = None
+        if model.open_key == row.key:                # a9 try #4: an opened row lifts closed — its ghost and its slot
+            top = rect.top()                         # the closed row's, never a picture of every part (a 300-part
+            self.lst.toggle(model.index(src, 0))     # group's was 13,000 px tall: 2 s on the window's thread here)
+            self.lst.executeDelayedItemsLayout()
+            rect = self.lst.visualRect(model.index(src, 0))
+            slot = self.lst.delegate.slot_rect(kind, rect, lines)
+            if rect.top() != top:                    # near the list's end its scroll clamped: the row moved from
+                home = (QPoint(global_pos), src)     # under the hand — its slot stays its own till the hand travels
         picked = self.lst.picked_rows
         if row.key in picked and len(picked) > 1:        # --- A4: a picked row's drag carries every pick
-            return self._begin_picks(picked, global_pos, slot.size())
+            ok = self._begin_picks(picked, global_pos, slot.size())
+            if ok and self.running is not None:
+                self.running.home = home
+            return ok
         d = _Drag()
         d.src, d.key, d.row, d.ids, d.title = src, row.key, row, ids_of(row), row.title
         d.source = "current"
-        d.grab = QPointF(press[3] - slot.topLeft())
+        d.grab = grab
+        d.home = home
         height = rect.height() - self.lst.delegate._lines_h(lines)
         pix = self._row_picture(kind, row, lines, rect, slot)
         unlit = None
@@ -1449,7 +1464,7 @@ class DragController(QObject):
             return
         kind, row, lines = model.entries[r]
         if kind not in (rows.HERO, rows.ROW) or model.open_key == row.key:
-            return                                   # (an opened row's picture is the screen's, taken at the lift)
+            return                                   # (an opened row lifts closed: its picture is baked at the lift)
         rect = lst.visualRect(model.index(r, 0))
         slot = lst.delegate.slot_rect(kind, rect, lines)
         dpr = lst.viewport().devicePixelRatioF() or 1.0
@@ -1593,8 +1608,13 @@ class DragController(QObject):
         tab = self.win.tab_buttons.get("finished")
         if tab is not None and tab.isVisible() and tab.rect().contains(tab.mapFromGlobal(global_pos)):
             return "tab", "finished"
-        if self.joins is not None and self.running is not None:     # --- W3.2 Q8: over another part of the same title
-            key = self.joins.target(self.running, global_pos)
+        d = self.running
+        if d is not None and d.home is not None:     # a9 try #4: the opened row closed under the hand: till the hand
+            if (global_pos - d.home[0]).manhattanLength() < theme.MOTION["drag-start-px"]:     # travels, its own slot
+                return "list", d.home[1]             # (a release right there moves nothing, a rest there joins
+            d.home = None                            # nothing: no hold starts on the row the close put under it)
+        if self.joins is not None and d is not None:     # --- W3.2 Q8: over another part of the same title
+            key = self.joins.target(d, global_pos)
             if key is not None:
                 return "join", key
         return "list", self.slot_at(self.lst.viewport().mapFromGlobal(global_pos).y())

@@ -237,10 +237,11 @@ def test_the_helpers_run_retitles_a_store_alpha6_left(language):
 ])
 def test_the_cover_search_asks_for_the_show_and_its_season_never_the_folder_alone(show, folder, aniList):
     """No cover: the AniList search kept a title's last path part, so it asked for `S02` (and every season folder sent
-    a search for nothing). Named `<show> Season N`, the whole name is asked and the gate compares its season with
-    AniList's (`2nd Season`, `第2期`; season 1 is a title with none said)."""
+    a search for nothing). Named `<show> Season N`, the show is asked (its season off: AniList finds nothing for
+    `… Season 1`, alpha 9 try) and the gate compares the name's season with AniList's (`2nd Season`, `第2期`; season 1
+    is a title with none said)."""
     title = ls.folder_title(f"{show}/{folder}")
     asked, _year = covers_online.clean_title(title)
-    assert asked == title
+    assert asked == title and covers_online.search_text(asked) == show
     media = [{"id": 1, "title": {"romaji": aniList}}, {"id": 2, "title": {"romaji": f"{show} 3rd Season"}}]
     assert covers_online.gate(asked, media) == media[0]

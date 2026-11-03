@@ -1,0 +1,3885 @@
+{
+ "recorded": "2026-11-02, https://graphql.anilist.co: the covers' search (covers_online.Q_SEARCH) for each text, its answer as it came",
+ "query": "query ($search: String) { Page(perPage: 10) { media(search: $search, type: ANIME) { id format episodes seasonYear startDate { year } title { romaji english native } synonyms relations { edges { relationType node { id format } } } coverImage { extraLarge large } } } }",
+ "answers": {
+  "Mushoku Tensei Season 1": {
+   "data": {
+    "Page": {
+     "media": []
+    }
+   }
+  },
+  "Mushoku Tensei Season 2": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 146065,
+       "format": "TV",
+       "episodes": 13,
+       "seasonYear": 2023,
+       "startDate": {
+        "year": 2023
+       },
+       "title": {
+        "romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu",
+        "english": "Mushoku Tensei: Jobless Reincarnation Season 2",
+        "native": "無職転生Ⅱ ～異世界行ったら本気だす～"
+       },
+       "synonyms": [
+        "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 2",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu 2nd Season",
+        "Mushoku Tensei II: Jobless Reincarnation",
+        "Mushoku Tensei II: Reencarnación desde cero",
+        "无职转生～到了异世界就拿出真本事～第2季"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 127720,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 142989,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 166873,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx146065-IjirxRK26O03.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx146065-IjirxRK26O03.png"
+       }
+      },
+      {
+       "id": 166873,
+       "format": "TV",
+       "episodes": 12,
+       "seasonYear": 2024,
+       "startDate": {
+        "year": 2024
+       },
+       "title": {
+        "romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2",
+        "english": "Mushoku Tensei: Jobless Reincarnation Season 2 Part 2",
+        "native": "無職転生Ⅱ ～異世界行ったら本気だす～ 第2クール"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Season 2 Cour 2",
+        "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 2 ครึ่งหลัง",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu 2nd Season Part 2",
+        "Mushoku Tensei II: Jobless Reincarnation Part 2",
+        "Mushoku Tensei II: Reencarnación desde cero",
+        "无职转生～到了异世界就拿出真本事～第2季"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 146065,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 178789,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx166873-xO0BRPkmwFll.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx166873-xO0BRPkmwFll.png"
+       }
+      },
+      {
+       "id": 127720,
+       "format": "TV",
+       "episodes": 12,
+       "seasonYear": 2021,
+       "startDate": {
+        "year": 2021
+       },
+       "title": {
+        "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2",
+        "english": "Mushoku Tensei: Jobless Reincarnation Cour 2",
+        "native": "無職転生 ～異世界行ったら本気だす～ 第2クール"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Part 2",
+        "เกิดชาตินี้พี่ต้องเทพ พาร์ท 2"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 108465,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 141534,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 146065,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx127720-ADJgIrUVMdU9.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx127720-ADJgIrUVMdU9.jpg"
+       }
+      },
+      {
+       "id": 141534,
+       "format": "SPECIAL",
+       "episodes": 1,
+       "seasonYear": 2022,
+       "startDate": {
+        "year": 2022
+       },
+       "title": {
+        "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2 - Eris no Goblin Toubatsu",
+        "english": "Mushoku Tensei: Jobless Reincarnation Cour 2 - Eris the Goblin Slayer",
+        "native": "無職転生 ～異世界行ったら本気だす～ 第2クール エリスのゴブリン討伐"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Cour 2 Special",
+        "Mushoku Tensei: Jobless Reincarnation Part 2 Special",
+        "เกิดชาตินี้พี่ต้องเทพ OVA",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2 Special"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 127720,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx141534-Tmnlz4mvYhaU.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx141534-Tmnlz4mvYhaU.jpg"
+       }
+      },
+      {
+       "id": 217434,
+       "format": "TV",
+       "episodes": null,
+       "seasonYear": null,
+       "startDate": {
+        "year": 2027
+       },
+       "title": {
+        "romaji": "Mushoku Tensei III: Isekai Ittara Honki Dasu Part 2",
+        "english": null,
+        "native": "無職転生Ⅲ ～異世界行ったら本気だす～ 第2クール"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Season 3 Part 2"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 178789,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx217434-xqZNBp5U3hgY.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx217434-xqZNBp5U3hgY.jpg"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "Mushoku Tensei": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 108465,
+       "format": "TV",
+       "episodes": 11,
+       "seasonYear": 2021,
+       "startDate": {
+        "year": 2021
+       },
+       "title": {
+        "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu",
+        "english": "Mushoku Tensei: Jobless Reincarnation",
+        "native": "無職転生 ～異世界行ったら本気だす～"
+       },
+       "synonyms": [
+        "Jobless Reincarnation: I Will Seriously Try If I Go To Another World",
+        "无职转生 ~到了异世界就拿出真本事~",
+        "เกิดชาตินี้พี่ต้องเทพ",
+        "Thất nghiệp chuyển sinh"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 127720,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx108465-1ANspF1EWyFx.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx108465-1ANspF1EWyFx.jpg"
+       }
+      },
+      {
+       "id": 146065,
+       "format": "TV",
+       "episodes": 13,
+       "seasonYear": 2023,
+       "startDate": {
+        "year": 2023
+       },
+       "title": {
+        "romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu",
+        "english": "Mushoku Tensei: Jobless Reincarnation Season 2",
+        "native": "無職転生Ⅱ ～異世界行ったら本気だす～"
+       },
+       "synonyms": [
+        "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 2",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu 2nd Season",
+        "Mushoku Tensei II: Jobless Reincarnation",
+        "Mushoku Tensei II: Reencarnación desde cero",
+        "无职转生～到了异世界就拿出真本事～第2季"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 127720,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 142989,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 166873,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx146065-IjirxRK26O03.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx146065-IjirxRK26O03.png"
+       }
+      },
+      {
+       "id": 178789,
+       "format": "TV",
+       "episodes": 14,
+       "seasonYear": 2026,
+       "startDate": {
+        "year": 2026
+       },
+       "title": {
+        "romaji": "Mushoku Tensei III: Isekai Ittara Honki Dasu",
+        "english": "Mushoku Tensei: Jobless Reincarnation Season 3",
+        "native": "無職転生Ⅲ ～異世界行ったら本気だす～"
+       },
+       "synonyms": [
+        "無職転生 ～異世界行ったら本気だす～ 第3期",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu 3rd Season",
+        "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 3"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 166873,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 146378,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 217434,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx178789-hNXjKFzUq7mk.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx178789-hNXjKFzUq7mk.jpg"
+       }
+      },
+      {
+       "id": 127720,
+       "format": "TV",
+       "episodes": 12,
+       "seasonYear": 2021,
+       "startDate": {
+        "year": 2021
+       },
+       "title": {
+        "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2",
+        "english": "Mushoku Tensei: Jobless Reincarnation Cour 2",
+        "native": "無職転生 ～異世界行ったら本気だす～ 第2クール"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Part 2",
+        "เกิดชาตินี้พี่ต้องเทพ พาร์ท 2"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 108465,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 141534,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 146065,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx127720-ADJgIrUVMdU9.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx127720-ADJgIrUVMdU9.jpg"
+       }
+      },
+      {
+       "id": 166873,
+       "format": "TV",
+       "episodes": 12,
+       "seasonYear": 2024,
+       "startDate": {
+        "year": 2024
+       },
+       "title": {
+        "romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2",
+        "english": "Mushoku Tensei: Jobless Reincarnation Season 2 Part 2",
+        "native": "無職転生Ⅱ ～異世界行ったら本気だす～ 第2クール"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Season 2 Cour 2",
+        "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 2 ครึ่งหลัง",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu 2nd Season Part 2",
+        "Mushoku Tensei II: Jobless Reincarnation Part 2",
+        "Mushoku Tensei II: Reencarnación desde cero",
+        "无职转生～到了异世界就拿出真本事～第2季"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 146065,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 178789,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx166873-xO0BRPkmwFll.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx166873-xO0BRPkmwFll.png"
+       }
+      },
+      {
+       "id": 141534,
+       "format": "SPECIAL",
+       "episodes": 1,
+       "seasonYear": 2022,
+       "startDate": {
+        "year": 2022
+       },
+       "title": {
+        "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2 - Eris no Goblin Toubatsu",
+        "english": "Mushoku Tensei: Jobless Reincarnation Cour 2 - Eris the Goblin Slayer",
+        "native": "無職転生 ～異世界行ったら本気だす～ 第2クール エリスのゴブリン討伐"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Cour 2 Special",
+        "Mushoku Tensei: Jobless Reincarnation Part 2 Special",
+        "เกิดชาตินี้พี่ต้องเทพ OVA",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2 Special"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 127720,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx141534-Tmnlz4mvYhaU.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx141534-Tmnlz4mvYhaU.jpg"
+       }
+      },
+      {
+       "id": 217434,
+       "format": "TV",
+       "episodes": null,
+       "seasonYear": null,
+       "startDate": {
+        "year": 2027
+       },
+       "title": {
+        "romaji": "Mushoku Tensei III: Isekai Ittara Honki Dasu Part 2",
+        "english": null,
+        "native": "無職転生Ⅲ ～異世界行ったら本気だす～ 第2クール"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Season 3 Part 2"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 178789,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx217434-xqZNBp5U3hgY.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx217434-xqZNBp5U3hgY.jpg"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "Sousou no Frieren": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 154587,
+       "format": "TV",
+       "episodes": 28,
+       "seasonYear": 2023,
+       "startDate": {
+        "year": 2023
+       },
+       "title": {
+        "romaji": "Sousou no Frieren",
+        "english": "Frieren: Beyond Journey’s End",
+        "native": "葬送のフリーレン"
+       },
+       "synonyms": [
+        "Frieren at the Funeral",
+        "장송의 프리렌",
+        "Frieren - Oltre la Fine del Viaggio",
+        "คำอธิษฐานในวันที่จากลา Frieren",
+        "Frieren e a Jornada para o Além",
+        "Frieren – Nach dem Ende der Reise",
+        "葬送的芙莉蓮",
+        "Frieren: Más allá del final del viaje",
+        "Frieren en el funeral",
+        "Sōsō no Furīren",
+        "Frieren. U kresu drogi",
+        "Frieren - Pháp sư tiễn táng",
+        "Фрирен, провожающая в последний путь",
+        "فريرن: ما وراء نهاية الرحلة",
+        "Frieren: Tras finalizar el viaje"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 118586,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 169811,
+           "format": "MUSIC"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 170068,
+           "format": "ONA"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 175691,
+           "format": "MUSIC"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 182255,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 189513,
+           "format": "ONA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx154587-qQTzQnEJJ3oB.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx154587-qQTzQnEJJ3oB.jpg"
+       }
+      },
+      {
+       "id": 209939,
+       "format": "TV",
+       "episodes": null,
+       "seasonYear": 2027,
+       "startDate": {
+        "year": 2027
+       },
+       "title": {
+        "romaji": "Sousou no Frieren 3rd Season",
+        "english": null,
+        "native": "葬送のフリーレン 第3期"
+       },
+       "synonyms": [
+        "Frieren: Beyond Journey’s End Season 3 Golden Land Arc",
+        "葬送のフリーレン 第3期【黄金郷編】",
+        "Sousou no Frieren 3rd Season [Ougonkyou-hen]"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 182255,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 118586,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx209939-g2Njkml1rheG.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx209939-g2Njkml1rheG.jpg"
+       }
+      },
+      {
+       "id": 182255,
+       "format": "TV",
+       "episodes": 10,
+       "seasonYear": 2026,
+       "startDate": {
+        "year": 2026
+       },
+       "title": {
+        "romaji": "Sousou no Frieren 2nd Season",
+        "english": "Frieren: Beyond Journey’s End Season 2",
+        "native": "葬送のフリーレン 第2期"
+       },
+       "synonyms": [
+        "Провожающая в последний путь Фрирен 2",
+        "장송의 프리렌 2기"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 118586,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 154587,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 206425,
+           "format": "ONA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 209939,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx182255-butzrqd4I0aC.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx182255-butzrqd4I0aC.jpg"
+       }
+      },
+      {
+       "id": 170068,
+       "format": "ONA",
+       "episodes": 12,
+       "seasonYear": 2023,
+       "startDate": {
+        "year": 2023
+       },
+       "title": {
+        "romaji": "Sousou no Frieren: ●● no Mahou",
+        "english": null,
+        "native": "葬送のフリーレン ～●●の魔法～"
+       },
+       "synonyms": [
+        "Sousou no Frieren Mini Anime",
+        "Frieren: Beyond Journey’s End Mini Anime",
+        "葬送のフリーレン ミニアニメ",
+        "Sousou no Frieren Marumaru no Mahou",
+        "葬送のフリーレン ミニアニメ",
+        "Frieren: Beyond Journey's End: Magic of ??"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 154587,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 189513,
+           "format": "ONA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx170068-ijY3tCP8KoWP.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx170068-ijY3tCP8KoWP.jpg"
+       }
+      },
+      {
+       "id": 189513,
+       "format": "ONA",
+       "episodes": 6,
+       "seasonYear": 2025,
+       "startDate": {
+        "year": 2025
+       },
+       "title": {
+        "romaji": "Sousou no Frieren: ●● no Mahou Part 2",
+        "english": null,
+        "native": "葬送のフリーレン ～●●の魔法～ 2クール"
+       },
+       "synonyms": [
+        "Sousou no Frieren Mini Anime",
+        "Frieren: Beyond Journey’s End Mini Anime",
+        "Sousou no Frieren: Marumaru no Mahou",
+        "葬送のフリーレン ミニアニメ",
+        "Frieren: Beyond Journey's End: Magic of ??"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 170068,
+           "format": "ONA"
+          }
+         },
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 154587,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 206425,
+           "format": "ONA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx189513-1R9Sryve0K53.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx189513-1R9Sryve0K53.png"
+       }
+      },
+      {
+       "id": 206425,
+       "format": "ONA",
+       "episodes": 6,
+       "seasonYear": 2026,
+       "startDate": {
+        "year": 2026
+       },
+       "title": {
+        "romaji": "Sousou no Frieren: ●● no Mahou Part 3",
+        "english": null,
+        "native": "葬送のフリーレン ～●●の魔法～ 3クール"
+       },
+       "synonyms": [
+        "Sousou no Frieren 2nd Season Mini Anime",
+        "Frieren: Beyond Journey’s End Season 2 Mini Anime",
+        "Sousou no Frieren: Marumaru no Mahou"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 189513,
+           "format": "ONA"
+          }
+         },
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 182255,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/b206425-WOwXsfDbHZwb.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/b206425-WOwXsfDbHZwb.jpg"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "Kimi no Na wa": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 97962,
+       "format": "SPECIAL",
+       "episodes": 3,
+       "seasonYear": 2016,
+       "startDate": {
+        "year": 2016
+       },
+       "title": {
+        "romaji": "Suntory Minami Alps no Tennen Mizu",
+        "english": null,
+        "native": "サントリー 南アルプスの天然水"
+       },
+       "synonyms": [
+        "Kimi no Na wa.",
+        "Your Name.",
+        "SUNTORY × Kimi no Na wa."
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 21519,
+           "format": "MOVIE"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/97962-3rBcawJt63sG.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/97962-3rBcawJt63sG.jpg"
+       }
+      },
+      {
+       "id": 21519,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2016,
+       "startDate": {
+        "year": 2016
+       },
+       "title": {
+        "romaji": "Kimi no Na wa.",
+        "english": "Your Name.",
+        "native": "君の名は。"
+       },
+       "synonyms": [
+        "Your Name. - Gestern, heute und für immer",
+        "Mi a Neved?",
+        "你的名字。",
+        "너의 이름은.",
+        "Tu nombre",
+        "Твоё имя",
+        "หลับตาฝันถึงชื่อเธอ",
+        "Il tuo nome",
+        "השם שלך.",
+        "Twoje imię",
+        "Tên cậu là gì",
+        "Tvoje meno.",
+        "Tvoje jméno."
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 97962,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 97337,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 97789,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 106286,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 16782,
+           "format": "MOVIE"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx21519-SUo3ZQuCbYhJ.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx21519-SUo3ZQuCbYhJ.png"
+       }
+      },
+      {
+       "id": 5643,
+       "format": "OVA",
+       "episodes": 2,
+       "seasonYear": 2008,
+       "startDate": {
+        "year": 2008
+       },
+       "title": {
+        "romaji": "Kimi no Na wo Yobeba",
+        "english": null,
+        "native": "キミの名を呼べば"
+       },
+       "synonyms": [
+        "If I Call Your Name"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 51293,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/5643.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/5643.jpg"
+       }
+      },
+      {
+       "id": 184951,
+       "format": "TV",
+       "episodes": 12,
+       "seasonYear": 2026,
+       "startDate": {
+        "year": 2026
+       },
+       "title": {
+        "romaji": "Seihantai na Kimi to Boku",
+        "english": "You and I Are Polar Opposites",
+        "native": "正反対な君と僕"
+       },
+       "synonyms": [
+        "ลุ้นรักฉบับคู่ต่างขั้ว",
+        "정반대의 너와 나",
+        "Cậu Và Tớ Là Hai Thái Cực Đối Lập"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 147997,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 186497,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 210031,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 215891,
+           "format": "MUSIC"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx184951-s8Lg2muPBhdX.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx184951-s8Lg2muPBhdX.jpg"
+       }
+      },
+      {
+       "id": 210031,
+       "format": "TV",
+       "episodes": 13,
+       "seasonYear": 2026,
+       "startDate": {
+        "year": 2026
+       },
+       "title": {
+        "romaji": "Seihantai na Kimi to Boku 2nd Season",
+        "english": "You and I Are Polar Opposites Season 2",
+        "native": "正反対な君と僕 第2期"
+       },
+       "synonyms": [
+        "ลุ้นรักฉบับคู่ต่างขั้ว ซีซัน 2"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 147997,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 184951,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx210031-TppgcHZh46LY.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx210031-TppgcHZh46LY.jpg"
+       }
+      },
+      {
+       "id": 4835,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2008,
+       "startDate": {
+        "year": 2008
+       },
+       "title": {
+        "romaji": "BLEACH: Fade to Black - Kimi no Na wo Yobu",
+        "english": "Bleach the Movie: Fade to Black",
+        "native": "BLEACH Fade to Black 君の名を呼ぶ"
+       },
+       "synonyms": [
+        "Bleach Movie 3",
+        "Bleach: Fade to Black - I Call Your Name",
+        "بليتش: التلاشي إلى الأسود"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 269,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 141702,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx4835-UqbwERH407BB.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx4835-UqbwERH407BB.jpg"
+       }
+      },
+      {
+       "id": 216171,
+       "format": "OVA",
+       "episodes": null,
+       "seasonYear": 2026,
+       "startDate": {
+        "year": 2026
+       },
+       "title": {
+        "romaji": "Majime na Kimi ni Hamaru Karada THE ANIMATION",
+        "english": null,
+        "native": "真面目なキミにハマるカラダ THE ANIMATION"
+       },
+       "synonyms": [
+        "Loosen Up"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 196050,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx216171-IhhbG5GAio2C.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx216171-IhhbG5GAio2C.png"
+       }
+      },
+      {
+       "id": 154459,
+       "format": "TV",
+       "episodes": 12,
+       "seasonYear": 2023,
+       "startDate": {
+        "year": 2023
+       },
+       "title": {
+        "romaji": "Keikenzumi na Kimi to, Keiken Zero na Ore ga, Otsukiai suru Hanashi.",
+        "english": "Our Dating Story: The Experienced You and The Inexperienced Me",
+        "native": "経験済みなキミと、経験ゼロなオレが、お付き合いする話。"
+       },
+       "synonyms": [
+        "หนุ่มซิงกับสาวฮอต เดตนี้จะรอดมั้ยนะ",
+        "Kimizero",
+        "キミゼロ",
+        "Kisah Asmara Kita: Kamu yang Berpengalaman dan Aku yang Polos",
+        "Искушённая ты и незрелый я",
+        "Kẻ Ngây Thơ, Người Từng Trải Và Câu Chuyện Tình Của Chúng Ta"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 132264,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 144718,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx154459-foR6BMJayEbi.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx154459-foR6BMJayEbi.jpg"
+       }
+      },
+      {
+       "id": 5550,
+       "format": "OVA",
+       "episodes": 1,
+       "seasonYear": 2002,
+       "startDate": {
+        "year": 2002
+       },
+       "title": {
+        "romaji": "Fujun Isei Kouyuu: Taisetsu na Kimi e",
+        "english": null,
+        "native": "不純異性交遊 ～大切な君へ～"
+       },
+       "synonyms": [
+        "Fujun Isei Kouyuu: Taisetsu na Kimi he"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 103210,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/5550.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/5550.jpg"
+       }
+      },
+      {
+       "id": 122201,
+       "format": "OVA",
+       "episodes": 6,
+       "seasonYear": 2020,
+       "startDate": {
+        "year": 2020
+       },
+       "title": {
+        "romaji": "Toshoshitsu no Kanojo: Seiso na Kimi ga Ochiru made THE ANIMATION",
+        "english": "The Girl in the Library ～Fall of Purity～ THE ANIMATION",
+        "native": "図書室ノ彼女~清楚ナ君ガ堕チルマデ~ THE ANIMATION"
+       },
+       "synonyms": [
+        "Girl in the Library: The Corruption of a Pure Girl"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 122200,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx122201-tBAIyCwWPD2N.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx122201-tBAIyCwWPD2N.jpg"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "Fruits Basket": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 120,
+       "format": "TV",
+       "episodes": 26,
+       "seasonYear": 2001,
+       "startDate": {
+        "year": 2001
+       },
+       "title": {
+        "romaji": "Fruits Basket",
+        "english": "Fruits Basket",
+        "native": "フルーツバスケット"
+       },
+       "synonyms": [
+        "Furuba",
+        "Fruba",
+        "フルバ"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30102,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 105334,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx120-Z5i1sw1xboQP.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx120-Z5i1sw1xboQP.jpg"
+       }
+      },
+      {
+       "id": 124194,
+       "format": "TV",
+       "episodes": 13,
+       "seasonYear": 2021,
+       "startDate": {
+        "year": 2021
+       },
+       "title": {
+        "romaji": "Fruits Basket: The Final",
+        "english": "Fruits Basket The Final Season",
+        "native": "フルーツバスケットThe Final"
+       },
+       "synonyms": [
+        "Furuba",
+        "Fruba",
+        "フルバ",
+        "Fruits Basket Season 3",
+        "水果篮子 最终季",
+        "เสน่ห์สาวข้าวปั้น ภาค 3",
+        "เสน่ห์สาวข้าวปั้น ภาคสุดท้าย",
+        "Корзинка фруктов: Финал"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30102,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 111762,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 136192,
+           "format": "MOVIE"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx124194-TJlqMMR7BGn9.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx124194-TJlqMMR7BGn9.jpg"
+       }
+      },
+      {
+       "id": 105334,
+       "format": "TV",
+       "episodes": 25,
+       "seasonYear": 2019,
+       "startDate": {
+        "year": 2019
+       },
+       "title": {
+        "romaji": "Fruits Basket: 1st Season",
+        "english": "Fruits Basket (2019)",
+        "native": "フルーツバスケット 1st Season"
+       },
+       "synonyms": [
+        "Fruits Basket (Zenpen)",
+        "Furuba",
+        "Fruba",
+        "フルバ",
+        "水果篮子（第一季）",
+        "水果篮子（2019）",
+        "เสน่ห์สาวข้าวปั้น",
+        "Корзинка фруктов"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30102,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 120,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 111762,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx105334-AZwEdMu4KFtV.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx105334-AZwEdMu4KFtV.jpg"
+       }
+      },
+      {
+       "id": 111762,
+       "format": "TV",
+       "episodes": 25,
+       "seasonYear": 2020,
+       "startDate": {
+        "year": 2020
+       },
+       "title": {
+        "romaji": "Fruits Basket: 2nd Season",
+        "english": "Fruits Basket Season 2",
+        "native": "フルーツバスケット 2nd Season"
+       },
+       "synonyms": [
+        "Furuba",
+        "Fruba",
+        "フルバ",
+        "水果篮子 第二季",
+        "เสน่ห์สาวข้าวปั้น ภาค 2",
+        "Fruits Basket (2019) 2",
+        "Корзинка фруктов 2"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 105334,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30102,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 124194,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx111762-C8TNf5uRlVNQ.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx111762-C8TNf5uRlVNQ.jpg"
+       }
+      },
+      {
+       "id": 136192,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2022,
+       "startDate": {
+        "year": 2022
+       },
+       "title": {
+        "romaji": "Fruits Basket: prelude",
+        "english": "Fruits Basket -prelude-",
+        "native": "フルーツバスケット -prelude-"
+       },
+       "synonyms": [
+        "The Story of Kyoko and Katsuya",
+        "今日子と勝也の物語",
+        "Kyouko to Katsuya no Monogatari",
+        "Fruits Basket Movie",
+        "Корзинка фруктов: Прелюдия"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30102,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 147825,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 124194,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx136192-hxeNRzBHizBZ.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx136192-hxeNRzBHizBZ.jpg"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "Hunter x Hunter": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 136,
+       "format": "TV",
+       "episodes": 62,
+       "seasonYear": 1999,
+       "startDate": {
+        "year": 1999
+       },
+       "title": {
+        "romaji": "HUNTER×HUNTER",
+        "english": "Hunter x Hunter",
+        "native": "HUNTER×HUNTER"
+       },
+       "synonyms": [
+        "ハンターxハンター",
+        "HxH",
+        "全职猎人",
+        "القناص"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 137,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30026,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 10189,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 11061,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx136-gj0bbCpDNrKG.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx136-gj0bbCpDNrKG.jpg"
+       }
+      },
+      {
+       "id": 11061,
+       "format": "TV",
+       "episodes": 148,
+       "seasonYear": 2011,
+       "startDate": {
+        "year": 2011
+       },
+       "title": {
+        "romaji": "HUNTER×HUNTER (2011)",
+        "english": "Hunter x Hunter (2011)",
+        "native": "HUNTER×HUNTER (2011)"
+       },
+       "synonyms": [
+        "ハンター×ハンター",
+        "HxH",
+        "全职猎人",
+        "האנטר האנטר",
+        "ฮันเตอร์ x ฮันเตอร์",
+        "القناص ",
+        "Мисливець X Мисливець"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 13271,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 136,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 137,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 138,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 139,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 19951,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30026,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 99530,
+           "format": "MUSIC"
+          }
+         },
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 9834,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx11061-y5gsT1hoHuHw.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx11061-y5gsT1hoHuHw.png"
+       }
+      },
+      {
+       "id": 138,
+       "format": "OVA",
+       "episodes": 8,
+       "seasonYear": 2003,
+       "startDate": {
+        "year": 2003
+       },
+       "title": {
+        "romaji": "HUNTER×HUNTER: Greed Island",
+        "english": null,
+        "native": "HUNTER×HUNTER: Greed Island"
+       },
+       "synonyms": [
+        "Hunter x Hunter OVA 2",
+        "HxH",
+        "ハンターｘハンター: Greed Island"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 137,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 139,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30026,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 11061,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx138-BY6R1y8zuf7s.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx138-BY6R1y8zuf7s.png"
+       }
+      },
+      {
+       "id": 139,
+       "format": "OVA",
+       "episodes": 14,
+       "seasonYear": 2004,
+       "startDate": {
+        "year": 2004
+       },
+       "title": {
+        "romaji": "HUNTER×HUNTER: Greed Island Final",
+        "english": null,
+        "native": "HUNTER×HUNTER　G・I　Final"
+       },
+       "synonyms": [
+        "Hunter x Hunter: G I Final",
+        "Hunter x Hunter OVA 3",
+        "ハンター×ハンター　G・I　Final",
+        "HxH"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 138,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30026,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 11061,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx139-qiFhjx4o1sKI.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx139-qiFhjx4o1sKI.png"
+       }
+      },
+      {
+       "id": 13271,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2013,
+       "startDate": {
+        "year": 2013
+       },
+       "title": {
+        "romaji": "HUNTER×HUNTER: Phantom Rouge",
+        "english": "Hunter x Hunter: Phantom Rouge",
+        "native": "劇場版 HUNTER×HUNTER 緋色の幻影（ファントム・ルージュ）"
+       },
+       "synonyms": [
+        "Gekijouban Hunter x Hunter: Hiiro no Genei",
+        "HxH Movie",
+        "HxH: Phantom Rogue",
+        "Hunter x Hunter: Fantasma Vermelho"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 75996,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 11061,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 163750,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx13271-jBxQFqHCpb2K.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx13271-jBxQFqHCpb2K.png"
+       }
+      },
+      {
+       "id": 137,
+       "format": "OVA",
+       "episodes": 8,
+       "seasonYear": 2002,
+       "startDate": {
+        "year": 2002
+       },
+       "title": {
+        "romaji": "HUNTER×HUNTER OVA",
+        "english": "Hunter x Hunter: Yorknew City",
+        "native": "HUNTER×HUNTER OVA"
+       },
+       "synonyms": [
+        "Hunter x Hunter: Yorkshin City Kanketsu-hen",
+        "HxH"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 136,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 138,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30026,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 11061,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx137-u17pWQRTZfKn.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx137-u17pWQRTZfKn.jpg"
+       }
+      },
+      {
+       "id": 19951,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2013,
+       "startDate": {
+        "year": 2013
+       },
+       "title": {
+        "romaji": "HUNTER×HUNTER: THE LAST MISSION",
+        "english": "Hunter x Hunter: The Last Mission",
+        "native": "劇場版 HUNTER×HUNTER THE LAST MISSION"
+       },
+       "synonyms": [
+        "HxH",
+        "HxH: The Last Mission",
+        "Hunter x Hunter: A Última Missão"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 11061,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 163659,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/nx19951-kouyrYvcEyGP.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/nx19951-kouyrYvcEyGP.jpg"
+       }
+      },
+      {
+       "id": 114106,
+       "format": "ONA",
+       "episodes": 12,
+       "seasonYear": null,
+       "startDate": {
+        "year": 2021
+       },
+       "title": {
+        "romaji": "Huan You Lieren",
+        "english": null,
+        "native": "幻游猎人"
+       },
+       "synonyms": [
+        "Fantasy X Hunter"
+       ],
+       "relations": {
+        "edges": []
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx114106-rctuswDA3iHi.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx114106-rctuswDA3iHi.png"
+       }
+      },
+      {
+       "id": 2808,
+       "format": "OVA",
+       "episodes": 1,
+       "seasonYear": 2005,
+       "startDate": {
+        "year": 2005
+       },
+       "title": {
+        "romaji": "Irregular Hunter X: The Day of Sigma",
+        "english": "Mega Man X - The Day of Sigma",
+        "native": "イレギュラーハンターＸ"
+       },
+       "synonyms": [
+        "Irregular Hunter X",
+        "Mega Man Maverick Hunter X: The Day of Sigma",
+        "The Day of Σ"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 1710,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 2110,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 2108,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 2109,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 2713,
+           "format": "TV_SHORT"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 3493,
+           "format": "TV_SHORT"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 2111,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 1854,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 1835,
+           "format": "TV_SHORT"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/2808.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/2808.jpg"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "Naruto": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 20,
+       "format": "TV",
+       "episodes": 220,
+       "seasonYear": 2002,
+       "startDate": {
+        "year": 2002
+       },
+       "title": {
+        "romaji": "NARUTO",
+        "english": "Naruto",
+        "native": "NARUTO -ナルト-"
+       },
+       "synonyms": [
+        "נארוטו",
+        "ناروتو",
+        "火影忍者",
+        "นารูโตะ นินจาจอมคาถา",
+        "Наруто"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 1735,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30011,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 442,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 594,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 761,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 936,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 1074,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 2144,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 7367,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 10659,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SUMMARY",
+          "node": {
+           "id": 155348,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 162561,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx20-dE6UHbFFg1A5.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx20-dE6UHbFFg1A5.jpg"
+       }
+      },
+      {
+       "id": 10075,
+       "format": "OVA",
+       "episodes": 1,
+       "seasonYear": 2011,
+       "startDate": {
+        "year": 2011
+       },
+       "title": {
+        "romaji": "NARUTO×UT",
+        "english": null,
+        "native": "NARUTO×UT"
+       },
+       "synonyms": [
+        "NARUTO x UT"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 1735,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/10075.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/10075.jpg"
+       }
+      },
+      {
+       "id": 162561,
+       "format": "TV",
+       "episodes": 4,
+       "seasonYear": null,
+       "startDate": {
+        "year": null
+       },
+       "title": {
+        "romaji": "NARUTO×NINKU",
+        "english": null,
+        "native": "NARUTO-ナルト-×NINKU-忍空-"
+       },
+       "synonyms": [
+        "NARUTO -ナルト- (2026)",
+        "NARUTO (2026)",
+        "NARUTO×NINKŪ"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 155348,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 912,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "CHARACTER",
+          "node": {
+           "id": 20,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx162561-Uk4eZAwcmcWk.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx162561-Uk4eZAwcmcWk.jpg"
+       }
+      },
+      {
+       "id": 155348,
+       "format": "SPECIAL",
+       "episodes": 1,
+       "seasonYear": 2022,
+       "startDate": {
+        "year": 2022
+       },
+       "title": {
+        "romaji": "ROAD OF NARUTO",
+        "english": null,
+        "native": "ROAD OF NARUTO"
+       },
+       "synonyms": [
+        "NARUTO - ナルト -  20 周年記念",
+        "NARUTO 20 Shuunenkinen",
+        "Naruto 20th Anniversary PV"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30011,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 20,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 1735,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 162561,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx155348-4ipji8SvTjyh.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx155348-4ipji8SvTjyh.jpg"
+       }
+      },
+      {
+       "id": 1735,
+       "format": "TV",
+       "episodes": 500,
+       "seasonYear": 2007,
+       "startDate": {
+        "year": 2007
+       },
+       "title": {
+        "romaji": "NARUTO: Shippuuden",
+        "english": "Naruto: Shippuden",
+        "native": "NARUTO -ナルト- 疾風伝"
+       },
+       "synonyms": [
+        "Naruto Shippuuden",
+        "Naruto Shippuden",
+        "נארוטו שיפודן",
+        "火影忍者 疾风传",
+        "นารูโตะ ตำนานวายุสลาตัน",
+        "ناروتو شيبودن",
+        "Наруто: Ураганные хроники"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 20,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30011,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 2472,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 4437,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 6325,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 8246,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 10075,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 10589,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 13667,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 16870,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 4134,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 12979,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 19511,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 21579,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 87232,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 97938,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 10686,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 115105,
+           "format": "MUSIC"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 87230,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 70549,
+           "format": "ONE_SHOT"
+          }
+         },
+         {
+          "relationType": "SUMMARY",
+          "node": {
+           "id": 155348,
+           "format": "SPECIAL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1735-kGfVm0YqCPcu.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx1735-kGfVm0YqCPcu.png"
+       }
+      },
+      {
+       "id": 936,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2005,
+       "startDate": {
+        "year": 2005
+       },
+       "title": {
+        "romaji": "NARUTO: Dai Gekitotsu! Maboroshi no Chitei Iseki Dattebayo",
+        "english": "Naruto the Movie: Legend of the Stone of Gelel",
+        "native": "劇場版 NARUTO -ナルト- 大激突!幻の地底遺跡だってばよ"
+       },
+       "synonyms": [
+        "Naruto THE Movie vol.2",
+        "Naruto Movie 2",
+        "Gekijouban Naruto",
+        "Naruto the Movie: The Great Clash! The Phantom Ruins in the Depths of the Earth",
+        "Naruto La Légende de la Pierre de Guelel",
+        "Naruto la película: La leyenda de la piedra de Gelel",
+        "Naruto Movie 02: La leggenda della pietra di Gelel"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 20,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 132766,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx936-P1ogcIs07UR8.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx936-P1ogcIs07UR8.jpg"
+       }
+      },
+      {
+       "id": 10659,
+       "format": "SPECIAL",
+       "episodes": 1,
+       "seasonYear": 2010,
+       "startDate": {
+        "year": 2010
+       },
+       "title": {
+        "romaji": "NARUTO: Soyokazeden - Naruto to Mashin to Mitsu no Onegai Dattebayo!!",
+        "english": "Naruto, the Genie, and the Three Wishes, Believe It!",
+        "native": "劇場版 NARUTO -ナルト- そよかぜ伝 ナルトと魔神と3つのお願いだってばよ!!"
+       },
+       "synonyms": [
+        "Gekijouban Naruto Soyokazeden: Naruto to Mashin to Mitsu no Onegai Dattebayo!!",
+        "Naruto: Gentle Breeze Chronicles the Film: Naruto",
+        "the Genie",
+        "and the Three Wishes Dattebayo!!"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 20,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 8246,
+           "format": "MOVIE"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/10659.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/10659.jpg"
+       }
+      },
+      {
+       "id": 21579,
+       "format": "SPECIAL",
+       "episodes": 1,
+       "seasonYear": 2016,
+       "startDate": {
+        "year": 2016
+       },
+       "title": {
+        "romaji": "BORUTO: NARUTO THE MOVIE - Naruto ga Hokage ni Natta Hi",
+        "english": "Boruto: Naruto the Movie - The Day Naruto Became Hokage",
+        "native": "BORUTO -NARUTO THE MOVIE- ナルトが火影になった日"
+       },
+       "synonyms": [],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 21220,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 1735,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 87402,
+           "format": "ONE_SHOT"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 97938,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/21579-AKxouF9BidMD.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/21579-AKxouF9BidMD.jpg"
+       }
+      },
+      {
+       "id": 8246,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2010,
+       "startDate": {
+        "year": 2010
+       },
+       "title": {
+        "romaji": "NARUTO: Shippuuden - The Lost Tower",
+        "english": "Naruto Shippuden the Movie: The Lost Tower",
+        "native": "劇場版 NARUTO -ナルト- 疾風伝 ザ・ロストタワー"
+       },
+       "synonyms": [
+        "Naruto Movie 7",
+        "Gekijouban Naruto Shippuuden: The Lost Tower",
+        "Naruto Shippūden la película: La torre perdida",
+        "Naruto Shippuden Movie 04: La torre perduta"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 1735,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 132773,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 10659,
+           "format": "SPECIAL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx8246-KAi3bLLdJ4OI.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx8246-KAi3bLLdJ4OI.jpg"
+       }
+      },
+      {
+       "id": 6325,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2009,
+       "startDate": {
+        "year": 2009
+       },
+       "title": {
+        "romaji": "NARUTO: Shippuuden - Hi no Ishi wo Tsugu Mono",
+        "english": "Naruto Shippuden the Movie: The Will of Fire",
+        "native": "劇場版 NARUTO -ナルト- 疾風伝 火の意志を継ぐ者"
+       },
+       "synonyms": [
+        "Naruto Shippuuden Movie 3",
+        "Naruto Movie 6",
+        "Naruto Shippuuden 3: Inheritors of Will of Fire",
+        "Naruto Shippūden la película: La voluntad de fuego",
+        "Naruto Shippuden - Eredi della volontà del Fuoco",
+        "Naruto Shippuden Movie 03: Gli eredi della volontà del Fuoco",
+        "Naruto Shippuden O Filme: Herdeiros da Vontade do Fogo"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 1735,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 132772,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx6325-WaJPWmdnzgiI.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx6325-WaJPWmdnzgiI.jpg"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "Bleach": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 269,
+       "format": "TV",
+       "episodes": 366,
+       "seasonYear": 2004,
+       "startDate": {
+        "year": 2004
+       },
+       "title": {
+        "romaji": "BLEACH",
+        "english": "Bleach",
+        "native": "BLEACH"
+       },
+       "synonyms": [
+        "ブリーチ",
+        "'בליץ",
+        "เทพมรณะ",
+        "بليتش",
+        "Блич"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30012,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 834,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 1686,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 2889,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 4835,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 8247,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 100719,
+           "format": "OVA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 116674,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 116673,
+           "format": "ONA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 154037,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 182561,
+           "format": "SPECIAL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx269-d2GmRkJbMopq.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx269-d2GmRkJbMopq.png"
+       }
+      },
+      {
+       "id": 116674,
+       "format": "TV",
+       "episodes": 13,
+       "seasonYear": 2022,
+       "startDate": {
+        "year": 2022
+       },
+       "title": {
+        "romaji": "BLEACH: Sennen Kessen-hen",
+        "english": "BLEACH: Thousand-Year Blood War",
+        "native": "BLEACH 千年血戦篇"
+       },
+       "synonyms": [
+        "بليتش: حرب الألف سنة الدموية",
+        "Bleach: La guerre sanglante de mille ans",
+        "BLEACH TYBW"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30012,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 269,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 142033,
+           "format": "MUSIC"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 159322,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx116674-p3zK4PUX2Aag.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx116674-p3zK4PUX2Aag.jpg"
+       }
+      },
+      {
+       "id": 169755,
+       "format": "TV",
+       "episodes": 14,
+       "seasonYear": 2024,
+       "startDate": {
+        "year": 2024
+       },
+       "title": {
+        "romaji": "BLEACH: Sennen Kessen-hen - Soukoku-tan",
+        "english": "BLEACH: Thousand-Year Blood War - The Conflict",
+        "native": "BLEACH 千年血戦篇-相剋譚-"
+       },
+       "synonyms": [
+        "BLEACH: Thousand Year Blood War Part 3",
+        "BLEACH 千年血戦篇 第3クール",
+        "BLEACH TYBW"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30012,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 159322,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 182561,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 185874,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 196193,
+           "format": "MUSIC"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx169755-Rqb7MjnzdTc6.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx169755-Rqb7MjnzdTc6.jpg"
+       }
+      },
+      {
+       "id": 185874,
+       "format": "TV",
+       "episodes": 10,
+       "seasonYear": 2026,
+       "startDate": {
+        "year": 2026
+       },
+       "title": {
+        "romaji": "BLEACH: Sennen Kessen-hen - Kashin-tan",
+        "english": "BLEACH: Thousand-Year Blood War - The Calamity",
+        "native": "BLEACH 千年血戦篇-禍進譚-"
+       },
+       "synonyms": [
+        "BLEACH: Thousand-Year Blood War Part 4",
+        "BLEACH 千年血戦篇 第4クール",
+        "BLEACH: Thousand-Year Blood War The Final Season",
+        "BLEACH TYBW"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30012,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 169755,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx185874-aU3e6tBT6wwA.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx185874-aU3e6tBT6wwA.jpg"
+       }
+      },
+      {
+       "id": 159322,
+       "format": "TV",
+       "episodes": 13,
+       "seasonYear": 2023,
+       "startDate": {
+        "year": 2023
+       },
+       "title": {
+        "romaji": "BLEACH: Sennen Kessen-hen - Ketsubetsu-tan",
+        "english": "BLEACH: Thousand-Year Blood War - The Separation",
+        "native": "BLEACH 千年血戦篇-訣別譚-"
+       },
+       "synonyms": [
+        "BLEACH: Thousand Year Blood War Part 2",
+        "BLEACH 千年血戦篇 第2クール",
+        "BLEACH TYBW"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 116674,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30012,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 169755,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx159322-Sp1GflRhE6Po.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx159322-Sp1GflRhE6Po.jpg"
+       }
+      },
+      {
+       "id": 182561,
+       "format": "SPECIAL",
+       "episodes": 1,
+       "seasonYear": null,
+       "startDate": {
+        "year": 2024
+       },
+       "title": {
+        "romaji": "BLEACH 20th PV",
+        "english": "BLEACH 20th Anime Anniversary Official Trailer",
+        "native": "BLEACH 20th PV"
+       },
+       "synonyms": [
+        "BLEACH 𝟐𝟎𝐭𝐡 𝐀𝐧𝐧𝐢𝐯𝐞𝐫𝐬𝐚𝐫𝐲",
+        "BLEACH 20周年 PV",
+        "ブリーチ 20th PV",
+        "BLEACH animation 20th"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 30012,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 269,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 169755,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx182561-lJDC9FT3jBhL.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx182561-lJDC9FT3jBhL.jpg"
+       }
+      },
+      {
+       "id": 8247,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2010,
+       "startDate": {
+        "year": 2010
+       },
+       "title": {
+        "romaji": "BLEACH: Jigoku-hen",
+        "english": "Bleach the Movie: Hell Verse",
+        "native": "BLEACH 地獄篇"
+       },
+       "synonyms": [
+        "Bleach Movie 4",
+        "Bleach: The Hell Chapter",
+        "بليتش: قصيدة الجحيم"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 269,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 141703,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 53355,
+           "format": "ONE_SHOT"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx8247-VppsQKlgXoXr.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx8247-VppsQKlgXoXr.png"
+       }
+      },
+      {
+       "id": 2889,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2007,
+       "startDate": {
+        "year": 2007
+       },
+       "title": {
+        "romaji": "BLEACH: The DiamondDust Rebellion - Mou Hitotsu no Hyourinmaru",
+        "english": "Bleach the Movie: The DiamondDust Rebellion",
+        "native": "BLEACH The DiamondDust Rebellion もう一つの氷輪丸"
+       },
+       "synonyms": [
+        "Bleach Movie 2",
+        "Bleach: The Diamond Dust Rebellion - Another Hyourinmaru",
+        "بليتش: تمرد غبار الماس",
+        "Bleach: The Movie 2: The DiamondDust Rebellion "
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 269,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 141701,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx2889-AmnSwChuAuGT.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx2889-AmnSwChuAuGT.jpg"
+       }
+      },
+      {
+       "id": 4835,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2008,
+       "startDate": {
+        "year": 2008
+       },
+       "title": {
+        "romaji": "BLEACH: Fade to Black - Kimi no Na wo Yobu",
+        "english": "Bleach the Movie: Fade to Black",
+        "native": "BLEACH Fade to Black 君の名を呼ぶ"
+       },
+       "synonyms": [
+        "Bleach Movie 3",
+        "Bleach: Fade to Black - I Call Your Name",
+        "بليتش: التلاشي إلى الأسود"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 269,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 141702,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx4835-UqbwERH407BB.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx4835-UqbwERH407BB.jpg"
+       }
+      },
+      {
+       "id": 1686,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2006,
+       "startDate": {
+        "year": 2006
+       },
+       "title": {
+        "romaji": "BLEACH: MEMORIES OF NOBODY",
+        "english": "Bleach the Movie: Memories of Nobody",
+        "native": "BLEACH MEMORIES OF NOBODY"
+       },
+       "synonyms": [
+        "Bleach Movie 1",
+        "بليتش: ذكريات اللا أحد"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 269,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 141700,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx1686-oZQepxP4SRQ2.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx1686-oZQepxP4SRQ2.jpg"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "無職転生": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 108465,
+       "format": "TV",
+       "episodes": 11,
+       "seasonYear": 2021,
+       "startDate": {
+        "year": 2021
+       },
+       "title": {
+        "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu",
+        "english": "Mushoku Tensei: Jobless Reincarnation",
+        "native": "無職転生 ～異世界行ったら本気だす～"
+       },
+       "synonyms": [
+        "Jobless Reincarnation: I Will Seriously Try If I Go To Another World",
+        "无职转生 ~到了异世界就拿出真本事~",
+        "เกิดชาตินี้พี่ต้องเทพ",
+        "Thất nghiệp chuyển sinh"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 127720,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx108465-1ANspF1EWyFx.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx108465-1ANspF1EWyFx.jpg"
+       }
+      },
+      {
+       "id": 146065,
+       "format": "TV",
+       "episodes": 13,
+       "seasonYear": 2023,
+       "startDate": {
+        "year": 2023
+       },
+       "title": {
+        "romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu",
+        "english": "Mushoku Tensei: Jobless Reincarnation Season 2",
+        "native": "無職転生Ⅱ ～異世界行ったら本気だす～"
+       },
+       "synonyms": [
+        "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 2",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu 2nd Season",
+        "Mushoku Tensei II: Jobless Reincarnation",
+        "Mushoku Tensei II: Reencarnación desde cero",
+        "无职转生～到了异世界就拿出真本事～第2季"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 127720,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 142989,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 166873,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx146065-IjirxRK26O03.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx146065-IjirxRK26O03.png"
+       }
+      },
+      {
+       "id": 178789,
+       "format": "TV",
+       "episodes": 14,
+       "seasonYear": 2026,
+       "startDate": {
+        "year": 2026
+       },
+       "title": {
+        "romaji": "Mushoku Tensei III: Isekai Ittara Honki Dasu",
+        "english": "Mushoku Tensei: Jobless Reincarnation Season 3",
+        "native": "無職転生Ⅲ ～異世界行ったら本気だす～"
+       },
+       "synonyms": [
+        "無職転生 ～異世界行ったら本気だす～ 第3期",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu 3rd Season",
+        "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 3"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 166873,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 146378,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 217434,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx178789-hNXjKFzUq7mk.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx178789-hNXjKFzUq7mk.jpg"
+       }
+      },
+      {
+       "id": 127720,
+       "format": "TV",
+       "episodes": 12,
+       "seasonYear": 2021,
+       "startDate": {
+        "year": 2021
+       },
+       "title": {
+        "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2",
+        "english": "Mushoku Tensei: Jobless Reincarnation Cour 2",
+        "native": "無職転生 ～異世界行ったら本気だす～ 第2クール"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Part 2",
+        "เกิดชาตินี้พี่ต้องเทพ พาร์ท 2"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 108465,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "SIDE_STORY",
+          "node": {
+           "id": 141534,
+           "format": "SPECIAL"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 146065,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx127720-ADJgIrUVMdU9.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx127720-ADJgIrUVMdU9.jpg"
+       }
+      },
+      {
+       "id": 166873,
+       "format": "TV",
+       "episodes": 12,
+       "seasonYear": 2024,
+       "startDate": {
+        "year": 2024
+       },
+       "title": {
+        "romaji": "Mushoku Tensei II: Isekai Ittara Honki Dasu Part 2",
+        "english": "Mushoku Tensei: Jobless Reincarnation Season 2 Part 2",
+        "native": "無職転生Ⅱ ～異世界行ったら本気だす～ 第2クール"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Season 2 Cour 2",
+        "เกิดชาตินี้พี่ต้องเทพ ซีซั่น 2 ครึ่งหลัง",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu 2nd Season Part 2",
+        "Mushoku Tensei II: Jobless Reincarnation Part 2",
+        "Mushoku Tensei II: Reencarnación desde cero",
+        "无职转生～到了异世界就拿出真本事～第2季"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 146065,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "SEQUEL",
+          "node": {
+           "id": 178789,
+           "format": "TV"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx166873-xO0BRPkmwFll.png",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx166873-xO0BRPkmwFll.png"
+       }
+      },
+      {
+       "id": 217434,
+       "format": "TV",
+       "episodes": null,
+       "seasonYear": null,
+       "startDate": {
+        "year": 2027
+       },
+       "title": {
+        "romaji": "Mushoku Tensei III: Isekai Ittara Honki Dasu Part 2",
+        "english": null,
+        "native": "無職転生Ⅲ ～異世界行ったら本気だす～ 第2クール"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Season 3 Part 2"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PREQUEL",
+          "node": {
+           "id": 178789,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx217434-xqZNBp5U3hgY.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx217434-xqZNBp5U3hgY.jpg"
+       }
+      },
+      {
+       "id": 141534,
+       "format": "SPECIAL",
+       "episodes": 1,
+       "seasonYear": 2022,
+       "startDate": {
+        "year": 2022
+       },
+       "title": {
+        "romaji": "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2 - Eris no Goblin Toubatsu",
+        "english": "Mushoku Tensei: Jobless Reincarnation Cour 2 - Eris the Goblin Slayer",
+        "native": "無職転生 ～異世界行ったら本気だす～ 第2クール エリスのゴブリン討伐"
+       },
+       "synonyms": [
+        "Mushoku Tensei: Jobless Reincarnation Cour 2 Special",
+        "Mushoku Tensei: Jobless Reincarnation Part 2 Special",
+        "เกิดชาตินี้พี่ต้องเทพ OVA",
+        "Mushoku Tensei: Isekai Ittara Honki Dasu Part 2 Special"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 127720,
+           "format": "TV"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85470,
+           "format": "NOVEL"
+          }
+         },
+         {
+          "relationType": "ALTERNATIVE",
+          "node": {
+           "id": 85564,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx141534-Tmnlz4mvYhaU.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx141534-Tmnlz4mvYhaU.jpg"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "Koe no Katachi": {
+   "data": {
+    "Page": {
+     "media": [
+      {
+       "id": 20954,
+       "format": "MOVIE",
+       "episodes": 1,
+       "seasonYear": 2016,
+       "startDate": {
+        "year": 2016
+       },
+       "title": {
+        "romaji": "Koe no Katachi",
+        "english": "A Silent Voice",
+        "native": "聲の形"
+       },
+       "synonyms": [
+        "The Shape of Voice",
+        "A Voz do Silêncio",
+        "A Forma da Voz",
+        "La Forma della Voce",
+        "צורתו של קול",
+        "声之形",
+        "الحزن الصامت",
+        "Una voz silenciosa",
+        "La Forme de la voix",
+        "Форма голоса",
+        "Форма голосу",
+        "Tylus balsas",
+        "Balss forma",
+        "Дауыс пішіні",
+        "Sakit səs",
+        "รักไร้เสียง",
+        "Dáng hình thanh âm"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85135,
+           "format": "MANGA"
+          }
+         },
+         {
+          "relationType": "OTHER",
+          "node": {
+           "id": 107764,
+           "format": "MUSIC"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx20954-sYRfE5jQRtSB.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx20954-sYRfE5jQRtSB.jpg"
+       }
+      },
+      {
+       "id": 107764,
+       "format": "MUSIC",
+       "episodes": 2,
+       "seasonYear": 2017,
+       "startDate": {
+        "year": 2017
+       },
+       "title": {
+        "romaji": "Koe no Katachi Specials",
+        "english": "A Silent Voice Specials",
+        "native": "聲の形スペシャル"
+       },
+       "synonyms": [
+        "Koi wo Shita no wa",
+        "Speed of Youth"
+       ],
+       "relations": {
+        "edges": [
+         {
+          "relationType": "PARENT",
+          "node": {
+           "id": 20954,
+           "format": "MOVIE"
+          }
+         },
+         {
+          "relationType": "ADAPTATION",
+          "node": {
+           "id": 85135,
+           "format": "MANGA"
+          }
+         }
+        ]
+       },
+       "coverImage": {
+        "extraLarge": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx107764-AOA6o9Pukejl.jpg",
+        "large": "https://s4.anilist.co/file/anilistcdn/media/anime/cover/medium/bx107764-AOA6o9Pukejl.jpg"
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

@@ -285,15 +285,24 @@ _OPENS = {}
 KIND_WORDS = {"books": "books and texts", "audio": "audiobooks and podcasts"}
 
 
-def opens(kind):
+def opens(kind, looked=False):
     """Would updating Anki Miner to the approved release (`APPROVED`) let Connect make cards from `kind` ("books",
     "audio": `anki_miner.WAITS`)? -> APPROVED, or None. Yes only when this Surasura knows the kind's ask
     (`anki_miner.mines(kind)`), the Anki Miner Connect last found doesn't name it (`mines_now`) and the one installed
     (`installed()`) is known and older than APPROVED — the release Surasura approves answers every ask it knows. The
-    one answer for *Needs you*'s line (`update_for`) and the rows' tip (`view_rows`). Never raises."""
+    one answer for *Needs you*'s line (`update_for`) and the rows' tip (`view_rows`). `looked`: the caller has just
+    asked `mines_now` (a row's status) — its read is taken as it is, no second look at the record's file (a row
+    build stays as fast as before: S19). Never raises."""
     try:
         from app.connect import anki_miner
-        if not anki_miner.mines(kind) or anki_miner.mines_now(kind):
+        if not anki_miner.mines(kind):
+            return None
+        last = anki_miner._NOW
+        if looked and "stamp" in last:
+            info = last.get("info")
+            if anki_miner.mines(kind, info if isinstance(info, dict) else {"features": []}):
+                return None
+        elif anki_miner.mines_now(kind):
             return None
         stamp = (anki_miner._NOW.get("stamp"), anki_miner.installed_version())     # (`mines_now` just took it)
         if _OPENS.get("stamp") != stamp:

@@ -126,7 +126,7 @@ def test_the_books_tip_names_the_update_and_where_its_button_is(monkeypatch):
     assert book.status.kind == "books" and book.status.label == vr.STRINGS["books_wait"]
     assert book.status.tip == vr.STRINGS["tip_wait_update"].format(version=am_release.APPROVED,
                                                                    what="books and texts")
-    assert f"Needs Anki Miner {am_release.APPROVED}" in book.status.tip and "Update in Needs you" in book.status.tip
+    assert f"Needs Anki Miner {am_release.APPROVED}" in book.status.tip and "Update it in Needs you" in book.status.tip
     assert "later update" not in book.status.tip, "the old promise of an update that already exists"
 
 
@@ -415,7 +415,7 @@ def test_the_rows_cache_builds_a_waiting_book_again_once_the_anki_miner_connect_
     cache = vr.RowCache()
     on = dict(on=True, mining=frozenset(), items={}, line="", state="idle", unseen=0, updating=False)
     before = vr.build(items, works, {"mine_line": 20}, numbers=(1, {}), cache=cache, connect=feed.Feed(**on, miner=((1, 1), OLD)))
-    assert before.rows[0].status.kind == "books" and "Update in Needs you" in before.rows[0].status.tip
+    assert before.rows[0].status.kind == "books" and "Update it in Needs you" in before.rows[0].status.tip
     hits = cache.hits
     vr.build(items, works, {"mine_line": 20}, numbers=(1, {}), cache=cache, connect=feed.Feed(**on, miner=((1, 1), OLD)))
     assert cache.hits > hits, "nothing moved: the cached row"
@@ -426,3 +426,17 @@ def test_the_rows_cache_builds_a_waiting_book_again_once_the_anki_miner_connect_
                      connect=feed.Feed(**on, miner=((2, 2), am_release.APPROVED)))
     assert cache.misses > misses, "the miner moved: built again"
     assert after.rows[0].status.kind != "books" and "Needs you" not in after.rows[0].status.tip
+
+
+def test_a_rows_tip_takes_the_read_mines_now_just_made_with_no_second_look_at_the_record(monkeypatch):
+    """CI (core 4/4, the airing window test): a row build slowed ~1 ms per waiting row lost a race there — the rows'
+    tip (`looked`) takes `mines_now`'s last read and never stats the record again; the answer is the same."""
+    _record(OLD, NO_READING)
+    assert am_release.opens("books") == am_release.APPROVED        # (the view's first row: the record read once)
+    assert not anki_miner.mines_now("books")                       # (each row's status asks it first)
+    stats = []
+    real = setup.record_path
+    monkeypatch.setattr(setup, "record_path", lambda: stats.append(1) or real())
+    assert am_release.opens("books", looked=True) == am_release.APPROVED
+    assert stats == [], "no second look at the record's file"
+    assert am_release.opens("books") == am_release.APPROVED and stats, "asked alone, it looks"

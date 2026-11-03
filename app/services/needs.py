@@ -505,8 +505,7 @@ def _waiting(e):
     """What an unmined, present episode waits for Anki Miner to mine — "books", "audio" (the rows' `Episode.text`,
     Connect's `library.waits_for`) — else None. An audiobook's own item with no text (`waiting`, Hon's H-7) waits on
     its text whatever Anki Miner mines: never one an update would open (review r2 #2)."""
-    if e.cards or getattr(e, "mined", False) or getattr(e, "deleted", False) or e.missing or \
-            getattr(e, "waiting", False):
+    if any(getattr(e, name, False) for name in ("cards", "mined", "deleted", "missing", "waiting")):
         return None
     return getattr(e, "text", None) or None
 

@@ -82,6 +82,33 @@ def waits_for(item, media=None):
     return "audio" if item and media in AUDIO_TYPES else None
 
 
+def audiobook_file(store, item_id):
+    """Z-16 (Michi-AB A1, PROVISIONAL): what an audiobook's own item (Hon, H-7) is cut from -> None for any other item;
+    else (its path, n): its audiobook's one file and 1 while its transcript is its text (Hon a6, `audiobooks.TEXT`);
+    None and the number of files when it is several (one transcript's times span them: it can't be cut, A5); (None, 0)
+    when no transcript is its text (none yet, H-8's question open, paired with its book: the book is the content). Its
+    record names its files: it is never looked for beside anything (its origin is its own first file)."""
+    from app import audiobooks
+    with store._reading():
+        rows = store._audiobook_rows(item_id)
+    if not rows:
+        return None
+    ab = rows[0][2].get("audiobook") or {}
+    files = [f for f in ab.get("files") or () if isinstance(f, str) and f]
+    if audiobooks.transcript_use(ab) != audiobooks.TEXT:
+        return None, 0
+    return (files[0] if len(files) == 1 else None), len(files)
+
+
+def audiobook_files(store):
+    """Z-16 (A1): every audio file an audiobook the library knows holds (its records' `files`, normalised) — a
+    subtitle named like one of them is that file's own (one subtitle per audio file). One read of the records."""
+    with store._reading():
+        rows = store._audiobook_rows()
+    return {os.path.normcase(os.path.abspath(f)) for _k, _i, r in rows
+            for f in (r.get("audiobook") or {}).get("files") or () if isinstance(f, str) and f}
+
+
 def book_parts(store, epub):
     """{item id: chapter record} of every part of `epub` the store holds (its live origins `<epub>#<n>`, Hon's
     `chapter` key: `connect.reading.place`); a part from before the record (no `chapter`) is left out. One range read

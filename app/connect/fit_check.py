@@ -148,7 +148,7 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
     exe = tsubasa if tsubasa is not None else find_tsubasa()
     if not exe:
         if others(pairing):         # a pairing program paired it but didn't time it: the switch never releases that
-            return NOT_TIMED, None, "Not timed to its video, so no cards.", 0.0
+            return NOT_TIMED, None, f"Not timed to its {_media(video)}, so no cards.", 0.0
         if trust:                   # you said your subtitles are synced: cut where the subtitle puts the lines
             return TIMED, "you", None, 0.0
         return NOT_TIMED, None, NO_CHECKER, 0.0
@@ -174,7 +174,7 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             return NOT_TIMED, "tsubasa", "tsubasa gave no shift to cut its lines by, so no cards.", 0.0
         return TIMED, "tsubasa", None, offset
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) > 1:
-        return NOT_TIMED, "tsubasa", "Its timing changes part-way through the video, so no cards.", 0.0
+        return NOT_TIMED, "tsubasa", f"Its timing changes part-way through the {_media(video)}, so no cards.", 0.0
     if outcome == "CONFIDENT":
         return NOT_TIMED, "tsubasa", "tsubasa found no timing to cut its lines by, so no cards.", 0.0
     reason = (answer or {}).get("reason")
@@ -182,10 +182,18 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
     if raw and trust:               # nothing inside the video to time against, and you trust your subtitles
         return TIMED, "you", None, 0.0
     if outcome in ("REFUSED", "ERROR"):
-        return NOT_TIMED, "tsubasa", f"Not timed to its video ({outcome.lower()}), so no cards." + (
+        return NOT_TIMED, "tsubasa", f"Not timed to its {_media(video)} ({outcome.lower()}), so no cards." + (
             f" tsubasa: {reason}" if isinstance(reason, str) and reason else "") + (
             f" If your subtitles are synced, turn on {TRUST_LABEL} in Settings → Anki & mining." if raw else ""), 0.0
     return NOT_TIMED, "tsubasa", "tsubasa gave no answer, so no cards.", 0.0
+
+
+def _media(path):
+    """What the lines are cut from, in the reasons' words: "audio" for an audio file (Z-16: tsubasa 0.1.11 has no
+    reference inside one — its ERROR names no subtitle track, a raw's — so it waits for *Trust my subtitles' timing*
+    or *Mine anyway*, as a raw video does), else "video"."""
+    from app.connect.anki_miner import is_audio
+    return "audio" if is_audio(path) else "video"
 
 
 def _span(seconds):

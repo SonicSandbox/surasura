@@ -289,6 +289,9 @@ STRINGS = {
     # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio
     "tip_audio_wait": "Anki Miner makes cards from videos only for now. Once a later update lets it mine audio, "
                       "Connect makes these cards by itself: nothing to do meanwhile.",
+    # Michi-AB (Z-16, PROVISIONAL): an audiobook with no text while Anki Miner mines audio — it waits on its text
+    "tip_heard_wait": "Nothing to mine here yet: it holds no words until it has a text — a subtitle file beside its "
+                      "audio, or its book.",
     "tip_no_subs": "Its {word} is in your folder, its subtitle file isn't yet: nothing to read or mine until one "
                    "arrives. Surasura fills it in by itself",
     "arr_no_subs": "no subtitles yet",
@@ -316,7 +319,14 @@ STRINGS = {
     # Hon a6 (H-12 ✅ Sonic, H-13 PROVISIONAL): an audiobook's transcript — alone, its content; paired, the book's
     "tip_audio_transcript": "🎧 Audiobook 「{title}」 with its transcript\n{files}\nIts transcript is its text: its "
                             "words count as an episode's do. Its cards wait until Anki Miner mines audio.",
-    "audio_transcript_timing": "Its transcript stays with the audio for timing: the book's words count, never twice.",
+    # Michi-AB (Z-16, PROVISIONAL): the same while Anki Miner mines audio
+    "tip_audio_transcript_mined": "🎧 Audiobook 「{title}」 with its transcript\n{files}\nIts transcript is its text: "
+                                  "its words count as an episode's do, and its cards' sentence audio is cut from it.",
+    "tip_audio_transcript_several": "🎧 Audiobook 「{title}」 with its transcript\n{files}\nIts transcript is its "
+                                    "text: its words count as an episode's do. Its cards wait: one transcript covers "
+                                    "its {n} files, so which file each line is in can't be told. A subtitle file for "
+                                    "each audio file, named like it, is mined.",
+    "audio_transcript_timing":"Its transcript stays with the audio for timing: the book's words count, never twice.",
     "audio_transcript_other": "The transcript beside it isn't this book's, so it isn't used.",
     "play_audio_wait": "Its audio is in your folder; it holds no words until Anki Miner gives its text",
     "arr_audio_wait": "waits for Anki Miner",
@@ -780,12 +790,14 @@ def status_of(eps, word, line_n):
         label = STRINGS["in_anki"].format(n=cards)      # mined = its cards are there, so cards > 0 (B-13, IK-27)
         tip = STRINGS["tip_in_anki"].format(n=cards) if n == 1 else STRINGS["tip_in_anki_k"].format(k=k, n=cards)
         st = Status("in_anki", label, tip, "ok")
-    elif (ready or heard) and all(getattr(e, "text", False) and not _mines(e.text) for e in ready + heard):
+    elif (ready or heard) and all(e in heard or (getattr(e, "text", False) and not _mines(e.text))
+                                  for e in ready + heard):
         # alpha 4 M1 / A4M1-3: only books, texts or audio left to mine while Anki Miner mines none of them — nothing to
         # press: Connect sets their jobs aside, and mines them by itself once it can (no *Mine*, no *Waiting*, never
-        # Anki Miner's window)
+        # Anki Miner's window). An audiobook's own item with no text (Hon, H-7) waits so whatever Anki Miner mines
         audio = all(e.text == "audio" for e in ready + heard)
-        st = Status("books", STRINGS["books_wait"], STRINGS["tip_audio_wait" if audio else "tip_books_wait"], "faint")
+        tip = "tip_heard_wait" if audio and _mines("audio") else "tip_audio_wait" if audio else "tip_books_wait"
+        st = Status("books", STRINGS["books_wait"], STRINGS[tip], "faint")
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
@@ -841,7 +853,9 @@ def audio_tip(piece):
     length = length_text(said.get("seconds"))
     files = " · ".join(x for x in (files, length) if x)
     if heard[0].get("availability") not in (None, "waiting"):     # a6: its transcript is its content
-        tip = STRINGS["tip_audio_transcript"].format(title=title, files=files)
+        # Z-16: its clips are cut from it only when its audiobook is one file (several: its cards wait, review AB-5)
+        mined = "tip_audio_transcript_several" if n > 1 else "tip_audio_transcript_mined"
+        tip = STRINGS[mined if _mines("audio") else "tip_audio_transcript"].format(title=title, files=files, n=n)
     else:
         tip = STRINGS["tip_audio_alone" if len(heard) == len(piece) else "tip_audio_paired"].format(title=title,
                                                                                                   files=files)
@@ -872,7 +886,7 @@ def _waits_for(item, media):
 def _mines(kind):
     """Can Connect make cards from `kind` now (`anki_miner.mines_now`: this Surasura knows it and the Anki Miner its
     setup record last found names it — Connect's jobs' own answer)? Alpha 4 M1; Z-9 (books and texts) known since
-    2026-10-28, Z-16 (audio) not yet."""
+    2026-10-28, Z-16 (audio) since 2026-11-02 (Michi-AB)."""
     from app.connect import anki_miner
     return anki_miner.mines_now("audio" if kind == "audio" else "books")
 

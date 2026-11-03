@@ -10606,7 +10606,9 @@ def _read_into_part(self, plan, token):
     """A switch's bytes, outside the lock: the plan's own (`plan["data"]`: a book's new edition's part, LM3), else the
     first of `plan["origins"]` (then the trashed copy, `plan["trash"]`) whose bytes are `plan["sha256"]`, written beside
     the copy as `<copy>.<token>.part` (its own name: two switches never share one) -> True, else False. Never written
-    where `Library` leads out of the data folder."""
+    where `Library` leads out of the data folder, nor from an original the look's one language rule refuses
+    (`sources._refusal`, K6: every switch — a better version, *Use [B]'s subtitles*, an Undo — goes this one way)."""
+    from app import sources
     full = os.path.join(self.data_dir, _strip(plan["rel"]))
     if not _ours_to_move(self.data_dir, plan["rel"], full):
         return False
@@ -10623,6 +10625,8 @@ def _read_into_part(self, plan, token):
             continue
         if not plan["sha256"] or hashlib.sha256(data).hexdigest() != plan["sha256"]:
             continue
+        if path in plan["origins"] and sources._refusal(data, self.language):   # K6, the look's one rule: an
+            continue                                         # original saved over with English is never switched in
         try:
             with open(part, "wb") as f:
                 f.write(data)
@@ -11243,8 +11247,9 @@ def _thin_switch(self, plan):
     """A6 for a better version (outside the lock), each file read once -> (thin, the version's bytes or None): does the
     version hold under 1/THIN of the dialogue lines of the item's copy (`sources.dialogue_lines`) — a signs track the
     look would never have picked (B4: one with none is thin while the copy holds some; neither holding any — a text,
-    not a subtitle — is no thin one)? The bytes go to the swap (`plan["data"]`, checked by their sha256 there). One
-    that can't be read is not judged here (its swap holds it)."""
+    not a subtitle — is no thin one)? A version the look's one language rule refuses (`sources._refusal`, K6) counts
+    as thin: passed over. The bytes go to the swap (`plan["data"]`, checked by their sha256 there). One that can't be
+    read is not judged here (its swap holds it)."""
     from app import sources
     try:
         with open(plan["origins"][0], "rb") as f:
@@ -11253,6 +11258,8 @@ def _thin_switch(self, plan):
             old = f.read()
     except OSError:
         return False, None
+    if sources._refusal(new, self.language):         # K6, the look's one rule: never another language's bytes
+        return True, None                            # (an English `.srt` saved over a version) — passed over
     lines = lambda data: sources.dialogue_lines(decode_text(data, self.language))      # noqa: E731
     return lines(new) * sources.THIN < lines(old), new
 

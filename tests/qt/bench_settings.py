@@ -51,7 +51,7 @@ def main_parent(a):
         out_path = os.path.join(os.path.dirname(root), "result.json")
         env["SURASURA_INSTANCE_NAME"] = f"surasura-bench-settings-{os.getpid()}-{os.path.basename(os.path.dirname(root))}"
         if a.settings:                                   # a learner's settings shape (reduced motion kept)
-            with open(a.settings, encoding="utf-8") as f:
+            with open(a.settings, encoding="utf-8-sig") as f:      # (a file Notepad saved: its BOM)
                 shape = json.load(f)
             if a.reduced:
                 shape["app_motion"] = "reduced"

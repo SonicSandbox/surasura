@@ -310,7 +310,8 @@ class Slab(QWidget):
 
 
 class Words(QLabel):
-    """A row's word-wrapped label or help line whose height for a width is worked out once per (width, text): Qt lays
+    """A row's word-wrapped label or help line whose height for a width is worked out once per (width, its minimum
+    width, text) — the minimum moves as a row stacks (`RowView.arrange`), and Qt answers at the larger of the two: Qt lays
     the text out again on every ask, and the page's every layout asks each of its ~270 lines at two widths or more
     (~5 ms a pass at 250 %, a9.1). Forgotten when the font, the style or the margins change."""
 
@@ -322,7 +323,7 @@ class Words(QLabel):
         self._heights = {}
 
     def heightForWidth(self, width):
-        key = (width, self.text())
+        key = (width, self.minimumWidth(), self.text())
         height = self._heights.get(key)
         if height is None:
             if len(self._heights) >= 8:
@@ -695,13 +696,14 @@ class SettingsPage(QWidget):
             settings, ctx = self._settings(), self._ctx()
             matches = self._matches(settings, ctx)
             shown = False
+            openers = {op.name: op for op in windows.OPENERS}
             while self._queue and (time.perf_counter() - t0) * 1000 < BUILD_MS:
                 if not _WARMED and _WARM_ROWS(self._queue[0][1]):
                     break                     # its module is still being imported on the worker: never raced here
                 index, row = self._queue.pop(0)
-                if self._build_guarded(index, row, settings):
-                    self._show_section(row.section, settings, ctx, matches, tint=False)   # shown in the slice that
-                    shown = True                                                            # built it
+                if self._build_guarded(index, row, settings):                # shown in the slice that built it
+                    self._show_section(row.section, settings, ctx, matches, openers, tint=False)
+                    shown = True
             if shown:
                 self._tint()
             self._show_nothing(matches)
@@ -1128,10 +1130,11 @@ class SettingsPage(QWidget):
 
     @contextmanager
     def _paused(self):
-        """Rows shown and hidden with the page's layouts paused, laid out once after (the settle, or the loop's own
-        turn): Qt lays out every ancestor of a widget it shows at once, so each row shown laid the whole page out again
-        — a search cleared showed 126 rows in ~100 ms at 250 % (a9.1). Resumed deepest first, each shown one laid out
-        at once (a hidden one is laid out as it shows). Nested: the outermost resumes."""
+        """Rows shown and hidden with the page's layouts paused, laid out once as the pass ends: Qt lays out every
+        ancestor of a widget it shows at once, so each row shown laid the whole page out again — a search cleared
+        showed 126 rows in ~100 ms at 250 % (a9.1). Resumed deepest first, each shown one laid out at once (a hidden
+        one is laid out as it shows; the scroll area's own range follows in the settle, or the loop's turn). Nested:
+        the outermost resumes."""
         if getattr(self, "_pausing", False):
             yield
             return
@@ -1238,7 +1241,7 @@ class SettingsPage(QWidget):
     # --- search ---------------------------------------------------------------------------------------------------- #
     def _searched(self, text):
         """A keystroke: rows hidden and shown, nothing rebuilt. With the search in view nothing above it can move, so
-        the layout is left to the loop's own turn (no settle on the keystroke: S3)."""
+        nothing is settled or corrected on the keystroke (S3); the rows are laid out once as the pass ends (`_paused`)."""
         self._query = text
         self._refresh_visibility(anchor=None if self._in_view(self.search) else self.search,
                                  fallback=not self._in_view(self.search))

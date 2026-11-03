@@ -63,25 +63,35 @@ def _laid_out_in_order(page, flush=False):
                     assert below.geometry().top() == above.geometry().bottom() + 1 + max(0, box.spacing()),                         (above.row.id, below.row.id)
 
 
+def _settled(turns=5):
+    for _ in range(turns):
+        QApplication.processEvents()
+
+
 # --- one layout for a pass, never one per row shown -------------------------------------------------------------- #
-def test_clearing_a_search_lays_the_page_out_once_not_once_per_row(qapp):
-    """Clearing a search shows nearly every row again, many inside slabs that stayed shown (a match in each). Each row
-    shown there moved every row under it (97 rows: 1,526 moves); paused, a few moves a row."""
+@pytest.mark.parametrize("query, came_back", [
+    ("an", 20),          # a match in most sections: rows come back inside slabs that stayed shown
+    ("zzzz", 80),        # nothing matched: every slab comes back (each slab shown re-laid the column, unpaused)
+])
+def test_clearing_a_search_lays_the_page_out_once_not_once_per_row(qapp, query, came_back):
+    """Clearing a search shows nearly every row again. Each row shown in a shown slab moved every row under it (97
+    rows: 1,526 moves), each slab shown moved every slab under it; paused, a few moves a row and a slab. Counted with
+    the layout settled before and after (the adversary's SHOULD-1: one turn left the search's own work in the count)."""
     page, store = make_page(ALL_ON, "ja")
-    page.search.edit.setText("an")
-    QApplication.processEvents()
+    page.search.edit.setText(query)
+    _settled()
     hidden = [v for v in page.rows.values() if not v.isVisibleTo(page)]
     moves, slab_moves = _Counter(QEvent.Type.Move, sp.RowView), _Counter(QEvent.Type.Move, sp.Slab)
     qapp.installEventFilter(moves)
     qapp.installEventFilter(slab_moves)
     try:
         page.search.edit.setText("")
-        QApplication.processEvents()
+        _settled()
     finally:
         qapp.removeEventFilter(moves)
         qapp.removeEventFilter(slab_moves)
     shown = shown_views(page)
-    assert len([v for v in hidden if v.isVisibleTo(page)]) > 20       # rows came back into shown slabs
+    assert len([v for v in hidden if v.isVisibleTo(page)]) > came_back
     assert moves.n <= 5 * len(shown), (moves.n, len(shown))
     assert slab_moves.n <= 3 * len(page.slabs), (slab_moves.n, len(page.slabs))     # the column laid out once too
     _laid_out_in_order(page)
@@ -155,6 +165,10 @@ def test_a_rows_words_answer_as_qt_does_and_forget_with_their_text_font_and_styl
     for label in (words, plain):
         label.setContentsMargins(3, 0, 11, 0)
     same()
+    for minimum in (300, 0):                         # a row stacking or not moves its words' minimum (`arrange`)
+        for label in (words, plain):
+            label.setMinimumWidth(minimum)
+        same()
 
 
 def test_a_rows_label_and_help_are_words_that_remember(qapp):
@@ -162,9 +176,10 @@ def test_a_rows_label_and_help_are_words_that_remember(qapp):
     view = page.rows["split_length"]
     assert isinstance(view.label, sp.Words) and isinstance(view.help, sp.Words)
     width = view.help.width()
-    assert (width, view.help.text()) in view.help._heights          # the page's layout asked it at the width it has
+    key = (width, view.help.minimumWidth(), view.help.text())
+    assert key in view.help._heights                                 # the page's layout asked it at the width it has
     known = dict(view.help._heights)
-    assert view.help.heightForWidth(width) == known[(width, view.help.text())]
+    assert view.help.heightForWidth(width) == known[key]
     assert view.help._heights == known                               # answered from what it remembered
 
 

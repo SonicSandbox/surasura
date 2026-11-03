@@ -43,20 +43,31 @@ VERDICT = "verdict.json"        # the running child's stdout (its verdict line)
 RUN_ID = "sync"                 # its one run in `run/` (Anki Miner's run folder)
 SPEECH = "speech-model"         # the speech model's setup, a line-up of its own (`look(SPEECH)`)
 ANSWER = "speech.json"          # AB-Q2's answer: {"answer": "yes" | "no", "at"}
+# AB-Q2: the speech model's one question (Connect's standing *Needs you* line: `runner._line_up`, `actions.speech_model`)
+# and, its download failed or stopped, the same question with why (kept while unanswered: review B-6)
+SPEECH_ASK = ("Lining up books with their audiobooks, and checking an audiobook's own subtitles, needs Anki Miner's "
+              "speech model: a 0.5 GB download, then about 20–30 minutes for each hour of audio. Download it? Not now: "
+              "their cards are made without sentence audio.")
+SPEECH_FAILED = "Anki Miner's speech model didn't download ({why}). Download it again?"
 SPOT = "spot.json"              # the spot-check's verdicts: {key: {"verdict", "at", "shares"}}
+SPOT_RULE = "v2"                # the spot-check's rule (one line a place, SAMPLES / MATCHES): its verdicts' key
 RUNNING, DONE, NONE, STOPPED, FAILED, INTERRUPTED, NO_MODEL = (
     "running", "done", "none", "stopped", "failed", "interrupted", "no-model")
 GOOD = ("A", "B")               # AB-Q4: grades whose cues cut cards (C / D: another edition, the wrong book)
 TRIES = 3                       # a line-up that failed this many times running is given up (the book mined as it is)
 MIN_CHARS = 8                   # a sentence this long (clean characters) or longer is found inside a longer one
-SAMPLES = 3                     # AB-Q5: places heard, at 1/4, 1/2 and 3/4 of the subtitle's lines
-SAMPLE_S = 30.0                 # ... each about this long (its following lines joined in)
-MATCH = 0.5                     # a sample's heard words holding this share of its lines (drill 4: own min 0.57,
-MATCHES = 2                     # others' median 0.12) — and this many samples so — is timed (PROVISIONAL)
+# AB-Q5 (PROVISIONAL): SAMPLES places through the subtitle, ONE line each (review B-13: a 30 s window passed a subtitle
+# 10 s off — one line's clip holds another line's words once it is off by more than about a line), each a line of
+# SAMPLE_CHARS clean characters or more (a short line is too little to hear); MATCHES of them heard at MATCH or more
+# (Stage A's drill: a card's own line min 0.57, another line's median 0.12) is timed
+SAMPLES = 5
+SAMPLE_CHARS = 8
+MATCH = 0.5
+MATCHES = 3
 SPOT_TIMEOUT = 20 * 60.0        # the spot-check's two calls, each (the model loads, three clips heard)
 MATCHED, NOT_MATCHED = "match", "no-match"
 
-Cue = namedtuple("Cue", "audio subtitle start end text")
+Cue = namedtuple("Cue", "audio subtitle start end text unit", defaults=(None,))
 
 
 # --------------------------------------------------------------------------- #
@@ -100,6 +111,11 @@ def write(key, state):
     return state
 
 
+def asks_speech(reason):
+    """Is a job's reason the speech model's question (either wording)? `actions.speech_model` frees those jobs."""
+    return isinstance(reason, str) and (reason == SPEECH_ASK or reason.startswith(SPEECH_FAILED.split("(")[0]))
+
+
 def answer():
     """AB-Q2's answer: "yes" (download it, then line up by itself), "no" (cards without sentence audio) or None."""
     said = (_read_json(os.path.join(root(), ANSWER)) or {}).get("answer")
@@ -130,10 +146,18 @@ def running(key):
     return held is not None and held[0].poll() is None
 
 
+def other_running(key):
+    """Another pair's line-up this Connect runs now (review B-2: one at a time — each loads the speech model and
+    listens for hours), or None."""
+    return next((k for k in list(_RUNNING) if k not in (key, SPEECH) and running(k)), None)
+
+
 def start_sync(miner, language, profile, key, book, audio):
     """Anki Miner's `sync` for one pair, started and left running (`anki_miner.start`): the book's EPUB and the audio
     files in order. -> its state (RUNNING). Raises AnkiMinerError (absent, quarantined, crashed)."""
     from app.connect import anki_miner
+    if running(key):            # review B-1: never a second run on one run folder (a stopped one not ended yet)
+        raise anki_miner.AnkiMinerError("busy", "This audiobook's line-up hasn't stopped yet.")
     where = folder(key)
     run_dir = os.path.join(where, "run")
     os.makedirs(os.path.join(run_dir, RUN_ID), exist_ok=True)
@@ -170,8 +194,10 @@ def start_speech(miner, language, profile):
         pass
     os.makedirs(folder(SPEECH), exist_ok=True)
     out = os.path.join(folder(SPEECH), VERDICT)
+    # never bound to Connect (review B-17, as *Finish its setup*'s: Anki Miner's own setup, under its own lock, writing
+    # its shared models folder, finishes whenever Connect quits)
     proc = anki_miner.start(miner, anki_miner.speech_setup_args(language, profile, os.path.join(
-        staging, anki_miner.PROGRESS)), out)
+        staging, anki_miner.PROGRESS)), out, bind=False)
     _RUNNING[SPEECH] = (proc, out)
     return write(SPEECH, {"status": RUNNING, "started": time.time(), "tries": read(SPEECH).get("tries") or 0})
 
@@ -193,7 +219,8 @@ def look(key):
         verdict = anki_miner.ended(proc, out)
     except anki_miner.AnkiMinerError as e:
         _RUNNING.pop(key, None)
-        return write(key, dict(state, status=FAILED, message=e.message, tries=(state.get("tries") or 0) + 1))
+        return write(key, dict(state, status=FAILED, message=e.message, tries=(state.get("tries") or 0) + 1,
+                               failed_at=utc()))
     if verdict is None:
         if key == SPEECH:
             _heartbeat()
@@ -233,7 +260,10 @@ def _ended(key, state, verdict):
     if key == SPEECH:
         why = anki_miner.speech_setup_done(verdict)
         if why is None:
+            anki_miner._SPEECH.clear()      # installed: asked again at once, never the no kept
             return {"status": DONE, "at": time.time()}
+        if verdict.get("error") == "BUSY":  # review B-5: its window open — no failure, started again once it closes
+            return dict(state, status=INTERRUPTED, busy=True)
         if verdict.get("error") == "CANCELLED" or (
                 ((verdict.get("result") or {}).get(anki_miner.SPEECH_ITEM) or {}).get("status") == "not_attempted"):
             return dict(state, status=STOPPED, stopped_at=utc())
@@ -243,13 +273,16 @@ def _ended(key, state, verdict):
     if code == "CANCELLED":
         return dict(state, status=STOPPED, stopped_at=state.get("stopped_at") or utc())
     if code == "SETUP_ERROR":
-        anki_miner._SPEECH.clear()      # its speech model went (or never was): asked again, never a loop of syncs
-        return dict(state, status=NO_MODEL, message=(run or verdict).get("message"))
+        # its speech model went (or never was), or ffmpeg: asked again — a try counted, so it never loops (review B-12)
+        anki_miner._SPEECH.clear()
+        return dict(state, status=NO_MODEL, message=(run or verdict).get("message"), tries=tries, failed_at=utc())
     if run is None or not run.get("ok"):
         return dict(state, status=FAILED, message=(run or verdict).get("message") or code or "no answer",
-                    code=code, tries=tries)
+                    code=code, tries=tries, failed_at=utc())
     report = _read_json(os.path.join(folder(key), "run", RUN_ID, os.path.basename(str(run.get("file") or "")))) or {}
-    files = [{"audio_file": f.get("audio_file"), "subtitle_file": f.get("subtitle_file"), "status": f.get("status")}
+    files = [{"audio_file": f.get("audio_file"), "subtitle_file": f.get("subtitle_file"), "status": f.get("status"),
+              "units": {str(c["n"]): c["index"] for c in f.get("cues") or () if isinstance(c, dict)
+                        and isinstance(c.get("n"), int) and isinstance(c.get("index"), int)}}
              for f in report.get("files") or () if isinstance(f, dict)]
     synced = [f for f in files if f["status"] == "synced" and isinstance(f["subtitle_file"], str)
               and os.path.isfile(f["subtitle_file"])]
@@ -336,31 +369,47 @@ def clean(text):
 
 
 def cues(state):
-    """Every cue of a usable line-up, in the book's order: [Cue(audio, subtitle, start, end, clean text)]."""
+    """Every cue of a usable line-up, in the book's order: [Cue(audio, subtitle, start, end, clean text, the book's unit
+    it is)] — only a file whose audio and subtitle are on this computer now (review B-3: an audiobook moved or away
+    since is never sent: those words go as the book)."""
     out = []
     for f in state.get("files") or ():
-        if f.get("status") != "synced" or not f.get("subtitle_file") or not f.get("audio_file"):
+        if f.get("status") != "synced" or not f.get("subtitle_file") or not f.get("audio_file") or \
+                not os.path.isfile(f["audio_file"]) or not os.path.isfile(f["subtitle_file"]):
             continue
-        for start, end, text in srt_cues(f["subtitle_file"]):
-            out.append(Cue(f["audio_file"], f["subtitle_file"], start, end, clean(text)))
+        units = f.get("units") or {}
+        for n, (start, end, text) in enumerate(srt_cues(f["subtitle_file"]), 1):
+            out.append(Cue(f["audio_file"], f["subtitle_file"], start, end, clean(text), units.get(str(n))))
     return out
 
 
-def place(line_text, spelling, found):
-    """The cue a word's card is cut from -> a Cue, or None (its sentence wasn't heard: the book's card, no clip). Its
-    sentence (`line_text`) is a cue, or holds one / sits inside one (MIN_CHARS or longer: a short line is only ever its
-    own cue), and that cue holds the word as written (`spelling`): never a neighbour's clip."""
+def place(line_text, spelling, found, unit=None):
+    """The cue a word's card is cut from -> a Cue, or None (its sentence wasn't heard: the book's card, no clip). The
+    book's unit the pick knows (`unit`, Anki Miner's own index: the sync's `cues[].index`) names it when its cue holds
+    the word. Else its sentence (`line_text`) is a cue, or holds one / sits inside one (MIN_CHARS or longer: a short
+    line is only ever its own cue), and that cue holds the word as written (`spelling`) — the one cue of the sentence
+    that does (review B-14: two of its cues holding it, 人 in 人間 and in 人, is no answer): never a neighbour's clip."""
+    hold = clean(spelling)
+    if isinstance(unit, int) and not isinstance(unit, bool):
+        cue = next((c for c in found if c.unit == unit), None)
+        if cue is not None and (not hold or hold in cue.text):
+            return cue
     want = clean(line_text)
     if not want:
         return None
-    hold = clean(spelling)
-    for cue in found:
+    for k, cue in enumerate(found):
         if not cue.text:
             continue
-        same = cue.text == want or (len(want) >= MIN_CHARS and want in cue.text) or \
-            (len(cue.text) >= MIN_CHARS and cue.text in want)
-        if same and (not hold or hold in cue.text):
-            return cue
+        if cue.text == want or (len(want) >= MIN_CHARS and want in cue.text):
+            return cue if not hold or hold in cue.text else None
+        if len(cue.text) >= MIN_CHARS and cue.text in want:
+            run = [cue]                     # the sentence's cues, in a row
+            for nxt in found[k + 1:]:
+                if not nxt.text or nxt.text not in want or len(nxt.text) < MIN_CHARS:
+                    break
+                run.append(nxt)
+            holding = [c for c in run if not hold or hold in c.text]
+            return holding[0] if len(holding) == 1 else None
     return None
 
 
@@ -371,8 +420,8 @@ def split(words, state):
     groups, rest = {}, []
     found = cues(state) if usable(state) else []
     for word in words:
-        cue = place(word.get("line_text"), word.get("surface") or word.get("orth") or word.get("word"), found) \
-            if found else None
+        cue = place(word.get("line_text"), word.get("surface") or word.get("orth") or word.get("word"), found,
+                    word.get("unit_index")) if found else None
         if cue is None:
             rest.append(word)
             continue
@@ -394,21 +443,19 @@ def overlap(said, heard):
     return sum(block.size for block in matcher.get_matching_blocks()) / len(a)
 
 
-def samples(lines, n=SAMPLES, span=SAMPLE_S):
-    """Where a subtitle is heard: n places at 1/(n+1)… of its lines, each its line and the ones after it until about
-    `span` seconds -> [(the first line's start, how many lines after it, their text)]."""
-    if not lines:
+def samples(lines, n=SAMPLES):
+    """Where a subtitle is heard: n places at 1/(n+1)… of its lines, each the first line from there of SAMPLE_CHARS
+    clean characters or more, one line alone -> [(its start, 0 lines after it, its text)]."""
+    long_enough = [k for k, line in enumerate(lines) if len(clean(line[2])) >= SAMPLE_CHARS]
+    if not long_enough:
         return []
-    picks = sorted({min(len(lines) - 1, (len(lines) * k) // (n + 1)) for k in range(1, n + 1)})
-    out = []
-    for at in picks:
-        start, end, text, after = lines[at][0], lines[at][1], [lines[at][2]], 0
-        while end - start < span and at + after + 1 < len(lines):
-            after += 1
-            end = lines[at + after][1]
-            text.append(lines[at + after][2])
-        out.append((start, after, "".join(text)))
-    return out
+    picks = []
+    for k in range(1, n + 1):
+        at = (len(lines) * k) // (n + 1)
+        found = next((i for i in long_enough if i >= at), long_enough[-1])
+        if found not in picks:
+            picks.append(found)
+    return [(lines[at][0], 0, lines[at][2]) for at in sorted(picks)]
 
 
 def spot_key(audio, subtitle):
@@ -421,7 +468,7 @@ def spot_key(audio, subtitle):
         st = os.stat(audio)
     except OSError:
         return None
-    return f"{digest.hexdigest()[:24]}-{st.st_size}-{st.st_mtime_ns}"
+    return f"{SPOT_RULE}-{digest.hexdigest()[:24]}-{st.st_size}-{st.st_mtime_ns}"
 
 
 def spot_kept(key):
@@ -436,6 +483,17 @@ def _keep_spot(key, verdict, shares):
 
 
 def spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT):
+    """(`_spot_check`, its run folder removed after: the clips and transcripts are Anki Miner's for the caller to
+    delete — review B-22.)"""
+    import shutil
+    try:
+        return _spot_check(miner, language, profile, audio, subtitle, timeout)
+    finally:
+        shutil.rmtree(folder("spot-" + ((spot_key(audio, subtitle) or "x").split("-", 1)[-1])[:24]),
+                      ignore_errors=True)
+
+
+def _spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT):
     """AB-Q5: is `subtitle` timed to `audio`? SAMPLES places of it cut from the audio (`media`, one call) and heard
     (`transcribe`, one call), each compared with its lines (`overlap`): MATCHES of them at MATCH or more → MATCHED,
     else NOT_MATCHED; kept per `spot_key`. -> MATCHED / NOT_MATCHED, or None (it couldn't be checked now: a call
@@ -449,7 +507,7 @@ def spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT):
     places = samples(srt_cues(subtitle))
     if not places:
         return None
-    where = folder("spot-" + (key or "x")[:24])
+    where = folder("spot-" + ((key or "x").split("-", 1)[-1])[:24])
     os.makedirs(where, exist_ok=True)
     run_dir = os.path.join(where, "run")
     os.makedirs(run_dir, exist_ok=True)
@@ -462,7 +520,8 @@ def spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT):
                                             for start, after, _t in places]}])
     path = os.path.join(where, "media.json")
     _write_json(path, media)
-    verdict = anki_miner.api(miner, ["media", path], timeout=timeout)
+    # a look-up for the job's *Stop* (review B-16): nothing here writes anything but its run folder, so a press ends it
+    verdict = anki_miner.api(miner, ["media", path], timeout=timeout, look_up=True)
     run = next((r for r in verdict.get("runs") or () if isinstance(r, dict) and r.get("run_id") == "spot"), None)
     if run is None or not run.get("ok"):
         if not verdict.get("runs"):
@@ -482,7 +541,7 @@ def spot_check(miner, language, profile, audio, subtitle, timeout=SPOT_TIMEOUT):
                                      for k, c in enumerate(clips, 1)])
     path = os.path.join(where, "transcribe.json")
     _write_json(path, heard_job)
-    verdict = anki_miner.api(miner, ["transcribe", path], timeout=timeout)
+    verdict = anki_miner.api(miner, ["transcribe", path], timeout=timeout, look_up=True)
     if not verdict.get("runs") and not verdict.get("ok"):
         anki_miner._result(verdict)                 # SETUP_ERROR (no speech model) and the like: raised
     shares = []

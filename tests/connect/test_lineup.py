@@ -169,14 +169,16 @@ def test_nothing_lined_up_is_none_and_a_poor_grade_is_never_used_for_cards(tmp_p
     assert lineup.partial_line(dict(skipped, unheard=[]), "杜子春") is None
 
 
-def test_a_sync_with_no_speech_model_is_no_model_never_a_failure_counted(tmp_path, fake_miner):
+def test_a_sync_refused_for_its_setup_is_no_model_asked_again_and_a_try_counted(tmp_path, fake_miner):
+    """`sync`'s SETUP_ERROR (no speech model - or no ffmpeg, which `check`'s item doesn't see): NO_MODEL, the model asked
+    about again, and a try counted, so it never starts a sync at every look for ever (review B-12)."""
     audio = _audio_files(tmp_path)
     fake_miner.plan(sync={"error": "SETUP_ERROR"})
-    anki_miner._SPEECH[("x", "ja", None)] = True
+    anki_miner._SPEECH[("x", "ja", None)] = (True, time.monotonic())
     lineup.start_sync(fake_miner.path, "ja", None, "pair-6", _book(tmp_path), audio)
     _until(lambda: not lineup.running("pair-6"))
     state = lineup.look("pair-6")
-    assert state["status"] == lineup.NO_MODEL and not state.get("tries")
+    assert state["status"] == lineup.NO_MODEL and state["tries"] == 1 and state["failed_at"]
     assert anki_miner._SPEECH == {}, "the model is asked about again, never assumed"
 
 
@@ -281,7 +283,10 @@ def test_no_model_anywhere_is_not_ready_and_the_windows_own_profile_is_never_cha
     fake_miner.plan(speech={"installed": [], "model": "large-v3"})
     assert anki_miner.speech_ready(fake_miner.path, "ja", "p-surasura", str(tmp_path)) is False
     assert fake_miner.commands().count("settings-import") == len(anki_miner.SPEECH_MODELS)
-    assert anki_miner.speech_ready(fake_miner.path, "ja", "p-surasura", str(tmp_path)) is False, "a no is asked again"
+    before = len(fake_miner.commands())
+    assert anki_miner.speech_ready(fake_miner.path, "ja", "p-surasura", str(tmp_path)) is False
+    assert len(fake_miner.commands()) == before, "a no is kept a while: never five launches a look (B-11)"
+    anki_miner._SPEECH.clear()
     before = len(fake_miner.commands())
     fake_miner.plan(speech={"installed": ["small"], "model": "large-v3"}, active_profile="default")
     assert anki_miner.speech_ready(fake_miner.path, "ja", "default", str(tmp_path)) is False
@@ -302,13 +307,19 @@ def test_the_model_is_installed_only_through_anki_miners_own_setup_small_by_defa
     assert anki_miner.speech_ready(fake_miner.path, "ja", "p-surasura", str(tmp_path)) is True
 
 
-@pytest.mark.parametrize("outcome, status", [("failed", lineup.FAILED), ("busy", lineup.FAILED)])
-def test_a_download_that_failed_is_said_never_tried_again_by_itself(tmp_path, fake_miner, outcome, status):
-    fake_miner.plan(speech={"installed": []}, speech_setup=outcome)
+def test_a_download_that_failed_is_failed_and_one_refused_while_its_window_is_open_is_no_failure(tmp_path, fake_miner):
+    """A failed download: FAILED with Anki Miner's reason (the question asked again by `Steps.speech`). BUSY (its window
+    open): no failure - started again once it can (review B-5)."""
+    fake_miner.plan(speech={"installed": []}, speech_setup="failed")
     lineup.start_speech(fake_miner.path, "ja", "p-surasura")
     _until(lambda: not lineup.running(lineup.SPEECH))
     state = lineup.look(lineup.SPEECH)
-    assert state["status"] == status and state["message"]
+    assert state["status"] == lineup.FAILED and state["message"] == "the download failed"
+    fake_miner.plan(speech={"installed": []}, speech_setup="busy")
+    lineup.start_speech(fake_miner.path, "ja", "p-surasura")
+    _until(lambda: not lineup.running(lineup.SPEECH))
+    state = lineup.look(lineup.SPEECH)
+    assert state["status"] == lineup.INTERRUPTED and state["busy"] is True
 
 
 def test_setup_verdicts_name_the_models_outcome(tmp_path):
@@ -325,6 +336,11 @@ def test_setup_verdicts_name_the_models_outcome(tmp_path):
 # --------------------------------------------------------------------------- #
 # The spot-check (AB-Q5)
 # --------------------------------------------------------------------------- #
+def _book_lines():
+    """The real line-up's 14 sentences of 杜子春 (every one long enough to be heard as a sample)."""
+    return [t for k in (1, 2) for _s, _e, t in lineup.srt_cues(os.path.join(SYNCED, f"toshisyun_0{k}.srt"))]
+
+
 def _subtitle(tmp_path, lines):
     path = tmp_path / "toshisyun_01.srt"
     path.write_text(_srt_of(lines, each=9.0), encoding="utf-8")
@@ -334,15 +350,17 @@ def _subtitle(tmp_path, lines):
 
 
 def test_a_subtitle_that_plays_in_time_passes_the_spot_check_and_the_verdict_is_kept(tmp_path, fake_miner):
-    """Three places of the subtitle cut from the audio and heard: each holds its lines → matched; asked again for the
-    same subtitle and audio file, the kept verdict answers (no second listen); the subtitle changed → checked again."""
-    audio, sub = _subtitle(tmp_path, _lines("ja")[:16])
+    """SAMPLES places of the subtitle, one line each, cut from the audio and heard: each holds its line → matched; its
+    run folder removed after; asked again for the same subtitle and audio file, the kept verdict answers (no second
+    listen); the subtitle changed → checked again."""
+    audio, sub = _subtitle(tmp_path, _book_lines())
     fake_miner.plan(speech={"installed": ["small"], "model": "small"})
     assert lineup.spot_check(fake_miner.path, "ja", None, audio, sub) == lineup.MATCHED
     assert fake_miner.commands().count("media") == 1 and fake_miner.commands().count("transcribe") == 1
-    [media] = [json.load(open(c["argv"][2], encoding="utf-8")) for c in fake_miner.calls()
-               if c.get("argv", [None, None])[1] == "media"]
-    assert len(media["episodes"][0]["lines"]) == lineup.SAMPLES and media["episodes"][0]["audio_file"] == audio
+    [asked] = [c for c in fake_miner.calls() if "media_lines" in c]
+    assert len(asked["media_lines"]) == lineup.SAMPLES and asked["audio_file"] == audio
+    assert all(line["line_expansion"] == [0, 0] for line in asked["media_lines"]), "one line a place (review B-13)"
+    assert [n for n in os.listdir(lineup.root()) if n.startswith("spot-")] == [], "its clips deleted (B-22)"
     assert lineup.spot_check(fake_miner.path, "ja", None, audio, sub) == lineup.MATCHED
     assert fake_miner.commands().count("media") == 1, "kept: never heard twice"
     with open(sub, "a", encoding="utf-8") as f:
@@ -352,18 +370,25 @@ def test_a_subtitle_that_plays_in_time_passes_the_spot_check_and_the_verdict_is_
 
 
 def test_a_subtitle_that_doesnt_match_its_audio_fails_and_one_match_in_three_is_not_enough(tmp_path, fake_miner):
-    """Heard words that aren't its lines (another episode's subtitle) → not matched — the job is *Not timed* (never a
-    wrong clip); only one place of three matching is not enough (MATCHES); nothing heard at all fails too."""
-    lines = _lines("ja")[:16]
+    """Heard words that aren't its lines (another episode's subtitle, or one off by a line or more: each clip holds its
+    neighbour's words) → not matched — the job is *Not timed* (never a wrong clip); two places of five matching is not
+    enough (MATCHES), three is; nothing heard at all fails too."""
+    lines = _book_lines()
     audio, sub = _subtitle(tmp_path, lines)
-    other = "".join(_lines("ja")[20:24])
+    other = "".join(_lines("ja")[:3])
     places = lineup.samples(lineup.srt_cues(sub))
+    assert len(places) == lineup.SAMPLES
     fake_miner.plan(speech={"installed": ["small"], "model": "small"},
-                    heard={places[0][2][:6]: other, places[1][2][:6]: other})
+                    heard={p[2][:6]: other for p in places[:3]})
     assert lineup.spot_check(fake_miner.path, "ja", None, audio, sub) == lineup.NOT_MATCHED
     kept = json.load(open(os.path.join(lineup.root(), lineup.SPOT), encoding="utf-8"))
     [verdict] = kept.values()
-    assert sum(1 for s in verdict["shares"] if s >= lineup.MATCH) == 1
+    assert sum(1 for s in verdict["shares"] if s >= lineup.MATCH) == 2
+    with open(sub, "a", encoding="utf-8") as f:
+        f.write("\n")
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"},
+                    heard={p[2][:6]: other for p in places[:2]})
+    assert lineup.spot_check(fake_miner.path, "ja", None, audio, sub) == lineup.MATCHED
     (tmp_path / "other").mkdir()
     audio2, sub2 = _subtitle(tmp_path / "other", lines[:12])
     fake_miner.plan(speech={"installed": ["small"], "model": "small"}, deaf=True)
@@ -371,7 +396,7 @@ def test_a_subtitle_that_doesnt_match_its_audio_fails_and_one_match_in_three_is_
 
 
 def test_a_spot_check_without_the_speech_model_is_anki_miners_setup_refusal(tmp_path, fake_miner):
-    audio, sub = _subtitle(tmp_path, _lines("ja")[:16])
+    audio, sub = _subtitle(tmp_path, _book_lines())
     fake_miner.plan(speech={"installed": [], "model": "small"})
     with pytest.raises(anki_miner.AnkiMinerError) as e:
         lineup.spot_check(fake_miner.path, "ja", None, audio, sub)
@@ -379,11 +404,13 @@ def test_a_spot_check_without_the_speech_model_is_anki_miners_setup_refusal(tmp_
     assert lineup.spot_kept(lineup.spot_key(audio, sub)) is None, "no verdict kept for a check never made"
 
 
-def test_samples_are_spread_through_the_subtitle_each_about_thirty_seconds():
-    cues = [(10.0 * n, 10.0 * n + 9.0, f"line{n}") for n in range(40)]
+def test_samples_are_one_line_each_spread_through_the_subtitle_and_never_a_short_line():
+    cues = [(10.0 * n, 10.0 * n + 9.0, "はい" if n % 2 else f"今日は雨が降っています{n}") for n in range(60)]
     places = lineup.samples(cues)
-    assert [round(p[0]) for p in places] == [100, 200, 300] and all(p[1] == 3 for p in places)
-    assert lineup.samples([]) == [] and len(lineup.samples(cues[:2])) == 2
+    assert [round(p[0]) for p in places] == [100, 200, 300, 400, 500] and all(p[1] == 0 for p in places)
+    assert all(len(lineup.clean(p[2])) >= lineup.SAMPLE_CHARS for p in places)
+    assert lineup.samples([]) == [] and lineup.samples([(0.0, 1.0, "はい")]) == []
+    assert len(lineup.samples(cues[:3])) == 2
 
 
 def test_the_fit_check_mines_a_matched_audio_subtitle_at_its_own_times_and_holds_one_that_doesnt(tmp_path):
@@ -509,7 +536,8 @@ def test_a_download_that_failed_asks_again_with_its_reason(paired, fake_miner):
     got = steps.line_up("ja", _job(), paired["book"])
     assert got == {"ask": runner.SPEECH_FAILED.format(why="the download failed")}
     assert lineup.answer() is None, "asked again: never a second download by itself"
-    assert steps.line_up("ja", _job(), paired["book"]) == {"ask": runner.SPEECH_ASK}
+    assert steps.line_up("ja", _job(), paired["book"]) == got, "the reason kept for every part until answered (B-6)"
+    assert fake_miner.commands().count("setup") == 1
 
 
 def test_on_battery_a_line_up_waits_for_the_plug_unless_you_asked(paired, fake_miner, monkeypatch):
@@ -744,3 +772,189 @@ def test_the_rows_line_while_it_lines_up_is_the_runners_with_stop(tmp_path):
     stopping = got.items[5]._replace(stopping=True)
     assert view_rows._connected(view_rows.Status("waiting", "Waiting", "", "dim"), stopping, "book").label == \
         view_rows.STRINGS["stopping"]
+
+
+# --------------------------------------------------------------------------- #
+# The review's round (tracks/pipeline/work/AB/review-stage-b-adversary.md)
+# --------------------------------------------------------------------------- #
+def test_b1_a_stop_not_ended_yet_is_never_a_second_sync_on_its_folder(paired, fake_miner):
+    """B-1: *Stop*, then *Mine now* before Anki Miner reached its next step: the part waits *stopping* while the stopped
+    child still runs — never its cancel file removed, never a second `sync` on the same run folder."""
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"}, sync={"files": paired["srts"], "hold": 20.0,
+                                                                             "report": {"grade": "A"}})
+    steps = paired["steps"]
+    with pytest.raises(runner.Wait):
+        steps.line_up("ja", _job(), paired["book"])
+    proc, _out = lineup._RUNNING[paired["key"]]
+    lineup.write(paired["key"], dict(lineup.read(paired["key"]), status=lineup.STOPPED, stopped_at="2026-01-01T00:00:00Z"))
+    with pytest.raises(runner.Wait) as w:
+        steps.line_up("ja", _job(asked_at="2999-01-01T00:00:00Z"), paired["book"])
+    assert w.value.reason == runner.LINING_UP_STOPPING and w.value.pair == paired["key"]
+    assert lineup._RUNNING[paired["key"]][0] is proc
+    with pytest.raises(anki_miner.AnkiMinerError):
+        lineup.start_sync(fake_miner.path, "ja", None, paired["key"], paired["book"], paired["files"])
+    _until(lambda: fake_miner.commands().count("sync") == 1)
+    assert fake_miner.commands().count("sync") == 1
+
+
+def test_b2_one_line_up_at_a_time_across_books(paired, fake_miner, tmp_path):
+    """B-2: another book's line-up running → this book waits its turn (*after another book's*), never a second speech
+    model listening for hours beside it."""
+    audio = _audio_files(tmp_path)
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"},
+                    sync=_synced_plan([os.path.basename(a) for a in audio], hold=20.0))
+    lineup.start_sync(fake_miner.path, "ja", None, "another-pair", _book(tmp_path), audio)
+    with pytest.raises(runner.Wait) as w:
+        paired["steps"].line_up("ja", _job(), paired["book"])
+    assert w.value.reason == runner.LINING_UP_AFTER and runner.lining_up(w.value.reason)
+    assert paired["key"] not in lineup._RUNNING
+
+
+def test_b3_a_moved_audiobook_is_cut_from_its_files_where_they_are_now_and_one_away_goes_as_the_book(paired, tmp_path):
+    """B-3: a finished line-up named the files where they were; the pair's key is their sizes, so the store's files
+    now are the same files: the cards are cut from them. A file away (a drive unplugged): its words go as the book."""
+    moved = [str(tmp_path / f"moved{k}.mp3") for k in range(3)]
+    for m in moved[:2]:
+        open(m, "wb").close()
+    state = {"status": lineup.DONE, "grade": "A", "book": paired["book"],
+             "files": [{"audio_file": f"Z:/gone/{k}.mp3", "subtitle_file": os.path.join(SYNCED, f"toshisyun_0{min(k, 1) + 1}.srt"),
+                        "status": "synced"} for k in range(3)]}
+    lineup.write(paired["key"], state)
+    from tests import connect_helpers as c
+    with c.store("ja") as s:
+        with s._writing():
+            for key, _i, rec in s._audiobook_rows(paired["item"]):
+                s.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
+                               (json.dumps(dict(rec, audiobook=dict(rec["audiobook"], files=moved)), sort_keys=True,
+                                           ensure_ascii=False), key))
+    got = paired["steps"].line_up("ja", _job(), paired["book"])
+    assert [f["audio_file"] for f in got["lineup"]["files"]] == moved
+    found = lineup.cues(got["lineup"])
+    assert {c.audio for c in found} == set(moved[:2]), "the file away is never sent"
+
+
+def test_b4_b6_a_stopped_or_failed_download_asks_again_and_keeps_its_reason(paired, fake_miner):
+    fake_miner.plan(speech={"installed": []}, speech_setup="installed")
+    lineup.set_answer(True)
+    lineup.write(lineup.SPEECH, {"status": lineup.STOPPED, "stopped_at": "2026-11-02T10:00:00Z"})
+    got = paired["steps"].line_up("ja", _job(), paired["book"])
+    assert got == {"ask": runner.SPEECH_FAILED.format(why="it was stopped")} and lineup.answer() is None
+    assert "setup" not in fake_miner.commands(), "a stopped download never starts again by itself (B-4)"
+    assert lineup.asks_speech(got["ask"]) and lineup.asks_speech(runner.SPEECH_ASK)
+    assert not lineup.asks_speech(runner.LINING_UP_STOPPED)
+
+
+def test_b5_its_window_open_is_a_wait_and_the_download_starts_again(paired, fake_miner):
+    fake_miner.plan(speech={"installed": []}, speech_setup="installed")
+    lineup.set_answer(True)
+    lineup.write(lineup.SPEECH, {"status": lineup.RUNNING})           # left by a child that answered BUSY
+    lineup._RUNNING.pop(lineup.SPEECH, None)
+    lineup.write(lineup.SPEECH, {"status": lineup.INTERRUPTED, "busy": True})
+    with pytest.raises(runner.Wait) as w:
+        paired["steps"].line_up("ja", _job(), paired["book"])
+    assert w.value.reason == runner.ANKI_MINER_OPEN
+    _until(lambda: not lineup.running(lineup.SPEECH))
+    assert fake_miner.commands().count("setup") == 1
+
+
+def test_b11_after_not_now_anki_miner_is_never_asked_about_the_model(paired, fake_miner):
+    fake_miner.plan(speech={"installed": []})
+    lineup.set_answer(False)
+    assert paired["steps"].line_up("ja", _job(), paired["book"]) is None
+    assert "check" not in fake_miner.commands() and "settings-import" not in fake_miner.commands()
+
+
+def test_b14_a_word_in_two_of_its_sentences_cues_is_no_answer_and_the_books_unit_names_its_cue(tmp_path):
+    """B-14: 人 in a line of two sentences whose cues both hold it (人間, 人) is no answer (the book's card, never a
+    neighbour's clip); the unit the pick knows (Anki Miner's own index) names the cue when it holds the word."""
+    srt = tmp_path / "a.srt"
+    srt.write_text(_srt_of(["人間はみな死ぬものだと思っている。", "その人は静かに笑っていました。"]), encoding="utf-8")
+    audio = tmp_path / "a.mp3"
+    audio.write_bytes(b"ID3")
+    state = {"status": lineup.DONE, "grade": "A", "files": [{"audio_file": str(audio), "subtitle_file": str(srt),
+                                                            "status": "synced", "units": {"1": 40, "2": 41}}]}
+    line = "人間はみな死ぬものだと思っている。その人は静かに笑っていました。"
+    found = lineup.cues(state)
+    assert lineup.place(line, "人", found) is None
+    assert lineup.place(line, "笑", found).unit == 41
+    assert lineup.place(line, "人", found, unit=41).start == found[1].start
+    assert lineup.place(line, "笑", found, unit=40) is not None and lineup.place(line, "笑", found, unit=40).unit == 41
+
+
+def test_b8_b9_a_restarted_line_up_frees_its_stopped_parts_and_a_stop_needs_no_store_read(tmp_path, monkeypatch):
+    """B-8: *Mine now* on one part starts a stopped line-up again: its other parts parked on the stop are queued and the
+    run woken. B-9: the pair a part waits on is kept, so its *Stop* cancels that line-up with no store read."""
+    woke = []
+    monkeypatch.setattr("app.connect.kick.wake", lambda videos=False: woke.append(1))
+    stopped = []
+    monkeypatch.setattr(lineup, "stop", lambda key: stopped.append(key))
+    restart = runner._lining(runner.LINING_UP_FILE.format(k=1, n=3), "pair-x")
+    restart.restarted = True
+    with Ledger(str(tmp_path / "ledger.db")) as ledger:
+        a = ledger.queue("ja", 31, "mine", None, "store-1")
+        b = ledger.queue("ja", 32, "mine", None, "store-1")
+        ledger.set_state(b, "waiting", reason=runner.LINING_UP_STOPPED)
+        with pytest.raises(runner.Wait):
+            runner._line_up(_LineUpSteps([restart]), ledger, "ja", {"id": a, "item_id": 31}, ("x.epub", "x.epub"))
+        assert ledger.job_by_id(b)["state"] == "queued" and woke == [1]
+        parked = {b: None, a: None}
+        ledger.set_state(a, "waiting", reason=runner.LINING_UP_FILE.format(k=1, n=3))
+        monkeypatch.setattr(runner, "_kicked", lambda steps: True)
+        runner._woken(None, ledger, parked)
+        assert parked == {a: None}, "the queued part goes again this run; the waiting one stays parked"
+        with pytest.raises(runner.Wait):
+            runner._stopped(object(), ledger, "ja", ledger.job_by_id(a), None, True)
+        assert stopped == ["pair-x"]
+
+
+def test_b15_a_part_waiting_on_its_line_up_writes_nothing_while_its_line_is_the_same(tmp_path):
+    class S(_LineUpSteps):
+        def mines(self, lang, kind):
+            return kind == "books"
+
+        def reading(self, lang, job):
+            return ("b.epub", "b.epub")
+    line = runner.LINING_UP_FILE.format(k=2, n=6)
+    with Ledger(str(tmp_path / "ledger.db")) as ledger:
+        jid = ledger.queue("ja", 41, "mine", None, "store-1")
+        steps = S([runner._lining(line, "p"), runner._lining(line, "p")])
+        for _ in range(2):
+            with pytest.raises(runner.Wait) as w:
+                runner._pick(steps, ledger, "ja", ledger.job_by_id(jid))
+            runner._wait(ledger, ledger.job_by_id(jid), w.value, {"waiting": {}})
+            if _ == 0:
+                first = ledger.job_by_id(jid)["updated_at"], ledger.conn.total_changes
+        assert ledger.job_by_id(jid)["state"] == "waiting"
+        assert (ledger.job_by_id(jid)["updated_at"], ledger.conn.total_changes) == first, "S19: no write a look"
+
+
+def test_b16_b17_the_spot_check_ends_at_a_stop_and_the_models_setup_outlives_connect(tmp_path, fake_miner, monkeypatch):
+    seen = []
+    real = anki_miner.api
+
+    def api(path, args, **kw):
+        seen.append((args[0], kw.get("look_up")))
+        return real(path, args, **kw)
+    monkeypatch.setattr(anki_miner, "api", api)
+    audio, sub = _subtitle(tmp_path, _book_lines())
+    fake_miner.plan(speech={"installed": ["small"], "model": "small"})
+    lineup.spot_check(fake_miner.path, "ja", None, audio, sub)
+    assert seen == [("media", True), ("transcribe", True)]
+    bound = []
+    monkeypatch.setattr(anki_miner, "_bind", lambda proc: bound.append(proc))
+    fake_miner.plan(speech={"installed": []}, speech_setup="installed")
+    lineup.start_speech(fake_miner.path, "ja", None)
+    assert bound == [], "Anki Miner's own setup finishes whenever Connect quits"
+    _until(lambda: not lineup.running(lineup.SPEECH))
+
+
+def test_b18_b19_a_given_up_line_up_goes_again_after_a_newer_mine_now_compared_as_stamps(paired, fake_miner):
+    lineup.write(paired["key"], {"status": lineup.FAILED, "tries": lineup.TRIES, "message": "no answer",
+                                 "failed_at": "2026-11-02T10:00:00Z"})
+    got = paired["steps"].line_up("ja", _job(asked_at="2026-11-02T10:00:00.500000Z"), paired["book"])
+    assert got == {"ask": runner.SPEECH_ASK}, "tried again: no longer given up"
+    assert runner._newer("2026-11-02T10:00:00.500000Z", "2026-11-02T10:00:00Z")
+    assert not runner._newer("2026-11-02T09:59:59.900000Z", "2026-11-02T10:00:00Z")
+    assert not runner._newer(None, "2026-11-02T10:00:00Z")
+    given_up = paired["steps"].line_up("ja", _job(asked_at="2026-11-02T09:00:00Z"), paired["book"])
+    assert given_up["lineup"] is None and "no answer" in given_up["line"]

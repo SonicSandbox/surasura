@@ -69,8 +69,8 @@ def speech_model(language, need_id, yes, path=None):
         says = {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND kind = 'speech-model' "
                                                   "AND fixed_at IS NULL", (language,))}
         lineup.set_answer(yes)
-        for job in ledger.jobs(language, states=("waiting",)):
-            if job.get("reason") in says:
+        for job in ledger.jobs(language, states=("waiting",)):      # either wording, asked before or since (B-6)
+            if job.get("reason") in says or lineup.asks_speech(job.get("reason")):
                 ledger.set_state(job["id"], "queued")      # its reason cleared: picks anew, the answer read then
         ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = 'speech-model' AND "
                             "fixed_at IS NULL", (book._now(), language))

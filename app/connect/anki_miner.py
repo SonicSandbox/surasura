@@ -313,15 +313,17 @@ def _communicate(proc, timeout, on_poll=None, look_up=False):
     return stopping.wait(proc, timeout, on_poll, _stop, look_up=look_up, every=POLL_S)[0]
 
 
-def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True):
+def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None):
     """Run `<path> --api <args…>` and return its verdict (a dict). Raises AnkiMinerError for a call with no verdict
     (absent, quarantined, crashed, timeout, unknown-version); a verdict with `ok: false` is returned as it is.
     `on_poll`: called every POLL_S while the call runs. A look-up (LOOK_UPS) still under way at the job's *Stop* is
     ended and raises `stopping.Stopped` (row 56: never an AnkiMinerError — nothing of it is kept). `bind` False: the
     call is never ended with this process (`_bind`) — Anki Miner's own `setup`, under its own run lock, finishes
-    whenever Surasura quits (review A2-4)."""
+    whenever Surasura quits (review A2-4). `look_up` True: ended at the job's *Stop* as a look-up is (Stage B's
+    spot-check: `media` and `transcribe` write only their own run folder)."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
-    look_up = bool(args) and args[0] in LOOK_UPS    # row 56: read before the program starts, never after
+    if look_up is None:
+        look_up = bool(args) and args[0] in LOOK_UPS    # row 56: read before the program starts, never after
     try:
         proc = subprocess.Popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, creationflags=flags)
@@ -358,11 +360,12 @@ def _verdict(returncode, stdout):
     return verdict
 
 
-def start(path, args, out):
+def start(path, args, out, bind=True):
     """A long call left running while Connect goes on (Michi-AB Stage B: `sync`, `setup --speech-model` — hours, never
     a look's wait): `<path> --api <args…>` started with its stdout written to the file `out` (its folder must exist),
     stderr nowhere, no window, and bound to this process (`_bind`: it ends with Connect; Anki Miner keeps each audio
-    file it finished, so the next start goes on from there). -> the Popen (`ended` reads its verdict). Raises
+    file it finished, so the next start goes on from there) — `bind` False for Anki Miner's own setup, which finishes
+    whenever Connect quits (review B-17). -> the Popen (`ended` reads its verdict). Raises
     AnkiMinerError `absent` / `quarantined` / `crashed` as `api` does."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     try:
@@ -376,7 +379,8 @@ def start(path, args, out):
             raise AnkiMinerError("quarantined", "Windows Security blocked Anki Miner. Check Windows Security → "
                                  "Protection history, then allow it if you trust it.") from None
         raise AnkiMinerError("crashed", f"Anki Miner couldn't be started: {e}") from None
-    _bind(proc)
+    if bind:
+        _bind(proc)
     return proc
 
 
@@ -557,8 +561,9 @@ def run_setup(path, language, profile, progress_path, on_poll=None):
     raise AnkiMinerError("failed", "Anki Miner's setup didn't finish" + (" — " + "; ".join(failed) if failed else "."))
 
 
-_SPEECH = {}            # `speech_ready`'s yes: {(path, language, profile): True}, for this Connect run
+_SPEECH = {}            # `speech_ready`'s answers: {(path, language, profile): (True / False, when)}, this Connect run
 SPEECH_ITEM = "speech_model"
+SPEECH_NO_S = 15 * 60   # a no is asked again after this long (review B-11: never five launches every look)
 
 
 def speech_ready(path, language, profile, folder):
@@ -568,10 +573,11 @@ def speech_ready(path, language, profile, folder):
     (`settings_import`'s `asr_model`: Surasura's own profile only — the window's is refused, never changed) and checked
     again, so a model downloaded for the other size is found. -> True / False. Kept True for this run (a check a look
     costs nothing once it is there); False is asked again (a model installed since is seen). Raises AnkiMinerError
-    from `check` (busy, setup …)."""
+    from `check` (busy, setup …). A no is kept SPEECH_NO_S (cleared once Anki Miner's setup installed one)."""
     key = (path, language, profile)
-    if _SPEECH.get(key):
-        return True
+    said = _SPEECH.get(key)
+    if said and (said[0] or time.monotonic() - said[1] < SPEECH_NO_S):
+        return said[0]
     ok = _speech_ok(check(path, language, profile))
     for model in SPEECH_MODELS if not ok and profile else ():
         try:
@@ -581,8 +587,7 @@ def speech_ready(path, language, profile, folder):
         ok = _speech_ok(check(path, language, profile))
         if ok:
             break
-    if ok:
-        _SPEECH[key] = True
+    _SPEECH[key] = (ok, time.monotonic())
     return ok
 
 

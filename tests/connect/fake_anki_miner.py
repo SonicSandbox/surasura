@@ -571,6 +571,7 @@ def _media(argv, plan):
         out = os.path.join(folder, "media-1")
         os.makedirs(out, exist_ok=True)
         lines = _srt_lines(episode["subtitle_file"])
+        _log({"media_lines": episode["lines"], "audio_file": episode.get("audio_file")})
         rows = []
         for k, request in enumerate(episode["lines"], 1):
             at = min(range(len(lines)), key=lambda i: abs(lines[i][0] - request["line_start"]))

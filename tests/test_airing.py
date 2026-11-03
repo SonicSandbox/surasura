@@ -109,6 +109,12 @@ def test_nothing_kept_or_a_hand_edited_entry_holds_nothing():
     assert A.holds({"status": "FINISHED", "episodes": True}, eps) is None
 
 
+def test_a_show_not_answered_yet_is_asking_and_holds_whatever_its_files():
+    """Alpha 9 #JNFJ8Q: an id AniList can be asked about, no answer kept yet (`of_rows`' PENDING) — it waits."""
+    assert A.holds({"status": A.PENDING}, [_ep(n) for n in range(1, 4)]) == "asking"
+    assert A.holds({"status": A.PENDING}, []) == "asking"
+
+
 def test_episodes_short_reads_the_highest_numbered_file_only():
     assert view_rows.episodes_short([_ep(1), _ep(2), _ep(24)], 28)
     assert not view_rows.episodes_short([_ep(13), _ep(24)], 12), "season 2's numbers above season 1's count"
@@ -161,6 +167,22 @@ def test_the_view_s_airing_map_is_built_for_current_s_rows_by_work():
     shows = {"501": {"status": "RELEASING"}, "999": {"status": "FINISHED"}, "502": "junk"}
     rows = [_row(1, [_ep(1)]), _row(2, [_ep(1)]), _row(3, [_ep(1)]), _row(None, [])]
     assert A.of_rows(rows, works, shows) == {1: {"status": "RELEASING"}}
+    assert A.of_rows(rows, works, {}) == {}
+
+
+def test_while_anilist_can_be_asked_a_show_with_an_id_and_no_answer_yet_is_pending():
+    """Alpha 9 #JNFJ8Q (Chii Fuyo: every episode marked at once, finished before AniList had answered): with the asker's
+    switch on, each Current show with an id and nothing kept reads PENDING; a kept answer wins; no id, a group or a row
+    of no title never; switched off (or no asker), exactly as before."""
+    works = {1: {"anilist_id": 501}, 2: {"anilist_id": 502}, 3: {}, 4: {"cover_source": "anilist", "cover_ref": "504"},
+             5: {"anilist_id": 505}}
+    shows = {"501": {"status": "FINISHED"}}
+    rows = [_row(1, [_ep(1)]), _row(2, [_ep(1)]), _row(3, [_ep(1)]), _row(4, [_ep(1, watched=False)]),
+            _row(5, [_ep(1)], group=True), _row(None, [])]
+    pending = {"status": A.PENDING}
+    assert A.of_rows(rows, works, shows, asking=True) == {1: {"status": "FINISHED"}, 2: pending, 4: pending}
+    assert A.of_rows(rows, works, {}, asking=True) == {1: pending, 2: pending, 4: pending}
+    assert A.of_rows(rows, works, shows, asking=False) == {1: {"status": "FINISHED"}}
     assert A.of_rows(rows, works, {}) == {}
 
 
@@ -382,6 +404,30 @@ def test_the_reader_hands_over_only_current_s_shows_near_their_end_and_reads_the
         A._write(reader._airing_kept.path, {"101": {"status": "RELEASING", "episodes": 12, "asked_at": NOW}})
         asker.on_change()                           # the asker's answer kept: the next view reads it
         assert _wait(lambda: views[-1].airing.get(seed.hero_work, {}).get("status") == "RELEASING")
+    finally:
+        reader.stop()
+
+
+def test_the_reader_marks_a_show_with_no_answer_yet_pending_only_while_its_asker_is_switched_on(tmp_path):
+    """Alpha 9 #JNFJ8Q: the hero (an id, no answer kept) reads PENDING on the view while the asker can ask; switched
+    off, nothing (3.0's dates decide)."""
+    seed = window_seed.build()
+    seed.library.commit(works=[{"id": seed.hero_work, "anilist_id": 101}])
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02)
+    reader._airing_kept.path = str(tmp_path / "airing_ja.json")
+    asker = _Asker()
+    asker.switch = True
+    asker.on = lambda: asker.switch
+    views = []
+    reader.subscribe(views.append)
+    reader.follow_airing(asker)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1].airing.get(seed.hero_work) == {"status": A.PENDING})
+        asker.switch = False
+        reader.airing_moved()
+        assert _wait(lambda: views[-1].state == "full" and seed.hero_work not in views[-1].airing)
     finally:
         reader.stop()
 

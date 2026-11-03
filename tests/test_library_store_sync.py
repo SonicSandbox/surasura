@@ -158,6 +158,30 @@ def test_parity_on_the_laptop_shaped_library(language):
     store.close()
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_new_files_for_soons_top_land_past_the_show_the_soon_line_runs_through(language):
+    """Review L3 (alpha 9 #JNFJ8Q's rule for every path): a loose file in Soon's folder, and a new show there, go to
+    Soon's top — `_tier_top`'s, after the Soon files of the show the line runs through, never between its NOW and Soon
+    halves (the show shown as two rows around them). Both found by one sync land together, in the walk's order."""
+    store = arrivals_off(migrated(language, shows=3, episodes=4))
+    third = [i for i in store.ids("now") if store.item(i)["work_id"] == store.item(store.ids("now")[8])["work_id"]]
+    store.set_soon_line(10)                                    # the line inside the third show: 2 NOW, 2 Soon
+    soon = store.ids("soon")
+    assert soon[:2] == third[2:]
+    data_dir, _u = roots(language)
+    w = names(language)
+    rels = _add_files(language, data_dir, [f"LowPriority/{w[60]}.txt", f"LowPriority/{w[61]}/{w[62]}.srt"])
+    asked = []
+    top = store._tier_top
+    store._tier_top = lambda tier, excl: asked.append(tier) or top(tier, excl)
+    added = store.sync_disk()["added"]
+    assert asked == ["soon"], "Soon's top worked out once for the sync's files"
+    assert sorted(added) == sorted(store.item_id(r) for r in rels)
+    now_soon = store.ids("soon")
+    assert now_soon[:2] == third[2:] and now_soon[2:4] == added and now_soon[4:] == soon[2:]
+    store.close()
+
+
 # --- 2. graduated; 3. hato's drops --------------------------------------------------------------- #
 
 @pytest.mark.parametrize("language", LANGUAGES)

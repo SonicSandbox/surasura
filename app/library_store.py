@@ -2601,7 +2601,10 @@ class Store:
         """Where "the top of `tier`" is. Soon's top is the first slot below the Soon line (L2.2 05 §5.1), counted
         without the rows being placed: rows leaving NOW let the line take Soon's first rows up, so the slot is after
         Current's `soon_line`-th row once they're gone; with fewer rows than the line nothing can sit below it (the
-        end of Soon, which the line then takes up). Any other tier: its top."""
+        end of Soon, which the line then takes up). Any other tier: its top. A show the line runs through (the line
+        counts files, so it can fall inside a book's parts) is never cut by what lands there: the slot is after its
+        Soon files (`_past_cut`: the window's `drag.soon_slot` rule, B2-1, for every path — the sort screen's Soon, New
+        arrivals' ⋯ *Soon*, `place --where soon`; alpha 9 #JNFJ8Q: one book shown as two rows around another)."""
         n = self._soon_line() if tier == "soon" else None
         if not n:
             return ("top",)
@@ -2612,10 +2615,57 @@ class Store:
                                          f"({','.join('?' * len(chunk))})", chunk).fetchone()[0]
         need = n - (now - leaving)
         if need <= 0:
-            return ("top",)
+            last = next((r for r in self.conn.execute("SELECT id FROM items WHERE tier = 'now' ORDER BY ord DESC, id "
+                                                      "DESC LIMIT ?", (len(excl) + 1,)) if r[0] not in excl), None)
+            past = self._past_cut(last[0], excl) if last is not None else None
+            return ("after", past) if past is not None else ("top",)
         rows = [r[0] for r in self.conn.execute("SELECT id FROM items WHERE tier = 'soon' ORDER BY ord, id LIMIT ?",
                                                 (need + len(excl),)) if r[0] not in excl]
-        return ("after", rows[need - 1]) if len(rows) >= need else ("end",)
+        if len(rows) < need:
+            return ("end",)
+        return ("after", self._past_cut(rows[need - 1], excl) or rows[need - 1])
+
+    def _past_cut(self, at_id, excl):
+        """The last row (none of `excl`) of the Soon piece that runs on from row `at_id` across the Soon line, or None
+        when the next Soon row is another show's — the view's straddle read in the store (`view_rows.build`): a group
+        on both sides is one piece; else one show (`view_rows._same_show`: one work, without one one folder), and only
+        Soon's FIRST piece joins its row (a learner's own split after it stays its own row: it lands before that)."""
+        groups = {}
+
+        def group(piece):
+            if piece is not None and piece not in groups:
+                groups[piece] = self._is_group(piece)
+            return piece is not None and groups[piece]
+
+        def run(row):                                   # `view_rows.pieces`' key
+            return row[1] if row[1] is not None else ("w", row[2]) if row[2] is not None else ("f", row[3] or row[0])
+        cols = "id, piece_id, work_id, parent_folder"
+        at = self.conn.execute(f"SELECT {cols}, tier, ord FROM items WHERE id = ?", (at_id,)).fetchone()
+        if at is None:
+            return None
+        if at[4] == "soon":
+            after = self.conn.execute(f"SELECT {cols} FROM items WHERE tier = 'soon' AND (ord, id) > (?, ?) "
+                                      f"ORDER BY ord, id", (at[5], at_id))
+        else:
+            after = self.conn.execute(f"SELECT {cols} FROM items WHERE tier = 'soon' ORDER BY ord, id")
+        first = past = None
+        for row in after:
+            if row[0] in excl:
+                continue
+            if first is None:
+                if group(at[1]) or group(row[1]):
+                    joined = at[1] == row[1]
+                elif at[2] is not None or row[2] is not None:
+                    joined = at[2] == row[2]
+                else:
+                    joined = at[3] is not None and at[3] == row[3]
+                if not joined:
+                    return None
+                first = run(row)
+            elif run(row) != first:
+                break
+            past = row[0]
+        return past
 
     def _folder_last(self, tier, folder, excl):
         """The last row of `folder` (the placement key) in `tier`, skipping `excl`: (id, ord) or None."""
@@ -2642,10 +2692,13 @@ class Store:
             self._before(change, [rows[i] for i in moving])
             excl = set(moving)
             groups = {}
+            top = None
             for item_id in moving:
                 folder = rows[item_id][4]
                 last = self._folder_last(tier, folder, excl) if folder else None
-                where = ("after", self._past_group(last[0])) if last else self._tier_top(tier, excl)   # LM11 (G4)
+                if not last and top is None:
+                    top = self._tier_top(tier, excl)    # once a call: nothing is placed before the loop ends
+                where = ("after", self._past_group(last[0])) if last else top   # LM11 (G4)
                 groups.setdefault(where, []).append(item_id)
             for where, group in groups.items():
                 self._put(tier, group, where, cmd.version)
@@ -2696,19 +2749,30 @@ class Store:
                                  "AND rel_key < ?", (self._root_id(), base, base[:-1] + "0")).fetchall()
         return [r for r in rows if r[0] not in excl and "/" not in r[3][len(base):]]
 
-    def _destination(self, rel, entry, fallback_tier, excl):
+    def _destination(self, rel, entry, fallback_tier, excl, tops=None):
         """Where a new file lands (§6.10 rule 3, Q4-9, Q4-11): hato's drop folder → the top of NOW; a
         tier folder's loose file → the top of its tier; a show (the file's real directory) with a row in
         NOW or Soon → right after its last row there (reading NOW → Soon); a show with rows but none
         there → the top of NOW; a directory with no item yet → today's rule in `fallback_tier` (after the
-        folder's last row, else the top)."""
+        folder's last row, else the top). Soon's top is `_tier_top`'s (past a show the Soon line runs through, alpha 9);
+        `tops` keeps it for the call's other files (nothing is placed until every file has its place)."""
+
+        def top(tier):
+            if tier != "soon":
+                return ("top", tier)
+            where = tops.get(tier) if tops is not None else None
+            if where is None:
+                where = self._tier_top(tier, excl)
+                if tops is not None:
+                    tops[tier] = where
+            return where + (tier,) if where[0] == "after" else (where[0], tier)
         folder_dir = _rel_dir(rel)
         dkey = path_key(folder_dir)
         hato = path_key(HATO_FOLDER)
         if dkey == hato or dkey.startswith(hato + "/"):
             return ("top", "now")
         if folder_dir in TIER_OF_FOLDER:
-            return ("top", TIER_OF_FOLDER[folder_dir])
+            return top(TIER_OF_FOLDER[folder_dir])
         rows = self._dir_rows(folder_dir, excl) if folder_dir else []
         if rows:
             for tier in ("soon", "now"):
@@ -2719,7 +2783,7 @@ class Store:
             return ("top", "now")
         folder = _entry_folder(entry)
         last = self._folder_last(fallback_tier, folder, excl) if folder else None
-        return ("after", self._past_group(last[0]), fallback_tier) if last else ("top", fallback_tier)
+        return ("after", self._past_group(last[0]), fallback_tier) if last else top(fallback_tier)
 
     def _add_rows(self, prepared, version):
         """Insert new item rows (ids issued past every id ever used, K30), placed later by `_put`."""
@@ -2793,7 +2857,8 @@ class Store:
             elif placement in ("top", "end"):
                 dests = [(placement, tier)] * (len(new) + len(taken))
             else:
-                dests = [self._destination(it[1], it[3], tier or "now", excl)
+                tops = {}
+                dests = [self._destination(it[1], it[3], tier or "now", excl, tops)
                          for it in [t[1] for t in taken] + new]
             dest_tier = [d[2] if d[0] in ("after", "before") else d[1] for d in dests]
             ids = [i for i, _ in taken]
@@ -3139,7 +3204,7 @@ class Store:
                 found, item = recorded(item, column)
                 if not found:
                     break
-        return ("top",)
+        return self._tier_top(tier, {r["item_id"]}) if tier == "soon" else ("top",)   # alpha 9: past a cut show
 
     # --- settling (schema 2, L3.1): every command ends here, inside its transaction ---------------- #
 
@@ -7933,8 +7998,9 @@ def _store_sync_disk(self, walk=None, folders=None, as_new=()):
         if new:
             prepared = [(rel, rel, key, entries[rel], (size, mtime_ns, "available")) for rel, key, size, mtime_ns in new]
             arrivals = cmd.meta.get("arrivals_on")
+            tops = {}
             dests = [("end", "arrivals") if arrivals and _in_hato(rel) else
-                     self._destination(rel, entries[rel], TIER_OF_FOLDER.get(rel.split("/", 1)[0], "now"), set())
+                     self._destination(rel, entries[rel], TIER_OF_FOLDER.get(rel.split("/", 1)[0], "now"), set(), tops)
                      for rel, _k, _s, _m in new]
             dest_tier = [d[2] if d[0] in ("after", "before") else d[1] for d in dests]
             ids = self._add_rows([p + (t,) for p, t in zip(prepared, dest_tier)], cmd.version)

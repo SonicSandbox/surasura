@@ -669,6 +669,7 @@ DONE_ALL = "✓ All {n} watched — finished with it?"
 DONE_ALL_WHY = "✓ All {n} watched · {why} — finished with it?"
 DONE_WHY_AIRING = "Still airing (AniList)"
 DONE_WHY_MORE = "AniList lists {n} episodes; you have up to {m}"
+DONE_WHY_ASKING = "Still asking AniList whether it's airing"     # alpha 9 #JNFJ8Q: no answer yet
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
 # L6.3: what the last file's Done does by itself (its toast's Undo takes it back; the ✓ stays)

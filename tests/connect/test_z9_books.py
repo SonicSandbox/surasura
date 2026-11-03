@@ -46,7 +46,9 @@ def test_books_are_mined_only_with_an_anki_miner_that_names_reading_and_audio_on
     assert not anki_miner.mines_now("books"), "no record yet: no"
     _record(["word-from-line", "dry-run"])
     assert not anki_miner.mines_now("books")
-    _record(["word-from-line", "reading"])
+    # (each record a size of its own: the record is read again only once its file's size or time changed, and two
+    # writes in one tick of a coarse clock keep the time)
+    _record(["word-from-line", "dry-run", "reading"])
     assert anki_miner.mines_now("books") and not anki_miner.mines_now("audio")
     _record(["word-from-line", "reading", "audio-episodes"])
     assert anki_miner.mines_now("books") and anki_miner.mines_now("audio")

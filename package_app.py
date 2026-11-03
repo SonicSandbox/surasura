@@ -506,6 +506,35 @@ def installer_defines(version, data_name, program_dir, real_name):
     }
 
 
+# The installer's agreement page (Inno's LicenseFile: "I accept" before Next): packaging/agreement.txt (your content, no
+# warranty, liability), then the LICENSE the program folder ships (the repo's, copied by this build), so a licence change
+# needs no edit here.
+AGREEMENT_HEAD = os.path.join(os.path.dirname(INSTALLER_SCRIPT), "agreement.txt")
+AGREEMENT_FILE = os.path.join("build", "installer_agreement.txt")
+AGREEMENT_RULE = "-" * 60
+
+
+def write_agreement(out=AGREEMENT_FILE, head=AGREEMENT_HEAD, licence="LICENSE"):
+    """packaging/agreement.txt, a rule, then `licence` as it is, into `out` (UTF-8 with a BOM, CRLF: what Inno's page
+    reads) -> `out`'s absolute path, or None (said why) when either can't be read: never an installer without them."""
+    texts = []
+    for path in (head, licence):
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                text = f.read().strip()
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"Installer not built: {path} can't be read for the agreement page ({e}).")
+            return None
+        if not text:
+            print(f"Installer not built: {path} is empty (the agreement page needs it).")
+            return None
+        texts.append(text)
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:
+        f.write(f"{texts[0]}\n\n{AGREEMENT_RULE}\n\n{texts[1]}\n")
+    return os.path.abspath(out)
+
+
 def find_iscc():
     """Inno Setup 6's command-line compiler, or None."""
     for place in ISCC_PLACES:
@@ -530,6 +559,10 @@ def build_installer(final_dist, version, data_name, real_name, out_dir="dist"):
     if os.path.exists(out):
         os.remove(out)
     defines = installer_defines(version, data_name, final_dist, real_name)
+    agreement = write_agreement(licence=os.path.join(final_dist, "LICENSE"))
+    if agreement is None:
+        return None
+    defines["AgreementFile"] = agreement
     cmd = [iscc, "/Qp", f"/O{os.path.abspath(out_dir)}", f"/F{os.path.splitext(installer_name(version))[0]}"] + \
         [f"/D{name}={value}" for name, value in defines.items()] + [INSTALLER_SCRIPT]
     print(f"Compiling the installer ({defines['AppName']}, AppId {{{defines['AppGuid']}}}) ...")

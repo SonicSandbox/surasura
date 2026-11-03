@@ -28,6 +28,10 @@
 #ifndef ProgramDir
   #define ProgramDir AddBackslash(SourcePath) + "..\dist\Surasura"
 #endif
+; The agreement page: packaging\agreement.txt + the program's LICENSE, written by package_app.py (write_agreement).
+#ifndef AgreementFile
+  #define AgreementFile AddBackslash(SourcePath) + "..\build\installer_agreement.txt"
+#endif
 
 [Setup]
 ; {{ is a literal brace: the AppId is {<GUID>}, the uninstall key <AppId>_is1.
@@ -58,6 +62,9 @@ OutputDir=..\dist
 OutputBaseFilename=Surasura-{#AppVersion}-setup
 SetupIconFile=..\app\assets\images\app_icon.ico
 WizardStyle=modern
+; "I accept the agreement" before Next (the user's content is theirs; no warranty; the licence). A silent run (the
+; updater's, the swapper's) never shows a page: Inno takes it as accepted.
+LicenseFile={#AgreementFile}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

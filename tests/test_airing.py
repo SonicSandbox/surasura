@@ -5,14 +5,17 @@
 What a wrong answer would cost a learner:
   * a show finishing by itself SOONER than 3.0 would — AniList's "finished" releasing a show its files' dates hold back,
     or season 1's id on a two-season folder (the spec's F1: AniList only ever holds a show back);
-  * an AniList id sent while they never turned *Download covers* on, a title or file name sent at all, or ids for
-    shows in Goal, Finished, New arrivals or far from their end (a privacy break: CLAUDE.md §1);
+  * an AniList id sent while they never turned *Download covers* on, a file name or path sent at all, a title sent
+    for a show that has an id (or more than its cleaned name, season off), or ids or titles for shows in Goal,
+    Finished, New arrivals or far from their end (a privacy break: CLAUDE.md §1);
+  * a show with no id that AniList doesn't know waiting forever (its *no sure answer* must leave the dates to decide);
   * AniList's limit broken (covers and airing together over 30 a minute: a one-minute block);
   * offline, refused or timed out: an answer lost, a dialog, or a retry storm;
   * *Remove downloaded covers* leaving AniList's answers behind.
 
 The network is blocked as in `test_covers_online` (its `blocked` guard, its fake AniList on 127.0.0.1: answers in the
-API's shape, hand-written here). No live AniList call. Show names are the suite's own made-up Japanese titles.
+API's shape, hand-written here, and AniList's own search answers recorded once in tests/Test Resources/anilist). No
+live AniList call. Show names are the suite's own made-up Japanese titles, and real ones for the recorded searches.
 """
 import json
 import os
@@ -532,3 +535,196 @@ def test_the_cache_is_written_though_the_reader_holds_it_open_a_moment(tmp_path,
     monkeypatch.setattr(A, "REPLACE_WAIT_S", 0.0)
     assert A._write(path, {"501": {"status": "RELEASING"}}) and refused
     assert A.read(path) == {"501": {"status": "RELEASING"}}
+
+
+# --- a show with no AniList id, asked by its title (alpha 9 try; Sonic 2026-11-02, item 2) ------------------------- #
+# Chii Fuyo's cover came from its own folder: no id, so AniList was never asked and its files' dates finished it. Now
+# its title is asked once, through the covers' own search and gate (`Fetcher._match`), and the id found is asked as
+# any other. The search's answers are AniList's own, recorded (`test_covers_online.ANSWERS`).
+from tests.test_covers_online import _serve  # noqa: E402
+
+
+def _titled(work_id, title, eps, media=None, group=False):
+    return _row(work_id, eps, group)._replace(media=media), {"title": title, "anilist_id": None}
+
+
+def test_a_title_s_answer_is_asked_again_only_when_nothing_was_found_and_a_week_went_by():
+    assert A.title_due(None, NOW) and A.title_due({"id": None}, NOW), "nothing kept, or no time"
+    assert A.title_due({"id": 146065, "asked_at": NOW + 60}, NOW), "a time ahead of the clock: nothing to trust"
+    assert not A.title_due({"id": 146065, "asked_at": NOW - 365 * DAY}, NOW), "an id found is kept"
+    assert not A.title_due({"id": None, "asked_at": NOW - 6 * DAY}, NOW)
+    assert A.title_due({"id": None, "asked_at": NOW - 8 * DAY}, NOW)
+
+
+def test_only_current_shows_near_their_end_with_no_id_and_a_name_anilist_may_know_are_asked_by_title():
+    rows, works = [], {}
+    for wid, title, eps, media in ((1, "Mushoku Tensei Season 2", [_ep(1), _ep(2, watched=False)], None),
+                                   (2, "Mushoku Tensei Season 3", [_ep(1, watched=False), _ep(2, watched=False)], None),
+                                   (3, "星の旅人", [_ep(1)], "book"),
+                                   (4, "[SubsPlease] - 01.ass", [_ep(1)], None),
+                                   (5, "Mushoku Tensei Season 2", [_ep(3)], None),
+                                   (6, "Sousou no Frieren", [_ep(1)], "anime")):
+        row, works[wid] = _titled(wid, title, eps, media)
+        rows.append(row)
+    works[6]["anilist_id"] = 154587
+    group, works[7] = _titled(7, "Sousou no Frieren Season 2", [_ep(1)], group=True)
+    rows.append(group)
+    clip, works[8] = _titled(8, "Bocchi the Rock!", [_ep(1)], media="anime")
+    rows.append(clip._replace(source="youtube"))    # bilibili / YouTube files, typed anime: never by title (review L4)
+    assert A.near_end_titles(rows, works) == ["Mushoku Tensei Season 2"], \
+        "two left: far from its end · a book · no name left once cleaned · the same title once · an id · a group"
+    found = {"Mushoku Tensei Season 2": {"id": 146065, "asked_at": NOW}}
+    assert A.near_end_titles(rows, works, found) == [], "found: asked by its id"
+    assert A.near_end(rows, works, found) == [146065, 154587]
+    assert A.airing_id(works[1], found) == 146065 and A.airing_id(works[1]) is None
+
+
+def test_a_show_with_no_id_waits_for_its_title_s_answer_and_none_found_leaves_its_dates_to_decide():
+    row, work = _titled(1, "Mushoku Tensei Season 2", [_ep(1), _ep(2)])
+    book, book_work = _titled(2, "星の旅人", [_ep(1)], media="book")
+    rows, works = [row, book], {1: work, 2: book_work}
+    pending = {"status": A.PENDING}
+    assert A.of_rows(rows, works, {}, asking=True) == {}, "titles not asked (no `find`): exactly as before"
+    assert A.of_rows(rows, works, {}, asking=True, titles={}) == {1: pending}, "a book is never asked: its dates"
+    assert A.of_rows(rows, works, {}, asking=False, titles={}) == {}, "switched off: the dates decide"
+    none = {"Mushoku Tensei Season 2": {"id": None, "asked_at": NOW}}
+    assert A.of_rows(rows, works, {}, asking=True, titles=none) == {1: {"status": A.NOT_FOUND}}
+    assert A.holds({"status": A.NOT_FOUND}, [_ep(1), _ep(2)]) is None, "AniList doesn't know it: holds nothing"
+    found = {"Mushoku Tensei Season 2": {"id": 146065, "asked_at": NOW}}
+    assert A.of_rows(rows, works, {}, asking=True, titles=found) == {1: pending}, "its id found: asking that"
+    shows = {"146065": {"status": "RELEASING"}}
+    assert A.of_rows(rows, works, shows, asking=False, titles=found) == {1: {"status": "RELEASING"}}
+
+
+def test_a_title_is_asked_through_the_covers_search_then_its_id_in_the_same_round(anilist, tmp_path):
+    _serve(anilist, "Mushoku Tensei Season 1")
+    _serve(anilist, "Mushoku Tensei")
+    anilist.media[108465] = dict(anilist.media[108465], status="FINISHED", nextAiringEpisode=None)
+    f = fetcher(Pen(), anilist)
+    a = _airing(f, tmp_path)
+    told = []
+
+    def reader_like():                              # the reader's next build hands the id it now has (review L3)
+        told.append(1)
+        a.want([108465])
+    a.on_change = reader_like
+    assert a.want_titles(["Mushoku Tensei Season 1"]) == 1 and a.run_once() == 1
+    full, search, ids = [b for b, _h in anilist.posts]
+    assert full["variables"] == {"search": "Mushoku Tensei Season 1"}, "the cleaned name: AniList finds nothing"
+    assert search == {"query": O.Q_SEARCH, "variables": {"search": "Mushoku Tensei"}}, "then its season off"
+    assert ids == {"query": A.Q_AIRING, "variables": {"ids": [108465]}}
+    assert a.run_once() == 0 and len(anilist.posts) == 3, "the id found is asked once, never again by the rebuild"
+    assert a.want_titles(["Mushoku Tensei Season 1"]) == 0, "found: never asked by title again"
+    shows, titles = A.read_all(a.path)
+    assert titles == {"Mushoku Tensei Season 1": {"id": 108465, "asked_at": NOW}}
+    assert shows["108465"]["status"] == "FINISHED" and told
+    kept = A.Kept("ja", a.path)
+    assert kept.titles() == titles and kept.shows() == shows
+
+
+def test_a_title_with_no_sure_answer_is_kept_as_none_and_asked_again_in_a_week(anilist, tmp_path):
+    _serve(anilist, "Naruto")
+    wall = {"t": NOW}
+    f = fetcher(Pen(), anilist)
+    a = _airing(f, tmp_path, clock=lambda: wall["t"])
+    assert a.want_titles(["Naruto Season 2"]) == 1 and a.run_once() == 0
+    assert [b["variables"]["search"] for b, _h in anilist.posts] == ["Naruto Season 2", "Naruto"]
+    assert _queries(anilist) == [], "no id: nothing asked by id"
+    assert A.read_all(a.path)[1] == {"Naruto Season 2": {"id": None, "asked_at": NOW}}
+    assert a.want_titles(["Naruto Season 2"]) == 0
+    wall["t"] = NOW + 8 * DAY
+    assert a.want_titles(["Naruto Season 2"]) == 1
+
+
+def test_titles_are_never_asked_with_the_switch_off_or_without_the_covers_search(anilist, tmp_path):
+    f = fetcher(Pen(), anilist, on=False)
+    a = _airing(f, tmp_path)
+    assert a.want_titles(["Mushoku Tensei Season 2"]) == 0 and a.run_once() == 0
+    f.switch["covers_download"] = True
+    assert a.want_titles(["Mushoku Tensei Season 2"]) == 1
+    f.switch["covers_download"] = False             # turned off before the thread's turn: nothing leaves
+    assert a.run_once() == 0
+    assert anilist.posts == [] and not os.path.exists(a.path)
+    plain = A.Airing("ja", lambda *_a: pytest.fail("asked"), lambda: True, path=str(tmp_path / "x.json"),
+                     clock=lambda: NOW, background=False)
+    assert plain.want_titles(["Mushoku Tensei Season 2"]) == 0 and plain.run_once() == 0
+
+
+def test_a_failed_title_ask_is_asked_again_after_retry_s_and_dropped_once_no_longer_near_its_end(tmp_path):
+    wall = {"t": NOW}
+    calls = []
+
+    def find(title):
+        calls.append(title)
+        raise OSError("offline")
+    a = A.Airing("ja", lambda *_a: pytest.fail("no id to ask"), lambda: True, path=str(tmp_path / "airing_ja.json"),
+                 clock=lambda: wall["t"], background=False, find=find)
+    assert a.want_titles(["Mushoku Tensei Season 2", "Sousou no Frieren"]) == 2 and a.run_once() == 0
+    assert calls == ["Mushoku Tensei Season 2", "Sousou no Frieren"] and not os.path.exists(a.path)
+    assert a.want_titles(["Mushoku Tensei Season 2"]) == 0, "waiting for its retry"
+    wall["t"] = NOW + A.RETRY_S + 1
+    assert a.run_once() == 0 and calls[2:] == ["Mushoku Tensei Season 2"], "Frieren left Current meanwhile"
+
+
+def test_remove_downloaded_covers_clears_the_title_answers_too(anilist, tmp_path):
+    _serve(anilist, "Naruto")
+    f = fetcher(Pen(), anilist)
+    a = _airing(f, tmp_path)
+    a.want_titles(["Naruto Season 2"]) and a.run_once()
+    assert os.path.exists(a.path)
+    f.remove_downloaded()
+    assert not os.path.exists(a.path) and a.want_titles(["Naruto Season 2"]) == 1
+
+
+def test_a_title_answer_in_flight_when_covers_are_removed_is_never_kept(tmp_path):
+    a = A.Airing("ja", lambda *_a: pytest.fail("no id"), lambda: True, path=str(tmp_path / "airing_ja.json"),
+                 clock=lambda: NOW, background=False, find=lambda title: a.clear())
+    assert a.want_titles(["Naruto Season 2"]) == 1 and a.run_once() == 0
+    assert not os.path.exists(a.path) and a.want_titles(["Naruto Season 2"]) == 1
+
+
+class _TitleAsker(_Asker):
+    find = staticmethod(lambda title: None)
+
+    def __init__(self):
+        super().__init__()
+        self.titles = []
+
+    def want_titles(self, titles):
+        self.titles.append((threading.get_ident(), list(titles)))
+        return len(titles)
+
+    def on(self):
+        return True
+
+
+def test_the_reader_hands_a_show_with_no_id_over_by_its_title_and_reads_its_answer_onto_the_view(tmp_path):
+    seed = window_seed.build()
+    seed.library.commit(works=[{"id": seed.hero_work, "anilist_id": None}])
+    hero_title = next(w["title"] for w in seed.works if w["id"] == seed.hero_work)
+    reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
+                                          mining=seed.mining, poll=0.02)
+    reader._airing_kept.path = str(tmp_path / "airing_ja.json")
+    asker = _TitleAsker()
+    views = []
+    reader.subscribe(views.append)
+    reader.follow_airing(asker)
+    reader.start()
+    try:
+        assert _wait(lambda: views and views[-1].airing.get(seed.hero_work) == {"status": A.PENDING}), \
+            "no id, a name AniList may know, asked: it waits for the answer"
+        hero = [i for i in seed.library.items() if i["work_id"] == seed.hero_work]
+        seed.library.commit(items=[dict(id=i["id"], watched=1) for i in hero[:-1]])
+        assert _wait(lambda: any(hero_title in t for _tid, t in asker.titles))
+        tid = next(tid for tid, t in asker.titles if hero_title in t)
+        assert tid != threading.get_ident(), "on the reader's thread"
+        A._write(reader._airing_kept.path, {}, {hero_title: {"id": None, "asked_at": NOW}})
+        asker.on_change()
+        assert _wait(lambda: views[-1].airing.get(seed.hero_work) == {"status": A.NOT_FOUND})
+        A._write(reader._airing_kept.path, {"777": {"status": "RELEASING", "asked_at": NOW}},
+                 {hero_title: {"id": 777, "asked_at": NOW}})
+        asker.on_change()
+        assert _wait(lambda: views[-1].airing.get(seed.hero_work, {}).get("status") == "RELEASING")
+        assert _wait(lambda: asker.asked and asker.asked[-1][1] == [777]), "found: asked by its id from then on"
+    finally:
+        reader.stop()

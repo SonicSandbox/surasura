@@ -313,3 +313,15 @@ def test_an_online_video_with_no_id_says_why_and_to_open_takes_the_online_path(m
     monkeypatch.setattr(play, "pairing", lambda language, item_id: {"video_id": "Zx9_Yw8-Vu7"})
     monkeypatch.setattr(play, "_find", lambda *a, **k: pytest.fail("an online video is never looked for on disk"))
     assert play.to_open("ja", 7, rel, "youtube", "youtube") == ("https://www.youtube.com/watch?v=Zx9_Yw8-Vu7", None)
+
+
+def test_a_bilibili_record_without_its_address_reads_the_sidecars_and_a_bad_id_never_wins():
+    """Review (a9.1): a record that keeps the id but not the page still opens the page the sidecar kept; a record or a
+    sidecar whose id isn't a YouTube id gives way to the next place that has one (the file's name)."""
+    rel = _transcript("第3話 星の祭り [bilibili-2009878].txt",
+                      {"video_id": "2009878", "url": "https://www.bilibili.tv/en/play/1048837/2009878"})
+    record = {"producer": "youtube", "content_key": "bilibili:2009878", "video_id": "2009878"}
+    assert play.online_link("ja", rel, record) == ("https://www.bilibili.tv/en/play/1048837/2009878", None)
+    bare = _transcript("夜の散歩 [dQw4w9WgXcQ].txt", {"video_id": "short"})
+    assert play.online_link("ja", bare, {"video_id": "also-bad"}) == ("https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                                                                      None)

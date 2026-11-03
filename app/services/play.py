@@ -154,22 +154,29 @@ def online_link(language, rel_path, record=None):
     record = record if isinstance(record, dict) else {}
     rel = rel_path or ""
     stem = os.path.splitext(rel.rsplit("/", 1)[-1])[0]
-    side = {}
-    if not record.get("video_id") and not record.get("url") and rel:
-        try:
-            path = os.path.join(path_utils.get_data_path(language), *rel.split("/"))
-            with open(os.path.splitext(path)[0] + path_utils.SIDECAR_SUFFIX, encoding="utf-8") as f:
-                side = json.load(f)
-        except (OSError, ValueError):
-            pass
-        side = side if isinstance(side, dict) else {}
+    held = []
+
+    def side():
+        """The cue sidecar beside the transcript, read once and only when the record lacks what is wanted."""
+        if not held:
+            got = {}
+            if rel:
+                try:
+                    path = os.path.join(path_utils.get_data_path(language), *rel.split("/"))
+                    with open(os.path.splitext(path)[0] + path_utils.SIDECAR_SUFFIX, encoding="utf-8") as f:
+                        got = json.load(f)
+                except (OSError, ValueError):
+                    pass
+            held.append(got if isinstance(got, dict) else {})
+        return held[0]
     if path_utils._BILIBILI_ID_RE.search(stem) or str(record.get("content_key") or "").startswith("bilibili:"):
-        url = str(record.get("url") or side.get("url") or "").split("#", 1)[0]     # (yt-dlp's season fragment)
+        url = str(record.get("url") or side().get("url") or "").split("#", 1)[0]     # (yt-dlp's season fragment)
         return (url, None) if url.startswith(("https://", "http://")) else (None, WHY["no-link"])
     m = path_utils._YOUTUBE_ID_RE.search(stem)
-    video = str(record.get("video_id") or side.get("video_id") or (m.group(1) if m else "")).strip()
-    if re.fullmatch(r"[A-Za-z0-9_-]{11}", video):
-        return f"https://www.youtube.com/watch?v={video}", None
+    for kept in (lambda: record.get("video_id"), lambda: side().get("video_id"), lambda: m.group(1) if m else None):
+        video = str(kept() or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", video):                # the first true id of the three
+            return f"https://www.youtube.com/watch?v={video}", None
     return None, WHY["no-link"]
 
 

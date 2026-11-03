@@ -150,7 +150,9 @@ class ToolIcon(QAbstractButton):
 
     def contextMenuEvent(self, event):
         if not self.win.gone:
-            self.menu().exec(event.globalPos())
+            m = self.menu()
+            m.exec(event.globalPos())
+            m.deleteLater()                                 # (one menu a right-click, gone with it)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.isAutoRepeat():

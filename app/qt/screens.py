@@ -225,7 +225,8 @@ class Page(QWidget):
 
         def failed(info):
             path = found[0][0] if found else None
-            self.message.emit(strings.PLAY_FAILED.format(name=os.path.basename(path) if path else episode.label,
+            named = path and "://" not in path                # (an online video's page: named by its episode)
+            self.message.emit(strings.PLAY_FAILED.format(name=os.path.basename(path) if named else episode.label,
                                                          why=str(info[0])))
         return qpress.open(self.window(), look, key=("play", episode.id), then=opened, failed=failed,
                            at=at or qpress.row_mark(self.list, [episode.id], "play"))

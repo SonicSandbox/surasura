@@ -52,6 +52,7 @@ import time
 from types import SimpleNamespace
 
 from app.connect import fit_check, inbox, stopping
+from app.connect.lineup import SPEECH_ASK, SPEECH_FAILED     # Stage B: the speech model's question
 from app.connect.ledger import (ASKED, BEFORE_MINING, IN_FLIGHT, LEVEL, OPEN, PREPARE_KINDS, STOPPED_REASON,
                                 Ledger)
 
@@ -82,6 +83,24 @@ NO_AUDIO = "No audio: its audio file isn't on this computer."
 NO_TEXT = "Nothing to cut its cards from yet: this audiobook has no text of its own (its book's, or a question open)."
 SEVERAL_FILES = ("One transcript for {n} audio files: Connect can't tell which file each line is in, so its cards "
                  "wait. A subtitle file for each audio file, named like it, is mined.")
+# Michi-AB Stage B (AB-Q2/Q3, PROVISIONAL): a book paired with its audiobook waits while Anki Miner lines them up (its
+# cards then come with their sentence audio); the row says so with *Stop* (`lining_up`: the feed's LINING_UP)
+LINING_UP = "Lining up its audiobook…"
+LINING_UP_FILE = LINING_UP + " file {k} of {n}"
+LINING_UP_MODEL = LINING_UP + " downloading Anki Miner's speech model first"
+LINING_UP_BATTERY = LINING_UP + " once this computer is plugged in"
+LINING_UP_STOPPING = LINING_UP + " stopping"
+LINING_UP_AFTER = LINING_UP + " after another book's (one at a time)"
+LINING_UP_STOPPED = "Lining up its audiobook stopped: Mine now goes on from where it was."
+CHECKING_MODEL = "Checking its timing… downloading Anki Miner's speech model first"
+# AB-Q2: the speech model's one question (once for the language, a standing *Needs you* line every book waiting on it
+# holds: `actions.speech_model` answers it) — and, its download failed, asked again with Anki Miner's reason
+SPEECH_NEED = "speech-model"
+LINEUP_PAIR = "lineup:"         # ledger meta: `lineup:<job id>` -> the pair a part waits on (its *Stop* reads it: B-9)
+# AB-Q4: the one plain line of a book whose audiobook doesn't follow it closely, or skips passages (`lineup.partial_line`)
+PARTIAL_NEED = "audiobook-partial"
+LINE_UP_FAILED = ("「{title}」: Anki Miner couldn't line it up with its audiobook ({why}), so its cards are made without "
+                  "sentence audio.")
 # MV-2 (Sonic: yes, 2026-10-23): a source folder's episode whose video left the folder it was in, the source folder
 # still there (`video_left`) — the same *No video* wait (`no_video`), its line naming the folder; the window's *Find
 # its folder* adds the folder picked as a source, and the store's join (MV-1) does the rest
@@ -419,6 +438,10 @@ def _woken(steps, ledger, parked):
     woke = _kicked(steps)
     if not woke:
         return False
+    # an answer that queued a parked job again (Stage B: the speech model's question, a restarted line-up) lets it go
+    # again this run — never a job still waiting as it was parked
+    for job_id in [j for j in parked if (ledger.job_by_id(j) or {}).get("state") == "queued"]:
+        del parked[job_id]
     if woke != kick.VIDEOS:
         return True
     for job_id in [j for j in parked if no_video((ledger.job_by_id(j) or {}).get("reason"))]:
@@ -874,6 +897,16 @@ def _stopped(steps, ledger, lang, job, step, record):
     stopped (row 56), the ask it carried kept (`Ledger.mark_stopped`) -> Wait for your next ask."""
     made = _keep_made(steps, ledger, lang, job, record)
     now = ledger.job_by_id(job["id"]) or {}
+    if lining_up(now.get("reason")):        # Stage B (AB-Q3): *Stop* while its audiobook is lined up stops that too
+        row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (f"{LINEUP_PAIR}{int(job['id'])}",)).fetchone()
+        if row is not None:
+            from app.connect import lineup
+            lineup.stop(row[0])
+        elif getattr(steps, "stop_line_up", None) is not None:
+            try:
+                steps.stop_line_up(lang, job)
+            except (Wait, Needs):
+                log.info("Connect: job %s's line-up couldn't be found to stop (the library is busy)", job["id"])
     ledger.mark_stopped(job["id"], now.get("asked_at"))
     log.info("Connect: job %s stopped by you before %s (%d words made so far)", job["id"], step or "its pick",
              len(made))
@@ -895,12 +928,81 @@ def _keep_made(steps, ledger, lang, job, record):
     return made
 
 
+def lining_up(reason):
+    """Is a job's reason a book waiting while its audiobook is lined up (`LINING_UP…`: the row's *Stop*)?"""
+    return isinstance(reason, str) and reason.startswith(LINING_UP)
+
+
+def _lining(reason, pair):
+    """A wait on a pair's line-up (looked at again), naming the pair (`_line_up` keeps it for the part's *Stop*)."""
+    wait = Wait(reason)
+    wait.pair = pair
+    return wait
+
+
+def _newer(asked, at):
+    """Is the ask `asked` (the ledger's or the store's stamp) newer than `at` (Connect's) — B-19: compared as keys."""
+    from app.connect.ledger import stamp_key
+    return bool(asked) and stamp_key(asked) > stamp_key(at)
+
+
+def _keep_pair(ledger, jid, pair):
+    """The pair a part waits on, kept for its *Stop* (`_stopped`: no store read at the press, review B-9) — written
+    only when it changed (S19)."""
+    key = f"{LINEUP_PAIR}{int(jid)}"
+    row = ledger.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    if row is None or row[0] != pair:
+        with ledger.transaction():
+            ledger.conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, pair))
+
+
+def _free_stopped(ledger, lang):
+    """A stopped line-up started again (a *Mine now* on one part): the book's other parts parked on the stop are
+    queued again, and the run woken so it tries them now (`_woken`: review B-8)."""
+    freed = [j["id"] for j in ledger.jobs(lang, states=("waiting",)) if j.get("reason") == LINING_UP_STOPPED]
+    for jid in freed:
+        ledger.set_state(jid, "queued")
+    if freed:
+        from app.connect import kick
+        kick.wake()
+
+
+def _line_up(steps, ledger, lang, job, book):
+    """Michi-AB Stage B: a book's part whose EPUB Hon paired with its audiobook, lined up first (`steps.line_up`) -> the
+    line-up its words are cut from ({key, grade, files}), or None (no audiobook, nothing to line up, given up: mined as
+    the book). Raises Wait while it lines up (LINING_UP…, looked at again), and for the speech model's one question
+    (SPEECH_NEED: recorded once for the language, the book held by it). AB-Q4's plain line recorded once a book."""
+    line_up = getattr(steps, "line_up", None)
+    if line_up is None or not book or not book[1]:
+        return None
+    try:
+        got = line_up(lang, job, book[1])
+    except Wait as w:
+        if getattr(w, "pair", None):
+            _keep_pair(ledger, job["id"], w.pair)
+        if getattr(w, "restarted", False):
+            _free_stopped(ledger, lang)
+        raise
+    if not got:
+        return None
+    if got.get("ask"):
+        if ledger.need(lang, SPEECH_NEED, got["ask"], standing=True):
+            log.info("Connect: asks for Anki Miner's speech model (%s)", lang)
+        raise Wait(got["ask"], look=False)
+    if got.get("line") and got.get("item_id") is not None:
+        ledger.need(lang, PARTIAL_NEED, got["line"], item_id=got["item_id"], standing=True)
+    return got.get("lineup")
+
+
 def _pick(steps, ledger, lang, job, record=True):
     """The pick step -> what it picked; None when it found no word (the job done with nothing to make); "filling"
     when it found none after an earlier batch made some (those recorded, then filled and ordered: adversary #6)."""
     jid = job["id"]
-    ledger.set_state(jid, "picking")
     book = _reading_source(steps, lang, job)        # Z-9: a book or a text, once Anki Miner reads them
+    # Stage B: its audiobook lined up first — before the step is written: a part waiting on the line-up writes its
+    # row only when its line changes (review B-15)
+    lined = _line_up(steps, ledger, lang, job, book) if book is not None else None
+    ledger.set_state(jid, "picking")
     video = steps.video(lang, job) if book is None else None
     heard = None                                    # Z-16: an audio item's own wait line, when nothing is found
     if book is None and video is None:
@@ -928,6 +1030,8 @@ def _pick(steps, ledger, lang, job, record=True):
               "anki_miner": got.get("anki_miner")}
     if book is not None:
         picked["reading"], picked["book"] = book    # the file Anki Miner reads; the EPUB its cards are placed in
+        if lined:
+            picked["lineup"] = lined                # Stage B: its words cut from the audiobook where it was heard
     before = ledger.picked(jid) or {}
     if before.get("forced") and before.get("pairing") == picked["pairing"] and before.get("video") == video:
         picked["forced"] = True     # *Mine anyway* (row 4.1.9) holds for the pairing and video you said it for (D5: a
@@ -1035,6 +1139,9 @@ def _fit(steps, ledger, lang, job):
         ledger.set_state(jid, "mining", picked=picked)
         return
     verdict, who, why, offset = steps.fit(lang, job, pairing, picked.get("video"), picked.get("file"))
+    if who == SPEECH_NEED:                  # AB-Q5: the spot-check needs the speech model — its one question
+        ledger.need(lang, SPEECH_NEED, why, standing=True)
+        raise Wait(why, look=False)
     if verdict == fit_check.TIMED and who == "you":
         log.info("Connect: job %s mined at its subtitle's own times: you trust your subtitles' timing", jid)
     tries = _fit_tries(ledger, jid, verdict == fit_check.RETRY)
@@ -2208,13 +2315,229 @@ class Steps:
     def fit(self, lang, job, pairing, video, subtitle):
         """-> (verdict, who, why, offset): `subtitle` is the library's copy (hato's sha256 is checked on it);
         `connect_trust_timing` (off by default; read from settings.json as it is now, so a switch turned mid-run counts
-        for the next episode) mines an episode nothing here can check at its own times."""
+        for the next episode) mines an episode nothing here can check at its own times. An audio file's subtitle is
+        spot-checked by listening (AB-Q5, `_spot`) while Anki Miner can, before anything else is asked."""
+        from app.connect import anki_miner
         trust = self._settings(lang).get("connect_trust_timing") is True
-        return fit_check.fit(pairing, video, subtitle, trust=trust)
+        spot = None
+        if not trust and anki_miner.is_audio(video) and anki_miner.can_now(anki_miner.SPOT_CHECK):
+            spot = lambda: self._spot(lang, job, video, subtitle)      # noqa: E731
+        return fit_check.fit(pairing, video, subtitle, trust=trust, spot=spot)
+
+    def _miner_profile(self, lang, job):
+        """(Anki Miner's path, the profile Connect mines with) for a line-up or a spot-check — the pick's look-ups
+        (row 25), else read; None when Anki Miner isn't installed. Raises Wait / Needs as the mine step does."""
+        from app.cli import verbs
+        from app.cli.contract import CliError
+        from app.connect import anki_miner
+        miner = anki_miner.find(self.loaded)
+        if miner is None:
+            return None
+        try:
+            setup = verbs._anki_miner_setup(self.loaded, lang, self.run_dir(job), held=self._anki_miner_held(lang))
+        except CliError as e:
+            raise _wait_or_needs(e, None, self.url) from None
+        return (miner, setup[1]) if setup is not None else None
+
+    def speech(self, lang, miner, profile, downloading=LINING_UP_MODEL):
+        """AB-Q1/Q2 (Sonic 2026-11-02, PROVISIONAL): may Anki Miner listen now? -> "ready" (a model it has — never a
+        second download, never asked: `anki_miner.speech_ready`), "no" (you said *Not now*: no sentence audio, Anki
+        Miner never asked again — review B-11), or the one question's words (unanswered; or its download failed or was
+        stopped: asked again with why, the words kept until answered — B-4, B-6). Your yes: Anki Miner's own `setup
+        --speech-model --model small` started (`lineup.start_speech`) and Wait while it downloads; its window open
+        (BUSY) is a wait, started again, never a failure (B-5); a setup a Connect that quit left running is waited for
+        (B-17)."""
+        from app.connect import anki_miner, lineup
+        said = lineup.answer()
+        if said == "no":
+            return "no"
+        state = lineup.look(lineup.SPEECH)
+        status = state.get("status")
+        if status == lineup.RUNNING or (status == lineup.INTERRUPTED and not state.get("busy")
+                                        and anki_miner.setting_up()):
+            raise Wait(downloading)
+        try:
+            if anki_miner.speech_ready(miner, lang, profile, lineup.folder(lineup.SPEECH)):
+                return "ready"
+        except anki_miner.AnkiMinerError as e:
+            raise _miner_wait_or_needs(e, self.url) from None
+        if said == "yes" and status in (lineup.FAILED, lineup.DONE, lineup.STOPPED) and not state.get("said"):
+            # its download ended, stopped or failed, and still nothing to listen with: the question again, with why —
+            # never a second download nobody asked for
+            why = "it was stopped" if status == lineup.STOPPED else \
+                state.get("message") or "Anki Miner says it still isn't ready"
+            ask = lineup.SPEECH_FAILED.format(why=why)
+            lineup.write(lineup.SPEECH, dict(state, said=True, ask=ask))
+            lineup.clear_answer()
+            return ask
+        if said != "yes":
+            return state.get("ask") if state.get("said") and state.get("ask") else lineup.SPEECH_ASK
+        busy = state.get("busy")
+        try:
+            lineup.start_speech(miner, lang, profile)
+        except anki_miner.AnkiMinerError as e:
+            raise _miner_wait_or_needs(e, self.url) from None
+        raise Wait(ANKI_MINER_OPEN if busy else downloading)
+
+    def line_up(self, lang, job, epub):
+        """Michi-AB Stage B (`runner._line_up`): the book `epub` lined up with the audiobook Hon paired with it ->
+        None (none paired, Anki Miner can't, you kept them apart in sound — *Keep them together* —, you said *Not now*
+        to the speech model: mined as the book); {"lineup": its usable line-up or None, "line": AB-Q4's plain line,
+        "item_id": the audiobook's}; {"ask": the speech model's question}. Raises Wait while it lines up (`file k of
+        n`; its `pair`), while another book's does (one at a time: review B-2), while a stopped one hasn't ended (B-1),
+        downloads the model, or waits for the plug, and after your *Stop* until your next *Mine now* (`restarted`
+        then). Nothing lined up at all: the store's mark (once), so *Needs you* asks the one question, and the book is
+        mined as it is. Given up (TRIES failures) until a *Mine now* newer than the last failure (B-18)."""
+        from app.connect import anki_miner, library, lineup
+        if not anki_miner.can_now(anki_miner.LINE_UP):
+            return None
+        with self._open(lang) as store:
+            ab = library.audiobook_of_book(store, epub)
+        if ab is None or not ab["key"] or ab["lineup"] == "kept":
+            return None
+        key = ab["key"]
+        state = lineup.look(key)
+        status = state.get("status")
+        asked = job.get("asked_at")
+        if status == lineup.DONE:
+            # its files as the store holds them now (review B-3: the pair's key is the files' sizes in order, so a moved
+            # audiobook is the same files at their new place); a file away is never sent (`lineup.cues`)
+            files = [dict(f, audio_file=ab["files"][k] if k < len(ab["files"]) else f.get("audio_file"))
+                     for k, f in enumerate(state.get("files") or ())]
+            line = lineup.partial_line(state, ab["title"])
+            lined = {"status": lineup.DONE, "key": key, "grade": state.get("grade"), "files": files} \
+                if lineup.usable(state) else None
+            return {"lineup": lined, "line": line, "item_id": ab["item_id"]}
+        if status == lineup.NONE:
+            if ab["lineup"] != "none":
+                self._mark_line_up(lang, ab, "none")
+            return None
+        if status == lineup.RUNNING:
+            raise _lining(LINING_UP_FILE.format(k=lineup.file_line(state)[0], n=lineup.file_line(state)[1]), key)
+        if lineup.running(key):             # stopped, its child not ended yet: never a second run on its folder
+            raise _lining(LINING_UP_STOPPING, key)
+        if status == lineup.STOPPED and not _newer(asked, state.get("stopped_at")):
+            raise Wait(LINING_UP_STOPPED, look=False)
+        if status in (lineup.FAILED, lineup.NO_MODEL) and (state.get("tries") or 0) >= lineup.TRIES and \
+                not _newer(asked, state.get("failed_at")):
+            why = state.get("message") or state.get("code") or "no answer"
+            return {"lineup": None, "item_id": ab["item_id"],
+                    "line": LINE_UP_FAILED.format(title=ab["title"], why=why)}
+        if lineup.other_running(key):
+            raise _lining(LINING_UP_AFTER, key)
+        if self.on_battery() and not asked:
+            raise Wait(LINING_UP_BATTERY)       # hours of listening: never on battery unless you asked for it
+        found = self._miner_profile(lang, job)
+        if found is None:
+            return None
+        miner, profile = found
+        said = self.speech(lang, miner, profile)
+        if said == "no":
+            return None
+        if said != "ready":
+            return {"ask": said}
+        missing = [f for f in ab["files"] if not _on_disk(f)]
+        if missing or not _on_disk(epub):
+            return None                         # an audio file or the book away: mined as the book this time
+        try:
+            lineup.start_sync(miner, lang, profile, key, epub, ab["files"])
+        except anki_miner.AnkiMinerError as e:
+            raise _miner_wait_or_needs(e, self.url) from None
+        log.info("Connect: lining up %s with its audiobook (%d files)", ab["title"], len(ab["files"]))
+        wait = _lining(LINING_UP_FILE.format(k=1, n=len(ab["files"])), key)
+        wait.restarted = status == lineup.STOPPED
+        raise wait
+
+    def _mark_line_up(self, lang, ab, status):
+        """The store's mark on the audiobook's records (`Store.mark_audiobook_lineup`): nothing lined up — *Needs you*
+        asks the one question. A busy store: marked at the next look."""
+        try:
+            with self._open(lang) as store:
+                store.mark_audiobook_lineup(ab["item_id"], ab["key"], status, by="connect")
+        except (Wait, Needs):
+            pass
+
+    def stop_line_up(self, lang, job):
+        """*Stop* on a book waiting while its audiobook is lined up (AB-Q3): its sync's cancel file (`lineup.stop`).
+        The book's EPUB from its part's origin (`reading.source`); nothing else read."""
+        from app.connect import library, lineup, reading
+        ab = None
+        with _held():
+            with self._open(lang) as store:
+                pairing = library.pairing_of(store, job["item_id"])
+            path = self.subtitle(lang, job)
+            epub = reading.source(path, pairing)[1] if path else None
+            if epub:
+                with self._open(lang) as store:
+                    ab = library.audiobook_of_book(store, epub)
+        if ab is not None and ab["key"]:
+            lineup.stop(ab["key"])
+
+    def _spot(self, lang, job, video, subtitle):
+        """AB-Q5's spot-check for `fit_check.fit` -> lineup.MATCHED / NOT_MATCHED; None when it can't be checked now
+        (Anki Miner absent, a call that failed: the rules after it decide, as before); (NOT_TIMED, SPEECH_NEED, the
+        question, 0.0) when Anki Miner has no speech model and you haven't said *Not now* (the question; your yes
+        downloads it, and the check runs then). Raises Wait while the model downloads."""
+        from app.connect import anki_miner, lineup
+        found = self._miner_profile(lang, job)
+        if found is None:
+            return None
+        miner, profile = found
+        kept = lineup.spot_kept(lineup.spot_key(video, subtitle))
+        if kept in (lineup.MATCHED, lineup.NOT_MATCHED):
+            return kept
+        said = self.speech(lang, miner, profile, downloading=CHECKING_MODEL)
+        if said == "no":
+            return None
+        if said != "ready":
+            return fit_check.NOT_TIMED, SPEECH_NEED, said, 0.0
+        try:
+            return lineup.spot_check(miner, lang, profile, video, subtitle)
+        except anki_miner.AnkiMinerError as e:
+            if e.kind == "setup":
+                anki_miner._SPEECH.clear()
+            log.info("Connect: the spot-check of %s couldn't run now (%s)", os.path.basename(subtitle), e.message)
+            return None
 
     def mine(self, lang, job, picked, words, attempt):
         """One Anki Miner batch -> {"outcomes", "app", "doubt"} (doubt: the run crashed or timed out — the words it
-        doesn't account for are found by tag)."""
+        doesn't account for are found by tag). Stage B: a book lined up with its audiobook (`picked["lineup"]`) goes
+        as one call a part — each audio file's words as its audio episode, cut at their sentence's cue, the rest as
+        the book (`lineup.split`); outcomes in the words' order. A call that fails after another made cards returns
+        those, the rest not attempted: the next batch sends only them (and meets the failure again, as itself)."""
+        lined = picked.get("lineup") if picked.get("reading") else None
+        if not lined:
+            return self._mine_one(lang, job, picked, words, attempt)
+        from app.connect import lineup
+        groups, rest = lineup.split(words, lined)
+        runs = [dict(picked, video=audio, subtitle=srt, reading=None, offset=0.0, _words=ws)
+                for (audio, srt), ws in groups.items()]
+        if rest:
+            runs.append(dict(picked, _words=rest))
+        got, out = {}, None
+        for n, run in enumerate(runs):
+            ws = run.pop("_words")
+            try:
+                done = self._mine_one(lang, job, run, ws, attempt if n == 0 else f"{attempt}-{n}")
+            except (Wait, Needs, Skip, Repick, stopping.Stopped):
+                if not got:
+                    raise
+                break                       # the cards made so far kept; the rest sent by the next batch
+            for w, o in zip(ws, done["outcomes"]):
+                got[(w["word"], w["reading"])] = o
+            if out is None:
+                out = dict(done, outcomes=None)
+            else:
+                out["doubt"] = out.get("doubt") or done.get("doubt")
+                out["stopped"] = out.get("stopped") or done.get("stopped")
+                out["tag_pending"] = list(out.get("tag_pending") or ()) + list(done.get("tag_pending") or ())
+            if done.get("stopped"):
+                break                       # your *Stop*: the next files' words wait with the job
+        out["outcomes"] = [got.get((w["word"], w["reading"])) or dict(_unsure(w), outcome="not_attempted")
+                           for w in words]
+        return out
+
+    def _mine_one(self, lang, job, picked, words, attempt):
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import anki_miner

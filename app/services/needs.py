@@ -117,6 +117,7 @@ LIBRARY_EMPTIED = "library-emptied"   # A5K-2: the library folder held none of t
 AUDIOBOOK_ASK = "audiobook-ask"       # Hon (H-8): is this audiobook that book? Asked once per pair, the answer kept
 AUDIOBOOK_FIND = "audiobook-find"     # Hon (a5-2): after a *No*, find its book — or it has none (never asked again)
 AUDIOBOOK_TRANSCRIPT = "audiobook-transcript"   # Hon (a6, H-13): an audiobook's transcript isn't its book's: not used
+AUDIOBOOK_LINEUP = "audiobook-lineup"   # Michi-AB Stage B: nothing of an audiobook lined up with its book — together?
 BACKLOG_SHOWS = "backlog-shows"       # Michi-C (A7B-3): the shows behind 順's deck's new cards, on this PC, not listed
 SETTINGS_FOLDER = "settings-folder"   # a6 settings import (SI-3): a video folder the imported settings name isn't here
 # Michi-U (alpha 9.1 try): titles wait only because the Anki Miner installed is older than the approved one
@@ -125,13 +126,15 @@ FOLDER_MIN = 10                 # gone files (of two shows or more) before a fol
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS, MINER_UPDATE)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
-                   "mine-failed": ("open_logs",), "error": ("open_logs",)}
+                   "mine-failed": ("open_logs",), "error": ("open_logs",),
+                   # Michi-AB Stage B (AB-Q2): the speech model's one question — *Download it* · *Not now*
+                   "speech-model": ("get_speech_model", "no_speech_model")}
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 
@@ -157,6 +160,11 @@ STRINGS = {
                             "book's: Surasura doesn't use it. The book's words count, as they did.",
     "abook_transcript_say_none": "Its lines aren't in that book, so it's another edition's or another book's: "
                                  "Surasura doesn't use it. The book's words count, as they did.",
+    # Michi-AB Stage B (Sonic 2026-11-02, PROVISIONAL): Anki Miner lined up nothing of an audiobook with its book
+    "abook_lineup_title": "This audiobook doesn't match 「{book}」",
+    "abook_lineup_say": "{files}: Anki Miner listened and found none of the book's sentences in it. Keep them "
+                        "together (listen alongside; the book's cards come without sentence audio), or separate them "
+                        "(the audiobook becomes its own title again)?",
     "anki_closed_title": "Anki isn't open: {n} wait for it",
     "anki_needs_title": "Anki needs you: {n} wait for it",
     # Mado-N (Sonic 2026-10-31, MA-1 / MA-2): AnkiConnect may be missing — Mado-A's words (`ankiconnect_addon`)
@@ -404,7 +412,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     for ask in asks or ():
         entry = _audiobook_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_ASK else \
             _audiobook_find_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_FIND else \
-            _transcript_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_TRANSCRIPT else _ask_entry(ask, by_id, seen)
+            _transcript_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_TRANSCRIPT else \
+            _lineup_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_LINEUP else _ask_entry(ask, by_id, seen)
         if entry is not None:
             out.append(entry)
     for root in roots:
@@ -1364,6 +1373,8 @@ def asks_of(store):
         out += [dict(a, kind=AUDIOBOOK_FIND) for a in store.audiobook_finds()]
     if hasattr(store, "transcript_mismatches"):          # a6 (H-13): a transcript its book doesn't hold
         out += [dict(a, kind=AUDIOBOOK_TRANSCRIPT) for a in store.transcript_mismatches()]
+    if hasattr(store, "audiobook_mismatches"):           # Stage B: nothing lined up with its book — together?
+        out += [dict(a, kind=AUDIOBOOK_LINEUP) for a in store.audiobook_mismatches()]
     return out
 
 
@@ -1411,6 +1422,20 @@ def _transcript_entry(ask, seen):
                                                                 book=ask.get("book") or "?"),
                  lines=(), actions=(), unseen=key not in seen, say=say,
                  data={"item_id": ask["item_id"], "transcript": ask.get("transcript") or ""})
+
+
+def _lineup_entry(ask, seen):
+    """Michi-AB Stage B's one question a pair: *This audiobook doesn't match 「…」* — *Keep them together*
+    (`keep_together`: an answer kept, the book's cards without sentence audio, never lined up again) · *Separate them*
+    (`separate_them`: its own title again, one Undo). Keyed by the pair (its answer key)."""
+    if not ask.get("key") or ask.get("item_id") is None:
+        return None
+    key = f"lineup:{_digest(['audiobook-lineup', str(ask['key'])])}"
+    return Entry(key=key, kind=AUDIOBOOK_LINEUP,
+                 title=STRINGS["abook_lineup_title"].format(book=ask.get("book") or "?"), lines=(),
+                 actions=("keep_together", "separate_them"), unseen=key not in seen,
+                 say=STRINGS["abook_lineup_say"].format(files=_audiobook_files(ask)),
+                 data={"item_id": ask["item_id"], "key": ask["key"], "title": ask.get("title") or ""})
 
 
 def _audiobook_entry(ask, seen):

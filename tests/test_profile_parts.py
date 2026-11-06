@@ -104,7 +104,7 @@ def _writers():
     """(what writes it, its path, a folder?) — each from the code's own path function under the test root."""
     from app import report, send_report, telemetry, updater
     from app.cli import contract, events
-    from app.connect import anki_miner, kick, known_signal, ledger
+    from app.connect import anki_miner, kick, known_signal, ledger, lineup
     from app.services import airing, first_run, library_reader, moves, needs, settings_io
     from app.services import anki_miner_setup
     out = [
@@ -117,6 +117,9 @@ def _writers():
         ("the known-words signal", known_signal.record_path("ja"), False),
         ("Connect's whitelist", anki_miner.whitelist_path("zh"), False),
         ("Anki Miner's install staging", anki_miner_setup.staging_folder(), True),
+        ("the speech model's progress", os.path.join(anki_miner.setup_folder(), anki_miner.PROGRESS), False),
+        ("the line-up's heartbeat", os.path.join(anki_miner.setup_folder(), anki_miner.HEARTBEAT), False),
+        ("Connect's line-ups", lineup.root(), True),
         ("the folder-time cache", os.path.join(ledger.folder(), "sources_ja.json"), False),
         ("the covers cache", os.path.join(path_utils.get_covers_cache_path(), "a.jpg"), False),
         ("the airing cache", airing.cache_path("ja"), False),

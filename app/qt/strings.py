@@ -1303,6 +1303,13 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "find_book": ("Find its book…", "Pick its book from your library, or an EPUB on your computer: the audiobook joins "
                                     "it as a Yes would. Undo takes it back"),
     "no_book": ("It has no book", "It stays an audiobook of its own: Surasura never asks about its book again"),
+    # Michi-AB Stage B (PROVISIONAL): Anki Miner's speech model, asked once; a pair nothing of which lined up
+    "get_speech_model": ("Download it", "Anki Miner downloads its speech model (0.5 GB) into its own folder, then lines "
+                                        "your books up with their audiobooks by itself"),
+    "no_speech_model": ("Not now", "Their cards are made without sentence audio. Surasura doesn't ask again"),
+    "keep_together": ("Keep them together", "Listen alongside: the book's cards come without sentence audio, and "
+                                            "Surasura doesn't try to line them up again"),
+    "separate_them": ("Separate them", "The audiobook becomes its own title again. Undo takes it back"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1425,6 +1432,10 @@ NEEDS_SAME_BOOK = "The audiobook joins its book"
 NEEDS_NOT_BOOK = "Kept: never asked about these two again"
 NEEDS_PICKED = "The audiobook joins 「{book}」"            # a5-2: *Find its book…*'s pick (its toast's Undo)
 NEEDS_NO_BOOK = "Kept as an audiobook of its own: never asked again"
+NEEDS_SPEECH_YES = "Anki Miner downloads its speech model, then lines up your audiobooks"   # Michi-AB Stage B
+NEEDS_SPEECH_NO = "Their cards come without sentence audio"
+NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
+NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_FIND_BOOK_LINE = "{title} · {n} parts"
 NEEDS_FIND_FILE = "An EPUB on your computer…"
 NEEDS_FIND_FILE_TIP = "Added the way + Add adds an EPUB (Extract), then the audiobook joins it"

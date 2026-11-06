@@ -717,8 +717,9 @@ def _closed_part(wiz, parent):
     row.addWidget(button)
     row.addStretch(1)
     col.addLayout(row)
-    steps = addon_steps.AddonSteps(lambda text, tip: _button(text, tip, lambda: None, part), "wizsub", wiz.say, part)
-    steps.setVisible(False)
+    # 3.0.1 (AC-5: setup's Anki step first): *Install AnkiConnect for me* above *Copy code*, where the install can
+    steps = addon_steps.AddonSteps(lambda text, tip: _button(text, tip, lambda: None, part), "wizsub", wiz.say, part,
+                                   url=wiz.anki_url, checked=wiz.look_anki, timer=addon_steps.ticker(wiz.shell))
     col.addWidget(steps)
     part.watch = addon_steps.Watch(part, addon_steps.ticker(wiz.shell), wiz.anki_url, wiz.look_anki)
     return part, line, steps, button
@@ -731,7 +732,7 @@ def _say_closed(line, steps, look, watch=None):
     _set_text(line, words)
     if todo:
         steps.set_unsure((look or {}).get("running") is None)
-    _show(steps, bool(todo))
+    steps.want(bool(todo))                                # an install under way keeps it on screen (Anki closed)
     if watch is not None:
         watch.arm(not (look or {}).get("say"), (look or {}).get("running"))
 
@@ -3062,6 +3063,7 @@ class SetupWizard(QWidget):
         self.anki = dict(look or {})
         if self.anki.get("open"):
             self._unsay_copied()
+            addon_steps.answered()                      # an install's done line goes: AnkiConnect is in
         if self.page.id in ("known", "order"):
             self._rearm()                               # its controls change now: never a press aimed before (R2-1)
         for page in self.pages:

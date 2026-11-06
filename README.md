@@ -53,8 +53,9 @@ Japanese and Chinese.
    and audiobooks where they are, and works out their series, episodes and order. Nothing is moved. Covers come from
    AniList when you turn on *Show covers*.
 2. **Tell it what you know.** Your Anki decks, Jiten, Migaku, or an Anki deck file (`.apkg`).
-   *Surasura talks to Anki through **AnkiConnect**, a free Anki add-on: in Anki, Tools › Add-ons › Get Add-ons…, paste
-   the code `2055492159` (setup's **Copy code** puts it on your clipboard), then restart Anki.*
+   *Surasura talks to Anki through **AnkiConnect**, a free Anki add-on. On Windows, setup's **Install AnkiConnect for
+   me** gets it from AnkiWeb and adds it while Anki is closed. Or in Anki: Tools › Add-ons › Get Add-ons…, paste the
+   code `2055492159` (setup's **Copy code** puts it on your clipboard), then restart Anki.*
 3. **Sort what it found.** One title at a time, one key each: **Soon (S) · Current (→) · Goal (↓) · Finished (↑) ·
    Ignore (←)**. Not sure yet? Leave the rest in **New arrivals** and sort them later.
 4. **Watch and read in order.** **Current** is your order: **Up Next** on top, then Soon, and **Goal** (someday) at its

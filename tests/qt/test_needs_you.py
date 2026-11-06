@@ -1170,3 +1170,28 @@ def test_a_pickers_start_is_one_press_and_a_language_switch_meanwhile_picks_noth
     QApplication.processEvents()
     assert started == [] and not any(c[0] == "link_video" for c in writer.calls)
     win.language = seed.language
+
+
+def test_the_anki_line_offers_install_ankiconnect_for_me_and_keeps_a_press_under_way_once_anki_closes(
+        world, monkeypatch):
+    # 3.0.1 (AC-5): the line's part leads with *Install AnkiConnect for me* where the install can; an install under way
+    # (Anki closed to let it go: the entry has no steps) still wears the part, with its line
+    from app import ankiconnect_addon as A
+    from app.connect import ankiconnect_install as I
+    from app.qt import addon_steps
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: False)
+    monkeypatch.setattr(addon_steps, "_STATE", None)
+    monkeypatch.setattr(I, "look", lambda: {"state": I.CAN_INSTALL, "disabled": False, "base": "B", "point": 1})
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(True)}
+    seed, win, writer, ny = world(connect=connect)
+    entry = entry_of(ny, service.ANKI_WAIT)
+    win.show_tab("needs")
+    card = ny.cards.card(entry.key)
+    assert wait_until(lambda: card.isVisible() and card.steps.install is not None and card.steps.install.isVisible())
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} >= {"copy_code", "install_ankiconnect"}
+    addon_steps.state().set(phase=addon_steps.RUNNING)     # a press under way, then Anki seen closed
+    box = card.steps.parentWidget().layout()
+    card.steps.setParent(None)
+    ny._addon(card, box, type(entry)(**dict(entry._asdict(), data=dict(entry.data, steps=None))))
+    assert card.steps.install_line.text() == I.RUNNING_LINE and card.steps.steps_row.isHidden()
+    addon_steps.state().set(phase=None)

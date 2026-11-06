@@ -1971,10 +1971,12 @@ class Store:
                 out[item_id] = (prev_id, next_id)
         return out
 
-    def _before(self, change, rows, explicit=1):
-        """Record each row's place just before the change, in the previous order (§6.11)."""
+    def _before(self, change, rows, explicit=1, near=None):
+        """Record each row's place just before the change, in the previous order (§6.11). `near`: the rows'
+        `_neighbours`, when the caller has read them."""
         rows = sorted(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
-        near = self._neighbours(rows)
+        if near is None:
+            near = self._neighbours(rows)
         for r in rows:
             prev_id, next_id = near.get(r[0], (None, None))
             change.items.append({"id": r[0], "tier": r[1], "prev": prev_id, "next": next_id,
@@ -2498,11 +2500,12 @@ class Store:
             block = [r[0] for r in ordered]
             where = ("before", before_id) if before_id is not None else \
                 ("after", after_id) if after_id is not None else self._tier_top(tier, set(block))
+            near = self._neighbours(ordered)      # read once: the no-op check's and the undo record's (R6)
             if self._in_place(tier, ordered, where[1] if where[0] == "before" else None,
-                              where[1] if where[0] == "after" else None, end=where[0] == "end"):
+                              where[1] if where[0] == "after" else None, end=where[0] == "end", near=near):
                 return None
             change = self._change(cmd, "move")
-            self._before(change, ordered)
+            self._before(change, ordered, near=near)
             self._put(tier, block, where, cmd.version,
                       (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None)
             # --- P4.1 L2 (TF fix 8, G1.6-10): out of Finished by any path, its cards come back into the order ---
@@ -2543,26 +2546,37 @@ class Store:
         change.status = list(change.status) + status
     # --- end P4.1 L2 ---
 
-    def _in_place(self, tier, ordered, before_id, after_id, end=False):
+    def _in_place(self, tier, ordered, before_id, after_id, end=False, near=None):
         """True when the move would leave every item in `tier` and the tier's sequence unchanged (`end`: the block
-        is to go to the tier's end)."""
+        is to go to the tier's end). `near`: the rows' `_neighbours` (prev, next in their tier), when read already."""
         if any(r[1] != tier for r in ordered):
             return False
         first, last = ordered[0], ordered[-1]
-        count = self.conn.execute(          # bounded: a scattered block never counts a whole tier
-            "SELECT COUNT(*) FROM (SELECT 1 FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= (?, ?) "
-            "LIMIT ?)", (tier, first[2], first[0], last[2], last[0], len(ordered) + 1)).fetchone()[0]
-        if count != len(ordered):
-            return False
+        if len(ordered) > 1:
+            count = self.conn.execute(          # bounded: a scattered block never counts a whole tier
+                "SELECT COUNT(*) FROM (SELECT 1 FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= "
+                "(?, ?) LIMIT ?)", (tier, first[2], first[0], last[2], last[0], len(ordered) + 1)).fetchone()[0]
+            if count != len(ordered):
+                return False
+
+        def nxt():
+            if near is not None:
+                return near.get(last[0], (None, None))[1]
+            row = self._beyond(tier, (last[0], last[2]), set(), 1, 1)
+            return row[0][0] if row else None
+
+        def prv():
+            if near is not None:
+                return near.get(first[0], (None, None))[0]
+            row = self._beyond(tier, (first[0], first[2]), set(), -1, 1)
+            return row[0][0] if row else None
         if before_id is not None:
-            nxt = self._beyond(tier, (last[0], last[2]), set(), 1, 1)
-            return bool(nxt) and nxt[0][0] == before_id
+            return nxt() == before_id
         if end:
-            return not self._beyond(tier, (last[0], last[2]), set(), 1, 1)
-        prv = self._beyond(tier, (first[0], first[2]), set(), -1, 1)
+            return nxt() is None
         if after_id is not None:
-            return bool(prv) and prv[0][0] == after_id
-        return not prv
+            return prv() == after_id
+        return prv() is None
 
     NUDGE_BATCH = 64
 
@@ -3827,7 +3841,14 @@ class Store:
                                            chunk)}
             pieces = set(kinds)
             groups = {p for p, k in kinds.items() if k == "group"}
-            is_group = lambda p: p is not None and (p in groups if p in kinds else self._is_group(p))  # noqa: E731
+            def is_group(p):                    # a piece's kind read once a settle (R6); none changes until its end
+                if p is None:
+                    return False
+                if p not in kinds:
+                    kinds[p] = "group" if self._is_group(p) else "run"
+                    if kinds[p] == "group":
+                        groups.add(p)
+                return p in groups
             whole, held = {}, {}
             for chunk in _chunks(sorted({v[1] for v in info.values() if v[1] is not None}), 500):   # one read (R6)
                 for p, i in conn.execute(f"SELECT piece_id, id FROM items WHERE piece_id IN "
@@ -4023,7 +4044,10 @@ class Store:
         """LM11 (G4): a group left holding one work's items, or standing in Finished or New arrivals, is a run again
         (an emptied one is left to go whole: its row is the undo's)."""
         marks = ",".join("?" * len(NO_GROUP_TIERS))
-        for chunk in _chunks(sorted(p for p in pieces if p is not None), 500):
+        groups = [r[0] for chunk in _chunks(sorted(p for p in pieces if p is not None), 500)    # R6: most commands
+                  for r in self.conn.execute(f"SELECT id FROM pieces WHERE kind = 'group' AND id IN "  # touch no group:
+                                             f"({','.join('?' * len(chunk))})", chunk)]         # no join for them
+        for chunk in _chunks(groups, 500):
             for piece, works, apart in self.conn.execute(
                     f"SELECT p.id, COUNT(DISTINCT i.work_id), MAX(i.tier IN ({marks})) FROM pieces p "
                     f"JOIN items i ON i.piece_id = p.id WHERE p.kind = 'group' AND p.id IN "

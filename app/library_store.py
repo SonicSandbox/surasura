@@ -10527,10 +10527,11 @@ def _store_track_items(self, held):
     comes beside the video later (the made copy beside it, Q4) is another version, never a second item."""
     if "items" not in held:
         held["items"] = {}
-        # through `pairings_extracted` (R6): the origin range's index left aside (`+`), or the planner walks every origin
+        # through `pairings_extracted` (R6): the origin range's index left aside (`+`, in the order too), or the planner
+        # walks every origin
         for item_id, text in self.conn.execute(
                 f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_EXTRACTED.format(p='p.')} AND "
-                f"+p.content_key >= 'src:' AND +p.content_key < 'src;' AND NOT {_VERSION_ROW} ORDER BY p.content_key"):
+                f"+p.content_key >= 'src:' AND +p.content_key < 'src;' AND NOT {_VERSION_ROW} ORDER BY +p.content_key"):
             for k in _video_keys(_json_dict(text) or {}):
                 held["items"][k] = item_id
     return held["items"]

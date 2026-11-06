@@ -322,7 +322,9 @@ class PictureMode:
         for w in self.window.findChildren(QWidget):
             if not w.isVisible() or w.window() is not self.window:     # (another window: its own picture, or none)
                 continue
-            if callable(getattr(w, "shown_fit", None)):
+            # asked of its class: a PyQt widget's own getattr for a name it lacks searches Qt's properties first (~11 µs,
+            # ~7 of the press's 9 ms over Settings' 629 shown widgets at 250 %, a9.1); `shown_fit` is a method always
+            if callable(getattr(type(w), "shown_fit", None)):
                 self.fitted.append(w)
                 w.shown_fit()
             elif isinstance(w, self.EDITS):

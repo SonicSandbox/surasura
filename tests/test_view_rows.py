@@ -1799,6 +1799,35 @@ def test_item12_a_drop_into_the_top_reads_waiting_at_once_as_the_store_builds_it
     assert any(not out[i].episodes[0].in_top and out[i].status.kind != "waiting" for i in moved if i > 1)
 
 
+def test_item12_topped_walks_rows_by_their_count_never_every_file_of_current():
+    """Review ITEM12 #2: a source offline (most files gone) leaves fewer than 20 that count; `topped` sums each row's
+    count (`Row.n_top`, the reader's) and reads files only in the row the top ends in — a mark painted on a row counts
+    it again (`marked`), and a row whose count isn't known (an older cache's) is counted from its files: the same
+    answer."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 12), {k: {"availability": "missing"} for k in range(2, 12)}),
+                      ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 400), {k: {"availability": "missing"} for k in range(400)}),
+                      ("soon", 3, 3, ["白銀の書庫番 第1巻.epub"], {0: {"source_type": "epub"}})])
+    view = vr.build(items, dict(WORKS), {"mine_line": 20})
+    assert [r.n_top for r in view.rows] == [2, 0, 1]
+    assert vr.topped(list(view.rows), 20)[1] == []
+    walked = []
+    real = vr.counts_toward_top
+    vr.counts_toward_top = lambda e, tier, keep=False: walked.append(e.id) or real(e, tier, keep)
+    try:
+        vr.topped(list(view.rows), 20)
+    finally:
+        vr.counts_toward_top = real
+    assert len(walked) == 1                             # the last counting row's file alone, never the 400 gone
+    marked = [vr.marked(view.rows[0], {view.rows[0].episodes[0].id: True})] + list(view.rows[1:])
+    assert marked[0].n_top == 1
+    unknown = [marked[0]._replace(n_top=None)] + marked[1:]
+    out, moved = vr.topped(marked, 20)
+    again = vr.topped(unknown, 20)[0]
+    assert [[e.in_top for e in r.episodes] for r in again] == [[e.in_top for e in r.episodes] for r in out]
+    stored = vr.build({**items, 1: dict(items[1], watched=1)}, dict(WORKS), {"mine_line": 20}).rows
+    assert [[e.in_top for e in r.episodes] for r in out] == [[e.in_top for e in r.episodes] for r in stored]
+
+
 def test_item12_topped_leaves_rows_as_they_are_with_connect_off_or_nothing_moved():
     """Connect off (no top: `mine_line` None), a top of 0, or an order the top doesn't change: the same rows, the same
     objects (the window repaints nothing for them)."""

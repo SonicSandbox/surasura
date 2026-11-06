@@ -1005,13 +1005,15 @@ class Writer:
             change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
         self._refresh_before(store, cmd, change)
+        stacked = not cmd.get("replay") and change is not None and not cmd.get("auto")   # B1: a background cover is
+        if stacked:                                 # nobody's to undo. On the stack before it leaves the queue: while it
+            with self._cond:                        # waits there `newest` says "not known" (review ITEM12 #3: never the
+                self._undo.append(change)           # change before it, in the moment between)
         self._landed(cmd)
         if cmd.get("replay"):
             if change is not None:
                 self._replay_applied += 1
-        elif change is not None and not cmd.get("auto"):  # B1: a background cover is nobody's to undo
-            with self._cond:
-                self._undo.append(change)
+        elif stacked:
             change.landed = _stamp(store)           # finish-pending: what its re-order must reach (the window waits)
             self._call(self.on_saved, change, cmd.get("label"))
         if note is not None:

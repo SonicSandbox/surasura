@@ -211,6 +211,12 @@ Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("audio", "s
 # (`moves.Kept`) — painted faded, nothing else; False with no figure. Episode's the same. Before `string`
 Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("new_faded", "string"),
                  defaults=tuple(Row._field_defaults.values())[:-1] + (False, None))
+# --- 3.0.1 item 12: `n_top`, how many of its files count toward the top line (`counts_toward_top`), worked out on the
+# reader's thread (a mark painted on the row: `marked`) — `topped` walks rows by it, never every file of Current on the
+# window's (review ITEM12 #2: a source offline, 20,000 files gone, fewer than 20 counting). None: not known (an older
+# first screen's cache) — `topped` counts that row's files. Before `string`
+Row = namedtuple("Row", Row._fields[:Row._fields.index("string")] + ("n_top", "string"),
+                 defaults=tuple(Row._field_defaults.values())[:-1] + (None, None))
 Episode = namedtuple("Episode", Episode._fields + ("new_faded",), defaults=tuple(Episode._field_defaults.values()) + (False,))
 # --- Michi-ST (PROVISIONAL): `tracks`, what a waiting video's own tracks say (`app/tracks.note`): "pictures" — its only
 # subtitles are drawn as pictures, not read yet; "no-miner" — no Anki Miner here to read a track inside it; else None
@@ -905,15 +911,26 @@ def topped(rows, line_n, keep=False, connect=None):
     if not line_n or not rows:
         return rows, []
     seen, last = 0, None
-    for i, r in enumerate(rows):
+    for i, r in enumerate(rows):                     # by the rows' counts: a row's files walked only where the line
+        c = r.n_top                                  # falls (or its count isn't known)
+        if c is None:
+            c = sum(1 for e in r.episodes if counts_toward_top(e, r.tier, keep))
+        if not c:
+            continue
+        if seen + c < line_n:
+            seen += c
+            last = (i, None)
+            continue
         for k, e in enumerate(r.episodes):
             if counts_toward_top(e, r.tier, keep):
                 seen += 1
-                last = (i, k)
                 if seen >= line_n:
+                    last = (i, k)
                     break
-        if seen >= line_n:
-            break
+        break
+    if last is not None and last[1] is None:         # fewer than `line_n` count: down to the last of them
+        r = rows[last[0]]
+        last = (last[0], max(k for k, e in enumerate(r.episodes) if counts_toward_top(e, r.tier, keep)))
     out, changed = list(rows), []
     for i, r in enumerate(rows):
         eps = r.episodes
@@ -1318,11 +1335,12 @@ def _string(eps, next_index, media, key, hato):
     return plan, max(stone_plan.tightest(plan), stone_plan.ahead(plan))
 
 
-def marked(row, marks, hero=False):
+def marked(row, marks, hero=False, keep=False):
     """Current's `row` with its files in `marks` ({file id: watched}) marked so — the window's own marks, painted the
     moment a stone is clicked and kept until the store's views have them (`drag.DragController`) — and everything the
     row reads from its marks read again by `_row`'s own rules, its string too (`hero`: Current's first row, read as Up
-    Next): the row the store builds next, field for field. `row` itself when no mark changes it."""
+    Next; `keep` the library's `keep_watched`, as its count toward the top reads it): the row the store builds next,
+    field for field. `row` itself when no mark changes it."""
     if not any(e.id in marks and e.watched != marks[e.id] for e in row.episodes):
         return row
     eps = tuple(e._replace(watched=marks[e.id]) if e.id in marks and e.watched != marks[e.id] else e
@@ -1337,7 +1355,9 @@ def marked(row, marks, hero=False):
     next_index = _next_index(eps)
     nxt = eps[next_index]
     chips, more = _chips(eps, next_index, row.audio)
-    out = row._replace(episodes=eps, n_watched=sum(1 for e in to_finish(eps) if e.watched), next_index=next_index,
+    out = row._replace(episodes=eps, n_top=sum(1 for e in eps if counts_toward_top(e, row.tier, keep)),
+                       n_watched=sum(1 for e in to_finish(eps) if e.watched),
+                       next_index=next_index,
                        line=line, description=line, title_ep=_title_ep(eps, next_index, row.media, group),
                        chips=chips, more_chips=more, play_tip=nxt.play_tip, can_play=nxt.can_play,
                        string=_string(eps, next_index, row.media, row.key, row.source == "hato"))
@@ -1345,7 +1365,7 @@ def marked(row, marks, hero=False):
 
 
 def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, finished=False, guessed=None,
-         connect=None, meta=None, playable=None):
+         connect=None, meta=None, playable=None, keep=False):
     first = piece[0]
     work = works.get(first.get("work_id")) or {}
     group = _is_group(meta, piece)                       # LM11b G1: `meta`, the feed's piece (a group's)
@@ -1416,7 +1436,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
                can_play=nxt.can_play, string=string, cover=cover_of(work), group=group,
                works=tuple(dict.fromkeys(it["work_id"] for it in piece if it.get("work_id") is not None)),
                cards_out=any(it.get("in_learning_order", 1) == 0 for it in piece),     # --- W3.2 Q4
-               audio=audio)                                                            # a5-2
+               audio=audio,                                                            # a5-2
+               n_top=0 if finished else sum(1 for e in eps if counts_toward_top(e, tier, keep)))   # 3.0.1 item 12
 
 
 class RowCache:
@@ -1494,7 +1515,7 @@ def _group_of(metas, piece):
     return meta if _is_group(meta, piece) else None
 
 
-_Sig = namedtuple("_Sig", "n line_n hero cards mining in_top guess connect play")
+_Sig = namedtuple("_Sig", "n line_n hero cards mining in_top guess connect play keep")
 #   a cached row's signature (`_cached_row`), read by name: read by place, the fast path once took Connect's part
 #   (the last, added in P4.1 L2) for the type guess and kept a row whose guess had moved. `play` (row 55): its items'
 #   ▶ answers — checked on the fast path too, so new answers rebuild only the rows whose answer moved
@@ -1510,11 +1531,11 @@ def _guess(guessed, work):
 
 
 def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, hero,
-                connect=None, soon_from=None, soon_piece=None, meta=None, playable=None):
+                connect=None, soon_from=None, soon_piece=None, meta=None, playable=None, keep=False):
     """`meta`: a group's piece from the feed (LM11b G1), else None. `playable`: ▶'s answers (row 55), else None."""
     if cache is None:
         row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta,
-                   playable)
+                   playable, keep)
         row = _as_hero(row) if hero else row
         return row._replace(soon_from=soon_from, soon_piece=soon_piece) if soon_from is not None else row  # P-LF-16
     first = piece[0]
@@ -1534,13 +1555,14 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
         all(map(operator.is_, hit[2], piece))       # (a4: C's walk, not a generator's)
     # row 55: as shown — found, not found, and not answered yet (R55-A: Up Next's *Looking…*, its tip) each its own
     play = None if playable is None else tuple(playable.get(it["id"]) for it in piece)
-    if same_items and cache.same_global and hit[0].hero == hero and hit[0].guess == guess and hit[0].play == play:
+    if same_items and cache.same_global and hit[0].hero == hero and hit[0].guess == guess and hit[0].play == play \
+            and hit[0].keep == keep:
         sig = hit[0]                                 # nothing global moved: the same objects are the same row
     else:
         sig = _Sig(len(piece), line_n, hero, tuple(cards.get(it["id"], 0) for it in piece),
                    tuple(it["id"] in mining for it in piece), tuple(it["id"] in in_top for it in piece), guess,
                    None if connect is None else tuple(connect.get(it["id"]) for it in piece),     # --- P4.1 L2
-                   play)
+                   play, keep)
     if same_items and hit[0] == sig and (hit[3].soon_from, hit[3].soon_piece) == (soon_from, soon_piece):  # same cut
         row = hit[3]
         if row.index != index:
@@ -1548,7 +1570,7 @@ def _cached_row(cache, index, tier, piece, works, numbers, cards, mining, in_top
         cache.hits += 1
     else:
         row = _row(index, tier, piece, works, numbers, cards, mining, in_top, line_n, finished, guessed, connect, meta,
-                   playable)
+                   playable, keep)
         if hero:
             row = _as_hero(row)
         if soon_from is not None:                    # P-LF-16
@@ -2096,7 +2118,7 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top,
                                     None if off else line_n, False, guessed, hero=not rows, connect=feed_items,
                                     soon_from=cut, soon_piece=soon_piece if cut is not None else None,
-                                    meta=_group_of(pieces, piece), playable=playable))
+                                    meta=_group_of(pieces, piece), playable=playable, keep=keep))
     worst = worst_needs(rows[1:])
     if cache is not None:
         if worst == cache.worst:
@@ -2276,6 +2298,8 @@ def to_cache(view, rows=CACHE_ROWS):
 
 def _row_from(data):
     r = Row(*data)
+    if not isinstance(r.n_top, int) or isinstance(r.n_top, bool):   # 3.0.1 item 12: an older cache's `string` lands
+        r = r._replace(n_top=None)                                  # there — its count unknown
     st = Status(*r.status[:4]) if r.status else None             # R47: never a cached Stop
     mk = Mark(*r.mark) if r.mark else None
     eps = tuple(ep._replace(status=Status(*ep.status[:4]) if ep.status else None,

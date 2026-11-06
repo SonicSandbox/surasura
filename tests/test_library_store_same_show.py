@@ -367,6 +367,31 @@ def test_a_new_episode_under_the_bang_folder_whose_key_went_with_the_join_joins_
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_show_folder_never_joins_when_a_title_without_a_folder_has_the_name_and_was_kept_apart(language):
+    """Review ITEM12 #1: `<show>!` (a folder's title) and `<show>` (a drop's title, no folder — a loose file in hato's
+    folder) the user kept apart: a new `HighPriority/<show>/` episode is no one title's — two titles hold the key —
+    so it is a title of its own, as before (*Same title?* asks), never `<show>!`'s against his answer."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[88]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{show}!": (1,)}, before_a8=False)
+        bang = _work_of(store, rels[f"{show}!"][0])
+        touch(data_dir, f"{ls.HATO_FOLDER}/{show} - 02.srt")
+        drop = store.sync_disk()["added"][0]
+        plain = _work_of(store, store.item(drop)["rel_path"])
+        if plain == bang:                                # (the loose drop joins by the key: take it apart, as he did)
+            store.split_work([drop], show)
+            plain = _work_of(store, store.item(drop)["rel_path"])
+        assert plain != bang
+        store.keep_apart([bang, plain])
+        touch(data_dir, f"HighPriority/{show}/{show} - 09.srt")
+        new = store.sync_disk()["added"][0]
+        assert _work_of(store, store.item(new)["rel_path"]) not in (bang, plain)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_new_show_folder_never_joins_two_titles_a_season_or_a_title_taken_in_another_way(language):
     """What stays its own title: a new `<a>` folder when `<a>!` and `<a>~` are two titles already (the user kept them
     apart: no one title to join, as a loose file's copy); a new `<b>/Season 2` (a season is a title of its own); a new
@@ -390,6 +415,11 @@ def test_a_new_show_folder_never_joins_two_titles_a_season_or_a_title_taken_in_a
         store.take_in(root, new)
         works = {_work_of(store, f["rel"]) for f in new}
         assert len(works) == 5 and not works & before
+        # a folder named with marks alone has no show key: never another such folder's title
+        marks = _take(store, language, data_dir, root, src, {"♪♪": (1,)}, before_a8=False)
+        star = _found(language, data_dir, src, "★", "★ - 02.srt", 916)
+        store.take_in(root, [star])
+        assert _work_of(store, star["rel"]) != _work_of(store, marks["♪♪"][0])
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

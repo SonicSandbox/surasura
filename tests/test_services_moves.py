@@ -293,6 +293,55 @@ def test_newest_is_what_ctrl_z_takes_behind_writes_that_never_touch_the_undo_sta
     assert w.newest() is heard.saved[1][0]
 
 
+def test_newest_never_names_the_change_before_one_that_is_landing(lib, make_writer):
+    """Review ITEM12 #3: a change goes on the Undo stack before its command leaves the queue — asked in the moment
+    between (`_landed`), `newest` says "not known" or names the new change, never the one saved before it (Ctrl+Z
+    would undo that one, and leave the new one)."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: heard.saved)
+    first = heard.saved[0][0]
+    seen, real = [], w._landed
+
+    def landed(cmd):
+        seen.append(w.newest())
+        return real(cmd)
+    w._landed = landed
+    w.set_watched([now[1]], True)
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert seen and all(c is not first for c in seen)
+    assert w.newest() is heard.saved[1][0]
+
+
+def test_newest_behind_a_download_registered_is_the_saved_change_and_unknown_while_a_copy_runs(lib, make_writer):
+    """A download's registration queued before Ctrl+Z never goes on the Undo stack (`_register`): what Ctrl+Z takes is
+    the saved change behind it. While the copier still works (an Explorer drop's copy, a registration's records) what
+    it hands the queue isn't known: None."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: heard.saved)
+    done = heard.saved[0][0]
+    words = names(lib.language)
+    w.hold()
+    told = []
+    w.register([_download(lib, words[40], words[41], "ccccccccccc")], _keyed(_yt(words[41])), rules={},
+               done=lambda *n: told.append(n))
+    assert h.until(lambda: w.pending() and not w._copying)
+    assert w.newest() is done
+    with w._cond:
+        w._copying += 1                                 # (a copy under way: its command not queued yet)
+    try:
+        assert w.newest() is None
+    finally:
+        with w._cond:
+            w._copying -= 1
+    w.release()
+    assert h.until(lambda: told) and w.newest() is done
+
+
 def test_undo_with_nothing_saved_does_nothing(lib, make_writer):
     w, heard = make_writer()
     w.undo()

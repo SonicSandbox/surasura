@@ -3208,6 +3208,21 @@ def _group_view(a_watched=2, b_watched=0, source=None):
     return vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces=pieces)
 
 
+def test_item12_the_drops_top_line_never_counts_a_video_waiting_for_its_subtitle():
+    """3.0.1 item 12: the drop's own top line (`lines_for`) and *in the top* (`topped`) count a file as the store does
+    (`view_rows.counts_toward_top`): a video waiting for its subtitle (SRC W1b) is never one of the top 20, so the line
+    falls where the reader's falls and the painted rows are the reader's."""
+    tvr.WORKS.clear()
+    tvr.work(1, SHOW_A)
+    waiting = {k: {"availability": "waiting", "rel_path": f"HighPriority/{SHOW_A} - {k + 1:02d}.mkv"} for k in (2, 5)}
+    items = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 30), waiting)])
+    view = vr.build(items, dict(tvr.WORKS), {"mine_line": 20})
+    top = next(ln for ln in view.lines if ln.kind == "top")
+    assert top.split == 22                              # 20 files that count, and the two waiting among them
+    assert drag.lines_for(view, view.rows) == tuple(ln for ln in view.lines if ln.kind in ("top", "soon"))
+    assert drag.topped(view, list(view.rows)) == (list(view.rows), [])
+
+
 def _show_group(win, **kw):
     """The group's view shown in the window (the fake writer writes nothing back: no reader view replaces it)."""
     win.moves._show(_group_view(**kw))

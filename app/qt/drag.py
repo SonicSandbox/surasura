@@ -304,11 +304,13 @@ def lines_for(view, rows_):
     keep = bool(getattr(view, "keep_watched", False))
     out = []
     top = next((ln for ln in view.lines if ln.kind == "top"), None)
-    if top is not None:
+    n = getattr(view, "mine_line", None)             # 3.0.1 item 12: drawn once that many count, as the reader does
+    if n is None and top is not None:                # (a view that doesn't say: the line's own count, as before)
         n = 0
         for i, r in enumerate(view.rows[:top.after + 1]):
             eps = r.episodes if (i < top.after or top.split is None) else r.episodes[:top.split]
             n += sum(1 for e in eps if counts(e, r.tier, keep))
+    if n:
         seen, at = 0, None
         for i, r in enumerate(rows_):
             for k, e in enumerate(r.episodes):
@@ -1201,10 +1203,11 @@ class DragController(QObject):
         if not self.expect_marks or view is None or not getattr(view, "rows", None):
             return view
         marks = {i: m[0] for i, m in self.expect_marks.items()}
+        keep = bool(getattr(view, "keep_watched", False))
         rows_ = list(view.rows)
         changed = []
         for k in self._holding(view):
-            row = view_rows.marked(rows_[k], marks, hero=not k)          # (Current's first row reads as Up Next)
+            row = view_rows.marked(rows_[k], marks, hero=not k, keep=keep)   # (Current's first row: Up Next)
             if row is not rows_[k]:
                 rows_[k] = row
                 changed.append(k)

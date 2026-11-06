@@ -1956,6 +1956,21 @@ class Store:
         """[(id, ord)] of a tier, in order."""
         return self.conn.execute("SELECT id, ord FROM items WHERE tier = ? ORDER BY ord, id", (tier,)).fetchall()
 
+    def _rows_near(self, ids):
+        """(`_rows(ids, entry=False)`, `_neighbours` of those rows) in one statement a chunk: a move's read (R6)."""
+        rows, near = {}, {}
+        for chunk in _chunks(list(ids), 300):
+            sql = (f"SELECT {_ROW_NO_ENTRY.replace('id, tier, ord', 'x.id, x.tier, x.ord', 1)}, "
+                   "(SELECT i.id FROM items i WHERE i.tier = x.tier AND (i.ord, i.id) < (x.ord, x.id) "
+                   " ORDER BY i.ord DESC, i.id DESC LIMIT 1), "
+                   "(SELECT i.id FROM items i WHERE i.tier = x.tier AND (i.ord, i.id) > (x.ord, x.id) "
+                   " ORDER BY i.ord, i.id LIMIT 1) "
+                   f"FROM items x WHERE x.id IN ({','.join('?' * len(chunk))})")
+            for row in self.conn.execute(sql, chunk):
+                rows[row[0]] = row[:-2]
+                near[row[0]] = row[-2:]
+        return rows, near
+
     def _neighbours(self, rows):
         """{id: (prev_id, next_id)} in each row's tier, just before a change (one query per 300)."""
         out = {}
@@ -2518,8 +2533,9 @@ class Store:
             return None
         with self._command("move", by) as cmd:
             self._recheck(check)
-            # the anchor in the same read; no entry: a move never reads it (R6)
-            rows = self._rows(ids if anchor is None else ids + [anchor], entry=False)
+            # the anchor in the same read, the rows' neighbours too (the no-op check's and the undo record's); no entry:
+            # a move never reads it (R6)
+            rows, near = self._rows_near(ids if anchor is None else ids + [anchor])
             a = rows.pop(anchor, None) if anchor is not None else None
             if not rows:
                 return None
@@ -2530,7 +2546,6 @@ class Store:
             block = [r[0] for r in ordered]
             where = ("before", before_id) if before_id is not None else \
                 ("after", after_id) if after_id is not None else self._tier_top(tier, set(block))
-            near = self._neighbours(ordered)      # read once: the no-op check's and the undo record's (R6)
             if self._in_place(tier, ordered, where[1] if where[0] == "before" else None,
                               where[1] if where[0] == "after" else None, end=where[0] == "end", near=near):
                 return None
@@ -3821,21 +3836,17 @@ class Store:
                                 (nxt,) + index[nxt][1:] if nxt is not None else none)
             else:
                 rest.append(item_id)
-        for chunk in _chunks(rest, 300):
-            sql = ("WITH m(id) AS (VALUES %s) SELECT x.id, "
+        for chunk in _chunks(rest, 300):        # the neighbours and their pieces in one statement (R6)
+            sql = ("WITH m(id) AS (VALUES %s), nb AS MATERIALIZED (SELECT x.id AS id, "
                    "(SELECT i.id FROM items i WHERE i.tier = x.tier AND (i.ord, i.id) < (x.ord, x.id) "
-                   " ORDER BY i.ord DESC, i.id DESC LIMIT 1), "
+                   " ORDER BY i.ord DESC, i.id DESC LIMIT 1) AS p, "
                    "(SELECT i.id FROM items i WHERE i.tier = x.tier AND (i.ord, i.id) > (x.ord, x.id) "
-                   " ORDER BY i.ord, i.id LIMIT 1) FROM m JOIN items x ON x.id = m.id" % ",".join("(?)" for _ in chunk))
-            pairs = self.conn.execute(sql, chunk).fetchall()
-            others = {v for _i, p, n in pairs for v in (p, n) if v is not None}
-            info = {}
-            for sub in _chunks(list(others), 500):
-                for r in self.conn.execute(f"SELECT id, piece_id, work_id FROM items WHERE id IN "
-                                           f"({','.join('?' * len(sub))})", sub):
-                    info[r[0]] = r
-            for item_id, p, n in pairs:
-                out[item_id] = (info.get(p, none), info.get(n, none))
+                   " ORDER BY i.ord, i.id LIMIT 1) AS n FROM m JOIN items x ON x.id = m.id) "
+                   "SELECT nb.id, nb.p, pp.piece_id, pp.work_id, nb.n, nn.piece_id, nn.work_id FROM nb "
+                   "LEFT JOIN items pp ON pp.id = nb.p LEFT JOIN items nn ON nn.id = nb.n"
+                   % ",".join("(?)" for _ in chunk))
+            for item_id, p, pp, pw, n, nn, nw in self.conn.execute(sql, chunk):
+                out[item_id] = ((p, pp, pw) if p is not None else none, (n, nn, nw) if n is not None else none)
         return out
 
     def _new_piece(self, like=None, title=None):

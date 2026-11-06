@@ -8,7 +8,7 @@ a modal loop that freezes the main window.
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QEvent, QPoint, Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton
 
@@ -347,3 +347,43 @@ def test_a_second_card_in_the_same_window_holds_the_keyboard_and_the_first_never
     assert QApplication.focusWidget() is first.default    # the older card holds the keyboard again
     first.no.click()
     assert first_answers == [False]
+
+
+# --- a card kept built (Mado-SO: Fresh library's sheet, built once a window): asked again as a new one ------------ #
+def _kept(window, **kw):
+    answers = []
+
+    def build(card):
+        card.keep = True
+    card = confirm.ask(window, "Sort again or start over", "", None, None, no="Close", no_tip="Close it",
+                       on_answer=answers.append, build=build, **kw)
+    QApplication.processEvents()
+    return card, answers
+
+
+def test_a_kept_card_is_hidden_at_its_answer_and_asked_again_answers_once_as_a_new_one(second):
+    # what a wrong answer would cost: the last opening's answer read as this one's, or a callback fired twice (an
+    # action run twice); a dimmed room left over the window
+    from PyQt6 import sip
+    card, answers = _kept(second)
+    QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert answers == [False] and not sip.isdeleted(card) and not card.isVisible() and card.keep
+    assert not any(w.isVisible() for w in second.findChildren(confirm.Scrim))
+    again = []
+    assert card.again(again.append) is card and card.answer is None and card.isVisible()
+    assert [w for w in second.findChildren(confirm.Scrim) if w.isVisible()] == [card.scrim]
+    QApplication.processEvents()
+    assert QApplication.focusWidget() is card.no                                  # the keyboard on it, as a new one's
+    _click_window_at(second, second.behind, QPoint(4, 4))                         # a click outside: No, reaching nothing
+    assert again == [False] and answers == [False] and second.clicks == []
+    card.no.click()                                                               # (answered: nothing more)
+    assert again == [False]
+
+
+def test_a_kept_card_open_when_its_window_hides_is_let_go_never_kept(second):
+    from PyQt6 import sip
+    card, answers = _kept(second)
+    second.hide()                                                                 # (a window closing with it open)
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert answers == [] and sip.isdeleted(card)

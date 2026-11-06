@@ -20,7 +20,8 @@ import time
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import Qt
+from PyQt6 import sip
+from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtWidgets import QLabel as QLabel_, QPushButton as QPushButton_
@@ -181,7 +182,7 @@ def test_change_folders_opens_the_folders_page_alone_and_back_opens_the_sheet_ag
     assert len(opened) == 1 and looks.fresh_calls == []                 # nothing changed until its Next
     wiz.finished.emit("later")                                         # Back: the sheet again
     again = [c for c in confirm._OPEN if getattr(c, "sheet", None) is not None]
-    assert again and again[-1] is not card
+    assert again and again[-1].answer is None and again[-1].sheet.choice is None    # (open anew: the kept card)
     again[-1].no.click()
     opened[0]({"add": ["D:/Dramas"], "stop": [3], "skip": []})          # its Next: Sort again with the changes
     assert looks.fresh_calls == [{"add": ["D:/Dramas"], "stop": [3], "skip": []}]
@@ -456,3 +457,144 @@ def test_a_second_press_on_the_sheet_changes_nothing_so_sort_and_start_over_neve
     # the same button pressed again is a second press too: it changes nothing either
     sheet.choose(("sort",))
     assert sheet.choice == ("sort",) and card.answer is True
+
+
+# --- built once a window (Mado-SO, 2026-11-06: it opened in 7.2 ms against its 5): kept at its close, made a new sheet
+# at each opening (`FreshSheet.renew`) ------------------------------------------------------------------------------- #
+def _hold_listing(monkeypatch, *answers):
+    """`list_backups` answering `answers` in turn, each held until its gate opens -> the gates."""
+    import threading
+    gates = [threading.Event() for _ in answers]
+    calls = []
+
+    def listing(_language):
+        i = len(calls)
+        calls.append(i)
+        gates[i].wait(5)
+        return answers[i]
+    monkeypatch.setattr(settings_sources, "list_backups", listing)
+    monkeypatch.setattr(settings_sources, "backup_sizes", lambda entries: {e["folder"]: 2048 for e in entries})
+    return gates
+
+
+def _entry(stamp):
+    return {"kind": profile_reset.SORTED_AGAIN, "scope": "language", "stamp": stamp, "stopped": False,
+            "date": f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}T12:00:00", "folder": "F" + stamp, "language": "ja"}
+
+
+def test_opened_again_it_is_the_kept_card_made_new_no_row_line_or_choice_of_before(window, monkeypatch):
+    # what a wrong answer would cost: an old Backups row (a Put back of a backup that's gone), the last counts, or the
+    # last opening's choice acting again
+    looks = SheetLooks(counts={"added": 3, "youtube": 0, "other": 0, "suspended": 2})
+    seed, win = window(looks)
+    gates = _hold_listing(monkeypatch, [_entry(f"202610{d:02d}-120000") for d in range(1, 8)], [])
+    _page, fresh, _over = _rows(win)
+    card = fresh.ask()
+    gates[0].set()
+    sheet = _sheet(card)
+    sheet.show_all()
+    rows = list(sheet.row_widgets)
+    assert len(rows) == 7 and not sheet.counts_line.isHidden() and not sheet.suspended_line.isHidden()
+    card.no.click()
+    assert not sip.isdeleted(card) and not card.isVisible()                       # kept, hidden
+    looks.counts = None
+    again = fresh.ask()
+    assert again is card and again.answer is None and again.isVisible() and fresh.card is card
+    assert sheet.choice is None and sheet.backups is None and sheet.row_widgets == [] and not sheet.all_shown
+    assert sheet.looking.isVisibleTo(card) and not sheet.scroll.isVisibleTo(card) and sheet.btn_all.isHidden()
+    assert sheet.counts_line.isHidden() and sheet.suspended_line.isHidden()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert all(sip.isdeleted(w) for w in rows)                                    # the old rows let go
+    gates[1].set()
+    assert wait_until(lambda: sheet.backups == [], 5)
+    assert not sheet.backups_part.isVisibleTo(card) and sheet.row_widgets == []
+    sheet.btn_sort.click()
+    assert looks.fresh_calls == [None]                                            # its press acts once, as a new one's
+    assert fresh.card is None
+
+
+def test_opened_again_its_greying_is_nows_never_the_last_openings(window, monkeypatch):
+    # §3.1 / F9: a sheet opened during a Generate greys every choice; opened again after it, every choice acts — and
+    # the other way round, a choice greyed now is greyed whatever the last opening showed
+    looks = SheetLooks()
+    seed, win = window(looks)
+    _sorted_again(win.language, "20261030-154000")
+    monkeypatch.setattr(type(win), "generating", lambda self: False)
+    card = settings_sources.open_fresh(win, win)
+    sheet = _sheet(card)
+    assert all(b.isEnabled() for b in (sheet.btn_sort, sheet.btn_folders, sheet.btn_over))
+    card.no.click()
+    monkeypatch.setattr(type(win), "generating", lambda self: True)
+    assert settings_sources.open_fresh(win, win) is card
+    _sheet(card)
+    for b in (sheet.btn_sort, sheet.btn_folders, sheet.btn_over):
+        assert not b.isEnabled() and b.toolTip() == S.FRESH_GENERATING
+    assert not any(b.isEnabled() for w in sheet.row_widgets for b in w.findChildren(QPushButton_)
+                   if b.text() == S.FRESH_PUT_BACK)
+    card.no.click()
+    monkeypatch.setattr(type(win), "generating", lambda self: False)
+    assert settings_sources.open_fresh(win, win) is card
+    _sheet(card)
+    assert sheet.btn_sort.toolTip() == S.FRESH_SORT_TIP and sheet.btn_folders.toolTip() == S.FRESH_FOLDERS_TIP
+    assert sheet.btn_over.toolTip() == S.FRESH_OVER_TIP
+    assert all(b.isEnabled() for b in (sheet.btn_sort, sheet.btn_folders, sheet.btn_over))
+    put = [b for w in sheet.row_widgets for b in w.findChildren(QPushButton_) if b.text() == S.FRESH_PUT_BACK]
+    assert put and all(b.isEnabled() and b.toolTip() == S.FRESH_PUT_BACK_TIP for b in put)
+    card.no.click()
+
+
+def test_an_earlier_openings_late_list_never_lands_in_the_next_one(window, monkeypatch):
+    # a slow folder: the first opening's list lands after it closed and the sheet opened again — never in that one
+    seed, win = window(SheetLooks())
+    gates = _hold_listing(monkeypatch, [_entry("20261030-154000")], [])
+    card = settings_sources.open_fresh(win, win)
+    card.no.click()
+    first = card.sheet.relay
+    assert settings_sources.open_fresh(win, win) is card
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(first) and card.sheet.relay is not first           # (one relay an opening, never kept)
+    gates[1].set()
+    assert wait_until(lambda: card.sheet.backups == [], 5)
+    gates[0].set()                                                                # the first opening's list, late
+    for _ in range(30):
+        QApplication.processEvents()
+        time.sleep(0.01)
+    assert card.sheet.backups == [] and card.sheet.row_widgets == []
+    card.no.click()
+
+
+def test_a_new_look_or_a_sheet_still_open_makes_a_new_one_and_the_kept_one_goes(window):
+    seed, win = window(SheetLooks())
+    card = settings_sources.open_fresh(win, win)
+    _sheet(card)
+    card.no.click()
+    card.made_in = ("another look",)                                              # (the theme or text size changed)
+    again = settings_sources.open_fresh(win, win)
+    assert again is not card and win.__dict__[settings_sources.KEPT] is again
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(card)
+    third = settings_sources.open_fresh(win, win)                                 # (another door while it is open)
+    assert third is not again and not again.keep and third.keep
+    third.no.click()
+    again.no.click()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(again) and not sip.isdeleted(third)
+
+
+def test_its_first_opening_is_its_own_height_at_once_never_a_jump_as_its_lists_land(window, monkeypatch):
+    # the adversary's B1: the hidden card measured its parts before they were laid out at its width — opened the
+    # whole window tall, then jumped when the counts or the list landed (its opening's picture taken at that size)
+    class Quiet(SheetLooks):
+        def fresh_counts(self, then):
+            return True                                               # (a slow store: its counts not back yet)
+    seed, win = window(Quiet())
+    gates = _hold_listing(monkeypatch, [], [])
+    for _ in range(2):                                                # built, then kept and opened again
+        card = settings_sources.open_fresh(win, win)
+        at_once = card.geometry()
+        assert at_once.height() < win.height() - 2 * confirm.MARGIN
+        card.place()                                                  # placed again: nothing it measures moves
+        assert card.geometry() == at_once
+        card.no.click()
+    for g in gates:
+        g.set()

@@ -174,7 +174,7 @@ def test_start_fresh_opens_settings_own_sheet_sort_again_first_then_the_looks_so
     _pump()
     assert ny.confirming is None and looks.fresh_calls == [] and writer.calls == []
     _button(ny, card.key, "start_fresh").click()
-    assert ny.confirming is not sheet
+    assert ny.confirming is not None and ny.confirming.answer is None     # (open anew: the window's kept sheet)
     ny.confirming.sheet.btn_sort.click()
     assert wait_until(lambda: looks.fresh_calls == [None], 5)
     assert writer.calls == []                                             # the looks wrote it, never the window

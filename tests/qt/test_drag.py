@@ -616,6 +616,109 @@ def test_the_finished_toasts_keep_writes_the_choice_to_keep(world):
     assert calls(writer, "finish")[0][2]["keep_cards"] is True
 
 
+def _finish_set(win, how):
+    """Settings' *When you finish something* (Sonic 2026-11-05), written before the test ends."""
+    win.services.settings.set({"finish_cards": how})
+    assert win.services.settings.flush(5)
+
+
+def _drop_on_finished(win, i=5):
+    lift(win, i)
+    at = well_point(win, "finished")
+    move_global(win, at)
+    release_global(win, at)
+
+
+def test_finish_set_to_keep_asks_nothing_and_writes_only_the_drop(world):
+    seed, win, writer = world()
+    _finish_set(win, "keep")
+    moved = rows_of(win)[5]
+    _drop_on_finished(win)
+    card = win.toasts.card
+    assert card.base == strings.DRAG_FINISHED.format(title=moved.title)
+    assert [b.text() for b in card.buttons if not b.isHidden()] == [strings.TOAST_UNDO]     # no question
+    settle()
+    assert [op[0] for op in calls(writer)] == ["set_tier"] and calls(writer, "finish") == []
+
+
+def test_finish_set_to_out_leaves_the_cards_out_with_the_drop_and_one_undo_takes_both(world):
+    """*Leave them out*: the toast says so and asks nothing; the choice is the store's `finish(keep_cards=False)`,
+    linked to the drop (`follows`), so the toast's one Undo takes both back (AD-6)."""
+    seed, win, writer = world()
+    _finish_set(win, "out")
+    moved = rows_of(win)[5]
+    _drop_on_finished(win)
+    card = win.toasts.card
+    assert card.base == strings.FINISHED_OUT[strings.DRAG_FINISHED].format(title=moved.title)
+    assert [b.text() for b in card.buttons if not b.isHidden()] == [strings.TOAST_UNDO]
+    assert wait_until(lambda: calls(writer, "finish"), 3)
+    op = calls(writer, "finish")[0]
+    assert op[1] == drag.ids_of(moved) and op[2]["keep_cards"] is False
+    assert op[2]["follows"] is calls_change(writer, "set_tier")
+    settle()
+    card.buttons[0].click()                                         # Undo: the drop's (its choice goes first)
+    assert wait_until(lambda: writer.undone, 3)
+    assert writer.undone[0].op == "set_tier"
+
+
+def test_finish_set_to_out_ctrl_z_takes_the_whole_finish_back_not_only_its_cards(world):
+    """(The adversary's R1) One finish to the learner, one Ctrl+Z: the newest saved change is the setting's choice,
+    and Ctrl+Z takes the drop back — which takes the choice first (AD-6) — never the cards alone (the item would stay
+    in Finished under a toast saying its cards are out)."""
+    seed, win, writer = world()
+    writer.newest = lambda: writer.saved[-1] if writer.saved else None      # (the real writer's: its newest saved)
+    _finish_set(win, "out")
+    _drop_on_finished(win)
+    assert wait_until(lambda: calls(writer, "finish") and writer.saved[-1].op == "finish", 3)
+    settle()
+    win.moves.undo_last()
+    assert wait_until(lambda: writer.undone, 3)
+    assert [c.op for c in writer.undone] == ["set_tier"]
+
+
+def test_finish_set_to_out_ctrl_z_before_the_drop_lands_takes_the_drop(world):
+    seed, win, writer = world()
+    _finish_set(win, "out")
+    writer.stuck = True
+    _drop_on_finished(win)
+    settle()
+    win.moves.undo_last()                                           # the choice waits: its drop is what is undone
+    writer.free()
+    assert wait_until(lambda: writer.undone, 3)
+    settle(150)
+    assert calls(writer, "finish") == [] and writer.undone[0].op == "set_tier"
+
+
+def test_finish_set_to_out_waits_for_a_busy_stores_drop_then_follows_it(world):
+    seed, win, writer = world()
+    _finish_set(win, "out")
+    writer.stuck = True
+    _drop_on_finished(win)
+    settle()
+    assert calls(writer, "finish") == []                            # never given unlinked
+    writer.free()
+    assert wait_until(lambda: calls(writer, "finish"), 3)
+    assert calls(writer, "finish")[0][2]["follows"] is calls_change(writer, "set_tier")
+
+
+def test_a_title_finished_by_itself_says_out_in_its_own_words(world):
+    """L6.3's finish by itself keeps its ✓ words, in their *out* twin when that is the setting."""
+    seed, win, writer = world()
+    _finish_set(win, "out")
+    row = rows_of(win)[5]
+    win.moves.to_finished(row, text=strings.DONE_FINISHED)
+    assert win.toasts.card.base == strings.FINISHED_OUT[strings.DONE_FINISHED].format(title=row.title)
+    assert wait_until(lambda: calls(writer, "finish"), 3)
+
+
+def test_a_title_with_braces_finishes_by_itself_without_breaking_its_toast(world):
+    """The ✓ words are a template formatted once (they were formatted twice: a title holding "{…}" raised)."""
+    seed, win, writer = world()
+    row = rows_of(win)[5]._replace(title="Re:ゼロ {Director's Cut}")
+    win.moves.to_finished(row, text=strings.DONE_FINISHED)
+    assert win.toasts.card.base == strings.DONE_FINISHED.format(title=row.title)
+
+
 def test_A2_21_the_finished_tab_takes_a_drop_too(world):
     seed, win, writer = world()
     moved = rows_of(win)[5]
@@ -2340,6 +2443,24 @@ def test_a8_a_mark_lets_go_at_its_own_view_while_another_write_still_waits(world
     assert not _lit(win, 2) and c.episodes[0].id in win.moves.expect_marks
     writer.free()
     assert _gone_quiet(win) and not _lit(win, 2) and _lit(win, 3) and _lit(win, 4)
+
+
+def test_a8_a_done_landed_as_nothing_lets_go_while_another_write_still_waits(world):
+    """A Done that lands as nothing (another program marked the file meanwhile) goes at the next view — and one comes
+    though another write still waits: the reader is asked for it at the word (flakes-2026-11-05 #4, its adversary's
+    B1). The other program's own view came before the word, so no view would come by itself while b's Done waits."""
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck, writer.nothing = True, {"set_watched"}
+    a, b = rows_of(win)[2], rows_of(win)[3]
+    win.moves.done(a, a.episodes[0])
+    win.moves.done(b, b.episodes[0])                                  # b's Done waits behind a's
+    seed.library.commit(items=[{"id": a.episodes[0].id, "watched": 1}])   # another program, meanwhile
+    settle(100)                                                       # its view is in before the writer's word
+    writer.free_one()                                                 # a's lands as nothing; b's still waits
+    assert wait_until(lambda: a.episodes[0].id not in win.moves.expect_marks, 3)
+    assert _lit(win, 2) and b.episodes[0].id in win.moves.expect_marks and _lit(win, 3)
+    writer.free()
+    assert wait_until(lambda: win.moves.expect_marks == {}, 3)
 
 
 def test_a8_a_done_another_program_already_made_lands_as_nothing_and_stays_lit(world):

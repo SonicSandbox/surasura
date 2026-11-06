@@ -4036,16 +4036,15 @@ class Store:
             sql = "SELECT id, piece_id, work_id FROM items WHERE tier = ? AND (ord, id) > (?, ?) ORDER BY ord, id LIMIT 1"
         return self.conn.execute(sql, (row[0], row[1], item_id)).fetchone()
 
-    def _split_runs(self, piece, placed, cmd, view=None, members=None, group=None, sets=None):
+    def _split_runs(self, piece, placed, cmd, view, members, group=None, sets=None):
         """Make `piece` one run again (05 §5.2 rules 1, 5): its members in (tier, ord, id), cut wherever the tier or
         the work changes or another row stands between two of them; the first run holding a member the command didn't
         place keeps the id (else the first run), each other run becomes a piece of its own. LM11: a group is cut where
         the tier changes or a row stands between, never where the work does (in Finished and New arrivals, where no
-        group lives, it is), and never at the Soon line (G1). -> the pieces it made."""
+        group lives, it is), and never at the Soon line (G1). `members`: its rows (id, tier, ord, work_id) in that order,
+        as the caller read them (`_fix_pieces`: every piece's at once, R6); `group`: its kind when the caller knows it;
+        `sets`: where the caller collects the new pieces' rows to write them at once. -> the pieces it made."""
         conn = self.conn
-        if members is None:                # else the caller's read of the same rows (`_fix_pieces`, R6)
-            members = conn.execute("SELECT id, tier, ord, work_id FROM items WHERE piece_id = ? ORDER BY tier, ord, id",
-                                   (piece,)).fetchall()
         if len(members) <= 1:
             return []
         if group is None:                  # else the kind the caller read (`_fix_pieces`' kinds)

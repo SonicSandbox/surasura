@@ -1195,7 +1195,8 @@ def test_an_add_of_two_shows_interleaved_reads_each_folder_once_and_each_file_la
     mixed = [f for pair in zip(many[:20], many[20:]) for f in pair]      # A B A B …: the cache holds both folders
     existing = os.path.join(data_dir, *store.item(show[1])["rel_path"].split("/"))
     change, big = _selects_during(store, lambda: store.insert(mixed + [existing, mixed[0]], "soon"))
-    assert big - small <= 4, (small, big)          # 10× the files: the same reads (one more chunk of nothing)
+    # 10× the files, the same reads: a read per file (three each, before) shows as ~100 more; a few for slack
+    assert big - small <= 4, (small, big)
     assert [e[1] for e in change.existing] == [show[1]]
     added = change.added
     assert len(added) == 40 == len(set(added))

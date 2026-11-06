@@ -18,28 +18,18 @@ from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
-from app.qt import rows, stones
-from tests.fixtures import window_seed
+from app.qt import rows
 from tests.qt import work_counts as wc
 from tests.qt.conftest import wait_until
-from tests.qt.test_drag import UndoingWriter, lift, move_global, open_window, release_global, row_point, settle
+from tests.qt.test_drag import lift, move_global, release_global, row_point, settle
 
 
 @pytest.fixture(scope="module")
 def screen(qapp, tmp_path_factory):
     """(seed, win, writer): the window on the synthetic library (Japanese titles), its moves written into the stand-in
     store and undone back, built once for the file."""
-    with wc.module_env(tmp_path_factory, "current"):
-        key = stones._key(1.0, "M")
-        if key not in stones._SHEETS:
-            stones._landed(key, stones.build(*key))
-        seed = window_seed.build()
-        writer = UndoingWriter(seed.library)
-        win, services = open_window(qapp, seed, writer)
-        wc.kept(win)
-        settle(300)
-        yield seed, win, writer
-        wc.close_kept(win, services)
+    with wc.window_screen(qapp, tmp_path_factory, "current") as s:
+        yield s
 
 
 def lst_of(win):

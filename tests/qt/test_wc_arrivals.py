@@ -13,11 +13,9 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QRect
 from PyQt6.QtWidgets import QWidget
 
-from app.qt import stones
-from tests.fixtures import window_seed
 from tests.qt import work_counts as wc
 from tests.qt.conftest import wait_until
-from tests.qt.test_arrivals import ArrivalsWriter, _arrive, open_tray, open_window, tray_of, tray_rows
+from tests.qt.test_arrivals import _arrive, open_tray, tray_of, tray_rows
 from tests.qt.test_drag import settle
 
 
@@ -25,17 +23,8 @@ from tests.qt.test_drag import settle
 def screen(qapp, tmp_path_factory):
     """(seed, win, writer): the window on the synthetic library with its arrivals (a hato show in two evenings, a
     YouTube video, a watched hato show), placements written into the stand-in store; built once for the file."""
-    with wc.module_env(tmp_path_factory, "arrivals"):
-        key = stones._key(1.0, "M")
-        if key not in stones._SHEETS:
-            stones._landed(key, stones.build(*key))
-        seed = window_seed.build()
-        writer = ArrivalsWriter(seed.library)
-        win, services = open_window(qapp, seed, writer)
-        wc.kept(win)
-        settle(300)
-        yield seed, win, writer
-        wc.close_kept(win, services)
+    with wc.window_screen(qapp, tmp_path_factory, "arrivals", writer="arrivals") as s:
+        yield s
 
 
 def _with_shadow(win, widget):

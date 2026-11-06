@@ -361,3 +361,39 @@ def module_env(tmp_path_factory, name):
         yield root
     finally:
         mp.undo()
+
+
+@contextmanager
+def window_screen(qapp, tmp_path_factory, name, writer="undo", **build):
+    """The 3.0 window on the synthetic library (`tests/fixtures/window_seed`, Japanese titles), its writes recorded and
+    written into the stand-in store (`writer`: "undo" — moves undone back, test_drag's `UndoingWriter`; "arrivals" —
+    New arrivals' placements too, test_arrivals' `ArrivalsWriter`), built once for a file: `(seed, win, writer)`.
+    A module fixture: `with work_counts.window_screen(qapp, tmp_path_factory, "needs") as s: yield s`."""
+    from app.qt import stones
+    from tests.fixtures import window_seed
+    with module_env(tmp_path_factory, name):
+        key = stones._key(1.0, "M")
+        if key not in stones._SHEETS:
+            stones._landed(key, stones.build(*key))
+        seed = window_seed.build(**build)
+        if writer == "arrivals":
+            from tests.qt.test_arrivals import ArrivalsWriter, open_window
+            w = ArrivalsWriter(seed.library)
+        else:
+            from tests.qt.test_drag import UndoingWriter, open_window
+            w = UndoingWriter(seed.library)
+        win, services = open_window(qapp, seed, w)
+        kept(win)
+        rest(300)
+        try:
+            yield seed, win, w
+        finally:
+            close_kept(win, services)
+
+
+def rest(ms=150):
+    """The loop run for `ms` (workers' answers land: a view, a toast), then settled — between presses, unmeasured, or
+    inside a measure after a press whose work lands from a worker."""
+    from PyQt6.QtTest import QTest
+    QTest.qWait(ms)
+    settle()

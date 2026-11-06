@@ -150,3 +150,48 @@ def test_an_export_with_nothing_owed_runs_at_once(monkeypatch):
 def test_before_the_duties_are_made_nothing_is_brought():
     services = SimpleNamespace(replan=None)
     assert shell.Services.journey_brought(services, "journey") is False
+
+
+def test_after_moves_and_the_users_generate_journey_waits_for_that_run(monkeypatch):
+    # R1: the journey was catching up, then the user pressed Generate: the press waits for that run (a6 #5), never
+    # opens the old journey at once
+    w = _World(monkeypatch)
+    try:
+        w.keeper.changed("store")
+        assert h.until(w.keeper.catching_up, seconds=5)
+        user = w.controller.request("ja", argv=["analyzer.py"], launcher=w.launches)
+        assert h.until(lambda: w.launches.count() == 1, seconds=5)
+        done = []
+        t = threading.Thread(target=lambda: done.append(w.draw()), daemon=True)
+        t.start()
+        time.sleep(0.5)
+        assert not done, "waits for the user's run"
+        w.halves.update(journey=True, report=True)
+        user.ended(0)
+        t.join(5)
+        assert done and done[0][0] is None
+    finally:
+        w.close()
+
+
+def test_an_export_a_moment_after_a_move_waits_for_its_catch_up(monkeypatch):
+    # R2: the export pressed before the keeper's first look: it still asks the catch-up and waits for it
+    w = _World(monkeypatch)
+    try:
+        w.keeper._settings = lambda: dict(SETTLE, journey_settle_s=5.0)
+        w.keeper.changed("store")
+        order = []
+        monkeypatch.setattr("app.exports.frequency_list",
+                            lambda language, fmt, dest: order.append(w.controller.state().state) or "done")
+        t = threading.Thread(target=lambda: settings_live.run_export("frequency_list", "ja", "txt", "out.txt",
+                                                                     w.services), daemon=True)
+        t.start()
+        assert h.until(lambda: w.launches.count() == 1, seconds=3)
+        time.sleep(0.3)
+        assert order == [], "waits for the run"
+        w.halves.update(journey=True, report=True)
+        w.launches.runs[0].ended(0)
+        t.join(5)
+        assert order == [G.CURRENT]
+    finally:
+        w.close()

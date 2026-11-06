@@ -65,6 +65,7 @@ JOURNEY_OLD_LOOK = "old-look"   # ... opened as drawn before a Journey setting c
 GONE_GO = phase_service.Go("needs", ("folder-gone",))   # a7: 届 amber for a gone folder opens its card (`needs.FOLDER_GONE`,
 #                                                         the services' needs module: not imported by the shell at load)
 JOURNEY_DRAW_WAIT = 60.0    # a6 #5: how long *Journey ↗* waits for a re-render (seconds), then opens the journey as it is
+JOURNEY_READ_WAIT = 600.0   # A: how long an export waits for the journey's catch-up (a big library's Generate), at most
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
 # the window up and its bar saying so (`ShellWindow._finish_first`), then whatever is left of it at `shutdown`. Under
@@ -622,13 +623,14 @@ class Services:
             applog.log("shell", f"the journey's catch-up: {e}")
             return False
 
-    def journey_for_reading(self, reason, wait=JOURNEY_DRAW_WAIT):
+    def journey_for_reading(self, reason, wait=JOURNEY_READ_WAIT):
         """(A worker.) A reader of the journey's lists that has no ● of its own (an export: the file it writes is the
-        lists as they are): when the journey is being brought in (`journey_brought`), waited for until it has landed —
-        no catch-up owed and no Generate in flight — never longer than `wait`, never past the quit. Else at once."""
+        lists as they are): a catch-up owed to moves asked for now (`journey_brought`), then waited for while one is
+        owed or any Generate runs or waits (the user's too: the lists it writes are the order's) — until it has landed,
+        never longer than `wait` (a 20,000-file library's Generate takes minutes on a laptop), never past the quit.
+        Nothing owed, nothing in flight: at once."""
         from app.services import generate as generate_module
-        if not self.journey_brought(reason):
-            return
+        self.journey_brought(reason)
         busy = (generate_module.QUEUED, generate_module.RUNNING, generate_module.CANCELLING)
         deadline = time.monotonic() + wait
         while not self.closing.is_set() and time.monotonic() < deadline:

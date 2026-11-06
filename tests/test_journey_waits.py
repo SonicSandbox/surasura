@@ -107,15 +107,16 @@ def test_the_journey_is_generated_after_the_quiet_minutes_and_each_move_starts_t
 
 def test_a_focus_or_a_start_look_never_puts_the_catch_up_off():
     # looks are not changes: a focus every 0.3 s must not keep the journey behind for ever
-    keeper, _controller, _registry, launches = _keeper(catch_up=1.2)
+    keeper, _controller, _registry, launches = _keeper(catch_up=1.0)
     keeper.changed("store")
     moved = time.monotonic()
-    while time.monotonic() - moved < 0.9:
+    while time.monotonic() - moved < 2.5 and launches.count() == 0:
         keeper.changed("start")
         keeper.changed("replan: moves")
-        time.sleep(0.3)
+        time.sleep(0.5)
     assert h.until(lambda: launches.count() == 1, seconds=5)
-    assert launches.times[0] - moved < 1.2 + SETTLE["journey_settle_s"] + 0.8, "counted from the move, not the looks"
+    took = launches.times[0] - moved
+    assert took < 1.0 + SETTLE["journey_settle_s"] + 0.6, f"counted from the move, not the looks ({took:.2f} s)"
     keeper.close()
 
 
@@ -153,7 +154,7 @@ def test_a_reader_never_starts_a_run_beside_the_users_own():
     assert h.until(keeper.catching_up, seconds=5)
     user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
     assert h.until(lambda: launches.count() == 1, seconds=5)
-    assert keeper.want("journey") is True
+    assert keeper.want("journey") is False, "the user's run brings it: the reader waits for that one"
     time.sleep(0.5)
     assert launches.count() == 1 and not launches.runs[0].quiet, "never two at once"
     current["now"] = True
@@ -268,7 +269,7 @@ def _baseline(language="ja", monkeypatch=None):
     assert controller.state().state == G.CURRENT
     store = ls.open_store(language, os.path.join(root, "data", language), os.path.join(root, "User Files", language))
     assert store is not None
-    assert J.only_moved(settings, language), "current: nothing but the order (nothing at all) moved"
+    assert not J.only_moved(settings, language), "current: nothing moved at all — no move to wait for"
     return store, settings, root, controller
 
 
@@ -359,7 +360,7 @@ def test_a_pin_asks_nothing_at_all():
         assert store.pin([store.ids("goal")[0]]) is not None
     finally:
         store.close()
-    assert not _not_current(settings, "ja") and J.only_moved(settings, "ja")
+    assert not _not_current(settings, "ja"), "nothing owed"
 
 
 def test_a_move_on_a_chinese_library_waits_too():
@@ -404,3 +405,65 @@ def test_only_order_answers_check_s_none_from_the_header_alone():
         store.close()
     assert plan_engine.only_order(None, "ja", "e", "s", {}) is False
 
+
+
+# --- the adversarial review's cases (tracks/engine/reviews/journey-waits-register.md) ------------------------------ #
+def test_a_readers_wish_in_the_quiet_time_after_a_move_is_never_lost():
+    # R2: Journey ↗ a moment after a move (before the keeper's first look): the look asks the run at once, and a
+    # reader waiting on `catching_up` waits for it instead of reading the old lists
+    keeper, _controller, _registry, launches = _keeper()
+    keeper._settings = lambda: dict(SETTLE, journey_settle_s=5.0)
+    keeper.changed("store")
+    assert keeper.want("journey") is False, "not told yet: the reader goes on as before"
+    assert keeper.catching_up(), "but a reader waiting on it waits"
+    assert h.until(lambda: launches.count() == 1, seconds=2), "asked at once, not after the 5 s quiet time"
+    assert not keeper.catching_up()
+    keeper.close()
+
+
+def test_a_readers_wish_with_the_background_generate_switched_off_waits_on_nothing():
+    # R3: deferred, then D29 off: the reader's wish meets the switch — nothing runs, nothing is left owed
+    on = {"now": True}
+    keeper, _controller, _registry, launches = _keeper(enabled=lambda: on["now"])
+    keeper.changed("store")
+    assert h.until(keeper.catching_up, seconds=5)
+    on["now"] = False
+    assert keeper.want("journey") is True
+    assert h.until(lambda: not keeper.catching_up(), seconds=3), "no reader waits on a run that never comes"
+    assert launches.count() == 0
+    keeper.close()
+
+
+def test_a_users_generate_in_flight_takes_the_readers_wish_never_the_keeper():
+    # R1: deferred, then the user's Generate: Journey ↗ waits for that run as before (want says no)
+    keeper, controller, _registry, launches = _keeper()
+    keeper.changed("store")
+    assert h.until(keeper.catching_up, seconds=5)
+    user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert keeper.want("journey") is False and keeper.background_run() is False
+    user.ended(0)
+    keeper.close()
+
+
+def test_a_quiet_run_being_stopped_for_the_users_press_is_no_background_run():
+    # R8: the user's press replaces the keeper's run: while it stops, Journey ↗ waits for the user's run
+    keeper, controller, _registry, launches = _keeper(only_moved=lambda: False)
+    keeper.changed("store")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert keeper.background_run() is True
+    controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)   # the user's
+    assert h.until(lambda: controller.state().state == G.CANCELLING, seconds=5)
+    assert keeper.background_run() is False
+    launches.runs[0].ended(1)
+    keeper.close()
+
+
+def test_a_list_file_gone_with_nothing_moved_is_no_move():
+    # R7: the journey isn't current because a list file is missing, not because the order moved: a Generate, and
+    # the Generate button says "out of date", never ✓
+    store, settings, root, _controller = _baseline("ja")
+    store.close()
+    os.remove(os.path.join(root, "results", "priority_learning_list.csv"))
+    assert _not_current(settings, "ja")
+    assert J.only_moved(settings, "ja") is False

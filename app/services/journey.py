@@ -59,6 +59,7 @@ LOOKS = ("start", "settled")   # `changed` reasons that are looks, not changes: 
                                # (nor does a host's ask, "replan: …": it follows a change or a look already told)
 SHADOW_LOG = "replan_shadow.log"
 IN_FLIGHT = ("queued", "running", "cancelling")   # the controller's states with a Generate on its way (generate.py)
+BRINGING = ("queued", "running")                  # ... and those of a quiet run that will finish (A2: never stopping)
 
 
 def on_battery():
@@ -128,24 +129,28 @@ def only_moved(settings, language, plan_path=None):
     """The one rule behind *no Generate after a plain move* (Sonic 2026-11-06, A): True when nothing but the order or
     the pins moved since the last Generate — its plan (`plan_path`, default `plan_file()`) is the library's in all but
     its order (`plan_engine.only_order`: `check` answers None — the same files unchanged, the same known words, lists,
-    settings and set-aside files, the run stamp its own, a plan the engine doesn't stand aside from). Asked of a journey
+    settings and set-aside files, the run stamp its own, a plan the engine doesn't stand aside from) and the order did
+    move (the run signature now isn't the plan's: else what is owed is no move — a list file gone). Asked of a journey
     that isn't current (the keeper's `pending`, the controller's check): then it is owed only to moves — the engine
     already serves the numbers, Anki's order and Connect, and only the journey catches up. False
     for anything else, and whenever it can't be told (no plan, no store, a read that fails): then a Generate, as
     before — never a guess. Stats every library file: a worker's call (the keeper's timer, the controller's check)."""
     try:
-        from app import library_store, plan_engine
+        from app import library_store, plan_engine, plan_rules
         from app.path_utils import get_data_path, get_user_files_path
         from app.services import moves
         header = plan_engine.read_header(plan_path or plan_file())
         if header is None:
             return False
         store = library_store.open_store(language, get_data_path(language), get_user_files_path(language),
-                                         role="window", busy_wait=0.0)
+                                         role="window", busy_wait=1.0)
         if store is None:
             return False
         with store:
-            return plan_engine.only_order(header, language, *moves.plan_inputs(language, settings, store))
+            inputs = moves.plan_inputs(language, settings, store)
+        if plan_rules.signature_digest(inputs[2]) == header.get("run_signature"):
+            return False                    # nothing moved at all (a list file gone, the token store's run another's)
+        return plan_engine.only_order(header, language, *inputs)
     except Exception as e:
         print(f"Journey: whether only the order moved couldn't be told ({e}); generating to be sure")
         return False
@@ -227,20 +232,37 @@ class JourneyKeeper:
         """A reader wants the journey now (*Journey ↗*, an export, the YouTube preview; A + A2): a journey owed only
         to moves (`catching_up`) is asked for at once — no quiet time, no rest, no minutes — with every other gate the
         keeper's run has (D29's switch, one Generate at a time and never beside a user's, the registry's hold while an
-        update waits, below-normal priority). -> True when it was catching up (the reader opens what is there
-        meanwhile; the run lands by itself). Returns at once: only the timer is armed."""
+        update waits, below-normal priority); so is a look still waiting for its quiet time (a move a moment ago: the
+        reader's wish is never lost to the settle). -> True when it was catching up (the reader opens what is there
+        meanwhile; the run lands by itself); False with nothing owed, for a look not told yet (the reader goes on as
+        before: it may be a change that is no move), and while a user's Generate runs or waits (that run brings the
+        journey; the reader waits for it as before). Returns at once: only the timer is armed."""
+        if self._users_run():
+            return False
         with self._lock:
-            if self._closed or not self._deferred:
+            if self._closed:
                 return False
+            owed = self._deferred
+            if not owed and self._timer is None:
+                return False                # nothing owed and no look on its way
             self._wanted = True
             self.reasons.append(reason)
             self._arm(0.0)
-        return True
+        return owed
+
+    def _users_run(self):
+        """A user's Generate runs or waits its turn (not a quiet one) — False when the controller can't say."""
+        try:
+            state = self.controller.state()
+        except Exception:
+            return False
+        return state.state in IN_FLIGHT and not getattr(state, "quiet", False)
 
     def catching_up(self):
-        """Whether the journey waits for a reader or the quiet minutes (A): owed only to moves, and not asked for yet.
-        No lock wait, no read (the window's thread may ask)."""
-        return self._deferred and not self._closed
+        """Whether the journey waits for a reader or the quiet minutes (A: owed only to moves, not asked for yet) — or
+        a reader's wish waits for its look (`want` in the quiet time: until the look asks its run, or finds nothing
+        owed). No lock wait, no read (the window's thread may ask)."""
+        return (self._deferred or self._wanted) and not self._closed
 
     def background_run(self):
         """A2: whether a Generate in flight is a background one that brings the journey (quiet — the keeper's or the
@@ -250,8 +272,8 @@ class JourneyKeeper:
             state = self.controller.state()
         except Exception:
             return False
-        if state.state not in IN_FLIGHT or not getattr(state, "quiet", False):
-            return False
+        if state.state not in BRINGING or not getattr(state, "quiet", False):
+            return False                    # (stopping: a user's press replaced it — that run is waited for)
         with self._lock:
             run = self._run
             renders = self._run_render_only and run is not None and not run.done
@@ -307,7 +329,7 @@ class JourneyKeeper:
         with self._lock:
             reason, self._again = self._again, None
         if reason is not None:
-            self._changed(reason, False)    # a look owed: the change behind it already started the quiet clock
+            self.changed(reason)
 
     def _settle_now(self):
         """(`changed`, nothing in flight.) The quiet time, from the last change — a change during a run that took
@@ -331,8 +353,13 @@ class JourneyKeeper:
                 ended = time.monotonic()
                 self._rest_until = ended + min(ended - self._running_since, REST_MAX_S)
                 self._running_since = None
+                if self._deferred and self._again is None:
+                    self._again = "settled"     # a run ended while catching up (the user's): one look — it may
+                                                # have brought the journey in, or moves came while it ran
             if state == "stale":
                 self._again = None
+                if self._timer is None:     # stopped by hand, nothing armed: no catch-up on its way (the next change
+                    self._deferred = self._wanted = False   # or focus asks again); no reader waits on it
             if self._again is None or state in IN_FLIGHT:
                 return
         self._look_again()
@@ -378,6 +405,9 @@ class JourneyKeeper:
             settle = settle_seconds(settings, self._battery())
         except Exception as e:              # settings.json unreadable this moment: no run on guessed settings
             print(f"Journey: the settings can't be read now ({e}); the next move asks again")
+            with self._lock:
+                if armed == self._armed:
+                    self._deferred = self._wanted = False   # nothing on its way: no reader waits on it
             return
         with self._lock:
             if self._closed or armed != self._armed:
@@ -390,6 +420,9 @@ class JourneyKeeper:
                 self._arm(left)             # on the battery, a longer quiet time set, or the rest after a run
                 return
         if self._enabled is not None and not self._enabled():
+            with self._lock:
+                if armed == self._armed:
+                    self._deferred = self._wanted = False   # nothing will bring it: no reader waits on it
             return                          # the background Generate is switched off (D29)
         with self._lock:
             self._again = self._again or "settled"   # a run that starts meanwhile: the look after it, not now

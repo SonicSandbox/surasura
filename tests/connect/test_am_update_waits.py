@@ -90,6 +90,8 @@ def test_no_update_is_offered_unless_it_is_what_the_books_wait_for(monkeypatch, 
         _record(recorded, features)
     assert am_release.opens("books") is None, why
     assert am_release.update_for({"books"}) is None
+    anki_miner.mines_now("books")                                   # (a row's status asks it first)
+    assert am_release.opens("books", looked=True) is None, f"a row's tip (looked) too: {why}"
 
 
 def test_audio_is_offered_once_surasura_knows_its_ask(monkeypatch):
@@ -202,6 +204,8 @@ def test_no_line_without_a_title_waiting_or_for_a_book_already_mined(monkeypatch
     assert not any(e.kind == service.MINER_UPDATE for e in service.entries(_view(BOOK), miner_update=None))
     view = vr.build(items_of([BOOK]), dict(WORKS), {"mine_line": 20}, cards={1: 4, 2: 3})
     assert service.miner_update(view) is None, "every part in Anki already: nothing waits"
+    gone = ("now", 3, 30, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub", "availability": "missing"}})
+    assert service.miner_update(_view(gone)) is None, "its file is gone: an update makes no card of it"
 
 
 def test_two_waiting_titles_are_counted_and_seen_keeps_the_line_quiet(monkeypatch):

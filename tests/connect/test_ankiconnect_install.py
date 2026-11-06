@@ -391,7 +391,7 @@ def test_the_rename_itself_never_replaces_a_folder_that_came_in_its_last_instant
 
     def present(folder):                               # nothing there at the last look, one there at the rename
         calls.append(folder)
-        if len(calls) == 2:
+        if len(calls) == 3:                            # the first look, the look after the wait, then the last one
             os.mkdir(os.path.join(anki.addons, I.CODE))
             with open(os.path.join(anki.addons, I.CODE, "keep.txt"), "w") as f:
                 f.write("mine")
@@ -685,3 +685,48 @@ def test_ankiconnect_already_there_is_said_at_once_even_with_anki_open(anki):
     clock = Clock()
     assert _install(clock=clock) == I.ALREADY
     assert clock.slept == [] and anki.net.asked == []
+
+
+# --- the mutants' rows (register: M17, M22, M27, M30) ------------------------------------------------------------ #
+def test_an_ankiconnect_under_another_name_that_appears_meanwhile_stops_the_rename(anki, monkeypatch):
+    # two copies would fight over port 8765 (P7): one added by hand under its own name during the download wins
+    def fetch(url):
+        other = os.path.join(anki.addons, "anki-connect-dev")
+        os.mkdir(other)
+        with open(os.path.join(other, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"package": "anki-connect-dev", "name": "Anki-Connect"}, f)
+        return Response(_zip())
+    monkeypatch.setattr(I, "_fetch", fetch)
+    assert _install() == I.ALREADY
+    assert not os.path.exists(os.path.join(anki.addons, I.CODE))
+
+
+def test_a_valid_zip_over_the_cap_with_no_length_is_refused_as_it_streams(anki, monkeypatch):
+    body = _zip()
+    monkeypatch.setattr(I, "SIZE_CAP", len(body) - 1)
+    monkeypatch.setattr(I, "_fetch", Net(lambda: Response(body, length=False)))
+    assert _install() == I.REFUSED
+    _untouched(anki)
+
+
+def test_ankiconnect_added_while_it_waits_for_anki_is_said_without_a_download(anki):
+    anki.state["running"] = [True, True, False]
+    clock = Clock()
+
+    def sleep(s):
+        clock.sleep(s)
+        os.makedirs(os.path.join(anki.addons, I.CODE), exist_ok=True)     # the learner's own Get Add-ons
+    assert _install(clock=clock, sleep=sleep) == I.ALREADY
+    assert anki.net.asked == []
+
+
+def test_cancel_during_the_download_stops_it_mid_stream(anki, monkeypatch):
+    cancel = threading.Event()
+    response = Response(b"x" * (3 * I.CHUNK))
+
+    def progress(done, total):
+        cancel.set()                                   # the learner's Cancel after the first chunk
+    monkeypatch.setattr(I, "_fetch", Net(lambda: response))
+    assert _install(cancel=cancel, on_progress=progress) == I.CANCELLED
+    assert response.pos == I.CHUNK                     # nothing more was read
+    _untouched(anki)

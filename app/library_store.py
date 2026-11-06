@@ -1729,6 +1729,7 @@ class _Seq:
 
 UNSORT_KINDS = ("move", "finish", "set_tier")    # Mado-O: the placements `Store.unsort` walks back itself
 _ROW = "id, tier, ord, changed_in, parent_folder, rel_path, availability, rel_key, graduated_at, entry, piece_id"
+_ROW_NO_ENTRY = _ROW.replace("entry", "NULL")     # the same places, without the row's largest text (a move's, R6)
 
 
 class Store:
@@ -1938,14 +1939,15 @@ class Store:
 
     # --- reading -------------------------------------------------------------------------------- #
 
-    def _rows(self, ids):
+    def _rows(self, ids, entry=True):
         """{id: row} for the ids that exist, row = (id, tier, ord, changed_in, folder, rel_path,
-        availability, rel_key, graduated_at, entry, piece_id)."""
+        availability, rel_key, graduated_at, entry, piece_id); `entry` False: None in its place."""
         out = {}
         ids = list(ids)
+        cols = _ROW if entry else _ROW_NO_ENTRY
         for chunk in _chunks(ids, 500):
             marks = ",".join("?" * len(chunk))
-            for row in self.conn.execute(f"SELECT {_ROW} FROM items WHERE id IN ({marks})", chunk):
+            for row in self.conn.execute(f"SELECT {cols} FROM items WHERE id IN ({marks})", chunk):
                 out[row[0]] = row
         return out
 
@@ -2478,7 +2480,8 @@ class Store:
             return None
         with self._command("move", by) as cmd:
             self._recheck(check)
-            rows = self._rows(ids if anchor is None else ids + [anchor])      # the anchor in the same read (R6)
+            # the anchor in the same read; no entry: a move never reads it (R6)
+            rows = self._rows(ids if anchor is None else ids + [anchor], entry=False)
             a = rows.pop(anchor, None) if anchor is not None else None
             if not rows:
                 return None

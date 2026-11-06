@@ -1747,7 +1747,7 @@ def test_a_nudge_across_the_now_soon_edge_moves_it_beside_the_neighbour(world):
     win.moves.nudge(rs[first_soon], -1)
     op = calls(writer, "move")[0]
     assert op[2]["tier"] == "now" and op[2]["before_id"] == rs[first_soon - 1].episodes[0].id
-    win.moves._let_go()
+    win.moves._let_go(now=True)
     win.show_library(win.services.library.view() or win.page_widgets["current"].view_model)
     writer.calls.clear()
     rs = rows_of(win)
@@ -1811,7 +1811,7 @@ def test_P_LF_16_nudges_around_a_show_the_soon_line_runs_through_move_beside_it_
     op = calls(writer)[-1]
     assert op[0] == "move" and op[1] == drag.ids_of(show) and len(op[1]) == 5
     assert op[2]["tier"] == "now" and op[2]["before_id"] == rs[at - 1].episodes[0].id
-    win.moves._let_go()
+    win.moves._let_go(now=True)
     win.show_library(win.services.library.view() or win.page_widgets["current"].view_model)
     writer.calls.clear()
     rs = rows_of(win)
@@ -1927,17 +1927,17 @@ def test_the_menus_moves_reach_the_writer(world):
     win.moves.menu_pick(rs[5], "up-next")
     op = calls(writer, "move")[-1]
     assert op[2]["before_id"] == rs[0].episodes[0].id and rows_of(win)[0].key == rs[5].key
-    win.moves._let_go()
+    win.moves._let_go(now=True)
     win.show_library(win.services.library.view())
     rs = rows_of(win)
     win.moves.menu_pick(rs[4], "goal")
     assert calls(writer, "move")[-1][2]["end"] is True
-    win.moves._let_go()
+    win.moves._let_go(now=True)
     win.show_library(win.services.library.view())
     rs = rows_of(win)
     win.moves.menu_pick(rs[4], "soon")
     assert calls(writer, "move")[-1][2]["tier"] == "soon"
-    win.moves._let_go()
+    win.moves._let_go(now=True)
     win.show_library(win.services.library.view())
     rs = rows_of(win)
     win.moves.menu_pick(rs[4], "finished")

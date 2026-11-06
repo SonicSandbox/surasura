@@ -1000,6 +1000,10 @@ class DragController(QObject):
         self.expect_tiers = {}
         self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
         self.expect_off = {}                         # LM11b G5: key -> ids taken off its row (the reader builds it so)
+        # alpha 9.1 (report 1): the reader's ask (`republish`'s number) whose answer — the store's view, read after every
+        # write landed — lets the order go (`_let_go`, `view_in`); `_unanswered` lets it go anyway if none comes
+        self._asked = None
+        self._answer_passed = False                  # ... its answer came under the hand: every view held since is newer
         # a8: file id -> [watched, its write, views since it landed (None: waiting), the row it was painted on] —
         # painted ahead of the store (`_marks_ahead`) until the reader's views have it (`_marks_seen`)
         self.expect_marks = {}
@@ -1074,6 +1078,10 @@ class DragController(QObject):
         self._settle.setSingleShot(True)
         self._settle.setInterval(D["settle-ms"])
         self._settle.timeout.connect(self._settled)
+        self._unanswered = QTimer(self)
+        self._unanswered.setSingleShot(True)
+        self._unanswered.setInterval(D["answer-ms"])
+        self._unanswered.timeout.connect(self._no_answer)
         # Auto-scroll is the hand's, not motion (M4.1, the lead's call IK-4): it runs under Reduced motion too, on a
         # timer of its own (never the clock, whose Reduced would stop it) — the one view timer named as allowed.
         self._scroll = QTimer(self)
@@ -1136,9 +1144,16 @@ class DragController(QObject):
         if self.expect_marks:
             self._marks_seen(view)
         if self.running is not None:
+            if self._store_answers(view):
+                self._answer_passed = True           # (every view after it is the store's too)
             self.held = view
             return None
         if self.expect is None:
+            self.held = None
+            return self._with_marks(view)
+        if self._answer_passed or self._store_answers(view):   # the store's own view, read after every write
+            # landed, or one after it (its answer came under a drag that ended without a view of its own): it stands
+            self._order_off()
             self.held = None
             return self._with_marks(view)
         out = self._conform(view)
@@ -1266,6 +1281,8 @@ class DragController(QObject):
             self.expect_gone[gone[0]] = gone[1]
         if off is not None:
             self.expect_off[off[0]] = self.expect_off.get(off[0], frozenset()) | frozenset(off[1])  # two in a row: both
+        self._asked, self._answer_passed = None, False   # (an ask before this order answers nothing of its write)
+        self._unanswered.stop()
         self._show(view)
         self._settle.start()
 
@@ -1282,24 +1299,30 @@ class DragController(QObject):
         self._let_go(idle=True)
         self._undo_answered(idle=True)               # (an undo that found nothing to undo answers nothing)
         republish = getattr(self.reader, "republish", None)
-        if republish is not None:                    # every write landed: the store's own view once more, changed or
-            republish()                              # not — where it placed a row otherwise than drawn (AD2-4)
+        if republish is not None and self._asked is None:   # every write landed: the store's own view once more,
+            republish()                              # changed or not — where it placed a row otherwise than drawn (AD2-4)
 
     def _writer_stopped(self):
         stopped = getattr(self.writer, "stopped", None)
         return bool(stopped()) if stopped is not None else False
 
-    def _let_go(self, idle=False):
-        """The expectation ends: the reader's newest view stands (held, or the next one). The reader's own build of a
-        show taken off its row (`_reader_off`, LM11b G5) goes only once that command landed or failed (H-C3: never
-        while it still waits behind another that landed as nothing) — or the writer is idle or stopped."""
+    def _let_go(self, idle=False, now=False):
+        """The expectation ends: the store's own view stands — the first the reader read after every write landed
+        (alpha 9.1, report 1: never a view it began before, which put a dropped row back where it was until its next
+        build put it forward again — *"it will then move back, wait a second, and then visually go back to where i had
+        moved it"*). Until it comes the window's order stands; a writer still busy asks once it lands (the settle).
+        `now`: the newest view stands at once (a command refused: nothing was written to wait for). The reader's own
+        build of a show taken off its row (`_reader_off`, LM11b G5) goes only once that command landed or failed (H-C3:
+        never while it still waits behind another that landed as nothing) — or the writer is idle or stopped."""
         off = self._reader_off
         if off is not None and (idle or off not in self.tickets or self._writer_stopped()):
             self._reader_off = None
             self._reader_expects(None)
-        self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
         if self._writer_stopped():                   # a8: nothing more lands here: the marks ahead let go too
             self.expect_marks, self._mark_undos = {}, []
+        if self.expect is not None and not now and self._ask_store():
+            return
+        self._order_off()
         held, self.held = self.held, None
         if held is not None and self.running is None:
             self._show(held)
@@ -1307,6 +1330,49 @@ class DragController(QObject):
             self.held = held
         if self.reader is not None:
             self.reader.refresh()
+
+    def _ask_store(self):
+        """-> True while the window's order waits for the store's own view: asked of the reader now (the writer idle),
+        or by the settle once the writer is (`_settled`). False: nothing to wait for — the window closed or its writer
+        stopped, or a reader that can't answer."""
+        if self._asked is not None:
+            return True
+        if self._closed or self._writer_stopped():
+            return False
+        ask, answered = getattr(self.reader, "republish", None), getattr(self.reader, "answered", None)
+        if ask is None or answered is None:
+            return False
+        if self.writer.pending():
+            self._settle.start()
+            return True
+        n = ask()
+        if n is None:
+            return False
+        self._asked = n
+        self._unanswered.start()
+        return True
+
+    def _store_answers(self, view):
+        """Whether `view` is the reader's answer to the window's ask: read after it, so after every write it waited for."""
+        if self._asked is None or view is None:
+            return False
+        n, answer = self.reader.answered()
+        return answer is view and n >= self._asked
+
+    def _no_answer(self):
+        """A reader that never answered (a store that can't be read for this long): the order goes all the same — the
+        newest view stands, as before the ask. Under the hand it waits for the drop (E6)."""
+        if self._asked is None or self._closed:
+            return
+        if self.running is not None:
+            self._unanswered.start()
+            return
+        self._let_go(now=True)
+
+    def _order_off(self):
+        self._asked, self._answer_passed = None, False
+        self._unanswered.stop()
+        self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
 
     def base(self):
         """The view the next move starts from: the reader's newest (held) when it has the same rows, else the page's."""
@@ -1724,6 +1790,9 @@ class DragController(QObject):
         if held is not None:
             if self.expect is None:
                 self._show(held)
+            elif self._answer_passed:                # the store's answer came under the hand: it stands
+                self._order_off()
+                self._show(held)
             else:
                 out = self._conform(held)
                 if out is not None:
@@ -1990,7 +2059,7 @@ class DragController(QObject):
             if self.refused() is None:               # W3.2 P0 (AD0-5): never silent — a writer let go at a switch
                 self.say(strings.MOVE_NOT_SAVED)
             held = self.held
-            self._let_go()
+            self._let_go(now=True)
             view = getattr(self.reader, "view", None)
             view = view() if held is None and view is not None else None
             if view is not None and view is not self.page.view_model:
@@ -2941,6 +3010,7 @@ class DragController(QObject):
             self.cancel()
         self._closed = True
         self._settle.stop()
+        self._unanswered.stop()
         self._airing_asking.clear()                  # (alpha 9 M1: nothing asked again past it)
         self.expect_marks, self._mark_undos = {}, []
         self._anki_let_go()

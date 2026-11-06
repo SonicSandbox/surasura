@@ -2343,10 +2343,28 @@ class Store:
                 raise StoreConflict("a file this change adds was added meanwhile")
 
     def _rel(self, path):
-        """A path under the data folder as the manifest writes it (relative, '/'); a relative path as is."""
+        """A path under the data folder as the manifest writes it (relative, '/'); a relative path as is. A path under
+        the data folder is cut from its absolute form (what `relpath` gives it, without `relpath`'s per-part compares:
+        R6, an Add of a 50-file season spent a millisecond there); anything else goes through `relpath`."""
         if os.path.isabs(path):
-            path = os.path.relpath(path, self.data_dir)
+            base = self._data_abs()
+            full = os.path.abspath(path)
+            if base is not None and os.path.normcase(full).startswith(base):
+                path = full[len(base):]
+            else:
+                path = os.path.relpath(path, self.data_dir)
         return path.replace("\\", "/")
+
+    def _data_abs(self):
+        """normcase(abspath(data folder)) + the separator, kept while the data folder is absolute; None for a root."""
+        if not os.path.isabs(self.data_dir):
+            return None
+        cached = self.__dict__.get("_data_abs_of")
+        if cached is None or cached[0] != self.data_dir:
+            base = os.path.abspath(self.data_dir)
+            cached = (self.data_dir, None if base.endswith(os.sep) else os.path.normcase(base) + os.sep)
+            self._data_abs_of = cached
+        return cached[1]
 
     def _in_library(self, path):
         """Does `path` lie under the data folder? (`library_rel`)"""

@@ -7,7 +7,9 @@
   Its tooltip: *Report a problem*, and the count when there is one.
 - **The press** (`open_report`): the picture is taken first — `QWidget.grab()` of each visible Surasura window, the
   main window first, never the screen and never another program — then the window opens (or is raised: the picture
-  taken again).
+  taken again). Opened once, the window is kept built when it closes (hidden; a9.1, Sonic: "It lags when I open up the
+  debug screen"): the next press shows it again as a fresh one opens (`ReportWindow.reopen`). The first press builds
+  the form and shows it; the other four pages follow its first frame (`_whole`).
 - **The window** (`ReportWindow`, a `windows.SecondaryWindow`: Esc closes it): *What happened?*, *What did you
   expect?*, the picture(s) with *Leave the picture out*, *Save to my list*; the list (each report: *Open*, *Remove*,
   Undo on the status line; an opened one shows its words, pictures and notes, and takes a note); *Show me what's in
@@ -52,6 +54,7 @@ from app.qt.windows import SecondaryWindow
 
 NAME = "report"                 # `windows.show`'s kind: one report window per main window
 DRAFT = "_report_draft"         # the main window's attribute holding an unsaved report (words, expected, tick)
+KEPT = "_report_kept"           # the main window's attribute holding the report window kept built since its close
 THUMB = 168                     # a picture's width in the form (logical px)
 
 
@@ -452,12 +455,33 @@ def png_bytes(image):
 
 
 def open_report(shell):
-    """The bug's press: the pictures first, then the window (raised with the new pictures when open)."""
+    """The bug's press: the pictures first, then the window (raised with the new pictures when open; the one kept
+    since its last close shown again, else a new one)."""
     pictures, scrubbed = take_pictures(shell)
     win = windows.opened(shell, NAME)
     if win is not None:
         win.set_pictures(pictures, scrubbed)
-    return windows.show(shell, NAME, lambda s: ReportWindow(s, pictures, scrubbed))
+    return windows.show(shell, NAME, lambda s: _kept(s, pictures, scrubbed) or ReportWindow(s, pictures, scrubbed))
+
+
+def _kept(shell, pictures, scrubbed):
+    """The report window kept built at its last close, as a fresh one opens (`ReportWindow.reopen`) — or None: none
+    kept, gone with its main window, or the look changed since (a new one is made in the new look)."""
+    win = getattr(shell, KEPT, None)
+    if win is None:
+        return None
+    setattr(shell, KEPT, None)
+    try:
+        if win.made_in == style.current():
+            win.reopen(pictures, scrubbed)
+            return win
+        win.deleteLater()
+    except RuntimeError:                                          # deleted meanwhile (or half reopened: let go)
+        try:
+            win.deleteLater()
+        except RuntimeError:
+            pass
+    return None
 
 
 def downloads():
@@ -495,6 +519,9 @@ class ReportWindow(SecondaryWindow):
 
     def __init__(self, shell, pictures=(), scrubbed=False):
         super().__init__(shell, strings.REPORT_WINDOW_NAME)
+        self.opening = 0                                          # each showing's number (`reopen`, `alive`)
+        self.made_in = style.current()                            # the look it was built in (kept only in that one)
+        self._whole_asked = False                                 # the other pages asked for after the first frame
         self.pictures = list(pictures)
         self.scrubbed = bool(scrubbed)                            # the pictures were taken in picture mode
         self.reports = None                                       # the list as last read (None: not read yet)
@@ -516,11 +543,7 @@ class ReportWindow(SecondaryWindow):
         f = theme.text_factor(style.current()[1])
         self.pages = QStackedWidget(self)
         self.body.addWidget(self.pages, 1)
-        self.pages.addWidget(self._form_page())
-        self.pages.addWidget(self._opened_page())
-        self.pages.addWidget(self._contents_page())
-        self.pages.addWidget(self._goes_page())
-        self.pages.addWidget(self._sent_page())
+        self.pages.addWidget(self._form_page())                   # (the others after the first frame: `_whole`)
         self.pages.currentChanged.connect(self._page_changed)
         self.body.addWidget(self._heading(strings.REPORT_LIST_HEADING.format(n=0)))
         self.list_heading = self.body.itemAt(self.body.count() - 1).widget()
@@ -588,6 +611,93 @@ class ReportWindow(SecondaryWindow):
         t.setTabChangesFocus(True)
         t.setFixedHeight(round(QFontMetrics(t.font()).lineSpacing() * lines + 16))
         return t
+
+    def _whole(self):
+        """The four pages not in view at the press — a saved report opened, *Show me*, *What goes*, a sent #ID —
+        built after the window's first frame (a9.1: a third of the first press; the form alone sets the window's size),
+        or at once by whatever needs one sooner."""
+        if self.pages.count() > 1:
+            return
+        for make in (self._opened_page, self._contents_page, self._goes_page, self._sent_page):
+            self.pages.addWidget(make())
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._whole_asked:                                  # the first frame drawn: the other pages next
+            self._whole_asked = True
+            QTimer.singleShot(0, self.alive(self._whole))
+
+    def alive(self, fn):
+        """`fn`, dropped once the window closed — and kept so after it opens again (`reopen`): a worker's answer to
+        an earlier opening never lands in this one."""
+        opening = self.opening
+
+        def call(*args):
+            if not self.gone and self.opening == opening:
+                return fn(*args)
+            return None
+        return call
+
+    def reopen(self, pictures, scrubbed=False):
+        """The bug pressed after a close (kept: `closeEvent`): opened as a fresh one opens — the form with the draft's
+        words and the new pictures, the other pages emptied, no line, row, answer or press of before; the list and
+        the send state read again (the list repainted only when it changed)."""
+        self.opening += 1
+        self._closed = False                                       # (SecondaryWindow's: open again)
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)   # where it was left, never in
+        #                                                                  its icon (as `windows.bring_back`)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.language = windows.language_of(self.shell)
+        for p in self.presses.showing():                           # (none live: a failed one's mark forgotten)
+            self.presses.forget(p.key)
+        self._holds.clear()
+        self._unheld = ""
+        self._show_status("")
+        self.opened_id = self.sent_opened = self.outbox = self.sent_id = self.last_removed = None
+        self.sending = False
+        self.goes_name_value = ""
+        self.back()
+        if self.pages.count() > 1:
+            self._hold(False)
+        self.what.clear()
+        self.expected.clear()
+        self.leave_out.setChecked(False)
+        self.include_results.setChecked(True)
+        self.name_field.clear()
+        self.name_field.setModified(False)
+        self.name_filled = False                                   # (the remembered name filled in again, once)
+        self.set_pictures(pictures, scrubbed)
+        self._restore_draft()
+        self._done_row("")
+        for w in self.dest_row + self.waiting_row:
+            w.setVisible(False)
+        self.dest = downloads()
+        self._show_dest()
+        if hasattr(self, "undo_button"):
+            self.undo_button.setVisible(False)
+        self.list.clearSelection()
+        self.list.scrollToTop()
+        self.what.setFocus()
+        prepare_identity()
+        self.read()
+        self.read_send()
+
+    def _empty(self):
+        """Kept at its close: what it showed let go — the pictures, thumbnails and the other pages' words and pictures
+        (a hidden window holds no screenshot; its next opening sized as a fresh one, by the form)."""
+        self.pictures = []
+        self._thumbs = None
+        self._clear(self.picture_row)
+        if self.pages.count() > 1:
+            self.opened_heading.setText("")
+            self.opened_text.clear()
+            self._clear(self.opened_pictures)
+            self.note.clear()
+            self.contents.clear()
+            self.goes_files.setText("")
+            self._clear(self.goes_pictures)
+            self.sent_opened_heading.setText("")
+            self._clear(self.sent_lines)
 
     def _form_page(self):
         page = QWidget(self)
@@ -867,6 +977,11 @@ class ReportWindow(SecondaryWindow):
         except RuntimeError:
             pass
         super().closeEvent(event)
+        if event.isAccepted() and not self.presses.any_live() and not self.busy():
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)    # kept built, hidden: the next press shows
+            setattr(self.shell, KEPT, self)                                  # ... it at once (one under way: deleted,
+            #                                                                  its answers to the main window's bar)
+            self._empty()
 
     # --- the pictures ------------------------------------------------------------------------------------------ #
     def set_pictures(self, pictures, scrubbed=False):
@@ -1040,6 +1155,7 @@ class ReportWindow(SecondaryWindow):
         r = next((x for x in (self.reports or []) if x.id == rid), None)
         if r is None:
             return
+        self._whole()
         self.opened_id = rid
         self.sent_opened = None
         self.opened_heading.setText(_when(r.created))
@@ -1159,6 +1275,7 @@ class ReportWindow(SecondaryWindow):
         include = self.include_results.isChecked()
 
         def shown(plan):
+            self._whole()
             self.contents.setPlainText(core.describe(plan))
             self.pages.setCurrentIndex(self.CONTENTS)
         library = library_summary(self.shell)
@@ -1190,6 +1307,7 @@ class ReportWindow(SecondaryWindow):
         saying it is gathering, and counts the files in as the worker scrubs them (`_gathered`); filled in once the
         zip is made (`_show_goes`). The window's thread never waited (measured: the press returns in 2 ms, its longest
         stall while a 17 MB zip is made 50 ms) — only the page came at the end, after seconds of a small arc."""
+        self._whole()                                              # (What goes may not be built yet: `_whole`)
         self.outbox = None
         self.opened_id = self.sent_opened = None
         self.gathering = True
@@ -1299,6 +1417,7 @@ class ReportWindow(SecondaryWindow):
     def _show_goes(self, outbox, pictures, code=None):
         """The What goes page for `outbox`, its pictures (QImages read from the zip) at the page's width. The Discord
         name and the sender code it shows are the ones that go: the row under it waits while it's up (`_goes_hold`)."""
+        self._whole()
         self.outbox = outbox
         self.opened_id = self.sent_opened = None
         self.gathering = False
@@ -1493,6 +1612,7 @@ class ReportWindow(SecondaryWindow):
             self.sent_opened = None
             self.say(strings.REPORT_SENT_EMPTY.format(id=rid))
             return
+        self._whole()
         self.opened_id = None
         self.sent_opened_heading.setText(strings.REPORT_SENT_OPENED.format(id=rid, when=when))
         self._clear(self.sent_lines)
@@ -1596,6 +1716,7 @@ class ReportWindow(SecondaryWindow):
     def _hold(self, on):
         """While a report is made or sent: the list, a note and Undo wait (a report changed meanwhile would be kept
         anyway)."""
+        self._whole()
         self.list.setEnabled(not on)
         self.note_button.setEnabled(not on)
         if hasattr(self, "undo_button"):

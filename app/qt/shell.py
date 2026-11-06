@@ -16,7 +16,8 @@ install's local data folder, never in settings.json (S16). The look — theme an
 QApplication before the first paint (`open_window`), and changes live (`set_look`, P-text: W2.1 row 9).
 
 App-wide: **Esc and the mouse's Back button** close every open overlay at once, else a secondary window, and **never
-the main window** (✅ G1.2-2); Forward does nothing. Tooltips are the bubble (`tooltip.py`).
+the main window** (✅ G1.2-2); Forward does nothing. Tooltips are the bubble (`tooltip.py`). Both read the events
+through one app-wide filter (`AppFilter`, a9.1).
 
 Run it: `python app_entry.py` on the 3.0 line (or `main()` here).
 """
@@ -1131,6 +1132,8 @@ class EscapeRouter(QObject):
     none open, they close that window if it's a secondary one; the main window is never closed. Forward does nothing.
     A menu (a popup) closes itself on Esc; Back closes it too."""
 
+    TYPES = frozenset({QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress})       # every event `eventFilter` reads
+
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main = main_window
@@ -1180,6 +1183,30 @@ class EscapeRouter(QObject):
         else:
             win.close()
         return True
+
+
+class AppFilter(QObject):
+    """The app's one event filter (a9.1): the tooltip bubble's (`tooltip.Tooltips`), then Esc and Back's
+    (`EscapeRouter`) — the order they ran in as two filters (the one installed last runs first). Every event in the
+    app passes an app-wide filter, each pass a call into Python: two were ~25 % of a Settings switch and of opening
+    the Settings tab (250 %). An event neither reads goes on at once."""
+
+    def __init__(self, tooltips, router, parent=None):
+        super().__init__(parent)
+        self.tooltips, self.router = tooltips, router
+
+    def eventFilter(self, obj, event):
+        if event.type() not in _FILTERED:
+            return False
+        try:
+            if self.tooltips.eventFilter(obj, event):
+                return True
+        except Exception:                                 # the bubble's failure never takes Esc and Back with it
+            _log_unhandled(*sys.exc_info())               # ... (as two filters: Qt called the router anyway)
+        return self.router.eventFilter(obj, event)
+
+
+_FILTERED = tooltip.Tooltips.TYPES | EscapeRouter.TYPES
 
 
 class _Duties:
@@ -1342,8 +1369,9 @@ class ShellWindow(QMainWindow):
         # app-wide behaviour
         app = QApplication.instance()
         self.router = EscapeRouter(self, parent=self)
-        app.installEventFilter(self.router)
-        self.tooltips = tooltip.Tooltips(parent=self).install(app)
+        self.tooltips = tooltip.Tooltips(parent=self)
+        self.app_filter = AppFilter(self.tooltips, self.router, parent=self)     # (one filter for both: a9.1)
+        app.installEventFilter(self.app_filter)
         self.phase.tooltips = self.tooltips
         for page in self.page_widgets.values():           # W2.2: painted parts' tooltips go through the bubble
             if hasattr(page, "list"):
@@ -3532,7 +3560,7 @@ class ShellWindow(QMainWindow):
         except OSError as e:
             applog.log("shell", f"window state not saved: {e}")
         app = QApplication.instance()
-        app.removeEventFilter(self.router)
+        app.removeEventFilter(self.app_filter)
         self.tooltips.uninstall(app)
         super().closeEvent(event)
 

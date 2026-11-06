@@ -328,7 +328,9 @@ def show(shell, name, make):
         return win
     win = make(shell)
     opened[name] = win
-    win.closed.connect(lambda w=win: opened.get(name) is w and opened.pop(name, None))
+    if getattr(win, "_shown_as", None) != name:           # (a window kept built and shown again: connected once)
+        win._shown_as = name
+        win.closed.connect(lambda w=win: opened.get(name) is w and opened.pop(name, None))
     win.adjustSize()
     win.show()
     win.raise_()

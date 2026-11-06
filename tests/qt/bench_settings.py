@@ -26,8 +26,10 @@ and every GUI-thread step, `--rounds` times each (>= 10 for a timed run):
   - `open-tab`: the Settings tab shown again from Current (the page built and kept);
   - `scroll-wheel`: the page turned by the wheel, a burst of notches 50 ms apart (down, back up at the end);
   - `report-open`: the bug's press with Settings in view (the pictures taken, the report window opened; closed
-    outside the repetition) — Sonic's "debug screen" (a9.1 report 3).
+    outside the repetition) — Sonic's "debug screen" (a9.1 report 3); its first press of the run apart
+    (`report-open-first`: the window made, never opened before — one a run: `--runs` for more).
 `--settings FILE`: that settings.json in each run's root (a learner's own shape: which sections and rows show).
+`--moments a,b`: only those moments (the page's build always runs first; `report-open` takes its first press too).
 After each moment's last repetition the clock's wake-ups are counted once it is still.
 """
 import argparse
@@ -321,7 +323,7 @@ def main_child(a):
     # --- the bug's press (the debug screen) ---------------------------------------------------------------------------- #
     def bug(c):
         def go():
-            moments.begin("report-open")
+            moments.begin("report-open-first" if c == 0 else "report-open")
             report.open_report(window)
         at(500, go)
 
@@ -348,40 +350,52 @@ def main_child(a):
 
     def start():
         n = a.rounds
-        for c in range(n):
+        wanted = set(a.moments.split(",")) if a.moments else None
+
+        def on(name):
+            return wanted is None or name in wanted
+        for c in range(n if on("build") else 1):
             build(c)
         at(0, still("build"))
         at(0, lambda: until(lambda: page()._found is not None, 5000, "modules never looked for"))
-        for c in range(n):
-            glide(c)
-        at(0, still("nav-glide"))
-        for c in range(2 * ((n + 1) // 2)):
-            fold(c)
-        at(0, still("more-options"))
-        for c in range(2 * ((n + 1) // 2)):
-            switch(c)
-        at(0, still("switch-junban"))
-        for c in range(n):
-            slider(c)
-        at(0, still("slider-release"))
-        strokes = keystrokes()
-        k = 0
-        while k < max(n, len(strokes)):
-            ch, key = strokes[k % len(strokes)]
-            search(k, ch, key)
-            k += 1
-        at(0, lambda: page().search.edit.clear())
-        at(0, still("search-key"))
-        for c in range(n):
-            open_tab(c)
-        at(0, still("open-tab"))
-        at(0, lambda: page().scroll.verticalScrollBar().setValue(0))
-        for c in range(n):
-            wheel(c)
-        at(0, still("scroll-wheel"))
-        for c in range(n):
-            bug(c)
-        at(0, still("report-open"))
+        if on("nav-glide"):
+            for c in range(n):
+                glide(c)
+            at(0, still("nav-glide"))
+        if on("more-options"):
+            for c in range(2 * ((n + 1) // 2)):
+                fold(c)
+            at(0, still("more-options"))
+        if on("switch-junban"):
+            for c in range(2 * ((n + 1) // 2)):
+                switch(c)
+            at(0, still("switch-junban"))
+        if on("slider-release"):
+            for c in range(n):
+                slider(c)
+            at(0, still("slider-release"))
+        if on("search-key"):
+            strokes = keystrokes()
+            k = 0
+            while k < max(n, len(strokes)):
+                ch, key = strokes[k % len(strokes)]
+                search(k, ch, key)
+                k += 1
+            at(0, lambda: page().search.edit.clear())
+            at(0, still("search-key"))
+        if on("open-tab"):
+            for c in range(n):
+                open_tab(c)
+            at(0, still("open-tab"))
+        if on("scroll-wheel"):
+            at(0, lambda: page().scroll.verticalScrollBar().setValue(0))
+            for c in range(n):
+                wheel(c)
+            at(0, still("scroll-wheel"))
+        if on("report-open"):
+            for c in range(n):
+                bug(c)
+            at(0, still("report-open"))
         run()
 
     def finish():
@@ -410,6 +424,7 @@ def main():
     ap.add_argument("--rounds", type=int, default=10, help="repetitions of each moment (>= 10 for a timed run)")
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--settings", help="a settings.json copied into each run's root (a learner's shape)")
+    ap.add_argument("--moments", help="only these moments, comma-separated (the page's build always runs first)")
     bench_moments.add_arguments(ap)
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()

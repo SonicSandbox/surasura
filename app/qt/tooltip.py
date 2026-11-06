@@ -99,6 +99,8 @@ class Tooltips(QObject):
 
     HIDE_ON = {QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick, QEvent.Type.Wheel,
                QEvent.Type.KeyPress, QEvent.Type.WindowDeactivate, QEvent.Type.DragEnter}
+    TYPES = frozenset(HIDE_ON | {QEvent.Type.ToolTip, QEvent.Type.FocusIn, QEvent.Type.Leave, QEvent.Type.Hide,
+                                 QEvent.Type.FocusOut, QEvent.Type.DeferredDelete})   # every event `eventFilter` reads
 
     def __init__(self, parent=None):
         super().__init__(parent)

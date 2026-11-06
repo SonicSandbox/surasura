@@ -449,6 +449,10 @@ def window_screen(qapp, tmp_path_factory, name, writer="undo", **build):
             w = UndoingWriter(seed.library)
         win, services = open_window(qapp, seed, w)
         try:
+            from tests.qt.conftest import logos_in, needs_in
+            assert logos_in(win.phase) and needs_in(win)    # the window done opening: the strip's logos and Needs
+            #   you's first answer (on a busy machine they land late, and their paint — the tab bar under Needs you's
+            #   count — fell in a test's measure: the full Qt run's drop test, 2026-11-06)
             kept(win)
         except BaseException:
             close_kept(win, services)

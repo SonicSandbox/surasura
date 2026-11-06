@@ -1218,12 +1218,21 @@ class DragController(QObject):
 
     def _marks_landed(self, write=None, empty=False):
         """`write`'s marks landed (None: every one whose word isn't awaited — the writer idle): they stand until the
-        views have them. `empty`: it landed as nothing — the next view decides."""
+        views have them. `empty`: it landed as nothing — the next view decides. A write's word may come after the reader's
+        view of it (the store's commit wakes the reader before the writer says so): the reader is asked for a view read
+        after the word (`republish`), so a landed mark goes at the first view that shows it so — and one landed as
+        nothing at the next view — even while another write still waits and no view would come by itself
+        (flakes-2026-11-05 #4; its adversary's B1)."""
+        landed = False
         for m in self.expect_marks.values():
             if m[2] is None and (m[1] is write if write is not None else not self._awaited(m[1])):
                 m[2] = 1 if empty else 0
+                landed = True
         if write is not None:
             self._mark_undos = [u for u in self._mark_undos if u is not write]
+            ask = getattr(self.reader, "republish", None)
+            if landed and ask is not None:
+                ask()
 
     def _marks_seen(self, view):
         """A view from the reader: the marks whose write landed counted against it (a busy store's last view again,

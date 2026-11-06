@@ -4,8 +4,9 @@ answers under `connect`.
 
 - **Read-only** (W3): the ledger opened `mode=ro` and never made (no ledger → the empty record: *Up to date*), the
   library store `mode=ro` for the episodes' titles and places. The window reads it on a worker, never the Tk thread.
-- **Only what changed** (S19, charter): `stamp()` is two `stat` calls and a look at Connect's lock; the window reads
-  the record again only when it differs from the last one.
+- **Only what changed** (S19, charter): `stamp()` is a few `stat` calls, the ledger's wal-index header (and, just after
+  a write with no connection holding it, the ledger's crc32) and a look at Connect's lock; the window reads the
+  record again only when it differs from the last one.
 - **Keyed by language** (D31): every part of the record is one language's; the rows carry their language.
 - **The window's two writes** (short, the ledger's own): `mark_seen` when *Needs you* is shown (the badge stops
   counting them; they stay listed), `dismiss` (the entry leaves the list until it happens again after its fix).
@@ -17,6 +18,8 @@ import json
 import os
 import pathlib
 import sqlite3
+import time
+import zlib
 
 from app.connect import ledger as book
 
@@ -28,6 +31,10 @@ STEP_WORDS = {"picking": "choosing words", "fit-check": "checking the timing", "
 UNDO_SHOWN = 100                # *Undo this batch*: the newest batches listed (any batch can be undone by its job)
 SHELF_WORDS = 20                # words named per shelf restore point
 FINISHED_WITH_CARDS = ("done", "failed", "skipped")
+# A file's time moves once a clock tick (15.6 ms on Windows' default clock, 2 s on FAT): a ledger written this
+# recently may have been written again inside the same tick at the same size, so its stamp carries its bytes' crc32
+# too (flakes-2026-11-05 #1). Older, it is two stats again: one more read once it settles, the Feed equal, no redraw.
+SETTLE_NS = 2 * 10 ** 9
 
 
 def _today():
@@ -50,6 +57,48 @@ def _file_stat(path):
     return [st.st_size, st.st_mtime_ns]
 
 
+def _ledger_stat(path, crc=True):
+    """`_file_stat`, and while the file is within SETTLE_NS of its last write (or dated ahead of the clock), its
+    bytes' crc32 (`crc`): two writes inside one clock tick at one size still give two stamps."""
+    out = _file_stat(path)
+    if crc and out is not None and time.time_ns() - out[1] < SETTLE_NS:
+        out.append(_digest(path))
+    return out
+
+
+SHM_HEAD = 48                   # SQLite's wal-index header: its change counter, last frame and salts
+
+
+def _ledger_parts(path):
+    """The ledger's two parts of the stamp: the file, then [its WAL, the wal-index header] (None when neither is
+    there). A commit is seen by a reader only once SQLite writes the wal-index (`-shm`), after the WAL's bytes are
+    final: its header moves exactly then, so a look between the two never keeps a stamp of a record it couldn't read
+    (adversary A1). While it is there every commit moves it (a writer always goes through it): no crc needed. It stays
+    after a read-only reader (`read`'s own) closes the ledger last: one more read after the first, then steady. With
+    none, the file and its WAL are what moved (a close checkpoints them)."""
+    try:
+        with open(path + "-shm", "rb") as f:
+            shm = f.read(SHM_HEAD).hex()
+    except FileNotFoundError:
+        shm = None
+    except OSError:                 # held just now: a stamp no later look equals, so the next one reads
+        shm = ("unread", time.time_ns())
+    crc = not isinstance(shm, str)
+    wal = _ledger_stat(path + "-wal", crc)
+    return [_ledger_stat(path, crc), None if wal is None and shm is None else [wal, shm]]
+
+
+def _digest(path):
+    try:
+        crc = 0
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                crc = zlib.crc32(chunk, crc)
+        return crc
+    except OSError:                 # gone or held just now: a stamp no later look equals, so the next one reads
+        return ("unread", time.time_ns())
+
+
 def running():
     """Is Connect running now? Two quick looks at its lock (a holder holds it all along)."""
     from app import locks
@@ -61,9 +110,12 @@ def stamp(path=None, languages=None):
     """What the record is read from, as it stands: the ledger's and its WAL's size and modified time, whether Connect
     runs, today's date (*cards made today*), each language's library file (the titles), and Anki Miner's release
     state, the setup record and the installer's version in the registry (P3.2-AMN: the update notice; a hand update
-    moves the stamp, ~10 µs a look). The same stamp → the same record: the window reads and redraws nothing (S19)."""
+    moves the stamp, ~10 µs a look). The same stamp → the same record: the window reads and redraws nothing (S19).
+    The ledger's part also carries its wal-index header and, with no connection holding it, the bytes' crc32 of a file
+    written in the last SETTLE_NS (`_ledger_parts`: a commit is seen once the wal-index has it; one clock tick can
+    hold two writes of one size)."""
     path = path or book.path()
-    out = [_file_stat(path), _file_stat(path + "-wal"), running(), _today().isoformat()]
+    out = _ledger_parts(path) + [running(), _today().isoformat()]
     for lang in languages or LANGUAGES:
         db = _store_path(lang)
         out += [_file_stat(db), _file_stat(db + "-wal")] if db else [None, None]

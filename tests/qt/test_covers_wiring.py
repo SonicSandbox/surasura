@@ -73,12 +73,17 @@ def real(qapp):
         page = win.page_widgets["current"]
         assert wait_until(lambda: page.view_model is not None and page.view_model.state == "full", 15)
         settle(30)
-        made.append((win, services, store))
+        made.append((win, services, writer, store))
         return store, win, writer, switch
     yield make
-    for win, services, store in made:
+    for win, services, writer, store in made:
         win.close()
         services.shutdown(2.0)
+        # the writer made here, finished here: a test that hands the window another writer (a switch) leaves
+        # services.shutdown finishing that one, and this one's thread outlived its test asking a store whose test root
+        # was gone (train 14's late "StoreRefused (I7)", flakes-2026-11-05 #8)
+        writer.finish(time.monotonic() + 2.0)
+        assert writer._thread is None or not writer._thread.is_alive(), "the window writer outlived its test"
         store.close()
 
 

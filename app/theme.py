@@ -582,6 +582,8 @@ DRAG = MappingProxyType({
     "placeholder-radius": 8,
     "join-fill-alpha": 0.14,        # a held join's target: its tint under the dashed outline (Sonic 2026-11-01: clear)
     "settle-ms": 300,               # the window's own order stands until the writer has been idle this long
+    "answer-ms": 10000,             # ... then till the store's view read after that comes: one that never comes lets
+                                    # it go this long after the ask (alpha 9.1, `drag.DragController._no_answer`)
     "message-ms": 4000,             # a line said in the footer's slot holds it this long (over the update chip)
     "near": 3,                      # painted neighbours on each side handed to the writer (an anchor gone meanwhile)
     "px-rest": 0.05,                # a px spring rests once this close (L5: its drawn value no longer changes)

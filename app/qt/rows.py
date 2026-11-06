@@ -1015,7 +1015,7 @@ def _size(pix):
 _UNSHOWN = {ROW: frozenset(("index", "accessible", "description")),
             HERO: frozenset(("index", "accessible", "description")),
             FINISHED: frozenset(("index", "episodes", "accessible", "description")),
-            "ep": frozenset(("rel_path", "ask"))}         # row 55: ▶'s ask is never painted (`can_play` is)
+            "ep": frozenset(("rel_path", "ask", "online"))}     # row 55: ▶'s ask is never painted (`can_play` is)
 _UNSHOWN[FINISHED] = _UNSHOWN[FINISHED] | {"cards_out"}      # --- W3.2 Q4: ⋯'s state, never painted
 _UNSHOWN[FINISHED] = _UNSHOWN[FINISHED] | {"new_faded"}      # --- U-1 (U-A5): a Finished row paints no *N new*
 
@@ -3430,6 +3430,11 @@ class RowsView(QListView):
 
     # entries ---------------------------------------------------------------------------------------------------- #
     # --- round 8 row 45: *Mine now* pressed (`mine_actions._ask`) --------------------------------------------- #
+    def key_of(self, file_id):
+        """The key of the row this list shows `file_id` in, or None (try a9.1: Anki Miner's circle's *Show* goes there)."""
+        found = self._where([file_id]).get(file_id)
+        return None if found is None else self.model().entries[found[0]][1].key
+
     def _where(self, ids, keys=None):
         """{id: (row index, its episode)} of the files `ids` this list shows. `keys` ({id: the row's key it was in}):
         looked up in those rows alone, the whole list walked only for one not found there (A-12: a view while one is

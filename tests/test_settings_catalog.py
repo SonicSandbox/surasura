@@ -829,6 +829,18 @@ def test_readmes_data_credits_are_all_named_in_the_app():
     assert credits.missing_from_credits("no credits here") == []
 
 
+def test_the_credits_card_ends_with_the_users_own_content_and_readme_has_its_section():
+    """Sonic, 2026-11-02: the user's content is theirs to answer for. The Data credits card (Settings › App) ends with
+    one line pointing at README's *Your content*, which the installer's agreement page says in full."""
+    from app import credits
+    assert credits.all_credits().endswith("\n\n" + credits.CONTENT_NOTE)
+    note = credits.CONTENT_NOTE.splitlines()
+    assert note[0] == "Your content" and len([line for line in note if line.strip()]) == 2
+    assert "you are responsible for the content you use" in note[-1] and "own or have the right to use" in note[-1]
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+        assert "\n## 📂 Your content\n" in f.read()
+
+
 def test_the_licence_line_is_the_licence_files_first_and_copyright_lines(monkeypatch, tmp_path):
     from app import credits, path_utils
     with open(os.path.join(ROOT, "LICENSE"), encoding="utf-8") as f:

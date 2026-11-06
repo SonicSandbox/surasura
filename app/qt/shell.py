@@ -3,7 +3,7 @@
 The window, edge to edge under Windows' own title bar (n1); the header (the mark, the wordmark, the subline); the tabs
 (Current · Finished · Needs you · Settings) over one page each; the bottom bar (what runs, the newest command-line
 failure, Connect's line when it exists). W3.1a's frame (`frame.py`): the header + tabs one band with the vein under the
-current tab and the jobs' hairline along its foot, the level ▾ and its pop (Generate, *Open your journey*) with *Journey ↗* beside it, the edges
+current tab and the jobs' hairline along its foot, the level ▾ and its pop (Generate) with *Journey ↗* beside it, the edges
 baked onto the content, the footer's emerald (the AnkiWeb mark's words in its hover) and known corner, and Current's
 Goal dock (its wells for the drag). Given a library (`Services(library=…)`: W2.2's reader),
 Current, Finished and Needs you show it (`screens.py`, display only until W3.1 / W3.2); without one, and Settings until
@@ -32,7 +32,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QKeySequence,
                          QLinearGradient, QPainter, QShortcut)
-from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QMenu, QPushButton,
+from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from app import path_utils, scrub, theme
@@ -538,7 +538,7 @@ class Services:
 
     @staticmethod
     def open_guide():
-        """(A worker.) ? › *Online guide*: the browser (IK-24; the Tk dashboard's Help › Tutorial opens the same)."""
+        """(A worker.) ?: the online guide in the browser (IK-24; the Tk dashboard's Help › Tutorial opens the same)."""
         import webbrowser
         webbrowser.open(path_utils.GUIDE_URL)
 
@@ -1187,7 +1187,7 @@ class _Duties:
 
     def __init__(self):
         self.module = None
-        self.generate = self.journey = self.help = self.known = self.anki = self.level = self.update_mark = None
+        self.generate = self.help = self.known = self.anki = self.level = self.update_mark = None
         self.update_cross = None                                   # round 8 row 54: the chip's ✕
         self.journey_button = None                                 # the header's *Journey ↗*, beside the level ▾
         self.sheet = self.cards = self.journey_dot = self.pop = None
@@ -1971,9 +1971,9 @@ class ShellWindow(QMainWindow):
         self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
         bridge.run_in_worker(_junban_here, then=self._junban_found)
         row.addWidget(self.phase)
-        # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line with *Open the logs folder* while it
-        # applies, else the update chip while it applies (`_attach_duties` puts it here), else the status line (the
-        # pulsing dot gave way to the header's hairline: light never pulses)
+        # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line (and its ✕) while it applies, else
+        # the update chip while it applies (`_attach_duties` puts it here), else the status line (the pulsing dot gave
+        # way to the header's hairline: light never pulses)
         self.bar_line = ElidingLabel(footer)
         self.bar_line.setObjectName("barline")
         self.bar_line.setAccessibleName(strings.BAR_NAME)
@@ -1983,15 +1983,8 @@ class ShellWindow(QMainWindow):
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP)
         self.bar_failure.setVisible(False)
         row.addWidget(self.bar_failure, 1)
-        self.logs_button = QPushButton(strings.BAR_LOGS, footer)
-        self.logs_button.setProperty("kind", "chip")
-        self.logs_button.setToolTip(strings.BAR_LOGS_TIP)
-        self.logs_button.setAccessibleName(strings.BAR_LOGS)
-        self.logs_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        qpress.room(self.logs_button)                      # round 8 row 45: its arc's room kept at rest
-        self.logs_button.clicked.connect(lambda _c=False: self.open_logs(control=self.logs_button))
-        self.logs_button.setVisible(False)
-        row.addWidget(self.logs_button)
+        # (a9.1: the failure line's *Open the logs folder* went — Settings › App › *Folders* is the one way to the logs,
+        # and Send report carries them)
         self.bar_failure_cross = standing_qt.Cross(footer)       # round 8 row 54: the failure off the bar (still listed)
         self.bar_failure_cross.clicked.connect(self._failure_dismissed)
         self.bar_failure_cross.setVisible(False)
@@ -2140,10 +2133,9 @@ class ShellWindow(QMainWindow):
         return until is not None and time.monotonic() < until
 
     def _paint_slot(self):
-        """W31A-1: the footer's one slot — the failure line (with *Open the logs folder* when there is a folder) while
-        it applies, else the update chip while it applies, else the status line (always the line while the close
-        waits: E20's one line); each part shown or hidden only when that changed (S19). A line just said (`say`) holds
-        the slot for a few seconds over both."""
+        """W31A-1: the footer's one slot — the failure line (and its ✕) while it applies, else the update chip while it
+        applies, else the status line (always the line while the close waits: E20's one line); each part shown or
+        hidden only when that changed (S19). A line just said (`say`) holds the slot for a few seconds over both."""
         saying = self._saying()
         if not saying and getattr(self, "_message_until", None) is not None:
             self._message_until = None               # the line said has had its time: the status line is back (or a
@@ -2152,8 +2144,7 @@ class ShellWindow(QMainWindow):
         failure = bool(self.bar_failure.full()) and self._quit != "waiting" and not saying
         d = self.duties
         update = d is not None and d.update_applies and not failure and self._quit != "waiting" and not saying
-        parts = [(self.bar_failure, failure, self.status_paints), (self.logs_button, failure and bool(self._logs_folder),
-                 self.status_paints), (self.bar_failure_cross, failure, self.status_paints),
+        parts = [(self.bar_failure, failure, self.status_paints), (self.bar_failure_cross, failure, self.status_paints),
                  (self.bar_line, not failure and not update, self.status_paints)]
         if d is not None:
             parts += [(d.update_mark, update, d.paints), (d.update_cross, update, d.paints)]
@@ -2478,7 +2469,7 @@ class ShellWindow(QMainWindow):
         d = self.duties = _Duties()
         d.module = duties_module
         # the header (W3.1a): the level ▾ — its pop (W3.1b, the Level menu) holds the slider, Automatic, the
-        # readout, Generate and *Open your journey* — and ? (*Online guide* only until the tours, IK-15 / IK-24)
+        # readout and Generate — and ? (a click: the online guide, until the tours, IK-15 / IK-24)
         d.level = frame.LevelButton(self.header)
         d.pop = frame.LevelPop(self.centralWidget(), d.level)
         d.level.clicked.connect(d.pop.toggle)
@@ -2490,16 +2481,7 @@ class ShellWindow(QMainWindow):
         d.generate = duties_module.GenerateControl(d.pop)
         d.generate.pressed.connect(self._generate_pressed)
         d.generate.log_asked.connect(self._open_generate_log)
-        d.journey = QPushButton(strings.LEVEL_JOURNEY, d.pop)
-        d.journey.setObjectName("popjourney")
-        d.journey.setToolTip(strings.JOURNEY_NONE_TIP)
-        d.journey.setAccessibleName(strings.LEVEL_JOURNEY)
-        d.journey.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        d.journey.setCursor(Qt.CursorShape.PointingHandCursor)
-        d.journey.setEnabled(False)                     # until a journey is found on disk: hidden meanwhile
-        d.journey.setVisible(False)
-        qpress.room(d.journey, end=True)                # round 8 row 45: a link — its arc's room at its right end
-        d.journey.clicked.connect(lambda _c=False: self._open_journey(control=d.journey))
+        # (a9.1: the pop's *Open your journey ↗* went — the header's *Journey ↗* beside the ▾ is the one way in)
         # laptop fixes (Sonic: "the journey should never automatically pop up … a button by auto … to open the
         # journey"): *Journey ↗* beside the ▾, the header's own button look (as ?); shown while one is on disk
         d.journey_button = QToolButton(self.header)
@@ -2519,26 +2501,19 @@ class ShellWindow(QMainWindow):
         d.help.setAccessibleName(strings.HELP_NAME)
         d.help.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         d.help.setCursor(Qt.CursorShape.PointingHandCursor)
-        d.help.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QMenu(d.help)
-        menu.addAction(strings.HELP_GUIDE).triggered.connect(self._open_guide)
-        d.help.setMenu(menu)
-        d.journey_dot = QLabel(d.pop)                     # row 7: the sentences catching up (02-state-model, G10)
+        qpress.room(d.help)                             # a9.1: one item, so no menu — a click opens the online guide
+        d.help.clicked.connect(lambda _c=False: self._open_guide(control=d.help))
+        d.journey_dot = QLabel(self.header)               # row 7: the sentences catching up (02-state-model, G10)
         d.journey_dot.setObjectName("journeydot")
         d.journey_dot.setTextFormat(Qt.TextFormat.PlainText)
         d.journey_dot.setAccessibleName(strings.JOURNEY_DOT_NAME)
         d.journey_dot.setVisible(False)
         d.pop.add_action(d.generate)
-        journey_row = QHBoxLayout()
-        journey_row.setContentsMargins(0, 0, 0, 0)
-        journey_row.addWidget(d.journey)
-        journey_row.addWidget(d.journey_dot)
-        journey_row.addStretch(1)
-        d.pop.actions.addLayout(journey_row)
         # --- W3.2 Q3: the level ▾ before + Add, ? after it
         header_row = self.header.layout()
         header_row.insertWidget(header_row.indexOf(self.add_stone), d.level)
         header_row.insertWidget(header_row.indexOf(self.add_stone), d.journey_button)    # right of the ▾ (laptop fixes)
+        header_row.insertWidget(header_row.indexOf(self.add_stone), d.journey_dot)       # a9.1: its dot beside it
         header_row.insertWidget(header_row.indexOf(self.report_button), d.help)          # ? before the bug
         # --- end W3.2 Q3
         self._paint_level()
@@ -2689,9 +2664,10 @@ class ShellWindow(QMainWindow):
         if path:
             qpress.open(self, path, control=self.duties.generate.log_button, key="open:generate-log")
 
-    def _open_guide(self, _checked=False):
-        """? › *Online guide*: its menu has closed, so the bar's arc turns until the browser was asked (a worker)."""
-        qpress.run(None, "open:guide", self.services.open_guide, win=self)
+    def _open_guide(self, _checked=False, control=None):
+        """? (a9.1: a button, its one-item menu gone): `control`'s arc turns — else the bar's — until the browser was
+        asked (a worker)."""
+        qpress.run(control, "open:guide", self.services.open_guide, win=self)
 
     # Your journey
     def _check_journey(self):
@@ -2700,7 +2676,7 @@ class ShellWindow(QMainWindow):
 
     def _show_journey(self, exists):
         exists = bool(exists)
-        for b in (self.duties.journey, self.duties.journey_button):
+        for b in (self.duties.journey_button,):
             if b.isEnabled() != exists:
                 b.setEnabled(exists)
                 b.setVisible(exists)                       # W3.1a: shown only while there is one to open
@@ -2709,7 +2685,7 @@ class ShellWindow(QMainWindow):
             self.duties.pop.place()
 
     def _open_journey(self, *_checked, asked=False, control=None, at=None, episode=None):
-        """*Journey ↗* in the header, *Open your journey ↗* in the pop — and (`asked`, W3.1a S5) Up Next's *N new
+        """*Journey ↗* in the header — and (`asked`, W3.1a S5) Up Next's *N new
         words ↗*: with none on disk the entries go, and a click from Up Next says why in the bar. The only ways the
         journey opens: a Generate writes it and never opens it (laptop fixes). Round 8 row 45: one press for all four
         (`press.run`): `control`'s arc turns (or `at`: the row's ↗, ⋯; neither: the bar's) until the browser was

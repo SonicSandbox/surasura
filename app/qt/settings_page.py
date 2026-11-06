@@ -37,6 +37,7 @@ change writes are `settings_catalog`'s; the page paints it and hands every chang
   time in `slice_ms`.
 """
 import bisect
+import math
 import os
 import time
 from collections import Counter
@@ -44,7 +45,7 @@ from contextlib import contextmanager
 
 from PyQt6 import sip
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon, QPainter, QPalette, QPixmap
+from PyQt6.QtGui import QFontMetricsF, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (QApplication, QBoxLayout, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                              QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
@@ -309,6 +310,71 @@ class Slab(QWidget):
         self.setMaximumWidth(round(theme.size("settings-card-max", style.current()[1])))
 
 
+# a9.1 (Sonic: "the subtitles unless it's absolutely needed, to be hidden with a ? hover icon instead. To keep settings
+# extremely clean"): a row's description — its catalog help line — stands behind a ? beside its label (`HelpMark`),
+# except on these rows, where the learner must read it before pressing (PROVISIONAL; the register lists why): data
+# leaving this computer, something that replaces or deletes for good, and Anki Miner's credit (Sonic's own words). A
+# live line in its place — a state, a warning, a readout — always shows (`described`).
+HELP_SHOWN = frozenset((
+    "known_import",              # replaces your known words
+    "update_check_enabled",      # asks GitHub at start
+    "telemetry_enabled",         # what the counts never hold
+    "covers_download",           # what goes to AniList and YouTube
+    "remove_downloaded_covers",  # deletes for good: what stays
+    "practice_ai",               # what goes to that AI's company
+    "enable_koe",                # each sentence goes to Google
+    "anki_miner",                # Sonic's credit to its maker
+))
+
+
+def described(row, text):
+    """Whether `text` is `row`'s own description (its catalog help, a live word in it filled in: *Anki's own setting for
+    {deck}…*), not a live line standing in its place."""
+    if not row.help or not text:
+        return False
+    if "{" not in row.help:
+        return text == row.help
+    import re
+    pattern = "".join(".+" if part.startswith("{") else re.escape(part)
+                      for part in re.split(r"(\{[^}]*\})", row.help) if part)
+    return re.fullmatch(pattern, text, re.DOTALL) is not None
+
+
+class HelpMark(QLabel):
+    """A row's ? (a9.1): its description in the bubble on hover, on keyboard focus (Tab) and on a click or Enter /
+    Space (the bubble's own rules, `tooltip.Tooltips`: wrapped to its width)."""
+
+    def __init__(self, parent=None):
+        super().__init__(S.HELP_MARK, parent)
+        self.setObjectName("helpmark")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setVisible(False)
+
+    def set_about(self, label, text):
+        if self.toolTip() != text:
+            self.setToolTip(text)
+            self.setAccessibleName(S.HELP_MARK_NAME.format(label=label) if label else S.HELP_MARK)
+            self.setAccessibleDescription(text)
+        if self.isHidden() == bool(text):
+            self.setVisible(bool(text))
+
+    def _ask(self):
+        tips = getattr(self.window(), "tooltips", None)
+        if tips is not None and self.toolTip():
+            tips.request(self)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._ask()                                       # the press hid the bubble: a click shows it again
+
+    def keyReleaseEvent(self, event):
+        super().keyReleaseEvent(event)
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self._ask()
+
+
 class Words(QLabel):
     """A row's word-wrapped label or help line whose height for a width is worked out once per (width, its minimum
     width, text) — the minimum moves as a row stacks (`RowView.arrange`), and Qt answers at the larger of the two: Qt lays
@@ -338,11 +404,12 @@ class Words(QLabel):
 
 
 class RowView(QWidget):
-    """One setting row (the mock's `.srow`): its label and help on the left, its control (and doors) on the right, in
-    `slot`; when the row is too narrow for both side by side (text size L in a narrow window), its words stand above
-    its control (B4). The level stands stacked always (S7): its label and *Automatic* (`aside`) on top, the slider the
-    row's full width under them, its readout (the help line) under the slider. Washed once by a reveal (`wash`,
-    0 … 1, painted under its children)."""
+    """One setting row (the mock's `.srow`): its label (its ? beside it: `HelpMark`) and help on the left, its control
+    (and doors) on the right, in `slot`; when the row is too narrow for both side by side (text size L in a narrow
+    window), its words stand above its control (B4). The level stands stacked always (S7): its label and *Automatic*
+    (`aside`) on top, the slider the row's full width under them, its readout (the help line) under the slider. A
+    `links` block (a9.1) stands stacked too: its title, then its buttons evenly across. Washed once by a reveal
+    (`wash`, 0 … 1, painted under its children)."""
 
     def __init__(self, row, parent=None):
         super().__init__(parent)
@@ -351,6 +418,7 @@ class RowView(QWidget):
         self.wash = 0.0
         self.controls = []                    # the value controls, in order (the level: its slider, then Automatic)
         self.doors = {}                       # opener name -> Door
+        self.links = {}                       # a `links` block's page name -> its button (a9.1)
         self.stacked = None                   # the words above the control (True) or beside it (False)
         self.label = Words(self)
         self.label.setObjectName("settingssublabel" if row.sub else "settingslabel")
@@ -358,6 +426,12 @@ class RowView(QWidget):
         self.help = Words(self)
         self.help.setObjectName("settingshelp")
         self.help.setWordWrap(True)
+        self.mark = HelpMark(self)
+        self.title = QHBoxLayout()                # the label, its ?, room after
+        self.title.addWidget(self.label, 1000)    # (as wide as its words, `_fit_title`; the room after takes the rest)
+        self.title.addWidget(self.mark, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.title.addStretch(1)
+        self._least = 0                           # the words' minimum width beside the control (`arrange`)
         self.slot = QWidget(self)
         self.slot.setObjectName("settingsslot")
         slot = QHBoxLayout(self.slot)
@@ -366,17 +440,25 @@ class RowView(QWidget):
         if row.kind == "slider":
             line = QVBoxLayout(self)
             top = QHBoxLayout()
-            top.addWidget(self.label, 1)
+            top.addLayout(self.title, 1)
             self.aside = QHBoxLayout()
             top.addLayout(self.aside)
             line.addLayout(top)
             line.addWidget(self.slot)
             line.addWidget(self.help)
             self.stacked = True
+        elif row.kind == "links":
+            line = QVBoxLayout(self)
+            self.words = QVBoxLayout()
+            self.words.addLayout(self.title)
+            self.words.addWidget(self.help)
+            line.addLayout(self.words)
+            line.addWidget(self.slot)
+            self.stacked = True
         else:
             line = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
             self.words = QVBoxLayout()
-            self.words.addWidget(self.label)
+            self.words.addLayout(self.title)
             self.words.addWidget(self.help)
             line.addLayout(self.words, 1)
             self.words.setAlignment(Qt.AlignmentFlag.AlignTop)    # the words together at the top beside a tall control
@@ -404,14 +486,21 @@ class RowView(QWidget):
         return m.left() + m.right() + self._words_min() + self.layout().spacing() + slot
 
     def minimumSizeHint(self):
-        """As narrow as the stacked row: the page never cuts a control at its right edge, it stacks the row (B4)."""
+        """As narrow as the stacked row: the page never cuts a control at its right edge, it stacks the row (B4); a
+        `links` block as narrow as its widest button (its buttons stack too, `arrange`)."""
         hint = super().minimumSizeHint()
         m = self.layout().contentsMargins()
-        return QSize(m.left() + m.right() + max(self.slot.minimumSizeHint().width(), self._words_min() // 2),
-                     hint.height())
+        slot = self.slot.minimumSizeHint().width()
+        if self.row.kind == "links":
+            slot = max((b.minimumSizeHint().width() for b in self.links.values()), default=0)
+        return QSize(m.left() + m.right() + max(slot, self._words_min() // 2), hint.height())
 
     def arrange(self, width=None):
-        """Side by side when `width` (the row's own) holds both, else the words above the control."""
+        """Side by side when `width` (the row's own) holds both, else the words above the control; a `links` block's
+        buttons side by side when they fit, else one under another."""
+        if self.row.kind == "links":
+            self._arrange_links(self.width() if width is None else width)
+            return
         if self.row.kind == "slider":
             return
         width = self.width() if width is None else width
@@ -423,18 +512,53 @@ class RowView(QWidget):
         line.setDirection(QBoxLayout.Direction.TopToBottom if stacked else QBoxLayout.Direction.LeftToRight)
         line.setAlignment(self.slot, self._slot_align(stacked))
         least = 0 if stacked else self._words_min()
-        self.label.setMinimumWidth(least)
+        self._least = least
         self.help.setMinimumWidth(least)
+        self._fit_title()
+
+    def _arrange_links(self, width):
+        m, box = self.layout().contentsMargins(), self.slot.layout()
+        need = sum(b.minimumSizeHint().width() for b in self.links.values()) + box.spacing() * (len(self.links) - 1)
+        across = width - m.left() - m.right() >= need
+        direction = QBoxLayout.Direction.LeftToRight if across else QBoxLayout.Direction.TopToBottom
+        if box.direction() != direction:
+            box.setDirection(direction)
+
+    def _fit_title(self):
+        """The ? right after the label's last word (a9.1): the label never wider than its words on one line — it wraps
+        as before when the row is narrower — and never held wider by the words' minimum (the help line holds that)."""
+        text = self.label.text()
+        self.label.ensurePolished()
+        natural = 0
+        if text:                                  # as QLabel lays a wrapped line out (bearings, hinting), with room
+            metrics = QFontMetricsF(self.label.font())
+            laid = metrics.boundingRect(QRectF(0, 0, 1e6, 1e6), int(Qt.TextFlag.TextWordWrap), text).width()
+            m = self.label.contentsMargins()
+            natural = math.ceil(max(laid, metrics.horizontalAdvance(text))) + m.left() + m.right() + \
+                2 * self.label.margin() + 4
+        if self.label.maximumWidth() != max(1, natural):
+            self.label.setMaximumWidth(max(1, natural))
+        least = min(self._least, natural)
+        if self.label.minimumWidth() != least:
+            self.label.setMinimumWidth(least)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.arrange(event.size().width())
 
     def set_words(self, label, help_):
+        """The label, and the line under it: a live line, or a description on a `HELP_SHOWN` row (the level's readout
+        too), in sight; any other description behind the ? (its text kept in `help`, hidden: one rule, every row)."""
         self.label.setText(label)
         self.label.setVisible(bool(label))
+        self._fit_title()
         self.help.setText(help_)
-        self.help.setVisible(bool(help_))
+        own = described(self.row, help_)
+        shown = bool(help_) and (not own or self.row.id in HELP_SHOWN or self.row.kind == "slider")
+        if self.help.isHidden() == shown:
+            self.help.setVisible(shown)
+        about = "" if shown and own else help_ if own else self.row.help if "{" not in self.row.help else ""
+        self.mark.set_about(label, about if label else "")
 
     def restyle(self):
         f = _f()
@@ -443,15 +567,19 @@ class RowView(QWidget):
         self.layout().setContentsMargins(round(left * f), round(pad_y * f), round(pad_x * f), round(pad_y * f))
         self.layout().setSpacing(round((6 if self.row.kind == "slider" else 14) * f))
         self.slot.layout().setSpacing(round(8 * f))
+        self.title.setSpacing(round(6 * f))
+        self._fit_title()                         # a new text size: the label's words measured again
         if self.aside is not None:
             self.aside.setSpacing(round(8 * f))
         else:
-            self.words.setSpacing(round(1 * f))
+            self.words.setSpacing(round((8 if self.row.kind == "links" else 1) * f))
         for c in self.controls:
             c.restyle()
         if self.row.id in logos.ROWS:         # PL: the service's cleared logo before its words, at this size
             logos.show(self)
-        if self.row.kind != "slider" and self.stacked is not None:     # a new text size: asked again (a row not
+        if self.row.kind == "links":                                    # a new size: its buttons measured again
+            self._arrange_links(self.width())
+        elif self.row.kind != "slider" and self.stacked is not None:   # a new text size: asked again (a row not
             self.stacked = None                                         # yet laid out is asked at its first resize)
             self.arrange()
 
@@ -840,7 +968,16 @@ class SettingsPage(QWidget):
             label, tip = S.ROW_DOORS.get(row.id, {}).get(name) or S.DOORS[name]
             door = sc.Door(label, tooltip=tip, name=label, parent=view.slot)
             door.clicked.connect(lambda _c=False, n=name: self.open_door(n))
-            view.slot.layout().addWidget(door)
+            if row.kind == "toggle":
+                # a9.1: a switch that opens its own door (*Preview a video…* on YouTube preview's switch): the door
+                # stands before the switch and keeps its room while hidden — the flip never moves the switch under
+                # the hand, nor grows the row (a choice never moves the page)
+                policy = door.sizePolicy()
+                policy.setRetainSizeWhenHidden(True)
+                door.setSizePolicy(policy)
+                view.slot.layout().insertWidget(len(view.doors), door)
+            else:
+                view.slot.layout().addWidget(door)
             view.doors[name] = door
         self._show_doors(view, settings)
         if row.group:
@@ -859,12 +996,21 @@ class SettingsPage(QWidget):
 
     def _make_controls(self, view, row, settings):
         kind, tip, name = row.kind, row.tip or None, row.label or None
-        if kind == "door" or (kind != "link" and not row.keys and row.id != "known_road"):
+        if kind == "door" or (kind not in ("link", "links") and not row.keys and row.id != "known_road"):
             return
         if kind == "link":
             link = qpress.room(sc.Door(S.LINK_OPEN, tooltip=tip, name=name, parent=view.slot))
             link.clicked.connect(lambda _c=False, b=link, u=S.LINK_URLS[row.id]: qpress.open(self.shell, u, control=b))
             view.slot.layout().addWidget(link)
+            return
+        if kind == "links":                      # a9.1: a button per page, evenly across the block, each one width
+            for page in row.options:
+                label, page_tip, url = S.LINKS[page]
+                link = qpress.room(sc.Door(label, tooltip=page_tip, name=label, parent=view.slot))
+                link.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                link.clicked.connect(lambda _c=False, b=link, u=url: qpress.open(self.shell, u, control=b))
+                view.slot.layout().addWidget(link, 1)
+                view.links[page] = link
             return
         value = None
         try:

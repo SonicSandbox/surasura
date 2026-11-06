@@ -1,5 +1,5 @@
 """Settings' *Sort again or start over…* sheet (Fresh library 3.0.1, WP4; the spec §3.1, §3.3–3.4, §8; replaces K7's one
-confirm, `app/qt/settings_sources.py` FreshRow / StartOverRow / FreshSheet / `act`): its two doors, its two choices,
+confirm, `app/qt/settings_sources.py` FreshRow / FreshSheet / `act`): its door, its two choices,
 its Backups list (on a worker), and what each press hands on — the work itself is the looks' (test_resort.py) and the
 start gate's (test_start_gate_move.py).
 
@@ -65,7 +65,7 @@ def _rows(win):
     page = win.mount_settings()
     assert wait_until(lambda: page.findChildren(settings_sources.SourcesRow), 10)
     row = page.findChildren(settings_sources.SourcesRow)[0]
-    return page, row.fresh, row.start_over
+    return page, row.fresh, row.fresh          # a9.1: App's *Start over completely…* went — Content's door is the one
 
 
 def _sheet(card):
@@ -92,12 +92,12 @@ def _sorted_again(language, stamp, stopped=False, **record):
     return folder
 
 
-def test_two_doors_open_one_sheet_each_with_its_own_choice_first_and_close_does_nothing(window):
+def test_one_door_opens_the_sheet_sort_again_first_and_close_does_nothing(window):
     looks = SheetLooks()
     seed, win = window(looks)
-    page, fresh, over = _rows(win)
+    page, fresh, _over = _rows(win)
     assert fresh.button.text() == S.FRESH_OPEN and fresh.button.toolTip() == S.FRESH_TIP
-    assert over.button.text() == S.START_OVER_OPEN and over.button.toolTip() == S.START_OVER_TIP
+    assert "start_over" not in page.rows                                 # a9.1: one door to the sheet
     t = time.perf_counter()
     card = fresh.ask()
     opened_ms = (time.perf_counter() - t) * 1000
@@ -114,12 +114,6 @@ def test_two_doors_open_one_sheet_each_with_its_own_choice_first_and_close_does_
     assert not sheet.backups_part.isVisibleTo(card)                      # none: the part is hidden
     QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)       # Esc: nothing happens
     assert card.answer is False and looks.fresh_calls == [] and fresh.card is None
-    card = over.ask()
-    lay = card.layout()
-    order = [lay.itemAt(i).widget() for i in range(lay.count()) if lay.itemAt(i).widget() is not None]
-    assert order.index(card.sheet.over_part) < order.index(card.sheet.sort_part)   # App's door: Start over first
-    card.no.click()
-    assert looks.fresh_calls == []
 
 
 def test_the_counts_say_what_never_comes_back_and_the_cards_left_suspended_on_their_sides(window):
@@ -195,10 +189,10 @@ def test_change_folders_opens_the_folders_page_alone_and_back_opens_the_sheet_ag
 
 def test_without_a_library_sort_again_is_greyed_with_why_and_start_over_still_opens(window):
     seed, win = window(None)
-    _page, fresh, over = _rows(win)
-    assert not fresh.button.isEnabled() and fresh.button.toolTip() == S.STORE_NO_LIBRARY_TIP
-    assert fresh.ask() is None
-    card = over.ask()
+    _page, fresh, _over = _rows(win)
+    # a9.1: the one door opens without a library too — Sort again greyed in the sheet with why, Start over there
+    assert fresh.button.isEnabled() and fresh.button.toolTip() == S.FRESH_TIP
+    card = fresh.ask()
     assert card is not None and not card.sheet.btn_sort.isEnabled() and card.sheet.btn_over.isEnabled()
     assert card.sheet.btn_sort.toolTip() == S.STORE_NO_LIBRARY_TIP
     card.no.click()

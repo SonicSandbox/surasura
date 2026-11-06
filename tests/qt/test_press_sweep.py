@@ -90,8 +90,9 @@ def test_update_now_turns_the_clicked_buttons_arc_before_the_service_is_asked(du
 
 
 def test_the_journey_is_one_press_for_its_four_doors_marked_before_the_open(duties, handed):
-    """§2.1 *Journey ↗* / *Open your journey* (GAP O): the clicked button's arc, then the open on a worker; a click on
-    another door meanwhile does nothing (it was dropped silently), and the press ends with the open."""
+    """§2.1 *Journey ↗* (GAP O; a9.1: the pop's *Open your journey* went): the clicked button's arc, then the open on
+    a worker; a click on another way in meanwhile (Up Next's ↗: no control) does nothing (it was dropped silently), and
+    the press ends with the open."""
     d, win = duties.d, duties.win
     win._show_journey(True)
     b = d.journey_button
@@ -99,7 +100,7 @@ def test_the_journey_is_one_press_for_its_four_doors_marked_before_the_open(duti
     handed.look = lambda: arc_shown(b)
     win._open_journey(control=b)
     assert len(handed) == 1 and handed[0].fn == win.services.open_journey and handed[0].look is True
-    assert win._open_journey(control=d.journey) is None and len(handed) == 1
+    assert win._open_journey() is None and len(handed) == 1
     handed[0].then(True)
     assert not win.presses.find("journey:open").live() and qpress.arc(b) is None
 

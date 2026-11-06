@@ -192,10 +192,11 @@ STATE_LINES = {
     "busy": "Updating your library…",
     "read-only": "Read-only: {reason}. Nothing can be moved until it's fixed.",
     "migration-failed": "Your library couldn't be brought into 3.0's store, so it can't show here yet. "
-                        "Open the logs folder (the bar) and send it in; nothing of yours was changed.",
+                        "Send it in with Report a problem (the bug, top right: it carries the logs); nothing of "
+                        "yours was changed.",
 }
 READ_ONLY_REASONS = {
-    "damaged": "the library needs a repair — Surasura keeps its last good copy; send the logs folder (the bar) in",
+    "damaged": "the library needs a repair — Surasura keeps its last good copy; send it in with Report a problem",
     "made by a newer Surasura": "your library was saved by a newer Surasura — update Surasura to change it",
     "busy": "another program is saving your library — it opens as soon as that's done",
 }
@@ -230,7 +231,7 @@ ROWS_STUDYING_TIP = "Its new cards go first in Anki until they're studied"
 ROWS_TICK_WATCHED = "Watched"
 ROWS_TICK_NOT = "Not watched yet"
 ROWS_MORE_CHIPS = "{n} more"
-ROWS_FAILURE_LINE = "Its details are in the logs folder (the bar's Open the logs folder)"
+ROWS_FAILURE_LINE = "Its details are in the logs (Settings › App › Folders › Logs)"
 # The string of stones, read out for a screen reader (W3.1a; `stone_plan.words`): "8 of 12 watched, 3 in Anki".
 STRING_WORDS = {
     "of_watched": "{k} of {n} watched", "in_anki": "{n} in Anki",
@@ -292,7 +293,6 @@ HEADER_JOURNEY_NAME = "Open your journey"
 HELP = "?"
 HELP_NAME = "Help"
 HELP_TIP = "Help\n• Click for the online guide"
-HELP_GUIDE = "Online guide"
 
 # The bottom bar's marks: statuses with tooltips (W3.3 makes them open Settings' sections).
 BAR_KNOWN = "{n:,} known"
@@ -417,7 +417,6 @@ LEVEL_POP_COVERAGE_TIP = ("The level does nothing while your list is set by cove
                           "(the gear)")
 LEVEL_POP_GEAR_NAME = "Level settings"
 LEVEL_POP_GEAR_TIP = "Level settings\n• Click to open them in Settings"
-LEVEL_JOURNEY = "Open your journey ↗"
 FOOT_ANKI = "Anki"
 FOOT_ANKI_NAME = "Anki: {words}"
 FOOT_ANKI_TIP = "{words}\n{tip}"
@@ -656,7 +655,7 @@ DRAG_REFUSED = "Your library can't be saved right now: {reason}"
 # W3.2 P0: a language switch, and a library that couldn't be opened
 SWITCHING = "Switching to {name}… Nothing can be moved until its library is open"
 MOVE_NOT_SAVED = "That change wasn't saved: try it again"
-LIBRARY_NOT_OPENED = "Your library couldn't be opened. Open the logs folder (the bar) and send it in"
+LIBRARY_NOT_OPENED = "Your library couldn't be opened. Send it in with Report a problem: it carries the logs"
 DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
 DONE_ONE = "✓ {title} {ep} watched"
 DONE_MANY = "✓ {title}: {n} marked watched"        # a7: ⋯'s mark-many, one toast, one Undo

@@ -175,12 +175,13 @@ def test_a_rows_label_and_help_are_words_that_remember(qapp):
     page, _store = make_page(ALL_ON, "ja")
     view = page.rows["split_length"]
     assert isinstance(view.label, sp.Words) and isinstance(view.help, sp.Words)
-    width = view.help.width()
-    key = (width, view.help.minimumWidth(), view.help.text())
-    assert key in view.help._heights                                 # the page's layout asked it at the width it has
-    known = dict(view.help._heights)
-    assert view.help.heightForWidth(width) == known[key]
-    assert view.help._heights == known                               # answered from what it remembered
+    words = view.label                         # (a9.1, Mado-S: the help line waits behind the ?: the label is laid out)
+    width = words.width()
+    key = (width, words.minimumWidth(), words.text())
+    assert key in words._heights                                     # the page's layout asked it at the width it has
+    known = dict(words._heights)
+    assert words.heightForWidth(width) == known[key]
+    assert words._heights == known                                   # answered from what it remembered
 
 
 # --- the body is opaque: a scroll moves what is on screen ---------------------------------------------------------- #

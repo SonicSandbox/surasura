@@ -324,6 +324,8 @@ def test_the_anki_miner_answer_landing_above_the_reader_never_moves_the_page(wor
 
 
 def test_the_new_cards_answer_landing_above_the_reader_never_moves_the_page(world):
+    # a9.1: the line naming the deck is the row's description — behind its ? now, so the row keeps its height and
+    # the ? carries the deck; the reader stays where it was either way (a row that grows: the Anki Miner test above)
     page, store, rows, _fake = make(world)
     anchor = scrolled_below(page, "new_cards_a_day")
     y0, h0 = y_in_view(page, anchor), page.rows["new_cards_a_day"].height()
@@ -334,7 +336,8 @@ def test_the_new_cards_answer_landing_above_the_reader_never_moves_the_page(worl
     for _ in range(5):
         QApplication.processEvents()
     page._settle()
-    assert page.rows["new_cards_a_day"].height() > h0, "the row didn't grow: this test proves nothing"
+    view = page.rows["new_cards_a_day"]
+    assert LONG_DECK in view.mark.toolTip() and not view.help.isVisibleTo(page) and view.height() == h0
     assert y_in_view(page, anchor) == y0
 
 

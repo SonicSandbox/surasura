@@ -466,7 +466,7 @@ def test_logs_and_the_data_folder_open_their_folders(qapp, fakes, monkeypatch):
     page, store, shell = make(fakes)
     page.live.parts["logs"]["open"].click()
     assert wait_until(lambda: opened == ["C:\\logs"])
-    page.live.parts["version"]["open"].click()
+    page.live.parts["logs"]["data"].click()                 # a9.1: beside the logs, *Folders*' (Version copies)
     assert wait_until(lambda: opened == ["C:\\logs", "C:\\data\\ja"])
     assert threads == [False, False]                        # never the window's thread
     from app import __version__
@@ -885,3 +885,30 @@ def test_piyo_names_the_row_and_keep_practice_rounds_is_its_switch_on_by_default
     from tests.qt.test_settings_page import change
     change(toggle, False)
     assert store.calls == [({"practice_keep_rounds": False}, None)]
+
+
+# --- a9.1: App's *Version* copies; *Folders* holds the data folder and the logs ------------------------------------ #
+def test_version_copies_the_version_and_folders_opens_the_data_folder_and_the_logs_each_on_a_worker(
+        qapp, fakes, monkeypatch):
+    """Sonic (a9.1): *Version* showed the version but its button opened the data folder; the bar and App both opened
+    the logs. Now *Version*'s *Copy* puts the version on the clipboard (*Copied*, then its name again), and App's
+    *Folders* row holds *Data folder* and *Logs*, the one way to each — opened on a worker, nothing written."""
+    from app import __version__
+    monkeypatch.setattr(qpress, "open_now", lambda target: None)
+    page, store, shell = make(fakes, dict(ALL_ON))
+    copy = page.live.parts["version"]["copy"]
+    assert copy.text() == S.VERSION_COPY and copy.toolTip() and copy.accessibleName().endswith(__version__)
+    assert __version__ in page.row("version").label.text()
+    QApplication.clipboard().setText("")
+    copy.click()
+    assert QApplication.clipboard().text() == __version__ and copy.text() == S.VERSION_COPIED
+    assert shell.bar_line.lines[-1] == S.VERSION_COPIED_LINE.format(version=__version__)
+    assert wait_until(lambda: copy.text() == S.VERSION_COPY, 4)          # its name back two seconds later
+    folders = page.live.parts["logs"]
+    assert [folders["data"].text(), folders["open"].text()] == [S.DATA_FOLDER, S.LOGS_OPEN]
+    assert folders["data"].toolTip() and folders["open"].toolTip()
+    folders["data"].click()
+    assert wait_until(lambda: "data_folder" in fakes.names())
+    folders["open"].click()
+    assert wait_until(lambda: "logs_folder" in fakes.names())
+    assert fakes.on_gui() == [] and store.calls == []

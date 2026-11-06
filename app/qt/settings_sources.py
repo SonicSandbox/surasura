@@ -25,9 +25,8 @@ rows' packages — never by the page itself.
   its language, so a root id another store also holds is never stopped there (ids repeat across stores). Without a
   library (no looks), the buttons are greyed and say why.
 
-***Sort again or start over…*** (K7; Fresh library 3.0.1, the spec §3) and Settings › App's ***Start over
-completely…***: two doors to one sheet (`open_fresh`; *Needs you*'s *Start fresh* is the third), each with its own
-choice first. **Sort my library again** (*Sort again* · *Change folders…*): the load screen over the window, the
+***Sort again or start over…*** (K7; Fresh library 3.0.1, the spec §3): the door to one sheet (`open_fresh`; *Needs
+you*'s *Start fresh* is the other; a9.1: App's *Start over completely…* went — this one offers it). **Sort my library again** (*Sort again* · *Change folders…*): the load screen over the window, the
 looks' `fresh` on their worker, the sort screen (`sort_again`), *Library sorted again · Put back* at its end.
 **Start over completely** (*Start over…* → a second step): the request written, the window restarts, the start gate
 moves everything aside (`start_over`). **Backups** (listed on a worker; five, then *Show all*): each *Put back…*
@@ -55,7 +54,6 @@ from app.services.source_looks import offline
 
 ROW_ID = "library_folders"
 FRESH_ID = "fresh_library"
-START_OVER_ID = "start_over"                            # Fresh library 3.0.1: Settings › App's door
 WINDOW = "library-folders"                                # its opener's name (`windows.OPENERS`, the row's door)
 
 
@@ -310,7 +308,6 @@ class SourcesRow(QObject):
         if looks is not None:
             looks.listing()                               # the counts as they stand, read on the looks' worker
         self.fresh = FreshRow(page) if FRESH_ID in getattr(page, "slots", {}) else None
-        self.start_over = StartOverRow(page) if START_OVER_ID in getattr(page, "slots", {}) else None
 
     def alive(self):
         return _alive(self.page)
@@ -878,10 +875,9 @@ def give_stop(shell, root_id, text, language, told=None):
 
 
 class FreshRow(QObject):
-    """*Sort again or start over…* (K7; Fresh library 3.0.1): `button` opens the one sheet (`open_fresh`) with its own
-    choice first — Settings › Content's row (`first="sort"`) and Settings › App's *Start over completely…*
-    (`StartOverRow`, `first="over"`). `card` while the sheet is open; `running` while a Sort again or a Put back it
-    began is under way (the window's `fresh_running`)."""
+    """*Sort again or start over…* (K7; Fresh library 3.0.1): `button` opens the one sheet (`open_fresh`), Sort again
+    first. `card` while the sheet is open; `running` while a Sort again or a Put back it began is under way (the
+    window's `fresh_running`)."""
 
     first = "sort"
     row_id = FRESH_ID
@@ -917,14 +913,11 @@ class FreshRow(QObject):
         return _looks(self.shell)
 
     def why_not(self):
-        """Why the sheet can't open now (the button's tooltip), or None. Start over opens it without a library too."""
+        """Why the sheet can't open now (the button's tooltip), or None. It opens without a library, or one that can't
+        be written, too: the sheet greys Sort again with why, and Start over stays (a9.1: the one door to it)."""
         if self.running:
             return S.FRESH_RUNNING_TIP
-        if self.first == "over":
-            return None
-        if self._looks() is None:
-            return S.STORE_NO_LIBRARY_TIP
-        return cant_write(getattr(self.page, "services", None))
+        return None
 
     def enable(self):
         """Greyed with why while it can't open; repainted only when it turned (S19)."""
@@ -949,24 +942,6 @@ class FreshRow(QObject):
     def _closed(self):
         self.card = None
         self.enable()
-
-
-class StartOverRow(FreshRow):
-    """Settings › App's *Start over completely…* (beside *Set up again*): the same sheet, Start over first."""
-
-    first = "over"
-    row_id = START_OVER_ID
-
-    def __init__(self, page):
-        super().__init__(page)
-        self.button.setText(S.START_OVER_OPEN)
-        self.button.setAccessibleName(S.START_OVER_OPEN)
-
-    def _label(self):
-        return S.START_OVER_OPEN
-
-    def _tip(self):
-        return S.START_OVER_TIP
 
 
 # --- the one sheet (the spec §3.1: two choices, the Backups list; three doors) ----------------------------------- #

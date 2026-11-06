@@ -676,3 +676,12 @@ def test_the_zip_check_alone_refuses_names_outside_the_add_on(tmp_path):
     path.write_bytes(_zip(links=("link.py",)))
     with pytest.raises(I._Refused):
         I._check_zip(str(path))
+
+
+def test_ankiconnect_already_there_is_said_at_once_even_with_anki_open(anki):
+    # the drill (2026-11-06): a second install with Anki open waited 10 minutes before it looked again
+    os.mkdir(os.path.join(anki.addons, I.CODE))
+    anki.state["running"] = [True]
+    clock = Clock()
+    assert _install(clock=clock) == I.ALREADY
+    assert clock.slept == [] and anki.net.asked == []

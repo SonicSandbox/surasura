@@ -496,6 +496,8 @@ def _route(on_progress, cancel, confirm, shown, on_phase, clock, sleep):
     local = staging_folder()
     staged = None
     try:
+        if look()["state"] == THERE:    # already in (the drill, 2026-11-06): said at once, never a wait for Anki
+            return ALREADY
         _wait_closed(cancel, shown, on_phase, clock, sleep, deadline)
         found = look()                  # nothing changed meanwhile (the learner may have added it by hand)
         if found["state"] == THERE:

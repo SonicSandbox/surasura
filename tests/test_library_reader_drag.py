@@ -305,3 +305,44 @@ def test_M41_B1_republish_with_nothing_new_publishes_the_last_view_again_and_bui
         assert quiet and len(views) == before + 2                                    # once, not again for the ask
     finally:
         reader.stop()
+
+
+def test_a91_a_build_begun_before_the_windows_ask_never_answers_it_the_next_look_does_with_the_write(monkeypatch):
+    """Alpha 9.1, report 1 (a dropped row put back, then forward again a second later): the window lets its order go
+    only for the view that answers its ask (`republish` -> its number, `answered`). A build begun before the ask — the
+    drop's write landing while it runs — is published as always but answers nothing; the next look, read after the ask,
+    answers it, and holds the write."""
+    seed = window_seed.build()
+    reader, views = _started(seed)
+    try:
+        gate, inside = threading.Event(), threading.Event()
+        real = library_reader.view_rows.build
+
+        def slow(*args, **kw):                                                       # a busy machine's build
+            if not gate.is_set():
+                inside.set()
+                gate.wait(5)
+            return real(*args, **kw)
+        monkeypatch.setattr(library_reader.view_rows, "build", slow)
+        rows = views[-1][1].rows
+        first, dropped = rows[3].episodes[0].id, rows[4].episodes[0].id
+        seed.library.commit(items=[{"id": first, "watched": 1}])                     # a sync: a build begins
+        assert _wait(lambda: inside.is_set())
+        seed.library.commit(items=[{"id": dropped, "watched": 1}])                   # the write lands mid-build
+        n = reader.republish()
+        assert reader.republish() == n + 1                                           # numbered, one by one
+        before = len(views)
+        gate.set()
+        assert _wait(lambda: reader.answered()[0] == n + 1)
+        early = views[before][1]                                                     # the build begun before
+        answer = reader.answered()[1]
+        assert answer is not early and answer is views[-1][1]
+
+        def watched(view, i):
+            return next(e.watched for r in view.rows for e in r.episodes if e.id == i)
+        assert watched(early, first) and not watched(early, dropped)
+        assert watched(answer, first) and watched(answer, dropped)
+        quiet, _ = _quiet(reader, views)
+        assert quiet and reader.answered() == (n + 1, answer)                        # answered once, then quiet
+    finally:
+        reader.stop()

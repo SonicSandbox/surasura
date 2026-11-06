@@ -10,7 +10,9 @@ between its steps, and tsubasa's check, Anki Miner's look-ups and its run were e
 - `wait(proc, timeout, …)`: the one process wait. A look-up (`look_up`: tsubasa's dry run, Anki Miner's read-only
   `--api` verbs) is ended at a press (`end`: the program and every process it started) and `Stopped` raised: nothing
   of that step is written, and the job stops before it. Anki Miner's run is never ended here: it reads its cancel file
-  (`anki_miner.cancel`, through `on_poll`), every card it made kept whole.
+  (`anki_miner.cancel`, through `on_poll`), every card it made kept whole — unless its `on_poll` answers `END`: a Stop
+  the run hasn't acted on while it has written nothing to Anki (#BS0A1K: a book's whole parse never looks at the
+  cancel file) ends it there too (`Stopped`).
 - `end(proc)`: the one process-ender for Connect's programs (a timeout, a press; hato's too), bounded: a child that
   survives it holding the program's output never holds the runner.
 
@@ -29,6 +31,7 @@ POLL_S = 1.0                    # a look-up's slice: a press is acted on within 
 END_WAIT_S = 5.0                # row 56: the longest `end` waits on taskkill, then on the ended program's last output
 CREATE_NO_WINDOW = 0x08000000
 
+END = object()                  # #BS0A1K: an `on_poll` answer — end the program now and raise `Stopped`
 _here = threading.local()
 
 
@@ -92,9 +95,9 @@ _end = end                      # `wait`'s default (its own `end` names the call
 def wait(proc, timeout, on_poll=None, end=None, look_up=False, every=None):
     """`proc.communicate()`'s (stdout, stderr) once it ends, waiting at most `timeout` s (TimeoutExpired past it; the
     caller ends it). With `on_poll` or `look_up`, in slices of `every` s (default POLL_S): each slice calls `on_poll()`
-    (its failure never stops the wait: logged once) and, for a look-up, asks `pressed()` — True: `end(proc)`
-    (default: this module's `end`) and `Stopped`. Retrying `communicate` after its TimeoutExpired loses no output (the
-    subprocess docs)."""
+    (its failure never stops the wait: logged once; its answer `END`: `end(proc)` and `Stopped`) and, for a look-up,
+    asks `pressed()` — True: `end(proc)` (default: this module's `end`) and `Stopped`. Retrying `communicate` after its
+    TimeoutExpired loses no output (the subprocess docs)."""
     if on_poll is None and not look_up:
         return proc.communicate(timeout=timeout)
     every = POLL_S if every is None else every
@@ -106,13 +109,14 @@ def wait(proc, timeout, on_poll=None, end=None, look_up=False, every=None):
         except subprocess.TimeoutExpired:
             if time.monotonic() >= deadline:
                 raise
+        answer = None
         if on_poll is not None:
             try:
-                on_poll()
+                answer = on_poll()
             except Exception:
                 if not told:
                     told = True
                     log.warning("Connect couldn't read a running program's progress; it goes on", exc_info=True)
-        if look_up and pressed():
+        if answer is END or (look_up and pressed()):
             (end or _end)(proc)
             raise Stopped()

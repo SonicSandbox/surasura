@@ -244,6 +244,8 @@ STRINGS = {
     "tip_mining": "Making its cards now",
     # R47 (laptop rows 47 + 56, PROVISIONAL words): Stop's states, and an ask Connect has read (its own status)
     "stopping": "Stopping…", "tip_stopping": "Stopping: the cards made so far are kept",
+    # #BS0A1K (PROVISIONAL words): Stop pressed while Anki Miner writes its cards — never ended mid-card
+    "tip_stopping_cards": "Adding the cards it has ready to Anki, then it stops: the cards made so far are kept",
     "tip_finishing": "\nFinishing its cards: too far along to stop", "asked": "Asked",
     "tip_asked": "Its cards come next",
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
@@ -317,6 +319,8 @@ STRINGS = {
     "tip_audio_alone": "🎧 Audio only 「{title}」\n{files}\nNothing to study here yet: it counts no words until Anki "
                        "Miner gives its text.",
     "audio_files_one": "1 file ({first})", "audio_files": "{n} files ({first} … {last})",
+    # Hon-S a9.1 (PROVISIONAL): a split book's part without the audiobook's own item keeps its 🎧 all the same
+    "audio_other_part": "Its files are listed in another part of this book, as its 🎧 file.",
     # Hon a6 (H-12 ✅ Sonic, H-13 PROVISIONAL): an audiobook's transcript — alone, its content; paired, the book's
     "tip_audio_transcript": "🎧 Audiobook 「{title}」 with its transcript\n{files}\nIts transcript is its text: its "
                             "words count as an episode's do. Its cards wait until Anki Miner mines audio.",
@@ -840,28 +844,33 @@ def status_of(eps, word, line_n):
 def audio_tip(piece):
     """a5-2: the 🎧's hover for a row holding an audiobook's item, else '' — *With its audiobook 「…」* beside a book's
     parts, *Audio only 「…」* alone; its files and length from the item's own summary (`audio`, the reader's, from
-    `Store.audiobook_hovers`), the title alone until it is read."""
+    `Store.audiobook_hovers`), the title alone until it is read. a9.1 (Hon-S): a part of a paired book whose row
+    doesn't hold the audiobook's item (a split book's earlier part) says *With its audiobook* all the same, from its
+    parts' `book_audio` (the reader's) — every way of splitting keeps the pairing on every part."""
     from app.audiobooks import length_text
     heard = [it for it in piece if it.get("source_type") == "audio"]
-    if not heard:
+    other = None if heard else next((it["book_audio"] for it in piece if it.get("book_audio")), None)
+    if not heard and other is None:
         return ""
-    said = heard[0].get("audio") or {}
-    title = said.get("title") or heard[0].get("title") or ""
+    said = (heard[0].get("audio") or {}) if heard else other
+    title = said.get("title") or (heard[0].get("title") if heard else "") or ""
     use = said.get("transcript")
     n = said.get("n") or 0
     files = STRINGS["audio_files_one"].format(first=said.get("first")) if n == 1 else \
         STRINGS["audio_files"].format(n=n, first=said.get("first"), last=said.get("last")) if n else ""
     length = length_text(said.get("seconds"))
     files = " · ".join(x for x in (files, length) if x)
-    if heard[0].get("availability") not in (None, "waiting"):     # a6: its transcript is its content
+    if heard and heard[0].get("availability") not in (None, "waiting"):     # a6: its transcript is its content
         # Z-16: its clips are cut from it only when its audiobook is one file (several: its cards wait, review AB-5)
         mined = "tip_audio_transcript_several" if n > 1 else "tip_audio_transcript_mined"
         tip = STRINGS[mined if _mines("audio") else "tip_audio_transcript"].format(title=title, files=files, n=n)
     else:
-        tip = STRINGS["tip_audio_alone" if len(heard) == len(piece) else "tip_audio_paired"].format(title=title,
-                                                                                                  files=files)
-        if use in ("timing", "other") and len(heard) < len(piece):
+        alone = len(heard) == len(piece)
+        tip = STRINGS["tip_audio_alone" if alone else "tip_audio_paired"].format(title=title, files=files)
+        if use in ("timing", "other") and not alone:
             tip += "\n" + STRINGS["audio_transcript_timing" if use == "timing" else "audio_transcript_other"]
+        if not heard:
+            tip += "\n" + STRINGS["audio_other_part"]
     return tip.replace("\n\n", "\n")
 
 
@@ -1003,7 +1012,8 @@ def _connected(st, item, word):
         # R47 (laptop rows 47 + 56): *Stop* pressed, the job not stopped yet -> *Stopping…*; while it can be stopped
         # its *Stop* (`stop`: the job); past the stop point (naming its clips) its hover says it is finishing
         if item.stopping:
-            return Status("mining", STRINGS["stopping"], STRINGS["tip_stopping"], "accent")
+            return Status("mining", STRINGS["stopping"],
+                          STRINGS["tip_stopping_cards" if item.writing_cards else "tip_stopping"], "accent")
         stop = item.job if item.stoppable else None
         if item.progress is not None:       # Anki Miner's run, as it goes (laptop round 5 #23, PROVISIONAL text: lean A)
             tip = STRINGS["tip_mining_doing"].format(doing=item.doing)

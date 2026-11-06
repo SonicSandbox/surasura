@@ -27,6 +27,9 @@ What it does is read from the plan file named by FAKE_ANKI_MINER_PLAN (JSON; eve
     {"export_cut": true}                                   # row 56: half its export written, then it hangs
     {"clear_leftovers": 0.3}                               # 3.10: this long after it starts, before its setup, an
                                                            # unconsumed cancel file is deleted once (runfolder.py)
+    {"media": true,                                        # #BS0A1K: a clip in the run's media folder (its stage 3)
+     "deaf": 30}                                           # … then, after its progress rows, this long in a step that
+                                                           # never reads the cancel file (3.11's whole-book parse)
 
 Round 2's Z-9 (`reading` in `features`; the request's own JSON, `tracks/pipeline/work/AM-round2/send/`): an episode
 may name `reading_file` instead of `video_file` + `subtitle_file`, a word `unit_index` beside `line_text`; each row of a
@@ -259,6 +262,13 @@ def _mine(argv, plan):
                 # hint): so does the fake, its warning a line in the call log, so a test sees each skipped step
                 _log({"progress_skipped": [stage, stages, done, total], "error": type(e).__name__})
             time.sleep(plan.get("progress_every", 0.3))
+        if plan.get("media"):
+            os.makedirs(os.path.join(folder, "media"), exist_ok=True)
+            open(os.path.join(folder, "media", "clip-1.mp3"), "wb").close()
+        if plan.get("deaf"):
+            _log({"deaf": episode["run_id"]})
+            time.sleep(plan["deaf"])
+            _log({"heard": episode["run_id"]})
         rows, note = [], 1727000000000
         cancelled = False
         for n, request in enumerate(episode["words"]):

@@ -377,16 +377,20 @@ def test_a_title_renamed_earlier_in_the_same_command_is_found_by_its_new_name(la
         wa = _work_of(store, rels[f"{a}!"][0])
         assert _new_folder(store, language, data_dir, root, src, names(language)[119], 1)    # (the index is built)
         f = _found(language, data_dir, src, b, f"{b} - 02.srt", 960)
+        e = names(language)[120]
+        g = _found(language, data_dir, src, e, f"{e} - 03.srt", 961)
         with store._command("rename_then_take_in"):
             store.rename_work(wa, f"{b}!")
-            store.take_in(root, [f])
-        assert _work_of(store, f["rel"]) == wa
+            store.take_in(root, [f])                    # (`wa` read in this command, by its new name)
+            store.rename_work(wa, f"{e}!")              # renamed again in the same command: read again
+            store.take_in(root, [g])
+        assert _work_of(store, f["rel"]) == wa and _work_of(store, g["rel"]) == wa
         assert store._shows is not None
         with pytest.raises(RuntimeError):
             with store._command("fails"):
                 store.rename_work(wa, f"{a}~")
                 raise RuntimeError("a command that fails")
-        assert store._shows is None and _works(store)[wa][0] == f"{b}!"
+        assert store._shows is None and _works(store)[wa][0] == f"{e}!"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -399,14 +403,15 @@ def test_the_kept_index_follows_a_rename_a_merge_another_handles_title_and_a_reb
     a, b, c, d = (names(language)[n] for n in (112, 113, 114, 115))
     with store:
         root = store.add_source(src)
-        rels = _take(store, language, data_dir, root, src, {f"{a}!": (1,), f"{c}!": (1,), f"{c}~": (2,)},
-                     before_a8=False)
+        rels = _take(store, language, data_dir, root, src, {f"{a}!": (1,)}, before_a8=False)
+        rels.update(_take(store, language, data_dir, root, src, {f"{c}!": (1,), f"{c}~": (2,)}))   # (two titles)
         assert _new_folder(store, language, data_dir, root, src, names(language)[116], 1)   # (the index is built)
         wa = _work_of(store, rels[f"{a}!"][0])
         store.rename_work(wa, f"{b}!")                  # renamed (its old name kept among its titles): `<b>` is its
         assert _new_folder(store, language, data_dir, root, src, b, 3) == wa      # show now, found by the new name
         c1, c2 = _work_of(store, rels[f"{c}!"][0]), _work_of(store, rels[f"{c}~"][0])
-        store.merge_works(c1, [c2])
+        assert c1 != c2
+        assert store.merge_works(c1, [c2]) is not None
         assert _new_folder(store, language, data_dir, root, src, c, 4) == c1, "the title merged away is no candidate"
         other = ls.open_store(language, data_dir, store.user_files_dir)
         with other:

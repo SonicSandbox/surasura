@@ -1026,6 +1026,12 @@ def test_the_moved_rows_are_found_by_search_under_their_old_and_new_words(query,
     assert row_id in catalog.find(query, CONNECT_ON, "ja", EVERYTHING)
 
 
+# Junban's switch as its module's default sets it: `enable_junban`'s default lives only in modules/junban
+# (SETTINGS_DEFAULTS), so with `{}` a checkout without the module (GitHub's public tree) reads the switch off and hides
+# the rows EVERYTHING says are installed — written out, the case reads the same with the modules and without
+JUNBAN_SWITCH_ON = {"enable_junban": True}
+
+
 # --- a9.1: nothing redundant — every door closed has its words where the door still is ---------------------------- #
 @pytest.mark.parametrize("query, row_id, settings", [
     ("discord", "surasura", {}), ("website", "surasura", {}), ("surasura.dev", "surasura", {}),
@@ -1033,9 +1039,10 @@ def test_the_moved_rows_are_found_by_search_under_their_old_and_new_words(query,
     ("how parsing works", "how_parsing_works", {}),
     ("processing log", "logs", {}), ("data folder", "logs", {}), ("version", "version", {}),
     ("start over completely", "fresh_library", {}), ("new pc", "fresh_library", {}),
-    ("preview order", "junban_scope", {}), ("undo", "junban_scope", {}), ("choose the deck", "junban_scope", {}),
-    ("fields", "junban_backfill_cards", {}), ("note type", "junban_backfill_cards", {}),
-    ("restore", "junban_backfill_cards", {}),
+    ("preview order", "junban_scope", JUNBAN_SWITCH_ON), ("undo", "junban_scope", JUNBAN_SWITCH_ON),
+    ("choose the deck", "junban_scope", JUNBAN_SWITCH_ON),
+    ("fields", "junban_backfill_cards", JUNBAN_SWITCH_ON), ("note type", "junban_backfill_cards", JUNBAN_SWITCH_ON),
+    ("restore", "junban_backfill_cards", JUNBAN_SWITCH_ON),
     ("extract", "split_length", {}), ("add from", "enable_youtube_transcripts", {}),
     ("preview a video", "enable_youtube_preview", {}),
     ("suspended", "anki_sync_include_suspended", {}), ("count as known", "anki_sync_include_suspended", {}),

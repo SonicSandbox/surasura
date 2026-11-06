@@ -422,19 +422,56 @@ def never_moves(text_size="M", language="ja"):
     return problems, checked
 
 
-def test_a_choice_never_moves_the_page_at_100_percent(qapp):
+@pytest.fixture
+def every_door(monkeypatch):
+    """The doors' modules found, as the window's look answers once a window opened (`windows._FOUND` is the process's:
+    alone this file's pages would never show a door, in company they would) — so the switch that shows its own door
+    (*Preview a video…* on YouTube preview's) is flipped here alone as in any file's company."""
+    monkeypatch.setattr(windows, "_FOUND", {op.module: True for op in windows.OPENERS if op.module})
+
+
+def test_a_choice_never_moves_the_page_at_100_percent(qapp, every_door):
     problems, checked = never_moves("M")
     assert checked > 60 and problems == [], "; ".join(problems)
 
 
-def test_a_choice_never_moves_the_page_at_text_size_large(qapp):
+def test_a_choice_never_moves_the_page_at_text_size_large(qapp, every_door):
     problems, checked = never_moves("L")
     assert checked > 60 and problems == [], "; ".join(problems)
 
 
-def test_a_choice_never_moves_the_page_in_chinese(qapp):
+def test_a_choice_never_moves_the_page_in_chinese(qapp, every_door):
     problems, checked = never_moves("M", "zh")
     assert checked > 60 and problems == [], "; ".join(problems)
+
+
+def test_a_switch_that_shows_its_own_door_stays_under_the_hand_in_the_switch_column(qapp, every_door):
+    """a9.1: *Preview a video…* follows YouTube preview's own switch. The door stands before the switch and keeps its
+    room while hidden: flipped on and off, the switch never slides sideways under the cursor, the row never grows, and
+    it stays in the same column as every other switch on the page."""
+    if style.current()[1] != "M":
+        style.apply(QApplication.instance(), "night", "M", "ja")
+    page, store = make_page(dict(ALL_ON, enable_youtube_preview=False), "ja")
+    open_all_folds(page)
+    view = page.rows["enable_youtube_preview"]
+    switch, door = view.controls[0], view.doors["youtube-preview"]
+    other = page.rows["covers_download"].controls[0]
+
+    def right(w):
+        return w.mapTo(page.body, QPoint(w.width(), 0)).x()
+    page.go_to("content")
+    QApplication.processEvents()
+    assert not door.isVisibleTo(page)
+    before = (switch.mapTo(page.body, QPoint(0, 0)).x(), view.height())
+    assert right(switch) == right(other)                       # the switch column, door hidden
+    for on in (True, False):
+        change(switch, on)
+        store.land()
+        QApplication.processEvents()
+        assert door.isVisibleTo(page) is on
+        assert (switch.mapTo(page.body, QPoint(0, 0)).x(), view.height()) == before
+    assert right(door) < switch.mapTo(page.body, QPoint(0, 0)).x()   # the door before it, never after
+    page.close()
 
 
 @pytest.mark.parametrize("scale", ["1.5", "1.75"])

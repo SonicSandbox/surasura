@@ -181,6 +181,8 @@ class LibraryReader:
         # the reader thread's own copy of the library (touched only there)
         self._items, self._works, self._cards = {}, {}, {}
         self._pieces = {}                  # LM11b G1: the feed's pieces {id: {id, title, kind}} (a group's kind and name)
+        self._book_audio = {}              # a9.1: a paired book's part -> its audiobook's 🎧 summary (`_audio_hovers`)
+        self._book_audio_of = set()        # ... and the audiobook items that hold one
         self._options = {}
         self._seen = self._epoch = None
         self._data_version = None
@@ -567,6 +569,7 @@ class LibraryReader:
         self._items, self._works, self._cards, self._options = {}, {}, {}, {}
         self._cards_asked = {}
         self._pieces = {}
+        self._book_audio, self._book_audio_of = {}, set()     # a9.1
         self._folders, self._folders_ask = {}, None     # A4B-8
         self._tiers, self._pos, self._dirty, self._moved_in = None, {}, set(), {}
         self._overlaid, self._overlay_tiers = {}, {}
@@ -642,8 +645,9 @@ class LibraryReader:
         options_before = dict(self._options)
         before = set(self._items) if held and feed["full"] else None
         arrived = self._arrived(feed)                   # Hon a7: read against the copy before the merge
+        fresh = () if feed["full"] else [r for r in feed["items"] if r["id"] not in self._items]   # a9.1
         self._merge(feed)
-        self._audio_hovers(h, feed)                     # a5-2 (Hon): an audiobook's 🎧 hover, on its own row
+        self._audio_hovers(h, feed, fresh)              # a5-2 (Hon): an audiobook's 🎧 hover, on its rows
         if arrived is None or arrived:
             self._tell("_arrived_subscribers", arrived)
         if held:                                        # E6: the dragged item gone meanwhile lets the drag go
@@ -1001,24 +1005,86 @@ class LibraryReader:
         self._options = dict(feed.get("options") or {})
         self._seen, self._epoch = feed["version"], feed["epoch"]
 
-    def _audio_hovers(self, h, feed):
+    def _audio_hovers(self, h, feed, fresh=()):
         """a5-2 (Hon): each audiobook item's summary for its row's 🎧 hover (`Store.audiobook_hovers`: its files, the
         first and last, its length), put on its own feed row as `audio` — read only when the feed brought an audiobook's
-        item (its record's change feeds it, `pair_audiobook`), so a row's cache keeps every other row (S19)."""
-        if feed["full"]:
+        item (its record's change feeds it, `pair_audiobook`), so a row's cache keeps every other row (S19).
+        a9.1 (Hon-S): its book's parts carry the same summary as `book_audio`, so a split book's every part keeps the
+        🎧, not just the one holding its item — whichever way it was split (✂, a part moved away, *Not part of this
+        title*): read again also when an audiobook's item went or its book's title took in a new item (`fresh`, the
+        feed's items the copy didn't hold — the titles of its marked parts and of the audiobook's item alike)."""
+        full = feed["full"]
+        if full:
             ids = [i for i, r in self._items.items() if r.get("source_type") == "audio"]
         else:
             ids = [r["id"] for r in feed["items"] if r.get("source_type") == "audio"]
-        if not ids or not hasattr(h, "audiobook_hovers"):
+        again = bool(ids) or any(k == "item" and i in self._book_audio_of for k, i in feed.get("gone") or ())
+        if not again and fresh and self._book_audio:
+            works = {self._items[i].get("work_id") for i in (*self._book_audio, *self._book_audio_of)
+                     if i in self._items}
+            again = any(r.get("work_id") in works for r in fresh)
+        if again and hasattr(h, "audiobook_hovers"):
+            try:
+                hovers = h.audiobook_hovers()
+            except Exception:
+                hovers = None
+            if hovers is not None:
+                for i in ids:
+                    r = self._items.get(i)
+                    if r is not None and i in hovers:
+                        r["audio"] = hovers[i]          # the feed's new row (never one a built view holds)
+                self._link_book_audio(hovers, None if full else {r["id"] for r in feed["items"]})
+                return
+        if full:
+            self._book_audio, self._book_audio_of = {}, set()
             return
-        try:
-            hovers = h.audiobook_hovers()
-        except Exception:
-            return
-        for i in ids:
+        for r in feed["items"]:                         # the feed's new rows: the mark they had, kept
+            said = self._book_audio.get(r["id"])
+            if said is not None:
+                r["book_audio"] = said
+
+    def _link_book_audio(self, hovers, fed):
+        """a9.1: `book_audio` on every part of a paired audiobook's book (`hovers`' `parts`) — set on the feed's new
+        rows (`fed`; None: a full read, every row new); a row the copy already held is swapped for a new dict only
+        when its mark changed, so the row cache rebuilds that row and keeps every other (S19)."""
+        marks = {}
+        for audio_id, said in sorted(hovers.items()):
+            if audio_id not in self._items or not said.get("parts"):
+                continue
+            mark = {k: v for k, v in said.items() if k != "parts"}
+            for p in said["parts"]:
+                marks.setdefault(p, mark)
+        old, self._book_audio = self._book_audio, marks
+        self._book_audio_of = {a for a, s in hovers.items() if s.get("parts")}
+        for i in set(old) | set(marks):
             r = self._items.get(i)
-            if r is not None and i in hovers:
-                r["audio"] = hovers[i]                  # the feed's new row (never one a built view holds)
+            if r is None or r.get("book_audio") == marks.get(i):
+                continue
+            if fed is None or i in fed:                 # the feed's new row: marked in place
+                if i in marks:
+                    r["book_audio"] = marks[i]
+                else:
+                    r.pop("book_audio", None)
+                continue
+            self._swap_item(dict(r, book_audio=marks[i]) if i in marks else
+                            {k: v for k, v in r.items() if k != "book_audio"})
+
+    def _swap_item(self, r):
+        """A row the copy holds replaced by `r` in place (its tier and order unchanged), as `_merge` swaps a row the
+        feed changed: a new object, so the row cache builds its row again."""
+        self._items[r["id"]] = r
+        if self._tiers is not None:
+            at = self._pos.get(r["id"])
+            if at is not None and at[1] < len(self._tiers.get(at[0]) or ()) and \
+                    self._tiers[at[0]][at[1]]["id"] == r["id"]:
+                self._tiers[at[0]][at[1]] = r
+            else:
+                self._dirty.add(r.get("tier"))
+                self._moved_in.setdefault(r.get("tier"), set()).add(r["id"])
+        if self._changed_ids is not None:
+            self._changed_ids.add(r["id"])
+        if self._build_changed is not None:
+            self._build_changed.add(r["id"])
 
     def _sorted_tiers(self):
         """Each tier's items in `(ord, id)` order: in full after a full read, else only the tiers something moved in."""

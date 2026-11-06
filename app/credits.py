@@ -66,9 +66,17 @@ COVER_CREDITS = """Covers (only with Download covers on)
 • YouTube — a video's own thumbnail (i.ytimg.com)."""
 
 
+# The user's own content (Sonic, 2026-11-02): the installer's agreement page (packaging/agreement.txt) and README's
+# *Your content* say it in full; the Data credits card ends with it in one line.
+CONTENT_NOTE = """Your content
+
+• Surasura provides no content: you are responsible for the content you use with it. Use only content you own or have the right to use (README's Your content)."""
+
+
 def all_credits():
-    """`data_credits()` followed by the logos' and the covers' credits: what the 3.0 window's Data credits shows."""
-    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS
+    """`data_credits()` followed by the logos' and the covers' credits, then the user's own content (`CONTENT_NOTE`):
+    what the 3.0 window's Data credits shows."""
+    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + CONTENT_NOTE
 
 
 # --- Surasura's own licence (the `LICENSE` file: its first line and its copyright line) --------------------------- #

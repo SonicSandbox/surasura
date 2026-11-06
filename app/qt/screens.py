@@ -52,7 +52,7 @@ def state_key(view):
 def media_to_open(language, episode, media):
     """The file ▶ opens for an episode, or (None, the bar's line): `services.play.to_open`'s answer (the rule is the
     service's, shared with Connect), worded for the bar. Runs on a worker (it reads the store and looks at the disk)."""
-    path, why = play.to_open(language, episode.id, episode.rel_path, media)
+    path, why = play.to_open(language, episode.id, episode.rel_path, media, getattr(episode, "online", None))
     return (path, None) if path else (None, strings.PLAY_FAILED.format(name=episode.label, why=why))
 
 
@@ -220,11 +220,13 @@ class Page(QWidget):
         def opened(path):
             if path is None:
                 self.message.emit(found[0][1] if found else "")
-                self.not_found.emit(episode.id)           # row 55 A-7: the app now knows; its ▶ is looked at again
+                if not getattr(episode, "online", None):  # (an online video's ▶ is never looked for on disk)
+                    self.not_found.emit(episode.id)       # row 55 A-7: the app now knows; its ▶ is looked at again
 
         def failed(info):
             path = found[0][0] if found else None
-            self.message.emit(strings.PLAY_FAILED.format(name=os.path.basename(path) if path else episode.label,
+            named = path and "://" not in path                # (an online video's page: named by its episode)
+            self.message.emit(strings.PLAY_FAILED.format(name=os.path.basename(path) if named else episode.label,
                                                          why=str(info[0])))
         return qpress.open(self.window(), look, key=("play", episode.id), then=opened, failed=failed,
                            at=at or qpress.row_mark(self.list, [episode.id], "play"))

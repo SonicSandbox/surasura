@@ -12122,9 +12122,9 @@ def _store_audiobook_asks(self):
     return out
 
 
-def _store_audiobook_place(self, book):
-    """(work, tier, its last part's id) of the book an audiobook reads — its EPUB's live parts (`<epub>#<n>`), else the
-    part the pairing named — or None (the book is gone, or waits)."""
+def _store_audiobook_parts(self, book):
+    """The item ids of the book an audiobook reads — its EPUB's live parts (`<epub>#<n>`), else the part the pairing
+    named. One rule for where the audiobook goes (`_audiobook_place`) and which rows show it (`audiobook_hovers`)."""
     ids = set()
     epub = book.get("epub")
     if isinstance(epub, str) and epub:
@@ -12133,6 +12133,13 @@ def _store_audiobook_place(self, book):
                                                f"p.content_key < ? AND {_LIVE_ORIGIN}", (lo, lo[:-1] + "$"))}
     if not ids and isinstance(book.get("item"), int) and not isinstance(book.get("item"), bool):
         ids = {book["item"]}
+    return ids
+
+
+def _store_audiobook_place(self, book):
+    """(work, tier, its last part's id) of the book an audiobook reads (`_audiobook_parts`) — or None (the book is
+    gone, or waits)."""
+    ids = self._audiobook_parts(book)
     rows = []
     for chunk in _chunks(sorted(ids), 500):
         rows += self.conn.execute(f"SELECT id, tier, ord, work_id FROM items WHERE id IN ({','.join('?' * len(chunk))}) "
@@ -12229,19 +12236,24 @@ def _store_audiobook_finds(self):
 
 def _store_audiobook_hovers(self):
     """a5-2: what the row's 🎧 says of each audiobook item -> {item_id: {title, n, first, last, seconds, paired,
-    transcript}} (its files' count, the first and last file's names, its length, paired or alone; a6: what its
-    transcript is for, `audiobooks.transcript_use`, None without one). One read; the reader asks again only when an
-    audiobook's item changed (`pair_audiobook`, `set_transcript` feed it)."""
+    transcript, parts}} (its files' count, the first and last file's names, its length, paired or alone; a6: what its
+    transcript is for, `audiobooks.transcript_use`, None without one; a9.1: `parts`, its book's item ids — every row
+    holding one shows the 🎧, so each part of a split book keeps it). One read; the reader asks again only when an
+    audiobook's item changed (`pair_audiobook`, `set_transcript` feed it) or its book's title took in a new item."""
     from app import audiobooks
     out = {}
     with self._reading():
         for _k, item_id, rec in self._audiobook_rows():
+            if item_id in out:
+                continue
             ab = rec.get("audiobook") or {}
             names = [os.path.basename(str(f)) for f in ab.get("files") or ()]
-            out.setdefault(item_id, {"title": ab.get("title") or "", "n": len(names),
-                                     "first": names[0] if names else "", "last": names[-1] if names else "",
-                                     "seconds": ab.get("seconds"), "paired": isinstance(ab.get("book"), dict),
-                                     "transcript": audiobooks.transcript_use(ab)})
+            paired = isinstance(ab.get("book"), dict)
+            out[item_id] = {"title": ab.get("title") or "", "n": len(names),
+                            "first": names[0] if names else "", "last": names[-1] if names else "",
+                            "seconds": ab.get("seconds"), "paired": paired,
+                            "transcript": audiobooks.transcript_use(ab),
+                            "parts": sorted(self._audiobook_parts(ab["book"]) - {item_id}) if paired else []}
     return out
 
 
@@ -12702,6 +12714,7 @@ Store._audiobook_rows = _store_audiobook_rows
 Store.audiobooks = _store_audiobooks
 Store.audiobook_answers = _store_audiobook_answers
 Store.audiobook_asks = _store_audiobook_asks
+Store._audiobook_parts = _store_audiobook_parts
 Store._audiobook_place = _store_audiobook_place
 Store.pair_audiobook = _store_pair_audiobook
 Store.answer_audiobook = _store_answer_audiobook

@@ -11,7 +11,7 @@
   its id (*Mine anyway*'s); `made` / `total` its cards so far of the words picked (*Mining 3 of 12*); `progress` /
   `doing` a mining item's percent through the whole episode and its step in words (`status._progress`; laptop round
   5 #23), else None; `stoppable` True while *Stop* can be pressed (#47); `stopping` True from that press until the
-  job has stopped (#56).
+  job has stopped (#56); `writing_cards` True while a stopping job's Anki Miner adds its cards (#BS0A1K).
 - Kinds are told by the runner's and the Anki session's named reasons (`runner.NO_VIDEO`, `anki_session.CLOSED`, …)
   and the job's own `kind` (`asked`, row 4.1.3), never by a wording a test can't see.
 - `Provider(language, settings_get)`: one per window and language, a worker's call. Off → the off Feed, nothing read.
@@ -33,8 +33,10 @@ Feed = namedtuple("Feed", "on mining items line state unseen updating")
 # `moved` (MV-2): a *No video* item whose video left its folder — that folder (`runner.moved_folder`), else None
 # `title` (alpha 2's try, T3): the episode as Connect's record names it (the store's title, else its file's name) — the
 # phase strip's 鉱 line names the episode being mined; else None
-Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved title",
-                  defaults=(None, None, None, None, None, None))
+# `writing_cards` (#BS0A1K): True while a stopping job's Anki Miner is in its card-writing stage (never ended there:
+# it finishes adding the cards it has ready), else None
+Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved title writing_cards",
+                  defaults=(None, None, None, None, None, None, None))
 
 # ANKI waits on Anki for you to act (closed, a prompt, another profile or none: `runner.anki_needs_you`, amber);
 # ANKI_WAIT waits on Anki for something that clears by itself (you reviewing, Anki busy, another writer, one slow
@@ -94,7 +96,7 @@ def _off(settings):
 
 def build(record, language):
     """The Feed of one language's status record (`status.read`'s) -> Feed (on)."""
-    from app.connect import actions, runner
+    from app.connect import actions, anki_miner, runner
     from app.connect import ledger as book
     rec = ((record or {}).get("languages") or {}).get(language) or {}
     running = bool((record or {}).get("running"))
@@ -132,6 +134,7 @@ def build(record, language):
         step = (job.get("progress") or None) if kind == MINING else None      # `status._progress`'s
         progress, doing = (step.get("percent"), step.get("doing")) if step else (None, None)
         stopping = True if job.get("stopping") else None
+        writing_cards = True if stopping and step and (step.get("stage") or 0) >= anki_miner.CARDS_STAGE else None
         stoppable = (True if job.get("job") is not None
                      and actions.stoppable(job.get("state"), job.get("resume"), job.get("progress"))
                      and reason != runner.STOPPED_BY_YOU and not stopping else None)
@@ -140,7 +143,8 @@ def build(record, language):
                               made=job.get("made") or 0, total=job.get("words") or 0, progress=progress, doing=doing,
                               stoppable=stoppable, stopping=stopping,
                               moved=runner.moved_folder(reason) if kind == NO_VIDEO else None,
-                              title=job.get("title") or None)
+                              title=job.get("title") or None,
+                              writing_cards=writing_cards)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
                 unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")))
 

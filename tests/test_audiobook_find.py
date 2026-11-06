@@ -297,7 +297,7 @@ def test_the_reader_puts_the_hover_on_an_audiobooks_row_only_when_its_item_chang
         def audiobook_hovers(self):
             asked.append(1)
             return {3: {"title": NEKO, "n": 2, "first": "01.mp3", "last": "02.mp3", "seconds": 60, "paired": False}}
-    reader = LibraryReader.__new__(LibraryReader)
+    reader = LibraryReader(None)
     book = {"id": 1, "source_type": "epub"}
     reader._items = {1: book}
     reader._audio_hovers(Handle(), {"full": False, "items": [book]})

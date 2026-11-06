@@ -191,6 +191,22 @@ def _shard_of(project_root, spec):
     return shards[i - 1] if i <= len(shards) else []       # more shards than files: the extra ones are empty
 
 
+# A pytest process that died by a Windows status, not an exit of its own (flakes-2026-11-05 #5): GitHub's bash shows
+# every one as 127, which names nothing. Said in hex with its kind: an access violation, or a fail-fast that leaves
+# no faulthandler line (a guarded call through freed memory), are different hunts.
+DEATHS = {0xC0000005: "an access violation", 0xC0000409: "a fail-fast (a guarded call or a stack check)",
+          0xC0000374: "heap corruption", 0xC00000FD: "a stack overflow", 0xC000013A: "Ctrl+C or the job ended",
+          0x40000015: "abort()"}
+
+
+def death(code):
+    """The words for a pytest process's exit `code` when a Windows status ended it (it never finished), else None."""
+    status = code & 0xFFFFFFFF if isinstance(code, int) and code >= 0 else 0     # (negative: a POSIX signal)
+    if status < 0x40000000:
+        return None
+    return f"the process died: exit 0x{status:08X}, {DEATHS.get(status, 'a Windows status')}"
+
+
 def run_shard(project_root, spec):
     """`--shard I/N`: run that shard's files, verbose like the default run. Returns pytest's exit code, as the default
     run does (5, nothing collected, fails); 2 for a bad I/N or a checkout with no core test files."""
@@ -207,6 +223,9 @@ def run_shard(project_root, spec):
         return 0
     result = subprocess.run([sys.executable, "-m", "pytest", *files, "-v", "-ra"],
                             cwd=project_root, env=os.environ.copy())
+    died = death(result.returncode)
+    if died:
+        print(f"\nCore suite, shard {spec}: {died}, in the test named last above", flush=True)
     return result.returncode
 
 
@@ -281,7 +300,7 @@ def run_all(project_root):
     failed_jobs = [label for label, _ in jobs if results[label][0] != 0]
     for label in failed_jobs:
         print("\n" + "="*60)
-        print(f"   FAILED: {label} (exit code {results[label][0]})")
+        print(f"   FAILED: {label} ({death(results[label][0]) or f'exit code {results[label][0]}'})")
         print("="*60)
         print(results[label][1])
     failed = [suite for suite in suites if any(label == suite or label.startswith(suite + " [") for label in failed_jobs)]

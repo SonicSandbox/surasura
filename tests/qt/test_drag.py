@@ -2289,6 +2289,24 @@ def test_a8_a_mark_lets_go_at_its_own_view_while_another_write_still_waits(world
     assert _gone_quiet(win) and not _lit(win, 2) and _lit(win, 3) and _lit(win, 4)
 
 
+def test_a8_a_done_landed_as_nothing_lets_go_while_another_write_still_waits(world):
+    """A Done that lands as nothing (another program marked the file meanwhile) goes at the next view — and one comes
+    though another write still waits: the reader is asked for it at the word (flakes-2026-11-05 #4, its adversary's
+    B1). The other program's own view came before the word, so no view would come by itself while b's Done waits."""
+    seed, win, writer = world(writer=MarkWriter)
+    writer.stuck, writer.nothing = True, {"set_watched"}
+    a, b = rows_of(win)[2], rows_of(win)[3]
+    win.moves.done(a, a.episodes[0])
+    win.moves.done(b, b.episodes[0])                                  # b's Done waits behind a's
+    seed.library.commit(items=[{"id": a.episodes[0].id, "watched": 1}])   # another program, meanwhile
+    settle(100)                                                       # its view is in before the writer's word
+    writer.free_one()                                                 # a's lands as nothing; b's still waits
+    assert wait_until(lambda: a.episodes[0].id not in win.moves.expect_marks, 3)
+    assert _lit(win, 2) and b.episodes[0].id in win.moves.expect_marks and _lit(win, 3)
+    writer.free()
+    assert wait_until(lambda: win.moves.expect_marks == {}, 3)
+
+
 def test_a8_a_done_another_program_already_made_lands_as_nothing_and_stays_lit(world):
     """The store's writer lands a Done as nothing when the file is already watched (another program marked it
     meanwhile): the stone stays lit — the store has it — never turned back on a guess."""

@@ -3875,9 +3875,20 @@ class Store:
                 v[1] = want
                 if want is None:
                     fresh.add(item_id)
-            if sets:
-                self._set_pieces(cmd, sets)
+            # R6: a row leaving its piece is never written piece-less first — every such row gets its piece below (back
+            # in its group, a run joined, a new piece) and is written once then; until that write it is `stale`: the
+            # reads in between see it as having no piece (`unstale`), as if the NULL had been written
+            stale = {i for w, i in sets if w is None}
+            if any(w is not None for w, _i in sets):
+                self._set_pieces(cmd, [(w, i) for w, i in sets if w is not None])
+
+            def unstale(n):
+                return (n[0], None) + tuple(n[2:]) if n is not None and n[0] in stale else n
             view = self._order_view({v[0] for v in info.values()}) if len(info) > self.BIG_SETTLE else None
+            if view is not None and stale:
+                for index, _order in view.values():
+                    for i in stale & index.keys():
+                        index[i] = (index[i][0], None, index[i][2])
             # the neighbours that matter: every new item's, and the ends of every piece the command placed whole
             ends = {item_id: info[item_id][0] for item_id in fresh}
             by_piece = {}
@@ -3896,12 +3907,12 @@ class Store:
                 else:
                     for i in ids:
                         ends[i] = info[i][0]
-            near = self._near(ends, view)
+            near = {i: (unstale(b), unstale(a)) for i, (b, a) in self._near(ends, view).items()}
             # --- LM11: an item moved within its own group stays in it (beside another of its rows, or beside a row that
             # stays so): a reorder inside the group, never "a foreign drop"
             back = {}
             # G1: NOW and Soon are one tier for a group — a row at the line's edge has its neighbour across it
-            across = {i: self._line_edge(info[i][0]) for i in fresh if olds[i] in groups and
+            across = {i: unstale(self._line_edge(info[i][0])) for i in fresh if olds[i] in groups and
                       (info[i][0] == "soon" and near[i][0][0] is None or info[i][0] == "now" and near[i][1][0] is None)}
             while True:
                 more = {i: olds[i] for i in fresh if i not in back and olds[i] in groups
@@ -3917,6 +3928,7 @@ class Store:
                 for i, g in back.items():
                     info[i][1] = g
                 fresh -= set(back)
+                stale -= set(back)
             # --- end LM11
             # GI1, PROVISIONAL (Sonic 2026-10-21, accepted for building, to be checked in use; asked of him, LM11-Q1):
             # dropping in is putting in — a row (a new one, one moved, a whole part) landing between two rows of one
@@ -3972,6 +3984,7 @@ class Store:
                     cmd.repieced += [(i, None, before[1]) for i in run]
                     for i in run:
                         info[i][1] = before[1]
+                    stale.difference_update(run)
                 else:
                     pending.append(run)
             # the pieces the command touched: one run of one work in one tier each, the first run keeping the id
@@ -3985,7 +3998,8 @@ class Store:
             for chunk in _chunks(sorted(affected), 500):
                 for row in conn.execute(f"SELECT piece_id, id, tier, ord, work_id FROM items WHERE piece_id IN "
                                         f"({','.join('?' * len(chunk))}) ORDER BY piece_id, tier, ord, id", chunk):
-                    members.setdefault(row[0], []).append(row[1:])
+                    if row[1] not in stale:             # still in its old piece only on disk
+                        members.setdefault(row[0], []).append(row[1:])
             split = []                          # nothing in the loop reads a row's piece: written after it, at once
             for p in sorted(affected):
                 news.update(self._split_runs(p, placed, cmd, view, members.get(p, []),
@@ -3997,8 +4011,8 @@ class Store:
                 work = info[run[0]][2]
                 ends = {r[0]: r[1:] for r in conn.execute("SELECT id, tier, ord FROM items WHERE id IN (?, ?)",
                                                           (run[0], run[-1]))}       # one read for both (R6)
-                before = self._side(run[0], -1, ends[run[0]])
-                after = self._side(run[-1], 1, ends[run[-1]])
+                before = unstale(self._side(run[0], -1, ends[run[0]]))
+                after = unstale(self._side(run[-1], 1, ends[run[-1]]))
                 if before is not None and before[2] == work and before[1] is not None and not is_group(before[1]):
                     piece = before[1]
                 elif after is not None and after[2] == work and after[1] is not None and not is_group(after[1]):
@@ -4008,6 +4022,9 @@ class Store:
                     piece = self._new_piece(title=title[0] if title else None)
                 self._set_pieces(cmd, [(piece, i) for i in run])
                 cmd.repieced += [(i, None, piece) for i in run]
+                stale.difference_update(run)
+            if stale:                       # none is left (every run took a piece above); never a row on disk with a
+                self._set_pieces(cmd, [(None, i) for i in sorted(stale)])   # piece it left, whatever happens
         self._settle_kinds(cmd, news | cmd.pieces_left)                     # LM11
         if cmd.pieces_left:
             for chunk in _chunks(sorted(cmd.pieces_left), 500):

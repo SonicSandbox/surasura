@@ -1542,6 +1542,7 @@ class _Command:
         self.piece_fields = []  # LM11: (piece, column, old, new) — a piece's kind or title written, for undo
         self.dropped = []     # LM11: the pieces' rows deleted when emptied, for undo
         self.line_set = False  # set_soon_line: the line moved
+        self.root_id = None   # the library's root, read once a command (`Store._root_id`)
         self.piece_seq = 0    # the highest piece id `_new_piece` issued in this command: its sequence row, at the end
 
     def touch(self, tiers=(), order=False, availability=False, pins=False, within=False):
@@ -2000,7 +2001,12 @@ class Store:
         return _keep_value(row[0] if row else None)
 
     def _root_id(self):
+        cmd = self._cmd                 # once a command (R6: an Add read it twice, a folder's look once a folder); no
+        if cmd is not None and cmd.root_id is not None:      # command makes or re-kinds the library's own root
+            return cmd.root_id
         row = self.conn.execute("SELECT id FROM roots WHERE kind = 'library' ORDER BY id LIMIT 1").fetchone()
+        if cmd is not None:
+            cmd.root_id = row[0]
         return row[0]
 
     def schedule(self, with_versions=False, with_aside=False):

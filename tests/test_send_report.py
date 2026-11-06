@@ -481,3 +481,13 @@ def test_a_name_of_exactly_32_characters_goes(saved, receiver):
     send_report.build("ja")
     assert send_report.send(name="あ" * 32).outcome == send_report.SENT
     assert base64.urlsafe_b64decode(receiver.got[0]["headers"]["X-Discord-Name"] + "==").decode("utf-8") == "あ" * 32
+
+
+def test_the_build_counts_every_file_in_as_it_is_gathered_then_says_all_are_in(saved):
+    """try a9.1: Send report's page counts the files in while the worker scrubs them (`step(done, total)` before each
+    file, then once with all in): from the first file to the last, in order, never past the total."""
+    told = []
+    ob = send_report.build("ja", step=lambda done, total: told.append((done, total)))
+    total = told[0][1]
+    assert told[0] == (0, total) and told[-1] == (total, total) and total >= len(ob.entries) - 1   # (MANIFEST: after)
+    assert [d for d, _t in told] == list(range(total + 1)) and {t for _d, t in told} == {total}

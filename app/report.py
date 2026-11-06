@@ -751,16 +751,19 @@ def _tail(data, tail):
     return cut.lstrip(bytes(range(0x80, 0xC0)))                      # no whole line: from a whole character
 
 
-def _write(p, part, language, send=False, tail=None, ident=None, found=None):
+def _write(p, part, language, send=False, tail=None, ident=None, found=None, step=None):
     """Write the plan's zip at `part`, every entry through `_entry_bytes`; then the guard. -> {rid: report.json's
     ORIGINAL sha256} (`_clear` compares the file on disk with it), MANIFEST naming each entry's sha256 as zipped (the
     scrubbed bytes: open_report checks them). `tail`: logs over it keep their last `tail` bytes (said in Left out).
-    Send: a guard hit raises Unsafe. Make the zip: its hits are named in the list and given to `found`."""
+    Send: a guard hit raises Unsafe. Make the zip: its hits are named in the list and given to `found`. `step(done,
+    total)`: told before each entry is read, and once all are in (try a9.1: Send report's page counts them)."""
     import hashlib
     ident = ident or scrubbing.identity()
     hashes, originals, names = {}, {}, set()
     with zipfile.ZipFile(part, "x", zipfile.ZIP_DEFLATED) as z:
-        for e in p.entries:
+        for n_done, e in enumerate(p.entries):
+            if step is not None:
+                step(n_done, len(p.entries))
             try:
                 data = e.data if e.data is not None else _read_shared(e.source)
             except OSError as err:
@@ -790,6 +793,8 @@ def _write(p, part, language, send=False, tail=None, ident=None, found=None):
             e.size = len(data)
             hashes[name] = hashlib.sha256(data).hexdigest()
             z.writestr(name, data)
+    if step is not None:
+        step(len(p.entries), len(p.entries))
     p.entries = [e for e in p.entries if e.name in hashes]
     p.left_out = [ident.scrub(x) for x in p.left_out]                # (a line added here may quote a path)
     hits = [] if send else scrubbing.leaks(part, ident, language)
@@ -846,10 +851,10 @@ class Sendable:
 
 
 def make_send_zip(path, language, include_results=True, library=None, root=None, extra=None, tail=None,
-                  results_why=None):
+                  results_why=None, step=None):
     """The zip Send report sends, at `path` (its folder made): text only, every entry scrubbed, then the guard — a hit
     raises Unsafe and leaves no zip. The list is NOT cleared: that waits for the receiver's answer (`_clear` with
-    `zipped`). -> a Sendable."""
+    `zipped`). `step(done, total)`: told before each file is read (`_write`). -> a Sendable."""
     root = root or folder()
     p = plan(language, include_results, library, root, extra, results_why)
     if not p.reports:
@@ -857,7 +862,7 @@ def make_send_zip(path, language, include_results=True, library=None, root=None,
     os.makedirs(os.path.dirname(path), exist_ok=True)
     part = path + PART
     try:
-        zipped = _write(p, part, language, send=True, tail=tail)
+        zipped = _write(p, part, language, send=True, tail=tail, step=step)
         os.replace(part, path)
     except BaseException:
         try:

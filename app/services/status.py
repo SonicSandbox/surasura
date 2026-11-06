@@ -338,6 +338,7 @@ def _content(snap):
 # --- the window's providers (W3.5 row 7): plain functions, each made once per window and language ---------------- #
 CONNECT_JOB_KIND = jobs_module.CONNECT_KIND   # Connect's mining as the window's registry lists it (row 40; row 35's sheet)
 CONNECT_JOB_LABEL = "Making cards"
+CONNECT_STOPPING = "Stopping…"            # the mining line's step once its Stop is asked (try a9.1)
 CONNECT_JOB_MISSED = 2                    # looks without mining before its job ends (a gap between two batches)
 # The phase strip (its card's item 3; Michi's meanings, `app/connect/feed.py`): Connect's episodes that wait, each
 # class one recorded *waiting* job — never the mining kind (the close names and keeps that one alone, row 35):
@@ -411,7 +412,9 @@ def mirror_connect(registry, got):
     if item is not None:
         from app.services.view_rows import stem
         title = stem(getattr(item, "title", None)) or None   # T3: the line names the episode being mined (no ".srt")
-        if item.progress is not None:
+        if getattr(item, "stopping", None):              # try a9.1: a Stop asked — said at once, as the row's pill
+            step = (f"{title} · {CONNECT_STOPPING}" if title else CONNECT_STOPPING, None, None)
+        elif item.progress is not None:
             doing = f"{item.doing} {item.progress}%" if item.doing else f"{item.progress}%"
             step = (f"{title} · {doing}" if title else doing, None, None)
         else:

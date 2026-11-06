@@ -528,10 +528,20 @@ def test_ready_offers_the_star_until_not_now_which_is_kept_in_local_data_never_s
     QTest.mouseClick(card.not_now, Qt.MouseButton.LeftButton)
     assert not card.star_box.isVisibleTo(page) and card.star_link.isVisibleTo(page)
     path = settings_values.star_path()
-    assert wait_until(lambda: os.path.exists(path), 5)
+    kept = {}
+
+    def read():
+        # until it reads, not until it is there: on Windows a file `os.replace` just named can still refuse an open
+        # (PermissionError) while the rename's own handle closes (flakes-2026-11-05 #7)
+        try:
+            with open(path, encoding="utf-8") as f:
+                kept.update(json.load(f))
+            return True
+        except (OSError, ValueError):
+            return False
+    assert wait_until(read, 5)
     assert path.startswith(os.environ["SURASURA_TEST_ROOT"])
-    with open(path, encoding="utf-8") as f:
-        assert json.load(f)["answer"] == "not-now"
+    assert kept["answer"] == "not-now"
     assert store.calls == [] and "star" not in json.dumps(store.file)
     QTest.mouseClick(card.check_again, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: not card.checking and len(world.checked) == 2, 5)

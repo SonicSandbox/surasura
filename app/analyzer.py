@@ -4237,6 +4237,8 @@ def settings_signature(settings, language):
         "connect_mine_words", "connect_send_grammar", "connect_anki_miner_path", "connect_anki_miner_profile",
         "connect_open_anki",            # when Surasura starts Anki for you (P2.3): never what a run counts
         "covers_download",              # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
+        "open_video", "open_video_program", "open_book", "open_book_program",   # what ▶ opens a file with: never a run
+        "finish_cards",                 # When you finish something: its cards' choice (D14), never a run
         "practice_keep_rounds",         # A6: the practice server keeps its rounds, never a run
         "setup_seen",                   # the setup pages seen (the setup wizard, WZ-8): never a run
         "setup_passed",                 # the setup pages saved before setup finished (IK2-2): never a run

@@ -665,15 +665,34 @@ def part_any(lst, i):
     return lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0)))
 
 
-def test_a_youtube_videos_row_has_no_play_and_never_a_dead_click(seeded):
-    """A-19: its video is online; until the window holds its address there is no ▶ on its row at all (row 55: a
-    ▶ is never there with nothing to open), never a dead click; its tip still names why (Up Next's *Online* says it)."""
+def test_a_youtube_videos_play_opens_its_page_in_the_browser(seeded, monkeypatch):
+    """Try a9.1 (Sonic: "the play button for a youtube video should be the video. add that, opens up in the web
+    browser"): an online video's row has its ▶ (never hidden again), its tip says where it opens, and a press opens
+    `youtube.com/watch?v=<id>` from what the downloader kept — on the press's worker, never looked for on disk; one
+    whose address wasn't kept says so in the bar. Wrong, ▶ would open nothing, or a file lookup would say *No video*."""
+    from app.qt import press as qpress
+    from app.services import play
     seed, win = seeded()
     lst = current(win)
+    page = win.page_widgets["current"]
     i, (kind, row, _l) = next((i, e) for i, e in enumerate(lst.model().entries)
                               if e[0] == rows.ROW and e[1].media == "youtube")
-    assert not row.can_play and "online" in row.play_tip.lower()
-    assert part(lst, i, "play") == []
+    assert row.can_play and "YouTube in your browser" in row.play_tip
+    assert part(lst, i, "play") != []
+    ep = row.episodes[row.next_index]
+    assert ep.online == "youtube" and ep.ask is None
+    opened, said = [], []
+    monkeypatch.setattr(qpress, "open_now", opened.append)
+    monkeypatch.setattr(play, "_find", lambda *a, **k: pytest.fail("an online video is never looked for on disk"))
+    monkeypatch.setattr(play, "pairing", lambda language, item_id: {"producer": "youtube", "video_id": "dQw4w9WgXcQ"})
+    page.message.connect(said.append)
+    page._play(ep)
+    assert wait_until(lambda: opened == ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"], 5)
+    assert wait_until(lambda: not qpress.live(win, ("play", ep.id)), 5)          # (a press while live does nothing)
+    monkeypatch.setattr(play, "pairing", lambda language, item_id: {})
+    page._play(ep)
+    assert wait_until(lambda: said == [strings.PLAY_FAILED.format(name=ep.label, why=play.WHY["no-link"])], 5)
+    assert len(opened) == 1
 
 
 def test_a_repaint_reuses_the_painted_rows_and_a_refresh_repaints_only_what_changed(seeded):

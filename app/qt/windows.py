@@ -19,6 +19,11 @@ left"): a window owned by the main window has no taskbar button of its own, so W
 desktop's corner as a bare title bar. Every secondary window's minimise now hides it into its icon in the main window's
 bottom bar instead (`tool_icons.ToolIcons`: one per open window, turning while it works) — the icon, or its door
 again, brings it back (`bring_back`). The main window minimised takes its windows with it, as Windows does.
+
+**Its icon's right-click** (try a9.1, Sonic: "if minimize they can right click on it for an option to stop it"): *Show*
+· *Stop* (while it runs work it can stop: `stoppable` / `stop_work`, a subclass's) · *Close* (`close_for_good`: closed
+even while it works, as the app's quit closes it). A window whose work goes on past X (the YouTube downloader) goes
+into its icon instead of closing (`tuck_away`) — `for_good` tells the two closes apart.
 """
 import contextlib
 import importlib.util
@@ -99,6 +104,7 @@ class SecondaryWindow(QWidget):
         self.destroyed.connect(lambda *_a: alive.__setitem__(0, False))
         self._writes = 0
         self._language_waiting = None
+        self.for_good = False                             # closed by the quit or its icon's *Close*: never kept going
         f = theme.text_factor(style.current()[1])
         root = QVBoxLayout(self)
         pad = round(16 * f)
@@ -213,6 +219,29 @@ class SecondaryWindow(QWidget):
         """Whether work it started is under way — a write (`begin_write`) or a press of its — for its icon's arc."""
         return self.busy() or self.presses.any_live()
 
+    def stoppable(self):
+        """Whether it runs work its icon's *Stop* can stop (try a9.1): a subclass that runs a job says so."""
+        return False
+
+    def stop_work(self):
+        """Its icon's *Stop*: a subclass stops the work it runs (the window stays open)."""
+
+    def close_for_good(self):
+        """Closed even while it works (the app's quit, its icon's *Close*): a close a subclass never turns into a
+        tuck. -> whether it closed."""
+        self.for_good = True
+        return self.close()
+
+    def tuck_away(self):
+        """Into its icon in the main window's bottom bar now (X while its work goes on), still open; with no bar to
+        hold the icon, minimised as Windows does."""
+        main = main_of(self)
+        if getattr(main, "tool_icons", None) is None or main.isMinimized():
+            self.showMinimized()
+            return
+        self.hide()
+        self.tell_icon()
+
     def tucked(self):
         """Hidden into its icon (minimised, try a9 #5), still open."""
         return not self.gone and not self.isVisible()
@@ -323,7 +352,7 @@ def close_all(shell):
     opened_now = [w for w in list(shell.__dict__.get("_secondary_windows", {}).values()) if not w.gone]
     for win in opened_now:
         try:
-            win.close()
+            getattr(win, "close_for_good", win.close)()   # (a run past X stops at the quit: never kept going)
         except RuntimeError:                              # already deleted with its parent
             pass
     return len(opened_now)

@@ -376,7 +376,8 @@ def test_a_single_video_is_title_first_and_its_channel_below():
     items = items_of([("now", 4, 4, ["【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"], {0: {"source_type": "youtube"}})])
     row = vr.build(items, WORKS, {}).rows[0]
     assert row.title == "【検証】一週間お弁当を作り続けてみた" and row.line == "Tsubasa no Kitchen"
-    assert row.source == "youtube" and not row.can_play and "online" in row.play_tip.lower()   # its video is online
+    # try a9.1: its video is online — ▶ opens its page in the browser
+    assert row.source == "youtube" and row.can_play and "YouTube in your browser" in row.play_tip
 
 
 def test_partly_watched_rows_say_how_many_but_the_hero_does_not():
@@ -515,7 +516,7 @@ def test_a_channels_row_is_titled_by_its_work_not_its_channel_id():
                       ("now", 7, 8, ["雨の日の散歩で見つけた小さな発見 [0a1b2c].srt"], {0: {"source_type": "youtube"}})])
     view = vr.build(items, WORKS, {})
     assert view.rows[0].title == "Kotoba Lab" and view.rows[1].line == "Kotoba Lab"
-    assert not view.rows[0].episodes[0].can_play and "online" in view.rows[0].play_tip.lower()
+    assert view.rows[0].episodes[0].can_play and "in your browser" in view.rows[0].play_tip    # try a9.1
 
 
 def test_mining_outranks_no_video():
@@ -1323,13 +1324,13 @@ def test_LM11b_G1_the_name_the_learner_gave_a_group_wins_and_a_runs_stored_title
 
 def test_LM11b_G1_a_youtube_video_in_a_group_is_labelled_as_a_video_and_the_anime_beside_it_as_episodes():
     """Each episode is read by its own show's type: a video grouped with an anime keeps its own title (never "Ep 1"
-    from a number in it, never playable from here), the anime's files stay *Ep N*. Wrong, the video would be read by
+    from a number in it; its ▶ its page in the browser, try a9.1), the anime's files stay *Ep N*. Wrong, the video would be read by
     the anime's rules or the anime's by the video's."""
     video = "【検証】一週間お弁当を作り続けてみた [a1b2c3].srt"
     items = _group_items([video], wid_b=4, extra_b={0: {"source_type": "youtube"}})
     row = vr.build(items, WORKS, {"mine_line": 20}, pieces=_group()).rows[0]
     assert [e.label for e in row.episodes] == ["Ep 1", "Ep 2", "【検証】一週間お弁当を作り続けてみた"]
-    assert row.episodes[2].number is None and not row.episodes[2].can_play
+    assert row.episodes[2].number is None and row.episodes[2].online == "youtube" and row.episodes[2].can_play
     assert row.episodes[0].number == 1 and row.title == "星降る街の小さな工房 + 1 more"
     assert row.line == "3 files · 2 shows"
 

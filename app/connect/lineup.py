@@ -185,8 +185,7 @@ def start_speech(miner, language, profile):
     sits in *Finish its setup*'s folder (`anki_miner.SETUP_STAGING`): a mine told BUSY meanwhile says Anki Miner is
     finishing its setup. -> its state (RUNNING)."""
     from app.connect import anki_miner
-    from app.path_utils import get_local_data_path
-    staging = os.path.join(get_local_data_path(), anki_miner.SETUP_STAGING)
+    staging = anki_miner.setup_folder()
     os.makedirs(staging, exist_ok=True)
     try:
         os.remove(os.path.join(staging, "cancel"))
@@ -243,8 +242,7 @@ def _heartbeat():
     """`anki_miner.run_setup`'s heartbeat, beside the speech model's progress file: a download that writes no progress
     for minutes still reads as *finishing its setup* (`anki_miner.setting_up`)."""
     from app.connect import anki_miner
-    from app.path_utils import get_local_data_path
-    beat = os.path.join(get_local_data_path(), anki_miner.SETUP_STAGING, anki_miner.HEARTBEAT)
+    beat = os.path.join(anki_miner.setup_folder(), anki_miner.HEARTBEAT)
     try:
         with open(beat, "a"):
             pass

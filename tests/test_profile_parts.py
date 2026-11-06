@@ -34,7 +34,6 @@ CALL_SITES = {
     "app/connect/kick.py": 3,
     "app/connect/known_signal.py": 1,
     "app/connect/ledger.py": 1,
-    "app/connect/lineup.py": 2,
     "app/import_2x.py": 2,
     "app/instance_name.py": 1,
     "app/library_store.py": 3,
@@ -118,10 +117,8 @@ def _writers():
         ("the known-words signal", known_signal.record_path("ja"), False),
         ("Connect's whitelist", anki_miner.whitelist_path("zh"), False),
         ("Anki Miner's install staging", anki_miner_setup.staging_folder(), True),
-        ("the speech model's progress", os.path.join(path_utils.get_local_data_path(), anki_miner.SETUP_STAGING,
-                                                     anki_miner.PROGRESS), False),     # lineup.start_speech's
-        ("the line-up's heartbeat", os.path.join(path_utils.get_local_data_path(), anki_miner.SETUP_STAGING,
-                                                 anki_miner.HEARTBEAT), False),        # lineup._heartbeat's
+        ("the speech model's progress", os.path.join(anki_miner.setup_folder(), anki_miner.PROGRESS), False),
+        ("the line-up's heartbeat", os.path.join(anki_miner.setup_folder(), anki_miner.HEARTBEAT), False),
         ("Connect's line-ups", lineup.root(), True),
         ("the folder-time cache", os.path.join(ledger.folder(), "sources_ja.json"), False),
         ("the covers cache", os.path.join(path_utils.get_covers_cache_path(), "a.jpg"), False),

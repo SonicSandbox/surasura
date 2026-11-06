@@ -505,14 +505,20 @@ def ours(info):
     return (SETUP_ITEMS if "Z-11" in named else frozenset()) | (SETTINGS_ITEMS if "Z-3" in named else frozenset())
 
 
+def setup_folder():
+    """*Finish its setup*'s folder under local data (SETUP_STAGING): Anki Miner's setup progress file and Surasura's
+    heartbeat beside it — the one place it is spelled (`setting_up`, the line-up's speech model)."""
+    from app.path_utils import get_local_data_path
+    return os.path.join(get_local_data_path(), SETUP_STAGING)
+
+
 def setting_up():
     """Is Surasura's *Finish its setup* running Anki Miner's setup now (A2-6: a Connect run told BUSY meanwhile names
     the setup, never "Anki Miner is open")? Its folder is there, and it or the progress file Anki Miner writes in it
     moved within SETUP_FRESH_S — or Surasura's heartbeat file, touched every poll while `run_setup` waits (A5F1).
     Never raises."""
     try:
-        from app.path_utils import get_local_data_path
-        folder = os.path.join(get_local_data_path(), SETUP_STAGING)
+        folder = setup_folder()
         times = [os.stat(folder).st_mtime]
     except Exception:
         return False

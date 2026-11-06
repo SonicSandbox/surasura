@@ -35,6 +35,14 @@ def test_the_run_file_carries_the_jobs_tag_and_the_show(batch, fake_miner, words
     assert episode["tags"].split() == ["surasura::connect::job-1", "Surasura::from::Hibike_Euphonium"]
 
 
+def test_an_episode_made_from_its_audio_tags_its_cards_so(batch, fake_miner, words):  # noqa: F811
+    # Michi-NS (Q5 ✅): a subtitle Anki Miner made from the audio is mined, each card tagged so the learner can find
+    # and check them (a misheard word can happen); never the tag on any other episode
+    episode = _episode(batch(show="Frieren", from_audio=True))
+    assert episode["tags"].split() == ["surasura::connect::job-1", "Surasura::from::Frieren", "surasura::from-audio"]
+    assert runfile.FROM_AUDIO_TAG not in _episode(batch(attempt=2, show="Frieren"))["tags"].split()
+
+
 def test_no_show_known_is_the_jobs_tag_alone(batch, fake_miner, words):  # noqa: F811
     assert _episode(batch())["tags"] == "surasura::connect::job-1"
 

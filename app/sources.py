@@ -139,6 +139,8 @@ _GUARD = threading.Lock()
 _RUNNING = set()                # stores a look is running on (their path keys): never two at once
 _LOOKED = set()                 # (store, source) looked at in full this run: later looks list only what changed
 _EMPTIED = set()                # A5K-2: the stores whose library folder this run's first look checked
+_KEPT = {}                      # F13b: {a store's key: (mark, its origins)} as the last look read them (`_load`)
+KEPT_STORES = 2                 # the stores whose origins are kept between looks (one a language)
 
 
 def cache_path(language):
@@ -1298,7 +1300,18 @@ class _Look:
         every folder as it was reads neither table)."""
         if self.origins is not None:
             return
-        self.origins = self.store.origins()
+        # F13b: a quick look reads only the origins that changed since the last look kept them (`origins_kept`); a
+        # full look (the first of this run, a Refresh) reads them all
+        key = _store_key(self.store)
+        with _GUARD:
+            kept = None if self.full else _KEPT.pop(key, None)
+        mark, origins = self.store.origins_kept(kept)
+        if mark is not None:
+            with _GUARD:                                     # (looks on two stores at once)
+                _KEPT[key] = (mark, origins)
+                while len(_KEPT) > KEPT_STORES:              # the oldest kept goes (a test run opens many stores)
+                    _KEPT.pop(next(iter(_KEPT)))
+        self.origins = dict(origins)                         # the look's own: `_refresh` changes it as it goes
         self.groups = dict(self.store.show_groups())
         excluded = self.store.excluded()
         self.ex_paths = set(excluded)

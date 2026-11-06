@@ -122,11 +122,14 @@ BACKLOG_SHOWS = "backlog-shows"       # Michi-C (A7B-3): the shows behind 順's 
 SETTINGS_FOLDER = "settings-folder"   # a6 settings import (SI-3): a video folder the imported settings name isn't here
 # Michi-U (alpha 9.1 try): titles wait only because the Anki Miner installed is older than the approved one
 MINER_UPDATE = "miner-update"
+# Michi-NS (3.0.1, SPEC no-subs §3; NS-2): videos with no subtitles, ONE card: *Find them with hato* (once hato takes a
+# list and you haven't said yes) and, per show, *Make them from the audio* (Anki Miner 3.11's `transcribe`)
+NO_SUBS = "no-subs"
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
@@ -172,6 +175,14 @@ STRINGS = {
     "anki_unsure_title": ankiconnect_addon.UNSURE + ": {n} wait for it",
     "anki_one": "1 episode", "anki_n": "{n:,} episodes",
     # Michi-U (alpha 9.1 try, Sonic: "if anki miner has an update, it would show in needs you right?")
+    # Michi-NS (PROVISIONAL words, SPEC §9; Mado tunes them)
+    "no_subs_title": "{n} videos have no subtitles yet", "no_subs_title_one": "A video has no subtitles yet",
+    "no_subs_line": "{title} ({n})",
+    "no_subs_say_both": "hato can look for them online, by each show's title. Anki Miner can make each one's subtitle "
+                        "from its audio, on this computer: a misheard word can happen.",
+    "no_subs_say_make": "Anki Miner can make each one's subtitle from its audio, on this computer, a show at a time: "
+                        "a misheard word can happen.",
+    "no_subs_say_hato": "hato can look for them online, by each show's title (jimaku.cc, with your jimaku key).",
     "miner_update_title": "Update Anki Miner to {version} to make cards from your {what}",
     "miner_update_say": "{n} for it. Surasura downloads Anki Miner {version} from its own GitHub release, checks it "
                         "and opens its installer: it asks first. Connect makes their cards by itself once it's updated.",
@@ -319,7 +330,7 @@ def item_key(item_id):
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
-            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None):
+            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None, no_subs=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -335,7 +346,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     (`settings_io.missing_folders`), one card each beside the gone source folders';
     `backlog` (Michi-C): `backlog_offer`'s record — one card while a show behind 順's deck's new cards waits in New
     arrivals (only the files New arrivals still holds), until *Leave them* (a new show asks again); `miner_update`
-    (Michi-U): `miner_update(view)`'s answer — ONE line while titles wait only for the approved Anki Miner."""
+    (Michi-U): `miner_update(view)`'s answer — ONE line while titles wait only for the approved Anki Miner; `no_subs`
+    (Michi-NS): `no_subs_offer`'s answer — ONE card while videos have no subtitle and a way to get one is here."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -399,6 +411,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     update = _miner_entry(miner_update, rows, seen) if miner_update and cards_on else None    # Connect may run
     if update is not None:
         out.append(update)
+    subs = _no_subs_entry(view, no_subs, seen) if no_subs else None            # Michi-NS: with Connect off too (Q3)
+    if subs is not None:
+        out.append(subs)
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
@@ -557,6 +572,75 @@ def _miner_entry(update, rows, seen):
                  lines=(), actions=("update_miner",), unseen=key not in seen,
                  say=STRINGS["miner_update_say"].format(n=wait, version=version),
                  data={"version": version, "kinds": kinds, "titles": n})
+
+
+def _no_subs_all(view):
+    """Every waiting video of the view, once (its audiobooks and files gone left out): what the card's key holds, so
+    the card keeps its key while one of them is being made (alpha 4 D2: *Not now* holds until a NEW video waits)."""
+    if view is None or view.mode != "store":
+        return []
+    out, seen = [], set()
+    for r in tuple(view.rows) + tuple(getattr(view, "arrivals", None) or ()):
+        for e in getattr(r, "episodes", None) or ():
+            if e.id not in seen and getattr(e, "waiting", False) and not e.missing and not view_rows._heard(e):
+                seen.add(e.id)
+                out.append((r, e))
+    return out
+
+
+def no_subs_waiting(view):
+    """Michi-NS: the view's waiting videos a way could get a subtitle for -> [(row, episode)] (Current's rows, then New
+    arrivals', each once): never an audiobook's own item, a file gone, one being made now, or one Anki Miner already
+    heard no speech in or couldn't open (`no_subs.DONE_NOTES`: offered again once a subtitle file comes)."""
+    from app import no_subs
+    out = []
+    for r, e in _no_subs_all(view):
+        said = getattr(e, "subs", None)
+        said = said[0] if isinstance(said, tuple) else said
+        if said != no_subs.MAKING and said not in no_subs.DONE_NOTES:
+            out.append((r, e))
+    return out
+
+
+def no_subs_offer(view, settings):
+    """(A worker.) Michi-NS: which ways can get the waiting videos a subtitle now -> {"make": Anki Miner makes them
+    from the audio (`no_subs.can_make`: 3.11's `transcribe`), "hato": hato takes a list and you haven't said yes yet},
+    or None (no waiting video, or neither way: the rows say *No subtitles yet*, as in 3.0). Never raises."""
+    if not no_subs_waiting(view):
+        return None
+    try:
+        from app import no_subs
+        make = no_subs.can_make(settings) is not None
+        hato = not (settings or {}).get(no_subs.SETTING) and no_subs.hato_finds() is not None
+    except Exception:
+        return None
+    return {"make": make, "hato": hato} if make or hato else None
+
+
+def _no_subs_entry(view, offer, seen):
+    """Michi-NS: ONE card for every video with no subtitle — a line per show (*Frieren (3)*, its own *Make them from
+    the audio* while Anki Miner can), *Find them with hato* on the card while hato takes a list and you haven't said
+    yes. Its key holds the videos' ids: a new one brings it back after *Not now* (SPEC §6); *Stop asking* (⋯) ends it."""
+    hits = no_subs_waiting(view)
+    if not hits:
+        return None
+    shows = {}
+    for r, e in hits:
+        shows.setdefault(_group(r), (r, []))[1].append(e)
+    make = bool(offer.get("make"))
+    lines = tuple(NeedLine(key=f"subs:{g}", text=STRINGS["no_subs_line"].format(title=r.title, n=len(eps)),
+                           item_id=None, label=r.title, number=len(eps), rel_path=None,
+                           actions=("make_from_audio",) if make else ())
+                  for g, (r, eps) in shows.items())
+    ids = sorted(e.id for _r, e in hits)
+    key = f"{NO_SUBS}:{_digest(sorted(e.id for _r, e in _no_subs_all(view)))}"
+    say = STRINGS["no_subs_say_both" if make and offer.get("hato") else "no_subs_say_make" if make else
+                  "no_subs_say_hato"]
+    title = STRINGS["no_subs_title_one"] if len(ids) == 1 else STRINGS["no_subs_title"].format(n=len(ids))
+    return Entry(key=key, kind=NO_SUBS, title=title, lines=lines,
+                 actions=("find_with_hato",) if offer.get("hato") else (), unseen=key not in seen, say=say,
+                 data={"shows": {f"subs:{g}": tuple(e.id for e in eps) for g, (_r, eps) in shows.items()},
+                       "item_ids": tuple(ids)})
 
 
 def _gone_entry(group, hits, seen):

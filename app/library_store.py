@@ -193,6 +193,16 @@ LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clo
 MEDIA_TYPES = ("anime", "drama", "movie", "youtube", "podcast", "audiobook", "book", "lightnovel", "manga",
                "game", "text")
 COVER_SOURCES = ("anilist", "tmdb", "youtube", "file", "user", "generated")
+# how a type is taken in (read · listened · played; any other, and None, watched): a new show folder never joins a title
+# taken in another way (`Store._same_show_folder`: a book's EPUBs beside a show's subtitles stay two titles)
+_MEDIA_FAMILY = {"book": "read", "lightnovel": "read", "manga": "read", "text": "read", "audiobook": "audio",
+                 "podcast": "audio", "game": "game"}
+
+
+def _media_family(media_type):
+    """How a title of `media_type` is taken in (`_MEDIA_FAMILY`; None, any other: watched) — the one "two types?" rule
+    of the same-show join and a new show folder's title."""
+    return _MEDIA_FAMILY.get(media_type, "watch")
 SKIP_NAMES = ("master_manifest.json", "_order.json", "desktop.ini")
 OLD_SURASURA_OWN = ("User Files", "_internal", "results")   # in a Surasura program's folder: never a source
 
@@ -710,6 +720,48 @@ ADDED_HASH_SQL = (
       BEGIN UPDATE items SET content_sha256 = NULL WHERE id = NEW.id; END""",
 )
 ADDED_HASH = "items_hash_stale"
+# F13b (3.0.1): which items' origins changed, logged by SQLite itself — whoever writes, an older Surasura too — so a
+# look reads only what changed since the origins it kept (`origins_kept`; reading every origin cost a look ~0.25–0.45 s
+# at 20k). One row an item an origin row (`pairings`, "src:") or an item's copy (`rel_path`, `availability`) changed:
+# its id. A replaced pairing logs the item it held too (BEFORE INSERT: SQLite's REPLACE fires no delete trigger).
+# Made with the added indexes (no version, no data change): a new store at once, an existing one at its first open by
+# a writer, which also logs the reset mark 0 (every origin as changed: a reader that kept origins from before the
+# triggers were there reads all) and gives the log a new id (meta ORIGIN_LOG_ID: a log dropped and made again restarts
+# its numbers, below a reader's mark). It keeps its newest ORIGIN_LOG_KEEP rows (the log prunes itself); a reader whose
+# mark is older reads all. Never in the copy (COPY_TABLES, COPY_META_KEYS). Dropped as easily: DROP the triggers, then
+# the table and the meta key.
+ORIGIN_LOG_KEEP = 50_000
+ORIGIN_LOG_ID = "origin_log"
+_SRC_ROW = "{0}.content_key >= 'src:' AND {0}.content_key < 'src;'"     # `_ORIGIN_ROW` on a trigger's NEW / OLD
+ORIGIN_LOG_SQL = (
+    "CREATE TABLE IF NOT EXISTS origin_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL)",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_replaced BEFORE INSERT ON pairings WHEN {_SRC_ROW.format('NEW')}
+      BEGIN INSERT INTO origin_changes (item_id) SELECT item_id FROM pairings
+        WHERE content_key = NEW.content_key AND item_id IS NOT NULL; END""",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_in AFTER INSERT ON pairings
+      WHEN NEW.item_id IS NOT NULL AND {_SRC_ROW.format('NEW')}
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.item_id); END""",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_set AFTER UPDATE ON pairings
+      WHEN ({_SRC_ROW.format('OLD')}) OR ({_SRC_ROW.format('NEW')})
+      BEGIN INSERT INTO origin_changes (item_id) SELECT OLD.item_id WHERE OLD.item_id IS NOT NULL
+        UNION SELECT NEW.item_id WHERE NEW.item_id IS NOT NULL; END""",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_out AFTER DELETE ON pairings
+      WHEN OLD.item_id IS NOT NULL AND {_SRC_ROW.format('OLD')}
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (OLD.item_id); END""",
+    """CREATE TRIGGER IF NOT EXISTS origin_log_copy AFTER UPDATE OF rel_path, availability ON items
+      WHEN NEW.rel_path IS NOT OLD.rel_path OR NEW.availability IS NOT OLD.availability
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END""",
+    """CREATE TRIGGER IF NOT EXISTS origin_log_item_in AFTER INSERT ON items
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END""",
+    """CREATE TRIGGER IF NOT EXISTS origin_log_item_out AFTER DELETE ON items
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (OLD.id); END""",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_prune AFTER INSERT ON origin_changes WHEN NEW.seq % 1024 = 0
+      BEGIN DELETE FROM origin_changes WHERE seq <= NEW.seq - {ORIGIN_LOG_KEEP}; END""",
+    "INSERT INTO origin_changes (item_id) VALUES (0)",                 # the reset mark (an item id is never 0)
+    f"INSERT OR REPLACE INTO meta (key, value) VALUES ('{ORIGIN_LOG_ID}', lower(hex(randomblob(8))))",
+)
+ORIGIN_LOG = ("origin_changes", "origin_log_replaced", "origin_log_in", "origin_log_set", "origin_log_out",
+              "origin_log_copy", "origin_log_item_in", "origin_log_item_out", "origin_log_prune")
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then
@@ -1740,8 +1792,9 @@ class Store:
         """ADDED_INDEXES, made at the first open by a writer of a store made before them, under the write lock: one
         read of the schema at every other open. A store not made yet, a newer one, a damaged or busy one (or this
         process inside a write already) is left as it is: a later open makes them. Never a version or data change.
-        A4K-7: the copies' hash column and its trigger too (ADDED_HASH_SQL), the column only where it isn't yet."""
-        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH,)
+        A4K-7: the copies' hash column and its trigger too (ADDED_HASH_SQL), the column only where it isn't yet.
+        F13b: the origins' change log and its triggers (ORIGIN_LOG_SQL), with its reset mark."""
+        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH,) + ORIGIN_LOG
         try:
             have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
                                                     f"({','.join('?' * len(names))})", names)}
@@ -1756,6 +1809,9 @@ class Store:
                     if sql.startswith("ALTER") and self._hash_column():   # another open made it meanwhile
                         continue
                     self.conn.execute(sql)
+                if not have.issuperset(ORIGIN_LOG):              # (its reset mark only with a trigger made)
+                    for sql in ORIGIN_LOG_SQL:
+                        self.conn.execute(sql)
         except (StoreError, sqlite3.Error):
             pass
 
@@ -2196,8 +2252,9 @@ class Store:
         say are two shows (`TITLES_APART`), the user kept apart (their answers about the others go to the kept title),
         put in one group of his own (his answer: they stay two titles in it) or of two types (a book beside a show).
         No item, order, piece or file touched: only which title the items are; *Not part of this title* takes them
-        apart again. Done once a store (`meta.shows_joined`, read again inside the command): a pair made later is
-        *Same title?*'s to ask (one key). The candidates are read once, outside the write lock; then commands of
+        apart again. Done once a store (`meta.shows_joined`, read again inside the command): a show folder made later
+        joins its show's one title as its first file comes in (`_same_show_folder`, 3.0.1 item 12); two titles made
+        another way are *Same title?*'s to ask (one key). The candidates are read once, outside the write lock; then commands of
         `JOIN_BATCH` pairs, each reading its pairs' rows again (the window's writes go between them; the window reads
         the works); the one that ends the list sets the mark. Returns the ids that went."""
         if self._meta().get(SHOWS_JOINED):
@@ -2225,7 +2282,7 @@ class Store:
                     ids = [w for w, _t in members]
                     if len(ids) < 2 or self._titles_apart(ids) or self._grouped_together(ids) or \
                             any((a, b) in apart for n, a in enumerate(ids) for b in ids[n + 1:]) or \
-                            len({t for t in (self.media_type(w)[0] for w in ids) if t is not None}) > 1:
+                            len({_media_family(self.media_type(w)[0]) for w in ids}) > 1:
                         continue
                     keep = max(members, key=lambda m: (len(unicodedata.normalize("NFKC", m[1] or "")), -m[0]))[0]
                     others = [w for w in ids if w != keep]
@@ -3231,7 +3288,8 @@ class Store:
 
     def _folder_work(self, rel, title, cmd, cache=None):
         """A new file's work by its folder (05 §5.3 (3)–(4)): the work holding its folder key; else the work of the
-        files beside it (a folder whose work was merged into another keeps going there); else a new work, titled by
+        files beside it (a folder whose work was merged into another keeps going there); else the one show folder's
+        title of the same show (`_same_show_folder`: `Show` of `Show!`, 3.0.1 item 12); else a new work, titled by
         its folder below the tier folder (`folder_title`: `Show/S01` is `Show Season 1`, the path kept among its other
         titles). A loose file's work is its show's, read from its name (`_stranded_work`)."""
         fk = folder_key_of(rel)
@@ -3252,11 +3310,47 @@ class Store:
         if wid is None and fk is None:
             return self._stranded_work(rel, title, cmd, cache)
         if wid is None:
+            wid = self._same_show_folder(fk, rel, cache)
+        if wid is None:
             below = _below_tier(rel)
             wid = self._new_work(folder_title(below), fk, cmd, titles=(below,))
+            index = cache.get(("show_folders",)) if cache is not None else None
+            if index is not None and "/" not in fk:
+                from app.episode_names import show_key
+                index.setdefault(show_key(fk), []).append(wid)
         if cache is not None:
             cache[fk] = wid
         return wid
+
+    def _same_show_folder(self, fk, rel, cache=None):
+        """A new show folder's title when no title holds its folder key and none of the files beside it has one (3.0.1
+        item 12, PROVISIONAL: Sonic's "one show, one title", a8): the ONE title of the same show (`episode_names.show_key`:
+        `Library/Show` of the title `Show!`, whose folder key went with the one-time join or was never made) — never
+        for a season's or another folder below a show (a key with `/`), never a title taken in another way
+        (`_media_family`: an EPUB beside a show), never one of two titles of that key (the user kept them apart: its own, as
+        `sources._show_of` does) — and every title counts, by any of its names (a hato title `Show` with no folder,
+        one the user kept apart from `Show!`: two of the key, so its own; review ITEM12 #1). Only a new file comes
+        here: two titles already made stay *Same title?*'s to ask. -> the work, or None."""
+        if "/" in fk:
+            return None
+        from app.episode_names import show_key
+        want = show_key(fk)
+        if not want:
+            return None
+        index = cache.get(("show_folders",)) if cache is not None else None
+        if index is None:                   # every title's names keyed once a command (its new ones added after)
+            index = {}
+            for w, keys in self.conn.execute("SELECT id, search_key FROM works ORDER BY id"):
+                for k in dict.fromkeys(show_key(k) for k in (keys or "").split("\n")):
+                    if k:
+                        index.setdefault(k, []).append(w)
+            if cache is not None:
+                cache[("show_folders",)] = index
+        found = index.get(want) or []
+        if len(found) != 1:
+            return None
+        mine = media_type_guess({infer_source_type(rel): 1})     # (a subtitle alone: None — nothing typed it yet)
+        return found[0] if _media_family(mine) == _media_family(self.media_type(found[0])[0]) else None
 
     def _stranded_work(self, rel, title, cmd, cache=None):
         """A loose file's work (SRC-11): one in hato's drop folder or directly in a tier folder has no show folder, so
@@ -6120,7 +6214,7 @@ def _ensure_schema(store):
                                           "AND name NOT LIKE 'sqlite_%'").fetchone()[0]
             if existing:
                 raise StoreError("a library database without a schema version; left alone")
-            for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL:      # A4K-7: a new store has the hashes at once
+            for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL + ORIGIN_LOG_SQL:   # A4K-7, F13b: at once
                 store.conn.execute(sql)
             store.conn.execute(f"PRAGMA user_version = {STORE_SCHEMA}")
     return version
@@ -9194,6 +9288,55 @@ def _store_origins(self, items=None):
     return {r[0]: Origin._make(r[1:]) for r in rows}         # in key order (a look finds a folder's by its prefix)
 
 
+def _store_origins_kept(self, kept=None):
+    """F13b: `origins()` as it reads now, from the origins a look kept (`kept`: this call's own answer last time, or
+    None) — only the items the change log (ORIGIN_LOG_SQL) names since then read again (`origins(items=…)`), their
+    old keys dropped, their keys now laid over the rest, in key order: the same dict, field for field and in the same
+    order, as a whole read. A whole read (`origins()`) when nothing was kept, the store is another (its id, epoch or
+    log id moved), the log can't say (its triggers missing, its rows since pruned, the reset mark 0 among them, the
+    row at the mark another item's: a file put back from a copy), more than a quarter of the origins changed, or inside
+    a write. -> (mark, origins); mark (store id, epoch, log id, its last row's seq, that row's item) or None: nothing
+    to keep."""
+    if self.conn.in_transaction:                             # a write's own rows may yet roll back: never kept
+        return None, self.origins()
+    with self._reading():
+        meta = self._meta()
+        have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
+                                                f"({','.join('?' * len(ORIGIN_LOG))})", ORIGIN_LOG)}
+        if len(have) < len(ORIGIN_LOG):
+            return None, self.origins()
+        top = self.conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'origin_changes'").fetchone()
+        seq = top[0] if top else 0
+        mark = (meta.get("store_id"), meta.get("epoch"), meta.get(ORIGIN_LOG_ID), seq, self._origin_logged(seq))
+        held, origins = kept if kept else (None, None)
+        if not held or held[:3] != mark[:3] or not isinstance(held[3], int) or held[3] > seq:
+            return mark, self.origins()
+        if held[3] == seq:
+            return (mark, origins) if held == mark else (mark, self.origins())
+        low = self.conn.execute("SELECT MIN(seq) FROM origin_changes").fetchone()[0]
+        if low is None or low > held[3] + 1:                 # the rows since the mark pruned (or none: all pruned)
+            return mark, self.origins()
+        if low <= held[3] and self._origin_logged(held[3]) != held[4]:   # the log isn't the one the mark read
+            return mark, self.origins()
+        ids = {r[0] for r in self.conn.execute("SELECT DISTINCT item_id FROM origin_changes WHERE seq > ?",
+                                               (held[3],))}
+        if 0 in ids or len(ids) > len(origins) // 4:
+            return mark, self.origins()
+        fresh = self.origins(items=ids)
+    out = {k: o for k, o in origins.items() if o.item_id not in ids}
+    new = [k for k in fresh if k not in out]
+    out.update(fresh)
+    if new:                                                  # in key order, as SQLite's (UTF-8 order is code points')
+        out = {k: out[k] for k in sorted(out)}
+    return mark, out
+
+
+def _store_origin_logged(self, seq):
+    """F13b: the item the change log's row `seq` names, or None (no such row)."""
+    row = self.conn.execute("SELECT item_id FROM origin_changes WHERE seq = ?", (seq,)).fetchone()
+    return row[0] if row else None
+
+
 def _store_excluded(self, root_ids=None):
     """{path_key(origin): {"size", "sha256", "video_key"?}} of the origins Remove keeps out (`root_ids`: only those
     sources'); a look checks a new file's path, bytes and video against them (S6; `take_in` checks them again)."""
@@ -10160,13 +10303,16 @@ def _store_waiting_tracks(self):
     return out
 
 
-def _store_fill_track(self, item_id, rel, sha256, track, video_key=None):
+def _store_fill_track(self, item_id, rel, sha256, track, video_key=None, verdict="extracted",
+                      provider="video-track"):
     """Michi-ST: a waiting video's own subtitle track, copied to `rel` (in `Library`, by the caller) — the item takes
     it in place (K5's fill, `_fill_gap`: its id, place and records kept, no placement event) and its video's origin
     record says where the text came from: `verdict` "extracted", `subtitle_sha256` (the copy's bytes:
     `fit_check.track_timed`), `subtitle_source` (hato's shape: the provider `video-track`) and `track` (`tracks._take`'s
     index, codec, language, title). -> True; False, nothing written, when the item no longer waits on that video
-    (filled, removed, or its video changed: `video_key` is no longer its record's)."""
+    (filled, removed, or its video changed: `video_key` is no longer its record's). Michi-NS (`app/no_subs.py`): a
+    subtitle Anki Miner made from the video's audio fills it the same way, `verdict` "transcribed" (never `timed`: K16)
+    and the provider `transcribe`."""
     rel = library_rel(self.data_dir, rel)
     parts = rel.split("/") if rel else []
     if len(parts) < 2 or path_key(parts[0]) != path_key(CONTENT_FOLDER):
@@ -10182,8 +10328,8 @@ def _store_fill_track(self, item_id, rel, sha256, track, video_key=None):
         if self._fill_gap(cmd, item_id, prepared, {}) is None:
             return False
         self._keep_hash(item_id, prepared[4], sha256)
-        record.update(verdict="extracted", subtitle_sha256=sha256, track=dict(track or {}),
-                      subtitle_source={"provider": "video-track", "file_name": (track or {}).get("title")})
+        record.update(verdict=verdict, subtitle_sha256=sha256, track=dict(track or {}),
+                      subtitle_source={"provider": provider, "file_name": (track or {}).get("title")})
         self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
                           (json.dumps(record, sort_keys=True, ensure_ascii=False), row[0]))
         self._copy_dirty()
@@ -10192,12 +10338,14 @@ def _store_fill_track(self, item_id, rel, sha256, track, video_key=None):
 
 def _store_track_items(self, held):
     """Michi-ST, inside `take_in`: {video key or path key: item id} of the items whose text is their video's own track
-    (`fill_track`'s live record, `verdict` "extracted") — read once a batch into `held` (a dict the caller keeps)."""
+    (`fill_track`'s live record, `verdict` "extracted") — read once a batch into `held` (a dict the caller keeps).
+    Michi-NS: and those whose text was made from their video's audio (`verdict` "transcribed"): a subtitle file that
+    comes beside the video later (the made copy beside it, Q4) is another version, never a second item."""
     if "items" not in held:
         held["items"] = {}
         for item_id, text in self.conn.execute(
                 f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND "
-                f"json_valid(p.pairing) AND json_extract(p.pairing, '$.verdict') = 'extracted'"):
+                f"json_valid(p.pairing) AND json_extract(p.pairing, '$.verdict') IN ('extracted', 'transcribed')"):
             for k in _video_keys(_json_dict(text) or {}):
                 held["items"][k] = item_id
     return held["items"]
@@ -12009,6 +12157,8 @@ Store.stop_source = _store_stop_source
 Store.join_moved = _store_join_moved
 Store.source_detail = _store_source_detail
 Store.origins = _store_origins
+Store.origins_kept = _store_origins_kept
+Store._origin_logged = _store_origin_logged
 Store.excluded = _store_excluded
 Store.items_of_size = _store_items_of_size
 Store.keep_hashes = _store_keep_hashes

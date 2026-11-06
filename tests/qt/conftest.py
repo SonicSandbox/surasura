@@ -90,6 +90,8 @@ def _per_test_window_state(request, monkeypatch):
         qt_bridge.drop_answers()                  # before any window goes: an answer on its way lands on nothing (a
         #   window whose close was put off — a move or a job still pending — never ran its own drop)
     for w in app.topLevelWidgets():
+        if _kept(w):                              # a screen a file builds once (`tests/qt/work_counts.py`'s `kept`)
+            continue                              # and its popups: closed by its own module fixture at the file's end
         w.close()
         w.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -131,6 +133,15 @@ def _per_test_window_state(request, monkeypatch):
     if errors and not getattr(request.node, "_qt_errors_expected", False):
         import traceback
         pytest.fail("an exception escaped a Qt slot:\n" + "".join(traceback.format_exception(*errors[0])))
+
+
+def _kept(w):
+    """A top-level a file keeps for its next test (`wc_keep`), or a popup / bubble parented to one."""
+    while w is not None:
+        if w.property("wc_keep"):
+            return True
+        w = w.parentWidget()
+    return False
 
 
 @pytest.fixture

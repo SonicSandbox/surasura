@@ -651,8 +651,8 @@ class ReportWindow(SecondaryWindow):
         for p in self.presses.showing():                           # (none live: a failed one's mark forgotten)
             self.presses.forget(p.key)
         self._holds.clear()
-        self._unheld = ""
-        self._show_status("")
+        self.say(strings.REPORT_EMPTY if self.reports == [] else "")   # (the list's own line as its read says it:
+        #                                                     the window never grows as it lands — Mado-SO)
         self.opened_id = self.sent_opened = self.outbox = self.sent_id = self.last_removed = None
         self.sending = False
         self.goes_name_value = ""
@@ -684,7 +684,7 @@ class ReportWindow(SecondaryWindow):
 
     def _empty(self):
         """Kept at its close: what it showed let go — the pictures, thumbnails and the other pages' words and pictures
-        (a hidden window holds no screenshot; its next opening sized as a fresh one, by the form)."""
+        (a hidden window holds no screenshot; its next opening at the size it was left at: `windows.show`)."""
         self.pictures = []
         self._thumbs = None
         self._clear(self.picture_row)
@@ -1068,6 +1068,10 @@ class ReportWindow(SecondaryWindow):
             self.say(line)
         elif not n and not self.status.text():
             self.say(strings.REPORT_EMPTY)
+        elif n and self._unheld == strings.REPORT_EMPTY:           # (the list's own line, gone with its emptiness —
+            self._unheld = ""                                      # ... a held line kept showing until it goes)
+            if not self._holds:
+                self._show_status("")
 
     def _row(self, r):
         w = QWidget(self.list)

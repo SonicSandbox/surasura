@@ -77,16 +77,25 @@ def _drop_folders():
     return folders
 
 
+def registers(settings):
+    """Does Surasura take hato's pairings (`surasura-cli register`)? While Connect's preview is on, or (Michi-NS, Q3:
+    finding subtitles is about the library, not cards) once the learner said yes to hato finding them
+    (`no_subs.SETTING`, spelled here: this module stays standard-library only)."""
+    settings = settings or {}
+    return bool(settings.get("connect_enabled") or settings.get("subs_with_hato"))
+
+
 def entry(settings):
     """Surasura's entry as a dict, or None when this process writes none (a portable or test build, or a source
-    checkout, without SURASURA_TOOLS_CLI). `register` is offered to other tools only while Connect's preview is on."""
+    checkout, without SURASURA_TOOLS_CLI). `register` is offered to other tools only while Connect's preview is on —
+    or (Michi-NS, Q3 ✅ Sonic 2026-10-31) while hato finds the waiting videos' subtitles (`registers`)."""
     advertised = _advertised()
     if advertised is None:
         return None
     from app import __version__
     from app.cli.contract import CONTRACT
     cli, app = advertised
-    verbs = ["status"] + (["register"] if (settings or {}).get("connect_enabled") else [])
+    verbs = ["status"] + (["register"] if registers(settings) else [])
     return {
         "schema": SCHEMA,
         "tool": TOOL,

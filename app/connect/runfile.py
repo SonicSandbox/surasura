@@ -28,6 +28,9 @@ SCHEMA = 1
 MAX_BYTES = 8 * 1024 * 1024
 RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 TAG_PREFIX = "surasura::connect::"
+# Michi-NS (Q5 ✅ Sonic 2026-10-31): on every card mined from a subtitle Anki Miner made from the episode's audio
+# (`no_subs`, the record's verdict "transcribed"): a misheard word can happen, so the learner can find and check them
+FROM_AUDIO_TAG = "surasura::from-audio"
 NAME_TAG = "surasura::name"     # on every card of a name (G1.3), added after mining: Anki Miner tags by episode
 # Laptop round 8 #50 (LF4-3 = A, Sonic: "the show title it came from, and … the show that it's targeted for"): the show a
 # card was mined from (fixed: Connect's run file, with the job's tag) and the show it is ordered for (Junban's, moving

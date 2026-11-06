@@ -101,13 +101,20 @@ def _sha256(path):
     return digest.hexdigest()
 
 
+# Surasura's own verdicts on a source folder's video (`library_store.fill_track`): its own track copied out (Michi-ST),
+# a subtitle made from its own audio (Michi-NS)
+OWN_VERDICTS = ("extracted", "transcribed")
+
+
 def track_timed(pairing, subtitle):
     """Michi-ST (`app/tracks.py`): the subtitle is the video's own track, copied out by Surasura — its own record (a
     source folder's origin, `producer` "source"), `verdict` "extracted", and the library copy is that very file (its
-    sha256): timed to that video, nothing to check. A copy changed since is checked as any other."""
+    sha256): timed to that video, nothing to check. A copy changed since is checked as any other. Michi-NS
+    (`app/no_subs.py`, Q5 ✅ Sonic 2026-10-31: mined like any timed subtitle): a subtitle Anki Miner made from the
+    video's own audio (`verdict` "transcribed") is timed to that audio the same way."""
     pairing = pairing if isinstance(pairing, dict) else {}
     want = pairing.get("subtitle_sha256")
-    if pairing.get("producer") != SOURCE or pairing.get("verdict") != "extracted" or             not isinstance(want, str) or not want or not subtitle:
+    if pairing.get("producer") != SOURCE or pairing.get("verdict") not in OWN_VERDICTS or             not isinstance(want, str) or not want or not subtitle:
         return False
     return _sha256(subtitle) == want.lower()
 
@@ -153,7 +160,7 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
     if hato_timed(pairing, subtitle):
         return TIMED, "hato", None, 0.0
     if track_timed(pairing, subtitle):
-        return TIMED, "track", None, 0.0
+        return TIMED, "audio" if pairing.get("verdict") == "transcribed" else "track", None, 0.0
     if spot is not None and _media(video) == "audio":
         heard = spot()
         if heard == SPOT_MATCHED:

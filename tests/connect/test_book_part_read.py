@@ -1,7 +1,8 @@
 """A book's part makes Anki Miner read that part, never the whole book again (Michi-BK, Sonic's report #BS0A1K): Anki
 Miner reads every sentence of the file it is handed before it makes a card, and each part's job handed it the whole
 EPUB — a 122-part book read whole at every part, minutes each. A part now names its own copy of the EPUB
-(`connect.reading.part_book`, `extract.epub_part`): every document in its place, only the part's own with text.
+(`connect.reading.part_book`, `extract.epub_part`), made again right before each Anki Miner call at the book's one
+place (`runner._part_read`, `Steps.part_book`): every document in its place, only the part's own with text.
 
 What a wrong answer would cost: these jobs write the learner's Anki unattended. A copy that numbers or labels one
 document otherwise than the book puts every card of the part on the wrong part (`connect.reading.place` reads
@@ -14,15 +15,17 @@ Real text (the suite's `ja/context_test.txt`) in EPUBs built the way the book su
 """
 import os
 import struct
+from types import SimpleNamespace
 import zipfile
 import zlib
 
 import pytest
 
 from app import extract
-from app.connect import reading
+from app.connect import reading, runner
+from app.connect.ledger import Ledger
 from tests.connect.test_p41_asked import _library, _place_top, _jobs, _run
-from tests.connect.test_z9_books import WORDS, BookSteps, _named, _parts_in_store
+from tests.connect.test_z9_books import WORDS, BookSteps, _parts_in_store
 from tests.test_book_chapters import _between, _epub, _lines, _novel
 
 
@@ -77,8 +80,8 @@ def test_a_parts_copy_numbers_and_labels_every_document_as_the_book_does_with_on
     epub, docs, records = novel
     assert len(records) >= 4, "the novel splits into several parts"
     for item, record in records.items():
-        path, why = reading.part_book(epub, record, str(tmp_path / "runs" / str(item)))
-        assert why is None and path == str(tmp_path / "runs" / str(item) / "book" / "旅の記録.epub")
+        path, why = reading.part_book(epub, record, str(tmp_path / "books" / str(item)))
+        assert why is None and path == str(tmp_path / "books" / str(item) / "旅の記録.epub")
         copy, _ = extract.epub_documents(path)
         assert [(d.href, d.label) for d in copy] == [(d.href, d.label) for d in docs]
         first, last = record["docs"]
@@ -105,6 +108,9 @@ def test_an_emptied_document_keeps_its_body_and_its_attributes_and_nothing_in_it
     assert extract._emptied(b"<html><body/></html>") == b"<html><body/></html>"
     assert extract._emptied(b"<html><bodyguard>a</bodyguard></html>") is None
     assert extract._emptied(b"<html><body><p>a</p></html>") is None, "no end tag: not emptied by guess"
+    # an end tag in a comment before the body's own: everything up to the LAST one goes
+    assert extract._emptied(b"<html><body><p>a</p><!-- </body> --><p>b</p></body></html>") == \
+        b"<html><body></body></html>"
 
 
 @pytest.mark.parametrize("cover_by", ["cover-image", "meta"])
@@ -122,6 +128,28 @@ def test_a_parts_copy_keeps_the_cover_and_leaves_out_the_pictures_no_reading_loo
     assert "OEBPS/images/i-001.png" not in names and "OEBPS/images/i-002.jpg" not in names
     copy, _ = extract.epub_documents(path)
     assert [(d.href, d.label) for d in copy] == [(d.href, d.label) for d in docs]
+
+
+def test_a_picture_in_the_spine_is_kept(tmp_path):
+    """A picture the spine itself lists (a full-page illustration as a spine item) stays: the spine is never changed."""
+    lines = _lines()
+    epub = _epub(tmp_path / "絵.epub", [{"href": "c1.xhtml", "body": f"<p>{lines[0]}</p>"},
+                                       {"href": "c2.xhtml", "body": f"<p>{lines[1]}</p>"}],
+                 [("c1.xhtml", "一"), ("c2.xhtml", "二")])
+    with zipfile.ZipFile(epub) as z:
+        entries = [(i, z.read(i.filename)) for i in z.infolist()]
+    with zipfile.ZipFile(epub, "w") as z:
+        for info, data in entries:
+            if info.filename == "OEBPS/content.opf":
+                data = data.replace(b"</manifest>", b'<item id="pg" href="pg.png" media-type="image/png"/></manifest>')
+                data = data.replace(b"</spine>", b'<itemref idref="pg"/></spine>')
+            z.writestr(info, data)
+        z.writestr("OEBPS/pg.png", _png())
+    read, _ = extract.epub_documents(epub)
+    path, why = reading.part_book(epub, {"docs": [0, 0], "hrefs": [read[0].href]}, str(tmp_path / "book"))
+    assert why is None
+    with zipfile.ZipFile(path) as mine:
+        assert mine.read("OEBPS/pg.png") == _png()
 
 
 def test_a_book_with_an_encryption_file_keeps_every_picture(novel, tmp_path):
@@ -196,30 +224,93 @@ def test_a_copy_that_reads_otherwise_than_the_book_is_never_named(novel, tmp_pat
 
 
 # --------------------------------------------------------------------------- #
-# The runner: the part's copy named; else the whole EPUB, and the job goes on
+# The runner: each Anki Miner call reads the part's copy, at the book's one place; else the whole EPUB
 # --------------------------------------------------------------------------- #
+class PartSteps(BookSteps):
+    """BookSteps with the runner's own copy rule (`Steps.part_book` over the store's pairing); its mine step records
+    the file each call was handed and the documents with text in it at that moment."""
+    pairing = runner.Steps.pairing
+    part_book = runner.Steps.part_book
+
+    def mine(self, lang, job, picked, words, attempt):
+        read, _ = extract.epub_documents(picked["reading"])
+        self.log.append(("read", job["item_id"], picked["reading"], picked["book"],
+                         [n for n, d in enumerate(read or ()) if d.text]))
+        return super().mine(lang, job, picked, words, attempt)
+
+
+def _reads(steps, item_id):
+    return [e[2:] for e in steps.log if e[:2] == ("read", item_id)]
+
+
+def test_each_part_reads_its_own_copy_at_the_books_one_place(tmp_path):
+    """Two parts of one book: each Anki Miner call is handed the book's copy — ONE path for the whole book (Anki Miner
+    names the cards' cover picture by it: one cover in Anki, never one a part) — made again for that part right
+    before the call, so it holds that part's documents and no other's text; the ledger still names the EPUB."""
+    from app.cli.verbs import _connect_folder
+    _library()
+    epub, parts, records = _parts_in_store(tmp_path)
+    # each part its own words: a word one part made is never made again by the next
+    words = {str(parts[0]): WORDS, str(parts[1]): [("旅", "タビ"), ("記録", "キロク")]}
+    steps = PartSteps(str(tmp_path), "ja", {"words": words})
+    for p in parts:
+        _place_top(p)
+    _run(steps)
+    first, second = (_reads(steps, p) for p in parts)
+    assert len(first) == 1 and len(second) == 1
+    (path_a, book_a, docs_a), (path_b, book_b, docs_b) = first[0], second[0]
+    assert path_a == path_b != epub and book_a == book_b == epub
+    assert os.path.dirname(os.path.dirname(path_a)) == os.path.join(_connect_folder(), "books")
+    assert os.path.basename(path_a) == os.path.basename(epub), "the book's own name (its title when it has none)"
+    for docs, p in ((docs_a, parts[0]), (docs_b, parts[1])):
+        first_doc, last_doc = records[p]["docs"]
+        assert docs == list(range(first_doc, last_doc + 1)), "the part's own documents only, at that call"
+    assert docs_a != docs_b
+    with Ledger() as ledger:
+        for p in parts:
+            picked = ledger.picked(_jobs(p)[-1]["id"])
+            assert (picked["reading"], picked["book"]) == (epub, epub)
+            assert _jobs(p)[-1]["state"] == "done"
+
+
 def test_a_part_from_before_the_record_reads_the_whole_book_and_is_mined(tmp_path):
-    """A part from before Hon's record (no `chapter`) names the whole EPUB, as before, and is mined."""
+    """A part from before Hon's record (no `chapter`) is handed the whole EPUB, as before, and is mined."""
     _library()
     epub, parts, _records = _parts_in_store(tmp_path, chapter=False)
-    steps = BookSteps(str(tmp_path), "ja", {"words": {str(parts[0]): WORDS}})
+    steps = PartSteps(str(tmp_path), "ja", {"words": {str(parts[0]): WORDS}})
     _place_top(parts[0])
     _run(steps)
-    assert _named(steps, parts[0]) == epub and _jobs(parts[0])[-1]["state"] == "done"
+    assert [r[0] for r in _reads(steps, parts[0])] == [epub] and _jobs(parts[0])[-1]["state"] == "done"
 
 
 def test_a_copy_that_raises_reads_the_whole_book_and_is_mined(tmp_path, monkeypatch):
-    """A copy that fails (a full disk, anything) never stops the job: the whole EPUB is named, the job mined."""
+    """A copy that fails (a full disk, anything) never stops the job: the whole EPUB is handed over, the job mined."""
     _library()
     epub, parts, _records = _parts_in_store(tmp_path)
 
     def full(*a, **k):
         raise OSError(28, "No space left on device")
     monkeypatch.setattr(reading, "part_book", full)
-    steps = BookSteps(str(tmp_path), "ja", {"words": {str(parts[0]): WORDS}})
+    steps = PartSteps(str(tmp_path), "ja", {"words": {str(parts[0]): WORDS}})
     _place_top(parts[0])
     _run(steps)
-    assert _named(steps, parts[0]) == epub and _jobs(parts[0])[-1]["state"] == "done"
+    assert [r[0] for r in _reads(steps, parts[0])] == [epub] and _jobs(parts[0])[-1]["state"] == "done"
+
+
+def test_a_video_or_a_text_is_handed_over_as_before():
+    """No copy for anything but a book's EPUB: a video's episode and a text's own file go to the mine step as picked
+    (`_part_read` hands `picked` back as it is); no rule, or no copy made: the whole EPUB."""
+    asked = []
+    steps = SimpleNamespace(part_book=lambda *a: asked.append(a) or "x.epub")
+    for picked in ({"video": "e.mkv", "reading": None, "book": None}, {"reading": "本.txt", "book": None},
+                   {"reading": "本.txt", "book": "本.epub"}):
+        assert runner._part_read(steps, "ja", {"id": 1}, picked) is picked
+    assert asked == []
+    whole = {"reading": "本.epub", "book": "本.epub"}
+    assert runner._part_read(SimpleNamespace(), "ja", {"id": 1}, whole) is whole, "steps without the rule"
+    assert runner._part_read(SimpleNamespace(part_book=lambda *a: None), "ja", {"id": 1}, whole) is whole
+    got = runner._part_read(steps, "ja", {"id": 1}, whole)
+    assert got == {"reading": "x.epub", "book": "本.epub"} and whole["reading"] == "本.epub", "the ledger's own kept"
 
 
 def test_an_item_that_is_the_whole_epub_makes_no_copy(tmp_path):

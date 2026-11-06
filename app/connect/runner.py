@@ -971,6 +971,18 @@ def _reading_source(steps, lang, job):
     return reading(lang, job)
 
 
+def _part_read(steps, lang, job, picked):
+    """Michi-BK (report #BS0A1K): `picked` for one Anki Miner call — a book's part reads its own copy of the book
+    (`steps.part_book`, made again right before each call: every part of a book shares the copy's one place), else
+    `picked` as it is (a video, a text, a copy that couldn't be made: the whole EPUB, as before). The ledger keeps
+    naming the EPUB."""
+    make = getattr(steps, "part_book", None)
+    if make is None or not picked.get("book") or picked.get("reading") != picked["book"]:
+        return picked
+    named = make(lang, job, picked["book"])
+    return dict(picked, reading=named) if named else picked
+
+
 class _Finished(Exception):
     """The job ended here in a finished state other than done (its state already saved)."""
 
@@ -1090,7 +1102,7 @@ def _mine(steps, ledger, lang, job, record=True):
         steps.on_progress = _Progress(ledger, jid)
         steps.should_stop = stopping.pressed    # #47: Anki Miner's batch cancelled at a press (the job's one check)
         try:
-            got = steps.mine(lang, job, picked, todo, attempt)
+            got = steps.mine(lang, job, _part_read(steps, lang, job, picked), todo, attempt)
         except Wait as w:
             ledger.end_batch(jid, attempt, "refused")
             raise Wait(w.reason, w.look, "mining") from None
@@ -1597,8 +1609,7 @@ class Steps:
     def reading(self, lang, job):
         """Z-9: (the file Anki Miner reads, the EPUB or None) when the job's item is a book or a text
         (`library.waits_for`), else None (`connect.reading.source`: the EPUB a part was cut from, else the item's own
-        text). A book's part names its own copy of the EPUB (`reading.part_book`: Anki Miner reads that part, never the
-        whole book again); one it can't be made for, the whole EPUB as before. A busy store is a Wait."""
+        text). A busy store is a Wait."""
         from app.connect import library, reading
         with _held():
             with self._open(lang) as store:
@@ -1610,14 +1621,6 @@ class Steps:
         if not path:
             return None
         found, book = reading.source(path, pairing)
-        if book is not None and found == book and reading.chapter(pairing) is not None:
-            try:
-                part, why = reading.part_book(book, reading.chapter(pairing), self.run_dir(job))
-            except Exception as e:      # never a reason not to mine: the whole book, as before
-                part, why = None, f"{type(e).__name__}: {e}"
-            if part is None:
-                log.info("Connect: job %s reads the whole book %s (%s)", job["id"], os.path.basename(book), why)
-            found = part or found
         return reading.as_text(found, self.run_dir(job), lang), book
 
     def subtitle(self, lang, job):
@@ -2152,6 +2155,26 @@ class Steps:
     def run_dir(self, job):
         from app.cli.verbs import _connect_folder
         return os.path.join(_connect_folder(), "runs", _tag(job))
+
+    def part_book(self, lang, job, epub):
+        """Michi-BK: the copy of `epub` holding the job's part (`reading.part_book`, Hon's record from the pairing),
+        written at the book's one place in Connect's folder (`books/<the EPUB's path, hashed>/<its name>`: one cover in
+        Anki for the whole book, one copy on disk a book) -> its path, or None: the whole EPUB, as before — logged, and
+        never a reason not to mine. A busy store is a Wait."""
+        import hashlib
+        from app.cli.verbs import _connect_folder
+        from app.connect import reading
+        record = reading.chapter(self.pairing(lang, job))
+        if record is None:
+            return None
+        key = hashlib.sha1(os.path.normcase(os.path.abspath(epub)).encode("utf-8")).hexdigest()[:12]
+        try:
+            named, why = reading.part_book(epub, record, os.path.join(_connect_folder(), "books", key))
+        except Exception as e:
+            named, why = None, f"{type(e).__name__}: {e}"
+        if named is None:
+            log.info("Connect: job %s reads the whole book %s (%s)", job["id"], os.path.basename(epub), why)
+        return named
 
     def pick(self, lang, job, video, reading=None):
         from app.cli import verbs

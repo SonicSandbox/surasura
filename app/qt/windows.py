@@ -328,10 +328,10 @@ def show(shell, name, make):
         return win
     win = make(shell)
     opened[name] = win
-    if getattr(win, "_shown_as", None) != name:           # (a window kept built and shown again: connected once)
-        win._shown_as = name
+    if getattr(win, "_shown_as", None) != name:           # (a window kept built and shown again: connected once,
+        win._shown_as = name                              # ... and shown at the size it was kept at — sized to its
         win.closed.connect(lambda w=win: opened.get(name) is w and opened.pop(name, None))
-    win.adjustSize()
+        win.adjustSize()                                  # ... hint again, it grew back as its lines landed: Mado-SO)
     win.show()
     win.raise_()
     win.activateWindow()

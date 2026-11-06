@@ -41,8 +41,9 @@ _TEXTS = []
 
 def _take(store, language, data_dir, root, src, folders, before_a8=True):
     """Each `{folder below the source: [episode numbers]}` copied as the look did before a8 (`Library/<folder>/…`), one
-    take-in -> {folder: [its files' rels]}. `before_a8`: the store as alpha 7 left it — its first helper run (the
-    test's empty library's) made no one-time join yet, so the mark is taken off."""
+    take-in -> {folder: [its files' rels]}. `before_a8`: the store as alpha 7 left it — every show folder a title of
+    its own as it came in (no `_same_show_folder` yet), and its first helper run (the test's empty library's) made no
+    one-time join yet, so the mark is taken off."""
     found, out = [], {}
     for folder, eps in folders.items():
         for n in eps:
@@ -51,7 +52,13 @@ def _take(store, language, data_dir, root, src, folders, before_a8=True):
             f = _found(language, data_dir, src, folder, f"{folder.split('/')[0].rstrip('!~')} - {n:02d}.srt", text)
             found.append(f)
             out.setdefault(folder, []).append(f["rel"])
-    store.take_in(root, found, first=True)
+    joins = ls.Store._same_show_folder
+    if before_a8:
+        ls.Store._same_show_folder = lambda self, fk, rel, cache=None: None
+    try:
+        store.take_in(root, found, first=True)
+    finally:
+        ls.Store._same_show_folder = joins
     if before_a8:
         with store._writing():
             store.conn.execute("DELETE FROM meta WHERE key = ?", (ls.SHOWS_JOINED,))
@@ -292,9 +299,11 @@ def test_a_loose_episode_dropped_later_joins_the_show_apart_only_by_punctuation(
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_the_join_runs_once_a_store_and_a_pair_made_later_is_asked_about(language):
-    """"The existing pairs joined once": the first helper run joins them and marks the store; a pair made after it
-    (another source's loose episode, a drop) is never joined without a word — *Same title?* asks about it (one key)."""
+def test_the_join_runs_once_a_store_and_a_show_folder_made_later_comes_in_as_its_shows_title(language):
+    """"The existing pairs joined once": the first helper run joins them and marks the store. A show folder made after
+    it (`<show>` beside `<show>!`, in one look or later) is never a second title: its first file joins the one title
+    of its show as it comes in (3.0.1 item 12, PROVISIONAL), so the helper finds nothing to join and *Same title?*
+    nothing to ask."""
     store, data_dir = _empty(language)
     src = _source_root()
     a, b = names(language)[73], names(language)[74]
@@ -304,10 +313,118 @@ def test_the_join_runs_once_a_store_and_a_pair_made_later_is_asked_about(languag
         assert len(store.join_same_shows()) == 1
         assert store.meta()[ls.SHOWS_JOINED] == 1
         later = _take(store, language, data_dir, root, src, {f"{b}!": (1,), b: (2,)}, before_a8=False)
-        ids = sorted({_work_of(store, r[0]) for r in later.values()})
-        assert store.join_same_shows() == [] and len(ids) == 2
-        assert ids in store.same_titles()
+        ids = {_work_of(store, r[0]) for r in later.values()}
+        assert store.join_same_shows() == [] and len(ids) == 1
+        assert not any(ids & set(g) for g in store.same_titles())
         assert len({_work_of(store, r) for rs in rels.values() for r in rs}) == 1
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_episode_in_a_new_folder_of_a_show_titled_with_its_punctuation_joins_that_title(language):
+    """3.0.1 item 12 (seen 2026-10-31, after a8): `<show>!` is a title (the one-time join done long ago); a new
+    episode arrives in a folder named without the `!` (another source's `<show>/`), nothing of the show copied there
+    before — it comes in as `<show>!`'s episode, never a second title. Its next episode follows (its folder's files)."""
+    store, data_dir = _empty(language)
+    src, other = _source_root(), _source_root("other")
+    show = names(language)[81]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{show}!": (1, 2)}, before_a8=False)
+        assert store.join_same_shows() == []
+        bang = _work_of(store, rels[f"{show}!"][0])
+        root2 = store.add_source(other)
+        new = _found(language, data_dir, other, show, f"{show} - 03.srt", 903)
+        store.take_in(root2, [new])
+        assert _work_of(store, new["rel"]) == bang
+        nxt = _found(language, data_dir, other, show, f"{show} - 04.srt", 904)
+        store.take_in(root2, [nxt])
+        assert _work_of(store, nxt["rel"]) == bang
+        assert len({w for w, in store.conn.execute("SELECT id FROM works")}) == 1
+        assert pieces_ok(store) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_episode_under_the_bang_folder_whose_key_went_with_the_join_joins_the_kept_title(language):
+    """3.0.1 item 12: the join kept `<show>` (the user's longer name on it), so the folder key `<show>!` went with
+    the title joined into it. A new episode under an old `<show>!/` folder with none of the show's files beside it
+    (a 2.x tier's folder, `HighPriority/<show>!/`) found no title by its key and became a second one; it joins the
+    kept title now (the same show by the one key)."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show, mine = names(language)[82], names(language)[83] * 3
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{show}!": (1,), show: (2,)})
+        plain = _work_of(store, rels[show][0])
+        store.rename_work(plain, mine)
+        bang = _work_of(store, rels[f"{show}!"][0])
+        assert store.join_same_shows() == [bang]
+        assert _works(store)[plain][2] == ls.path_key(show), "the kept title keeps its own folder key only"
+        touch(data_dir, f"HighPriority/{show}!/{show} - 09.srt")
+        drop = store.sync_disk()["added"][0]
+        assert _work_of(store, store.item(drop)["rel_path"]) == plain
+        assert pieces_ok(store) is None
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_show_folder_never_joins_when_a_title_without_a_folder_has_the_name_and_was_kept_apart(language):
+    """Review ITEM12 #1: `<show>!` (a folder's title) and `<show>` (a drop's title, no folder — a loose file in hato's
+    folder) the user kept apart: a new `HighPriority/<show>/` episode is no one title's — two titles hold the key —
+    so it is a title of its own, as before (*Same title?* asks), never `<show>!`'s against his answer."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[88]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{show}!": (1,)}, before_a8=False)
+        bang = _work_of(store, rels[f"{show}!"][0])
+        touch(data_dir, f"{ls.HATO_FOLDER}/{show} - 02.srt")
+        drop = store.sync_disk()["added"][0]
+        plain = _work_of(store, store.item(drop)["rel_path"])
+        if plain == bang:                                # (the loose drop joins by the key: take it apart, as he did)
+            store.split_work([drop], show)
+            plain = _work_of(store, store.item(drop)["rel_path"])
+        assert plain != bang
+        store.keep_apart([bang, plain])
+        touch(data_dir, f"HighPriority/{show}/{show} - 09.srt")
+        new = store.sync_disk()["added"][0]
+        assert _work_of(store, store.item(new)["rel_path"]) not in (bang, plain)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_new_show_folder_never_joins_two_titles_a_season_or_a_title_taken_in_another_way(language):
+    """What stays its own title: a new `<a>` folder when `<a>!` and `<a>~` are two titles already (the user kept them
+    apart: no one title to join, as a loose file's copy); a new `<b>/Season 2` (a season is a title of its own); a new
+    `<c>` folder of EPUBs beside the anime `<c>!`, and a new `<d>` of subtitles beside the book `<d>!`; `Gintama'`
+    beside `Gintama` (an exception: another season)."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    a, b, c, d = (names(language)[n] for n in (84, 85, 86, 87))
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{a}!": (1,), f"{a}~": (2,), f"{b}!": (1,),
+                                                            f"{c}!": (1,), f"{d}!": (1,), "Gintama": (1,)})
+        store.set_media_type([_work_of(store, rels[f"{c}!"][0])], "anime")
+        store.set_media_type([_work_of(store, rels[f"{d}!"][0])], "book")
+        before = {w for w, in store.conn.execute("SELECT id FROM works")}
+        new = [_found(language, data_dir, src, a, f"{a} - 03.srt", 911),
+               _found(language, data_dir, src, f"{b}/Season 2", f"{b} - 01.srt", 912),
+               _found(language, data_dir, src, c, f"{c} 01.epub", 913),
+               _found(language, data_dir, src, d, f"{d} - 01.srt", 914),
+               _found(language, data_dir, src, "Gintama'", "Gintama' - 01.srt", 915)]
+        store.take_in(root, new)
+        works = {_work_of(store, f["rel"]) for f in new}
+        assert len(works) == 5 and not works & before
+        # a season below a show (a key with `/`) is never another title's, even one of the same name below `<b>!`
+        season = _take(store, language, data_dir, root, src, {f"{b}!/Season 3": (1,)}, before_a8=False)
+        s3 = _found(language, data_dir, src, f"{b}/Season 3", f"{b} - 02.srt", 917)
+        store.take_in(root, [s3])
+        assert _work_of(store, s3["rel"]) != _work_of(store, season[f"{b}!/Season 3"][0])
+        # a folder named with marks alone has no show key: never another such folder's title
+        marks = _take(store, language, data_dir, root, src, {"♪♪": (1,)}, before_a8=False)
+        star = _found(language, data_dir, src, "★", "★ - 02.srt", 916)
+        store.take_in(root, [star])
+        assert _work_of(store, star["rel"]) != _work_of(store, marks["♪♪"][0])
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -326,6 +443,22 @@ def test_titles_the_user_grouped_together_or_of_two_types_stay_two(language):
         assert store.join(pieces, how="group") is not None
         store.set_media_type([ids[b]], "book")
         store.set_media_type([ids[f"{b}!"]], "anime")
+        before = _works(store)
+        assert store.join_same_shows() == []
+        assert _works(store) == before
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_join_never_joins_an_untyped_show_with_a_book_one_rule_with_new_folders(language):
+    """Review ITEM12 #4: one "taken in another way" rule (`_media_family`) for the join and a new folder — a book
+    (`<show>`, typed) and a show nobody typed (`<show>!`, subtitles: watched) stay two titles."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[89]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {show: (1,), f"{show}!": (2,)})
+        store.set_media_type([_work_of(store, rels[show][0])], "book")
         before = _works(store)
         assert store.join_same_shows() == []
         assert _works(store) == before

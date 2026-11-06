@@ -265,6 +265,84 @@ def test_set_watched_and_finished_save_and_undo(lib, make_writer):
     assert lib.store.item(now[0])["watched"] == 0 and lib.store.item(now[1])["watched"] == 0
 
 
+def test_newest_is_what_ctrl_z_takes_behind_writes_that_never_touch_the_undo_stack(lib, make_writer):
+    """3.0.1 item 12: Ctrl+Z on a saved Done waited behind other saves, its stone painted only with nothing queued.
+    `newest` is what Ctrl+Z's undo takes as the queue reaches it: the saved Done behind background writes that never
+    touch the Undo stack (forgotten covers, Settings' lines); unknown (None) once a write that may (another mark, an
+    Undo) waits before it. The undo named with it takes that Done back, whatever lands first."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: heard.saved)
+    done = heard.saved[0][0]
+    assert w.newest() is done
+    w.hold()                                            # (a drag: nothing lands until it lets go)
+    w.forget_covers()
+    w.set_options(keep_watched=False)
+    assert w.pending() == 2 and w.newest() is done
+    w.undo(w.newest())
+    assert w.newest() is None, "an Undo queued may take one off the stack"
+    w.release()
+    assert h.until(lambda: heard.undone)
+    assert heard.undone[0][0] is done and lib.store.item(now[0])["watched"] == 0
+    w.hold()
+    w.set_watched([now[1]], True)
+    assert w.newest() is None, "a mark queued goes on the stack: not known before it lands"
+    w.release()
+    assert h.until(lambda: len(heard.saved) == 2) and h.until(lambda: not w.pending())
+    assert w.newest() is heard.saved[1][0]
+
+
+def test_newest_never_names_the_change_before_one_that_is_landing(lib, make_writer):
+    """Review ITEM12 #3: a change goes on the Undo stack before its command leaves the queue — asked in the moment
+    between (`_landed`), `newest` says "not known" or names the new change, never the one saved before it (Ctrl+Z
+    would undo that one, and leave the new one)."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: heard.saved)
+    first = heard.saved[0][0]
+    seen, real = [], w._landed
+
+    def landed(cmd):
+        out = real(cmd)
+        seen.append(w.newest())                         # (the command has left the queue: its change is known)
+        return out
+    w._landed = landed
+    w.set_watched([now[1]], True)
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert seen and all(c is not first for c in seen)
+    assert w.newest() is heard.saved[1][0]
+
+
+def test_newest_behind_a_download_registered_is_the_saved_change_and_unknown_while_a_copy_runs(lib, make_writer):
+    """A download's registration queued before Ctrl+Z never goes on the Undo stack (`_register`): what Ctrl+Z takes is
+    the saved change behind it. While the copier still works (an Explorer drop's copy, a registration's records) what
+    it hands the queue isn't known: None."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: heard.saved)
+    done = heard.saved[0][0]
+    words = names(lib.language)
+    w.hold()
+    told = []
+    w.register([_download(lib, words[40], words[41], "ccccccccccc")], _keyed(_yt(words[41])), rules={},
+               done=lambda *n: told.append(n))
+    assert h.until(lambda: w.pending() and not w._copying)
+    assert w.newest() is done
+    with w._cond:
+        w._copying += 1                                 # (a copy under way: its command not queued yet)
+    try:
+        assert w.newest() is None
+    finally:
+        with w._cond:
+            w._copying -= 1
+    w.release()
+    assert h.until(lambda: told) and w.newest() is done
+
+
 def test_undo_with_nothing_saved_does_nothing(lib, make_writer):
     w, heard = make_writer()
     w.undo()

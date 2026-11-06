@@ -248,7 +248,8 @@ ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway",
            "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
            "no_speech_model", "keep_together", "separate_them")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs",
-                     "open_anki", "find_book", "choose_video", "choose_file")      # a7: a picker's start looked for
+                     "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
+                     "make_from_audio", "find_with_hato")                          # Michi-NS: each a long ask
 
 
 class NeedsCards(QWidget):
@@ -519,6 +520,69 @@ def _find_miner(settings):
     return tools_found.make_cards_shown(tools_found.tools_found(settings).miner)
 
 
+def _subs_ready(language, settings):
+    """(A worker.) Michi-NS: can Anki Miner make subtitles from the audio now -> "ready" · "no_model" (its speech
+    model isn't there: the window asks) · "no_miner" (none here that can) · "busy" (it can't be asked now)."""
+    from app import no_subs
+    from app.services.settings import thaw
+    miner = no_subs.can_make(thaw(settings))
+    if miner is None:
+        return "no_miner"
+    ready = no_subs.speech_ready(miner, language)
+    return "ready" if ready else "no_model" if ready is False else "busy"
+
+
+def _default_make(opener, registry, language, item_ids, settings, title, install, cancel):
+    """(A worker.) Michi-NS: one show's subtitles made from the audio (`no_subs.make`) through a store handle of this
+    worker's own (closed after), as ONE `transcribe` job in `registry` (its Cancel sets `cancel`; quitting cancels it)
+    — `install` first Anki Miner's speech model (`no_subs.install_speech`). -> `make`'s counts, or {"model_failed":
+    why}."""
+    from app import no_subs
+    from app.services.settings import thaw
+    settings = thaw(settings)
+    job = None
+    if registry is not None:
+        job = registry.record(no_subs.JOB_KIND, strings.NEEDS_SUBS_JOB.format(title=title),
+                              cancel=lambda _job: cancel.set(), on_quit="cancel")
+    got, ok = {}, False
+    try:
+        if install:
+            if job is not None:
+                job.progress(strings.NEEDS_SUBS_JOB_MODEL)
+            miner = no_subs.can_make(settings)
+            why = no_subs.install_speech(miner, language, cancel=cancel.is_set) if miner else None
+            if why == no_subs.STOPPED:
+                return got                          # its Cancel: the bar says *Stopped* (its setup goes on alone)
+            if why:
+                got = {"model_failed": why}
+                return got
+        if opener is None or getattr(opener, "mode", None) != "store" or not hasattr(opener, "handle"):
+            return got
+        store = opener.handle()
+        if store is None:
+            return got
+
+        def progress(n, total, pct):
+            if job is not None:
+                job.progress(strings.NEEDS_SUBS_JOB_STEP.format(title=title, n=min(n + 1, total), total=total),
+                             pct, 100)
+        try:
+            got = no_subs.make(store, language, item_ids, settings, stop=cancel.is_set, on_progress=progress)
+        finally:
+            close = getattr(opener, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    pass
+        ok = bool(got.get("made")) or not any(got.get(k) for k in ("failed", "no_miner", "no_model"))
+        return got
+    finally:
+        if job is not None:
+            job.finish(ok=ok or cancel.is_set(), cancelled=cancel.is_set(),
+                       message=None if ok else strings.NEEDS_SUBS_FAILED)
+
+
 def _default_asks(opener):
     """9a's questions through a store handle of this worker's own (closed after: a pool thread keeps none)."""
     if opener is None or getattr(opener, "mode", None) != "store" or not hasattr(opener, "handle"):
@@ -659,6 +723,9 @@ class NeedsYou(QObject):
         self.read_connect = service.read_connect
         self.read_asks = lambda: _default_asks(opener)
         self.read_books = lambda item_id: _default_books(opener, item_id)      # a5-2 (Hon)
+        # Michi-NS: *Make them from the audio*'s two steps, each on a worker (tests replace them)
+        self.subs_ready = _subs_ready
+        self.make_subs = lambda *args: _default_make(opener, *args)
         self.open_extract = None                 # a5-2: + Add's EPUB door for a book from disk (tests replace it)
         self.find_offline = service.find_offline
         self.read_settings = win.services.settings.get
@@ -880,7 +947,8 @@ class NeedsYou(QObject):
                                   emptied=emptied,                            # A5K-2: the folder emptied
                                   settings_folders=_settings_folders(settings, lang),     # a6: imported, not here
                                   backlog=service.backlog_offer(lang, settings),   # Michi-C: the backlog's shows
-                                  miner_update=service.miner_update(view))    # Michi-U: Anki Miner out of date
+                                  miner_update=service.miner_update(view),    # Michi-U: Anki Miner out of date
+                                  no_subs=service.no_subs_offer(view, settings))   # Michi-NS: videos, no subtitle
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -1766,6 +1834,89 @@ class NeedsYou(QObject):
                 result, strings.NEEDS_MINER_NOT_UPDATED))
             self.refresh()
         self._press("update_miner", entry, run, then=done, goes=False)
+
+    # Michi-NS (3.0.1, SPEC no-subs §3, §7.3): videos with no subtitle
+    def _do_make_from_audio(self, entry, line):
+        """*Make them from the audio* on a show's line: Anki Miner asked on a worker whether it can listen now
+        (`_subs_ready`); its speech model missing, asked once in the window (nothing downloaded before the yes); then
+        `_make_subs`. The arc turns from the press to the end."""
+        from app.qt import confirm
+        ids = tuple(((entry.data or {}).get("shows") or {}).get(line.key) or ()) if line is not None else ()
+        if not ids:
+            return
+        lang, read_settings = self.language, self.read_settings
+
+        def ready(answer):
+            if answer == "ready":
+                self._make_subs(entry, line, ids, install=False)
+            elif answer == "no_model":
+                self.confirming = confirm.ask(
+                    self.win, strings.NEEDS_SUBS_MODEL_ASK, strings.NEEDS_SUBS_MODEL_BODY, strings.NEEDS_SUBS_MODEL_YES,
+                    strings.NEEDS_SUBS_MODEL_YES_TIP, no=strings.NEEDS_SUBS_MODEL_NO,
+                    no_tip=strings.NEEDS_SUBS_MODEL_NO_TIP,
+                    on_answer=lambda yes: yes and self._make_subs(entry, line, ids, install=True))
+            else:
+                self._say(strings.NEEDS_SUBS_NO_MINER if answer == "no_miner" else strings.NEEDS_SUBS_BUSY)
+        self._press("make_from_audio", entry, lambda: self.subs_ready(lang, read_settings() or {}), line=line,
+                    then=ready, goes=False)
+
+    def _make_subs(self, entry, line, ids, install):
+        """The show's subtitles made on a worker as ONE job in the bottom bar (its Cancel stops the episode under way:
+        Anki Miner keeps nothing of it; the ones done stay) — the speech model first after the yes (`install`). Each
+        episode's row lights up as it's filled (the store's feed); the bar says how it ended."""
+        registry = getattr(getattr(self.win, "services", None), "registry", None)
+        lang, read_settings, cancel = self.language, self.read_settings, threading.Event()
+        title = line.label or ""
+        make = self.make_subs
+
+        def done(got):
+            got = got or {}
+            if got.get("model_failed"):
+                self._say(strings.NEEDS_SUBS_MODEL_FAILED.format(why=got["model_failed"]))
+            elif got.get("made"):
+                self._say(strings.NEEDS_SUBS_MADE_ONE if got["made"] == 1 else
+                          strings.NEEDS_SUBS_MADE.format(n=got["made"]))
+            elif cancel.is_set():
+                self._say(strings.NEEDS_SUBS_STOPPED)
+            elif got.get("no_miner"):
+                self._say(strings.NEEDS_SUBS_NO_MINER)
+            elif got.get("busy") or got.get("no_model"):
+                self._say(strings.NEEDS_SUBS_BUSY)
+            elif got.get("no_speech") or got.get("unreadable"):
+                self._say(strings.NEEDS_SUBS_NONE.format(why=strings.NEEDS_SUBS_NO_SPEECH))
+            else:
+                self._say(strings.NEEDS_SUBS_FAILED)
+            if got.get("beside_refused"):
+                self._say(strings.NEEDS_SUBS_BESIDE)
+            self.refresh()
+        self._press("make_from_audio", entry, lambda: make(registry, lang, ids, read_settings() or {}, title, install,
+                                                           cancel), line=line, then=done, goes=False)
+
+    def _do_find_with_hato(self, entry, _line):
+        """*Find them with hato* (NS-2: the one press, the first time): the yes kept (`no_subs.SETTING`, through the
+        settings service), Surasura's tools entry written again (hato's `register` listed: Q3), then a look — after it
+        the waiting videos go to hato on the looks' own worker (`SourceLooks._fill_tracks`)."""
+        from app import no_subs
+        settings = self.win.services.settings
+        settings.set({no_subs.SETTING: True})
+        looks = getattr(self.win, "looks", None)
+        read_settings = self.read_settings
+
+        def run():
+            from app import tools_entry
+            from app.services.settings import thaw
+            try:
+                tools_entry.refresh(thaw(read_settings() or {}))
+            except Exception as e:
+                print(f"Needs you: Surasura's tools entry wasn't written again: {e!r}")
+            return True
+
+        def done(_ok):
+            self._say(strings.NEEDS_HATO_ON)
+            if looks is not None and hasattr(looks, "asked"):
+                looks.asked(refreshed=True)
+            self.refresh()
+        self._press("find_with_hato", entry, run, then=done, goes=False)
 
     def _do_open_anki(self, entry, _line):
         """A3W-6: *Open Anki* on the Anki line — Anki started on Connect's profile, on a worker; the line stays until

@@ -27,7 +27,11 @@ and every GUI-thread step, `--rounds` times each (>= 10 for a timed run):
   - `scroll-wheel`: the page turned by the wheel, a burst of notches 50 ms apart (down, back up at the end);
   - `report-open`: the bug's press with Settings in view (the pictures taken, the report window opened; closed
     outside the repetition) — Sonic's "debug screen" (a9.1 report 3); its first press of the run apart
-    (`report-open-first`: the window made, never opened before — one a run: `--runs` for more).
+    (`report-open-first`: the window made, never opened before — one a run: `--runs` for more);
+  - `fresh-sheet`: Content's *Sort again or start over…* pressed (the sheet built and opened on the motion clock, its
+    counts and Backups list landing from their workers; closed with *Close* outside the repetition) — its first open
+    of the run apart (`fresh-sheet-first`). The window counts as in front for it (a learner's click puts it there; this
+    bench shows it without taking the keyboard): the card opens through its lift, as on a learner's screen.
 `--settings FILE`: that settings.json in each run's root (a learner's own shape: which sections and rows show).
 `--moments a,b`: only those moments (the page's build always runs first; `report-open` takes its first press too).
 After each moment's last repetition the clock's wake-ups are counted once it is still.
@@ -75,7 +79,8 @@ def main_child(a):
     from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
     from PyQt6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent
     from PyQt6.QtWidgets import QApplication
-    from app.qt import hud as hud_module, report, settings_catalog as catalog, settings_page as sp, shell
+    from app.qt import hud as hud_module, report, settings_catalog as catalog, settings_page as sp, settings_sources
+    from app.qt import motion, shell
 
     app = QApplication([sys.argv[0]])
     shell.prepare_process()
@@ -334,6 +339,32 @@ def main_child(a):
                 w.close()
         at(400, close)
 
+    # --- Content's Sort again or start over sheet ---------------------------------------------------------------- #
+    in_front = motion._in_front
+    def sheet(c):
+        def go():
+            rows = page().findChildren(settings_sources.SourcesRow)
+            state["fresh"] = rows[0].fresh if rows else None
+            if state["fresh"] is None or not state["fresh"].button.isEnabled():
+                why = "fresh-sheet: no door"
+                result["skipped"][why] = result["skipped"].get(why, 0) + 1
+                state["fresh"] = None
+                return
+            motion._in_front = lambda top: top is window   # (the learner's click: the window in front)
+            moments.begin("fresh-sheet-first" if c == 0 else "fresh-sheet")
+            state["fresh"].button.click()
+        at(500, go)                                      # (its opening and its lists' landing inside the repetition)
+
+        def close():
+            fresh = state.get("fresh")
+            if fresh is None:
+                return
+            moments.end()
+            if fresh.card is not None:
+                fresh.card.no.click()
+            motion._in_front = in_front
+        at(400, close)
+
     def still(name):
         return lambda: (lambda then: moments.still(name, then))
 
@@ -392,6 +423,10 @@ def main_child(a):
             for c in range(n):
                 wheel(c)
             at(0, still("scroll-wheel"))
+        if on("fresh-sheet"):
+            for c in range(n):
+                sheet(c)
+            at(400, still("fresh-sheet"))
         if on("report-open"):
             for c in range(n):
                 bug(c)

@@ -1362,3 +1362,82 @@ def test_back_during_the_save_makes_no_zip_and_a_second_press_meanwhile_says_why
         QApplication.processEvents()
     assert built == [] and w.pages.currentIndex() == w.FORM          # Back before the zip: none made for nothing
     assert wait_until(lambda: w.send_button.isEnabled())
+
+
+# --- Mado-SO (a9.1's kept window at 250 %: three whole paints an opening): opened again as it was left ------------- #
+def _held_list(monkeypatch):
+    """The saved reports' read held until the gate opens (a slow disk): what the window shows before it lands."""
+    import threading
+    gate = threading.Event()
+    real = core.listed
+    monkeypatch.setattr(core, "listed", lambda: (gate.wait(5), real())[1])
+    return gate
+
+
+def test_kept_it_opens_at_the_size_it_was_left_at_never_shrunk_then_grown_back(main, monkeypatch):
+    # `windows.show` sized a kept window to its hint again; its lines landing grew it back, twice (Windows' own
+    # second step): each a whole repaint at 250 %. Opened again it is the size it was left at — a learner's own too
+    from PyQt6.QtCore import QObject, QSize
+    w = _press(main)
+    for _ in range(10):
+        QApplication.processEvents()
+    w.resize(w.size() + QSize(30, 50))
+    for _ in range(10):
+        QApplication.processEvents()
+    size = w.size()
+    _close(w)
+    resized = []
+
+    class Sizes(QObject):
+        def eventFilter(self, obj, event):
+            if obj is w and event.type() == QEvent.Type.Resize and event.oldSize().isValid():
+                resized.append((event.oldSize(), event.size()))
+            return False
+    sizes = Sizes()
+    w.installEventFilter(sizes)
+    gate = _held_list(monkeypatch)
+    landed = []
+    real_show = w._show
+    monkeypatch.setattr(w, "_show", lambda got, line=None: (real_show(got, line), landed.append(len(got))))
+    main.report_button.click()
+    assert windows.opened(main, report_ui.NAME) is w and w.size() == size
+    gate.set()
+    assert wait_until(lambda: landed == [0])
+    for _ in range(10):
+        QApplication.processEvents()
+    assert w.size() == size and resized == []
+    w.removeEventFilter(sizes)
+    _close(w)
+
+
+def test_kept_with_nothing_saved_its_line_is_there_at_the_press_and_the_read_changes_nothing(main, monkeypatch):
+    w = _press(main)
+    assert wait_until(lambda: w.status.text() == strings.REPORT_EMPTY) and w.reports == []
+    _close(w)
+    gate = _held_list(monkeypatch)
+    landed = []
+    real_show = w._show
+    monkeypatch.setattr(w, "_show", lambda got, line=None: (real_show(got, line), landed.append(len(got))))
+    main.report_button.click()
+    assert windows.opened(main, report_ui.NAME) is w
+    assert w.status.text() == strings.REPORT_EMPTY and w.status.isVisibleTo(w)   # at the press, before the read
+    paints = w.status_paints
+    gate.set()
+    assert wait_until(lambda: landed == [0])
+    assert w.status.text() == strings.REPORT_EMPTY and w.status_paints == paints   # nothing it shows changed (S19)
+    _close(w)
+
+
+def test_kept_with_nothing_saved_a_report_saved_since_takes_the_empty_line_away(main, monkeypatch):
+    # the line is the list's own: put back at the press from the last read, it goes when the read finds a report
+    w = _press(main)
+    assert wait_until(lambda: w.status.text() == strings.REPORT_EMPTY)
+    _close(w)
+    core.save(JA_WHAT, "", [])                                         # (saved meanwhile: the next read finds it)
+    gate = _held_list(monkeypatch)
+    main.report_button.click()
+    assert w.status.text() == strings.REPORT_EMPTY
+    gate.set()
+    assert wait_until(lambda: w.reports is not None and len(w.reports) == 1)
+    assert w.status.text() == "" and w.status.isHidden()
+    _close(w)

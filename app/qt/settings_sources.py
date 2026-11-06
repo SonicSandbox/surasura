@@ -947,6 +947,7 @@ class FreshRow(QObject):
 # --- the one sheet (the spec §3.1: two choices, the Backups list; three doors) ----------------------------------- #
 SHOWN_BACKUPS = 5                                   # the newest five, then *Show all* (P15)
 RUNNING = "_fresh_running"                          # on the window: a Sort again or a Put back under way (its words)
+KEPT = "_fresh_kept"                                # on the window: the sheet's card kept built since its close
 _SIZES = {}                                         # (folder, its time) -> bytes: a backup's size, worked out once
 
 
@@ -1025,7 +1026,8 @@ class FreshSheet(QObject):
     completely** (*Start over…*) — `first` on top — and **Backups** (hidden while there are none; *Looking for
     backups…* until the worker's list lands; five, then *Show all*; each *Put back…* / *Put it back* and *Show in
     folder*). A press sets `choice` (("sort",), ("folders",), ("over",), ("put-back", entry)) and closes the card
-    with Yes; `on_choice(choice)` follows. Nothing here runs anything."""
+    with Yes; `on_choice(choice)` follows. Nothing here runs anything. Kept built with its card (`open_fresh`):
+    `renew` makes it a new sheet again for the next opening."""
 
     def __init__(self, card, first="sort", why=None, connect_on=False, on_choice=None, busy=None):
         super().__init__(card)
@@ -1038,6 +1040,8 @@ class FreshSheet(QObject):
         self.row_words = []                           # [(entry, its words label)] of the rows listed
         self.on_show_all = None                       # (the sheet's opener: the sizes of the rest, on a worker)
         self._rows_key = None
+        self.relay = None                             # (the opening's: its workers' answers, dropped with it)
+        self.opening = 0                              # each opening's number: an earlier one's answer never lands
         f = theme.text_factor(style.current()[1])
         box = card.layout()
         at = box.count() - 1                          # (above the card's own button row)
@@ -1083,6 +1087,29 @@ class FreshSheet(QObject):
         backups_box.addLayout(row)
         for i, part in enumerate(parts + (self.backups_part,)):
             box.insertWidget(at + i, part)
+
+    def renew(self, why=None, connect_on=False, busy=None):
+        """(Kept, hidden.) As a new sheet opens: nothing chosen, its counts and its Backups not read yet (*Looking for
+        backups…*), the greying of now."""
+        self.choice, self.busy = None, busy
+        self.backups, self.sizes, self.all_shown, self._rows_key = None, {}, False, None
+        for w in self.row_widgets:
+            self.rows.removeWidget(w)
+            w.hide()
+            w.deleteLater()
+        self.row_widgets, self.row_words = [], []
+        _say(self.counts_line, "")
+        _say(self.suspended_line, "")
+        _say(self.cards_line, S.FRESH_SORT_CARDS if connect_on else "")
+        for b, tip in ((self.btn_sort, S.FRESH_SORT_TIP), (self.btn_folders, S.FRESH_FOLDERS_TIP)):
+            b.setToolTip(why or tip)
+            b.setEnabled(why is None)
+        self.btn_over.setToolTip(busy or S.FRESH_OVER_TIP)
+        self.btn_over.setEnabled(busy is None)
+        self.looking.setVisible(True)
+        self.scroll.setVisible(False)
+        self.btn_all.setVisible(False)
+        self.backups_part.setVisible(True)
 
     # --- building ------------------------------------------------------------------------------------------------ #
     def _part(self, head, body):
@@ -1203,13 +1230,15 @@ class FreshSheet(QObject):
         card, lay = self.card, self.card.layout()
         lay.activate()
         room = card._window.height() - 2 * confirm.MARGIN
-        parts = [p for p in (self.sort_part, self.over_part) if p.isVisible()]
+        parts = [p for p in (self.sort_part, self.over_part) if not p.isHidden()]     # (before it shows, too)
         need = sum(p.heightForWidth(p.width()) if p.hasHeightForWidth() else p.sizeHint().height() for p in parts)
-        listed = self.scroll.isVisible() and self.row_widgets
+        listed = not self.scroll.isHidden() and self.row_widgets
         rows_h = self.scroll.height() if listed else 0
         other = card.height() - sum(p.height() for p in parts) - rows_h
-        if listed:
-            one = max(w.heightForWidth(w.width()) if w.hasHeightForWidth() else w.sizeHint().height()
+        if listed:                                    # each row at its narrowest, its scrollbar beside it (shown or
+            #                                           not yet: measured as it will be, never as it is just now)
+            width = self.scroll.contentsRect().width() - self.scroll.verticalScrollBar().sizeHint().width()
+            one = max(w.heightForWidth(width) if w.hasHeightForWidth() else w.sizeHint().height()
                       for w in self.row_widgets) + self.rows.spacing()
             rows_h = max(one, min(min(len(self.row_widgets), SHOWN_BACKUPS) * one, room - other - need))
             self.scroll.setFixedHeight(rows_h)
@@ -1273,7 +1302,8 @@ def _connect_on(shell):
 
 def open_fresh(shell, parent, first="sort", done=None):
     """The one sheet over `parent`'s window, at once (≤ 5 ms on the window's thread: its counts and its Backups list
-    read on workers as it shows). Esc, Back, *Close* or a click outside close it, doing nothing; a press acts
+    read on workers as it shows; built once a window — kept at its close, `_kept` — and made a new sheet again at each
+    opening, `FreshSheet.renew`). Esc, Back, *Close* or a click outside close it, doing nothing; a press acts
     (`act`). `done()` once it closed, either way. -> the card."""
     from app.qt import bridge, confirm
     looks = _looks(shell)
@@ -1288,23 +1318,39 @@ def open_fresh(shell, parent, first="sort", done=None):
             done()
         if choice is not None:
             act(shell, choice, parent=parent)
-    card = confirm.ask(parent, S.FRESH_SHEET, "", None, None, no=S.FRESH_CLOSE, no_tip=S.FRESH_CLOSE_TIP,
-                       on_answer=answered)
-    sheet = holder["sheet"] = FreshSheet(card, first=first, why=why, connect_on=_connect_on(shell), busy=busy)
-    card.sheet = sheet
-    card.ring = sheet.buttons                         # Tab goes round its buttons too (`confirm.Confirm`)
-    place = card.place
 
-    def fitted():                                     # the card's own placing, then measured again at its width
-        for w in card.findChildren(QWidget):          # (in their own fonts: the stylesheet's, before they show)
-            w.ensurePolished()
-        card.layout().invalidate()
-        place()
-        sheet.fit()
-    card.place = fitted
-    card.place()
-    relay = bridge.Relay(card)
-    relay.said.connect(lambda said: _heard_sheet(sheet, said))
+    def build(card):                                  # its parts made before the card shows: one show, one polish
+        sheet = holder["sheet"] = FreshSheet(card, first=first, why=why, connect_on=_connect_on(shell), busy=busy)
+        card.sheet = sheet
+        card.ring = sheet.buttons                     # Tab goes round its buttons too (`confirm.Confirm`)
+        card.keep, card.made_in = True, style.current()   # (kept at its close: the next opening shows it again)
+        place = card.place
+
+        def fitted():                                 # the card's own placing, then measured again at its width
+            for w in sheet.row_widgets:               # (in their own fonts: the stylesheet's, before they show — the
+                w.ensurePolished()                    # ... card polishes the rest at its first place; rows come later)
+            card.layout().invalidate()
+            place()
+            card.layout().setGeometry(card.rect())    # (laid out at its placed size: hidden, no resize comes to do it)
+            sheet.fit()
+        card.place = fitted
+    card = _kept(shell, parent, first)
+    if card is not None:                              # built once: made a new sheet again, opened as a new one
+        sheet = holder["sheet"] = card.sheet
+        sheet.renew(why=why, connect_on=_connect_on(shell), busy=busy)
+        card.again(answered)
+    else:
+        card = confirm.ask(parent, S.FRESH_SHEET, "", None, None, no=S.FRESH_CLOSE, no_tip=S.FRESH_CLOSE_TIP,
+                           on_answer=answered, build=build)
+        sheet = holder["sheet"]
+        if shell is not None:
+            shell.__dict__[KEPT] = card
+    if sheet.relay is not None and not sip.isdeleted(sheet.relay):
+        sheet.relay.deleteLater()                     # (an earlier opening's answers dropped: never in this one)
+    relay = sheet.relay = bridge.Relay(card)
+    sheet.opening += 1
+    opening = sheet.opening
+    relay.said.connect(lambda said: opening == sheet.opening and _heard_sheet(sheet, said))
     language = getattr(shell, "language", None)
     counts = getattr(looks, "fresh_counts", None)
     if counts is not None and not counts(lambda c: relay.call(("counts", c))):
@@ -1319,6 +1365,25 @@ def open_fresh(shell, parent, first="sort", done=None):
     sheet.on_show_all = lambda rest: rest and bridge.run_in_worker(
         lambda: relay.call(("sizes", backup_sizes(rest))), failed=lambda info: None)
     return card
+
+
+def _kept(shell, parent, first):
+    """The sheet's card kept since its close, for an opening over `parent`'s window with `first` on top — or None
+    (none kept, open now, let go with its window, another window, `first` or look: then let go here)."""
+    card = shell.__dict__.get(KEPT) if shell is not None else None
+    if card is None:
+        return None
+    if (not sip.isdeleted(card) and card.keep and card.answer is not None and card._window is parent.window()
+            and card.made_in == style.current() and card.sheet.first == first):
+        return card
+    shell.__dict__.pop(KEPT, None)
+    if not sip.isdeleted(card):
+        if card.answer is None:
+            card.keep = False                         # (open now: let go at its answer, as any card)
+        else:
+            card.scrim.deleteLater()
+            card.deleteLater()
+    return None
 
 
 def _busy_now(shell):

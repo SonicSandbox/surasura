@@ -879,7 +879,7 @@ def tag_names(url, words, outcomes):
 
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
-               known=None, should_stop=None, show=None, reading=None):
+               known=None, should_stop=None, show=None, reading=None, from_audio=False):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -897,7 +897,9 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     `runfile.from_tag(show)`. `reading` (Z-9): the book's or
     the text's file Anki Miner reads (an Anki Miner naming `reading` only): `video` and `subtitle` unused, each word
     named by its sentence. `video` an audio file (`is_audio`, Z-16: an audiobook's, a podcast's): mined as Anki Miner's
-    audio episode, the clips cut from it (an Anki Miner naming `audio-episodes` only)."""
+    audio episode, the clips cut from it (an Anki Miner naming `audio-episodes` only). `from_audio` (Michi-NS, Q5): the
+    episode's subtitle was made from its audio (`no_subs`): every card also carries `runfile.FROM_AUDIO_TAG`, so the
+    learner can find and check them."""
     from app import anki_connect, locks
     try:
         # #BS0A1K: a Stop pressed while another writer holds Anki (Junban's reorder) ends the wait for it at once
@@ -913,7 +915,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                               subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show,
-                              reading)
+                              reading, from_audio)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -954,7 +956,7 @@ def before_anki(run_dir, run_id, progress):
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
-               show=None, reading=None):
+               show=None, reading=None, from_audio=False):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
@@ -970,7 +972,8 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         # Z-16: the same for an audio file (an audiobook's, a podcast's) with an Anki Miner that doesn't mine audio
         raise AnkiMinerError("no-audio", "This Anki Miner can't mine audio.", verdict=info)
     run_id = f"{job}-{attempt}"
-    tags = " ".join(t for t in (runfile.job_tag(job), runfile.from_tag(show)) if t)
+    tags = " ".join(t for t in (runfile.job_tag(job), runfile.from_tag(show),
+                                runfile.FROM_AUDIO_TAG if from_audio else "") if t)
     if reading is not None:
         episode = runfile.reading_episode(run_id, reading, runfile.word_requests(words, named, book=True), tags)
     else:

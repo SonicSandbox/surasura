@@ -968,7 +968,16 @@ class SettingsPage(QWidget):
             label, tip = S.ROW_DOORS.get(row.id, {}).get(name) or S.DOORS[name]
             door = sc.Door(label, tooltip=tip, name=label, parent=view.slot)
             door.clicked.connect(lambda _c=False, n=name: self.open_door(n))
-            view.slot.layout().addWidget(door)
+            if row.kind == "toggle":
+                # a9.1: a switch that opens its own door (*Preview a video…* on YouTube preview's switch): the door
+                # stands before the switch and keeps its room while hidden — the flip never moves the switch under
+                # the hand, nor grows the row (a choice never moves the page)
+                policy = door.sizePolicy()
+                policy.setRetainSizeWhenHidden(True)
+                door.setSizePolicy(policy)
+                view.slot.layout().insertWidget(len(view.doors), door)
+            else:
+                view.slot.layout().addWidget(door)
             view.doors[name] = door
         self._show_doors(view, settings)
         if row.group:

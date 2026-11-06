@@ -727,7 +727,8 @@ def _rows():
                  {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv"),
                   f"{{S}}!/{ep(2)}.{{T}}.srt": _ep(f"{{S}}!/{ep(2)}.{{T}}.srt", f"{{S}}!/{ep(2)}.mkv"),
                   f"{{S}}/{ep(3)}.{{T}}.srt": at_top(3)},
-                 "the loose one goes to the folder named exactly (the helper's run joins the two titles later)"))
+                 "the loose one goes to the folder named exactly; the two folders are one title as they come in "
+                 "(3.0.1 item 12; before, the helper's run joined them later)"))
     rows.append(("`<Show>'/` and `<Show>°/` beside a loose `<Show>`", "convention (a8)",
                  "two seasons named apart only by punctuation (`Gintama'`, `Gintama°`) and a loose "
                  "`[Grp] <Show> - 03 (1080p)` at the top, no folder named exactly `<Show>`", "",
@@ -735,7 +736,8 @@ def _rows():
                  {f"{{S}}'/{ep(1)}.{{T}}.srt": _ep(f"{{S}}'/{ep(1)}.{{T}}.srt", f"{{S}}'/{ep(1)}.mkv"),
                   f"{{S}}°/{ep(2)}.{{T}}.srt": _ep(f"{{S}}°/{ep(2)}.{{T}}.srt", f"{{S}}°/{ep(2)}.mkv"),
                   f"{{S}}/{ep(3)}.{{T}}.srt": at_top(3)},
-                 "two folders of one show and neither is it: the loose episode keeps its own show, as before"))
+                 "two folders of one show and neither is it: the loose episode keeps its own show folder, as "
+                 "before — all three one title as they come in (punctuation apart, no exception: 3.0.1 item 12)"))
     one, two = "Gintama", "Gintama'"                    # seasons named by punctuation (SHOW_KEY_EXCEPTIONS)
     rows.append(("`Gintama/` and `Gintama'/` beside loose episodes of each", "convention (a8, an exception)",
                  "two seasons named by punctuation (`episode_names.SHOW_KEY_EXCEPTIONS`), each with a loose episode "
@@ -773,6 +775,9 @@ def _languages(row):
 
 
 CASES = [pytest.param(row, language, id=f"{row[0]}-{language}") for row in ROWS for language in _languages(row)]
+# the rows whose show folders are ONE title (3.0.1 item 12: a new show folder joins the one title of its show key);
+# every other row's folders are a title each
+_ONE_TITLE = ("`<Show>/` and `<Show>!/` beside a loose `<Show>`", "`<Show>'/` and `<Show>°/` beside a loose `<Show>`")
 
 
 @pytest.mark.parametrize("row,language", CASES)
@@ -797,6 +802,8 @@ def test_a_layout_is_read_as_a_learner_would_want(row, language, record_property
         _look(store, language, rid, full=True)
         again = _state(store, data_dir, drive, made)
     shows = sorted({os.path.dirname(k) for k in want})
+    if _id in _ONE_TITLE:
+        shows = [" + ".join(shows)]
     assert got == (shows, want)
     assert again == got, "a Refresh changed what the looks made"
 

@@ -42,10 +42,12 @@ def _fresh_module_state():
     sources._LOOKED.clear()
     sources._RUNNING.clear()
     sources._EMPTIED.clear()
+    sources._KEPT.clear()
     yield
     sources._LOOKED.clear()
     sources._RUNNING.clear()
     sources._EMPTIED.clear()
+    sources._KEPT.clear()
 
 
 # --- helpers ------------------------------------------------------------------------------------------------------- #
@@ -1943,12 +1945,13 @@ def test_a_quick_look_with_no_folder_changed_reads_no_origins_or_exclusions(monk
         root = store.add_source(src)
         _look(store, language, root, first=True)
         reads = []
-        real_origins, real_excluded = store.origins, store.excluded
-        monkeypatch.setattr(store, "origins", lambda: reads.append("origins") or real_origins())
+        real_origins, real_kept, real_excluded = store.origins, store.origins_kept, store.excluded
+        monkeypatch.setattr(store, "origins", lambda items=None: reads.append("origins") or real_origins(items=items))
+        monkeypatch.setattr(store, "origins_kept", lambda kept=None: reads.append("origins") or real_kept(kept))
         monkeypatch.setattr(store, "excluded", lambda root_ids=None: reads.append("excluded") or real_excluded())
         assert _look(store, language, root)["added"] == 0 and reads == []
         _write(os.path.join(src, a, "ep02.srt"), _text(language, 2))
-        assert _look(store, language, root)["added"] == 1 and sorted(reads) == ["excluded", "origins"]
+        assert _look(store, language, root)["added"] == 1 and "excluded" in reads and "origins" in reads
 
 
 def test_the_known_books_are_gathered_once_a_look(monkeypatch):

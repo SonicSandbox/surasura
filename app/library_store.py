@@ -710,6 +710,44 @@ ADDED_HASH_SQL = (
       BEGIN UPDATE items SET content_sha256 = NULL WHERE id = NEW.id; END""",
 )
 ADDED_HASH = "items_hash_stale"
+# F13b (3.0.1): which items' origins changed, logged by SQLite itself — whoever writes, an older Surasura too — so a
+# look reads only what changed since the origins it kept (`origins_kept`; reading every origin cost a look ~0.25–0.45 s
+# at 20k). One row an item an origin row (`pairings`, "src:") or an item's copy (`rel_path`, `availability`) changed:
+# its id. A replaced pairing logs the item it held too (BEFORE INSERT: SQLite's REPLACE fires no delete trigger).
+# Made with the added indexes (no version, no data change): a new store at once, an existing one at its first open by
+# a writer, which also logs the reset mark 0 (every origin as changed: a reader that kept origins from before the
+# triggers were there reads all). It keeps its newest ORIGIN_LOG_KEEP rows (the log prunes itself); a reader whose
+# mark is older reads all. Never in the copy (COPY_TABLES). Dropped as easily: DROP the triggers, then the table.
+ORIGIN_LOG_KEEP = 50_000
+_SRC_ROW = "{0}.content_key >= 'src:' AND {0}.content_key < 'src;'"     # `_ORIGIN_ROW` on a trigger's NEW / OLD
+ORIGIN_LOG_SQL = (
+    "CREATE TABLE IF NOT EXISTS origin_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL)",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_replaced BEFORE INSERT ON pairings WHEN {_SRC_ROW.format('NEW')}
+      BEGIN INSERT INTO origin_changes (item_id) SELECT item_id FROM pairings
+        WHERE content_key = NEW.content_key AND item_id IS NOT NULL; END""",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_in AFTER INSERT ON pairings
+      WHEN NEW.item_id IS NOT NULL AND {_SRC_ROW.format('NEW')}
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.item_id); END""",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_set AFTER UPDATE ON pairings
+      WHEN ({_SRC_ROW.format('OLD')}) OR ({_SRC_ROW.format('NEW')})
+      BEGIN INSERT INTO origin_changes (item_id) SELECT OLD.item_id WHERE OLD.item_id IS NOT NULL
+        UNION SELECT NEW.item_id WHERE NEW.item_id IS NOT NULL; END""",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_out AFTER DELETE ON pairings
+      WHEN OLD.item_id IS NOT NULL AND {_SRC_ROW.format('OLD')}
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (OLD.item_id); END""",
+    """CREATE TRIGGER IF NOT EXISTS origin_log_copy AFTER UPDATE OF rel_path, availability ON items
+      WHEN NEW.rel_path IS NOT OLD.rel_path OR NEW.availability IS NOT OLD.availability
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END""",
+    """CREATE TRIGGER IF NOT EXISTS origin_log_item_in AFTER INSERT ON items
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END""",
+    """CREATE TRIGGER IF NOT EXISTS origin_log_item_out AFTER DELETE ON items
+      BEGIN INSERT INTO origin_changes (item_id) VALUES (OLD.id); END""",
+    f"""CREATE TRIGGER IF NOT EXISTS origin_log_prune AFTER INSERT ON origin_changes WHEN NEW.seq % 1024 = 0
+      BEGIN DELETE FROM origin_changes WHERE seq <= NEW.seq - {ORIGIN_LOG_KEEP}; END""",
+    "INSERT INTO origin_changes (item_id) VALUES (0)",                 # the reset mark (an item id is never 0)
+)
+ORIGIN_LOG = ("origin_changes", "origin_log_replaced", "origin_log_in", "origin_log_set", "origin_log_out",
+              "origin_log_copy", "origin_log_item_in", "origin_log_item_out", "origin_log_prune")
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then
@@ -1740,8 +1778,9 @@ class Store:
         """ADDED_INDEXES, made at the first open by a writer of a store made before them, under the write lock: one
         read of the schema at every other open. A store not made yet, a newer one, a damaged or busy one (or this
         process inside a write already) is left as it is: a later open makes them. Never a version or data change.
-        A4K-7: the copies' hash column and its trigger too (ADDED_HASH_SQL), the column only where it isn't yet."""
-        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH,)
+        A4K-7: the copies' hash column and its trigger too (ADDED_HASH_SQL), the column only where it isn't yet.
+        F13b: the origins' change log and its triggers (ORIGIN_LOG_SQL), with its reset mark."""
+        names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH,) + ORIGIN_LOG
         try:
             have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
                                                     f"({','.join('?' * len(names))})", names)}
@@ -1756,6 +1795,9 @@ class Store:
                     if sql.startswith("ALTER") and self._hash_column():   # another open made it meanwhile
                         continue
                     self.conn.execute(sql)
+                if not have.issuperset(ORIGIN_LOG):              # (its reset mark only with a trigger made)
+                    for sql in ORIGIN_LOG_SQL:
+                        self.conn.execute(sql)
         except (StoreError, sqlite3.Error):
             pass
 
@@ -6120,7 +6162,7 @@ def _ensure_schema(store):
                                           "AND name NOT LIKE 'sqlite_%'").fetchone()[0]
             if existing:
                 raise StoreError("a library database without a schema version; left alone")
-            for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL:      # A4K-7: a new store has the hashes at once
+            for sql in SCHEMA_SQL + SCHEMA_2_SQL + ADDED_HASH_SQL + ORIGIN_LOG_SQL:   # A4K-7, F13b: at once
                 store.conn.execute(sql)
             store.conn.execute(f"PRAGMA user_version = {STORE_SCHEMA}")
     return version
@@ -9194,6 +9236,44 @@ def _store_origins(self, items=None):
     return {r[0]: Origin._make(r[1:]) for r in rows}         # in key order (a look finds a folder's by its prefix)
 
 
+def _store_origins_kept(self, kept=None):
+    """F13b: `origins()` as it reads now, from the origins a look kept (`kept`: this call's own answer last time, or
+    None) — only the items the change log (ORIGIN_LOG_SQL) names since then read again (`origins(items=…)`), their
+    old keys dropped, their keys now laid over the rest, in key order: the same dict, field for field and in the same
+    order, as a whole read. A whole read (`origins()`) when nothing was kept, the store is another (its id or epoch
+    moved), the log can't say (its triggers missing, its rows since pruned, the reset mark 0 among them), more than a
+    quarter of the origins changed, or inside a write. -> (mark, origins); `mark` None: nothing to keep."""
+    if self.conn.in_transaction:                             # a write's own rows may yet roll back: never kept
+        return None, self.origins()
+    with self._reading():
+        meta = self._meta()
+        have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
+                                                f"({','.join('?' * len(ORIGIN_LOG))})", ORIGIN_LOG)}
+        if len(have) < len(ORIGIN_LOG):
+            return None, self.origins()
+        top = self.conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'origin_changes'").fetchone()
+        mark = (meta.get("store_id"), meta.get("epoch"), top[0] if top else 0)
+        held, origins = kept if kept else (None, None)
+        if not held or held[:2] != mark[:2] or not isinstance(held[2], int) or held[2] > mark[2]:
+            return mark, self.origins()
+        if held[2] == mark[2]:
+            return mark, origins
+        low = self.conn.execute("SELECT MIN(seq) FROM origin_changes").fetchone()[0]
+        if low is None or low > held[2] + 1:                 # the rows since the mark pruned (or none: all pruned)
+            return mark, self.origins()
+        ids = {r[0] for r in self.conn.execute("SELECT DISTINCT item_id FROM origin_changes WHERE seq > ?",
+                                               (held[2],))}
+        if 0 in ids or len(ids) > len(origins) // 4:
+            return mark, self.origins()
+        fresh = self.origins(items=ids)
+    out = {k: o for k, o in origins.items() if o.item_id not in ids}
+    new = [k for k in fresh if k not in out]
+    out.update(fresh)
+    if new:                                                  # in key order, as SQLite's (UTF-8 order is code points')
+        out = {k: out[k] for k in sorted(out)}
+    return mark, out
+
+
 def _store_excluded(self, root_ids=None):
     """{path_key(origin): {"size", "sha256", "video_key"?}} of the origins Remove keeps out (`root_ids`: only those
     sources'); a look checks a new file's path, bytes and video against them (S6; `take_in` checks them again)."""
@@ -12009,6 +12089,7 @@ Store.stop_source = _store_stop_source
 Store.join_moved = _store_join_moved
 Store.source_detail = _store_source_detail
 Store.origins = _store_origins
+Store.origins_kept = _store_origins_kept
 Store.excluded = _store_excluded
 Store.items_of_size = _store_items_of_size
 Store.keep_hashes = _store_keep_hashes

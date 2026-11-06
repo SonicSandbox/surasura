@@ -14,8 +14,8 @@ import pytest
 
 from app import library_store as ls
 from app import sources
-from tests.test_sources_scan import (_drive, _empty, _fresh_module_state, _look, _seed, _settle,  # noqa: F401
-                                     _text, _write)
+from tests.test_sources_scan import (_chapters, _drive, _empty, _epub, _fresh_module_state,  # noqa: F401
+                                     _look, _seed, _settle, _text, _write)
 
 
 def _counting(store, monkeypatch):
@@ -47,31 +47,44 @@ def _library(n=120, per_show=10):
 
 # --- the store's read ----------------------------------------------------------------------------------------------- #
 
-def test_the_kept_read_equals_the_whole_read_after_every_kind_of_write():
-    """300 random writes of every kind an origin's read depends on — a record rewritten, a key moved to another item
-    by REPLACE (no delete trigger fires), an origin deleted, an item's copy moved or gone, an item deleted with its
-    records, a new item and origin, a record made unreadable, the store's own take-in and update — each through a
-    plain connection or the store; after each, the kept read is the whole read, in order."""
+def _copy_item(raw, item_id, new_id, n):
+    """A new item row like `item_id`'s, with its own id and file (an item made by another program)."""
+    cols = [r[1] for r in raw.execute("PRAGMA table_info(items)") if r[1] not in ("id", "rel_path", "rel_key")]
+    raw.execute(f"INSERT INTO items (id, rel_path, rel_key, {', '.join(cols)}) SELECT ?, ?, ?, {', '.join(cols)} "
+                f"FROM items WHERE id = ?", (new_id, f"Library/外/{n}.srt", f"library/外/{n}.srt", item_id))
+
+
+@pytest.mark.parametrize("foreign_keys", [True, False], ids=["fk-on", "fk-off"])
+def test_the_kept_read_equals_the_whole_read_after_every_kind_of_write(foreign_keys):
+    """400 random writes of every kind an origin's read depends on — a record rewritten or made unreadable, a key
+    moved to another item by UPDATE or by REPLACE (SQLite fires no delete trigger for it), to no item or out of the
+    origins' range, an origin deleted, an item's copy moved or gone, an item deleted, an item made after its record
+    (a writer with foreign keys off: a plain connection's default), the store's own take-in (new keys sorting among
+    the old) and update — through a plain connection or the store; after each, the kept read is the whole read, in
+    order."""
     store, data_dir, src, root = _library()
     try:
-        rng = random.Random(13)
+        rng = random.Random(13 + foreign_keys)
         raw = sqlite3.connect(store.db_path)
-        raw.execute("PRAGMA foreign_keys=ON")
+        raw.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys else 'OFF'}")
         kept = store.origins_kept(None)
         assert kept[0] is not None
         _same(kept[1], store)
-        for step in range(300):
+        later = []                                              # items whose records came first (foreign keys off)
+        for step in range(400):
             keys = list(store.origins())
             ids = [r[0] for r in raw.execute("SELECT id FROM items")]
-            what = rng.randrange(10)
+            top = raw.execute("SELECT MAX(id) FROM items").fetchone()[0] or 0
+            what = rng.randrange(14)
             k = ls.SOURCE_KEY + rng.choice(keys) if keys else None
             if what == 0 and k:
                 raw.execute("UPDATE pairings SET pairing = json_set(pairing, '$.size', ?) WHERE content_key = ? AND "
                             "json_valid(pairing)", (rng.randrange(10**6), k))
             elif what == 1 and k:                               # REPLACE onto another item
                 row = raw.execute("SELECT pairing, paired_at FROM pairings WHERE content_key = ?", (k,)).fetchone()
+                to = rng.choice(ids) if foreign_keys or rng.random() < 0.5 else top + 1000 + step
                 raw.execute("INSERT OR REPLACE INTO pairings (content_key, item_id, pairing, paired_at) VALUES "
-                            "(?, ?, ?, ?)", (k, rng.choice(ids), row[0], row[1]))
+                            "(?, ?, ?, ?)", (k, to, row[0], row[1]))
             elif what == 2 and k:
                 raw.execute("DELETE FROM pairings WHERE content_key = ?", (k,))
             elif what == 3 and ids:
@@ -85,15 +98,15 @@ def test_the_kept_read_equals_the_whole_read_after_every_kind_of_write():
                 raw.execute("UPDATE pairings SET item_id = ? WHERE content_key = ?", (rng.choice(ids), k))
             elif what == 7 and k:
                 raw.execute("UPDATE pairings SET pairing = 'not json' WHERE content_key = ?", (k,))
-            elif what == 8:                                     # the store's own take-in: a new item and origin
+            elif what == 8:                                     # the store's own take-in: new keys among the old
                 name = f"新作{step:03d}.ja.srt"
                 rel = f"Library/新作/{name}"
                 full = os.path.join(data_dir, *rel.split("/"))
                 os.makedirs(os.path.dirname(full), exist_ok=True)
                 with open(full, "w", encoding="utf-8") as f:
-                    f.write(f"そんなことより、今日はどこへ行くの？ {step}\n")
+                    f.write(f"そんなことより、今日はどこへ行くの？ {step}" + chr(10))
                 raw.commit()
-                store.take_in(root, [{"origin": os.path.join(src, "新作", name), "size": 10, "mtime_ns": 1,
+                store.take_in(root, [{"origin": os.path.join(src, "aa新作", name), "size": 10, "mtime_ns": 1,
                                       "sha256": f"{10**6 + step:064x}", "show": "新作", "rel": rel,
                                       "episode": step + 1}])
             elif what == 9 and keys:                            # the store's own update of a record's stats
@@ -102,6 +115,19 @@ def test_the_kept_read_equals_the_whole_read_after_every_kind_of_write():
                 if readable:
                     o = rng.choice(readable)
                     store.update_origins([(o.origin, 11, 2, o.sha256, None)])
+            elif what == 10 and k:                              # to no item
+                raw.execute("UPDATE pairings SET item_id = NULL WHERE content_key = ?", (k,))
+            elif what == 11 and k:                              # out of the origins' range (and back, later)
+                raw.execute("UPDATE pairings SET content_key = ? WHERE content_key = ?", ("hato:" + k, k))
+            elif what == 12 and not foreign_keys and ids:       # a record first, its item after
+                row = raw.execute("SELECT pairing, paired_at FROM pairings LIMIT 1").fetchone()
+                if row:
+                    new_id = top + 100_000 + step              # (never one the store makes meanwhile)
+                    raw.execute("INSERT INTO pairings (content_key, item_id, pairing, paired_at) VALUES (?, ?, ?, ?)",
+                                (f"{ls.SOURCE_KEY}c:/elsewhere/m{step:03d}.srt", new_id, row[0], row[1]))
+                    later.append((rng.choice(ids), new_id, step))
+            elif what == 13 and later:
+                _copy_item(raw, *later.pop())
             raw.commit()
             kept = store.origins_kept(kept)
             assert kept[0] is not None
@@ -179,7 +205,8 @@ def test_the_log_prunes_itself_and_a_mark_before_its_rows_reads_in_full(monkeypa
             store.conn.executemany("INSERT INTO origin_changes (item_id) VALUES (?)",
                                    [(1,)] * (ls.ORIGIN_LOG_KEEP + 3000))
         count, low, top = store.conn.execute("SELECT COUNT(*), MIN(seq), MAX(seq) FROM origin_changes").fetchone()
-        assert count <= ls.ORIGIN_LOG_KEEP + 1024 and low > kept[0][2] + 1 and top - low + 1 == count
+        assert ls.ORIGIN_LOG_KEEP <= count <= ls.ORIGIN_LOG_KEEP + 1024 and low > kept[0][2] + 1
+        assert top - low + 1 == count
         whole = _counting(store, monkeypatch)
         got = store.origins_kept(kept)[1]
         assert whole == [1]
@@ -258,6 +285,13 @@ def test_a_quick_look_reads_only_what_changed_and_a_full_look_reads_all(monkeypa
             _settle(os.path.join(src, "seeded", show))
             assert _look(store, "ja", root)["added"] == 1
         assert whole == [1], "quick looks read only what changed"
+        _epub(os.path.join(src, "書棚", "星の歌.epub"), [c + "<p>書棚</p>" for c in _chapters()])
+        _settle(src)
+        assert _look(store, "ja", root)["added"] >= 2                  # a book: the look's own `_refresh` changes its
+        _write(os.path.join(src, "seeded", show, f"[Grp] {show} - 81 (1080p).ja.srt"), _text("ja", 81))   # copy
+        _settle(os.path.join(src, "seeded", show))
+        assert _look(store, "ja", root)["added"] == 1                  # what was kept is the store's, never that copy
+        assert whole == [1]
         _write(os.path.join(src, "seeded", show, f"[Grp] {show} - 80 (1080p).ja.srt"), _text("ja", 80))
         _settle(os.path.join(src, "seeded", show))
         assert _look(store, "ja", root, full=True)["added"] == 1

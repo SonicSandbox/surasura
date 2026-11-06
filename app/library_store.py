@@ -4052,10 +4052,13 @@ class Store:
             news |= affected
             for run in pending:
                 work = info[run[0]][2]
-                ends = {r[0]: r[1:] for r in conn.execute("SELECT id, tier, ord FROM items WHERE id IN (?, ?)",
-                                                          (run[0], run[-1]))}       # one read for both (R6)
-                before = unstale(self._side(run[0], -1, ends[run[0]]))
-                after = unstale(self._side(run[-1], 1, ends[run[-1]]))
+                # its two sides are `near`'s rows (nothing moves a row while the pieces settle); only their pieces may
+                # have changed since (a split, a run before this one): read now, both at once (R6)
+                sides = [n for n in (near[run[0]][0][0], near[run[-1]][1][0]) if n is not None]
+                now = {r[0]: r for r in conn.execute(f"SELECT id, piece_id, work_id FROM items WHERE id IN "
+                                                     f"({','.join('?' * len(sides))})", sides)} if sides else {}
+                before = unstale(now.get(near[run[0]][0][0]))
+                after = unstale(now.get(near[run[-1]][1][0]))
                 if before is not None and before[2] == work and before[1] is not None and not is_group(before[1]):
                     piece = before[1]
                 elif after is not None and after[2] == work and after[1] is not None and not is_group(after[1]):
@@ -4139,18 +4142,6 @@ class Store:
         if fresh:
             self.conn.executemany("UPDATE items SET piece_id = ?, feed_in = ? WHERE id = ?", fresh)
         fed.update(i for _p, i in sets)
-
-    def _side(self, item_id, direction, row=None):
-        """(id, piece_id, work_id) of the row just before (-1) or after (1) an item in its tier, or None. `row`: the
-        item's (tier, ord) when the caller has read it."""
-        if row is None:
-            row = self.conn.execute("SELECT tier, ord FROM items WHERE id = ?", (item_id,)).fetchone()
-        if direction < 0:
-            sql = ("SELECT id, piece_id, work_id FROM items WHERE tier = ? AND (ord, id) < (?, ?) "
-                   "ORDER BY ord DESC, id DESC LIMIT 1")
-        else:
-            sql = "SELECT id, piece_id, work_id FROM items WHERE tier = ? AND (ord, id) > (?, ?) ORDER BY ord, id LIMIT 1"
-        return self.conn.execute(sql, (row[0], row[1], item_id)).fetchone()
 
     def _split_runs(self, piece, placed, cmd, view, members, group=None, sets=None):
         """Make `piece` one run again (05 §5.2 rules 1, 5): its members in (tier, ord, id), cut wherever the tier or

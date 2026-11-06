@@ -651,8 +651,8 @@ class ReportWindow(SecondaryWindow):
         for p in self.presses.showing():                           # (none live: a failed one's mark forgotten)
             self.presses.forget(p.key)
         self._holds.clear()
-        self._unheld = ""
-        self._show_status("")
+        self.say(strings.REPORT_EMPTY if self.reports == [] else "")   # (the list's own line as its read says it:
+        #                                                     the window never grows as it lands — Mado-SO)
         self.opened_id = self.sent_opened = self.outbox = self.sent_id = self.last_removed = None
         self.sending = False
         self.goes_name_value = ""
@@ -1068,6 +1068,8 @@ class ReportWindow(SecondaryWindow):
             self.say(line)
         elif not n and not self.status.text():
             self.say(strings.REPORT_EMPTY)
+        elif n and self.status.text() == strings.REPORT_EMPTY:
+            self.say("")                                           # (the list's own line, gone with its emptiness)
 
     def _row(self, r):
         w = QWidget(self.list)

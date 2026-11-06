@@ -11,7 +11,8 @@ window closed or was hidden (a window closing with a question open answers nothi
 `check` (K7's *Also forget my known words*) sits under the words, off; its state is the card's `checked` when the
 answer comes (No leaves it False). An optional `field` (LM11b G3: the group's *Rename…*) is a line of text under the
 words, prefilled with it, in focus and selected as the card opens; Enter in it is Yes; its text is the card's `text`
-when the answer comes (No leaves it None).
+when the answer comes (No leaves it None). A card its asker sets `keep` on (Fresh library's sheet) is hidden at its
+answer instead of let go, and asked again with `again(on_answer)` — built once, opened as a new one opens.
 
 The looks are the stylesheet's (`QLabel#confirmtitle` / `#confirmline`, `kind="primary"` / `kind="danger"`) and the
 theme's tokens (the `scrim` colour, the `dialog` radius and shadow): re-skinned with W3.3's surfaces.
@@ -69,6 +70,8 @@ class Confirm(motion.Overlay):
     how = "dialog"
     shadow_name = "dialog"
     focus = True
+    keep = False                         # (its asker's) kept built at its answer, hidden, for `again`; never when its
+    #                                      window closed or hid with it open
 
     def __init__(self, window, title, body, yes, yes_tip, no=None, no_tip=None, default_no=False, danger=False,
                  on_answer=None, check=None, check_tip=None, field=None):
@@ -221,8 +224,10 @@ class Confirm(motion.Overlay):
         if self.isVisible() or motion.opening_of(self) is not None:
             self.close()
         self.scrim.hide()
-        self.scrim.deleteLater()
-        self.deleteLater()
+        if not (self.keep and alive):                     # (kept: hidden, asked again with `again`)
+            self.keep = False
+            self.scrim.deleteLater()
+            self.deleteLater()
         before = self._before
         try:
             back = alive and before is not None and before.window() is self._window and before.isVisible()
@@ -232,6 +237,18 @@ class Confirm(motion.Overlay):
             before.setFocus(Qt.FocusReason.OtherFocusReason)
         if alive and callback is not None:                # never once its window closed or was hidden
             callback(self.answer)
+
+    def again(self, on_answer):
+        """A kept card (`keep`) asked again: unanswered, its check off, and opened as a new one opens; `on_answer(yes)`
+        once, as `ask`'s. -> the card."""
+        self.answer, self.checked, self.text = None, False, None
+        self._on_answer = on_answer
+        self._before = QApplication.focusWidget()
+        if self.check is not None:
+            self.check.setChecked(False)
+        _register(self._window, self)
+        self.open()
+        return self
 
     def drop(self):
         """The question no longer stands (its window moved on): closed, answered No, and no callback."""
@@ -277,15 +294,19 @@ def _register(window, overlay):
 
 
 def ask(window, title, body, yes, yes_tip, *, no=None, no_tip=None, default_no=False, danger=False, on_answer=None,
-        check=None, check_tip=None, field=None):
+        check=None, check_tip=None, field=None, build=None):
     """Ask in `window` (a top-level: the main window or a secondary one). `yes` names the action ("Remove 2 lists");
     `default_no` for anything that removes, replaces or restores; `danger` paints the action as one; `check` a box
     under the words (off; read as `card.checked` in `on_answer`); `field` a line of text prefilled with it (read as
     `card.text` in `on_answer`; Enter in it is Yes); `yes=None` offers no action — the card's one button is `no`, its
-    answer always No (row 35's close with only Connect going on). -> the card (answered later through `on_answer(yes)`)."""
+    answer always No (row 35's close with only Connect going on). `build(card)`: a card's own parts (Fresh library's
+    sheet) made into it before it opens — never one by one into a card on screen. -> the card (answered later through
+    `on_answer(yes)`)."""
     window = window.window()
     card = Confirm(window, title, body, yes, yes_tip, no=no, no_tip=no_tip, default_no=default_no, danger=danger,
                    on_answer=on_answer, check=check, check_tip=check_tip, field=field)
+    if build is not None:
+        build(card)
     _register(window, card)
     card.open()
     return card

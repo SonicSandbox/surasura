@@ -1708,10 +1708,10 @@ def test_a8_a_rows_marks_painted_ahead_are_the_row_the_store_builds_next_field_f
     store has it. What a wrong answer would cost a learner: a row that flickers as the store's own view replaces the
     painted one — another *k of n watched*, another Up next, other chips. So every row kind, every file of it marked
     (and two at once, ⋯'s mark-many), equals the row the store builds with that mark — every field, its string too.
-    One thing waits for the store, as after a drop: which files are *in the top* (a watched file stops counting, so the
-    top-20 line moves one file) — a file's `in_top` and what it decides (its status, its stone's dimming, the row's
-    status and spoken text), and only in a row the line runs through (the window moves the line itself:
-    `drag.lines_for`)."""
+    One thing `marked` leaves to `topped` (3.0.1 item 12, the test after the next): which files are *in the top* (a
+    watched file stops counting, so the top-20 line moves one file) — a file's `in_top` and what it decides (its
+    status, its stone's dimming, the row's status and spoken text), and only in a row the line runs through (the window
+    moves the line itself: `drag.lines_for`)."""
     top = ("in_top", "status", "mark")
     items, pieces = _a8_items()
     view = _a8_build(items, pieces)
@@ -1738,6 +1738,80 @@ def test_a8_a_rows_marks_painted_ahead_are_the_row_the_store_builds_next_field_f
                     assert getattr(painted, f) == getattr(stored, f), (row.title, f, marks)
             tried += 1
     assert tried > 20 and len(crossed) == 1
+
+
+def test_item12_marks_painted_ahead_read_the_top_again_and_every_row_is_the_stores_next_field_for_field():
+    """3.0.1 item 12 (seen 2026-10-31): the *Waiting* a file takes as it moves into the top showed with the store's
+    next view, about a second late — a Done (a watched file stops counting) moved the top-20 line, but which files
+    were *in the top* waited. `topped` reads it again for the painted rows by the store's rule: every row of the
+    painted view — the marked one, the one the line now runs through and any after it — equals the store's next build,
+    every field (its files' `in_top`, statuses, marks, the stones' plan, the spoken line); the view says how many the
+    line holds (`mine_line`)."""
+    items, pieces = _a8_items()
+    view = _a8_build(items, pieces)
+    assert view.mine_line == 20
+    tried = crossed = 0
+    for n, row in enumerate(view.rows):
+        sets = [[e] for e in row.episodes] + [list(row.episodes[:2])] * (len(row.episodes) > 1)
+        for eps_ in sets:
+            marks = {e.id: not e.watched for e in eps_}
+            again = dict(items)
+            for i, on in marks.items():
+                again[i] = dict(items[i], watched=int(on))
+            stored = _a8_build(again, pieces).rows
+            painted = list(view.rows)
+            painted[n] = vr.marked(row, marks, hero=not n)
+            painted, moved = vr.topped(painted, view.mine_line, view.keep_watched, None)
+            crossed += bool(moved)
+            assert [r.key for r in painted] == [r.key for r in stored]
+            for a, b in zip(painted, stored):
+                for f in vr.Row._fields:
+                    assert getattr(a, f) == getattr(b, f), (row.title, a.title, f, marks)
+            tried += 1
+    assert tried > 20 and crossed
+
+
+def test_item12_a_drop_into_the_top_reads_waiting_at_once_as_the_store_builds_it():
+    """A drop of the Soon group (two shows, the line running through it: its second show below the line) to just under
+    Up next: all its files go into the top (*Waiting*), the files the line held last (a single video, a book) go out —
+    at once, as the store's next build has them; the rows above are the same objects (nothing repainted for them)."""
+    items, pieces = _a8_items()
+    view = _a8_build(items, pieces)
+    group = next(r for r in view.rows if r.group)
+    assert group.tier == "soon" and group.episodes[1].in_top and not group.episodes[-1].in_top
+    again = dict(items)
+    base = max(it["ord"] for it in items.values() if it["piece_id"] == 1)
+    for k, e in enumerate(group.episodes):
+        again[e.id] = dict(items[e.id], tier="now", ord=base + 1 + k)
+    stored = _a8_build(again, pieces).rows
+    by = {r.key: r for r in view.rows}
+    order = [r.key for r in stored]
+    assert order.index(group.key) == 1
+    painted = [by[k] if by[k].index == i + 1 and by[k].tier == stored[i].tier else
+               by[k]._replace(index=i + 1, tier=stored[i].tier) for i, k in enumerate(order)]
+    out, moved = vr.topped(painted, view.mine_line, view.keep_watched, None)
+    assert 1 in moved and 0 not in moved and len(moved) >= 2
+    assert out[0] is painted[0]
+    for a, b in zip(out, stored):
+        for f in ("episodes", "status", "mark", "accessible", "string"):
+            assert getattr(a, f) == getattr(b, f), (a.title, f)
+    assert all(e.in_top for e in out[1].episodes) and out[1].status.kind == "waiting"
+    assert any(not out[i].episodes[0].in_top and out[i].status.kind != "waiting" for i in moved if i > 1)
+
+
+def test_item12_topped_leaves_rows_as_they_are_with_connect_off_or_nothing_moved():
+    """Connect off (no top: `mine_line` None), a top of 0, or an order the top doesn't change: the same rows, the same
+    objects (the window repaints nothing for them)."""
+    items, pieces = _a8_items()
+    view = _a8_build(items, pieces)
+    rows = list(view.rows)
+    for line_n in (None, 0):
+        assert vr.topped(rows, line_n)[0] is rows
+    out, moved = vr.topped(rows, view.mine_line, view.keep_watched, None)
+    assert moved == [] and all(a is b for a, b in zip(out, rows))
+    off = vr.build(items, dict(WORKS), {"mine_line": 20}, pieces=pieces,
+                   connect=type("Feed", (), {"on": False, "items": {}, "mining": ()})())
+    assert off.mine_line is None
 
 
 def test_a8_marked_leaves_a_row_its_marks_dont_change_as_it_is():

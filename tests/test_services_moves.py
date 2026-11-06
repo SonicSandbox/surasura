@@ -265,6 +265,34 @@ def test_set_watched_and_finished_save_and_undo(lib, make_writer):
     assert lib.store.item(now[0])["watched"] == 0 and lib.store.item(now[1])["watched"] == 0
 
 
+def test_newest_is_what_ctrl_z_takes_behind_writes_that_never_touch_the_undo_stack(lib, make_writer):
+    """3.0.1 item 12: Ctrl+Z on a saved Done waited behind other saves, its stone painted only with nothing queued.
+    `newest` is what Ctrl+Z's undo takes as the queue reaches it: the saved Done behind background writes that never
+    touch the Undo stack (forgotten covers, Settings' lines); unknown (None) once a write that may (another mark, an
+    Undo) waits before it. The undo named with it takes that Done back, whatever lands first."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: heard.saved)
+    done = heard.saved[0][0]
+    assert w.newest() is done
+    w.hold()                                            # (a drag: nothing lands until it lets go)
+    w.forget_covers()
+    w.set_options(keep_watched=False)
+    assert w.pending() == 2 and w.newest() is done
+    w.undo(w.newest())
+    assert w.newest() is None, "an Undo queued may take one off the stack"
+    w.release()
+    assert h.until(lambda: heard.undone)
+    assert heard.undone[0][0] is done and lib.store.item(now[0])["watched"] == 0
+    w.hold()
+    w.set_watched([now[1]], True)
+    assert w.newest() is None, "a mark queued goes on the stack: not known before it lands"
+    w.release()
+    assert h.until(lambda: len(heard.saved) == 2) and h.until(lambda: not w.pending())
+    assert w.newest() is heard.saved[1][0]
+
+
 def test_undo_with_nothing_saved_does_nothing(lib, make_writer):
     w, heard = make_writer()
     w.undo()

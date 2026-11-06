@@ -297,9 +297,10 @@ def lines_for(view, rows_):
     """The top-20 line and the Soon line for `rows_` (the drop's order) as the reader would draw them: the top line
     after the row holding the same number of available files as before (split through it when it falls inside one),
     the Soon line where the reader draws it (`view_rows.soon_line_after`: one rule). W-1: a file counts toward the top
-    line by the store's one rule too (`library_store.counts`: a watched one only while the view's `keep_watched` is on).
+    line by the store's one rule too (`view_rows.counts_toward_top`: a watched one only while the view's `keep_watched`
+    is on; never a video waiting for its subtitle).
     """
-    from app.library_store import counts
+    counts = view_rows.counts_toward_top
     keep = bool(getattr(view, "keep_watched", False))
     out = []
     top = next((ln for ln in view.lines if ln.kind == "top"), None)
@@ -307,11 +308,11 @@ def lines_for(view, rows_):
         n = 0
         for i, r in enumerate(view.rows[:top.after + 1]):
             eps = r.episodes if (i < top.after or top.split is None) else r.episodes[:top.split]
-            n += sum(1 for e in eps if not e.missing and counts(r.tier, e.watched, keep))
+            n += sum(1 for e in eps if counts(e, r.tier, keep))
         seen, at = 0, None
         for i, r in enumerate(rows_):
             for k, e in enumerate(r.episodes):
-                if not e.missing and counts(r.tier, e.watched, keep):
+                if counts(e, r.tier, keep):
                     seen += 1
                     if seen == n:
                         at = (i, k + 1)
@@ -332,6 +333,15 @@ def lines_for(view, rows_):
         tip = old.tip if old is not None else view_rows.STRINGS["soon_tip_nocount"]
         out.append(view_rows.Line("soon", soon_at, tip, None))
     return tuple(out)
+
+
+def topped(view, rows_):
+    """`rows_` (an order of `view`'s rows the window paints: a drop's, its marks) with which files are *in the top*
+    read again for that order by the store's rule (`view_rows.topped`: their *Waiting*, the stones' dimming), at once
+    rather than with the store's next view (3.0.1 item 12) -> (rows, the places of the rows read again)."""
+    feed = getattr(view, "connect", None)
+    return view_rows.topped(rows_, getattr(view, "mine_line", None), bool(getattr(view, "keep_watched", False)),
+                            feed.items if feed is not None and feed.on else None)
 
 
 def mines_itself(lines, place):
@@ -360,14 +370,15 @@ def reordered(view, keys, tiers=None):
         out.append(r._replace(**changes) if changes else r)
     if out and view.rows and out[0].key != view.rows[0].key:
         out[0] = view_rows._as_hero(out[0])        # the new Up Next reads as one
+    out, moved = topped(view, out)
     files = sum(r.n_files for r in out)
     counts = view.counts._replace(current_rows=len(out), current_files=files)
     lang = view_rows.LANGUAGE_NAMES.get(view.language, "")
     subline = view_rows.STRINGS["subline"].format(lang=lang, rows=len(out), files=files) if out else view.subline
     worst = view.worst
-    if [r.key for r in out[1:]] != [r.key for r in view.rows[1:]] and \
+    if any(i > 0 for i in moved) or [r.key for r in out[1:]] != [r.key for r in view.rows[1:]] and \
             {r.key for r in out[1:]} != {r.key for r in view.rows[1:]}:
-        worst = view_rows.worst_needs(out[1:])      # another row under Up Next: the one title width asked again
+        worst = view_rows.worst_needs(out[1:])      # another row under Up Next (or one read again): the width asked
     return view._replace(rows=tuple(out), lines=lines_for(view, out), counts=counts, subline=subline, worst=worst)
 
 
@@ -1172,8 +1183,8 @@ class DragController(QObject):
     # the second). A write that lands as nothing (already so, refused, failed) or an Undo the store refuses: the next
     # view is the store's, whatever it shows (nothing was written for it to begin before). The row's own fields come
     # from `view_rows.marked` (one rule with the reader's); the top-20 line and the one title width as `reordered`
-    # draws them for a drop; which files are *in the top* (a stone's dimming, *Waiting*) follow the store's view, as
-    # after a drop.
+    # draws them for a drop; which files are *in the top* (a stone's dimming, *Waiting*) as `topped` reads them for a
+    # drop too (3.0.1 item 12: the store's rule, at once — no longer with the store's next view).
     def _holding(self, view):
         """The places of `view`'s rows that hold a marked file: the rows they were painted on (by key) — every row
         holding one only when a marked file isn't there (its row joined, split or gone): never a walk over every file
@@ -1199,7 +1210,8 @@ class DragController(QObject):
                 changed.append(k)
         if not changed:
             return view
-        worst = view.worst if changed == [0] else view_rows.worst_needs(rows_[1:])
+        rows_, moved = topped(view, rows_)          # 3.0.1 item 12: a Done moved the top (keep-watched off): at once
+        worst = view.worst if set(changed + moved) == {0} else view_rows.worst_needs(rows_[1:])
         return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_), worst=worst)
 
     def _marks_ahead(self, write, marks, key):
@@ -2206,13 +2218,16 @@ class DragController(QObject):
         if self.writer.can_undo() or self.writer.pending():
             self._undo_pressed()
             label = Ticket(None)                     # finish-pending: its undo waits for Anki if its change did (`_undone`)
+            # 3.0.1 item 12: what it takes is known now when nothing queued before it can change the Undo stack (a
+            # background cover, a download's registration, Settings' lines: `Writer.newest`) — that change, painted now
+            # and named to the writer, whatever waits ahead of it; else (a move, a Done, an Undo queued) as it lands
             newest = getattr(self.writer, "newest", None)
-            change = newest() if newest is not None and not self.writer.pending() else None
+            change = newest() if newest is not None else None
             marks, key = self._marks_of.get(change, (None, None)) if change is not None else (None, None)
             if marks:                                # a8: a Done's undo, the next the writer takes: its stones now
                 self._mark_undos.append(label)
                 self._marks_ahead(label, {i: not on for i, on in marks.items()}, key)
-            if self._undo_to_writer(label=label) is None and marks:
+            if self._undo_to_writer(change, label=label) is None and marks:
                 self._marks_landed(label, empty=True)
             self._let_go()
 

@@ -161,6 +161,9 @@ View = namedtuple("View", View._fields + ("keep_watched",), defaults=tuple(View.
 # --- 3.0.1 item 5: `airing`, AniList's kept answers for Current's titles ({work_id: entry}, `airing.of_rows`), set by
 # the reader on its thread — what `drag.when_done` holds a show back by. Never in the first screen's cache ({}: none)
 View = namedtuple("View", View._fields + ("airing",), defaults=tuple(View._field_defaults.values()) + ({},))
+# --- 3.0.1 item 12: `mine_line`, how many files the top line holds as the rows were built with it (None: Connect off —
+# nothing in the top — or the first screen's cache): what the window's own orders read the top by (`topped`)
+View = namedtuple("View", View._fields + ("mine_line",), defaults=tuple(View._field_defaults.values()) + (None,))
 #   worst: Current's rows below Up Next, the most-needing string per kind of Anki count beside it (`worst_needs`)
 #   arrivals: the tray's rows as it shows them (New, then Already watched; each newest first); arrival_groups: the
 #   groups that hold any, in that order. Neither is in the first screen's cache (the first frame shows no tray)
@@ -855,6 +858,100 @@ def status_of(eps, word, line_n):
     return st, mark
 
 
+def _ep_status(ep, word, line_n, connect, said):
+    """An episode's (status, mark): `status_of` over it alone, then what Connect's feed says of it (`said`, its item)
+    while there is a feed (`connect`) — `_episode`'s, and `topped`'s for a file that moved in or out of the top."""
+    st, mark = status_of([_Shim(ep, bool(ep.cards))], word, line_n)
+    if connect is not None:                          # --- P4.1 L2: what Connect says of it (row 4.1.10)
+        st = _connected(st, said, word)
+    return st, mark
+
+
+def _row_status(eps, word, line_n, connect):
+    """A row's (status, mark) from its episodes: `status_of` over them all, then Connect's word (`_row_connected`) —
+    `_row`'s, and `topped`'s."""
+    st, mark = status_of([_Shim(e, bool(e.cards)) for e in eps], word, line_n)
+    if connect is not None:                          # --- P4.1 L2
+        st = _row_connected(st, eps, connect, word)
+    return st, mark
+
+
+def _accessible(title, pct, n_new, st):
+    """A Current row's spoken line (Up Next's is `_as_hero`'s)."""
+    acc_pct = STRINGS["acc_pct_none"] if pct is None else STRINGS["pct"].format(pct=round(pct))
+    acc_new = STRINGS["new"].format(n=n_new) if n_new is not None else ""          # row 36: the number or nothing
+    return _said(STRINGS["acc_row"].format(title=title, pct=acc_pct, new=acc_new, status=spoken(st)))
+
+
+def counts_toward_top(e, tier, keep=False):
+    """Does file `e` (an `Episode` of a row in `tier`) count toward the top line — the store's `_mine_ids` read on a
+    row's files: there, not a video waiting for its subtitle, and counted by `library_store.counts` (a watched one only
+    while `keep`, the library's `keep_watched`, is on). The window's own orders draw the line (`drag.lines_for`) and
+    read the top (`topped`) by it."""
+    from app.library_store import counts
+    return not e.missing and not getattr(e, "waiting", False) and counts(tier, e.watched, keep)
+
+
+def topped(rows, line_n, keep=False, connect=None):
+    """Current's `rows` in an order the window paints ahead of the store (a drop's, a Done's marks: `app/qt/drag`) with
+    which files are *in the top* read again by the store's rule (`build`: every file down to the `line_n`-th that
+    counts, `counts_toward_top`; with fewer, down to the last) — and what a row reads from that read again by `_row`'s
+    own rules: each such file's status and mark, the row's (*Waiting* · *Mine* · *Mine rest*), its stones' plan (a
+    stone outside the top is dimmed) and its spoken line (Up Next's as `_as_hero`), on the rows whose files moved in or
+    out of the top only (3.0.1 item 12: the *Waiting* a file takes as it moves into the top showed with the store's
+    next view, about a second later). `line_n` None (Connect off: no top) or 0: `rows` as they are. `connect`: the
+    feed's items the rows were built with (`View.connect.items`), or None. -> (rows, the places of the rows read
+    again). A row beyond the top is looked at by its first file only (the top holds a row's first files)."""
+    if not line_n or not rows:
+        return rows, []
+    seen, last = 0, None
+    for i, r in enumerate(rows):
+        for k, e in enumerate(r.episodes):
+            if counts_toward_top(e, r.tier, keep):
+                seen += 1
+                last = (i, k)
+                if seen >= line_n:
+                    break
+        if seen >= line_n:
+            break
+    out, changed = list(rows), []
+    for i, r in enumerate(rows):
+        eps = r.episodes
+        if last is None or i > last[0]:
+            if not eps or not eps[0].in_top:
+                continue
+            n = 0
+        else:
+            n = len(eps) if i < last[0] else last[1] + 1
+        if all(e.in_top == (k < n) for k, e in enumerate(eps)):
+            continue
+        out[i] = _retopped(r, n, line_n, connect, hero=not i)
+        changed.append(i)
+    return out, changed
+
+
+def _retopped(row, n, line_n, connect, hero=False):
+    """`row` with its first `n` files in the top, and what it reads from that read again (`topped`)."""
+    eps = []
+    for k, e in enumerate(row.episodes):
+        if e.in_top != (k < n):
+            e = e._replace(in_top=k < n)
+            st, mark = _ep_status(e, e.media_word, line_n, connect, connect.get(e.id) if connect is not None else None)
+            moved = getattr(e.status, "moved", None)
+            if moved and st.kind == "no_media":      # MV-2: the folder its video left, as `_episode` said it
+                st = st._replace(moved=moved, tip=e.status.tip)
+            e = e._replace(status=st, mark=mark)
+        eps.append(e)
+    eps = tuple(eps)
+    st, mark = _row_status(eps, _status_word(eps) if getattr(row, "group", False) else row.media_word, line_n,
+                           connect)
+    string = row.string if row.string is None else _string(eps, row.next_index, row.media, row.key,
+                                                           row.source == "hato")
+    out = row._replace(episodes=eps, status=st, mark=mark, string=string,
+                       accessible=_accessible(row.title, row.pct, row.n_new, st))
+    return _as_hero(out) if hero else out
+
+
 def audio_tip(piece):
     """a5-2: the 🎧's hover for a row holding an audiobook's item, else '' — *With its audiobook 「…」* beside a book's
     parts, *Audio only 「…」* alone; its files and length from the item's own summary (`audio`, the reader's, from
@@ -990,9 +1087,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
-    st, mark = status_of([_Shim(ep, mined)], word, line_n)
-    if connect is not None:                          # --- P4.1 L2: what Connect says of it (row 4.1.10)
-        st = _connected(st, said, word)
+    st, mark = _ep_status(ep, word, line_n, connect, said)
     # MV-2: the folder its video left — Connect's line, else ▶'s own look's answer (`play.MovedAway`: a str, falsy)
     left = getattr(said, "moved", None) if no_video else None
     answer = playable.get(item["id"]) if playable is not None and not left else None
@@ -1265,11 +1360,8 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
         eps = [_episode(it, work, media, numbers, cards, mining, it["id"] in in_top_ids, line_n, connect,
                         playable=playable) for it in piece]
     word = MEDIA_WORD.get(media, "video")
-    shims = [_Shim(e, bool(e.cards)) for e in eps]
     said = _status_word(eps) if group else word      # LM11b G1: never "No video" for a group's EPUB
-    st, mark = status_of(shims, said, line_n)
-    if connect is not None:                          # --- P4.1 L2
-        st = _row_connected(st, eps, connect, said)
+    st, mark = _row_status(eps, said, line_n, connect)
     n = len(eps)
     finish = to_finish(eps)                              # a5-2 with L6.3: a book's own files (never its audiobook's
     n_watched = sum(1 for e in finish if e.watched)      # waiting item) are what is watched and what is next
@@ -1308,10 +1400,7 @@ def _row(index, tier, piece, works, numbers, cards, mining, in_top_ids, line_n, 
     chips, more = _chips(eps, next_index, audio)
     studying = bool(first.get("pinned")) and any(it.get("pinned") for it in piece)
     stamp = max((it.get("graduated_at") or "" for it in piece), default="") or None
-    acc_pct = STRINGS["acc_pct_none"] if pct is None else STRINGS["pct"].format(pct=round(pct))
-    acc_new = STRINGS["new"].format(n=n_new) if n_new is not None else ""          # row 36: the number or nothing
-    accessible = _said(STRINGS["acc_row"].format(title=title, pct=acc_pct, new=acc_new, status=spoken(st))) \
-        if not finished \
+    accessible = _accessible(title, pct, n_new, st) if not finished \
         else f"{title} · {spoken(st) if st.kind in ('in_anki', 'mining') else line}"
     key = f"p{first['piece_id']}" if first.get("piece_id") is not None else f"i{first['id']}"
     # its string planned here, never on the window's thread (B2; a mark painted ahead re-plans its own row: `marked`)
@@ -2159,7 +2248,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
                 rows=tuple(rows), lines=tuple(lines), goal=goal, finished=finished, needs=tuple(needs), counts=counts,
                 subline=subline, badges=badges, worst=worst, arrivals=arrival_rows, arrival_groups=arrival_groups,
                 connect=connect,                    # --- P4.1 L2
-                keep_watched=keep)                  # --- W-1
+                keep_watched=keep,                  # --- W-1
+                mine_line=None if off else line_n)  # --- 3.0.1 item 12
 
 
 # --- the first screen's cache (02 §2.1) ---------------------------------------------------------------------- #

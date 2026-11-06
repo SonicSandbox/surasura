@@ -576,3 +576,22 @@ def test_a_new_look_or_a_sheet_still_open_makes_a_new_one_and_the_kept_one_goes(
     again.no.click()
     QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert sip.isdeleted(again) and not sip.isdeleted(third)
+
+
+def test_its_first_opening_is_its_own_height_at_once_never_a_jump_as_its_lists_land(window, monkeypatch):
+    # the adversary's B1: the hidden card measured its parts before they were laid out at its width — opened the
+    # whole window tall, then jumped when the counts or the list landed (its opening's picture taken at that size)
+    class Quiet(SheetLooks):
+        def fresh_counts(self, then):
+            return True                                               # (a slow store: its counts not back yet)
+    seed, win = window(Quiet())
+    gates = _hold_listing(monkeypatch, [], [])
+    for _ in range(2):                                                # built, then kept and opened again
+        card = settings_sources.open_fresh(win, win)
+        at_once = card.geometry()
+        assert at_once.height() < win.height() - 2 * confirm.MARGIN
+        card.place()                                                  # placed again: nothing it measures moves
+        assert card.geometry() == at_once
+        card.no.click()
+    for g in gates:
+        g.set()

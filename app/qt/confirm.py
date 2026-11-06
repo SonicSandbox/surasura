@@ -224,7 +224,10 @@ class Confirm(motion.Overlay):
         if self.isVisible() or motion.opening_of(self) is not None:
             self.close()
         self.scrim.hide()
-        if not (self.keep and alive):                     # (kept: hidden, asked again with `again`)
+        if self.keep and alive:                           # (kept: hidden, asked again with `again`; its window's
+            self._window.removeEventFilter(self)          # ... events unheard meanwhile)
+            self._window.removeEventFilter(self.scrim)
+        else:
             self.keep = False
             self.scrim.deleteLater()
             self.deleteLater()
@@ -246,6 +249,9 @@ class Confirm(motion.Overlay):
         self._before = QApplication.focusWidget()
         if self.check is not None:
             self.check.setChecked(False)
+        self.scrim.setGeometry(self._window.rect())       # (its window may have changed size meanwhile)
+        self._window.installEventFilter(self.scrim)
+        self._window.installEventFilter(self)
         _register(self._window, self)
         self.open()
         return self

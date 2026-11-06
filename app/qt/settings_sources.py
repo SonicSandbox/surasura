@@ -1331,6 +1331,7 @@ def open_fresh(shell, parent, first="sort", done=None):
                 w.ensurePolished()                    # ... card polishes the rest at its first place; rows come later)
             card.layout().invalidate()
             place()
+            card.layout().setGeometry(card.rect())    # (laid out at its placed size: hidden, no resize comes to do it)
             sheet.fit()
         card.place = fitted
     card = _kept(shell, parent, first)

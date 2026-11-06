@@ -1198,7 +1198,12 @@ class AppFilter(QObject):
     def eventFilter(self, obj, event):
         if event.type() not in _FILTERED:
             return False
-        return self.tooltips.eventFilter(obj, event) or self.router.eventFilter(obj, event)
+        try:
+            if self.tooltips.eventFilter(obj, event):
+                return True
+        except Exception:                                 # the bubble's failure never takes Esc and Back with it
+            _log_unhandled(*sys.exc_info())               # ... (as two filters: Qt called the router anyway)
+        return self.router.eventFilter(obj, event)
 
 
 _FILTERED = tooltip.Tooltips.TYPES | EscapeRouter.TYPES

@@ -679,6 +679,20 @@ def test_esc_in_an_open_menu_is_the_menus_own(window):
     menu.close()
 
 
+def test_a_failure_in_the_bubbles_filter_never_takes_esc_with_it(window, monkeypatch):
+    # The adversary's S3: as two filters, Qt called the router even when the bubble's raised; one filter must too.
+    from app.qt import tooltip
+    logged = []
+    monkeypatch.setattr(shell, "_log_unhandled", lambda *info: logged.append(info[0]))
+
+    def broken(self, obj, event):
+        raise RuntimeError("wrapped C/C++ object has been deleted")
+    monkeypatch.setattr(tooltip.Tooltips, "eventFilter", broken)
+    o = _overlay(window)
+    QTest.keyClick(window.centralWidget(), Qt.Key.Key_Escape)
+    assert not o.isVisible() and window.isVisible() and RuntimeError in logged
+
+
 def test_the_app_filter_goes_when_the_window_closes(qapp, services, monkeypatch):
     from app.qt import tooltip
     win = shell.open_window(qapp, services)

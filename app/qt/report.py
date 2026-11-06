@@ -476,8 +476,11 @@ def _kept(shell, pictures, scrubbed):
             win.reopen(pictures, scrubbed)
             return win
         win.deleteLater()
-    except RuntimeError:                                          # deleted meanwhile
-        pass
+    except RuntimeError:                                          # deleted meanwhile (or half reopened: let go)
+        try:
+            win.deleteLater()
+        except RuntimeError:
+            pass
     return None
 
 
@@ -638,6 +641,8 @@ class ReportWindow(SecondaryWindow):
         the send state read again (the list repainted only when it changed)."""
         self.opening += 1
         self._closed = False                                       # (SecondaryWindow's: open again)
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)   # where it was left, never in
+        #                                                                  its icon (as `windows.bring_back`)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.language = windows.language_of(self.shell)
         for p in self.presses.showing():                           # (none live: a failed one's mark forgotten)
@@ -650,15 +655,6 @@ class ReportWindow(SecondaryWindow):
         self.goes_name_value = ""
         self.back()
         if self.pages.count() > 1:
-            self.opened_heading.setText("")
-            self.opened_text.clear()
-            self._clear(self.opened_pictures)
-            self.note.clear()
-            self.contents.clear()
-            self.goes_files.setText("")
-            self._clear(self.goes_pictures)
-            self.sent_opened_heading.setText("")
-            self._clear(self.sent_lines)
             self._hold(False)
         self.what.clear()
         self.expected.clear()
@@ -682,6 +678,23 @@ class ReportWindow(SecondaryWindow):
         prepare_identity()
         self.read()
         self.read_send()
+
+    def _empty(self):
+        """Kept at its close: what it showed let go — the pictures, thumbnails and the other pages' words and pictures
+        (a hidden window holds no screenshot; its next opening sized as a fresh one, by the form)."""
+        self.pictures = []
+        self._thumbs = None
+        self._clear(self.picture_row)
+        if self.pages.count() > 1:
+            self.opened_heading.setText("")
+            self.opened_text.clear()
+            self._clear(self.opened_pictures)
+            self.note.clear()
+            self.contents.clear()
+            self.goes_files.setText("")
+            self._clear(self.goes_pictures)
+            self.sent_opened_heading.setText("")
+            self._clear(self.sent_lines)
 
     def _form_page(self):
         page = QWidget(self)
@@ -962,6 +975,7 @@ class ReportWindow(SecondaryWindow):
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)    # kept built, hidden: the next press shows
             setattr(self.shell, KEPT, self)                                  # ... it at once (one under way: deleted,
             #                                                                  its answers to the main window's bar)
+            self._empty()
 
     # --- the pictures ------------------------------------------------------------------------------------------ #
     def set_pictures(self, pictures, scrubbed=False):

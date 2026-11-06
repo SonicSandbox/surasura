@@ -11,7 +11,7 @@ import zipfile
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QEvent, QPoint, Qt
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QPushButton, QWidget
 
@@ -1181,3 +1181,40 @@ def test_whatever_needs_a_page_before_the_first_frame_builds_it_first(main, ask)
         assert wait_until(lambda: w.pages.currentIndex() == w.CONTENTS)
     assert w.pages.count() == 5
     w.close()
+
+
+def test_kept_hidden_it_holds_no_picture_and_opens_again_at_a_fresh_ones_size(main, receiver):
+    # The adversary's S1 / S2: a hidden window held the screenshots and What goes' full-width pictures until the next
+    # press (which may never come), and a page left full could size the next opening bigger than a fresh one.
+    from app import scrub
+    scrub.identity()
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    assert w.goes_pictures.count() >= 1                                # the press's picture, at the page's width
+    _close(w)
+    assert w.pictures == [] and w._thumbs is None and w.picture_row.count() == 0
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert w.goes_pictures.count() == 0 and w.opened_pictures.count() == 0 and w.contents.toPlainText() == ""
+    assert _press(main) is w
+    _read(w)
+    after_goes = w.size()
+    assert len(w.pictures) == 1
+    _close(w)                                                          # (closed from the form this time)
+    assert _press(main) is w
+    _read(w)
+    assert w.size() == after_goes                                      # nothing a page showed sizes the next one
+
+
+def test_opened_again_it_is_where_it_was_left_never_in_its_icon(main):
+    # The adversary's N2 (lean, lead): a kept window comes back where the learner left it, at its size — but never
+    # minimised (closed from its icon), as `windows.bring_back` shows one.
+    w = _press(main)
+    w.move(w.pos() + QPoint(40, 30))
+    at, size = w.pos(), w.size()
+    w.setWindowState(Qt.WindowState.WindowMinimized)                   # (closed as it goes into its icon)
+    _close(w)
+    assert _press(main) is w
+    for _ in range(5):
+        QApplication.processEvents()                                   # (the platform's late state reports)
+    assert not w.isMinimized() and w.isVisible() and w.pos() == at and w.size() == size

@@ -199,6 +199,12 @@ _MEDIA_FAMILY = {"book": "read", "lightnovel": "read", "manga": "read", "text": 
                  "podcast": "audio", "game": "game"}
 
 
+def _show_keys(search_key):
+    """The show keys (`episode_names.show_key`) of a title's names, from its `search_key` (one folded name a line)."""
+    from app.episode_names import show_key
+    return frozenset(k for k in (show_key(n) for n in (search_key or "").split("\n")) if k)
+
+
 def _media_family(media_type):
     """How a title of `media_type` is taken in (`_MEDIA_FAMILY`; None, any other: watched) — the one "two types?" rule
     of the same-show join and a new show folder's title."""
@@ -3310,19 +3316,15 @@ class Store:
         if wid is None and fk is None:
             return self._stranded_work(rel, title, cmd, cache)
         if wid is None:
-            wid = self._same_show_folder(fk, rel, cache)
+            wid = self._same_show_folder(fk, rel, cmd)
         if wid is None:
             below = _below_tier(rel)
             wid = self._new_work(folder_title(below), fk, cmd, titles=(below,))
-            index = cache.get(("show_folders",)) if cache is not None else None
-            if index is not None and "/" not in fk:
-                from app.episode_names import show_key
-                index.setdefault(show_key(fk), []).append(wid)
         if cache is not None:
             cache[fk] = wid
         return wid
 
-    def _same_show_folder(self, fk, rel, cache=None):
+    def _same_show_folder(self, fk, rel, cmd):
         """A new show folder's title when no title holds its folder key and none of the files beside it has one (3.0.1
         item 12, PROVISIONAL: Sonic's "one show, one title", a8): the ONE title of the same show (`episode_names.show_key`:
         `Library/Show` of the title `Show!`, whose folder key went with the one-time join or was never made) — never
@@ -3330,27 +3332,49 @@ class Store:
         (`_media_family`: an EPUB beside a show), never one of two titles of that key (the user kept them apart: its own, as
         `sources._show_of` does) — and every title counts, by any of its names (a hato title `Show` with no folder,
         one the user kept apart from `Show!`: two of the key, so its own; review ITEM12 #1). Only a new file comes
-        here: two titles already made stay *Same title?*'s to ask. -> the work, or None."""
+        here: two titles already made stay *Same title?*'s to ask. The titles of a key come from `_show_titles` (kept on
+        this handle), each re-read by its id: gone, or no longer of that key, it doesn't count. -> the work, or None."""
         if "/" in fk:
             return None
         from app.episode_names import show_key
-        want = show_key(fk)
+        want = show_key(search_fold(fk, self.language))   # (folded as the titles' names are: a Chinese library's 臺 is 台)
         if not want:
             return None
-        index = cache.get(("show_folders",)) if cache is not None else None
-        if index is None:                   # every title's names keyed once a command (its new ones added after)
-            index = {}
-            for w, keys in self.conn.execute("SELECT id, search_key FROM works ORDER BY id"):
-                for k in dict.fromkeys(show_key(k) for k in (keys or "").split("\n")):
-                    if k:
-                        index.setdefault(k, []).append(w)
-            if cache is not None:
-                cache[("show_folders",)] = index
-        found = index.get(want) or []
+        found = []
+        for w in sorted(self._show_titles(cmd)["key"].get(want, ())):
+            row = self.conn.execute("SELECT search_key FROM works WHERE id = ?", (w,)).fetchone()
+            if row is not None and want in _show_keys(row[0]):
+                found.append(w)
         if len(found) != 1:
             return None
         mine = media_type_guess({infer_source_type(rel): 1})     # (a subtitle alone: None — nothing typed it yet)
         return found[0] if _media_family(mine) == _media_family(self.media_type(found[0])[0]) else None
+
+    def _show_titles(self, cmd):
+        """{"key": {show key: {work ids}}, ...}: every title by the show keys of its names (`episode_names.show_key`),
+        kept on this handle and brought up to date from `works.feed_in` (indexed; the change feed's own column: every
+        command stamps the titles it changed, a new title is made with its command's version) — only the titles changed
+        since are read again, never every title once a command (#289's regression: 41 ms an insert at 8.3k titles,
+        Kura-B's R6). Read once in full a handle (and again when the store's epoch moves: a rebuild). A title gone since
+        stays in it — `_same_show_folder` re-reads each candidate by its id. Its stamp never passes a version below this
+        command's: what this command writes is read again next time (a command that rolls back leaves nothing behind
+        but such stale entries)."""
+        kept = getattr(self, "_shows", None)
+        if kept is None or kept["epoch"] != cmd.epoch:
+            kept = self._shows = {"epoch": cmd.epoch, "stamp": -1, "work": {}, "key": {}}
+        stamp = kept["stamp"]
+        for wid, keys, fed in self.conn.execute("SELECT id, search_key, feed_in FROM works WHERE feed_in > ?",
+                                                (kept["stamp"],)):
+            new, old = _show_keys(keys), kept["work"].get(wid, frozenset())
+            for k in old - new:
+                kept["key"][k].discard(wid)
+            for k in new - old:
+                kept["key"].setdefault(k, set()).add(wid)
+            kept["work"][wid] = new
+            if fed < cmd.version:
+                stamp = max(stamp, fed)
+        kept["stamp"] = stamp
+        return kept
 
     def _stranded_work(self, rel, title, cmd, cache=None):
         """A loose file's work (SRC-11): one in hato's drop folder or directly in a tier folder has no show folder, so

@@ -2378,6 +2378,26 @@ class Store:
         ('top',) or ('end',) — touching only the rows that change: the placed items (tier, ord,
         `changed_in`) and, when the gap is spent, a local window re-spaced (ord only, §6.5). `anchor`: the anchor's
         (id, ord) when the caller read it in the same transaction."""
+        keys, others = self._place_keys(tier, ids, where, anchor)
+        cmd = self._cmd
+        self.conn.executemany("UPDATE items SET tier = ?, ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
+                              [(tier, k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
+        self._placed(tier, ids, others)
+
+    def _placed(self, tier, ids, others):
+        """What `_put` records once its rows are written (and an Add's rows inserted in place, `_add_rows`): the
+        command's bookkeeping, and a re-space's other rows written."""
+        cmd = self._cmd
+        cmd.moved.update(ids)
+        cmd.fed_inline.update(ids)
+        cmd.tiers.add(tier)
+        if others:          # a re-space: each row carries its new key to the windows (§12.8)
+            self.conn.executemany("UPDATE items SET ord = ?, feed_in = ? WHERE id = ?",
+                                  [(k, cmd.version, i) for i, k in others])
+
+    def _place_keys(self, tier, ids, where, anchor=None):
+        """`_put`'s reads: the keys `ids` take at `where` in `tier`, and [(id, ord)] of a re-space's other rows. `ids`
+        are left out of every read (rows already, or not yet)."""
         excl = set(ids)
         kind = where[0]
         if kind == "after":
@@ -2400,15 +2420,7 @@ class Store:
         others = []
         if not _valid(keys, lo[1] if lo else None, hi[1] if hi else None):
             keys, others = self._respace(tier, ids, lo, hi, excl)
-        cmd = self._cmd
-        self.conn.executemany("UPDATE items SET tier = ?, ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
-                              [(tier, k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
-        cmd.moved.update(ids)
-        cmd.fed_inline.update(ids)
-        cmd.tiers.add(tier)
-        if others:          # a re-space: each row carries its new key to the windows (§12.8)
-            self.conn.executemany("UPDATE items SET ord = ?, feed_in = ? WHERE id = ?",
-                                  [(k, cmd.version, i) for i, k in others])
+        return keys, others
 
     def _respace(self, tier, ids, lo, hi, excl):
         """Local re-space (§6.5): up to 16 rows each side of the gap, renumbered with the placed items
@@ -2839,24 +2851,34 @@ class Store:
             tops[seen] = dest
         return dest
 
-    def _add_rows(self, prepared, version):
-        """Insert new item rows (ids issued past every id ever used, K30), placed later by `_put`."""
+    def _add_rows(self, prepared, version, place=None):
+        """Insert new item rows (ids issued past every id ever used, K30), placed later by `_put` — or, with `place`
+        ((tier, where): every row one destination), inserted at their place: `_put`'s keys, read before the rows
+        exist (no other new row is waiting at ord 0 to be read), written by the insert itself, not by an update of
+        each row after it (R6: an Add of a season wrote every row twice)."""
         root = self._root_id()
         seq = self.conn.execute("SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'items'), 0), "
                                 "COALESCE((SELECT MAX(id) FROM items), 0)").fetchone()
         next_id = max(seq) + 1
+        ids = list(range(next_id, next_id + len(prepared)))
+        keys, others, fed = [0.0] * len(ids), [], None
+        if place is not None:
+            keys, others = self._place_keys(place[0], ids, place[1])
+            fed = self._cmd.version
         now = _now()
-        rows, ids = [], []
-        for path, rel, key, entry, (size, mtime_ns, availability), tier in prepared:
+        rows = []
+        for item_id, k, (path, rel, key, entry, (size, mtime_ns, availability), tier) in zip(ids, keys, prepared):
             title, folder, source_type = _columns(entry)
-            rows.append((next_id, root, rel, key, tier, 0.0, _dumps(entry), title, folder, source_type,
-                         availability, size, mtime_ns, version, now, search_fold(title, self.language)))
-            ids.append(next_id)
-            next_id += 1
+            rows.append((item_id, root, rel, key, tier, k, _dumps(entry), title, folder, source_type,
+                         availability, size, mtime_ns, version, now, search_fold(title, self.language))
+                        + ((fed,) if fed is not None else ()))
         self.conn.executemany(
             "INSERT INTO items (id, root_id, rel_path, rel_key, tier, ord, entry, title, parent_folder, "
-            "source_type, availability, size, mtime_ns, changed_in, added_at, search_key) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+            "source_type, availability, size, mtime_ns, changed_in, added_at, search_key"
+            + (", feed_in) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" if fed is not None else
+               ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"), rows)
+        if place is not None:
+            self._placed(place[0], ids, others)
         return ids
 
     def _takeover(self, key, started_at):
@@ -2929,13 +2951,16 @@ class Store:
                     "WHERE id = ?",
                     [(_dumps(it[3]),) + _columns(it[3]) + (search_fold(_columns(it[3])[0], self.language), i)
                      for i, it in taken])
-            ids += self._add_rows([it + (t,) for it, t in zip(new, dest_tier[len(taken):])], cmd.version)
-            groups = {}
-            for item_id, dest, t in zip(ids, dests, dest_tier):
-                where = (dest[0], dest[1]) if dest[0] in ("after", "before") else (dest[0],)
-                groups.setdefault((t, where), []).append(item_id)
-            for (t, where), group in groups.items():
-                self._put(t, group, where, cmd.version)
+            spots = [(t, (d[0], d[1]) if d[0] in ("after", "before") else (d[0],)) for d, t in zip(dests, dest_tier)]
+            one = not taken and len(set(spots)) == 1               # the common Add: one place, new rows only
+            ids += self._add_rows([it + (t,) for it, t in zip(new, dest_tier[len(taken):])], cmd.version,
+                                  place=spots[0] if one else None)
+            if not one:
+                groups = {}
+                for item_id, (t, where) in zip(ids, spots):
+                    groups.setdefault((t, where), []).append(item_id)
+                for (t, where), group in groups.items():
+                    self._put(t, group, where, cmd.version)
             change.added = ids
             if origins:
                 self._add_origins(zip(ids, [t[1] for t in taken] + new), origins)

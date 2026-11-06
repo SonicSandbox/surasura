@@ -1216,6 +1216,35 @@ def test_an_add_of_two_shows_interleaved_reads_each_folder_once_and_each_file_la
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_an_add_of_a_new_season_inserts_each_row_at_its_place_in_one_write(language):
+    """R6 (§6.12): an Add with one destination and only new files inserts each row at its key — no update of the row
+    after its insert to place it — in the order given, at the top of the tab, each row fed this version; the next
+    Add's season lands above it, as before."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    word = names(language)[98]
+    first = [touch(data_dir, f"LowPriority/{word}A/{word}_{e:03d}.srt") for e in range(20)]
+    second = [touch(data_dir, f"LowPriority/{word}B/{word}_{e:03d}.srt") for e in range(5)]
+    placing = []
+    store.conn.set_trace_callback(lambda sql: placing.append(sql) if sql.lstrip().upper().startswith(
+        "UPDATE ITEMS SET TIER") else None)
+    a = store.insert(first, "soon")
+    store.conn.set_trace_callback(None)
+    assert placing == [], "the rows were inserted at their place"
+    b = store.insert(second, "soon")
+    soon = store.ids("soon")
+    assert [i for i in soon if i in set(a.added)] == a.added and [i for i in soon if i in set(b.added)] == b.added
+    assert soon.index(b.added[-1]) < soon.index(a.added[0]), "the later season above the earlier, both at the top"
+    assert soon.index(a.added[-1]) - soon.index(a.added[0]) == len(a.added) - 1
+    version = store.meta()["state_version"]
+    feeds = {r[0] for r in store.conn.execute(
+        f"SELECT feed_in FROM items WHERE id IN ({','.join('?' * len(b.added))})", b.added)}
+    assert feeds == {version}
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_move_that_splits_a_show_writes_the_piece_sequence_once_and_past_every_piece(language):
     """K30 / LM11 G3 for pieces, written once a command (R6: a move into another show made two pieces and wrote the
     sequence row twice — one write more than the 100k move's count allows): the row is past every piece id issued,

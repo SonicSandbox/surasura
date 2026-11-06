@@ -165,7 +165,7 @@ class AddonSteps(QWidget):
         self.install = self.cancel_btn = self.open_btn = None   # made the first time one shows (`_buttons`)
         self._make, self._inst = button, inst
         self.install_line = _line(name, "", self.install_row)
-        inst.addWidget(self.install_line, 1)
+        inst.addWidget(self.install_line, 1)             # buttons first, the line after (as Copy code's row)
         self.install_line.setVisible(False)
         self.install_row.setVisible(False)
         col.addWidget(self.install_row)
@@ -209,9 +209,9 @@ class AddonSteps(QWidget):
             self.install = self._button(I.BUTTON, I.BUTTON_TIP, self.press_install, "install_ankiconnect")
             self.cancel_btn = self._button(I.CANCEL, I.CANCEL_TIP, self.press_cancel, "cancel_ankiconnect")
             self.open_btn = self._button(I.OPEN, I.OPEN_TIP, self.press_open, "open_anki_installed")
-            self._inst.insertWidget(0, self.install, 0, Qt.AlignmentFlag.AlignVCenter)
-            self._inst.addWidget(self.cancel_btn, 0, Qt.AlignmentFlag.AlignVCenter)
-            self._inst.addWidget(self.open_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+            self._inst.insertWidget(0, self.install, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._inst.insertWidget(1, self.cancel_btn, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            self._inst.insertWidget(2, self.open_btn, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
     # --- the host's wish ------------------------------------------------------------------------------------------ #
     def want(self, on):
@@ -256,7 +256,7 @@ class AddonSteps(QWidget):
                 line = I.TURNED_OFF_LINE if found.get("disabled") else I.THERE_LINE
         visible = self._want or phase in HOLDING
         steps = self._want
-        heading = steps and (button or phase in HOLDING or phase == FAILED)
+        heading = steps and (button or phase in (ASKING, WAITING, RUNNING, FAILED))    # installed: no alternative
         row = line is not None or button or cancel or opened
         return (visible, row, line, button, cancel, opened, heading, steps)
 

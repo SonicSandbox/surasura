@@ -380,9 +380,10 @@ def _outbox_empty():
 
 
 def _look(w):
-    """Send report pressed: wait for What goes, and for the send state read after it."""
+    """Send report pressed: wait for What goes filled in (it opens at the press, gathering: try a9.1), and for the send
+    state read after it."""
     w.send_button.click()
-    assert wait_until(lambda: w.pages.currentIndex() == w.GOES, 15)
+    assert wait_until(lambda: w.pages.currentIndex() == w.GOES and w.outbox is not None, 15)
     _read(w)
 
 
@@ -996,3 +997,142 @@ def test_who_you_are_is_worked_out_after_the_start_or_as_the_hand_reaches_the_bu
     QApplication.sendEvent(main.report_button, QEnterEvent(p, p, p))          # (a second pass: one worker only)
     assert sum(t.name == "scrub-identity" for t in threading.enumerate()) <= 1
     assert wait_until(scrub.ready, 10)
+
+
+# --- try a9.1 (Sonic: "it lagged when i hit the button, just hung there until it got to the screen of exactly what goes.
+# need something to indicate that it's thinking"): What goes opens at the press, gathering, and counts the files in ----- #
+def _gated_build(monkeypatch, steps=()):
+    """`send_report.build` held until the gate opens, telling `steps` ((done, total) …) first, as `report._write` does:
+    what the window shows meanwhile is the press's own frame, not the zip's end."""
+    import threading
+    from app import send_report
+    gate, real, made = threading.Event(), send_report.build, []
+
+    def slow(*a, step=None, **k):
+        for done, total in steps:
+            step(done, total)
+        gate.wait(10)
+        made.append(real(*a, step=step, **k))
+        return made[-1]
+    monkeypatch.setattr(send_report, "build", slow)
+    return gate, made
+
+
+def test_send_report_opens_what_goes_in_the_press_frame_saying_it_is_gathering(main, receiver, monkeypatch):
+    import time
+    gate, _made = _gated_build(monkeypatch)
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    t0 = time.perf_counter()
+    w.send_button.click()                                              # (the frame: no worker has answered yet)
+    took = time.perf_counter() - t0
+    assert took < 0.1                                                  # press -> its page: well inside 100 ms
+    assert w.pages.currentIndex() == w.GOES and w.gathering
+    assert not w.goes_gathering.isHidden() and w.goes_gathering.text() == strings.REPORT_GATHERING
+    assert all(x.isHidden() for x in (w.goes_placeholders, w.goes_name, w.goes_kept, w.goes_files))
+    assert not w.goes_send.isEnabled() and not w.goes_open.isEnabled()  # nothing to send or open until it's made
+    assert wait_until(lambda: w.reports is not None and len(w.reports) == 1)   # saved meanwhile: still no second press
+    assert not w.send_button.isEnabled()                               # ... nor Show me / Make a zip beside it
+    assert not w.show_button.isEnabled() and not w.zip_button.isEnabled()
+    assert w.goes_back.isEnabled() and receiver.got == []
+    gate.set()
+    assert wait_until(lambda: w.outbox is not None, 15)                # made: the page fills in, the same page
+    assert w.pages.currentIndex() == w.GOES and not w.gathering and w.goes_gathering.isHidden()
+    assert not w.goes_files.isHidden() and "MANIFEST.txt" in w.goes_files.text()
+    assert w.goes_send.isEnabled() and w.goes_open.isEnabled() and receiver.got == []
+
+
+def test_the_gathering_page_counts_the_files_in_and_says_the_last_check(main, receiver, monkeypatch):
+    gate, _made = _gated_build(monkeypatch, steps=((0, 12), (4, 12)))
+    w = _press(main)
+    _save(w, ZH_WHAT)                                                  # a saved report, the form empty
+    w.send_button.click()
+    assert wait_until(lambda: w.goes_gathering.text() == strings.REPORT_GATHERING_N.format(done=5, total=12))
+    w._gathered((12, 12))                                              # every file in: the guard's read-back
+    assert w.goes_gathering.text() == strings.REPORT_GATHERING_CHECK
+    gate.set()
+    assert wait_until(lambda: w.outbox is not None, 15)
+    w._gathered((3, 12))                                               # a late count, the page made: never said
+    assert w.goes_gathering.isHidden() and w.goes_gathering.text() == strings.REPORT_GATHERING_CHECK
+
+
+def test_back_while_gathering_returns_to_the_form_and_the_zip_made_after_is_deleted(main, receiver, monkeypatch):
+    gate, made = _gated_build(monkeypatch)
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.send_button.click()
+    assert w.pages.currentIndex() == w.GOES and w.gathering
+    w.goes_back.click()                                                # changed their mind before it was made
+    assert w.pages.currentIndex() == w.FORM and not w.gathering
+    gate.set()
+    assert wait_until(lambda: made, 15)
+    assert wait_until(_outbox_empty, 15)                               # made after Back: never kept, never shown
+    assert w.pages.currentIndex() == w.FORM and w.outbox is None and receiver.got == []
+    assert wait_until(lambda: w.send_button.isEnabled() and w.list.isEnabled())
+    assert len(core.listed()) == 1                                     # the report itself stays on the list
+
+
+def test_a_save_that_fails_takes_the_gathering_page_back_to_the_form(main, receiver, monkeypatch):
+    def refuse(*a, **k):
+        raise OSError("the disk is full")
+    monkeypatch.setattr(core, "save", refuse)
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    w.send_button.click()
+    assert w.pages.currentIndex() == w.GOES                            # it reacted at once …
+    assert wait_until(lambda: w.pages.currentIndex() == w.FORM)        # … and came back with the reason
+    assert wait_until(lambda: "the disk is full" in w.status.text())
+    assert w.what.toPlainText() == JA_WHAT and not w.gathering and receiver.got == []
+
+
+def test_prepare_send_scales_wide_pictures_on_the_worker(main, receiver, monkeypatch):
+    """The What goes pictures come scaled to the page's width from the worker: the window's thread only shows them."""
+    from PyQt6.QtGui import QColor, QImage
+    w = _press(main)
+    img = QImage(3000, 400, QImage.Format.Format_RGB32)
+    img.fill(QColor("#1e1e1e"))
+    core.save(JA_WHAT, "", [report_ui.png_bytes(img)], where="Current", scrubbed=True)
+    kind, _outbox, pictures, *_code = report_ui.prepare_send("ja", False, {"language": "ja"}, {}, None, 600)
+    assert kind == "built" and [p.width() for p in pictures] == [600]
+    kind, _outbox, pictures, *_code = report_ui.prepare_send("ja", False, {"language": "ja"}, {})
+    assert kind == "built" and [p.width() for p in pictures] == [3000]  # no width: as it went
+    assert w is not None
+
+
+def test_back_while_gathering_reads_what_waits_again_and_never_shows_the_replaced_zip(main, receiver, monkeypatch):
+    """A zip left waiting (a send that didn't go) is replaced by the press's: its *Send now* row goes at the press and,
+    after Back deleted the new one, stays gone (nothing waits any more) — never a row for a zip that's gone."""
+    from app import send_report
+    w = _press(main)
+    _save(w, JA_WHAT)
+    send_report.build("ja")                                            # one waiting, as after a send that didn't go
+    w.read_send()
+    assert wait_until(lambda: not w.waiting_row[0].isHidden())
+    gate, made = _gated_build(monkeypatch)
+    w.send_button.click()
+    assert all(x.isHidden() for x in w.waiting_row)                     # never beside the gathering page
+    w.goes_back.click()
+    gate.set()
+    assert wait_until(lambda: made, 15) and wait_until(_outbox_empty, 15)
+    assert wait_until(lambda: w.waiting is None and all(x.isHidden() for x in w.waiting_row), 15)
+
+
+def test_back_during_the_save_makes_no_zip_and_a_second_press_meanwhile_says_why(main, receiver, monkeypatch):
+    import threading
+    from app import send_report
+    gate, real_save, built = threading.Event(), core.save, []
+    monkeypatch.setattr(core, "save", lambda *a, **k: (gate.wait(10), real_save(*a, **k))[1])
+    monkeypatch.setattr(send_report, "build", lambda *a, **k: built.append(a))
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    w.send_button.click()                                              # saving first
+    w.goes_back.click()
+    w.what.setPlainText(JA_WHAT + "。")
+    w.send_button.click()                                              # pressed again while the first save runs
+    assert w.status.text() == strings.REPORT_ZIP_BUSY and w.pages.currentIndex() == w.FORM
+    gate.set()
+    assert wait_until(lambda: w.reports is not None and len(w.reports) == 1, 15)
+    for _ in range(30):
+        QApplication.processEvents()
+    assert built == [] and w.pages.currentIndex() == w.FORM          # Back before the zip: none made for nothing
+    assert wait_until(lambda: w.send_button.isEnabled())

@@ -582,6 +582,15 @@ PHASE_PRESS_RESTORE = "Waiting for your decision: press to undo the unfinished r
 PHASE_FOLDER_GONE = "{name} was moved or deleted: Needs you asks what to do"
 PHASE_FOLDERS_GONE = "{n} folders were moved or deleted: Needs you asks what to do"
 PHASE_STARTING = "Starting…"                       # lit by a press whose job hasn't begun, with no words of its own
+# try a9.1 (Sonic's report: "junban and anki miner are spinning but i don't know what they are doing"): a circle whose
+# work is under way and can be seen somewhere — the title Anki Miner makes cards for, 順's window — opens there; its
+# right-click is the bottom bar's one icon menu (`tool_icons.menu_of`): *Show* · *Stop* (where a stop exists) ·
+# *Settings*
+PHASE_PRESS_SHOW = "Press to see it"
+PHASE_MENU_TIP = "Right-click: {items}"
+PHASE_SHOW = ("Show", "Go to where it is happening: the title Anki Miner is making cards for, or 順's window")
+PHASE_STOP = ("Stop", "Stop what it is doing now. Cards already made stay; one being written to Anki is finished first")
+PHASE_SETTINGS = ("Settings", "Open its settings")
 # A job's plain name in the hover, by its kind (else by its label) where the job's own label is a word for us
 PHASE_JOB_NAMES = {
     "indexer": "Reading your files",
@@ -1581,7 +1590,11 @@ REPORT_SENDER_TIP = ("A code made at random on this PC, sent with each report so
 REPORT_NEW_CODE = "New code"
 REPORT_NEW_CODE_TIP = "Make a fresh code: reports you send from now on aren't grouped with the earlier ones"
 REPORT_NEW_CODE_DONE = "New code made: your next reports are grouped as {code}"
-REPORT_BUILDING = "Making your report…"
+# try a9.1 (Sonic: "it lagged when i hit the button … need something to indicate that it's thinking"): What goes opens at
+# the press and counts the files in while the worker scrubs them
+REPORT_GATHERING = "Gathering what goes in…"
+REPORT_GATHERING_N = "Gathering what goes in… {done} of {total} files, each with names and folders written as <you>"
+REPORT_GATHERING_CHECK = "Checking every file once more before it can go…"
 REPORT_GOES_HEADING = "This is exactly what goes"
 REPORT_GOES_TIP = "Every file that goes, its size, and what's left out and why"
 REPORT_GOES_PLACEHOLDERS = ("Your Windows name, PC name and home folder are written as <you>, <pc> and C:\\Users\\<you>. "

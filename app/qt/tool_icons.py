@@ -39,6 +39,19 @@ def mark_of(name, title):
     return title[:1].upper() or "?"
 
 
+def menu_of(parent, entries):
+    """The bottom bar's one right-click menu (try a9.1), for its icons on both sides — the open windows' here and the
+    phase strip's circles: `entries` [((words, tip), do), …] in order, each an item with its tip; a press runs `do()`.
+    -> the QMenu (Esc closes it; nothing runs)."""
+    m = QMenu(parent)
+    m.setToolTipsVisible(True)
+    for (words, tip), do in entries:
+        act = m.addAction(words)
+        act.setToolTip(tip)
+        act.triggered.connect(lambda _c=False, do=do: do())
+    return m
+
+
 class ToolIcon(QAbstractButton):
     """One open window's icon: a click brings it back."""
 
@@ -136,17 +149,11 @@ class ToolIcon(QAbstractButton):
 
     def menu(self):
         """The icon's own menu: *Show* · *Stop* (while its window runs work it can stop) · *Close* — every icon's."""
-        m = QMenu(self)
-        m.setToolTipsVisible(True)
         win = self.win
-        for (words, tip), do, shown in ((strings.TOOL_SHOW, lambda: windows.bring_back(win), True),
-                                        (strings.TOOL_STOP, win.stop_work, win.stoppable()),
-                                        (strings.TOOL_CLOSE, win.close_for_good, True)):
-            if shown:
-                act = m.addAction(words)
-                act.setToolTip(tip)
-                act.triggered.connect(lambda _c=False, do=do: None if win.gone else do())
-        return m
+        return menu_of(self, [(pair, lambda do=do: None if win.gone else do())       # (one menu rule: menu_of)
+                              for pair, do, shown in ((strings.TOOL_SHOW, lambda: windows.bring_back(win), True),
+                                                      (strings.TOOL_STOP, win.stop_work, win.stoppable()),
+                                                      (strings.TOOL_CLOSE, win.close_for_good, True)) if shown])
 
     def contextMenuEvent(self, event):
         if not self.win.gone:

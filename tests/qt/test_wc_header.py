@@ -20,3 +20,14 @@ from tests.qt.conftest import wait_until
 def screen(qapp, tmp_path_factory):
     with wc.window_screen(qapp, tmp_path_factory, "header", writer="arrivals") as s:
         yield s
+
+
+@pytest.fixture(autouse=True)
+def _at_rest(screen, monkeypatch):
+    """Each test in the file's own root, Current shown; at its end everything on its way landed."""
+    wc.home(monkeypatch, "header")
+    seed, win, writer = screen
+    win.show_tab("current")
+    wc.rest(200)
+    yield
+    wc.quiet(win)

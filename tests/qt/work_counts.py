@@ -18,13 +18,16 @@ What is counted, between the press and the window at rest again:
   shown multiplies them. `one_pass(widget)` counts one forced full pass of a widget's layouts, the unit a rule compares
   with;
 - **geometry** — Move and Resize events reaching widgets (rows pushed about);
-- **widgets** created and deleted (`QApplication.allWidgets()` before and after);
+- **widgets** created and deleted (every live widget tagged before the press: one without the tag after is new);
 - **reads** — the library reader's feed reads and views built (`LibraryReader.reads` / `.builds`), settings.json read
   from disk (`settings_manager.load_settings`) and the settings service's `get()`;
 - **events** — every event the application delivered: each one is a call into every app-wide filter written in Python
   (the shell's `AppFilter`, motion's finisher, the click-away watchers), so it is that work's count.
 
 Deterministic: no clock is read, only counts; the motion freeze is on (the harness's), so an overlay lands at once.
+(The paint, hint and widget counts are; `events` and the settings reads also count what a `wait_until` inside the
+measure lets in.) Paints in another window than `top` (a popup, the bubble, the drag's ghost) are kept apart
+(`elsewhere`): the rect rules judge `top`'s own.
 
 **The rules** (GUI_Design_Guidelines_Qt.md §3 *Work counts*; a screen that legitimately needs more names why in its
 test):
@@ -41,10 +44,9 @@ import sys
 from collections import Counter, namedtuple
 from contextlib import contextmanager
 
-from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect
 from PyQt6.QtGui import QPainterPath, QRegion
-from PyQt6.QtWidgets import QApplication, QLayout, QWidget
+from PyQt6.QtWidgets import QAbstractItemDelegate, QApplication, QLayout, QWidget
 
 PASS_SLACK = 1.5             # R1: a real pass asks up to ~1.3× the forced one (Settings' paused pass resumes its layouts
                              # deepest first, and the rows it shows ask their own); a pass laid twice is 2×, a pass
@@ -52,8 +54,9 @@ PASS_SLACK = 1.5             # R1: a real pass asks up to ~1.3× the forced one 
 MOVES_PER_PASS = 2           # R1: one press moves a widget at most twice (its pass, and a scroll that keeps an anchor)
 STRIP_SLACK_PX = 4           # R2: rows of pixels over the strip a scroll exposes (the device-pixel rounding)
 HINTS = ("sizeHint", "minimumSizeHint", "heightForWidth")
+LAYOUT_HINTS = ("sizeHint", "minimumSize", "heightForWidth", "setGeometry")     # a layout written in Python
 _E = QEvent.Type
-Paint = namedtuple("Paint", "widget cls name area rect region")
+Paint = namedtuple("Paint", "widget cls name area rect region window")
 
 
 def _ours(name):
@@ -61,17 +64,25 @@ def _ours(name):
 
 
 def hint_classes():
-    """Every widget class this app writes in Python that answers a size hint itself: [(cls, name, function)]."""
+    """Every widget, item delegate (a painted list's rows: `RowDelegate`, the tray's) and layout class this app writes
+    in Python that answers a size hint itself: [(cls, name, function)]."""
     found = []
     for name, mod in list(sys.modules.items()):
         if mod is None or not _ours(name):
             continue
         for obj in list(vars(mod).values()):
-            if isinstance(obj, type) and obj.__module__ == name and issubclass(obj, QWidget):
-                for h in HINTS:
-                    f = obj.__dict__.get(h)
-                    if callable(f):
-                        found.append((obj, h, f))
+            if not (isinstance(obj, type) and obj.__module__ == name):
+                continue
+            if issubclass(obj, (QWidget, QAbstractItemDelegate)):
+                names = HINTS
+            elif issubclass(obj, QLayout):
+                names = LAYOUT_HINTS
+            else:
+                continue
+            for h in names:
+                f = obj.__dict__.get(h)
+                if callable(f):
+                    found.append((obj, h, f))
     return found
 
 
@@ -94,11 +105,18 @@ def settle(turns=30):
         QApplication.processEvents()
 
 
-def _addr(w):
-    try:
-        return sip.unwrapinstance(w)
-    except (RuntimeError, TypeError):
-        return None
+_TAG = "_wc_seen"
+_TOKENS = __import__("itertools").count(1)
+
+
+def _tag_all(token):
+    """Every live widget tagged with `token`: one made during the press has no tag (an address can be reused by a
+    widget made after one deleted, a property can't). -> how many were tagged."""
+    n = 0
+    for w in QApplication.allWidgets():
+        w.setProperty(_TAG, token)
+        n += 1
+    return n
 
 
 class Work(QObject):
@@ -133,7 +151,7 @@ class Work(QObject):
             win = obj.window() if obj.isWidgetType() else obj      # (a QWindow of its own: the lift, the ghost)
             at = obj.mapTo(win, QPoint(0, 0)) if win is not obj else QPoint(0, 0)
             here = region.translated(at)
-            self.paints.append(Paint(obj, type(obj).__name__, obj.objectName(), area(region), here.boundingRect(), here))
+            self.paints.append(Paint(obj, type(obj).__name__, obj.objectName(), area(region), here.boundingRect(), here, win))
             key = id(win)
             self._union[key] = self._union.get(key, QRegion()).united(here)
         elif t == _E.LayoutRequest:
@@ -170,18 +188,28 @@ class Work(QObject):
     def union_in(self, rect):
         """px² of `rect` (in the top-level's coordinates) painted at least once."""
         if self.top is None:
-            return 0
+            raise ValueError("union_in needs the measure's top-level window")
         return area(self._union.get(id(self.top), QRegion()).intersected(QRegion(rect)))
 
     def painted_in(self, widget):
         """px² painted on `widget` and its descendants."""
         return sum(p.area for p in self.paints if _within(p.widget, widget))
 
+    @property
+    def elsewhere(self):
+        """The paints in another window than `top` (a popup, the tooltip bubble, the drag's ghost, a lift): their
+        coordinates are their own window's, so the rect rules never judge them — assert on these apart."""
+        return [(p.cls, p.name, p.rect) for p in self.paints if self.top is not None and p.window is not self.top]
+
+    def _here(self):
+        return [p for p in self.paints if self.top is None or p.window is self.top]
+
     def paints_outside(self, *widgets):
         """The paints that reach outside every one of `widgets` (where they stand in the window: a parent painting the
-        ground under a child counts as inside the child): [(class, objectName, rect)]."""
+        ground under a child counts as inside the child): [(class, objectName, rect)]. `top`'s own paints only (see
+        `elsewhere`)."""
         rects = [rect_in_window(x) for x in widgets]
-        return [(p.cls, p.name, p.rect) for p in self.paints
+        return [(p.cls, p.name, p.rect) for p in self._here()
                 if not any(r.contains(p.rect) for r in rects) and not any(_within(p.widget, x) for x in widgets)]
 
     def paints_outside_rect(self, *rects):
@@ -191,7 +219,7 @@ class Work(QObject):
         for r in rects:
             allowed = allowed.united(QRegion(r))
         out = []
-        for p in self.paints:
+        for p in self._here():
             left = p.region.subtracted(allowed)
             if not left.isEmpty():
                 out.append((p.cls, p.name, left.boundingRect()))
@@ -254,6 +282,7 @@ def measure(top=None, readers=(), settle_turns=30):
     from app import settings_manager
     from app.services import settings as settings_service
     app = QApplication.instance()
+    assert top is None or top.isWindow(), "measure's `top` is a top-level window (its coordinates are the rules')"
     w = Work(top, readers)
     patched = []
 
@@ -278,7 +307,8 @@ def measure(top=None, readers=(), settle_turns=30):
         return get(self)
     settings_manager.load_settings = counted_load
     settings_service.SettingsService.get = counted_get
-    before = {a for a in map(_addr, app.allWidgets()) if a is not None}
+    token = next(_TOKENS)
+    before = _tag_all(token)
     reads = [(r.reads, r.builds) for r in w.readers]
     app.installEventFilter(w)
     try:
@@ -290,8 +320,9 @@ def measure(top=None, readers=(), settle_turns=30):
         settings_service.SettingsService.get = get
         for cls, name, f in reversed(patched):
             setattr(cls, name, f)
-    after = {a for a in map(_addr, app.allWidgets()) if a is not None}
-    w.created, w.deleted = len(after - before), len(before - after)
+    now = QApplication.allWidgets()
+    w.created = sum(1 for x in now if x.property(_TAG) != token)
+    w.deleted = before - (len(now) - w.created)
     for (r0, b0), r in zip(reads, w.readers):
         w.reads += r.reads - r0
         w.builds += r.builds - b0
@@ -321,6 +352,32 @@ def visible_rect(widget):
 
 
 # --- a screen built once per file ------------------------------------------------------------------------------- #
+ROOTS = {}                                   # a kept screen's name -> its file's root (`module_env`)
+
+
+def home(monkeypatch, name):
+    """Each test of a kept screen's file back in the file's own root (the core conftest gives every test a new one): the
+    window's settings service rebuilds each write from the file it finds, so a write in a fresh root would leave the
+    window with that test's keys only — the next test meeting default settings (the first mark's hint, …)."""
+    monkeypatch.setenv("SURASURA_TEST_ROOT", ROOTS[name])
+
+
+def quiet(win=None, timeout_ms=10000):
+    """Everything a kept window has on its way landed before a test ends (the harness drops the answers still coming
+    at each test's end — on a kept window, for good): the thread pool's workers done, the moves' tickets cleared, the
+    hover's bubble hidden, the loop settled."""
+    from PyQt6.QtCore import QThreadPool
+    from app.qt import bridge
+    QThreadPool.globalInstance().waitForDone(timeout_ms)
+    bridge.wait_for_workers(timeout_ms)
+    moves = getattr(win, "moves", None) if win is not None else None
+    if moves is not None:
+        from tests.qt.conftest import wait_until
+        wait_until(lambda: not getattr(moves, "tickets", None), timeout_ms / 1000)
+    bubble = getattr(getattr(win, "tooltips", None), "bubble", None) if win is not None else None
+    if bubble is not None:
+        bubble.hide()
+    settle()
 def kept(widget):
     """Keep `widget` (a top-level) open across a file's tests: the harness's per-test close skips it and its popups
     (`tests/qt/conftest.py::_kept`); the file's module fixture closes it at its end (`close_kept`)."""
@@ -331,12 +388,19 @@ def kept(widget):
 
 
 def close_kept(widget, services=None):
+    """The file's screen closed at its end, while the file's own root is still set: its workers and its source looks
+    waited for (the harness's per-test waits never saw them: they were made before its patch), then deleted."""
+    from app.qt import bridge
     for top in QApplication.topLevelWidgets():
         if top.property("wc_keep"):
             top.setProperty("wc_keep", False)
     widget.close()
     if services is not None:
         services.shutdown(0.5)
+    looks = getattr(widget, "looks", None)
+    if looks is not None and hasattr(looks, "idle"):
+        looks.idle(10)
+    bridge.wait_for_workers(10000)
     widget.deleteLater()
     QApplication.sendPostedEvents(None, _E.DeferredDelete)
     QApplication.processEvents()
@@ -353,6 +417,7 @@ def module_env(tmp_path_factory, name):
     from app.qt import star_ask
     mp = pytest.MonkeyPatch()
     root = tmp_path_factory.mktemp(f"wc_{name}")
+    ROOTS[name] = str(root)
     mp.setenv("SURASURA_TEST_ROOT", str(root))
     mp.setenv("SURASURA_FREEZE_MOTION", "1")
     mp.setenv("SURASURA_INSTANCE_NAME", f"surasura-wc-{uuid.uuid4().hex[:12]}")
@@ -383,7 +448,11 @@ def window_screen(qapp, tmp_path_factory, name, writer="undo", **build):
             from tests.qt.test_drag import UndoingWriter, open_window
             w = UndoingWriter(seed.library)
         win, services = open_window(qapp, seed, w)
-        kept(win)
+        try:
+            kept(win)
+        except BaseException:
+            close_kept(win, services)
+            raise
         rest(300)
         try:
             yield seed, win, w

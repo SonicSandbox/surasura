@@ -40,6 +40,7 @@ def page(qapp, tmp_path_factory):
 
 @pytest.fixture(autouse=True)
 def _at_rest(page, monkeypatch):
+    wc.home(monkeypatch, "settings")
     """Each test from the same place: the search empty, the page at its top, no write pending; the page never saves
     settings.json itself (the service does)."""
     def refused(*_a, **_k):
@@ -116,7 +117,7 @@ def test_r4_a_switch_that_reveals_nothing_repaints_only_inside_its_own_row(page)
         wc.settle()
 
 
-@pytest.mark.xfail(strict=True, reason="WC found.md F1: the whole page in view repaints (rows above the switch too)")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found.md F1: the whole page in view repaints (rows above the switch too)")
 def test_r4_r1_a_sections_switch_repaints_nothing_above_itself_and_lays_the_page_out_once(page):
     """*Junban* off hides its section's rows (on brings them back): the page below the switch repaints, nothing
     above it; one layout pass at most; no widget made or deleted (rows are hidden, never rebuilt)."""
@@ -140,7 +141,7 @@ def test_r4_r1_a_sections_switch_repaints_nothing_above_itself_and_lays_the_page
 
 
 # --- R1: More options and the search: one layout pass ------------------------------------------------------------ #
-@pytest.mark.xfail(strict=True, reason="WC found.md F2: rows above the button repaint")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found.md F2: rows above the button repaint")
 def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_its_button(page):
     """*More options*: the section's other rows open in place below its button — one layout pass of the page at most,
     nothing above the button repainted, nothing made. *Fewer options* the same."""
@@ -162,6 +163,8 @@ def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_it
         wc.settle()
 
 
+SEARCH_LAYERS = 12                  # today's most: ~9 viewports of paint summed over the nested layers (body, slab,
+#                                     row, label…) when a keystroke changes every row in view
 SEARCH_MOVES = 9                    # today's most: a row moved 7–8 times by one keystroke (found.md F3) — the rule is
 #                                     `wc.MOVES_PER_PASS`; lower this to it when F3's fix lands. Unpaused (a9.1's lag): 38
 
@@ -178,7 +181,8 @@ def test_r1_a_search_keystroke_lays_the_page_out_once_whatever_it_shows_or_hides
         page.search.edit.setText(typed)
     assert w.most_moved()[0] <= SEARCH_MOVES, w.report()
     assert w.hints <= unit * wc.PASS_SLACK, (unit, w.report())
-    assert w.union <= page.width() * page.height(), w.report()
+    vp = page.scroll.viewport()
+    assert w.area <= SEARCH_LAYERS * vp.width() * vp.height(), w.report()
     assert w.created == 0 and w.deleted == 0, w.report()
 
 

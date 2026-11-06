@@ -41,8 +41,10 @@ def keys_of(win):
 
 
 @pytest.fixture(autouse=True)
-def _at_rest(screen):
-    """Each test from the same place: Current shown, at its top, no row open, the order as the seed made it."""
+def _at_rest(screen, monkeypatch):
+    """Each test from the same place: the file's own root, Current shown, at its top, no row open, the order as the
+    seed made it; at its end everything on its way landed (`wc.quiet`)."""
+    wc.home(monkeypatch, "current")
     seed, win, writer = screen
     win.show_tab("current")
     lst = lst_of(win)
@@ -60,6 +62,7 @@ def _at_rest(screen):
         i = next(i for i, e in enumerate(lst.model().entries) if getattr(e[1], "key", None) == lst.model().open_key)
         lst.toggle(lst.model().index(i, 0))
     settle(150)
+    wc.quiet(win)
 
 
 def _row_band(lst, first, last):
@@ -71,10 +74,13 @@ def _row_band(lst, first, last):
 
 def _allowed_outside_the_list(win):
     """What a press may repaint outside the list: the toast it raises (with its shadow and the parts under it), the
-    bottom bar's line (the press's mark and its words) and the edge strips over the list's ends."""
+    bottom bar's line (the press's mark and its words), the edge strips over the list's ends and the header's 1 px
+    progress line (a press that waits on a worker shows its mark there: `press.py`)."""
+    from PyQt6.QtWidgets import QWidget
     toast = wc.rect_in_window(win.toasts.card).adjusted(-48, -48, 48, 48)
     bar = QRect(0, wc.rect_in_window(win.dock).top() - 24, win.width(), win.height())
-    return [toast, bar]
+    progress = win.findChild(QWidget, "progress")
+    return [toast, bar] + ([wc.rect_in_window(progress)] if progress is not None else [])
 
 
 def _closed_row(lst, at_least=0):
@@ -106,7 +112,9 @@ def test_r3_a_nudge_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_lis
                and not any(r.contains(p.rect) for r in _allowed_outside_the_list(win))]
     assert outside == [], (outside, w.report())
     assert lst.delegate.renders - renders <= 2, w.report()        # the two rows' new pictures at most
-    assert w.builds <= 1, w.report()                               # one view for one move
+    # (no view: the test's writer records a nudge without writing the stand-in store — the rows shown are the
+    #  optimistic move's, which is what the learner sees at the press)
+    assert w.builds == 0, w.report()
 
 
 def test_r3_a_drop_draws_afresh_only_the_rows_whose_place_changed(screen):
@@ -121,14 +129,15 @@ def test_r3_a_drop_draws_afresh_only_the_rows_whose_place_changed(screen):
     settle(100)
     saved = len(writer.saved)
     renders = lst.delegate.renders
-    with wc.measure(win, readers=[win.services.library]) as w:
+    reader = win.services.library
+    built = reader.builds
+    with wc.measure(win, readers=[reader]) as w:
         release_global(win, target)
-        assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3)
+        assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [] and reader.builds > built, 3)
         settle(200)
     assert lst.delegate.renders - renders <= 6 - 2 + 1, w.report()          # rows 2…6, no other
-    assert w.builds <= 1, w.report()
-    header = wc.rect_in_window(win.header) if hasattr(win, "header") else QRect()
-    assert not any(header.contains(p.rect) for p in w.paints), w.report()
+    assert w.builds == 1, w.report()
+    assert w.paints_outside_rect(wc.rect_in_window(lst), *_allowed_outside_the_list(win)) == [], w.report()
 
 
 def test_r3_an_undo_draws_afresh_only_the_rows_it_puts_back(screen):
@@ -143,13 +152,16 @@ def test_r3_an_undo_draws_afresh_only_the_rows_it_puts_back(screen):
     settle(300)
     undone = len(writer.undone)
     renders = lst.delegate.renders
-    with wc.measure(win, readers=[win.services.library]) as w:
+    reader = win.services.library
+    built = reader.builds
+    with wc.measure(win, readers=[reader]) as w:
         win.toasts.card.buttons[0].click()
-        assert wait_until(lambda: len(writer.undone) > undone, 3)
-        settle(300)
+        assert wait_until(lambda: len(writer.undone) > undone and reader.builds > built and win.moves.tickets == [], 3)
+        settle(200)
     writer.saved.pop()                                             # undone: nothing for the clean-up to undo
     assert lst.delegate.renders - renders <= 6 - 2 + 1, w.report()          # rows 2…6, no other
-    assert w.builds <= 2, w.report()                               # (the undo's view; the optimistic one at most)
+    assert 1 <= w.builds <= 2, w.report()                          # (the undo's view; the optimistic one at most)
+    assert w.paints_outside_rect(wc.rect_in_window(lst), *_allowed_outside_the_list(win)) == [], w.report()
     assert w.created == 0, w.report()
 
 
@@ -170,9 +182,7 @@ def test_r4_opening_and_closing_a_row_draws_only_its_own_episodes_afresh(screen)
             settle(100)
         drawn = lst.delegate.renders - renders
         assert drawn <= (1 + episodes if opening else 0), (opening, drawn, w.report())
-        assert w.paints_outside_rect(box) == [] or all(p[0] in ("ShellWindow", "QWidget", "QStackedWidget",
-                                                                 "CurrentPage") and box.contains(p[2])
-                                                       for p in w.paints_outside_rect(box)), w.report()
+        assert w.paints_outside_rect(box) == [], w.report()
         assert w.created == 0 and w.builds == 0, w.report()
 
 
@@ -202,7 +212,7 @@ def test_r2_a_wheel_notch_paints_only_the_strip_that_came_into_view(screen):
 
 
 # --- R5: the ⋯ menu built once ------------------------------------------------------------------------------------- #
-@pytest.mark.xfail(strict=True, reason="WC found.md F4: each ⋯ open makes its submenus again (5 widgets)")
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found.md F4: each ⋯ open makes its submenus again (5 widgets)")
 def test_r5_the_rows_menu_opened_again_makes_no_widget(screen):
     """⋯ on a row, closed, then ⋯ on another: the list keeps one menu (C4) — the second open makes no widget and no
     native window."""

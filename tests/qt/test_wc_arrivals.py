@@ -38,8 +38,10 @@ def _with_shadow(win, widget):
 
 
 @pytest.fixture(autouse=True)
-def _at_rest(screen):
-    """Each test from the same place: Current shown, the tray closed."""
+def _at_rest(screen, monkeypatch):
+    """Each test from the same place: the file's own root, Current shown, the tray closed; at its end everything on its
+    way landed (`wc.quiet`)."""
+    wc.home(monkeypatch, "arrivals")
     seed, win, writer = screen
     win.show_tab("current")
     settle(200)
@@ -47,6 +49,7 @@ def _at_rest(screen):
     if tray_of(win).isVisible():
         tray_of(win).close()
     settle(200)
+    wc.quiet(win)
 
 
 def test_an_arrival_landing_repaints_the_inset_alone(screen):
@@ -78,7 +81,8 @@ def test_r5_the_tray_opened_again_makes_no_widget(screen):
         open_tray(win)
         settle(200)
     assert w.created == 0 and w.deleted == 0, w.report()
-    assert w.builds == 0 and w.hints == 0, w.report()
+    assert w.builds == 0, w.report()
+    assert w.hints <= len(tray_rows(win)) + 1, w.report()        # its list lays its rows out once as it shows
 
 
 def test_the_top_icon_draws_afresh_only_the_rows_its_arrival_changes_on_current(screen):
@@ -92,10 +96,17 @@ def test_the_top_icon_draws_afresh_only_the_rows_its_arrival_changes_on_current(
     row = next(r for r in tray_rows(win) if r.icon_kind == "top")
     n = len(tray_rows(win))
     renders = lst.delegate.renders
+    tray = _with_shadow(win, tray_of(win))
     with wc.measure(win, readers=[win.services.library]) as w:
         row.click("icon")
         assert wait_until(lambda: len(tray_rows(win)) == n - 1, 5)
         settle(200)
+    toast = wc.rect_in_window(win.toasts.card).adjusted(-48, -48, 48, 48)
+    bar = QRect(0, wc.rect_in_window(win.dock).top() - 24, win.width(), win.height())
+    tabs = wc.rect_in_window(win.findChild(QWidget, "tabbar"))    # Current's count: one more
+    counts = wc.rect_in_window(win.findChild(QWidget, "wordsub"))  # the header's line: Current's count
+    assert w.paints_outside_rect(tray, wc.rect_in_window(lst), wc.rect_in_window(win.arrivals_inset), toast, bar,
+                                 tabs, counts) == [], w.report()
     assert lst.delegate.renders - renders <= 3, w.report()
     assert w.builds == 1, w.report()
     assert w.created <= 1, w.report()

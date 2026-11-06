@@ -76,6 +76,13 @@ LINKS = {"github": ("⭐ Star on GitHub", "Opens Surasura's GitHub page in your 
 # a link's page, by its name: the block's buttons, and Parsing's *How parsing works* row
 LINK_URLS = dict({name: url for name, (_label, _tip, url) in LINKS.items()}, how_parsing_works=HOW_PARSING_URL)
 FOLDER_PICK_TITLE = "Where videos are looked for"
+# *Videos open in* / *Books open in* (Sonic 2026-11-05): the program option before one is chosen, its *Change…*, the
+# picker (PROVISIONAL)
+PROGRAM_PICK = "Choose a program…"
+PROGRAM_CHANGE = "Change…"
+PROGRAM_CHANGE_TIP = "Choose another program"
+PROGRAM_PICK_TITLE = {"open_video": "The program videos open in", "open_book": "The program EPUBs open in"}
+PROGRAM_FILTER = {"win32": "Programs (*.exe)"}                   # other systems: every file
 
 # --- the controls' own words (settings_controls.py; moved here from its top, W3.3 P3) ------------------------------ #
 ADD = "Add"                                      # an empty bed's words when the page names none
@@ -419,6 +426,18 @@ ROWS = {
                       "Sort your library again, or start over completely; both can be put back",
                       "sort library again order tiers fresh reset start over completely everything new pc clear read "
                       "again put back backup restore"),
+    # Sonic 2026-11-05 (the mock's rows, "2 lines. One for the term and then a row or 2 for the buttons"); PROVISIONAL
+    "open_video": ("Videos open in", "What ▶ opens a video with: the program Windows uses for it, or one you choose. "
+                                     "YouTube and bilibili always open on their site",
+                   "What ▶ opens a video with", "open play video player program vlc mpv watch"),
+    "open_book": ("Books open in", "What ▶ opens an EPUB with: the program Windows uses for it, or one you choose. A "
+                                   "book with no EPUB opens its text file",
+                  "What ▶ opens an EPUB with", "open read book epub reader program"),
+    "finish_cards": ("When you finish something", "What happens to its new cards in Anki. Leaving them out suspends "
+                                                  "and tags them, never deletes them: Undo or Put back brings them "
+                                                  "back",
+                     "What finishing something does to its new cards in Anki",
+                     "finish finished done new cards keep leave out suspend order"),
     "split_books_by": ("Split books by", "Each book you add: its chapters, each cut into parts; or even parts across "
                                          "the book. Books already in keep their parts",
                        "How a book is cut into parts when you add it", "split books chapters even parts epub"),
@@ -582,6 +601,9 @@ OPTIONS = {
     "junban_scope": {"deck": "This deck", "all": "All decks"},
     "junban_order": {"content": "As I’ll meet it", "priority": "By leverage"},
     "split_books_by": {"chapters": "Chapters", "even": "Even parts"},
+    "open_video": {"default": "Your default player", "program": PROGRAM_PICK},     # "program": its name once chosen
+    "open_book": {"default": "Your EPUB reader", "program": PROGRAM_PICK},
+    "finish_cards": {"ask": "Ask each time", "keep": "Keep its cards", "out": "Leave them out"},
     "junban_unlisted": {"list_first": "After it", "journey": "Mixed in", "back": "At the back"},
     "junban_only_markers": {"star": "✦", "lopsided": "⚖", "reading": "📖"},
     "backfill_patterns": {"patterns": FILLS["patterns"]}, "backfill_sentence": {"sentence": FILLS["sentence"]},
@@ -610,6 +632,13 @@ OPTION_TIPS = {
                             "reading": "Reading: words you'll read but essentially never hear"},
     "junban_order_all": {False: "Your own cards go ahead of Connect's, in the order you made them",
                          True: "Your own cards go among Connect's, in your list's order"},
+    "open_video": {"default": "▶ opens a video in the program Windows opens it with",
+                   "program": "▶ opens a video in a program you choose"},       # once chosen: its path
+    "open_book": {"default": "▶ opens an EPUB in the program Windows opens it with",
+                  "program": "▶ opens an EPUB in a program you choose"},
+    "finish_cards": {"ask": "Finishing something asks: keep its new cards in your order, or leave them out",
+                     "keep": "Its new cards stay in your order, as they are",
+                     "out": "Its new cards leave your order: suspended in Anki and tagged, never deleted"},
 }
 
 # --- P4: the live rows (settings_live.py): Your setup, the level readout, the statuses, App's rows, the credits, Export

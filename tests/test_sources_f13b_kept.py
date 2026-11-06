@@ -8,6 +8,7 @@ older Surasura), the kept read equals it, field for field and in key order. Each
 full (counted, never timed: it holds on any runner)."""
 import os
 import random
+import shutil
 import sqlite3
 
 import pytest
@@ -160,37 +161,39 @@ def test_nothing_changed_reads_nothing_and_one_change_reads_one_item(monkeypatch
 
 def test_the_log_reads_in_full_when_it_cant_say(monkeypatch):
     """A whole read whenever the log can't answer: nothing kept, another store (its id or epoch moved), a mark ahead of
-    the log, the rows since the mark pruned, the reset mark among them, more than a quarter of the origins changed,
-    or inside a write (and then nothing is kept)."""
+    the log, another log (its id), the row at the mark another item's, the rows since the mark pruned, the reset mark
+    among them, more than a quarter of the origins changed, or inside a write (and then nothing is kept)."""
     store, data_dir, src, root = _library()
     try:
         kept = store.origins_kept(None)
         whole = _counting(store, monkeypatch)
         mark, origins = kept
-        store.origins_kept(((mark[0], mark[1] + 1, mark[2]), origins))         # another epoch
-        store.origins_kept((("another store", mark[1], mark[2]), origins))
-        store.origins_kept(((mark[0], mark[1], mark[2] + 5), origins))         # a mark ahead of the log
-        assert len(whole) == 3
+        store.origins_kept(((mark[0], mark[1] + 1) + mark[2:], origins))        # another epoch
+        store.origins_kept((("another store",) + mark[1:], origins))
+        store.origins_kept((mark[:2] + ("another log",) + mark[3:], origins))
+        store.origins_kept((mark[:3] + (mark[3] + 5, None), origins))          # a mark ahead of the log
+        store.origins_kept((mark[:4] + (mark[4] + 1,), origins))                # its row another item's
+        assert len(whole) == 5
         with store._writing():
             store.conn.execute("INSERT INTO origin_changes (item_id) VALUES (0)")
         store.origins_kept(kept)
-        assert len(whole) == 4, "the reset mark"
+        assert len(whole) == 6, "the reset mark"
         kept = store.origins_kept(None)
         ids = sorted({o.item_id for o in kept[1].values()})
         with store._writing():
             store.conn.executemany("UPDATE items SET availability = 'missing' WHERE id = ?",
                                    [(i,) for i in ids[:len(kept[1]) // 4 + 1]])
         store.origins_kept(kept)
-        assert len(whole) == 6, "a quarter changed"
+        assert len(whole) == 8, "a quarter changed"
         kept = store.origins_kept(None)
         with store._writing():
             store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (ids[-1],))
-            store.conn.execute("DELETE FROM origin_changes WHERE seq <= ?", (kept[0][2] + 1,))
+            store.conn.execute("DELETE FROM origin_changes WHERE seq <= ?", (kept[0][3] + 1,))
         store.origins_kept(kept)
-        assert len(whole) == 8, "its rows pruned"
+        assert len(whole) == 10, "its rows pruned"
         with store._writing():
             assert store.origins_kept(kept)[0] is None
-        assert len(whole) == 9, "inside a write"
+        assert len(whole) == 11, "inside a write"
     finally:
         store.__exit__(None, None, None)
 
@@ -205,7 +208,7 @@ def test_the_log_prunes_itself_and_a_mark_before_its_rows_reads_in_full(monkeypa
             store.conn.executemany("INSERT INTO origin_changes (item_id) VALUES (?)",
                                    [(1,)] * (ls.ORIGIN_LOG_KEEP + 3000))
         count, low, top = store.conn.execute("SELECT COUNT(*), MIN(seq), MAX(seq) FROM origin_changes").fetchone()
-        assert ls.ORIGIN_LOG_KEEP <= count <= ls.ORIGIN_LOG_KEEP + 1024 and low > kept[0][2] + 1
+        assert ls.ORIGIN_LOG_KEEP <= count <= ls.ORIGIN_LOG_KEEP + 1024 and low > kept[0][3] + 1
         assert top - low + 1 == count
         whole = _counting(store, monkeypatch)
         got = store.origins_kept(kept)[1]
@@ -228,6 +231,7 @@ def test_a_store_made_before_the_log_gets_it_at_open_with_its_reset_mark_and_wit
     for name in ls.ORIGIN_LOG[1:]:
         raw.execute(f"DROP TRIGGER {name}")
     raw.execute("DROP TABLE origin_changes")
+    raw.execute("DELETE FROM meta WHERE key = ?", (ls.ORIGIN_LOG_ID,))
     raw.commit()
     before = {t: raw.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall() for t in ("items", "pairings", "meta")}
     raw.close()
@@ -239,8 +243,10 @@ def test_a_store_made_before_the_log_gets_it_at_open_with_its_reset_mark_and_wit
         reader.close()
     store = ls.open_store("ja", data_dir, ud)
     with store:
-        assert {t: store.conn.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall()
+        assert {t: [r for r in store.conn.execute(f"SELECT * FROM {t} ORDER BY rowid").fetchall()
+                    if t != "meta" or r[0] != ls.ORIGIN_LOG_ID]
                 for t in ("items", "pairings", "meta")} == before
+        assert store.meta()[ls.ORIGIN_LOG_ID]
         assert store.conn.execute("SELECT item_id FROM origin_changes").fetchall() == [(0,)]
         whole = _counting(store, monkeypatch)
         again = store.origins_kept(kept)
@@ -257,6 +263,62 @@ def test_a_store_made_before_the_log_gets_it_at_open_with_its_reset_mark_and_wit
         got = store.origins_kept(again)[1]
         assert whole == [1], "the reset mark: nothing kept from before the gap is read as current"
         _same(got, store)
+
+
+def _toggle(raw, item, times):
+    """`times` changes of one item's copy, by a plain connection (an even count: back as it was)."""
+    for n in range(times):
+        raw.execute("UPDATE items SET availability = ? WHERE id = ?", ("missing" if n % 2 == 0 else "available", item))
+    raw.commit()
+
+
+def test_a_log_dropped_and_made_again_is_another_log_even_when_its_numbers_pass_the_mark():
+    """The log dropped (its triggers, its table: its numbers restart) while a process keeps origins, a change made
+    meanwhile (never logged), the log made again: once its new numbers pass the kept mark, the mark still names the old
+    log (its id) — read in full, the change seen (the adversary's probe, F13b register row 1)."""
+    store, data_dir, src, root = _library()
+    db, ud = store.db_path, store.user_files_dir
+    kept = store.origins_kept(None)
+    x, y = sorted({o.item_id for o in kept[1].values()})[:2]
+    store.__exit__(None, None, None)
+    raw = sqlite3.connect(db)
+    for name in ls.ORIGIN_LOG[1:]:
+        raw.execute(f"DROP TRIGGER {name}")
+    raw.execute("DROP TABLE origin_changes")
+    raw.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (x,))   # in the gap: never logged
+    raw.commit()
+    raw.close()
+    store = ls.open_store("ja", data_dir, ud)
+    with store:
+        raw = sqlite3.connect(db)
+        _toggle(raw, y, kept[0][3] + 2)
+        raw.close()
+        _same(store.origins_kept(kept)[1], store)
+
+
+def test_a_store_file_put_back_from_a_copy_under_a_kept_mark_reads_in_full():
+    """A copy of the store taken earlier put back at its path while a process keeps origins (the same store id, epoch
+    and log id): once writes pass the kept mark, the row at the mark is another item's — read in full (F13b register
+    row 2; Surasura's own Put back makes a new store id)."""
+    store, data_dir, src, root = _library()
+    db, ud = store.db_path, store.user_files_dir
+    copy = db + ".copy"
+    ls._copy_db(store.conn, copy)
+    x, y = sorted({o.item_id for o in store.origins().values()})[:2]
+    with store._writing():
+        store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (x,))
+    kept = store.origins_kept(None)
+    store.__exit__(None, None, None)
+    for end in ("-wal", "-shm"):
+        if os.path.exists(db + end):
+            os.remove(db + end)
+    shutil.copyfile(copy, db)
+    store = ls.open_store("ja", data_dir, ud)
+    with store:
+        raw = sqlite3.connect(db)
+        _toggle(raw, y, 4)
+        raw.close()
+        _same(store.origins_kept(kept)[1], store)
 
 
 # --- the look ------------------------------------------------------------------------------------------------------- #

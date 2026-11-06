@@ -1972,8 +1972,14 @@ def test_the_known_books_are_gathered_once_a_look(monkeypatch):
             def __iter__(self):
                 Counted.walked += 1
                 return super().__iter__()
-        real = store.origins
-        monkeypatch.setattr(store, "origins", lambda: Counted(real()))
+        real_load = sources._Look._load
+
+        def load(look):                                 # the look's own origins (F13b: a copy of what it read)
+            fresh = look.origins is None
+            real_load(look)
+            if fresh:
+                look.origins = Counted(look.origins)
+        monkeypatch.setattr(sources._Look, "_load", load)
         grouped = []
         real_members = sources._Look._members
 
@@ -1983,7 +1989,7 @@ def test_the_known_books_are_gathered_once_a_look(monkeypatch):
             return real_members(self, table)
         monkeypatch.setattr(sources._Look, "_members", members)
         assert _look(store, language, root, full=True)["added"] == 0
-        assert Counted.walked <= 1 and len(grouped) == 1
+        assert Counted.walked == 1 and len(grouped) == 1
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

@@ -1303,11 +1303,14 @@ class _Look:
         # F13b: a quick look reads only the origins that changed since the last look kept them (`origins_kept`); a
         # full look (the first of this run, a Refresh) reads them all
         key = _store_key(self.store)
-        mark, origins = self.store.origins_kept(None if self.full else _KEPT.pop(key, None))
+        with _GUARD:
+            kept = None if self.full else _KEPT.pop(key, None)
+        mark, origins = self.store.origins_kept(kept)
         if mark is not None:
-            _KEPT[key] = (mark, origins)
-            while len(_KEPT) > KEPT_STORES:                  # the oldest kept goes (a test run opens many stores)
-                _KEPT.pop(next(iter(_KEPT)))
+            with _GUARD:                                     # (looks on two stores at once)
+                _KEPT[key] = (mark, origins)
+                while len(_KEPT) > KEPT_STORES:              # the oldest kept goes (a test run opens many stores)
+                    _KEPT.pop(next(iter(_KEPT)))
         self.origins = dict(origins)                         # the look's own: `_refresh` changes it as it goes
         self.groups = dict(self.store.show_groups())
         excluded = self.store.excluded()

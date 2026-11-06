@@ -716,9 +716,12 @@ ADDED_HASH = "items_hash_stale"
 # its id. A replaced pairing logs the item it held too (BEFORE INSERT: SQLite's REPLACE fires no delete trigger).
 # Made with the added indexes (no version, no data change): a new store at once, an existing one at its first open by
 # a writer, which also logs the reset mark 0 (every origin as changed: a reader that kept origins from before the
-# triggers were there reads all). It keeps its newest ORIGIN_LOG_KEEP rows (the log prunes itself); a reader whose
-# mark is older reads all. Never in the copy (COPY_TABLES). Dropped as easily: DROP the triggers, then the table.
+# triggers were there reads all) and gives the log a new id (meta ORIGIN_LOG_ID: a log dropped and made again restarts
+# its numbers, below a reader's mark). It keeps its newest ORIGIN_LOG_KEEP rows (the log prunes itself); a reader whose
+# mark is older reads all. Never in the copy (COPY_TABLES, COPY_META_KEYS). Dropped as easily: DROP the triggers, then
+# the table and the meta key.
 ORIGIN_LOG_KEEP = 50_000
+ORIGIN_LOG_ID = "origin_log"
 _SRC_ROW = "{0}.content_key >= 'src:' AND {0}.content_key < 'src;'"     # `_ORIGIN_ROW` on a trigger's NEW / OLD
 ORIGIN_LOG_SQL = (
     "CREATE TABLE IF NOT EXISTS origin_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL)",
@@ -745,6 +748,7 @@ ORIGIN_LOG_SQL = (
     f"""CREATE TRIGGER IF NOT EXISTS origin_log_prune AFTER INSERT ON origin_changes WHEN NEW.seq % 1024 = 0
       BEGIN DELETE FROM origin_changes WHERE seq <= NEW.seq - {ORIGIN_LOG_KEEP}; END""",
     "INSERT INTO origin_changes (item_id) VALUES (0)",                 # the reset mark (an item id is never 0)
+    f"INSERT OR REPLACE INTO meta (key, value) VALUES ('{ORIGIN_LOG_ID}', lower(hex(randomblob(8))))",
 )
 ORIGIN_LOG = ("origin_changes", "origin_log_replaced", "origin_log_in", "origin_log_set", "origin_log_out",
               "origin_log_copy", "origin_log_item_in", "origin_log_item_out", "origin_log_prune")
@@ -9240,9 +9244,11 @@ def _store_origins_kept(self, kept=None):
     """F13b: `origins()` as it reads now, from the origins a look kept (`kept`: this call's own answer last time, or
     None) — only the items the change log (ORIGIN_LOG_SQL) names since then read again (`origins(items=…)`), their
     old keys dropped, their keys now laid over the rest, in key order: the same dict, field for field and in the same
-    order, as a whole read. A whole read (`origins()`) when nothing was kept, the store is another (its id or epoch
-    moved), the log can't say (its triggers missing, its rows since pruned, the reset mark 0 among them), more than a
-    quarter of the origins changed, or inside a write. -> (mark, origins); `mark` None: nothing to keep."""
+    order, as a whole read. A whole read (`origins()`) when nothing was kept, the store is another (its id, epoch or
+    log id moved), the log can't say (its triggers missing, its rows since pruned, the reset mark 0 among them, the
+    row at the mark another item's: a file put back from a copy), more than a quarter of the origins changed, or inside
+    a write. -> (mark, origins); mark (store id, epoch, log id, its last row's seq, that row's item) or None: nothing
+    to keep."""
     if self.conn.in_transaction:                             # a write's own rows may yet roll back: never kept
         return None, self.origins()
     with self._reading():
@@ -9251,18 +9257,23 @@ def _store_origins_kept(self, kept=None):
                                                 f"({','.join('?' * len(ORIGIN_LOG))})", ORIGIN_LOG)}
         if len(have) < len(ORIGIN_LOG):
             return None, self.origins()
+        if not meta.get(ORIGIN_LOG_ID):
+            return None, self.origins()
         top = self.conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'origin_changes'").fetchone()
-        mark = (meta.get("store_id"), meta.get("epoch"), top[0] if top else 0)
+        seq = top[0] if top else 0
+        mark = (meta.get("store_id"), meta.get("epoch"), meta[ORIGIN_LOG_ID], seq, self._origin_logged(seq))
         held, origins = kept if kept else (None, None)
-        if not held or held[:2] != mark[:2] or not isinstance(held[2], int) or held[2] > mark[2]:
+        if not held or held[:3] != mark[:3] or not isinstance(held[3], int) or held[3] > seq:
             return mark, self.origins()
-        if held[2] == mark[2]:
-            return mark, origins
+        if held[3] == seq:
+            return (mark, origins) if held == mark else (mark, self.origins())
         low = self.conn.execute("SELECT MIN(seq) FROM origin_changes").fetchone()[0]
-        if low is None or low > held[2] + 1:                 # the rows since the mark pruned (or none: all pruned)
+        if low is None or low > held[3] + 1:                 # the rows since the mark pruned (or none: all pruned)
+            return mark, self.origins()
+        if low <= held[3] and self._origin_logged(held[3]) != held[4]:   # the log isn't the one the mark read
             return mark, self.origins()
         ids = {r[0] for r in self.conn.execute("SELECT DISTINCT item_id FROM origin_changes WHERE seq > ?",
-                                               (held[2],))}
+                                               (held[3],))}
         if 0 in ids or len(ids) > len(origins) // 4:
             return mark, self.origins()
         fresh = self.origins(items=ids)
@@ -9272,6 +9283,12 @@ def _store_origins_kept(self, kept=None):
     if new:                                                  # in key order, as SQLite's (UTF-8 order is code points')
         out = {k: out[k] for k in sorted(out)}
     return mark, out
+
+
+def _store_origin_logged(self, seq):
+    """F13b: the item the change log's row `seq` names, or None (no such row)."""
+    row = self.conn.execute("SELECT item_id FROM origin_changes WHERE seq = ?", (seq,)).fetchone()
+    return row[0] if row else None
 
 
 def _store_excluded(self, root_ids=None):
@@ -12090,6 +12107,7 @@ Store.join_moved = _store_join_moved
 Store.source_detail = _store_source_detail
 Store.origins = _store_origins
 Store.origins_kept = _store_origins_kept
+Store._origin_logged = _store_origin_logged
 Store.excluded = _store_excluded
 Store.items_of_size = _store_items_of_size
 Store.keep_hashes = _store_keep_hashes

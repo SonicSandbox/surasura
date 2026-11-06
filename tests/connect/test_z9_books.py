@@ -325,8 +325,9 @@ class BookSteps(StoreSteps):
         return super().pick(lang, job, video)
 
 
-def _parts_in_store(tmp_path, lang="ja"):
-    """Two parts of a real EPUB (its first chapter's first two) added with their origin records (`<epub>#<n>` + Hon's `chapter`), as Extract does."""
+def _parts_in_store(tmp_path, lang="ja", chapter=True):
+    """Two parts of a real EPUB (its first chapter's first two) added with their origin records (`<epub>#<n>` + Hon's `chapter`), as Extract does
+    (`chapter` False: parts from before Hon's record)."""
     epub = _novel(tmp_path)
     docs, _ = extract.epub_documents(epub)
     pieces = extract.book_split(docs, 1500)[1:3]         # the first chapter's first two parts: one document shared
@@ -339,7 +340,7 @@ def _parts_in_store(tmp_path, lang="ja"):
         with open(files[-1], "w", encoding="utf-8") as f:
             f.write(p.text)
     origins = {f: {"origin": f"{epub}#{n}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": "0" * 64,
-                   "show": "旅の記録", "episode": n, "chapter": p.chapter}
+                   "show": "旅の記録", "episode": n, **({"chapter": p.chapter} if chapter else {})}
                for n, (f, p) in enumerate(zip(files, pieces), 1)}
     with c.store(lang) as s:
         added = s.insert(files, "now", origins=origins).added

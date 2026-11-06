@@ -271,8 +271,10 @@ def test_never_asked_where_play_cant_be_and_connects_no_video_wins():
     view = vr.build(items, WORKS, {"mine_line": 20}, connect=connect, playable=dict.fromkeys(range(1, 6), True))
     by_id = {e.id: e for r in view.rows for e in r.episodes}
     assert by_id[1].ask is not None and by_id[1].can_play
-    for i in (2, 3, 4, 5):                                               # missing, waiting, Connect's No video, online
+    for i in (2, 3, 4):                                                  # missing, waiting, Connect's No video
         assert by_id[i].ask is None and not by_id[i].can_play, i
+    # try a9.1: an online video is never looked for on disk, and its ▶ shows (its page in the browser)
+    assert by_id[5].ask is None and by_id[5].can_play and by_id[5].online == "youtube"
     assert by_id[4].status.kind == "no_media"                           # the status and ▶ say the same
 
 
@@ -298,6 +300,7 @@ def test_the_reader_asks_once_shows_the_answers_and_a_quiet_refresh_looks_at_not
     first = vr.build({r["id"]: r for r in seed.items}, {w["id"]: w for w in seed.works}, {"mine_line": 20})
     asked = [e.id for r in first.rows for e in r.episodes if e.ask is not None]
     lucky = set(asked[::3])                                              # every third episode's video is found
+    online = {e.id for r in first.rows for e in r.episodes if e.online}  # (try a9.1: ▶ always, never looked for)
     calls = _fake_look(monkeypatch, {i: True for i in lucky})
     looks = play.Looks(seed.language)
     reader = library_reader.LibraryReader(seed.opener, language=seed.language, numbers=seed.numbers,
@@ -307,7 +310,7 @@ def test_the_reader_asks_once_shows_the_answers_and_a_quiet_refresh_looks_at_not
     reader.start()
     try:
         def shown():
-            return views and {e.id for r in views[-1].rows for e in r.episodes if e.can_play} == lucky
+            return views and {e.id for r in views[-1].rows for e in r.episodes if e.can_play} == lucky | online
         end = time.monotonic() + 10
         while not shown() and time.monotonic() < end:
             time.sleep(0.02)

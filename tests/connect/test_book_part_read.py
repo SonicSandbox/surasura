@@ -107,6 +107,7 @@ def test_an_emptied_document_keeps_its_body_and_its_attributes_and_nothing_in_it
     assert extract._emptied(b"<x:html><x:BODY>\n<p>a</p></x:BODY ></x:html>") == b"<x:html><x:BODY></x:BODY ></x:html>"
     assert extract._emptied(b"<html><body/></html>") == b"<html><body/></html>"
     assert extract._emptied(b"<html><bodyguard>a</bodyguard></html>") is None
+    assert extract._emptied(b"<html><head><bodyguard/></head><body><p>a</p></body></html>") ==         b"<html><head><bodyguard/></head><body></body></html>", "the body itself, never a tag named like it"
     assert extract._emptied(b"<html><body><p>a</p></html>") is None, "no end tag: not emptied by guess"
     # an end tag in a comment before the body's own: everything up to the LAST one goes
     assert extract._emptied(b"<html><body><p>a</p><!-- </body> --><p>b</p></body></html>") == \
@@ -178,9 +179,9 @@ def test_a_record_that_doesnt_fit_its_epub_makes_no_copy(novel, tmp_path):
            dict(record, docs=[record["docs"][0] + 40, record["docs"][1] + 40]),
            dict(record, hrefs=record["hrefs"] + ["OEBPS/p-099.xhtml"]),
            dict(record, docs=[True, record["docs"][1]])]
-    for wrong in bad:
-        path, why = reading.part_book(epub, wrong, str(folder))
-        assert path is None and why, wrong
+    no_record, changed = "no chapter record", "the EPUB changed since it was split"
+    for wrong, said in zip(bad, [no_record] * 3 + [changed, changed, no_record, no_record]):
+        assert reading.part_book(epub, wrong, str(folder)) == (None, said), wrong     # the log says which
     assert not folder.exists() or not any(folder.rglob("*.epub"))
     assert reading.part_book(str(tmp_path / "gone.epub"), record, str(folder))[0] is None
 
@@ -210,6 +211,55 @@ def test_a_document_whose_body_isnt_in_its_bytes_leaves_no_copy(tmp_path):
     record = {"docs": [2, 2], "hrefs": ["OEBPS/c3.xhtml"], "start": 0, "end": len(read[2].text)}
     path, why = reading.part_book(epub, record, str(tmp_path / "run"))
     assert why is None and [d.text for d in extract.epub_documents(path)[0]] == ["", "", read[2].text]
+
+
+def _nav_in_the_spine(tmp_path):
+    """A book whose nav (its TOC) is also a reading document in the middle of the spine, as some books do."""
+    lines = _lines()
+    docs = [{"href": f"c{n}.xhtml", "body": f"<p>{lines[n]}</p>"} for n in range(8)]
+    epub = _epub(tmp_path / "目次も本文.epub", docs, [(f"c{n}.xhtml", f"第{n + 1}話") for n in range(8)])
+    with zipfile.ZipFile(epub) as z:
+        entries = [(i, z.read(i.filename)) for i in z.infolist()]
+    with zipfile.ZipFile(epub, "w") as z:
+        for info, data in entries:
+            if info.filename == "OEBPS/content.opf":
+                data = data.replace(b'<itemref idref="d4"/>', b'<itemref idref="nav"/><itemref idref="d4"/>')
+            z.writestr(info, data)
+    read, _ = extract.epub_documents(epub)
+    assert "OEBPS/nav.xhtml" in [d.href for d in read], "the nav is one of the book's reading documents"
+    return epub, read
+
+
+def test_a_nav_that_is_a_reading_document_keeps_its_labels(tmp_path):
+    """The nav is never emptied, even where it is a reading document outside the part: its TOC labels each document
+    (`ch.<n>`'s label, what `reading.place` reads), so the copy is made and labels every document as the book does."""
+    epub, read = _nav_in_the_spine(tmp_path)
+    path, why = reading.part_book(epub, {"docs": [0, 0], "hrefs": [read[0].href]}, str(tmp_path / "book"))
+    assert why is None
+    copy, _ = extract.epub_documents(path)
+    assert [(d.href, d.label) for d in copy] == [(d.href, d.label) for d in read]
+    with zipfile.ZipFile(epub) as book, zipfile.ZipFile(path) as mine:
+        assert mine.read("OEBPS/nav.xhtml") == book.read("OEBPS/nav.xhtml")
+
+
+def test_a_copy_whose_labels_differ_from_the_books_is_never_named(novel, tmp_path, monkeypatch):
+    """The read-back compares each document's TOC label too, not only its place: a copy whose TOC reads otherwise
+    (here one label changed after it was written) is removed and the whole EPUB named."""
+    epub, _docs, records = novel
+    real = extract.epub_part
+
+    def relabelled(src, out, empty):
+        why = real(src, out, empty)
+        with zipfile.ZipFile(out) as z:
+            entries = [(i, z.read(i.filename)) for i in z.infolist()]
+        with zipfile.ZipFile(out, "w") as z:
+            for info, data in entries:
+                z.writestr(info, data.replace("第二章".encode("utf-8"), "第三章".encode("utf-8")))
+        return why
+    monkeypatch.setattr(extract, "epub_part", relabelled)
+    path, why = reading.part_book(epub, next(iter(records.values())), str(tmp_path / "run"))
+    assert path is None and why == "its copy didn't read as the book does"
+    assert not list((tmp_path / "run").rglob("*.epub*"))
 
 
 def test_a_copy_that_reads_otherwise_than_the_book_is_never_named(novel, tmp_path, monkeypatch):

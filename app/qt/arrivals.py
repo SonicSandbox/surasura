@@ -2081,20 +2081,16 @@ class ArrivalsTray(motion.Overlay):
             give_place(moves, strings.TRAY_PLACED[name].format(title=arrival.title), ids, name)
 
     def finish(self, title, ids):
-        """To Finished (`place(…, "finished")`) and the finish toast's choice, D14 (IK-11): *Keep* or *Take its new
-        cards out* — W3.1a's `DragController._finish`, through the arrivals' own command."""
+        """To Finished (`place(…, "finished")`) and the finish toast's choice, D14 (IK-11), as Settings' *When you
+        finish something* says — W3.1a's `DragController.finish_choice`, through the arrivals' own command."""
         from app.qt import drag
         moves = self._moves()
-        ticket = drag.Ticket(strings.DRAG_FINISHED.format(title=title), (), ids)
+        how = moves.finish_how()
+        template = strings.FINISHED_OUT[strings.DRAG_FINISHED] if how == "out" else strings.DRAG_FINISHED
+        ticket = drag.Ticket(template.format(title=title), (), ids)
         if moves._give(ticket, lambda t: moves.writer.place(list(ids), "finished", label=t), toast=False) is None:
             return
-
-        def choose(keep):
-            choice = drag.Ticket(strings.DRAG_TAKEN_OUT.format(title=title), (), ids)
-            choice.follows = ticket
-            moves._give(choice, lambda t: moves._set_finished(list(ids), keep, t, ticket), toast=not keep)
-        moves._toast(ticket, buttons=[(strings.DRAG_KEEP, strings.DRAG_KEEP_TIP, lambda: choose(True)),
-                                      (strings.DRAG_TAKE_OUT, strings.DRAG_TAKE_OUT_TIP, lambda: choose(False))])
+        moves.finish_choice(ticket, ids, title, how=how, anki=False)
 
     def all_to_finished(self):
         """*Already watched › ✓ All to Finished* (A2 behaviour 100): every watched arrival recorded, in one command, with D14's

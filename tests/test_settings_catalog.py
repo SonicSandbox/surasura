@@ -219,7 +219,8 @@ def test_settings_held_by_a_window_are_reached_through_its_door_row():
         assert reached[key] == "koe_door" and key not in catalog.NOT_SHOWN
     for row in catalog.ROWS:
         if row.reaches:
-            assert row.door, f"{row.id} reaches a window's settings without a door to it"
+            # (a program row reaches its program, which its own picker writes: Sonic 2026-11-05)
+            assert row.door or row.id in catalog.PROGRAM_ROWS,                 f"{row.id} reaches a window's settings without a door to it"
 
 
 # --- change(): only the row's own keys ------------------------------------------------------------------------------- #

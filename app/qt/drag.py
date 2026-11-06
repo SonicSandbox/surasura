@@ -52,7 +52,7 @@ from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QT
 from PyQt6.QtGui import QAction, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut
 from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
 
-from app import theme
+from app import settings_manager, theme
 from app.qt import bridge, motion, rows, shadow, strings, style
 from app.qt import press as qpress
 from app.services import airing
@@ -868,7 +868,7 @@ class Ticket:
     `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
     `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
     __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left",
-                 "marks")
+                 "marks", "rides")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -881,6 +881,7 @@ class Ticket:
         self.anki = None
         self.left = None
         self.marks = None                            # a8: {file id: watched} its command marks (painted ahead)
+        self.rides = False                           # a Finished choice the setting made: undone with its drop
 
 
 def _tell(ticket, event):
@@ -1009,6 +1010,7 @@ class DragController(QObject):
         self.expect_marks = {}
         self._mark_undos = []                        # a8: the Undos painted ahead whose word is still to come
         self._marks_of = weakref.WeakKeyDictionary()  # a8: a saved change -> (its marks, its row's key) (Ctrl+Z)
+        self._rides = weakref.WeakKeyDictionary()     # a saved choice the setting made -> its drop's ticket (Ctrl+Z)
         self._reader_off = None                      # ... the ticket whose landing lets the reader's build go (H-C3)
         self._closed = False                         # H-T1: let go by the window (its close, a language switch)
         self.held = None                             # the reader's newest view, not shown yet
@@ -1961,27 +1963,49 @@ class DragController(QObject):
             self._finish(d.title, d.ids, keys)
 
     def _finish(self, title, ids, keys=(), many=False, text=None):
-        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Leave its new cards out of
-        your order*, each written as `set_finished` (live, never greyed). finish-pending: the drop and *Leave its new
-        cards out* each a press until the host's re-order for it lands (Anki moves after the Generate it starts: the
-        bar's arc — the row has left this list)."""
-        ticket = Ticket(text or (strings.PICKS_FINISHED if many else strings.DRAG_FINISHED).format(title=title), keys,
-                        ids)
+        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) as Settings' *When you finish
+        something* says (`finish_choice`). `text`: the toast's words (a template with `{title}`; L6.3's for a finish by
+        itself). finish-pending: the drop and *Leave its new cards out* each a press until the host's re-order for it
+        lands (Anki moves after the Generate it starts: the bar's arc — the row has left this list)."""
+        how = self.finish_how()
+        template = text or (strings.PICKS_FINISHED if many else strings.DRAG_FINISHED)
+        if how == "out":
+            template = strings.FINISHED_OUT.get(template, template)
+        ticket = Ticket(template.format(title=title), keys, ids)
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False,
                       anki=on_bar) is None:
             return None
         for work_id in [w for w, k in self._airing_asking.items() if k in keys]:
             del self._airing_asking[work_id]         # alpha 9 M1: sent to Finished — never again by itself (its Undo)
+        self.finish_choice(ticket, ids, title, keys, many=many, how=how)
+        return ticket
 
-        def choose(keep):
+    def finish_how(self):
+        """Settings' *When you finish something* now (`settings_manager.finish_cards`): "ask", "keep" or "out"."""
+        services = getattr(self.win, "services", None)
+        return settings_manager.finish_cards(services.settings.get() if services is not None else None)
+
+    def finish_choice(self, ticket, ids, title, keys=(), many=False, how=None, anki=True):
+        """The finish toast for `ticket`, the drop to Finished (D14), as *When you finish something* says (`how`, read
+        when the drop was made): "ask" — *Keep* or *Leave its new cards out of your order*, each written as
+        `set_finished` (live, never greyed); "keep" — no question; "out" — its new cards left out with the drop, linked
+        to it (`follows`: the toast's one Undo takes both back). `anki`: the choice's Anki half a press on the bar
+        (the arrivals' own finish has none)."""
+        def choose(keep, toast=None, rides=False):
             choice = Ticket((strings.PICKS_TAKEN_OUT if many else strings.DRAG_TAKEN_OUT).format(title=title), keys,
                             ids)
             choice.follows = ticket
-            self._give(choice, lambda t: self._set_finished(list(ids), keep, t, ticket), toast=not keep,
-                       anki=None if keep else on_bar)
-        self._toast(ticket, buttons=[(strings.DRAG_KEEP, strings.DRAG_KEEP_TIP, lambda: choose(True)),
-                                     (strings.DRAG_TAKE_OUT, strings.DRAG_TAKE_OUT_TIP, lambda: choose(False))])
-        return ticket
+            choice.rides = rides
+            self._give(choice, lambda t: self._set_finished(list(ids), keep, t, ticket),
+                       toast=not keep if toast is None else toast, anki=None if keep or not anki else on_bar)
+        how = how or self.finish_how()
+        if how == "ask":
+            self._toast(ticket, buttons=[(strings.DRAG_KEEP, strings.DRAG_KEEP_TIP, lambda: choose(True)),
+                                         (strings.DRAG_TAKE_OUT, strings.DRAG_TAKE_OUT_TIP, lambda: choose(False))])
+            return
+        self._toast(ticket)                          # the drop's toast: its Undo takes the choice back too (AD-6)
+        if how == "out":                             # one finish to the learner: Ctrl+Z takes both back too (`undo`)
+            choose(False, toast=False, rides=True)
 
     def _set_finished(self, ids, keep, label, follows):
         """The Finished toast's choice, linked to the drop's change (`follows=`: the drop's Undo then undoes both). Chosen
@@ -2167,6 +2191,9 @@ class DragController(QObject):
         """A toast's Undo: that change (once the writer saved it; asked before, it is undone as it lands).
         finish-pending: a change whose Anki half waits — its press lets go, and the Undo's own waits the same way back;
         asked before the change was saved, its press stays and waits for the Undo's re-order (`_saved`)."""
+        if ticket.rides and ticket.follows is not None:
+            self.undo(ticket.follows)                # a choice the setting made: its drop's Undo takes both (AD-6)
+            return
         _tell(ticket, "undone")
         back = {i: not on for i, on in ticket.marks.items()} if ticket.marks else None   # a8: its stones, turned back
         if ticket.change is not None:
@@ -2204,10 +2231,14 @@ class DragController(QObject):
             self.undo(waiting[-1])
             return
         if self.writer.can_undo() or self.writer.pending():
-            self._undo_pressed()
-            label = Ticket(None)                     # finish-pending: its undo waits for Anki if its change did (`_undone`)
             newest = getattr(self.writer, "newest", None)
             change = newest() if newest is not None and not self.writer.pending() else None
+            drop = self._rides.get(change) if change is not None else None
+            if drop is not None and drop.change is not None:     # the setting's choice: the drop's Undo takes both
+                self.undo(drop)
+                return
+            self._undo_pressed()
+            label = Ticket(None)                     # finish-pending: its undo waits for Anki if its change did (`_undone`)
             marks, key = self._marks_of.get(change, (None, None)) if change is not None else (None, None)
             if marks:                                # a8: a Done's undo, the next the writer takes: its stones now
                 self._mark_undos.append(label)
@@ -2220,6 +2251,8 @@ class DragController(QObject):
         if isinstance(label, Ticket):
             label.change = change
             _tell(label, "saved")
+            if label.rides and label.follows is not None:
+                self._rides[change] = label.follows
             then, label.then = label.then, None
             if label.anki is not None:
                 self._anki_of[change] = label.anki   # finish-pending: Ctrl+Z's undo of it waits for Anki too
@@ -2698,7 +2731,7 @@ class DragController(QObject):
 
     def to_finished(self, row, text=None):
         """*Move to Finished* (the finish toast, ⋯): the row leaves Current at once; the Finished toast (`text`: L6.3's
-        own words for a finish by itself)."""
+        own words for a finish by itself, a template with `{title}`)."""
         if self.refused() is not None:
             return
         base = self.base()
@@ -2711,7 +2744,7 @@ class DragController(QObject):
         through the paths a hand would take — the Finish path (D14's *Keep* / *Leave out*, its Anki half after its
         Generate) or the store's join (one command). Its toast's Undo takes back that move; the ✓ stays."""
         if verdict[0] == "finish":
-            self.to_finished(row, text=strings.DONE_FINISHED.format(title=row.title))
+            self.to_finished(row, text=strings.DONE_FINISHED)        # (a template: `_finish` formats it)
             return
         _kind, pieces, ahead, ids, line = verdict
         text = (strings.DONE_JOINED if ahead else strings.DONE_CAME_UP).format(line=line)   # ahead: a Current part

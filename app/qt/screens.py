@@ -62,6 +62,22 @@ def _ole32():
     return ctypes.windll.ole32
 
 
+def open_with_program(program, path):
+    """(A worker.) `path` handed to the program the user chose in Settings (*Videos open in* / *Books open in*:
+    `play.program_for`) as its one argument — no shell, nothing else on its command line (a macOS .app through `open
+    -a`). Raises OSError, in the bar's words, when the program isn't there any more, isn't a program ▶ may start
+    (`play.program_allowed`: on Windows an .exe or .com) or couldn't start."""
+    name = os.path.basename(program.rstrip("\\/")) or program
+    if not play.program_allowed(program):
+        raise OSError(strings.PLAY_NOT_A_PROGRAM.format(program=name))
+    app = sys.platform == "darwin" and program.rstrip("/").endswith(".app")       # a macOS app is a folder
+    if not (os.path.isdir(program) if app else os.path.isfile(program)):
+        raise OSError(strings.PLAY_NO_PROGRAM.format(program=name))
+    import subprocess
+    subprocess.Popen(["open", "-a", program, path] if app else [program, path], close_fds=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def open_with_system(path):
     """A file or a folder in the user's own program. On Windows on a worker: COM set up around the call, as
     ShellExecuteEx asks — an association that goes through COM (a Store app as the default player) can't start without
@@ -211,11 +227,20 @@ class Page(QWidget):
         (`media_to_open`) and the open, both on a worker; a second ▶ meanwhile does nothing. -> the press, or None."""
         media = self._media_of(episode)
         found = []
+        services = getattr(self.window(), "services", None)
+        settings = services.settings.get() if services is not None else {}   # (frozen: read on the worker as it is)
 
         def look():
             path, why = media_to_open(self.language, episode, media)
             found.append((path, why))
             return path
+
+        def opener(path):
+            program = play.program_for(settings, path, media)    # Settings' *Videos open in* / *Books open in*
+            if program:
+                open_with_program(program, path)
+            else:
+                qpress.open_now(path)
 
         def opened(path):
             if path is None:
@@ -229,7 +254,7 @@ class Page(QWidget):
             self.message.emit(strings.PLAY_FAILED.format(name=os.path.basename(path) if named else episode.label,
                                                          why=str(info[0])))
         return qpress.open(self.window(), look, key=("play", episode.id), then=opened, failed=failed,
-                           at=at or qpress.row_mark(self.list, [episode.id], "play"))
+                           at=at or qpress.row_mark(self.list, [episode.id], "play"), opener=opener)
 
 
 class CurrentPage(Page):

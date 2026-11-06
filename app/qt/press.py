@@ -627,13 +627,15 @@ def open_now(target):
         screens.open_with_system(target)
 
 
-def open(win, target, control=None, key=None, at=None, then=None, failed=None):  # noqa: A001 — the press's verb
+def open(win, target, control=None, key=None, at=None, then=None, failed=None, opener=None):  # noqa: A001
     """Another program, a folder or a link opened for a press: `control` marked (or `at`; neither: the bar's arc) and
     painted, then the open on a worker — never on the window's thread — and done when the call returned. `target`: a
     path or a link, or a callable worked out on that worker first (a lookup: `isdir`, the episode to play) returning
     one, or None — nothing to open (`then(None)`). `then(target)` once opened; `failed(info)`, else the reason in the
     bar (`OPEN_FAILED`). `key`: the press's (default `open:<target>`; a callable target needs its own).
+    `opener(target)`: the open itself, where it isn't `open_now` (▶'s: the program chosen in Settings).
     -> the press, or None while it is live (a second press does nothing)."""
+    opener = opener or open_now
     if key is None:
         key = f"open:{target}"
 
@@ -645,7 +647,7 @@ def open(win, target, control=None, key=None, at=None, then=None, failed=None): 
             return None
         resolved.append(t)
         if OFF_THREAD:
-            open_now(t)
+            opener(t)
         return t
 
     def broke(info):
@@ -660,7 +662,7 @@ def open(win, target, control=None, key=None, at=None, then=None, failed=None): 
     def opened(t):
         if t and not OFF_THREAD:                    # (off Windows: here, on the window's thread)
             try:
-                open_now(t)
+                opener(t)
             except Exception as e:
                 broke((e, ""))
                 return

@@ -178,7 +178,7 @@ def test_an_export_a_moment_after_a_move_waits_for_its_catch_up(monkeypatch):
     # R2: the export pressed before the keeper's first look: it still asks the catch-up and waits for it
     w = _World(monkeypatch)
     try:
-        w.keeper._settings = lambda: dict(SETTLE, journey_settle_s=5.0)
+        w.keeper._settings = lambda: dict(SETTLE, journey_settle_s=20.0)
         w.keeper.changed("store")
         order = []
         monkeypatch.setattr("app.exports.frequency_list",
@@ -186,7 +186,7 @@ def test_an_export_a_moment_after_a_move_waits_for_its_catch_up(monkeypatch):
         t = threading.Thread(target=lambda: settings_live.run_export("frequency_list", "ja", "txt", "out.txt",
                                                                      w.services), daemon=True)
         t.start()
-        assert h.until(lambda: w.launches.count() == 1, seconds=3)
+        assert h.until(lambda: w.launches.count() == 1, seconds=8), "asked at once, not after the 20 s quiet time"
         time.sleep(0.3)
         assert order == [], "waits for the run"
         w.halves.update(journey=True, report=True)

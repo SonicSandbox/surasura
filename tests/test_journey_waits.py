@@ -106,17 +106,26 @@ def test_the_journey_is_generated_after_the_quiet_minutes_and_each_move_starts_t
 
 
 def test_a_focus_or_a_start_look_never_puts_the_catch_up_off():
-    # looks are not changes: a focus every 0.3 s must not keep the journey behind for ever
-    keeper, _controller, _registry, launches = _keeper(catch_up=1.0)
+    # looks are not changes: a focus, a start's look or the host's ask never moves the catch-up's clock — the quiet
+    # minutes count from the move (a focus now and then must not keep the journey behind for ever)
+    keeper, _controller, _registry, launches = _keeper(catch_up=2.0)
+    keeper.changed("store")
+    moved, clock = time.monotonic(), keeper._moved_at
+    time.sleep(1.2)
+    for look in ("start", "replan: moves", "settled"):
+        keeper.changed(look)
+    assert keeper._moved_at == clock, "a look moved the clock"
+    keeper.changed("store")
+    assert keeper._moved_at > clock, "a move does"
+    keeper.close()
+    keeper, _controller, _registry, launches = _keeper(catch_up=2.0)
     keeper.changed("store")
     moved = time.monotonic()
-    while time.monotonic() - moved < 2.5 and launches.count() == 0:
-        keeper.changed("start")
-        keeper.changed("replan: moves")
-        time.sleep(0.5)
-    assert h.until(lambda: launches.count() == 1, seconds=5)
+    time.sleep(1.2)
+    keeper.changed("start")                         # one focus, 1.2 s in: the run still comes ~2 s after the move
+    assert h.until(lambda: launches.count() == 1, seconds=6)
     took = launches.times[0] - moved
-    assert took < 1.0 + SETTLE["journey_settle_s"] + 0.6, f"counted from the move, not the looks ({took:.2f} s)"
+    assert 2.0 - 0.05 <= took < 3.0, f"counted from the move, not the look ({took:.2f} s; the look's would be 3.2)"
     keeper.close()
 
 
@@ -412,11 +421,11 @@ def test_a_readers_wish_in_the_quiet_time_after_a_move_is_never_lost():
     # R2: Journey ↗ a moment after a move (before the keeper's first look): the look asks the run at once, and a
     # reader waiting on `catching_up` waits for it instead of reading the old lists
     keeper, _controller, _registry, launches = _keeper()
-    keeper._settings = lambda: dict(SETTLE, journey_settle_s=5.0)
+    keeper._settings = lambda: dict(SETTLE, journey_settle_s=20.0)
     keeper.changed("store")
     assert keeper.want("journey") is False, "not told yet: the reader goes on as before"
     assert keeper.catching_up(), "but a reader waiting on it waits"
-    assert h.until(lambda: launches.count() == 1, seconds=2), "asked at once, not after the 5 s quiet time"
+    assert h.until(lambda: launches.count() == 1, seconds=8), "asked at once, not after the 20 s quiet time"
     assert not keeper.catching_up()
     keeper.close()
 

@@ -3223,6 +3223,34 @@ def test_item12_the_drops_top_line_never_counts_a_video_waiting_for_its_subtitle
     assert drag.topped(view, list(view.rows)) == (list(view.rows), [])
 
 
+def test_item12_a_done_painted_ahead_reads_the_top_and_draws_its_line_as_the_store_will():
+    """A Done that takes a file out of the top (keep-watched off) — the 21st comes in at once (*in the top*, as the
+    store's next build has it: `_with_marks` → `topped`); and with only 20 files that count after an un-watch, the line
+    the store draws (19 before: none) is drawn at once too (`lines_for` at the view's `mine_line`)."""
+    tvr.WORKS.clear()
+    tvr.work(1, SHOW_A)
+    items = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 25), {})])
+    view = vr.build(items, dict(tvr.WORKS), {"mine_line": 20})
+    first = view.rows[0].episodes[0]
+    ctl = type("C", (), {"expect_marks": {first.id: [True, None, None, view.rows[0].key]}})()
+    ctl._holding = lambda v: drag.DragController._holding(ctl, v)
+    shown = drag.DragController._with_marks(ctl, view)
+    stored = vr.build({**items, first.id: dict(items[first.id], watched=1)}, dict(tvr.WORKS), {"mine_line": 20})
+    assert [e.in_top for e in shown.rows[0].episodes] == [e.in_top for e in stored.rows[0].episodes]
+    assert shown.rows[0].episodes[20].in_top and shown.lines == tuple(
+        ln for ln in stored.lines if ln.kind in ("top", "soon"))
+    # 19 that count (one watched of 20): no line; the un-watch brings the 20th — the line at once
+    few = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 20), {0: {"watched": 1}})])
+    view = vr.build(few, dict(tvr.WORKS), {"mine_line": 20})
+    assert not any(ln.kind == "top" for ln in view.lines)
+    first = view.rows[0].episodes[0]
+    ctl.expect_marks = {first.id: [False, None, None, view.rows[0].key]}
+    shown = drag.DragController._with_marks(ctl, view)
+    stored = vr.build({**few, first.id: dict(few[first.id], watched=0)}, dict(tvr.WORKS), {"mine_line": 20})
+    assert any(ln.kind == "top" for ln in stored.lines)
+    assert shown.lines == tuple(ln for ln in stored.lines if ln.kind in ("top", "soon"))
+
+
 def _show_group(win, **kw):
     """The group's view shown in the window (the fake writer writes nothing back: no reader view replaces it)."""
     win.moves._show(_group_view(**kw))

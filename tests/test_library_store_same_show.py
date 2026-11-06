@@ -415,6 +415,11 @@ def test_a_new_show_folder_never_joins_two_titles_a_season_or_a_title_taken_in_a
         store.take_in(root, new)
         works = {_work_of(store, f["rel"]) for f in new}
         assert len(works) == 5 and not works & before
+        # a season below a show (a key with `/`) is never another title's, even one of the same name below `<b>!`
+        season = _take(store, language, data_dir, root, src, {f"{b}!/Season 3": (1,)}, before_a8=False)
+        s3 = _found(language, data_dir, src, f"{b}/Season 3", f"{b} - 02.srt", 917)
+        store.take_in(root, [s3])
+        assert _work_of(store, s3["rel"]) != _work_of(store, season[f"{b}!/Season 3"][0])
         # a folder named with marks alone has no show key: never another such folder's title
         marks = _take(store, language, data_dir, root, src, {"♪♪": (1,)}, before_a8=False)
         star = _found(language, data_dir, src, "★", "★ - 02.srt", 916)
@@ -438,6 +443,22 @@ def test_titles_the_user_grouped_together_or_of_two_types_stay_two(language):
         assert store.join(pieces, how="group") is not None
         store.set_media_type([ids[b]], "book")
         store.set_media_type([ids[f"{b}!"]], "anime")
+        before = _works(store)
+        assert store.join_same_shows() == []
+        assert _works(store) == before
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_join_never_joins_an_untyped_show_with_a_book_one_rule_with_new_folders(language):
+    """Review ITEM12 #4: one "taken in another way" rule (`_media_family`) for the join and a new folder — a book
+    (`<show>`, typed) and a show nobody typed (`<show>!`, subtitles: watched) stay two titles."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[89]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {show: (1,), f"{show}!": (2,)})
+        store.set_media_type([_work_of(store, rels[show][0])], "book")
         before = _works(store)
         assert store.join_same_shows() == []
         assert _works(store) == before

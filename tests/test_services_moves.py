@@ -305,8 +305,9 @@ def test_newest_never_names_the_change_before_one_that_is_landing(lib, make_writ
     seen, real = [], w._landed
 
     def landed(cmd):
-        seen.append(w.newest())
-        return real(cmd)
+        out = real(cmd)
+        seen.append(w.newest())                         # (the command has left the queue: its change is known)
+        return out
     w._landed = landed
     w.set_watched([now[1]], True)
     assert h.until(lambda: len(heard.saved) == 2)

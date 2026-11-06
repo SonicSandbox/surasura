@@ -1391,6 +1391,11 @@ def test_LM11b_G1_a_group_row_round_trips_through_the_first_screen_cache_and_an_
     before = vr.from_cache(old)
     assert before is not None and not any(r.group for r in before.rows)
     assert [r.title for r in before.rows] == [r.title for r in view.rows]
+    # 3.0.1 item 12: a cache from before `n_top` — its `string` would land there: read as not known
+    at = vr.Row._fields.index("n_top")
+    older = dict(data, rows=[r[:at] + r[at + 1:] for r in data["rows"]])
+    assert all(r.n_top is None for r in vr.from_cache(older).rows)
+    assert [r.n_top for r in back.rows] == [r.n_top for r in view.rows]
 
 
 def test_LM11b_G1_a_chinese_group_reads_the_same_way():
@@ -1806,9 +1811,13 @@ def test_item12_topped_walks_rows_by_their_count_never_every_file_of_current():
     answer."""
     items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 12), {k: {"availability": "missing"} for k in range(2, 12)}),
                       ("now", 2, 2, eps("雲の上の郵便屋さん", 1, 400), {k: {"availability": "missing"} for k in range(400)}),
-                      ("soon", 3, 3, ["白銀の書庫番 第1巻.epub"], {0: {"source_type": "epub"}})])
+                      ("soon", 3, 3, ["白銀の書庫番 第1巻.epub", "白銀の書庫番 第2巻.epub"],
+                       {0: {"source_type": "epub"}, 1: {"source_type": "epub"}})])
     view = vr.build(items, dict(WORKS), {"mine_line": 20})
-    assert [r.n_top for r in view.rows] == [2, 0, 1]
+    assert [r.n_top for r in view.rows] == [2, 0, 2]
+    assert all(e.in_top for e in view.rows[2].episodes)  # (fewer than 20: down to the last that counts)
+    kept = vr.build({**items, 1: dict(items[1], watched=1)}, dict(WORKS), {"mine_line": 20, "keep_watched": 1})
+    assert [r.n_top for r in kept.rows] == [2, 0, 2], "a watched file counts while the option is on"
     assert vr.topped(list(view.rows), 20)[1] == []
     walked = []
     real = vr.counts_toward_top
@@ -1817,7 +1826,7 @@ def test_item12_topped_walks_rows_by_their_count_never_every_file_of_current():
         vr.topped(list(view.rows), 20)
     finally:
         vr.counts_toward_top = real
-    assert len(walked) == 1                             # the last counting row's file alone, never the 400 gone
+    assert len(walked) == 2                             # the last counting row's files alone, never the 400 gone
     marked = [vr.marked(view.rows[0], {view.rows[0].episodes[0].id: True})] + list(view.rows[1:])
     assert marked[0].n_top == 1
     unknown = [marked[0]._replace(n_top=None)] + marked[1:]
@@ -1826,6 +1835,20 @@ def test_item12_topped_walks_rows_by_their_count_never_every_file_of_current():
     assert [[e.in_top for e in r.episodes] for r in again] == [[e.in_top for e in r.episodes] for r in out]
     stored = vr.build({**items, 1: dict(items[1], watched=1)}, dict(WORKS), {"mine_line": 20}).rows
     assert [[e.in_top for e in r.episodes] for r in out] == [[e.in_top for e in r.episodes] for r in stored]
+
+
+def test_item12_up_next_read_again_still_reads_as_up_next():
+    """One show of 25 parts, Up next: a Done on its first part (keep-watched off) brings its 21st into the top — the
+    row read again is the store's Up next, field for field (its spoken line is Up next's, `_as_hero`)."""
+    items = items_of([("now", 1, 1, eps("星降る街の小さな工房", 1, 25), {})])
+    view = vr.build(items, dict(WORKS), {"mine_line": 20})
+    row = view.rows[0]
+    first = row.episodes[0]
+    painted, moved = vr.topped([vr.marked(row, {first.id: True}, hero=True)], 20)
+    assert moved == [0]
+    stored = vr.build({**items, first.id: dict(items[first.id], watched=1)}, dict(WORKS), {"mine_line": 20}).rows[0]
+    for f in vr.Row._fields:
+        assert getattr(painted[0], f) == getattr(stored, f), f
 
 
 def test_item12_topped_leaves_rows_as_they_are_with_connect_off_or_nothing_moved():

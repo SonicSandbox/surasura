@@ -10303,13 +10303,16 @@ def _store_waiting_tracks(self):
     return out
 
 
-def _store_fill_track(self, item_id, rel, sha256, track, video_key=None):
+def _store_fill_track(self, item_id, rel, sha256, track, video_key=None, verdict="extracted",
+                      provider="video-track"):
     """Michi-ST: a waiting video's own subtitle track, copied to `rel` (in `Library`, by the caller) — the item takes
     it in place (K5's fill, `_fill_gap`: its id, place and records kept, no placement event) and its video's origin
     record says where the text came from: `verdict` "extracted", `subtitle_sha256` (the copy's bytes:
     `fit_check.track_timed`), `subtitle_source` (hato's shape: the provider `video-track`) and `track` (`tracks._take`'s
     index, codec, language, title). -> True; False, nothing written, when the item no longer waits on that video
-    (filled, removed, or its video changed: `video_key` is no longer its record's)."""
+    (filled, removed, or its video changed: `video_key` is no longer its record's). Michi-NS (`app/no_subs.py`): a
+    subtitle Anki Miner made from the video's audio fills it the same way, `verdict` "transcribed" (never `timed`: K16)
+    and the provider `transcribe`."""
     rel = library_rel(self.data_dir, rel)
     parts = rel.split("/") if rel else []
     if len(parts) < 2 or path_key(parts[0]) != path_key(CONTENT_FOLDER):
@@ -10325,8 +10328,8 @@ def _store_fill_track(self, item_id, rel, sha256, track, video_key=None):
         if self._fill_gap(cmd, item_id, prepared, {}) is None:
             return False
         self._keep_hash(item_id, prepared[4], sha256)
-        record.update(verdict="extracted", subtitle_sha256=sha256, track=dict(track or {}),
-                      subtitle_source={"provider": "video-track", "file_name": (track or {}).get("title")})
+        record.update(verdict=verdict, subtitle_sha256=sha256, track=dict(track or {}),
+                      subtitle_source={"provider": provider, "file_name": (track or {}).get("title")})
         self.conn.execute("UPDATE pairings SET pairing = ? WHERE content_key = ?",
                           (json.dumps(record, sort_keys=True, ensure_ascii=False), row[0]))
         self._copy_dirty()
@@ -10335,12 +10338,14 @@ def _store_fill_track(self, item_id, rel, sha256, track, video_key=None):
 
 def _store_track_items(self, held):
     """Michi-ST, inside `take_in`: {video key or path key: item id} of the items whose text is their video's own track
-    (`fill_track`'s live record, `verdict` "extracted") — read once a batch into `held` (a dict the caller keeps)."""
+    (`fill_track`'s live record, `verdict` "extracted") — read once a batch into `held` (a dict the caller keeps).
+    Michi-NS: and those whose text was made from their video's audio (`verdict` "transcribed"): a subtitle file that
+    comes beside the video later (the made copy beside it, Q4) is another version, never a second item."""
     if "items" not in held:
         held["items"] = {}
         for item_id, text in self.conn.execute(
                 f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND "
-                f"json_valid(p.pairing) AND json_extract(p.pairing, '$.verdict') = 'extracted'"):
+                f"json_valid(p.pairing) AND json_extract(p.pairing, '$.verdict') IN ('extracted', 'transcribed')"):
             for k in _video_keys(_json_dict(text) or {}):
                 held["items"][k] = item_id
     return held["items"]

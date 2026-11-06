@@ -120,6 +120,10 @@ DEFAULT_SETTINGS = {
     # Show covers (the setup wizard's *Your shows* page, G1.2-19 / C1): on only by the user's own yes there — each show's
     # name is sent to AniList or TMDB for its cover. Off by default (and *Skip* writes nothing). Never in a signature.
     "covers_download": False,
+    # Find them with hato (Michi-NS, NS-2: *Needs you*'s one press, the first time; app/no_subs.py): from then Surasura
+    # hands hato its videos with no subtitle (only once hato takes a list: its tools entry lists `find`), and lists
+    # `register` for hato with Connect off too (Q3). Off by default. Never in a signature.
+    "subs_with_hato": False,
     # Keep practice rounds (A6, H9; Settings → Connections; app/practice_rounds.py): the practice server keeps each round
     # in User Files/<lang>/practice/ so the learner can do it again, and what they ask to keep is read back to later
     # rounds. On by default (PROVISIONAL A6P-6): nothing leaves; off, nothing is saved or read back. Never in a signature.

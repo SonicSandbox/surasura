@@ -78,6 +78,7 @@ BOM, the 3.5.0 keys only (and, with refuse-sentence-keys, main's refusal of the 
 """
 import json
 import os
+import shutil
 import sys
 import time
 
@@ -616,6 +617,9 @@ def _transcribe(argv, plan):
         folder = os.path.join(data["run_dir"], run_id)
         out = os.path.join(folder, "transcribe-1")
         os.makedirs(out, exist_ok=True)
+        if "video_file" in episode:                 # Michi-NS: a whole episode's audio, as `heard_videos` says
+            runs.append(_heard_video(episode, folder, out, plan))
+            continue
         with open(episode["audio_file"], encoding="utf-8") as f:
             said = f.read()
         if any(said.startswith(k) for k in plan.get("unreadable_clips") or ()):    # a clip of silence it refuses
@@ -633,6 +637,36 @@ def _transcribe(argv, plan):
         runs.append({"run_id": run_id, "ok": True, "error": None, "message": None, "file": "transcribe-1.json",
                      "failure_is_transient": False})
     return {**_ok("transcribe"), "runs": runs}
+
+
+def _heard_video(episode, folder, out, plan):
+    """Michi-NS: `transcribe` of a video episode -> its run's verdict. `heard_videos` {video file name: the SRT it
+    writes | "no_speech" | "VIDEO_UNREADABLE"}; `transcribe_hold` seconds it runs (progress written, its cancel seen:
+    CANCELLED, no json, its folder gone — API.md)."""
+    run_id, name = episode["run_id"], os.path.basename(episode["video_file"])
+    hold = float(plan.get("transcribe_hold") or 0)
+    if hold:
+        _progress(folder, run_id, 1, 2)
+        if _cancel_seen(folder, hold):
+            shutil.rmtree(out, ignore_errors=True)
+            return {"run_id": run_id, "ok": False, "error": "CANCELLED", "message": "cancelled", "file": None,
+                    "failure_is_transient": False}
+        _progress(folder, run_id, 2, 2)
+    heard = (plan.get("heard_videos") or {}).get(name, "no_speech")
+    if heard == "VIDEO_UNREADABLE":
+        shutil.rmtree(out, ignore_errors=True)
+        return {"run_id": run_id, "ok": False, "error": heard, "message": "no audio", "file": None,
+                "failure_is_transient": False}
+    srt = None
+    if heard != "no_speech":
+        srt = os.path.join(out, os.path.splitext(name)[0] + ".srt")
+        with open(srt, "w", encoding="utf-8") as f:
+            f.write(heard)
+    with open(os.path.join(folder, "transcribe-1.json"), "w", encoding="utf-8") as f:
+        json.dump({"schema": 1, "run_id": run_id, "subtitle_file": srt,
+                   "status": "no_speech" if srt is None else "generated"}, f, ensure_ascii=False)
+    return {"run_id": run_id, "ok": True, "error": None, "message": None, "file": "transcribe-1.json",
+            "failure_is_transient": False, "status": "no_speech" if srt is None else "generated"}
 
 
 def _cancel_seen(folder, wait=5.0):

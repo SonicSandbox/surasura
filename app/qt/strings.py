@@ -1349,6 +1349,14 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     # Michi-U: Anki Miner's line (titles wait only for the approved Anki Miner)
     "update_miner": ("Update", "Get the Anki Miner Surasura has tested, free: its installer from its own GitHub "
                                "release, checked before it opens.\n• Asks before it downloads"),
+    # Michi-NS (PROVISIONAL words, SPEC §9): a video with no subtitle — made from its audio, or found online by hato
+    "make_from_audio": ("Make them from the audio", "Anki Miner listens to each episode and writes its subtitle on "
+                                                    "this computer, one at a time: the row lights up as each one is "
+                                                    "done. A misheard word can happen, so their cards are tagged "
+                                                    "surasura::from-audio"),
+    "find_with_hato": ("Find them with hato", "hato looks for their subtitles on jimaku.cc by each show's title, with "
+                                              "your jimaku key, and fits each one to its video. From then on it looks "
+                                              "for every new video with no subtitle by itself"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
     # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
@@ -1449,6 +1457,29 @@ NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
 NEEDS_ANKI_RUNNING = "Anki is already starting or open"
 NEEDS_ANKI_NOT_STARTED = "Anki couldn't be started from here: open it yourself"
 NEEDS_UPDATE_MINER_ASK = "Update Anki Miner to {version}?"
+# Michi-NS (PROVISIONAL words; SPEC §9): *Make them from the audio* and *Find them with hato*
+NEEDS_SUBS_MODEL_ASK = "Download Anki Miner's speech model?"
+NEEDS_SUBS_MODEL_BODY = ("Making subtitles from the audio needs Anki Miner's speech model: about 0.5 GB, downloaded once "
+                         "from huggingface.co into Anki Miner's own folder. It can't be paused once started. Everything "
+                         "after it happens on this computer.")
+NEEDS_SUBS_MODEL_YES = "Download it"
+NEEDS_SUBS_MODEL_YES_TIP = "Anki Miner downloads its speech model, then makes these subtitles one episode at a time"
+NEEDS_SUBS_MODEL_NO = "Not now"
+NEEDS_SUBS_MODEL_NO_TIP = "Nothing is downloaded: these videos keep waiting for a subtitle file"
+NEEDS_SUBS_JOB = "Making subtitles from the audio · {title}"
+NEEDS_SUBS_JOB_STEP = "{title}: episode {n} of {total}"
+NEEDS_SUBS_JOB_MODEL = "Downloading Anki Miner's speech model"
+NEEDS_SUBS_MADE = "Made {n} subtitles from the audio: their episodes count from now"
+NEEDS_SUBS_MADE_ONE = "Made a subtitle from the audio: its episode counts from now"
+NEEDS_SUBS_NONE = "No subtitle was made: {why}"
+NEEDS_SUBS_NO_SPEECH = "Anki Miner heard no speech in them"
+NEEDS_SUBS_FAILED = "Anki Miner couldn't make them now (its log says why); press again to try"
+NEEDS_SUBS_STOPPED = "Stopped: the episodes made so far are kept"
+NEEDS_SUBS_NO_MINER = "Anki Miner 3.11 or later makes subtitles from the audio: Settings → Anki & mining"
+NEEDS_SUBS_BUSY = "Anki Miner is busy (its setup, or another one being made): press again in a moment"
+NEEDS_SUBS_MODEL_FAILED = "Anki Miner's speech model didn't download: {why}"
+NEEDS_SUBS_BESIDE = "Kept in Surasura's library only: their video folder took no copy beside the video"
+NEEDS_HATO_ON = "hato looks for these subtitles now, and for every new video with none from now on"
 NEEDS_MINER_UPDATED = "Anki Miner is updated · Connect makes the waiting cards by itself"
 NEEDS_MINER_NOT_UPDATED = "Anki Miner wasn't updated: its installer closed before it finished"
 NEEDS_MINER_BUSY = "Anki Miner is in use (Connect is making cards, or its window is open): Update again once it's free"

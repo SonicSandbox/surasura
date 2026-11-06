@@ -110,7 +110,10 @@ _FLAGS = frozenset({"forced", "sdh", "hi", "cc", "signs", "songs", "s&s", "karao
                     "lyrics"})      # a track's flags (Plex, Jellyfin, Bazarr, Anki Miner), never a language
 # A re-timer's mark ending a subtitle's name (LF-17: `<video>.ja.synced.srt`, either side of the language): no flag, it
 # comes off the stem (the file is that video's episode) and says the file was re-timed; `.alt` stays an unknown tag
-RETIMED = frozenset({"synced", "sync", "resync", "resynced", "retimed", "timed"})
+# Michi-NS (Q4 ✅ Sonic 2026-10-31): the copy beside a video of a subtitle Anki Miner made from its audio
+# (`<video>.ja.from-audio.srt`, `no_subs`) carries a mark that comes off the same way: the file is that video's episode
+FROM_AUDIO = "from-audio"
+RETIMED = frozenset({"synced", "sync", "resync", "resynced", "retimed", "timed", FROM_AUDIO})
 _CJK = re.compile(r"((?:简体|簡體|繁体|繁體|简中|繁中|中文|日文|日语|日語|日本語|英文|英语|英語|[简簡繁中日英])+)"
                   r"(双语|雙語|双字|雙字)?(?:内嵌|內嵌|内封|內封|外挂|外掛|字幕)?")
 _CJK_PART = re.compile(r"简体|簡體|繁体|繁體|简中|繁中|中文|日文|日语|日語|日本語|英文|英语|英語|[简簡繁中日英]")

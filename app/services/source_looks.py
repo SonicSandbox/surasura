@@ -52,7 +52,8 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
 - **A video's own subtitle track** (Michi-ST, `app/tracks.py`): after every look, the videos waiting for a subtitle
   (K5) are asked of Anki Miner on a worker of their own (`_ask_tracks`): one fill at a time, an ask meanwhile folded
   into one more after it; never on the looks' worker, so a long copy never holds a look or Refresh. The window closing
-  cancels the copy under way.
+  cancels the copy under way. Michi-NS: then, on the same worker, the ones still waiting are handed to hato
+  (`no_subs.find`, once it takes them and you said yes), and the folders it wrote into are looked at again.
 - **Skipped folders** (K6): every summary carries `skipped` (`Store.skipped_folders`: Settings' list);
   `skippable(item_ids)` answers ⋯'s *Never read this folder* submenu (`Store.skip_choices`), `skip_refused(path)`
   Settings' *Skip a folder…* (`Store.skip_refused`, Q7); *Read again* (`read_again`) drops the skip
@@ -62,7 +63,7 @@ import os
 import threading
 import time
 
-from app import settings_manager, sources, tracks
+from app import no_subs, settings_manager, sources, tracks
 from app.services.automation import Worker
 
 
@@ -484,10 +485,19 @@ class SourceLooks:
             store = self._store()
             if store is not None and not self._closing.is_set():
                 away = {root for root, reached in dict(self._reachable).items() if reached is False}
-                got = tracks.fill(store, self.language, settings_manager.load_settings(), stop=self._closing.is_set,
-                                  away=away)
+                settings = settings_manager.load_settings()
+                got = tracks.fill(store, self.language, settings, stop=self._closing.is_set, away=away)
                 if got.get("filled") or got.get("failed"):
                     print(f"Sources: subtitle tracks inside videos: {got}")
+                # Michi-NS: the rows' subtitle notes kept true (a row that waits no more, a video changed since);
+                # then hato, for those still waiting — only once it takes a list and you said yes; what it wrote
+                # beside their videos is taken in by those folders' next look (K5)
+                no_subs.tidy(store, self.language, away=away)
+                found = no_subs.find(store, self.language, settings, stop=self._closing.is_set, away=away)
+                if found.get("asked") or found.get("failed"):
+                    print(f"Sources: hato looked for subtitles: { {k: v for k, v in found.items() if k != 'roots'} }")
+                for root in (found.get("roots") or {}) if not self._closing.is_set() else ():
+                    self.look_at(root)
         except Exception as e:                        # never the window's fault: the next look asks again
             print(f"Sources: the videos' subtitle tracks wait for the next look: {e!r}")
         finally:

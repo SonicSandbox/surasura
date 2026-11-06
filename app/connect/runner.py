@@ -1028,6 +1028,8 @@ def _pick(steps, ledger, lang, job, record=True):
     picked = {"words": words, "file": got.get("file"), "subtitle": got.get("subtitle"),
               "video": video, "pairing": fit_check.version(pairing), "profile": got.get("profile"),
               "anki_miner": got.get("anki_miner")}
+    if isinstance(pairing, dict) and pairing.get("verdict") == "transcribed":
+        picked["from_audio"] = True                 # Michi-NS (Q5): its subtitle was made from its audio: tagged
     if book is not None:
         picked["reading"], picked["book"] = book    # the file Anki Miner reads; the EPUB its cards are placed in
         if lined:
@@ -2562,7 +2564,8 @@ class Steps:
                                          expect_profile=picked.get("profile"),
                                          on_progress=getattr(self, "on_progress", None), known=setup[:2],
                                          should_stop=getattr(self, "should_stop", None),
-                                         show=self.show(lang, job), reading=picked.get("reading"))
+                                         show=self.show(lang, job), reading=picked.get("reading"),
+                                         from_audio=bool(picked.get("from_audio")))
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":

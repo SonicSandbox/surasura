@@ -9257,11 +9257,9 @@ def _store_origins_kept(self, kept=None):
                                                 f"({','.join('?' * len(ORIGIN_LOG))})", ORIGIN_LOG)}
         if len(have) < len(ORIGIN_LOG):
             return None, self.origins()
-        if not meta.get(ORIGIN_LOG_ID):
-            return None, self.origins()
         top = self.conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'origin_changes'").fetchone()
         seq = top[0] if top else 0
-        mark = (meta.get("store_id"), meta.get("epoch"), meta[ORIGIN_LOG_ID], seq, self._origin_logged(seq))
+        mark = (meta.get("store_id"), meta.get("epoch"), meta.get(ORIGIN_LOG_ID), seq, self._origin_logged(seq))
         held, origins = kept if kept else (None, None)
         if not held or held[:3] != mark[:3] or not isinstance(held[3], int) or held[3] > seq:
             return mark, self.origins()

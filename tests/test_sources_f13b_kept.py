@@ -187,7 +187,8 @@ def test_the_log_reads_in_full_when_it_cant_say(monkeypatch):
         assert len(whole) == 8, "a quarter changed"
         kept = store.origins_kept(None)
         with store._writing():
-            store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (ids[-1],))
+            for i in ids[-2:]:                          # two rows after the mark: the first one pruned
+                store.conn.execute("UPDATE items SET availability = 'missing' WHERE id = ?", (i,))
             store.conn.execute("DELETE FROM origin_changes WHERE seq <= ?", (kept[0][3] + 1,))
         store.origins_kept(kept)
         assert len(whole) == 10, "its rows pruned"
@@ -275,7 +276,8 @@ def _toggle(raw, item, times):
 def test_a_log_dropped_and_made_again_is_another_log_even_when_its_numbers_pass_the_mark():
     """The log dropped (its triggers, its table: its numbers restart) while a process keeps origins, a change made
     meanwhile (never logged), the log made again: once its new numbers pass the kept mark, the mark still names the old
-    log (its id) — read in full, the change seen (the adversary's probe, F13b register row 1)."""
+    log (its id) — read in full, the change seen (the adversary's probe, F13b register row 1). The new log's row at
+    the mark names the mark's own item, so only the log's id tells the two logs apart."""
     store, data_dir, src, root = _library()
     db, ud = store.db_path, store.user_files_dir
     kept = store.origins_kept(None)
@@ -291,7 +293,14 @@ def test_a_log_dropped_and_made_again_is_another_log_even_when_its_numbers_pass_
     store = ls.open_store("ja", data_dir, ud)
     with store:
         raw = sqlite3.connect(db)
-        _toggle(raw, y, kept[0][3] + 2)
+        seq, item = kept[0][3:]
+        now = raw.execute("SELECT seq FROM sqlite_sequence WHERE name = 'origin_changes'").fetchone()[0]
+        assert now < seq - 1 and item not in (x, y)
+        _toggle(raw, y, seq - now - 1)                                  # up to the row before the mark's
+        raw.execute("UPDATE items SET availability = 'waiting' WHERE id = ?", (item,))   # the mark's row: its item
+        raw.commit()
+        _toggle(raw, y, 1)                                              # past the mark
+        assert raw.execute("SELECT item_id FROM origin_changes WHERE seq = ?", (seq,)).fetchone() == (item,)
         raw.close()
         _same(store.origins_kept(kept)[1], store)
 

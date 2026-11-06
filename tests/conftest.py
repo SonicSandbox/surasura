@@ -462,8 +462,22 @@ def pytest_runtest_logreport(report):
     # Worst outcome across setup/call/teardown wins.
     if report.failed:
         _PROF["outcome"][report.nodeid] = "FAILED"
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            _say_now(report)
     elif report.skipped:
         _PROF["outcome"].setdefault(report.nodeid, "skipped")
+
+
+def _say_now(report):
+    """(GitHub only.) A failed report printed as it happens, not only in pytest's closing summary: a shard whose
+    process dies a moment later (twice after test_settings_store's teardown ERROR, flakes-2026-11-05 #5) never reaches
+    that summary, and the error was lost both times."""
+    try:
+        text = report.longreprtext[-6000:]
+        sys.__stderr__.write(f"\n--- {report.nodeid} ({report.when}) failed; said at once:\n{text}\n---\n")
+        sys.__stderr__.flush()
+    except Exception:                   # never in the way of the run
+        pass
 
 
 def pytest_runtest_logfinish(nodeid, location):

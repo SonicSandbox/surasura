@@ -22,6 +22,7 @@ import itertools
 import json
 import os
 import re
+import sys
 import threading
 
 AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".opus", ".ogg", ".flac", ".wav")
@@ -131,6 +132,38 @@ def _on_disk(path, listings, check=None):
     if folder not in listings:
         _reachable(path, listings)
     return False
+
+
+PROGRAM_EXTS = (".exe", ".com")    # Windows: a program ▶ may hand a file to — never a .bat / .cmd (cmd reads its line)
+
+
+def program_allowed(program, platform=None):
+    """Whether `program` may be the one ▶ hands a file to: on Windows an .exe or .com only (a .bat or .cmd runs through
+    cmd, which would read `&` in a file's name as a command); elsewhere any (a macOS .app, a Linux binary)."""
+    platform = platform or sys.platform
+    return platform != "win32" or os.path.splitext(str(program))[1].lower() in PROGRAM_EXTS
+
+
+def program_for(settings, path, media=None):
+    """What ▶ opens `path` with (Settings → Content, *Videos open in* / *Books open in*; Sonic 2026-11-05): the program
+    chosen there (its path), or None — the program Windows opens it with. An EPUB follows *Books open in*; the file a
+    video's ▶ found (`media` a video's type — `MEDIA_WORD` "video", None too — and no audio file) *Videos open in*; a
+    link (YouTube, bilibili: always their site), audio, a text: None. A choice of "program" with no program kept reads
+    as the default. `settings`: a dict or the window's frozen copy."""
+    from app.services.view_rows import MEDIA_WORD
+    if not path or "://" in path or not hasattr(settings, "get"):
+        return None
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".epub":
+        key = "open_book"
+    elif MEDIA_WORD.get(media, "video") == "video" and ext not in AUDIO_EXTS:
+        key = "open_video"
+    else:
+        return None
+    program = settings.get(f"{key}_program")
+    if settings.get(key) != "program" or not isinstance(program, str) or not program.strip():
+        return None
+    return program.strip()
 
 
 def to_open(language, item_id, rel_path, media, online=None):

@@ -17,8 +17,9 @@ and a key named like one (`SECRET`) is left out of the file and of an import.
 - a key this version doesn't know (`known`: placed, its module installed) is left out, counted; a key the file lacks
   takes its default (the file replaces settings.json whole, and every reader fills the defaults);
 - Anki Miner's place (`connect_anki_miner_path`) not on this PC goes back to its default (Surasura finds Anki Miner
-  itself); a video folder (`connect_video_folders`) not on this PC is kept and named — *Needs you* asks for it
-  (`missing_folders`, a card each: *Find it…* · *Stop looking there*, `folder_change`).
+  itself), and so does ▶'s program (`open_video_program` / `open_book_program`, with its choice); a video folder
+  (`connect_video_folders`) not on this PC is kept and named — *Needs you* asks for it (`missing_folders`, a card
+  each: *Find it…* · *Stop looking there*, `folder_change`).
 `apply(plan)` replaces settings.json **whole, never merged**: the settings service's changes still queued land first,
 then, under the `settings` lock, a dated copy of the file now (`path_utils.backup_to_trash`: `.trash` beside it; none
 made, nothing written), then the file written atomically (`settings_manager.save_settings`). The run and render
@@ -41,6 +42,7 @@ NAME = "Surasura settings {date}.json"
 UNDO_NAME = "Surasura settings before import {stamp}.json"     # beside the dated copy: Import takes it (the way back)
 FOLDERS = "connect_video_folders"
 MINER_PATH = "connect_anki_miner_path"
+PROGRAMS = {"open_video": "open_video_program", "open_book": "open_book_program"}   # *Videos / Books open in*
 # A key named like a secret never leaves or comes in (none is in settings.json: Speech's key is in its keystore)
 SECRET = re.compile(r"(^|_)(api_?key|key|token|secret|password|passwd|credentials?)s?$", re.IGNORECASE)
 LANGUAGE_NAMES = {"ja": "Japanese", "zh": "Chinese"}
@@ -240,6 +242,11 @@ def read(path, isdir=os.path.isdir, isfile=os.path.isfile):
     miner_reset = isinstance(miner, str) and bool(miner.strip()) and not isfile(miner)
     if miner_reset or (MINER_PATH in settings and not isinstance(miner, str)):
         settings.pop(MINER_PATH)                  # its default: found by its installer's key
+    for choice, key in PROGRAMS.items():          # ▶'s program not on this PC: the default program, as Anki Miner's
+        program = settings.get(key)
+        if key in settings and (not isinstance(program, str) or program.strip() and not isfile(program.strip())):
+            settings.pop(key)
+            settings.pop(choice, None)
     missing = tuple(f for f in _folders(settings.get(FOLDERS)) if not isdir(f))
     language = settings.get("target_language") or data.get("language") or "ja"
     return Plan(None, settings, str(version), str(language), str(data.get("exported") or ""), dropped, missing,

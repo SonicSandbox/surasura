@@ -397,3 +397,20 @@ def test_pr_yml_runs_every_shard_once_and_one_tests_job_reads_them_all():
     assert "needs: [changes, shards]" in tests
     assert "if: ${{ always() && needs.changes.outputs.code != 'false' }}" in tests
     assert 'test "$SHARDS" = success' in tests and "SHARDS: ${{ needs.shards.result }}" in tests
+
+
+@pytest.mark.parametrize("code, words", [(3221225477, "exit 0xC0000005, an access violation"),
+                                         (3221226505, "exit 0xC0000409, a fail-fast"), (3221225786, "exit 0xC000013A"),
+                                         (3, "exit 3: abort()")])
+def test_a_shard_whose_pytest_died_says_so_in_hex_never_only_127(tmp_path, monkeypatch, capsys, code, words):
+    """GitHub's bash shows a pytest process that died by a Windows status as 127, which names nothing (#285's core
+    4/4, flakes-2026-11-05 #5): the shard says how it died, and its exit code is still the child's (red)."""
+    _core(str(tmp_path), {"test_a.py": 10})
+    monkeypatch.setattr(run_tests.subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, code))
+    assert run_tests.run_shard(str(tmp_path), "1/1") == code
+    assert words in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("code", [0, 1, 2, 4, 5, 75, 127, 255, -11])
+def test_pytests_own_exit_codes_are_no_death(code):
+    assert run_tests.death(code) is None

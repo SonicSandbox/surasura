@@ -359,6 +359,20 @@ class Choice(_Control):
         self._describe()
         self.update()
 
+    def set_label(self, value, label, tip=None):
+        """`value`'s option shown with these words (a live one: *Videos open in*'s program, named once chosen) — no
+        signal; the control's size follows. -> True when they changed."""
+        i = self._find(value)
+        if self._options[i][1:] == (label, tip):
+            return False
+        self._options[i] = (value, label, tip)
+        self._vein.stop()
+        self.setMouseTracking(any(t for _v, _l, t in self._options))
+        self._describe()
+        self.updateGeometry()
+        self.update()
+        return True
+
     def vein(self):
         """The vein's (left, right) as drawn now."""
         return self._vein.span or self._rest(self._index)

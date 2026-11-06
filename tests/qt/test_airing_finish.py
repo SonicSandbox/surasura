@@ -301,9 +301,9 @@ class _Asker:
         return True
 
 
-def _marked_all_before_the_answer(world, aid):
+def _marked_all_before_the_answer(world, aid, writer=None):
     """⋯ *Mark all watched* on a show with AniList id `aid` whose answer hasn't come (the asker switched on)."""
-    seed, win, writer = world()
+    seed, win, writer = world(writer=writer)
     row = rows_of(win)[4]
     seed.library.commit(works=[{"id": row.work_id, "anilist_id": aid}])
     reader = win.services.library
@@ -462,8 +462,11 @@ def test_window_a_show_sent_to_finished_by_a_pick_is_never_asked_again(world):
 def test_window_the_mark_undone_then_the_answer_finishes_nothing(world):
     """Review round 3 (H): *Mark all watched* undone after the *Still asking* offer — AniList's "ended" answer then
     never finishes a show with files to watch (`when_done` reads every file watched: the caller checks)."""
-    from tests.qt.test_drag import calls
-    _seed, win, writer, row = _marked_all_before_the_answer(world, 424252)
+    from tests.qt.test_drag import MarkWriter, calls
+    # MarkWriter: the Undo written back into the stand-in library, as the store's is. The recording writer's Undo
+    # writes nothing, so its store kept the show all watched and the window's own marks alone said otherwise — until
+    # they let go at the second view since (one more view on a slower PC): flakes-2026-11-05 #3
+    _seed, win, writer, row = _marked_all_before_the_answer(world, 424252, writer=MarkWriter)
     assert wait_until(lambda: not win.moves.tickets, 3)
     win.moves.undo(win.moves.toasted)
     assert wait_until(lambda: (settle() or True) and not win.moves.tickets and

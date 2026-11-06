@@ -19,6 +19,19 @@ DEFAULT_SETTINGS = {
     "split_length": 3000,
     # how an EPUB is cut into parts when it is added: "chapters" (its TOC's, else its heading lines') or "even"
     "split_books_by": "chapters",
+    # What ▶ opens a video or an EPUB with (Settings → Content, *Videos open in* / *Books open in*; Sonic 2026-11-05,
+    # the mock's rows): "default" — the program Windows opens it with — or "program", the one chosen there
+    # (`open_video_program` / `open_book_program`: its path, kept when "default" is picked again). YouTube always opens
+    # on YouTube; a book with no EPUB opens in the default program. Read by `app/services/play.program_for` (▶'s open,
+    # `screens.Page._play`). Never in a signature.
+    "open_video": "default",
+    "open_video_program": "",
+    "open_book": "default",
+    "open_book_program": "",
+    # When you finish something (Settings → Content; the mock's *When something is finished*, N7): "ask" — the toast
+    # asks *Keep* or *Leave its new cards out of your order* (D14) — or always "keep", or always "out" (the toast then
+    # says so, its Undo takes both back). Read by `finish_cards()`. Never in a signature.
+    "finish_cards": "ask",
     "target_language": "ja",
     # Chinese only: read the whole library as "s" (Simplified) or "t" (Traditional); "asis" leaves
     # every file's script as written. Files are never converted on disk (app/zh_script.py).
@@ -684,6 +697,17 @@ def connect_on(settings) -> bool:
     (off)."""
     on = settings.get("connect_enabled") if hasattr(settings, "get") else False
     return bool(on) and automation(settings)
+
+
+FINISH_CARDS = ("ask", "keep", "out")
+
+
+def finish_cards(settings) -> str:
+    """*When you finish something* (`finish_cards`) as every finish reads it: "ask", "keep" or "out"; absent, a
+    hand-edited value no choice names, or no settings: "ask" (the toast's question, as before the setting). Takes a
+    settings dict, a window's frozen copy, or None."""
+    value = settings.get("finish_cards") if hasattr(settings, "get") else None
+    return value if value in FINISH_CARDS else "ask"
 
 
 def update_check_on(settings) -> bool:

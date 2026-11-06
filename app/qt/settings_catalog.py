@@ -6,9 +6,10 @@ says and hands every change on through `change()`; it decides nothing.
   out of the page and the nav.
 - **Rows** (`Row`): `keys` the settings a control writes (a top-level key, or a dotted `logic.` path); `reaches` the
   ones a door row's window holds (decks, fields, the deck pickers, Speech's tunables, Backfill's note types — reached
-  there, shown here, never written here: 🧭 call 3); `adv` under *More options*; `group` a group name above it; `sub`
-  indented under the row above; `when(settings, language, ctx)` whether it shows; `door` the opener names
-  (`app/qt/windows.OPENERS`) its buttons open; `target` the section a summary's *Change ›* goes to.
+  there, shown here, never written here: 🧭 call 3; a `PROGRAM_ROWS` row's program, its own picker's); `adv` under
+  *More options*; `group` a group name above it; `sub` indented under the row above; `when(settings, language, ctx)`
+  whether it shows; `door` the opener names (`app/qt/windows.OPENERS`) its buttons open; `target` the section a
+  summary's *Change ›* goes to.
 - **Kinds:** `toggle` (a bool key; with `options` one value of a list key, Q31) · `choice` (one of a few) · `cards`
   (choice cards, a line under each) · `tablets` (a list value's picks, each lit one ticked — never the vein a choice
   draws under its one, so no multi-pick reads as a pick-one: Q31; picks a word each says better are switches, a row
@@ -32,6 +33,7 @@ says and hands every change on through `change()`; it decides nothing.
 """
 import copy
 import importlib.util
+import os
 import unicodedata
 from collections import namedtuple
 from collections.abc import Mapping
@@ -318,6 +320,13 @@ ROWS = (
     # SRC W1b: the store's sources, read where they are; row 32: a summary here, the folders in their own window
     _row("library_folders", "content", "custom", door=("library-folders",)),
     _row("fresh_library", "content", "custom"),                       # K7: the library set aside, the folders read again
+    # Sonic 2026-11-05 (the mock's rows): what ▶ opens a file with, what finishing does to its cards — each its name
+    # on one line, its choices under it (`STACKED`); the program kept beside the choice (`PROGRAM_ROWS`)
+    _row("open_video", "content", "choice", ("open_video",), options=("default", "program"),
+         reaches=("open_video_program",)),
+    _row("open_book", "content", "choice", ("open_book",), options=("default", "program"),
+         reaches=("open_book_program",)),
+    _row("finish_cards", "content", "choice", ("finish_cards",), options=settings_manager.FINISH_CARDS),
     _row("split_books_by", "content", "choice", ("split_books_by",), options=("chapters", "even")),
     _row("split_length", "content", "number", ("split_length",), bounds=(1, None)),
     _row("use_every_core", "content", "toggle", ("use_every_core",), adv=True),      # K5 C4: big first reads
@@ -392,6 +401,11 @@ ROWS = (
     _row("surasura", "app", "links", options=("github", "discord", "website")),
 )
 ROW = {row.id: row for row in ROWS}
+# A row that stands stacked always (Sonic 2026-11-05: "One for the term and then a row or 2 for the buttons")
+STACKED = ("open_video", "open_book", "finish_cards")
+# A choice row whose "program" choice opens a program kept in another key: row id -> that key (its path; the page's
+# picker writes it, *Change…* picks again)
+PROGRAM_ROWS = {"open_video": "open_video_program", "open_book": "open_book_program"}
 
 # Every setting no row shows, and why (the test holds it to PLACED).
 NOT_SHOWN = {
@@ -543,7 +557,32 @@ def options(row, settings, language):
     if row.id == "anki_sync_delay_min":
         return tuple((v, label, "") for label, v in settings_values.sync_choices(value_of(settings, row.keys[0])))
     labels, lines = S.OPTIONS.get(row.id, {}), S.OPTION_LINES.get(row.id, {})
+    if row.id in PROGRAM_ROWS:
+        labels = dict(labels, program=program_label(row, settings)[0])
     return tuple((v, labels.get(v, str(v)), lines.get(v, "")) for v in (row.options or ()))
+
+
+def program(row, settings):
+    """The program a `PROGRAM_ROWS` row keeps (its path, stripped), or "" — none chosen (or a hand-edited non-text)."""
+    found = value_of(settings, PROGRAM_ROWS[row.id])
+    return found.strip() if isinstance(found, str) else ""
+
+
+def program_label(row, settings):
+    """(label, tip) of a `PROGRAM_ROWS` row's "program" choice: the program's name (its file's, without .exe) and its
+    path once one is chosen; before, *Choose a program…* and its own tip."""
+    path = program(row, settings)
+    if not path:
+        return S.OPTIONS[row.id]["program"], S.OPTION_TIPS[row.id]["program"]
+    return os.path.splitext(os.path.basename(path.replace("\\", "/")))[0] or path, path
+
+
+def option_tips(row, settings):
+    """{value: tip} of a choice's options: the strings table's, a program row's chosen program its path."""
+    tips = dict(S.OPTION_TIPS.get(row.id, {}))
+    if row.id in PROGRAM_ROWS:
+        tips["program"] = program_label(row, settings)[1]
+    return tips
 
 
 def rows(section_id):

@@ -1532,6 +1532,7 @@ class _Command:
         self.piece_fields = []  # LM11: (piece, column, old, new) — a piece's kind or title written, for undo
         self.dropped = []     # LM11: the pieces' rows deleted when emptied, for undo
         self.line_set = False  # set_soon_line: the line moved
+        self.piece_seq = 0    # the highest piece id `_new_piece` issued in this command: its sequence row, at the end
 
     def touch(self, tiers=(), order=False, availability=False, pins=False, within=False):
         """Record a change: any tier in `tiers` that is analysed bumps `order_version`; so does a REFERENCE tier (W-1b:
@@ -1563,10 +1564,12 @@ class _Command:
     def finish(self):
         """Settle (the Soon line, the pieces, the feed: `Store._settle`), then write the versions and the log,
         inside the transaction. Returns the own-bump deltas."""
-        if not self.changed:
-            return None
         store = self.store
+        if not self.changed:
+            self._write_piece_seq()
+            return None
         store._settle(self)
+        self._write_piece_seq()
         if self.logging:
             after = store._mine_ids(self.mine_n)
             before = set(self.mine_before)
@@ -1595,6 +1598,12 @@ class _Command:
             updates.append(("pins_version", self.meta["pins_version"] + 1))
         store.conn.executemany("UPDATE meta SET value = ? WHERE key = ?", [(str(v), k) for k, v in updates])
         return {"order": int(self.bump_order), "availability": int(self.bump_avail)}
+
+    def _write_piece_seq(self):
+        """K30 / LM11 G3 for pieces: the sequence row past every piece id the command issued, one write a command (a
+        move that splits a show makes two pieces: one row write, not two)."""
+        if self.piece_seq:
+            _set_seq(self.store.conn, "pieces", self.piece_seq)
 
 
 
@@ -2461,11 +2470,11 @@ class Store:
             return None
         with self._command("move", by) as cmd:
             self._recheck(check)
-            rows = self._rows(ids)
+            rows = self._rows(ids if anchor is None else ids + [anchor])      # the anchor in the same read (R6)
+            a = rows.pop(anchor, None) if anchor is not None else None
             if not rows:
                 return None
             if anchor is not None:
-                a = self._rows([anchor]).get(anchor)
                 if a is None or a[1] != tier:
                     raise ValueError("the anchor is not in that tier")
             ordered = sorted(rows.values(), key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
@@ -2755,7 +2764,8 @@ class Store:
         NOW or Soon → right after its last row there (reading NOW → Soon); a show with rows but none
         there → the top of NOW; a directory with no item yet → today's rule in `fallback_tier` (after the
         folder's last row, else the top). Soon's top is `_tier_top`'s (past a show the Soon line runs through, alpha 9);
-        `tops` keeps it for the call's other files (nothing is placed until every file has its place)."""
+        `tops` keeps it, and each folder's place, for the call's other files (nothing is placed until every file has its
+        place)."""
 
         def top(tier):
             if tier != "soon":
@@ -2773,17 +2783,29 @@ class Store:
             return ("top", "now")
         if folder_dir in TIER_OF_FOLDER:
             return top(TIER_OF_FOLDER[folder_dir])
+        folder = _entry_folder(entry)
+        # R6 (an Add Folder of a 50-file season, 24 % over §6.12): the call's other files of this folder land at the
+        # same place — read once a call, not three queries a file (nothing is written until every file has its place)
+        seen = ("at", folder_dir, folder, fallback_tier)
+        if tops is not None and seen in tops:
+            return tops[seen]
+        dest = None
         rows = self._dir_rows(folder_dir, excl) if folder_dir else []
         if rows:
             for tier in ("soon", "now"):
                 here = [r for r in rows if r[1] == tier]
                 if here:
                     last = max(here, key=lambda r: (r[2], r[0]))
-                    return ("after", self._past_group(last[0]), tier)        # LM11 (G4): never inside a group
-            return ("top", "now")
-        folder = _entry_folder(entry)
-        last = self._folder_last(fallback_tier, folder, excl) if folder else None
-        return ("after", self._past_group(last[0]), fallback_tier) if last else top(fallback_tier)
+                    dest = ("after", self._past_group(last[0]), tier)        # LM11 (G4): never inside a group
+                    break
+            else:
+                dest = ("top", "now")
+        else:
+            last = self._folder_last(fallback_tier, folder, excl) if folder else None
+            dest = ("after", self._past_group(last[0]), fallback_tier) if last else top(fallback_tier)
+        if tops is not None:
+            tops[seen] = dest
+        return dest
 
     def _add_rows(self, prepared, version):
         """Insert new item rows (ids issued past every id ever used, K30), placed later by `_put`."""
@@ -2834,12 +2856,18 @@ class Store:
             self._recheck(check, takeover_ok=lambda i: self._takeover_id(i, started_at))
             change = self._change(cmd, kind)
             new, taken, seen = [], [], set()
+            held = {}                   # rel_key -> (id, tier): one read for the call's files, not one a file (R6)
+            for chunk in _chunks(list(dict.fromkeys(item[2] for item in prepared)), 500):
+                for key, item_id, item_tier in self.conn.execute(
+                        f"SELECT rel_key, id, tier FROM items WHERE rel_key IN ({','.join('?' * len(chunk))}) "
+                        "ORDER BY rel_key, id", chunk):
+                    held.setdefault(key, (item_id, item_tier))
             for item in prepared:
                 path, rel, key, entry, fp = item
                 if key in seen:
                     continue
                 seen.add(key)
-                row = self.conn.execute("SELECT id, tier FROM items WHERE rel_key = ?", (key,)).fetchone()
+                row = held.get(key)
                 if row is None:
                     new.append(item)
                 elif self._takeover(key, started_at) is not None:
@@ -3742,7 +3770,12 @@ class Store:
         base = self.conn.execute("SELECT title, kind FROM pieces WHERE id = ?", (like,)).fetchone() if like else None
         kind = base[1] if base else "run"
         piece = _next_id(self.conn, "pieces")
-        _set_seq(self.conn, "pieces", piece)
+        cmd = self._cmd
+        if cmd is not None:      # inside a command: its sequence row written once, at its end (`_Command.finish`, R6)
+            piece = max(piece, cmd.piece_seq + 1)
+            cmd.piece_seq = piece
+        else:
+            _set_seq(self.conn, "pieces", piece)
         self.conn.execute("INSERT INTO pieces (id, title, kind, created_at) VALUES (?, ?, ?, ?)",
                           (piece, None if kind == "group" else base[0] if base else title, kind, _now()))
         return piece
@@ -3775,9 +3808,12 @@ class Store:
             pieces = set(kinds)
             groups = {p for p, k in kinds.items() if k == "group"}
             is_group = lambda p: p is not None and (p in groups if p in kinds else self._is_group(p))  # noqa: E731
-            whole = {}
-            for p in {v[1] for v in info.values() if v[1] is not None}:
-                ids = [r[0] for r in conn.execute("SELECT id FROM items WHERE piece_id = ?", (p,))]
+            whole, held = {}, {}
+            for chunk in _chunks(sorted({v[1] for v in info.values() if v[1] is not None}), 500):   # one read (R6)
+                for p, i in conn.execute(f"SELECT piece_id, id FROM items WHERE piece_id IN "
+                                         f"({','.join('?' * len(chunk))})", chunk):
+                    held.setdefault(p, []).append(i)
+            for p, ids in held.items():
                 whole[p] = all(i in info for i in ids) and \
                     not (p in groups and any(info[i][0] in NO_GROUP_TIERS for i in ids))     # LM11: out of the group
             sets, fresh, olds = [], set(), {}
@@ -3902,8 +3938,19 @@ class Store:
             for before, after in near.values():
                 affected.update(p for p in (before[1], after[1]) if p is not None)
             placed = set(info)
+            # each piece's members read at once (R6: a 50-row move touched ~36 pieces, a read each): a split rewrites
+            # only its own piece's rows, so what one piece's split reads is the same read before the first
+            members = {}
+            for chunk in _chunks(sorted(affected), 500):
+                for row in conn.execute(f"SELECT piece_id, id, tier, ord, work_id FROM items WHERE piece_id IN "
+                                        f"({','.join('?' * len(chunk))}) ORDER BY piece_id, tier, ord, id", chunk):
+                    members.setdefault(row[0], []).append(row[1:])
+            split = []                          # nothing in the loop reads a row's piece: written after it, at once
             for p in sorted(affected):
-                news.update(self._split_runs(p, placed, cmd, view))
+                news.update(self._split_runs(p, placed, cmd, view, members.get(p, []),
+                                             group=p in groups if p in kinds else None, sets=split))
+            if split:
+                self._set_pieces(cmd, split)
             news |= affected
             for run in pending:
                 work = info[run[0]][2]
@@ -3989,18 +4036,20 @@ class Store:
             sql = "SELECT id, piece_id, work_id FROM items WHERE tier = ? AND (ord, id) > (?, ?) ORDER BY ord, id LIMIT 1"
         return self.conn.execute(sql, (row[0], row[1], item_id)).fetchone()
 
-    def _split_runs(self, piece, placed, cmd, view=None):
+    def _split_runs(self, piece, placed, cmd, view=None, members=None, group=None, sets=None):
         """Make `piece` one run again (05 §5.2 rules 1, 5): its members in (tier, ord, id), cut wherever the tier or
         the work changes or another row stands between two of them; the first run holding a member the command didn't
         place keeps the id (else the first run), each other run becomes a piece of its own. LM11: a group is cut where
         the tier changes or a row stands between, never where the work does (in Finished and New arrivals, where no
         group lives, it is), and never at the Soon line (G1). -> the pieces it made."""
         conn = self.conn
-        members = conn.execute("SELECT id, tier, ord, work_id FROM items WHERE piece_id = ? ORDER BY tier, ord, id",
-                               (piece,)).fetchall()
+        if members is None:                # else the caller's read of the same rows (`_fix_pieces`, R6)
+            members = conn.execute("SELECT id, tier, ord, work_id FROM items WHERE piece_id = ? ORDER BY tier, ord, id",
+                                   (piece,)).fetchall()
         if len(members) <= 1:
             return []
-        group = self._is_group(piece)
+        if group is None:                  # else the kind the caller read (`_fix_pieces`' kinds)
+            group = self._is_group(piece)
 
         first, last = members[0], members[-1]
         span = None                # {id: position} of the rows from its first member to its last, read at once
@@ -4048,7 +4097,10 @@ class Store:
             new = self._new_piece(like=piece)
             made.append(new)
             ids = [m[0] for m in r]
-            self._set_pieces(cmd, [(new, i) for i in ids])
+            if sets is None:
+                self._set_pieces(cmd, [(new, i) for i in ids])
+            else:                           # the caller writes every piece's splits in one go (R6)
+                sets += [(new, i) for i in ids]
             cmd.repieced += [(i, piece, new) for i in ids]
         return made
 

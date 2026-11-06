@@ -1162,6 +1162,86 @@ def test_add_folder_leaves_graduated_and_demoted_episodes_where_they_are(languag
     store.close()
 
 
+def _selects_during(store, fn):
+    seen = []
+    store.conn.set_trace_callback(lambda sql: seen.append(sql) if sql.lstrip().upper().startswith(("SELECT", "WITH"))
+                                  else None)
+    try:
+        out = fn()
+    finally:
+        store.conn.set_trace_callback(None)
+    return out, len(seen)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_add_of_two_shows_interleaved_reads_each_folder_once_and_each_file_lands_after_its_own_show(language):
+    """R6 (§6.12: an Add Folder of a 50-file season cost a third over its allowance): each folder's place is read once
+    a call, not once a file, and whether a file is an item already is one read for the call. The places are as before:
+    a file of a show with rows in NOW lands after its last row, in the order given; a new folder's files land together
+    at the top of the tab chosen; a file already in is reported, never added twice, and a file given twice is one."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    show = [i for i in store.ids("now") if store.item(i)["parent_folder"]][:3]
+    folder = store.item(show[0])["rel_path"].rsplit("/", 1)[0]
+    last = [i for i in store.ids("now") if store.item(i)["rel_path"].startswith(folder + "/")][-1]
+    word = names(language)[97]
+
+    def files(n, base):
+        return [touch(data_dir, f"{folder}/{word}{base}_第{e:02d}話.srt") for e in range(base, base + n)] + \
+            [touch(data_dir, f"LowPriority/{word}{base}/{word}_{e:03d}.srt") for e in range(n)]
+    few = files(2, 10)
+    _ignored, small = _selects_during(store, lambda: store.insert([few[0], few[2], few[1], few[3]], "soon"))
+    many = files(20, 30)
+    mixed = [f for pair in zip(many[:20], many[20:]) for f in pair]      # A B A B …: the cache holds both folders
+    existing = os.path.join(data_dir, *store.item(show[1])["rel_path"].split("/"))
+    change, big = _selects_during(store, lambda: store.insert(mixed + [existing, mixed[0]], "soon"))
+    assert big - small <= 4, (small, big)          # 10× the files: the same reads (one more chunk of nothing)
+    assert [e[1] for e in change.existing] == [show[1]]
+    added = change.added
+    assert len(added) == 40 == len(set(added))
+    rel = {i: store.item(i)["rel_path"] for i in added}
+    own = [i for i in added if rel[i].startswith(folder + "/")]
+    loose = [i for i in added if not rel[i].startswith(folder + "/")]
+    now = store.ids("now")
+    at = now.index(last)
+    assert [i for i in now + store.ids("soon") if i in own] == own, "its show's files in the order given"
+    first_own = (now + store.ids("soon")).index(own[0])
+    assert first_own > at, "after the show's last row"
+    soon = store.ids("soon")
+    assert [i for i in soon if i in loose] == loose and \
+        soon.index(loose[-1]) - soon.index(loose[0]) == len(loose) - 1, "the new folder's files together, in order"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_that_splits_a_show_writes_the_piece_sequence_once_and_past_every_piece(language):
+    """K30 / LM11 G3 for pieces, written once a command (R6: a move into another show made two pieces and wrote the
+    sequence row twice — one write more than the 100k move's count allows): the row is past every piece id issued,
+    so a piece emptied and deleted later never gives its id away."""
+    store = big_store(language, 2_000)
+    soon = store.ids("soon")
+    item, anchor = soon[5], soon[40]                 # out of one show, into the middle of another (12 a show)
+    writes = []
+    store.conn.set_trace_callback(lambda sql: writes.append(sql) if "sqlite_sequence" in sql and
+                                  sql.lstrip().upper().startswith(("UPDATE", "INSERT")) else None)
+    before = store.conn.execute("SELECT MAX(id) FROM pieces").fetchone()[0]
+    store.move([item], "soon", after_id=anchor)
+    store.conn.set_trace_callback(None)
+    made = store.conn.execute("SELECT COUNT(*) FROM pieces WHERE id > ?", (before,)).fetchone()[0]
+    assert made == 2, "its own piece and the split's second half"
+    assert len(writes) == 1, writes
+    seq = store.conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'pieces'").fetchone()[0]
+    assert seq == store.conn.execute("SELECT MAX(id) FROM pieces").fetchone()[0] == before + 2
+    store.move([item], "soon", after_id=soon[4])     # back: its piece emptied and deleted, the split joined again
+    gone = store.conn.execute("SELECT MAX(id) FROM pieces").fetchone()[0]
+    store.move([soon[100]], "soon", after_id=soon[200])
+    assert store.conn.execute("SELECT MIN(id) FROM pieces WHERE id > ?", (gone,)).fetchone()[0] > seq, \
+        "never an id issued before"
+    assert pieces_ok(store) is None
+    store.close()
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_row_a_sync_added_mid_copy_is_taken_over(language):
     store = migrated(language)

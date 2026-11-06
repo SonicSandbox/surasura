@@ -475,7 +475,7 @@ def test_install_opens_anki_miners_releases_page_and_the_star_line_its_github_pa
     QTest.mouseClick(rows.miner.install, Qt.MouseButton.LeftButton)
     assert world.opened == [setup.RELEASES]
     QTest.mouseClick(rows.miner.star_line, Qt.MouseButton.LeftButton)
-    assert wait_until(lambda: world.opened[-1] == settings_values.STAR_URL, 5)
+    assert wait_until(lambda: world.opened and world.opened[-1] == settings_values.STAR_URL, 5)
     assert wait_until(settings_values.star_answered, 5), "a star click is kept as answered"
     assert store.calls == []
 
@@ -537,7 +537,7 @@ def test_ready_offers_the_star_until_not_now_which_is_kept_in_local_data_never_s
     assert wait_until(lambda: not card.checking and len(world.checked) == 2, 5)
     assert not card.star_box.isVisibleTo(page) and card.star_link.isVisibleTo(page)
     QTest.mouseClick(card.open_miner, Qt.MouseButton.LeftButton)
-    assert wait_until(lambda: world.opened[-1] == MINER, 5)
+    assert wait_until(lambda: world.opened and world.opened[-1] == MINER, 5)   # (empty until the worker opens it)
 
 
 def test_browse_writes_only_the_programs_path_through_the_service_and_checks_again(world):

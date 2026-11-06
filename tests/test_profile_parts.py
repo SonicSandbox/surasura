@@ -48,6 +48,7 @@ CALL_SITES = {
     "app/send_report.py": 5,
     "app/services/airing.py": 1,
     "app/services/anki_miner_setup.py": 4,
+    "app/connect/ankiconnect_install.py": 1,     # 3.0.1: its staging folder ("ankiconnect-install", PARTS)
     "app/services/arrivals.py": 1,
     "app/services/chores.py": 1,
     "app/services/covers.py": 4,

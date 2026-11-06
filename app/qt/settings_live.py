@@ -578,8 +578,8 @@ class Live(QObject):
             # and *Check* by itself once Anki answers (the shell's poll; armed by `_paint_anki`)
             view = self.page.row(row_id)
             steps = addon_steps.AddonSteps(lambda text, tip: sc.Door(text, tooltip=tip), "settingshelp",
-                                           lambda text: self.say(text, row_id), view)
-            steps.setVisible(False)
+                                           lambda text: self.say(text, row_id), view, url=self._anki_url,
+                                           checked=self.check, timer=addon_steps.ticker(self.shell))
             (view.words if view.words is not None else view.layout()).addWidget(steps)    # under the row's help
             watch = addon_steps.Watch(view, addon_steps.ticker(self.shell), self._anki_url, self.check)
             self.parts[row_id] = {"mark": mark, "check": check, "steps": steps, "watch": watch}
@@ -821,8 +821,9 @@ class Live(QObject):
             shown = key in ("no_addon", "unsure")
             if shown:
                 steps.set_unsure(key == "unsure")
-            if steps.isHidden() == shown:
-                steps.setVisible(shown)
+            if key == "connected":
+                addon_steps.answered()                    # an install's done line goes: AnkiConnect is in
+            steps.want(shown)                             # an install under way keeps it on screen (Anki closed)
         if watch is not None and key != "checking":
             report = self.facts.get("report") or {}
             # a sync's "closed" took no process look: as none seen, so an Anki opened without AnkiConnect is noticed

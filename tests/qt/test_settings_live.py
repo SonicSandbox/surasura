@@ -913,3 +913,24 @@ def test_version_copies_the_version_and_folders_opens_the_data_folder_and_the_lo
     folders["open"].click()
     assert wait_until(lambda: "logs_folder" in fakes.names())
     assert fakes.on_gui() == [] and store.calls == []
+
+
+def test_ankiconnect_missing_offers_install_ankiconnect_for_me_above_copy_code(qapp, fakes, monkeypatch):
+    # 3.0.1 (AC-5): where the install can (its look: `can-install`), the row's part leads with *Install AnkiConnect
+    # for me* in the row's own look (a door), *Or add it in Anki yourself:* and Copy code under it; a closed Anki with
+    # nothing under way shows none of it
+    from app import ankiconnect_addon as A
+    from app.connect import ankiconnect_install as I
+    from app.qt import addon_steps
+    monkeypatch.setattr(addon_steps, "_STATE", None)
+    monkeypatch.setattr(I, "look", lambda: {"state": I.CAN_INSTALL, "disabled": False, "base": "B", "point": 1})
+    page, store, shell = make(fakes)
+    steps = page.live.parts["anki_connection"]["steps"]
+    fakes.probe = {"ok": False, "version": None, "missing": [], "error": "refused", "running": True}
+    page.live.check()
+    assert wait_until(lambda: steps.install is not None and steps.install.isVisible())
+    assert isinstance(steps.install, sc.Door) and steps.install.toolTip() == I.BUTTON_TIP
+    assert steps.heading.isVisible() and steps.copy.isVisible() and steps.line.text() == A.steps_line()
+    fakes.probe = dict(fakes.probe, running=False)
+    page.live.check()
+    assert wait_until(lambda: steps.isHidden())

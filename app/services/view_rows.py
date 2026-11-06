@@ -212,6 +212,9 @@ Episode = namedtuple("Episode", Episode._fields + ("new_faded",), defaults=tuple
 # --- Michi-ST (PROVISIONAL): `tracks`, what a waiting video's own tracks say (`app/tracks.note`): "pictures" — its only
 # subtitles are drawn as pictures, not read yet; "no-miner" — no Anki Miner here to read a track inside it; else None
 Episode = namedtuple("Episode", Episode._fields + ("tracks",), defaults=tuple(Episode._field_defaults.values()) + (None,))
+# --- try a9.1 (Mado-Y): `online`, an online video's `source_type` ("youtube" · "bilibili"): ▶ opens its page in the
+# browser (`play.online_link`); None for a file on disk and in a cache from before
+Episode = namedtuple("Episode", Episode._fields + ("online",), defaults=tuple(Episode._field_defaults.values()) + (None,))
 Arrival = namedtuple("Arrival", Arrival._fields + ("audio",), defaults=tuple(Arrival._field_defaults.values()) + ("",))
 
 
@@ -241,6 +244,8 @@ STRINGS = {
     "tip_mining": "Making its cards now",
     # R47 (laptop rows 47 + 56, PROVISIONAL words): Stop's states, and an ask Connect has read (its own status)
     "stopping": "Stopping…", "tip_stopping": "Stopping: the cards made so far are kept",
+    # #BS0A1K (PROVISIONAL words): Stop pressed while Anki Miner writes its cards — never ended mid-card
+    "tip_stopping_cards": "Adding the cards it has ready to Anki, then it stops: the cards made so far are kept",
     "tip_finishing": "\nFinishing its cards: too far along to stop", "asked": "Asked",
     "tip_asked": "Its cards come next",
     "tip_waiting": "In your top {line}: it mines by itself, in turn",
@@ -267,7 +272,7 @@ STRINGS = {
     "mark_missing": "{eps}: {gone}",                  # R55-C (Sonic): Up Next's own words, which episodes first
     "mark_removed": "{Word} deleted after mining: {eps}\nThe cards keep their pictures and audio; only ▶ can't play it",
     "play": "{verb} {name} in your {player}\nThe {word} beside its subtitle file",
-    "play_online": "Its video is online: opening it from here comes in a later build",
+    "play_online": "Watch it on {site} in your browser\nIts video's own page, from what the downloader kept",
     # row 55: ▶'s own lookup found nothing to open (PROVISIONAL words)
     "play_not_found": "No {word} found for it on this computer, so there is nothing to {verb_l} from here",
     # R55-A (Sonic): before the check has answered, Up Next says *Looking…*; its tip says only that (A-11)
@@ -320,6 +325,8 @@ STRINGS = {
     "tip_audio_alone": "🎧 Audio only 「{title}」\n{files}\nNothing to study here yet: it counts no words until Anki "
                        "Miner gives its text.",
     "audio_files_one": "1 file ({first})", "audio_files": "{n} files ({first} … {last})",
+    # Hon-S a9.1 (PROVISIONAL): a split book's part without the audiobook's own item keeps its 🎧 all the same
+    "audio_other_part": "Its files are listed in another part of this book, as its 🎧 file.",
     # Hon a6 (H-12 ✅ Sonic, H-13 PROVISIONAL): an audiobook's transcript — alone, its content; paired, the book's
     "tip_audio_transcript": "🎧 Audiobook 「{title}」 with its transcript\n{files}\nIts transcript is its text: its "
                             "words count as an episode's do. Its cards wait until Anki Miner mines audio.",
@@ -847,28 +854,33 @@ def status_of(eps, word, line_n):
 def audio_tip(piece):
     """a5-2: the 🎧's hover for a row holding an audiobook's item, else '' — *With its audiobook 「…」* beside a book's
     parts, *Audio only 「…」* alone; its files and length from the item's own summary (`audio`, the reader's, from
-    `Store.audiobook_hovers`), the title alone until it is read."""
+    `Store.audiobook_hovers`), the title alone until it is read. a9.1 (Hon-S): a part of a paired book whose row
+    doesn't hold the audiobook's item (a split book's earlier part) says *With its audiobook* all the same, from its
+    parts' `book_audio` (the reader's) — every way of splitting keeps the pairing on every part."""
     from app.audiobooks import length_text
     heard = [it for it in piece if it.get("source_type") == "audio"]
-    if not heard:
+    other = None if heard else next((it["book_audio"] for it in piece if it.get("book_audio")), None)
+    if not heard and other is None:
         return ""
-    said = heard[0].get("audio") or {}
-    title = said.get("title") or heard[0].get("title") or ""
+    said = (heard[0].get("audio") or {}) if heard else other
+    title = said.get("title") or (heard[0].get("title") if heard else "") or ""
     use = said.get("transcript")
     n = said.get("n") or 0
     files = STRINGS["audio_files_one"].format(first=said.get("first")) if n == 1 else \
         STRINGS["audio_files"].format(n=n, first=said.get("first"), last=said.get("last")) if n else ""
     length = length_text(said.get("seconds"))
     files = " · ".join(x for x in (files, length) if x)
-    if heard[0].get("availability") not in (None, "waiting"):     # a6: its transcript is its content
+    if heard and heard[0].get("availability") not in (None, "waiting"):     # a6: its transcript is its content
         # Z-16: its clips are cut from it only when its audiobook is one file (several: its cards wait, review AB-5)
         mined = "tip_audio_transcript_several" if n > 1 else "tip_audio_transcript_mined"
         tip = STRINGS[mined if _mines("audio") else "tip_audio_transcript"].format(title=title, files=files, n=n)
     else:
-        tip = STRINGS["tip_audio_alone" if len(heard) == len(piece) else "tip_audio_paired"].format(title=title,
-                                                                                                  files=files)
-        if use in ("timing", "other") and len(heard) < len(piece):
+        alone = len(heard) == len(piece)
+        tip = STRINGS["tip_audio_alone" if alone else "tip_audio_paired"].format(title=title, files=files)
+        if use in ("timing", "other") and not alone:
             tip += "\n" + STRINGS["audio_transcript_timing" if use == "timing" else "audio_transcript_other"]
+        if not heard:
+            tip += "\n" + STRINGS["audio_other_part"]
     return tip.replace("\n\n", "\n")
 
 
@@ -947,7 +959,9 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     mined = c > 0
     word = MEDIA_WORD.get(media, "video")
     verb = VERB[word]
-    online = item.get("source_type") in ("youtube", "bilibili")      # its video is online: no address for it yet
+    # its video is online (try a9.1, Sonic: "the play button for a youtube video should be the video"): ▶ opens its
+    # page in the browser (`play.online_link`, on the click's worker) — always shown, never looked for on disk
+    online = item.get("source_type") in ("youtube", "bilibili")
     said = connect.get(item["id"]) if connect is not None else None
     # row 55 (Sonic: "if it doesn't find the media, there shouldn't be a play button"): ▶ only where ▶'s own lookup
     # (`play.Looks`, its answers `playable`) found the file — never asked where it can't be, nor where Connect says
@@ -956,7 +970,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     no_video = said is not None and said.kind == connect_feed.NO_VIDEO and word == "video"
     ask = None if missing or waiting or online or no_video else (item.get("rel_path"), media)
     looking = ask is not None and playable is not None and item["id"] not in playable
-    can_play = ask is not None and (playable is None or bool(playable.get(item["id"])))
+    can_play = online or (ask is not None and (playable is None or bool(playable.get(item["id"]))))
     # mining: Connect is making its cards now — an episode already in Anki that a level raise mines again too (alpha 2's
     # try, T3: its row showed only ✓, so no row said where the strip's arc was); a level job that waits keeps ✓
     ep = Episode(id=item["id"], label=label, number=number, title=name if audio else stem(name),
@@ -967,7 +981,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
                  rel_path=item.get("rel_path"), play_tip="", can_play=can_play, waiting=waiting,
                  media_word=MEDIA_WORD.get(media, "video"), work_id=item.get("work_id"), show=show, show_key=show_key,
                  ask=ask, looking=looking, text=_waits_for(item, media), added=item.get("added_at"),
-                 disk=item.get("mtime_ns"), media=media, tracks=tracks_said)
+                 disk=item.get("mtime_ns"), media=media, tracks=tracks_said,
+                 online=item.get("source_type") if online else None)
     asked = item.get("mine_asked")                    # asked again after it was mined: it mines again (Sonic's "unless asked")
     deleted = bool(item.get("mined_at")) and not mined and not (asked and str(asked) > str(item["mined_at"]))
     ep = ep._replace(deleted=deleted)
@@ -982,7 +997,8 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
         from app.connect.runner import MOVED
         st = st._replace(moved=left, tip=STRINGS["tip_connect_moved"].format(tip=MOVED.format(folder=left)))
     if online:
-        tip = STRINGS["play_online"]
+        from app.services.play import SITES
+        tip = STRINGS["play_online"].format(site=SITES[item["source_type"]])
     elif waiting and audio:
         tip = STRINGS["play_audio_wait"]
     elif waiting and tracks_said == tracks.PICTURES:
@@ -1023,7 +1039,8 @@ def _connected(st, item, word):
         # R47 (laptop rows 47 + 56): *Stop* pressed, the job not stopped yet -> *Stopping…*; while it can be stopped
         # its *Stop* (`stop`: the job); past the stop point (naming its clips) its hover says it is finishing
         if item.stopping:
-            return Status("mining", STRINGS["stopping"], STRINGS["tip_stopping"], "accent")
+            return Status("mining", STRINGS["stopping"],
+                          STRINGS["tip_stopping_cards" if item.writing_cards else "tip_stopping"], "accent")
         stop = item.job if item.stoppable else None
         if item.progress is not None:       # Anki Miner's run, as it goes (laptop round 5 #23, PROVISIONAL text: lean A)
             tip = STRINGS["tip_mining_doing"].format(doing=item.doing)

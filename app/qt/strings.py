@@ -569,6 +569,10 @@ TOOL_OPEN = "Open"
 TOOL_TIP = "{name}: {doing}"
 TOOL_BACK_TIP = "Click to bring it back"
 TOOL_FRONT_TIP = "Click to bring it to the front"
+TOOL_MENU_TIP = "Right-click: Show · Stop · Close"           # try a9.1: the icon's own menu
+TOOL_SHOW = ("Show", "Bring the window back")
+TOOL_STOP = ("Stop", "Stop what it is doing — the window stays open")
+TOOL_CLOSE = ("Close", "Close the window — anything it is doing stops too")
 PHASE_PRESS = "Press to open its settings"         # the hover's last line, on a circle that has some (mouse or keys)
 # a7 (Sonic 2026-10-29): an amber circle's last line — what waits for your decision, and where a press takes you to it
 PHASE_PRESS_NEEDS = "Waiting for your decision: press to answer it in Needs you"

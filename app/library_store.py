@@ -193,6 +193,16 @@ LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clo
 MEDIA_TYPES = ("anime", "drama", "movie", "youtube", "podcast", "audiobook", "book", "lightnovel", "manga",
                "game", "text")
 COVER_SOURCES = ("anilist", "tmdb", "youtube", "file", "user", "generated")
+# how a type is taken in (read · listened · played; any other, and None, watched): a new show folder never joins a title
+# taken in another way (`Store._same_show_folder`: a book's EPUBs beside a show's subtitles stay two titles)
+_MEDIA_FAMILY = {"book": "read", "lightnovel": "read", "manga": "read", "text": "read", "audiobook": "audio",
+                 "podcast": "audio", "game": "game"}
+
+
+def _media_family(media_type):
+    """How a title of `media_type` is taken in (`_MEDIA_FAMILY`; None, any other: watched) — the one "two types?" rule
+    of the same-show join and a new show folder's title."""
+    return _MEDIA_FAMILY.get(media_type, "watch")
 SKIP_NAMES = ("master_manifest.json", "_order.json", "desktop.ini")
 OLD_SURASURA_OWN = ("User Files", "_internal", "results")   # in a Surasura program's folder: never a source
 
@@ -2242,8 +2252,9 @@ class Store:
         say are two shows (`TITLES_APART`), the user kept apart (their answers about the others go to the kept title),
         put in one group of his own (his answer: they stay two titles in it) or of two types (a book beside a show).
         No item, order, piece or file touched: only which title the items are; *Not part of this title* takes them
-        apart again. Done once a store (`meta.shows_joined`, read again inside the command): a pair made later is
-        *Same title?*'s to ask (one key). The candidates are read once, outside the write lock; then commands of
+        apart again. Done once a store (`meta.shows_joined`, read again inside the command): a show folder made later
+        joins its show's one title as its first file comes in (`_same_show_folder`, 3.0.1 item 12); two titles made
+        another way are *Same title?*'s to ask (one key). The candidates are read once, outside the write lock; then commands of
         `JOIN_BATCH` pairs, each reading its pairs' rows again (the window's writes go between them; the window reads
         the works); the one that ends the list sets the mark. Returns the ids that went."""
         if self._meta().get(SHOWS_JOINED):
@@ -2271,7 +2282,7 @@ class Store:
                     ids = [w for w, _t in members]
                     if len(ids) < 2 or self._titles_apart(ids) or self._grouped_together(ids) or \
                             any((a, b) in apart for n, a in enumerate(ids) for b in ids[n + 1:]) or \
-                            len({t for t in (self.media_type(w)[0] for w in ids) if t is not None}) > 1:
+                            len({_media_family(self.media_type(w)[0]) for w in ids}) > 1:
                         continue
                     keep = max(members, key=lambda m: (len(unicodedata.normalize("NFKC", m[1] or "")), -m[0]))[0]
                     others = [w for w in ids if w != keep]
@@ -3277,7 +3288,8 @@ class Store:
 
     def _folder_work(self, rel, title, cmd, cache=None):
         """A new file's work by its folder (05 §5.3 (3)–(4)): the work holding its folder key; else the work of the
-        files beside it (a folder whose work was merged into another keeps going there); else a new work, titled by
+        files beside it (a folder whose work was merged into another keeps going there); else the one show folder's
+        title of the same show (`_same_show_folder`: `Show` of `Show!`, 3.0.1 item 12); else a new work, titled by
         its folder below the tier folder (`folder_title`: `Show/S01` is `Show Season 1`, the path kept among its other
         titles). A loose file's work is its show's, read from its name (`_stranded_work`)."""
         fk = folder_key_of(rel)
@@ -3298,11 +3310,47 @@ class Store:
         if wid is None and fk is None:
             return self._stranded_work(rel, title, cmd, cache)
         if wid is None:
+            wid = self._same_show_folder(fk, rel, cache)
+        if wid is None:
             below = _below_tier(rel)
             wid = self._new_work(folder_title(below), fk, cmd, titles=(below,))
+            index = cache.get(("show_folders",)) if cache is not None else None
+            if index is not None and "/" not in fk:
+                from app.episode_names import show_key
+                index.setdefault(show_key(fk), []).append(wid)
         if cache is not None:
             cache[fk] = wid
         return wid
+
+    def _same_show_folder(self, fk, rel, cache=None):
+        """A new show folder's title when no title holds its folder key and none of the files beside it has one (3.0.1
+        item 12, PROVISIONAL: Sonic's "one show, one title", a8): the ONE title of the same show (`episode_names.show_key`:
+        `Library/Show` of the title `Show!`, whose folder key went with the one-time join or was never made) — never
+        for a season's or another folder below a show (a key with `/`), never a title taken in another way
+        (`_media_family`: an EPUB beside a show), never one of two titles of that key (the user kept them apart: its own, as
+        `sources._show_of` does) — and every title counts, by any of its names (a hato title `Show` with no folder,
+        one the user kept apart from `Show!`: two of the key, so its own; review ITEM12 #1). Only a new file comes
+        here: two titles already made stay *Same title?*'s to ask. -> the work, or None."""
+        if "/" in fk:
+            return None
+        from app.episode_names import show_key
+        want = show_key(fk)
+        if not want:
+            return None
+        index = cache.get(("show_folders",)) if cache is not None else None
+        if index is None:                   # every title's names keyed once a command (its new ones added after)
+            index = {}
+            for w, keys in self.conn.execute("SELECT id, search_key FROM works ORDER BY id"):
+                for k in dict.fromkeys(show_key(k) for k in (keys or "").split("\n")):
+                    if k:
+                        index.setdefault(k, []).append(w)
+            if cache is not None:
+                cache[("show_folders",)] = index
+        found = index.get(want) or []
+        if len(found) != 1:
+            return None
+        mine = media_type_guess({infer_source_type(rel): 1})     # (a subtitle alone: None — nothing typed it yet)
+        return found[0] if _media_family(mine) == _media_family(self.media_type(found[0])[0]) else None
 
     def _stranded_work(self, rel, title, cmd, cache=None):
         """A loose file's work (SRC-11): one in hato's drop folder or directly in a tier folder has no show folder, so

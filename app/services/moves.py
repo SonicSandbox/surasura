@@ -700,8 +700,12 @@ class Writer:
             return bool(self._undo)
 
     def newest(self):
-        """The change Ctrl+Z's undo takes back if nothing is queued before it (the newest saved), or None. Any thread."""
+        """The change Ctrl+Z's undo takes back as the queue reaches it — the newest saved, when nothing queued before it
+        can change the Undo stack (3.0.1 item 12: a background cover, a download's registration, Settings' store lines,
+        a replay never do; a move, a Done or another Undo might) — else None: not known yet. Any thread."""
         with self._cond:
+            if self._copying or any(_stacks(c) for c in self._pending):
+                return None
             return self._undo[-1] if self._undo else None
 
     def pending(self):
@@ -1001,13 +1005,15 @@ class Writer:
             change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
         self._refresh_before(store, cmd, change)
+        stacked = not cmd.get("replay") and change is not None and not cmd.get("auto")   # B1: a background cover is
+        if stacked:                                 # nobody's to undo. On the stack before it leaves the queue: while it
+            with self._cond:                        # waits there `newest` says "not known" (review ITEM12 #3: never the
+                self._undo.append(change)           # change before it, in the moment between)
         self._landed(cmd)
         if cmd.get("replay"):
             if change is not None:
                 self._replay_applied += 1
-        elif change is not None and not cmd.get("auto"):  # B1: a background cover is nobody's to undo
-            with self._cond:
-                self._undo.append(change)
+        elif stacked:
             change.landed = _stamp(store)           # finish-pending: what its re-order must reach (the window waits)
             self._call(self.on_saved, change, cmd.get("label"))
         if note is not None:
@@ -1914,6 +1920,13 @@ def _skips(out):
         if head.isdigit() and "changed since" in str(note):
             n += int(head)
     return n
+
+
+def _stacks(cmd):
+    """Can `cmd`, queued, change the Undo stack as it lands (go on it, or take one off it)? Never a background write
+    (`auto`), a replay, a download's registration or Settings' store lines (`_set_options`): what Ctrl+Z takes stays
+    the newest saved behind them (`Writer.newest`)."""
+    return not (cmd.get("auto") or cmd.get("replay")) and cmd["op"] not in ("register", "set_options")
 
 
 def _journals(cmd):

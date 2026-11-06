@@ -1719,7 +1719,11 @@ def test_C3_a_drop_across_a_line_relays_the_rows_out_never_resets_and_keeps_the_
     lst.viewport().repaint()
     QApplication.processEvents()
     drawn = lst.delegate.renders - renders
-    assert drawn == (1 if line == "soon" else 0), drawn               # none drawn afresh but the row now in NOW
+    # none drawn afresh but the row now in NOW — and, across the top line, the rows whose files moved in or out of the
+    # top (their *Waiting* and stones read again at once, `drag.topped`: 3.0.1 item 12), each once
+    retopped = drag.topped(view, [by[k] for k in (e[1].key for e in model.entries if e[1] is not None)])[1]
+    assert bool(retopped) == (line == "top")
+    assert drawn == (1 if line == "soon" else len(retopped)), drawn
     assert calls(writer, "move")
 
 
@@ -2084,7 +2088,16 @@ class MarkWriter(FakeWriter):
         self._empty = []
 
     def newest(self):
+        """`Writer.newest`: the newest saved — None while a command waiting before Ctrl+Z's could change the Undo
+        stack (a move, a Done, an Undo); a background write (`auto`) never does (3.0.1 item 12)."""
+        if any(not (isinstance(c, Change) and c.kw.get("auto")) for c, _label in self._waiting):
+            return None
         return self.saved[-1] if self.saved else None
+
+    def background(self):
+        """A background write queued, as the cover scan's (`auto`): nobody's to undo, never among `saved`."""
+        self.calls.append(("set_cover", [], {"auto": True}))
+        self._waiting.append((Change("set_cover", [], auto=True), None))
 
     def stopped(self):
         return self.halted
@@ -2124,6 +2137,9 @@ class MarkWriter(FakeWriter):
     def _land(self, change, label):
         if isinstance(change, tuple):
             self._undo_now(change[1], label)
+            return
+        if change.kw.get("auto"):                                     # (the store's `on_reread`, no `on_saved`)
+            threading.Thread(target=self.on_reread, daemon=True).start()
             return
         if change.op in self.nothing:
             self._empty.append(label)
@@ -2263,6 +2279,43 @@ def test_a8_the_undo_of_a_saved_done_darkens_at_once_while_the_store_is_busy(wor
     writer.free()
     assert wait_until(lambda: writer.undone, 3) and _gone_quiet(win)
     assert not _lit(win, 4) and _stored(seed, row.episodes[0]) == 0
+
+
+def test_a8_ctrl_z_of_a_saved_done_darkens_at_once_behind_a_background_write(world):
+    """3.0.1 item 12 (seen 2026-10-31): Ctrl+Z of a saved Done while a background write waits ahead of it (the cover
+    scan's) — nothing queued can change what Ctrl+Z takes, so its stone goes dark in the press and the Undo the writer
+    lands is that Done's (named, never the newest at landing). Before: lit until the store reached the Undo."""
+    seed, win, writer = world(writer=MarkWriter)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert wait_until(lambda: writer.saved, 3) and _gone_quiet(win) and _lit(win, 4)
+    done = writer.saved[-1]
+    writer.stuck = True
+    writer.background()
+    QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert not _lit(win, 4) and writer.pending() == 2                 # behind the cover; its stone doesn't wait
+    assert calls(writer, "undo")[-1][2] == {"change": done}
+    writer.free()
+    assert wait_until(lambda: writer.undone == [done], 3) and _gone_quiet(win)
+    assert not _lit(win, 4) and _stored(seed, row.episodes[0]) == 0
+
+
+def test_a8_ctrl_z_behind_a_write_that_goes_on_the_undo_stack_waits_and_takes_that_write(world):
+    """What Ctrl+Z takes isn't known while a write that goes on the Undo stack waits before it (another Done, given
+    without a ticket of the window's): nothing is painted ahead, and the Undo takes that newer write as it lands —
+    never the saved Done before it (round 2, AD2-6's rule)."""
+    seed, win, writer = world(writer=MarkWriter)
+    row = rows_of(win)[4]
+    win.moves.done(row, row.episodes[0])
+    assert wait_until(lambda: writer.saved, 3) and _gone_quiet(win)
+    writer.stuck = True
+    other = rows_of(win)[5].episodes[0]
+    writer.set_watched([other.id], True)
+    QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert _lit(win, 4) and calls(writer, "undo")[-1][2] == {"change": None}
+    writer.free()
+    assert wait_until(lambda: len(writer.undone) == 1, 3) and _gone_quiet(win)
+    assert writer.undone[0].ids == [other.id] and _lit(win, 4) and _stored(seed, row.episodes[0]) == 1
 
 
 def test_a8_an_undo_the_store_refuses_lights_the_stone_again(world):
@@ -3274,6 +3327,49 @@ def _group_view(a_watched=2, b_watched=0, source=None):
                           ("now", 3, 11, ["白銀の書庫番 01 章.epub"], {0: {"source_type": "epub"}})])
     pieces = {10: {"id": 10, "title": None, "kind": "group"}, 11: {"id": 11, "title": None, "kind": "run"}}
     return vr.build(items, dict(tvr.WORKS), {"mine_line": 20}, pieces=pieces)
+
+
+def test_item12_the_drops_top_line_never_counts_a_video_waiting_for_its_subtitle():
+    """3.0.1 item 12: the drop's own top line (`lines_for`) and *in the top* (`topped`) count a file as the store does
+    (`view_rows.counts_toward_top`): a video waiting for its subtitle (SRC W1b) is never one of the top 20, so the line
+    falls where the reader's falls and the painted rows are the reader's."""
+    tvr.WORKS.clear()
+    tvr.work(1, SHOW_A)
+    waiting = {k: {"availability": "waiting", "rel_path": f"HighPriority/{SHOW_A} - {k + 1:02d}.mkv"} for k in (2, 5)}
+    items = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 30), waiting)])
+    view = vr.build(items, dict(tvr.WORKS), {"mine_line": 20})
+    top = next(ln for ln in view.lines if ln.kind == "top")
+    assert top.split == 22                              # 20 files that count, and the two waiting among them
+    assert drag.lines_for(view, view.rows) == tuple(ln for ln in view.lines if ln.kind in ("top", "soon"))
+    assert drag.topped(view, list(view.rows)) == (list(view.rows), [])
+
+
+def test_item12_a_done_painted_ahead_reads_the_top_and_draws_its_line_as_the_store_will():
+    """A Done that takes a file out of the top (keep-watched off) — the 21st comes in at once (*in the top*, as the
+    store's next build has it: `_with_marks` → `topped`); and with only 20 files that count after an un-watch, the line
+    the store draws (19 before: none) is drawn at once too (`lines_for` at the view's `mine_line`)."""
+    tvr.WORKS.clear()
+    tvr.work(1, SHOW_A)
+    items = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 25), {})])
+    view = vr.build(items, dict(tvr.WORKS), {"mine_line": 20})
+    first = view.rows[0].episodes[0]
+    ctl = type("C", (), {"expect_marks": {first.id: [True, None, None, view.rows[0].key]}})()
+    ctl._holding = lambda v: drag.DragController._holding(ctl, v)
+    shown = drag.DragController._with_marks(ctl, view)
+    stored = vr.build({**items, first.id: dict(items[first.id], watched=1)}, dict(tvr.WORKS), {"mine_line": 20})
+    assert [e.in_top for e in shown.rows[0].episodes] == [e.in_top for e in stored.rows[0].episodes]
+    assert shown.rows[0].episodes[20].in_top and shown.lines == tuple(
+        ln for ln in stored.lines if ln.kind in ("top", "soon"))
+    # 19 that count (one watched of 20): no line; the un-watch brings the 20th — the line at once
+    few = tvr.items_of([("now", 1, 10, tvr.eps(SHOW_A, 1, 20), {0: {"watched": 1}})])
+    view = vr.build(few, dict(tvr.WORKS), {"mine_line": 20})
+    assert not any(ln.kind == "top" for ln in view.lines)
+    first = view.rows[0].episodes[0]
+    ctl.expect_marks = {first.id: [False, None, None, view.rows[0].key]}
+    shown = drag.DragController._with_marks(ctl, view)
+    stored = vr.build({**few, first.id: dict(few[first.id], watched=0)}, dict(tvr.WORKS), {"mine_line": 20})
+    assert any(ln.kind == "top" for ln in stored.lines)
+    assert shown.lines == tuple(ln for ln in stored.lines if ln.kind in ("top", "soon"))
 
 
 def _show_group(win, **kw):

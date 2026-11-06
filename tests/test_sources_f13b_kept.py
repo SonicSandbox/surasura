@@ -299,7 +299,10 @@ def test_a_log_dropped_and_made_again_is_another_log_even_when_its_numbers_pass_
         _toggle(raw, y, seq - now - 1)                                  # up to the row before the mark's
         raw.execute("UPDATE items SET availability = 'waiting' WHERE id = ?", (item,))   # the mark's row: its item
         raw.commit()
-        _toggle(raw, y, 1)                                              # past the mark
+        raw.execute("UPDATE items SET availability = CASE availability WHEN 'missing' THEN 'available' ELSE 'missing' "
+                    "END WHERE id = ?", (y,))                           # past the mark (a change, whatever y was)
+        raw.commit()
+        assert raw.execute("SELECT seq FROM sqlite_sequence WHERE name = 'origin_changes'").fetchone() == (seq + 1,)
         assert raw.execute("SELECT item_id FROM origin_changes WHERE seq = ?", (seq,)).fetchone() == (item,)
         raw.close()
         _same(store.origins_kept(kept)[1], store)

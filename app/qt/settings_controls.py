@@ -188,7 +188,10 @@ def gem_path(centre, w, h, cut="toggle"):
 def paint_gem(p, centre, w, h, body, shade, facet, cut="toggle"):
     """A rough gem, flat and matte: its body, and two facet planes off its table (a point a little up and left of its
     centre) — the one facing the room's light (upper left) a step lighter, the one facing away (lower right) a step
-    darker."""
+    darker. A gem with no size (a toggle painted while its row is a few pixels tall, growing in) paints nothing:
+    never a division by its size inside a paint event."""
+    if w <= 0 or h <= 0:
+        return
     pts = gem_corners(centre, w, h, cut)
     n = len(pts)
     table = QPointF(centre.x() - w * 0.08, centre.y() - h * 0.10)

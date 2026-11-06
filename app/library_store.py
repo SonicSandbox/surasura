@@ -605,6 +605,12 @@ def _own_bumps(db_path):
 
 ROLES = ("window", "helper", "analyzer", "register", "reader", "connect")
 
+# A record whose `verdict` says its text is its video's own (`fill_track`'s: "extracted", Michi-ST; "transcribed",
+# no-subs): the expression `pairings_extracted` indexes — written the same wherever it is read, so the index serves the
+# read ({p}: the table's alias and a dot, or nothing)
+_EXTRACTED = ("(CASE WHEN json_valid({p}pairing) THEN json_extract({p}pairing, '$.verdict') END) "
+              "IN ('extracted', 'transcribed')")
+
 SCHEMA_SQL = (
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     """CREATE TABLE roots (
@@ -640,6 +646,7 @@ SCHEMA_SQL = (
     "CREATE INDEX items_missing ON items (size) WHERE availability = 'missing'",   # D2: a scoped sync's missing items
     "CREATE INDEX items_watched ON items (tier) WHERE watched != 0",        # the journey's stones (`STONES_EXIST_SQL`)
     "CREATE INDEX items_available_size ON items (size) WHERE availability = 'available'",   # K5: `items_of_size`
+    "CREATE INDEX items_waiting ON items (id) WHERE availability = 'waiting'",   # R6: `_waiting_videos`
     """CREATE TABLE trash (
       id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL, root_id INTEGER NOT NULL, rel_path TEXT NOT NULL,
       tier TEXT NOT NULL, prev_id INTEGER, next_id INTEGER,
@@ -662,6 +669,7 @@ SCHEMA_SQL = (
       pairing TEXT NOT NULL,
       paired_at TEXT NOT NULL)""",
     "CREATE INDEX pairings_item ON pairings (item_id)",   # an item's records (`_PREFERRED_ROW`, a show's episodes)
+    f"CREATE INDEX pairings_extracted ON pairings (item_id) WHERE {_EXTRACTED.format(p='')}",   # R6: `_track_items`
     """CREATE TABLE placement_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       item_id INTEGER NOT NULL,
@@ -694,12 +702,6 @@ ADDED_TABLES_SQL = (
       made_at  TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS made_lines_item ON made_lines (item_id)",
 )
-
-# A record whose `verdict` says its text is its video's own (`fill_track`'s: "extracted", Michi-ST; "transcribed",
-# no-subs): the expression `pairings_extracted` indexes — written the same wherever it is read, so the index serves the
-# read ({p}: the table's alias and a dot, or nothing)
-_EXTRACTED = ("(CASE WHEN json_valid({p}pairing) THEN json_extract({p}pairing, '$.verdict') END) "
-              "IN ('extracted', 'transcribed')")
 
 # Indexes added without a schema change (SRC perf): an index changes no row and an older Surasura reads the store as it
 # was; a new store makes them in SCHEMA_SQL, an existing one at its first open by a writer (`_added_indexes`)
@@ -10528,7 +10530,7 @@ def _store_track_items(self, held):
         # through `pairings_extracted` (R6): the origin range's index left aside (`+`), or the planner walks every origin
         for item_id, text in self.conn.execute(
                 f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_EXTRACTED.format(p='p.')} AND "
-                f"+p.content_key >= 'src:' AND +p.content_key < 'src;' AND NOT {_VERSION_ROW}"):
+                f"+p.content_key >= 'src:' AND +p.content_key < 'src;' AND NOT {_VERSION_ROW} ORDER BY p.content_key"):
             for k in _video_keys(_json_dict(text) or {}):
                 held["items"][k] = item_id
     return held["items"]

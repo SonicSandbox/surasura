@@ -378,6 +378,30 @@ def test_IK_11_finished_on_a_watched_arrival_offers_D14s_choice_and_take_out_fol
     assert got == ids and kw["keep_cards"] is False and kw["follows"] is not None
 
 
+@pytest.mark.parametrize("how", ["keep", "out"])
+def test_finished_on_an_arrival_follows_when_you_finish_something(world, how):
+    """Settings' *When you finish something* (Sonic 2026-11-05) holds for New arrivals' finish too: no question;
+    *Leave them out* gives the choice linked to the place (its Undo takes both back), *Keep its cards* nothing more."""
+    seed, win, writer = world()
+    win.services.settings.set({"finish_cards": how})
+    assert win.services.settings.flush(5)
+    open_tray(win)
+    row = tray_rows(win)[2]
+    ids, title = list(row.arrival.item_ids), row.arrival.title
+    row.click("icon")
+    card = win.toasts.card
+    words = strings.FINISHED_OUT[strings.DRAG_FINISHED] if how == "out" else strings.DRAG_FINISHED
+    assert card.base == words.format(title=title)
+    assert strings.DRAG_KEEP not in [b.text() for b in card.buttons if b.isVisible()]
+    if how == "out":
+        assert wait_until(lambda: calls(writer, "finish"), 5)
+        _op, got, kw = calls(writer, "finish")[0]
+        assert got == ids and kw["keep_cards"] is False and kw["follows"] is not None
+    else:
+        settle()
+        assert calls(writer, "finish") == []
+
+
 def test_IK_11_the_menus_finished_offers_the_same_choice(world):
     seed, win, writer = world()
     open_tray(win)

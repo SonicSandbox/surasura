@@ -348,6 +348,8 @@ NOT_AN_INSTALL = {
                                              "its path): one per video, kept in a job's pick, which no zip takes",
     ("app/connect/lineup.py", "spot_key"): "one subtitle's bytes with its audio's size and time: one per pair, kept "
                                           "in the spot-check's record and its run folder's name",
+    ("app/connect/runner.py", "part_book"): "one EPUB's path: the folder of that book's copy, one per book, never "
+                                          "one install's code",
     ("app/connect/media_names.py", "fingerprint"): "a subtitle line's words",
     ("app/connect/media_names.py", "line_name"): "a line's key, times and fingerprint",
     ("app/library_store.py", "line_fingerprint"): "a subtitle line's words",

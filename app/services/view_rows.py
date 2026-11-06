@@ -291,11 +291,17 @@ STRINGS = {
     "no_subs": "No subtitles yet", "no_subs_n": "No subtitles yet · {n}",
     # alpha 4 M1: a book or a text, while Anki Miner reads none — quiet, nothing to press (never its window)
     "books_wait": "Waits for Anki Miner",
-    "tip_books_wait": "Anki Miner makes cards from videos only for now. Once a later update lets it read books and "
-                      "texts, Connect makes these cards by itself: nothing to do meanwhile.",
-    # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Anki Miner mines audio
-    "tip_audio_wait": "Anki Miner makes cards from videos only for now. Once a later update lets it mine audio, "
-                      "Connect makes these cards by itself: nothing to do meanwhile.",
+    # Michi-U (alpha 9.1 try: the tip said "once a later update lets it read books" when 3.11 already did): what's
+    # true now (`_wait_tip`) — the update that opens it and where its button is; else the Anki Miner it waits for
+    "tip_wait_update": "Needs Anki Miner {version} to make cards from {what}. Connect makes these cards by itself "
+                       "once it's updated\n• Update it in Needs you",
+    "tip_books_wait": "Waits for an Anki Miner that reads books and texts, {version} or later. Connect makes these "
+                      "cards by itself once it finds one",
+    # A4M1-3 (lean taken, PROVISIONAL): an audiobook's or a podcast's the same way, until Surasura mines audio
+    "tip_audio_wait": "This Surasura doesn't make cards from audio yet: once an update of Surasura does, Connect makes "
+                      "these cards by itself. Nothing to do meanwhile.",
+    "tip_audio_wait_miner": "Waits for an Anki Miner that mines audiobooks and podcasts, {version} or later. Connect "
+                            "makes these cards by itself once it finds one",
     # Michi-AB (Z-16, PROVISIONAL): an audiobook with no text while Anki Miner mines audio — it waits on its text
     "tip_heard_wait": "Nothing to mine here yet: it holds no words until it has a text — a subtitle file beside its "
                       "audio, or its book.",
@@ -803,10 +809,14 @@ def status_of(eps, word, line_n):
                                   for e in ready + heard):
         # alpha 4 M1 / A4M1-3: only books, texts or audio left to mine while Anki Miner mines none of them — nothing to
         # press: Connect sets their jobs aside, and mines them by itself once it can (no *Mine*, no *Waiting*, never
-        # Anki Miner's window). An audiobook's own item with no text (Hon, H-7) waits so whatever Anki Miner mines
-        audio = all(e.text == "audio" for e in ready + heard)
-        tip = "tip_heard_wait" if audio and _mines("audio") else "tip_audio_wait" if audio else "tip_books_wait"
-        st = Status("books", STRINGS["books_wait"], STRINGS[tip], "faint")
+        # Anki Miner's window). An audiobook's own item with no text (Hon, H-7) waits so whatever Anki Miner mines;
+        # the rest say what's true (Michi-U, `_wait_tip`)
+        if ready:
+            tip = _wait_tip({e.text for e in ready}, line_n is not None, looked=True)   # (`_mines` just asked)
+        else:                                       # only its own item, no text: an update makes no card of it
+            from app.connect import anki_miner
+            tip = STRINGS["tip_heard_wait"] if anki_miner.mines("audio") else _wait_tip({"audio"}, line_n is not None)
+        st = Status("books", STRINGS["books_wait"], tip, "faint")
     elif any(e.in_top for e in ready):
         label = STRINGS["waiting"] if not k else STRINGS["waiting_kn"].format(k=k, n=n)
         st = Status("waiting", label, STRINGS["tip_waiting"].format(line=line_n), "dim")
@@ -895,6 +905,23 @@ def _waits_for(item, media):
     "books", "audio", else False. Alpha 4 M1 / A4M1-3."""
     from app.connect import library
     return library.waits_for(item, media) or False
+
+
+def _wait_tip(kinds, connect=True, looked=False):
+    """Michi-U: the *Waits for Anki Miner* tip for items waiting on `kinds` ("books", "audio") — what's true now, by
+    Connect's one rule (`am_release.opens`): the approved update that opens them, Update in *Needs you* (its line,
+    `services.needs`' MINER_UPDATE, reads the same rule — and shows only while Connect is on: `connect`, the row's
+    `line_n` known); else the Anki Miner they wait for; audio before this Surasura mines it, that."""
+    from app.connect import am_release, anki_miner
+    kinds = [k for k in anki_miner.WAITS if k in kinds] or ["books"]
+    opened = [k for k in kinds if am_release.opens(k, looked)] if connect else []
+    if opened:
+        return STRINGS["tip_wait_update"].format(version=am_release.APPROVED, what=" and ".join(
+            am_release.KIND_WORDS[k] for k in opened))
+    if kinds == ["audio"]:
+        return STRINGS["tip_audio_wait_miner" if anki_miner.mines("audio") else "tip_audio_wait"].format(
+            version=am_release.APPROVED)
+    return STRINGS["tip_books_wait"].format(version=am_release.APPROVED)
 
 
 def _mines(kind):
@@ -1317,6 +1344,7 @@ class RowCache:
         self.same_global = False                      # set by `begin`: nothing global moved since the last build
         self._glob = self._cards = None
         self._connect = None                          # P4.1 L2: the Connect feed's items the last build read
+        self._miner = None                            # Michi-U: the Anki Miner Connect knew of (`Feed.miner`)
         self._next = {}
         self.guess_seen, self.guess_counts = {}, {}   # `_Guesses`: each row counted once, kept while it is the same object
         # the ids changed since the counts were last brought up to date, kept until a build counts (a build with no
@@ -1332,8 +1360,13 @@ class RowCache:
         else:
             self.guess_pending |= set(changed)
 
-    def begin(self, version, cards=None, mining=None, in_top=None, line_n=None, changed=None, connect=None):
-        """`changed`: the item ids the numbers changed since the cache's version (None: unknown — every row again)."""
+    def begin(self, version, cards=None, mining=None, in_top=None, line_n=None, changed=None, connect=None,
+              miner=None):
+        """`changed`: the item ids the numbers changed since the cache's version (None: unknown — every row again).
+        `miner` (Michi-U): the Anki Miner Connect knows of (`feed.Feed.miner`) — moved (an update followed), every
+        row is built again once: what *Waits for Anki Miner* says, and whether a book can be mined, read it."""
+        if miner != self._miner:
+            self.rows, self._miner = {}, miner
         if version != self.version:
             changed = None if changed is None else set(changed)
             self.rows = {} if changed is None else \
@@ -1946,7 +1979,8 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
             if r["id"] == last:
                 break
     if cache is not None:
-        cache.begin(cache_version, cards, mining, in_top, line_n, numbers_changed, feed_items)
+        cache.begin(cache_version, cards, mining, in_top, line_n, numbers_changed, feed_items,
+                    getattr(connect, "miner", None))
     if cache is not None:
         cache.note_changed(changed)
     guessed = _Guesses(items, cache)

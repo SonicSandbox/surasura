@@ -36,6 +36,7 @@ import importlib.util
 import json
 import os
 import threading
+import time
 
 from app import ankiconnect_addon
 
@@ -114,6 +115,86 @@ def note_anki_miner(info):
         return False
     record["anki_miner"] = info
     return write_record(record)
+
+
+# Michi-U (alpha 9.1 try, Sonic: "i updated anki miner, but there was no update in surasura for the books ... after i
+# stepped away it began working"): an Anki Miner updated is followed at once (`follow_install`)
+FOLLOW_RETRY_S = 120            # a look that didn't find the new version is tried again after this,
+FOLLOW_TRIES = 3                # this many looks at most a version (Connect pointed at another Anki Miner: no loop)
+_FOLLOWED = {}                  # the installer's version this process last followed: {"version", "at", "ok", "tries"}
+_FOLLOWING = threading.Lock()   # one follow at a time
+
+
+def _record_app():
+    return str(((read_record().get("anki_miner") or {}).get("app")) or "")
+
+
+def to_follow(installed):
+    """Is `installed` (the installer's version, `anki_miner.installed_version` — `status.stamp`'s last part) an Anki
+    Miner this process should look at again: one with digits, not the one it last followed (or that one, its look
+    not taken, FOLLOW_RETRY_S on), and newer than the one the setup record holds (or the record holds none) — an
+    update, never a downgrade or a Connect pointed at another Anki Miner (review r1 #4)? In memory first; the record
+    read only for a version not followed yet. Never raises."""
+    try:
+        from app.connect import am_release
+        if not am_release.known(installed):
+            return False
+        last = _FOLLOWED
+        if last.get("version") == installed and (last.get("ok") or last.get("tries", 0) >= FOLLOW_TRIES
+                                                 or time.monotonic() - last["at"] < FOLLOW_RETRY_S):
+            return False
+        app = _record_app()
+        if am_release.known(app) and am_release._key(app) >= am_release._key(installed):
+            _FOLLOWED.update(version=installed, at=time.monotonic(), ok=True, tries=0)
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def follow_install(settings, language, installed=None, force=False, kick=True):
+    """An Anki Miner updated — by hand (its own installer) or by *Update* in *Needs you* — followed at once (Michi-U):
+    when the installer's version (`installed`, else read now) is `to_follow`, or `force` (the *Update*'s end), the
+    checks run again with the record kept as `checks` keeps it (Connect set up: `anki_miner.mines_now` then reads the
+    new Anki Miner, so the rows' *Waits for Anki Miner* and *Needs you*'s line go), and Connect is kicked (`kick`:
+    started, or woken — its next look queues the titles set aside for that Anki Miner again, `runner._books_aside`).
+    Once per version a process, again after FOLLOW_RETRY_S while the look didn't find it (Anki Miner busy; FOLLOW_TRIES
+    at most). Blocking:
+    a worker's or `follow_in_background`'s thread. One at a time (another meanwhile: False). -> True when the checks
+    ran. Never raises."""
+    if not _FOLLOWING.acquire(blocking=False):
+        return False
+    try:
+        from app.connect import am_release, anki_miner
+        installed = anki_miner.installed_version() if installed is None else installed
+        if not (force or to_follow(installed)):
+            return False
+        tries = _FOLLOWED.get("tries", 0) + 1 if _FOLLOWED.get("version") == installed else 1
+        _FOLLOWED.update(version=installed, at=time.monotonic(), ok=False, tries=tries)
+        result = checks(settings, language)
+        app = str((result.get("anki_miner") or {}).get("app") or "")
+        _FOLLOWED["ok"] = bool(am_release.known(app) and am_release.known(installed)
+                               and am_release._key(app) >= am_release._key(installed))
+        if kick:
+            from app.connect import kick as kicking
+            kicking.kick(settings)
+        return True
+    except Exception:
+        return False
+    finally:
+        _FOLLOWING.release()
+
+
+def follow_in_background(settings, language, installed):
+    """`follow_install` on a daemon thread when `installed` is `to_follow` (in memory, a small read) -> the thread, or
+    None. The window's Connect feed calls it at each look (`feed.Provider`): a hand update is followed within seconds,
+    with no Settings visit."""
+    if _FOLLOWING.locked() or not to_follow(installed):
+        return None
+    t = threading.Thread(target=follow_install, args=(settings, language, installed), daemon=True,
+                         name="anki-miner-follow")
+    t.start()
+    return t
 
 
 def write_record(record):

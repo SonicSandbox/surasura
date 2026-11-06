@@ -441,7 +441,9 @@ def test_an_audiobook_with_no_text_still_waits_and_its_hover_says_what_it_waits_
     from types import SimpleNamespace
     ep = SimpleNamespace(id=5, media_word="audio", text="audio", waiting=True, rel_path="Library/x (audio)/01.mp3",
                          cards=0, mined=False, missing=False, removed=False, in_top=True, mining=False, deleted=False)
-    for features, tip in ((["reading"], "tip_audio_wait"), (AUDIO_311, "tip_heard_wait")):
+    # Michi-U: with an Anki Miner that doesn't mine audio too, its text is what it waits on first — never an update
+    # (that makes no card of it) nor "Anki Miner can't mine audio"
+    for features, tip in ((["reading"], "tip_heard_wait"), (AUDIO_311, "tip_heard_wait")):
         _record(features)
         st, _mark = view_rows.status_of([ep], "audio", 20)
         assert (st.kind, st.tip) == ("books", view_rows.STRINGS[tip])

@@ -31,7 +31,7 @@ from app.connect.ledger import Ledger
 from app.services import view_rows
 from tests.connect.test_anki_miner import batch, words  # noqa: F401  (fixtures)
 
-QUICK = 4.0                 # seconds: the grace (1.5 s), a poll (1 s) and the program's end, with room to spare
+QUICK = 4.0                 # seconds from the press: the grace (1.5 s), a poll and the program's end, with room to spare
 
 
 def _deaf_run(fake_miner, monkeypatch, progress, deaf=30, app="3.11.0", **plan):
@@ -43,6 +43,18 @@ def _run_dir(fake_miner):
     return fake_miner.run_files()[0]["run_dir"]
 
 
+def _press_once_under_way(fake_miner):
+    """(should_stop, pressed): Stop pressed once the mine call is under way, `pressed` its time. A Stop is timed
+    from its press: the program's starts before it (a slow runner's seconds) are no part of it (flakes-2026-11-05 #2)."""
+    pressed = []
+
+    def should_stop():
+        if not pressed and "mine" in fake_miner.commands():
+            pressed.append(time.monotonic())
+        return bool(pressed)
+    return should_stop, pressed
+
+
 # --- before its card stage: ended within seconds, nothing reached Anki --------------------------------------------- #
 @pytest.mark.parametrize("progress, media", [([[1, 5, 0, 0]], True), ([[3, 5, 2, 6], [4, 5, 0, 0]], True),
                                              ([], False)],
@@ -50,10 +62,10 @@ def _run_dir(fake_miner):
 def test_a_stop_anki_miner_cant_hear_before_its_card_stage_ends_it_within_seconds(batch, fake_miner, words,  # noqa: F811
                                                                                  monkeypatch, progress, media):
     _deaf_run(fake_miner, monkeypatch, progress, media=media)
-    began = time.monotonic()
+    should_stop, pressed = _press_once_under_way(fake_miner)
     with pytest.raises(anki_miner.AnkiMinerError) as raised:
-        batch(should_stop=lambda: "mine" in fake_miner.commands())      # pressed once the run is under way
-    took = time.monotonic() - began
+        batch(should_stop=should_stop)
+    took = time.monotonic() - pressed[0]
     assert took < QUICK, f"Stop took {took:.1f} s"
     assert raised.value.kind == "cancelled" and raised.value.stopped is True, \
         "the batch the runner reads back by its tag: never a crash, never counted as Anki Miner failing"

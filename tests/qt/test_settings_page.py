@@ -44,6 +44,9 @@ ALL_ON = {
     "connect_enabled": True, "enable_junban": True, "strategy": "coverage", "enable_koe": True,
     "anki_sync_decks": {"ja": ["日本語::コア2k"], "zh": ["中文::HSK"]},
     "connect_backlog_cap": {"ja": 40, "zh": 25},
+    # *Videos open in* / *Books open in*: a program kept, so picking "program" is the catalog's one key (no picker)
+    "open_video_program": "C:\\Program Files\\mpv\\mpv.exe",
+    "open_book_program": "C:\\Program Files\\Calibre2\\ebook-viewer.exe",
     "connect_video_folders": {"ja": ["E:\\アニメ\\ひとり・で・ぽっぷ！"], "zh": ["D:\\视频\\中文"]},
 }
 NEW_FOLDER = "D:\\動画\\日本語"
@@ -112,6 +115,15 @@ def _full_motion():
     mode.set_setting("full")
     yield
     mode.set_setting(was)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_file_dialog(monkeypatch):
+    """A file dialog left unpatched would wait for a person (on the tests' hidden desktop): it fails at once instead."""
+    def refused(*_a, **_k):
+        raise AssertionError("a real file dialog opened: patch QFileDialog in the test")
+    monkeypatch.setattr(sp.QFileDialog, "getOpenFileName", refused)
+    monkeypatch.setattr(sp.QFileDialog, "getExistingDirectory", refused)
 
 
 @pytest.fixture(autouse=True)

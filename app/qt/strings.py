@@ -212,6 +212,8 @@ def store_reason(reason):
 
 
 PLAY_FAILED = "Couldn't open {name}: {why}"
+PLAY_NOT_A_PROGRAM = "{program} isn't a program ▶ can start (Settings › Content: choose its .exe)"
+PLAY_NO_PROGRAM = "{program} isn't there any more (Settings › Content › Videos open in / Books open in)"
 GOAL_ACCESSIBLE = "{name}: {line}"
 ROWS_PCT = "{pct}%"
 ROWS_MORE_CHIP = "+{n}"
@@ -1736,6 +1738,13 @@ PICKS_DONE = {
 }
 PICKS_FINISHED = "{title} finished · their cards stay put"
 PICKS_TAKEN_OUT = "{title}: their new cards are out of your order"
+# Settings' *When you finish something* = *Leave them out*: the finish toast says so, no question (its Undo takes both
+# back) — each finish toast's words and their *out* twin (`DragController._finish`)
+FINISHED_OUT = {
+    DRAG_FINISHED: "{title} finished · its new cards are out of your order",
+    PICKS_FINISHED: "{title} finished · their new cards are out of your order",
+    DONE_FINISHED: "✓ {title} finished · its new cards are out of your order",
+}
 PICKS_REMOVE_ASK = "Remove {title}?"
 PICKS_REMOVE_BODY = "Their {n} files go to the trash for 30 days. Undo puts them back where they were."
 PICKS_REMOVE_YES = "Remove {n} files"

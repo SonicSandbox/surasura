@@ -39,6 +39,7 @@ change writes are `settings_catalog`'s; the page paints it and hands every chang
 import bisect
 import math
 import os
+import sys
 import time
 from collections import Counter
 from contextlib import contextmanager
@@ -447,7 +448,9 @@ class RowView(QWidget):
             line.addWidget(self.slot)
             line.addWidget(self.help)
             self.stacked = True
-        elif row.kind == "links":
+        elif row.kind == "links" or row.id in catalog.STACKED:
+            if row.kind != "links":               # the choices packed from the left at their own size, never spread
+                slot.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             line = QVBoxLayout(self)
             self.words = QVBoxLayout()
             self.words.addLayout(self.title)
@@ -501,8 +504,8 @@ class RowView(QWidget):
         if self.row.kind == "links":
             self._arrange_links(self.width() if width is None else width)
             return
-        if self.row.kind == "slider":
-            return
+        if self.row.kind == "slider" or self.row.id in catalog.STACKED:
+            return                                      # (stacked always: the words, then the control under them)
         width = self.width() if width is None else width
         stacked = width < self.side_by_side()
         if stacked == self.stacked:
@@ -579,7 +582,8 @@ class RowView(QWidget):
             logos.show(self)
         if self.row.kind == "links":                                    # a new size: its buttons measured again
             self._arrange_links(self.width())
-        elif self.row.kind != "slider" and self.stacked is not None:   # a new text size: asked again (a row not
+        elif self.row.kind != "slider" and self.row.id not in catalog.STACKED and self.stacked is not None:
+            #                                                           a new text size: asked again (a row not
             self.stacked = None                                         # yet laid out is asked at its first resize)
             self.arrange()
 
@@ -1030,6 +1034,8 @@ class SettingsPage(QWidget):
         control.changed.connect(lambda v, r=row, c=control: self._changed(r, v, c))
         view.controls.append(control)
         view.slot.layout().addWidget(control)
+        if row.id in catalog.PROGRAM_ROWS:       # *Videos open in* / *Books open in*: the program's picker
+            self._program_controls(view, row, control, settings)
         if kind == "slider":                     # *Automatic* beside the slider: the row's other key
             words = QLabel(view.slot)
             words.setObjectName("settingsaffix")
@@ -1052,7 +1058,7 @@ class SettingsPage(QWidget):
             opts = list(catalog.options(row, settings, self.language))
             if value not in [v for v, _l, _line in opts]:
                 opts.append((value, str(value), ""))       # a value no option names (hand-edited): shown, kept
-            tips = S.OPTION_TIPS.get(row.id, {})
+            tips = catalog.option_tips(row, settings)
             if kind == "cards":
                 control = sc.Cards([(v, label, line) for v, label, line in opts], value, tooltip=tip, name=name)
             else:
@@ -1106,6 +1112,10 @@ class SettingsPage(QWidget):
             view.set_words(row.label, catalog.help_line(row, settings, self.language))
         values = [value[row.keys[0]], value[row.keys[1]]] if row.kind == "slider" else [value]
         moved = False
+        if row.id in catalog.PROGRAM_ROWS:                 # the program's name on its choice, *Change…* once kept
+            label, tip = catalog.program_label(row, settings)
+            moved = view.controls[0].set_label("program", label, tip)
+            view.change.setVisible(bool(catalog.program(row, settings)))
         for control, v in zip(view.controls, values):
             if control.value() == v:
                 continue
@@ -1155,6 +1165,45 @@ class SettingsPage(QWidget):
             windows.launch(self.shell, op)
         else:
             self.door_asked.emit(name)
+
+    # --- *Videos open in* / *Books open in*: the program chosen (Sonic 2026-11-05) --------------------------------- #
+    def _program_controls(self, view, row, control, settings):
+        """A program row's *Change…* beside its choice (shown once a program is kept), and its "program" choice taken
+        here while none is kept: the picker first (`takes`)."""
+        change = sc.Door(S.PROGRAM_CHANGE, tooltip=S.PROGRAM_CHANGE_TIP, name=S.PROGRAM_CHANGE, parent=view.slot)
+        change.clicked.connect(lambda _c=False, r=row: self._pick_program(r))
+        view.slot.layout().addWidget(change)
+        view.change = change
+        change.setVisible(bool(catalog.program(row, settings)))
+        self.takes[row.id] = lambda value, r=row: self._take_program(r, value)
+
+    def _take_program(self, row, value):
+        """`takes`' hook: "program" picked while no program is kept opens the picker (-> True: handled here); any other
+        change is the catalog's to write (-> False)."""
+        if value != "program" or catalog.program(row, self._settings()):
+            return False
+        return self._pick_program(row)
+
+    def _pick_program(self, row):
+        """*Choose a program…* / *Change…*: a program picked (the system's own file dialog, as the folders' is), then
+        both keys written in one change — the choice "program" and the program's path. Cancelled: nothing written, the
+        choice shows the settings' value again. -> True (the change is handled here)."""
+        settings = self._settings()
+        kept = catalog.program(row, settings)
+        path, _filter = QFileDialog.getOpenFileName(self, S.PROGRAM_PICK_TITLE[row.id],
+                                                    os.path.dirname(kept) if kept else "",
+                                                    S.PROGRAM_FILTER.get(sys.platform, ""))
+        from app.services import play
+        if path and not play.program_allowed(path):        # (a name typed past the filter: a .bat, a .lnk)
+            applog.log("settings", f"{row.id}: not a program ▶ can start: {os.path.basename(path)}")
+            path = ""
+        if path:
+            changes = {row.keys[0]: "program", catalog.PROGRAM_ROWS[row.id]: os.path.normpath(path)}
+            self.store.set({k: v for k, v in changes.items() if catalog.value_of(settings, k) != v})
+        view = self.rows.get(row.id)
+        if view is not None:
+            self._show_value(view, self._settings())        # cancelled: back to what is saved; picked: shown at once
+        return True
 
     def _add_folder(self, control):
         folder = QFileDialog.getExistingDirectory(self, S.FOLDER_PICK_TITLE)

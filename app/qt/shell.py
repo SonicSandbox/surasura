@@ -579,12 +579,18 @@ class Services:
         re-renders and re-analyses nothing (seconds) — asked once — until no Generate runs or waits. Never longer than
         `wait`, and never past the quit. A journey whose analysis is stale too is opened as it is: a full Generate is
         the user's to ask (the Generate button's mark says so) -> True then (its new look waits for that Generate); with
-        the duties not made yet (the first moments) it opens as it is too, -> None."""
+        the duties not made yet (the first moments) it opens as it is too, -> None.
+
+        A2 (Sonic 2026-11-06): it never waits for a background run (`journey_brought`): a journey owed only to moves is
+        asked for now and opens at once as it is, and so does one a background Generate is bringing in (the ● dot says
+        its sentences are catching up) -> None."""
         from app.services import generate as generate_module
         busy = (generate_module.QUEUED, generate_module.RUNNING, generate_module.CANCELLING)
         deadline = time.monotonic() + wait
         asked = False
         while not self.closing.is_set() and self.controller is not None and time.monotonic() < deadline:
+            if self.journey_brought("journey"):
+                return None
             if self.controller.state().state in busy:
                 self.closing.wait(0.1)                   # a run in flight or waiting: its end, then look again
                 continue
@@ -601,6 +607,37 @@ class Services:
             if asked or self.generate() is None:         # asked once: a run that ended and left it stale opens as is
                 return
             asked = True
+
+    def journey_brought(self, reason):
+        """(Any thread; returns at once.) Whether the journey is being brought in by itself (A + A2): a catch-up owed
+        only to moves — asked for now, for `reason` (`Replan.journey_wanted`) — or a background Generate in flight that
+        brings it (`Replan.journey_background`). The one rule a reader of the journey asks: *Journey ↗* then opens at
+        once (`draw_journey`), an export waits for it (`journey_for_reading`). False before the duties are made."""
+        replan = self.replan
+        if replan is None:
+            return False
+        try:
+            return bool(replan.journey_wanted(reason) or replan.journey_background())
+        except Exception as e:
+            applog.log("shell", f"the journey's catch-up: {e}")
+            return False
+
+    def journey_for_reading(self, reason, wait=JOURNEY_DRAW_WAIT):
+        """(A worker.) A reader of the journey's lists that has no ● of its own (an export: the file it writes is the
+        lists as they are): when the journey is being brought in (`journey_brought`), waited for until it has landed —
+        no catch-up owed and no Generate in flight — never longer than `wait`, never past the quit. Else at once."""
+        from app.services import generate as generate_module
+        if not self.journey_brought(reason):
+            return
+        busy = (generate_module.QUEUED, generate_module.RUNNING, generate_module.CANCELLING)
+        deadline = time.monotonic() + wait
+        while not self.closing.is_set() and time.monotonic() < deadline:
+            replan, controller = self.replan, self.controller
+            if replan is None or controller is None:
+                return
+            if not replan.journey_catching_up() and controller.state().state not in busy:
+                return
+            self.closing.wait(0.1)
 
     def level(self):
         """(A worker.) The level chip's (band, automatic) (`automation.level`)."""

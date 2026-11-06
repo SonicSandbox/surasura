@@ -173,8 +173,14 @@ def ready_to_export(export):
     return exports.ready(export)
 
 
-def run_export(export, language, fmt, dest):
+def run_export(export, language, fmt, dest, services=None):
+    """(A worker.) One export; `services` (the window's): a journey being brought in — moves only, or a background
+    Generate on its way (Sonic 2026-11-06, A) — is waited for first (`Services.journey_for_reading`), so the file holds
+    the lists of the order as it stands."""
     from app import exports
+    wait = getattr(services, "journey_for_reading", None)
+    if wait is not None:
+        wait("export")
     if export == "sentence_list":
         return exports.sentence_list(language, dest)
     return getattr(exports, export)(language, fmt, dest)
@@ -1091,7 +1097,7 @@ class Live(QObject):
         if not path.lower().endswith(ext):
             path += ext
         self._press(row_id, "export", run_export, export, self.page.language, fmt, os.path.normpath(path),
-                    busy=S.EXPORT_RUNNING.format(name=catalog.ROW[row_id].label),
+                    self.services, busy=S.EXPORT_RUNNING.format(name=catalog.ROW[row_id].label),
                     then=lambda outcome: self._exported(row_id, outcome),
                     failed=lambda info: self._exported(row_id, None, info))
 

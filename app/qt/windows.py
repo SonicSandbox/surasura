@@ -578,6 +578,9 @@ def _arrived(shell, relay, counts, then=None, quiet=False):
 
 def _open_preview(shell):
     from modules.youtube_downloader import open_preview
+    services = getattr(shell, "services", None)
+    if services is not None:
+        services.journey_brought("youtube-preview")   # A: it scores against the list: a catch-up owed to moves now
     return open_preview(shell)
 
 

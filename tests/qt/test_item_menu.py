@@ -1510,7 +1510,7 @@ def test_alt_up_and_down_nudge_the_focused_row(world):
     row = rows_of(win)[4]
     QApplication.sendEvent(lst, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier))
     assert calls(writer, "nudge")[-1] == ("nudge", drag.ids_of(row), {"direction": "up"})
-    win.moves._let_go()
+    win.moves._let_go(now=True)
     win.show_library(win.services.library.view())
     lst.setCurrentIndex(lst.model().index(4, 0))
     row = rows_of(win)[4]

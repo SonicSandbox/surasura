@@ -202,6 +202,8 @@ DEATHS = {0xC0000005: "an access violation", 0xC0000409: "a fail-fast (a guarded
 def death(code):
     """The words for a pytest process's exit `code` when a Windows status ended it (it never finished), else None."""
     status = code & 0xFFFFFFFF if isinstance(code, int) and code >= 0 else 0     # (negative: a POSIX signal)
+    if status == 3:                     # pytest's own internal error prints INTERNALERROR lines; abort() prints nothing
+        return "exit 3: abort() (Qt's qFatal, a fatal Python error) unless INTERNALERROR lines are above"
     if status < 0x40000000:
         return None
     return f"the process died: exit 0x{status:08X}, {DEATHS.get(status, 'a Windows status')}"

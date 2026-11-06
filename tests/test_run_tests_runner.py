@@ -400,7 +400,8 @@ def test_pr_yml_runs_every_shard_once_and_one_tests_job_reads_them_all():
 
 
 @pytest.mark.parametrize("code, words", [(3221225477, "exit 0xC0000005, an access violation"),
-                                         (3221226505, "exit 0xC0000409, a fail-fast"), (3221225786, "exit 0xC000013A")])
+                                         (3221226505, "exit 0xC0000409, a fail-fast"), (3221225786, "exit 0xC000013A"),
+                                         (3, "exit 3: abort()")])
 def test_a_shard_whose_pytest_died_says_so_in_hex_never_only_127(tmp_path, monkeypatch, capsys, code, words):
     """GitHub's bash shows a pytest process that died by a Windows status as 127, which names nothing (#285's core
     4/4, flakes-2026-11-05 #5): the shard says how it died, and its exit code is still the child's (red)."""
@@ -410,6 +411,6 @@ def test_a_shard_whose_pytest_died_says_so_in_hex_never_only_127(tmp_path, monke
     assert words in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("code", [0, 1, 2, 5, 75, 127, 255])
+@pytest.mark.parametrize("code", [0, 1, 2, 4, 5, 75, 127, 255, -11])
 def test_pytests_own_exit_codes_are_no_death(code):
     assert run_tests.death(code) is None

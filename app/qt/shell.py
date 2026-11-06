@@ -1993,6 +1993,9 @@ class ShellWindow(QMainWindow):
         self.phase.follow_presses(self.presses)
         # Alpha 3 (Sonic 2026-10-24, PROVISIONAL): a circle's press opens its settings — 順's only while Junban is here
         self.phase.opened.connect(self._circle_pressed)
+        self.phase.asked.connect(self._circle_asked)       # try a9.1: its right-click's Show · Stop · Settings
+        self.phase.stops = self._circle_stops
+        self.phase.can_show = self._circle_shows
         self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
         bridge.run_in_worker(_junban_here, then=self._junban_found)
         row.addWidget(self.phase)
@@ -2256,15 +2259,89 @@ class ShellWindow(QMainWindow):
             self.needs_you.reveal_first(go.at)            # (at its card, not only the page)
             return
         if go is not None and go.place == "junban":
-            from app.qt import windows
-            opener = next((op for op in windows.OPENERS if op.name == "junban"), None)
-            if opener is not None:
-                win = windows.launch(self, opener)
-                if win is not None and hasattr(win, "highlight"):
-                    win.highlight(go.at)
+            if self._open_junban(go.at):
                 return
+        if self.phase.showing(circle) and self._show_circle(circle):
+            return                                         # try a9.1: running, where it can be seen
         if circle in self.phase.opens:
             self.open_setting(phase_strip.SETTINGS[circle])
+
+    def _open_junban(self, at=None):
+        """順's window, opened or brought to the front — at its control `at` (a7), if any. -> whether it opened."""
+        from app.qt import windows
+        opener = next((op for op in windows.OPENERS if op.name == "junban"), None)
+        if opener is None:
+            return False
+        win = windows.launch(self, opener)
+        if win is not None and at is not None and hasattr(win, "highlight"):
+            win.highlight(at)
+        return True
+
+    # --- try a9.1 (Sonic's report: "junban and anki miner are spinning but i don't know what they are doing") ------- #
+    def _circle_asked(self, circle, what):
+        """A circle's right-click menu: *Show* where its work is seen (else its settings), *Stop* it, its *Settings*."""
+        if what == "show" and self._show_circle(circle):
+            return
+        if what == "stop":
+            self._stop_circle(circle)
+            return
+        if circle in self.phase.opens:
+            self.open_setting(phase_strip.SETTINGS[circle])
+
+    def _mining_now(self):
+        """The episode Connect is making cards for, as its feed's last look has it (in memory, no read): (file id, its
+        feed Item), or None."""
+        try:
+            items = connect_feed(self.language, self.services.settings).latest().items or {}
+        except Exception:
+            return None
+        return next(((i, it) for i, it in items.items() if it.kind == "mining"), None)
+
+    def _circle_shows(self, circle):
+        """Whether `circle`'s work has a place to be seen now: an episode Connect is mining; 順's window (Junban here)."""
+        if circle == phase_service.JUNBAN:
+            return phase_service.JUNBAN in self.phase.opens
+        return circle == phase_service.MINER and self._mining_now() is not None
+
+    def _show_circle(self, circle):
+        """Where `circle`'s running work is seen: Anki Miner — the title it makes cards for, in its list, washed (its
+        Stop is on that row); 順 — its window. -> whether it showed something."""
+        if circle == phase_service.JUNBAN:
+            return self._open_junban()
+        if circle != phase_service.MINER:
+            return False
+        got = self._mining_now()
+        if got is None:
+            return False
+        for name in ("current", "finished"):
+            lst = getattr(self.page_widgets.get(name), "list", None)
+            key = lst.key_of(got[0]) if hasattr(lst, "key_of") else None
+            if key is not None:
+                self.search.show_row(name, key)
+                return True
+        self.show_tab("current")
+        return True
+
+    def _circle_stops(self, circle):
+        """Whether `circle`'s work can be stopped now: Anki Miner's episode before its cards are named (its row's
+        *Stop*, `actions.stoppable`), else a job of the circle's a Stop may cancel (`phase.stoppable`)."""
+        if circle == phase_service.MINER:
+            got = self._mining_now()
+            if got is not None and got[1].stoppable and not got[1].stopping and getattr(self, "mine", None):
+                return True
+        return bool(phase_service.stoppable(self.services.registry.live(), circle))
+
+    def _stop_circle(self, circle):
+        """*Stop* from a circle's menu: Anki Miner's episode through its row's own Stop (*Stopping…* on the row and in
+        the hover; refused once its cards are named, the bar says why); a cancellable job through its own cancel."""
+        if circle == phase_service.MINER:
+            got = self._mining_now()
+            if got is not None and got[1].stoppable and not got[1].stopping and getattr(self, "mine", None):
+                from app.qt import rows as qrows
+                self.mine.stop(qrows.Ask(got[0], (got[0],), None, got[1].job))
+                return
+        for job_id in phase_service.stoppable(self.services.registry.live(), circle):
+            self.services.registry.cancel(job_id)
 
     def _junban_found(self, here):
         """Alpha 3: 順's circle opens Junban's settings once Junban is found (`_junban_here`, a worker's file look)."""

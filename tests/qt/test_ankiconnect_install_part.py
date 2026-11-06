@@ -61,7 +61,7 @@ class Counter(QObject):
     """Paint and layout events on a widget and its children (S19's eye)."""
 
     def __init__(self, root):
-        super().__init__()
+        super().__init__(root)                         # the root owns it: never a filter left dangling
         self.paints = self.layouts = 0
         self.where = []
         for w in [root] + root.findChildren(QWidget):
@@ -317,3 +317,121 @@ def test_setups_anki_step_offers_it_first_in_japanese_and_chinese(make, monkeypa
     assert wait_until(lambda: steps.install is not None and steps.install.isVisible())
     assert steps.copy.isVisible() and steps.heading.isVisible()
     assert wiz.language == language
+
+
+# --- the review's rows (Mado-AC register A1-A7) ------------------------------------------------------------------- #
+def test_a_sheet_dropped_unanswered_puts_the_part_back(part, monkeypatch):
+    # A2: the window hid (or the wizard closed) with the sheet open: `on_answer` is never called; the card's end is
+    cards = []
+
+    def ask(window, *a, **kw):
+        card = QObject()
+        cards.append(card)
+        return card
+    monkeypatch.setattr(confirm, "ask", ask)
+    steps = part.make()
+    steps.want(True)
+    assert wait_until(lambda: steps.install is not None and steps.install.isVisible())
+    steps.install.click()
+    assert addon_steps.state().phase == addon_steps.ASKING
+    from PyQt6.QtCore import QCoreApplication
+    cards[0].deleteLater()                                 # the card's own end (`Confirm._answer(drop=True)`)
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    assert wait_until(lambda: addon_steps.state().phase is None)
+    assert part.route.calls == [] and steps.install.isVisible()
+
+
+def test_a_look_that_cant_tell_whether_anki_runs_offers_no_button(part):
+    # A6: the route could only end "couldn't tell whether Anki is closed" (spec 5.4 step 2: Copy code only)
+    steps = part.make()
+    steps.set_unsure(True)
+    steps.want(True)
+    assert wait_until(lambda: addon_steps.state().found is not None)
+    _settle()
+    assert steps.install is None and steps.copy.isVisible() and steps.heading.isHidden()
+    steps.set_unsure(False)
+    assert steps.install is not None and steps.install.isVisible()
+
+
+def test_needs_you_wakes_no_connect_when_anki_answers_after_the_done_lines_open_anki(part, monkeypatch):
+    # A3 (AC-4 A): the done line's press marks the opening as quiet; the next "AnkiConnect answers" uses it up
+    from app.connect import setup
+    monkeypatch.setattr(open_anki, "running", lambda: True)              # already open: nothing started
+    monkeypatch.setattr(setup, "anki_profile", lambda: None)
+    assert addon_steps.quiet_open() is False
+    part.route.go.set()
+    steps = part.make()
+    steps.want(True)
+    assert wait_until(lambda: steps.install is not None and steps.install.isVisible())
+    steps.install.click()
+    part.sheet.answer(True)
+    assert wait_until(lambda: steps.open_btn is not None and steps.open_btn.isVisible())
+    steps.open_btn.click()
+    assert addon_steps.quiet_open() is True and addon_steps.quiet_open() is False      # once
+
+
+def test_the_route_may_look_while_its_job_is_in_a_shown_windows_bar(part):
+    # A1/A4: no part on screen (another tab), the bar's job still says "Close Anki": the route may look; the window
+    # minimised, it may not
+    import weakref
+    st = addon_steps.state()
+    steps = part.make()
+    steps.want(True)
+    assert wait_until(lambda: steps.install is not None and steps.install.isVisible())
+    steps.install.click()
+    part.sheet.answer(True)
+    assert wait_until(lambda: part.route.shown is not None)
+    st.bar = weakref.ref(part.host)
+    steps.setParent(None)                                  # its line off screen (the host's tab changed)
+    st.update_shown()
+    assert part.route.shown()                              # the bar's window is shown
+    part.host.showMinimized()
+    assert wait_until(lambda: not part.route.shown(), 3)
+    part.host.showNormal()
+    assert wait_until(lambda: part.route.shown(), 3)
+    steps.deleteLater()
+
+
+def test_the_real_route_under_the_real_part_installs_once_anki_closes(qapp, tmp_path, monkeypatch):
+    # A1 (the must-fix): the real `install_as_job`, the real wait, the real files; only AnkiWeb and the process list
+    # stood in for. Anki open at the press: the waiting line; closed: installed, the folder placed
+    import json
+    import os
+    import types
+    from tests.connect import test_ankiconnect_install as T
+    monkeypatch.setattr(addon_steps, "_STATE", None)
+    base = tmp_path / "Anki2"
+    (base / "addons21").mkdir(parents=True)
+    T._prefs(str(base), {"last_run_version": T.POINT})
+    monkeypatch.setenv("ANKI_BASE", str(base))
+    monkeypatch.setattr(I, "sys", types.SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(I, "WAIT_EVERY", 0.05)
+    net = T.Net()
+    monkeypatch.setattr(I, "_fetch", net)
+    anki_open = {"now": True}
+    looks = []
+    monkeypatch.setattr(open_anki, "running", lambda: looks.append(1) or anki_open["now"])
+    sheet = Sheet()
+    monkeypatch.setattr(confirm, "ask", sheet)
+    host = QWidget()
+    QVBoxLayout(host)
+    steps = addon_steps.AddonSteps(lambda text, tip: _button(text, tip, host), "wizsub", None, host, url=lambda: URL,
+                                   checked=lambda: None, timer=QTimer(host))
+    host.layout().addWidget(steps)
+    host.show()
+    try:
+        steps.want(True)
+        assert wait_until(lambda: steps.install is not None and steps.install.isVisible())
+        steps.install.click()
+        sheet.answer(True)
+        assert wait_until(lambda: steps.install_line.text() == I.WAITING_LINE, 5)
+        assert net.asked == [] and looks
+        anki_open["now"] = False                           # the learner closes Anki
+        assert wait_until(lambda: steps.install_line.text() == I.DONE_LINE, 10)
+        assert net.asked == [T.URL]
+        with open(os.path.join(str(base), "addons21", I.CODE, "meta.json"), encoding="utf-8") as f:
+            assert json.load(f) == T.META
+        assert not os.path.exists(os.path.join(str(base), I.ANKI_STAGING))
+    finally:
+        host.close()
+        host.deleteLater()

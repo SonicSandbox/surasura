@@ -1810,6 +1810,8 @@ class NeedsYou(QObject):
         kick, read_settings = self.connect_calls.get("kick"), self.read_settings
         if news is True:
             addon_steps.answered()                      # an install's done line goes: AnkiConnect is in
+            if addon_steps.quiet_open():                # AC-4 A: Anki opened from that done line wakes nothing
+                kick = None
         if news is True and kick is not None:
             from app.qt import applog
             bridge.run_in_worker(lambda: kick(read_settings() or {}), then=lambda _p: None,

@@ -7,6 +7,7 @@ is replaced by a stand-in that hands out an add-on built here the way AnkiWeb's 
 probe: a 303 to `/svc/shared/download-addon/2055492159?t=…&minpt=…&maxpt=…&bidx=…`, a zip with `__init__.py`,
 `manifest.json`, `config.json` at its root). `open_anki.running` is faked; the waits use a fake clock and sleep."""
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -336,7 +337,9 @@ def test_the_process_list_is_looked_at_only_while_the_waiting_line_is_on_screen(
         clock.sleep(s)
         shown["now"] = clock.now >= 6                  # the line comes on screen at 6 s
     assert _install(clock=clock, sleep=sleep, shown=lambda: shown["now"]) == I.INSTALLED
-    assert looks and min(looks[:-1] or looks) >= 6     # none while hidden (the last is the check before the rename)
+    # the first look at once (the press was just made on screen), then none while hidden; the last is the check
+    # before the rename
+    assert looks[0] == 0 and min(looks[1:-1]) >= 6
 
 
 def test_ten_minutes_of_anki_open_ends_it_with_nothing_fetched(anki):
@@ -573,3 +576,91 @@ def test_the_jobs_cancel_sets_the_routes_cancel(anki):
 def test_the_kind_is_in_the_windows_tables():
     from app.services import jobs, phase
     assert I.JOB_KIND in jobs.RESOURCES and I.JOB_KIND in phase.KINDS
+
+
+# --- the review's rows (Mado-AC register A5, A8, A9, A10) ----------------------------------------------------------- #
+@pytest.mark.parametrize("name", ["CON", "aux.py", "com1.txt", "LPT9", "nul.json", "web.py.", "web.py ", "a//b.py"])
+def test_windows_device_names_and_names_windows_would_change_are_refused(anki, monkeypatch, name):
+    monkeypatch.setattr(I, "_fetch", Net(lambda: Response(_zip(dict(FILES, **{name: "x"})))))
+    assert _install() == I.REFUSED
+    _untouched(anki)
+
+
+class Faulty(Response):
+    """A download that breaks after its first chunk."""
+
+    def __init__(self, fault):
+        super().__init__(_zip())
+        self.fault = fault
+
+    def read(self, n=-1):
+        if self.pos:
+            raise self.fault
+        return super().read(10)
+
+
+@pytest.mark.parametrize("fault", [ConnectionResetError(10054, "reset"), TimeoutError("timed out"),
+                                   http.client.IncompleteRead(b"", 10)])
+def test_a_network_fault_mid_download_is_couldnt_reach_ankiweb(anki, monkeypatch, fault):
+    monkeypatch.setattr(I, "_fetch", Net(lambda: Faulty(fault)))
+    assert _install() == I.OFFLINE
+    _untouched(anki)
+
+
+def test_an_ankiweb_refusal_other_than_not_found_is_couldnt_reach_ankiweb(anki, monkeypatch):
+    monkeypatch.setattr(I, "_fetch", Net(lambda: urllib.error.HTTPError(URL, 429, "Too Many Requests", {}, None)))
+    assert _install() == I.OFFLINE
+
+
+def test_the_unpack_refuses_a_name_outside_its_folder_by_itself(tmp_path):
+    # the second layer, proven alone (the zip check is the first)
+    path = tmp_path / "a.zip"
+    path.write_bytes(_zip(dict(FILES, **{"../evil.py": "x"})))
+    with zipfile.ZipFile(path) as z:
+        files = [i for i in z.infolist() if not i.is_dir()]
+    with pytest.raises(I._Refused):
+        I._unpack(str(path), files, str(tmp_path / "out" / I.CODE), META)
+    assert not (tmp_path / "out" / "evil.py").exists()
+
+
+def test_a_file_that_isnt_what_came_is_never_placed(anki, monkeypatch):
+    real = zipfile.ZipFile.read
+
+    def read(self, name, pwd=None):
+        if str(getattr(name, "filename", name)) == "web.py":
+            return b"changed"
+        return real(self, name, pwd)
+    monkeypatch.setattr(zipfile.ZipFile, "read", read)
+    assert _install() == I.NOT_WRITTEN
+    _untouched(anki)
+
+
+def test_a_virus_check_holding_the_new_files_is_waited_for_twice(anki, monkeypatch):
+    real = os.rename
+    tries = []
+
+    def rename(a, b):
+        tries.append(a)
+        if len(tries) < 3:
+            raise PermissionError(5, "Access is denied")
+        return real(a, b)
+    monkeypatch.setattr(I.os, "rename", rename)
+    assert _install() == I.INSTALLED and len(tries) == 3
+    _untouched(anki, placed=True)
+    real(os.path.join(anki.addons, I.CODE), os.path.join(anki.base, "away"))
+    tries.clear()
+
+    def refused(a, b):
+        tries.append(a)
+        raise PermissionError(5, "Access is denied")
+    monkeypatch.setattr(I.os, "rename", refused)
+    assert _install() == I.NOT_WRITTEN and len(tries) == I.RENAME_TRIES
+    assert not os.path.exists(os.path.join(anki.addons, I.CODE))
+
+
+def test_the_first_look_at_the_process_list_is_at_once_even_off_screen(anki, monkeypatch):
+    # A1: the press was just made on screen; the gate is for the waits after it
+    looks = []
+    monkeypatch.setattr(open_anki, "running", lambda: looks.append(1) or False)
+    assert _install(shown=lambda: False) == I.INSTALLED
+    assert len(looks) == 2                             # the first wait's look, and the check before the rename

@@ -42,6 +42,8 @@ from app.qt import bridge, confirm, strings, style
 from app.qt import press as qpress
 
 ASKING, WAITING, RUNNING, INSTALLED, FAILED = "asking", "waiting", "running", "installed", "failed"
+SEEN_MS = 1000                      # while the route runs: how often "is any of it on screen?" is asked again
+QUIET_S = 300                       # the done line's *Open Anki*: Connect isn't woken when Anki answers this soon after
 HOLDING = (ASKING, WAITING, RUNNING, INSTALLED)     # a part with one of these stays on screen (`want`)
 
 
@@ -57,6 +59,17 @@ class _State(QObject):
         self.looking = False
         self.shown = threading.Event()
         self.parts = weakref.WeakSet()
+        self.bar = None                    # the window whose bottom bar lists the route's job (a weak reference)
+        self.opened_at = None              # when the done line's *Open Anki* was pressed (`quiet_open`)
+        self._seen = QTimer(self)          # while the route runs: is any of it on screen? (`update_shown`)
+        self._seen.setInterval(SEEN_MS)
+        self._seen.timeout.connect(self.update_shown)
+        self.changed.connect(self._timer)
+
+    def _timer(self):
+        live = self.phase in (RUNNING, WAITING)
+        if live != self._seen.isActive():
+            (self._seen.start if live else self._seen.stop)()
 
     def set(self, **values):
         if any(getattr(self, k) != v for k, v in values.items()):
@@ -79,7 +92,12 @@ class _State(QObject):
         bridge.run_in_worker(I.look, then=came, failed=failed)
 
     def update_shown(self):
-        on = self.phase == WAITING and any(not sip.isdeleted(p) and p.isVisible() for p in list(self.parts))
+        """The route may look at the process list (`shown`): it runs, and its line is on screen in a part, or its job
+        in the bottom bar of a window shown and not minimised (the bar's *Waiting for Anki to close*)."""
+        bar = self.bar() if self.bar is not None else None
+        on = self.phase in (RUNNING, WAITING) and (
+            any(not sip.isdeleted(p) and p.isVisible() for p in list(self.parts))
+            or (bar is not None and not sip.isdeleted(bar) and bar.isVisible() and not bar.isMinimized()))
         if on != self.shown.is_set():
             (self.shown.set if on else self.shown.clear)()
 
@@ -106,6 +124,16 @@ def answered():
         _STATE.set(phase=None)
 
 
+def quiet_open():
+    """Was Anki just opened from an install's done line (AC-4 A: that press never wakes Connect)? Asked once: *Needs
+    you*'s line, when AnkiConnect answers, skips its own wake-up then."""
+    if _STATE is None or sip.isdeleted(_STATE) or _STATE.opened_at is None:
+        return False
+    recent = time.monotonic() - _STATE.opened_at < QUIET_S
+    _STATE.opened_at = None
+    return recent
+
+
 def _quiet_after(_settings):
     """*Open Anki* from the done line: nothing after the start — never Connect's kick (AC-4 A; `open_anki.for_you`'s
     default is `kick_when_open`). The part's own watch runs the host's *Check again* once AnkiConnect answers."""
@@ -122,6 +150,7 @@ class AddonSteps(QWidget):
         self.say = say
         self._copies = 0
         self._want = False
+        self._unsure = False
         self._view = None
         self._url, self._checked = url, checked
         self.paints = 0                                  # S19: views painted (only when what it shows changed)
@@ -200,6 +229,9 @@ class AddonSteps(QWidget):
         text = A.steps_line(unsure=bool(unsure))
         if self.line.text() != text:
             self.line.setText(text)
+        if bool(unsure) != self._unsure:
+            self._unsure = bool(unsure)    # a look that can't tell whether Anki runs: no button (spec 5.4 step 2)
+            self._paint()
 
     # --- the view ------------------------------------------------------------------------------------------------- #
     def view(self):
@@ -218,7 +250,7 @@ class AddonSteps(QWidget):
         else:
             if phase == FAILED and st.line:
                 line = st.line
-            if found.get("state") == I.CAN_INSTALL or phase == ASKING:
+            if (found.get("state") == I.CAN_INSTALL and not self._unsure) or phase == ASKING:
                 button = True
             elif found.get("state") == I.THERE and line is None:
                 line = I.TURNED_OFF_LINE if found.get("disabled") else I.THERE_LINE
@@ -282,18 +314,24 @@ class AddonSteps(QWidget):
         win = self.window()
         p = qpress.begin(self.install, "addon:install", win=win)
         st.set(phase=ASKING, line=None)
+        once = []
 
         def answered(yes):
+            if once:
+                return
+            once.append(yes)
             if p is not None:
                 qpress.end(p, win)
             if sip.isdeleted(st) or st.phase != ASKING:
                 return
             if not yes:
-                st.set(phase=None)                       # *Back*: nothing fetched, the part as it was
+                st.set(phase=None)                       # *Back* (or the sheet dropped): nothing fetched
                 return
-            _start(st, _registry(self))
-        confirm.ask(win, I.SHEET_TITLE, I.SHEET_BODY, I.SHEET_YES, I.SHEET_YES_TIP, no=I.SHEET_NO,
-                    no_tip=I.SHEET_NO_TIP, on_answer=answered)
+            _start(st, _registry(self), win)
+        card = confirm.ask(win, I.SHEET_TITLE, I.SHEET_BODY, I.SHEET_YES, I.SHEET_YES_TIP, no=I.SHEET_NO,
+                           no_tip=I.SHEET_NO_TIP, on_answer=answered)
+        if isinstance(card, QObject):                    # dropped unanswered (the window hid, the wizard closed)
+            card.destroyed.connect(lambda _o=None: answered(False))
 
     def press_cancel(self):
         st = state()
@@ -304,6 +342,8 @@ class AddonSteps(QWidget):
         """The done line's *Open Anki* (AC-4 A, PROVISIONAL): Anki on Connect's profile, the learner's press; never
         Connect's kick. The part's watch runs the host's *Check again* once AnkiConnect answers."""
         from app.connect import open_anki
+
+        state().opened_at = time.monotonic()
 
         def started(answer):
             if answer is False and self.say is not None and not sip.isdeleted(self):
@@ -335,7 +375,7 @@ class AddonSteps(QWidget):
             self.say(A.COPIED_LINE)
 
 
-def _start(st, registry):
+def _start(st, registry, window=None):
     """The route after the sheet's *Install*: on a daemon thread of its own (never the window's pool: it may wait for
     Anki to close), listed in `registry`; its phases and its end come back to the window's thread."""
     cancel = threading.Event()
@@ -353,6 +393,7 @@ def _start(st, registry):
             st.set(phase=FAILED, line=I.said(result), cancel=None)
         st.look()                                         # what's in Anki's folder now
     ended.said.connect(end)
+    st.bar = weakref.ref(window) if window is not None and registry is not None else None
     st.set(phase=RUNNING, line=None, cancel=cancel)
     st.update_shown()
 

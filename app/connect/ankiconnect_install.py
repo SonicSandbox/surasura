@@ -34,6 +34,7 @@ names (is AnkiConnect there already, under any name?). Never another add-on's fo
 
 Standard library only; no Qt, no Tk.
 """
+import http.client
 import io
 import json
 import os
@@ -62,6 +63,7 @@ WAIT_EVERY = 2.0                        # s between looks at the process list wh
 WAIT_FOR = 600.0                        # s: then *Close Anki, then press Install again*
 STAGING = "ankiconnect-install"         # under local data: the download, emptied before, after and on every failure
 ANKI_STAGING = ".surasura-ankiconnect"  # in Anki's base folder, beside addons21 (same volume: one rename)
+RENAME_TRIES, RENAME_PAUSE = 3, 0.5    # a virus check holding the new files (WinError 5): twice more, 0.5 s apart
 APPDATA_UNDER_TESTS = False             # under a test root only `ANKI_BASE` is read (a test of %APPDATA% sets this)
 
 # look's states
@@ -101,7 +103,7 @@ TURNED_OFF_LINE = "AnkiConnect is turned off in Anki: Tools › Add-ons, select 
 REASONS = {"offline": "couldn't reach AnkiWeb", "no-branch": "AnkiWeb has no AnkiConnect for this Anki",
            "blocked": "Windows blocked the file", "already": "AnkiConnect is already there",
            "cant-tell": "couldn't tell whether Anki is closed", "refused": "AnkiWeb's file didn't look like AnkiConnect",
-           "not-written": "couldn't write into Anki's folder", "no-base": "open Anki once first",
+           "not-written": "couldn't write AnkiConnect's files", "no-base": "open Anki once first",
            "no-version": "couldn't tell which Anki you have", "busy": "an install is already going",
            "off": "it can't be done on this computer"}
 
@@ -294,7 +296,7 @@ def _download(point, path, on_progress, cancel):
     try:
         response = _fetch(url)
     except urllib.error.HTTPError as e:     # a redirect off AnkiWeb (`_AnkiWebOnly`), or AnkiWeb's own error
-        result = REFUSED if e.code < 400 else NO_BRANCH if e.code < 500 else OFFLINE
+        result = REFUSED if e.code < 400 else NO_BRANCH if e.code in (404, 410) else OFFLINE
         raise _Refused(result, f"AnkiWeb answered {e.code}")
     except _Refused:
         raise
@@ -316,7 +318,12 @@ def _download(point, path, on_progress, cancel):
                 while True:
                     if _stopped(cancel):
                         raise _Refused(CANCELLED)
-                    chunk = response.read(CHUNK)
+                    try:
+                        chunk = response.read(CHUNK)
+                    except (OSError, http.client.HTTPException, ValueError) as e:     # the network, mid-download
+                        if getattr(e, "winerror", None) == 225:                   # Windows' virus check
+                            raise _Refused(BLOCKED, str(e))
+                        raise _Refused(OFFLINE, str(e))
                     if not chunk:
                         break
                     done += len(chunk)
@@ -328,10 +335,8 @@ def _download(point, path, on_progress, cancel):
                             on_progress(done, total or None)
                         except Exception:
                             pass
-        except (OSError, urllib.error.URLError) as e:
-            if isinstance(e, OSError) and getattr(e, "winerror", None) == 225:     # Windows' virus check
-                raise _Refused(BLOCKED, str(e))
-            raise _Refused(OFFLINE if isinstance(e, urllib.error.URLError) else NOT_WRITTEN, str(e))
+        except OSError as e:                # writing the download into Surasura's own folder
+            raise _Refused(BLOCKED if getattr(e, "winerror", None) == 225 else NOT_WRITTEN, str(e))
     if total and done != total:
         raise _Refused(OFFLINE, f"{done} of {total} bytes came")
     return meta
@@ -340,12 +345,19 @@ def _download(point, path, on_progress, cancel):
 # --------------------------------------------------------------------------- #
 # What came, checked; then placed
 # --------------------------------------------------------------------------- #
+_DEVICES = frozenset({"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {f"COM{i}" for i in range(10)}
+                     | {f"LPT{i}" for i in range(10)})      # Windows' device names: never a file
+
+
 def _entry_ok(info):
     name = info.filename
     if not name or name.startswith(("/", "\\")) or "\\" in name or ":" in name:
         return False
-    if any(part in ("..", ".") for part in name.rstrip("/").split("/")) or "//" in name.rstrip("/"):
+    parts = name.rstrip("/").split("/")
+    if any(part in ("..", ".", "") for part in parts):
         return False
+    if any(part.endswith((".", " ")) or part.split(".", 1)[0].upper().rstrip(" ") in _DEVICES for part in parts):
+        return False                        # Windows drops a trailing dot or space; CON, aux.py: a device
     kind = (info.external_attr >> 16) & 0o170000
     return kind != 0o120000                 # never a link
 
@@ -442,14 +454,14 @@ def _running():
 
 
 def _wait_closed(cancel, shown, on_phase, clock, sleep, deadline):
-    """AC-3 A: until no Anki runs. The process list looked at every `WAIT_EVERY` s while the waiting line is on
-    screen (`shown()`), never otherwise; `deadline` (the clock's) passed -> STAYED_OPEN; a look that can't tell ->
+    """AC-3 A: until no Anki runs. The process list looked at once, then every `WAIT_EVERY` s while the install's line
+    (or the bottom bar's job) is on screen (`shown()`), never otherwise; `deadline` (the clock's) passed -> STAYED_OPEN; a look that can't tell ->
     CANT_TELL (never written blind); the learner's Cancel -> CANCELLED. Returns None once Anki is closed."""
-    said = False
+    said, first = False, True
     while True:
         if _stopped(cancel):
             raise _Refused(CANCELLED)
-        if shown is None or _shown(shown):
+        if first or shown is None or _shown(shown):     # the first look at once: the press was just made on screen
             now = _running()
             if now is None:
                 raise _Refused(CANT_TELL)
@@ -460,6 +472,7 @@ def _wait_closed(cancel, shown, on_phase, clock, sleep, deadline):
             if not said and on_phase:
                 on_phase(WAITING)
             said = True
+        first = False
         if clock() >= deadline:
             raise _Refused(STAYED_OPEN)
         sleep(WAIT_EVERY)
@@ -513,10 +526,20 @@ def _route(on_progress, cancel, confirm, shown, on_phase, clock, sleep):
         target = os.path.join(_addons(folder), CODE)
         if _present(folder) is not None:
             raise _Refused(ALREADY)
-        try:
-            os.rename(added, target)    # THE one move into addons21: atomic, and never over a folder there
-        except OSError as e:            # FileExistsError: one came meanwhile (the learner's own wins)
-            raise _Refused(ALREADY if os.path.lexists(target) else NOT_WRITTEN, str(e))
+        for attempt in range(RENAME_TRIES):
+            try:
+                os.rename(added, target)    # THE one move into addons21: atomic, and never over a folder there
+                break
+            except FileExistsError as e:    # one came meanwhile (the learner's own wins)
+                raise _Refused(ALREADY, str(e))
+            except PermissionError as e:    # a virus check still reading the new files: a moment, then again
+                if os.path.lexists(target):
+                    raise _Refused(ALREADY, str(e))
+                if attempt == RENAME_TRIES - 1:
+                    raise _Refused(NOT_WRITTEN, str(e))
+                sleep(RENAME_PAUSE)
+            except OSError as e:
+                raise _Refused(ALREADY if os.path.lexists(target) else NOT_WRITTEN, str(e))
         return INSTALLED
     except _Refused as e:
         return e.result

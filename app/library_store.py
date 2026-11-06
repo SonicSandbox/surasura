@@ -685,6 +685,10 @@ ADDED_TABLES_SQL = (
     "CREATE INDEX IF NOT EXISTS made_lines_item ON made_lines (item_id)",
 )
 
+# A record whose `verdict` is "extracted" (`fill_track`'s, Michi-ST): the expression `pairings_extracted` indexes —
+# written the same wherever it is read, so the index serves the read ({p}: the table's alias and a dot, or nothing)
+_EXTRACTED = "(CASE WHEN json_valid({p}pairing) THEN json_extract({p}pairing, '$.verdict') END) = 'extracted'"
+
 # Indexes added without a schema change (SRC perf): an index changes no row and an older Surasura reads the store as it
 # was; a new store makes them in SCHEMA_SQL, an existing one at its first open by a writer (`_added_indexes`)
 ADDED_INDEXES_SQL = (
@@ -694,8 +698,15 @@ ADDED_INDEXES_SQL = (
     # K5 (alpha 4): a look's check (b) per new file or book part (`items_of_size`) scanned every item without it: a first
     # look of 25k books spent minutes there. Dropped as easily (DROP INDEX): no row changes
     "CREATE INDEX IF NOT EXISTS items_available_size ON items (size) WHERE availability = 'available'",
+    # R6 (Kura-B, 2026-11-06): the records of a video's own extracted track (Michi-ST), which every take-in reads under
+    # the write lock (`_track_items`) — without it, each batch of a look parsed every origin's record (~45 ms at 20k)
+    f"CREATE INDEX IF NOT EXISTS pairings_extracted ON pairings (item_id) WHERE {_EXTRACTED.format(p='')}",
+    # R6: the items waiting for their subtitle (K5), which every take-in with a video reads (`_waiting_videos`) — without
+    # it, a scan of every item (~10 ms at 20k) under the write lock each batch
+    "CREATE INDEX IF NOT EXISTS items_waiting ON items (id) WHERE availability = 'waiting'",
 )
-ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_available_size")
+ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_available_size", "pairings_extracted",
+                 "items_waiting")
 # A4K-7 (alpha 4, Sonic 2026-10-28): each copy's content hash, kept for a look's check (b), which read and hashed every
 # copy of a new part's size (~56,000 files when 100 books came onto 60k parts). Made with the added indexes: an added
 # column (no row rewritten: NULL until a look fills it) and a trigger that forgets a hash whenever its row's file
@@ -10364,9 +10375,10 @@ def _store_track_items(self, held):
     (`fill_track`'s live record, `verdict` "extracted") — read once a batch into `held` (a dict the caller keeps)."""
     if "items" not in held:
         held["items"] = {}
+        # through `pairings_extracted` (R6): the origin range's index left aside (`+`), or the planner walks every origin
         for item_id, text in self.conn.execute(
-                f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND "
-                f"json_valid(p.pairing) AND json_extract(p.pairing, '$.verdict') = 'extracted'"):
+                f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_EXTRACTED.format(p='p.')} AND "
+                f"+p.content_key >= 'src:' AND +p.content_key < 'src;' AND NOT {_VERSION_ROW}"):
             for k in _video_keys(_json_dict(text) or {}):
                 held["items"][k] = item_id
     return held["items"]

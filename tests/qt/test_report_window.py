@@ -996,3 +996,188 @@ def test_who_you_are_is_worked_out_after_the_start_or_as_the_hand_reaches_the_bu
     QApplication.sendEvent(main.report_button, QEnterEvent(p, p, p))          # (a second pass: one worker only)
     assert sum(t.name == "scrub-identity" for t in threading.enumerate()) <= 1
     assert wait_until(scrub.ready, 10)
+
+
+# --- a9.1: the window kept built after its first close (Sonic: "It lags when I open up the debug screen") ---------- #
+def _close(w):
+    QTest.keyClick(w, Qt.Key.Key_Escape)
+    assert wait_until(lambda: w.gone)
+
+
+def test_the_second_press_shows_the_same_window_again_built_once(main, monkeypatch):
+    made = []
+    real = report_ui.ReportWindow.__init__
+
+    def counted(self, *a, **k):
+        made.append(1)
+        real(self, *a, **k)
+    monkeypatch.setattr(report_ui.ReportWindow, "__init__", counted)
+    w = _press(main)
+    _close(w)
+    assert windows.opened(main, report_ui.NAME) is None                # closed: no window, no icon
+    assert getattr(main, report_ui.KEPT) is w and not w.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    again = _press(main)
+    assert again is w and made == [1] and w.isVisible() and not w.gone
+    assert getattr(main, report_ui.KEPT) is None                       # in use, not kept twice
+    receivers = w.receivers(w.closed)
+    for _ in range(3):                                                 # closed and opened again: connected once
+        _close(w)
+        assert _press(main) is w
+    assert w.receivers(w.closed) == receivers
+    _close(w)
+    assert windows.opened(main, report_ui.NAME) is None
+
+
+def test_opened_again_it_is_as_new_no_page_line_row_or_picture_of_before(main):
+    w = _press(main)
+    first = list(w.pictures)
+    _save(w, JA_WHAT, "Finishedに残ると思った")
+    _save(w, ZH_WHAT)
+    w.remove(w.reports[0].id)
+    assert wait_until(lambda: len(w.reports) == 1 and w.undo_button.isVisible())
+    w.open(w.reports[0].id)
+    w.note.setPlainText("还没写完")
+    assert w.pages.currentIndex() == w.OPENED and w.status.text()     # "Removed…" said
+    w.name_field.setText("ゆき#0429")                                  # typed, never sent
+    w.include_results.setChecked(False)
+    w._done_row("Made it", invite=strings.REPORT_INVITE_ZIP)
+    for x in w.dest_row:
+        x.setVisible(True)
+    w.dest = os.path.expanduser("~")
+    _close(w)
+    w = _press(main)
+    assert w.pages.currentIndex() == w.FORM and w.opened_id is None and w.sent_opened is None and w.outbox is None
+    assert w.opened_text.toPlainText() == "" and w.note.toPlainText() == "" and w.opened_pictures.count() == 0
+    assert w.status.text() in ("", strings.REPORT_EMPTY)               # nothing said of before
+    assert not w.undo_button.isVisible() and w.last_removed is None
+    assert w.done_line.isHidden() and w.invite_button.isHidden() and all(x.isHidden() for x in w.dest_row)
+    assert w.dest == report_ui.downloads() and w.include_results.isChecked()
+    assert w.name_field.text() == "" and not w.name_goes.isVisibleTo(w)    # the typed name not kept (as a new window)
+    assert len(w.pictures) == 1 and w.pictures[0] is not first[0]       # this press's picture, its thumbnail anew
+    assert len(w._thumbs) == 1 and not w._thumbs[0].pixmap().isNull()
+    assert w.what.toPlainText() == "" and not w.save_button.isEnabled()
+
+
+def test_a_sent_reports_page_is_never_shown_again_on_the_next_press(main, receiver, sent):
+    w = _press(main)
+    w.include_results.setChecked(False)
+    _save(w, JA_WHAT)
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.sent_rows.count() == 1, 15)
+    assert w.done_line.isVisibleTo(w) and w.copy_button.isVisibleTo(w)
+    _sent_open(w, "K3Q7PM").click()
+    assert wait_until(lambda: w.pages.currentIndex() == w.SENT, 15)
+    _close(w)
+    w = _press(main)
+    _read(w)
+    assert w.pages.currentIndex() == w.FORM and w.sent_lines.count() == 0 and w.sent_opened_heading.text() == ""
+    assert w.done_line.isHidden() and w.copy_button.isHidden() and w.sent_id is None
+    assert w.sent_rows.count() == 1                                    # Sent reports still lists it (read again)
+
+
+def test_what_goes_closed_unsent_is_never_shown_again(main, receiver):
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    _close(w)
+    assert wait_until(_outbox_empty)
+    w = _press(main)
+    _read(w)
+    assert w.pages.currentIndex() == w.FORM and w.outbox is None and w.goes_pictures.count() == 0
+    assert w.send_button.isEnabled() and w.name_field.isEnabled() and w.list.isVisibleTo(w)   # nothing held
+
+
+def test_an_answer_to_an_earlier_opening_never_lands_in_the_next(main):
+    w = _press(main)
+    landed = []
+    late = w.alive(lambda *a: landed.append(a))                        # a worker's answer, asked before the close
+    _close(w)
+    assert late("closed") is None
+    _press(main)
+    late("opened again")
+    assert landed == []
+    w.alive(lambda *a: landed.append(a))("now")                        # this opening's own answers land
+    assert landed == [("now",)]
+
+
+def test_the_draft_and_the_remembered_name_come_back_as_in_a_new_window(main):
+    from app import send_report
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    w.leave_out.setChecked(True)
+    w.name_field.setText("typed, not kept")
+    _close(w)
+    send_report.remember_name("ゆき#0429")
+    w = _press(main)
+    assert w.what.toPlainText() == JA_WHAT and w.leave_out.isChecked() and w.save_button.isEnabled()
+    assert wait_until(lambda: w.name_field.text() == "ゆき#0429")      # the remembered one, filled in again
+
+
+def test_a_window_closed_while_its_work_goes_on_is_not_kept(main, receiver, monkeypatch):
+    import threading
+    from app import send_report
+    gate = threading.Event()
+    real = send_report.build
+
+    def slow(*a, **k):
+        gate.wait(10)
+        return real(*a, **k)
+    monkeypatch.setattr(send_report, "build", slow)
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.send_button.click()
+    _close(w)
+    assert getattr(main, report_ui.KEPT, None) is None and w.gone
+    gate.set()
+    again = _press(main)
+    assert again is not w                                              # (that one finishes, and goes)
+
+
+def test_a_new_look_makes_a_new_window(main):
+    w = _press(main)
+    _close(w)
+    w.made_in = ("day",) + tuple(w.made_in[1:])                        # as if the look changed while it was kept
+    again = _press(main)
+    assert again is not w and getattr(main, report_ui.KEPT, None) is None
+    _close(again)
+    assert _press(main) is again
+
+
+def test_the_first_press_builds_the_form_and_the_other_pages_after_its_first_frame(main):
+    w = report_ui.ReportWindow(main)
+    assert w.pages.count() == 1                                        # the form alone at the press
+    w.show()
+    assert wait_until(lambda: w.pages.count() == 5)                    # after its first frame
+    assert w.pages.indexOf(w.opened_text.parentWidget()) == w.OPENED
+    assert w.pages.indexOf(w.contents.parentWidget()) == w.CONTENTS
+    w.close()
+
+
+@pytest.mark.parametrize("ask", ["open", "hold", "goes", "contents"])
+def test_whatever_needs_a_page_before_the_first_frame_builds_it_first(main, ask):
+    from app import send_report
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    _close(w)
+    setattr(main, report_ui.KEPT, None)
+    w = report_ui.ReportWindow(main)                                   # never shown: no frame yet
+    assert wait_until(lambda: w.reports)
+    assert w.pages.count() == 1
+    if ask == "open":
+        w.open(w.reports[0].id)
+        assert w.pages.currentIndex() == w.OPENED and ZH_WHAT in w.opened_text.toPlainText()
+    elif ask == "hold":
+        w._hold(True)
+        assert not w.note_button.isEnabled()
+        w._hold(False)
+    elif ask == "goes":
+        ob = send_report.build(w.language, include_results=False)
+        w._show_goes(ob, [])
+        assert w.pages.currentIndex() == w.GOES and w.goes_files.text()
+        w.back()
+    else:
+        w.show_contents()
+        assert wait_until(lambda: w.pages.currentIndex() == w.CONTENTS)
+    assert w.pages.count() == 5
+    w.close()

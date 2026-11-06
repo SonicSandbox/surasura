@@ -543,6 +543,154 @@ def test_coming_forward_raises_and_activates_the_window(window):
     assert calls == ["raise", "activate"] and not window.isMinimized()
 
 
+# --- a9.1: one app-wide filter for the bubble and Esc / Back ------------------------------------------------------- #
+# Every event in the app passes an app-wide filter, each pass a call into Python: the bubble's and the router's were
+# two (~25 % of a Settings switch and of opening the Settings tab, 250 %). Now one (`shell.AppFilter`): the cases each
+# handled, through it, as before.
+class _Spy:
+    """Counts the calls into `cls.eventFilter` (the bubble's or the router's) while it lives."""
+
+    def __init__(self, monkeypatch, cls):
+        self.calls = []
+        real = cls.eventFilter
+
+        def counted(this, obj, event):
+            self.calls.append(event.type())
+            return real(this, obj, event)
+        monkeypatch.setattr(cls, "eventFilter", counted)
+
+
+def test_one_python_filter_sees_the_apps_events_and_only_the_ones_it_reads_go_further(window, monkeypatch):
+    from app.qt import tooltip
+    tips, router = _Spy(monkeypatch, tooltip.Tooltips), _Spy(monkeypatch, shell.EscapeRouter)
+    target = window.tab_buttons["finished"]
+    for kind in (QEvent.Type.User, QEvent.Type.UpdateRequest, QEvent.Type.LayoutRequest, QEvent.Type.Polish):
+        QApplication.sendEvent(target, QEvent(kind))
+    assert tips.calls == [] and router.calls == []            # an event neither reads goes on at once
+    delivered = []
+
+    class Count(QObject):
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Type.KeyPress:
+                delivered.append(obj)
+            return False
+    count_ = Count()
+    QApplication.instance().installEventFilter(count_)
+    try:
+        QTest.keyClick(window.centralWidget(), Qt.Key.Key_A)  # (a key no one takes goes on to the parents: each a pass)
+    finally:
+        QApplication.instance().removeEventFilter(count_)
+    assert delivered                                           # each read every pass once: one filter, never two
+    assert tips.calls.count(QEvent.Type.KeyPress) == router.calls.count(QEvent.Type.KeyPress) == len(delivered)
+    assert isinstance(window.app_filter, shell.AppFilter)
+
+
+def test_a_control_without_a_tooltip_lets_qts_own_tooltip_event_go_on(window):
+    plain = QWidget(window.centralWidget())
+    plain.show()
+    pos = QPoint(2, 2)
+    ev = QHelpEvent(QEvent.Type.ToolTip, pos, plain.mapToGlobal(pos))
+    assert window.app_filter.eventFilter(plain, ev) is False and window.tooltips.showing() is None
+
+
+def test_focus_by_the_mouse_shows_no_bubble(window):
+    from app.qt import freeze
+    freeze.set_frozen(True)
+    tab = window.tab_buttons["settings"]
+    tab.setFocus(Qt.FocusReason.MouseFocusReason)
+    QApplication.processEvents()
+    assert window.tooltips.showing() is None
+
+
+def _bubble_on(window, name="finished"):
+    from app.qt import freeze
+    freeze.set_frozen(True)
+    tab = window.tab_buttons[name]
+    _hover(tab)
+    assert wait_until(lambda: window.tooltips.showing() is not None)
+    return tab
+
+
+@pytest.mark.parametrize("kind", ["wheel", "double-click", "deactivate", "drag-enter"])
+def test_the_bubble_hides_on_each_of_its_events_anywhere(window, kind):
+    from PyQt6.QtCore import QMimeData, QPointF
+    from PyQt6.QtGui import QDragEnterEvent, QMouseEvent, QWheelEvent
+    _bubble_on(window)
+    elsewhere = window.centralWidget()
+    at = QPointF(10, 10)
+    event = {
+        "wheel": lambda: QWheelEvent(at, at, QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton,
+                                     Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False),
+        "double-click": lambda: QMouseEvent(QEvent.Type.MouseButtonDblClick, at, at, Qt.MouseButton.LeftButton,
+                                            Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier),
+        "deactivate": lambda: QEvent(QEvent.Type.WindowDeactivate),
+        "drag-enter": lambda: QDragEnterEvent(QPoint(10, 10), Qt.DropAction.CopyAction, QMimeData(),
+                                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier),
+    }[kind]()
+    QApplication.sendEvent(elsewhere, event)
+    assert window.tooltips.showing() is None
+
+
+@pytest.mark.parametrize("kind", [QEvent.Type.Leave, QEvent.Type.Hide, QEvent.Type.FocusOut])
+def test_the_bubble_goes_when_its_own_control_is_left_hidden_or_unfocused_and_not_for_another(window, kind):
+    from PyQt6.QtGui import QFocusEvent
+    tab = _bubble_on(window)
+    other = window.tab_buttons["settings"]
+
+    def ev():
+        return QFocusEvent(kind) if kind == QEvent.Type.FocusOut else QEvent(kind)
+    QApplication.sendEvent(other, ev())
+    assert window.tooltips.showing() is not None              # another control's: the bubble stays
+    QApplication.sendEvent(tab, ev())
+    assert window.tooltips.showing() is None
+
+
+def test_the_bubble_goes_when_its_control_is_deleted(window):
+    from PyQt6.QtWidgets import QPushButton
+    b = QPushButton("Generate", window.centralWidget())
+    b.setToolTip("Make the list again")
+    b.show()
+    from app.qt import freeze
+    freeze.set_frozen(True)
+    _hover(b)
+    assert wait_until(lambda: window.tooltips.showing() == "Make the list again")
+    b.deleteLater()
+    from PyQt6.QtCore import QCoreApplication
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert window.tooltips.showing() is None
+
+
+def test_esc_with_the_bubble_up_hides_it_and_still_closes_the_overlay(window):
+    _bubble_on(window)
+    o = _overlay(window)
+    QTest.keyClick(window.centralWidget(), Qt.Key.Key_Escape)
+    assert window.tooltips.showing() is None and not o.isVisible() and window.isVisible()
+
+
+def test_esc_in_an_open_menu_is_the_menus_own(window):
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtWidgets import QMenu
+    menu = QMenu(window)
+    menu.addAction("Move to top").triggered.connect(lambda: None)
+    menu.popup(window.mapToGlobal(QPoint(100, 100)))
+    assert wait_until(menu.isVisible)
+    esc = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+    assert window.app_filter.eventFilter(menu, esc) is False   # the router leaves it to the menu
+    menu.close()
+
+
+def test_the_app_filter_goes_when_the_window_closes(qapp, services, monkeypatch):
+    from app.qt import tooltip
+    win = shell.open_window(qapp, services)
+    win.show()
+    QApplication.processEvents()
+    win.close()
+    tips, router = _Spy(monkeypatch, tooltip.Tooltips), _Spy(monkeypatch, shell.EscapeRouter)
+    probe = QWidget()
+    QTest.keyClick(probe, Qt.Key.Key_A)
+    assert tips.calls == [] and router.calls == []
+
+
 # --- W3.1a: the stones' sheet after the first frame (S1), Up Next's ↗ opens the journey (S5) ---------------------- #
 def _seeded_window(qapp):
     from app.services import library_reader

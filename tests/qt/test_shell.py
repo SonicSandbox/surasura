@@ -593,6 +593,16 @@ def test_a_control_without_a_tooltip_lets_qts_own_tooltip_event_go_on(window):
     assert window.app_filter.eventFilter(plain, ev) is False and window.tooltips.showing() is None
 
 
+def test_a_control_with_a_tooltip_takes_qts_tooltip_event_so_only_the_bubble_shows(window):
+    # Mutant M2: the bubble's filter answering True is what keeps Qt's own QToolTip from showing beside it.
+    from app.qt import freeze
+    freeze.set_frozen(True)
+    tab = window.tab_buttons["finished"]
+    pos = QPoint(2, 2)
+    ev = QHelpEvent(QEvent.Type.ToolTip, pos, tab.mapToGlobal(pos))
+    assert window.app_filter.eventFilter(tab, ev) is True and window.tooltips.showing() == tab.toolTip()
+
+
 def test_focus_by_the_mouse_shows_no_bubble(window):
     from app.qt import freeze
     freeze.set_frozen(True)

@@ -4034,10 +4034,18 @@ class Store:
                                  (row[0],)).fetchone()[0]
 
     def _set_pieces(self, cmd, sets):
-        """[(piece, item_id)] written with the command's `feed_in` in the same row write."""
-        self.conn.executemany("UPDATE items SET piece_id = ?, feed_in = ? WHERE id = ?",
-                              [(p, cmd.version, i) for p, i in sets])
-        cmd.fed_inline.update(i for _p, i in sets)
+        """[(piece, item_id)] written with the command's `feed_in` in the same row write — a row already written with it
+        in this command (`fed_inline`: placed, or re-pieced before) keeps it unwritten: SQLite rewrites the feed's index
+        entry for every row whose SET names `feed_in`, the same value or not (R6: a moved row's was written three
+        times)."""
+        fed = cmd.fed_inline
+        again = [(p, i) for p, i in sets if i in fed]
+        fresh = [(p, cmd.version, i) for p, i in sets if i not in fed]
+        if again:
+            self.conn.executemany("UPDATE items SET piece_id = ? WHERE id = ?", again)
+        if fresh:
+            self.conn.executemany("UPDATE items SET piece_id = ?, feed_in = ? WHERE id = ?", fresh)
+        fed.update(i for _p, i in sets)
 
     def _side(self, item_id, direction, row=None):
         """(id, piece_id, work_id) of the row just before (-1) or after (1) an item in its tier, or None. `row`: the

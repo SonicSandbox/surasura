@@ -835,6 +835,7 @@ PARTS = (
     ("install", "backlog_shows_*.json", "junban_backlog_shows", MOVES, STAYS),
     ("install", "anki-miner-install", "staging", MOVES, STAYS),
     ("install", "anki-miner-setup", "staging", MOVES, STAYS),
+    ("install", "ankiconnect-install", "staging", MOVES, STAYS),   # 3.0.1: AnkiWeb's add-on, while it's checked
     ("roaming", "settings.json", "settings", MOVES, STAYS),      # installed: here; portable: in the library folder
     ("roaming", "telemetry_id.json", "telemetry_id", STAYS, STAYS),     # P7: one install counts once
     ("roaming", "telemetry_url.json", "telemetry_url", STAYS, STAYS),   # stays with the id

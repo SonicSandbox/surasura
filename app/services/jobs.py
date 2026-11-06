@@ -76,6 +76,9 @@ RESOURCES = {
     # IK-6: the window's start look at Anki (Q4-4, *Open Anki for me*): its session's sync is Anki's own, its
     # known-words sync a job of its own after it — beside everything
     "anki-session": set(),
+    # 3.0.1: *Install AnkiConnect for me* (`app/connect/ankiconnect_install.py`): AnkiWeb's add-on placed in Anki's
+    # add-ons folder while Anki is closed — touches no file the others write; its route's own lock keeps one at a time
+    "ankiconnect-install": set(),
 }
 
 Progress = namedtuple("Progress", "step done total")

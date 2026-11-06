@@ -53,6 +53,7 @@ KINDS = {
     "mine": MINER, "mine-wait": MINER, "anki-miner-install": MINER, "anki-miner-setup": MINER,
     "junban": JUNBAN, "backfill": JUNBAN, "replan": JUNBAN,
     "anki-sync": ANKI, "anki-backlog": ANKI, "anki-session": ANKI, "known-import": ANKI, "mine-anki": ANKI,
+    "ankiconnect-install": ANKI,                              # 3.0.1: *Install AnkiConnect for me*
     "update": None,
 }
 # A press's key's first word (`"known:sync"`, `"mine:ja:12"`) -> its circle: lit from the press, before any job

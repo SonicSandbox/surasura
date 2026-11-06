@@ -1784,10 +1784,13 @@ class NeedsYou(QObject):
         data = entry.data or {}
         if entry.kind != service.ANKI_WAIT or not data.get("closed"):
             return
-        if data.get("steps"):
-            steps = addon_steps.AddonSteps(lambda text, tip: _small(card, text, tip), "sheetline", self._say, card)
+        if data.get("steps") or addon_steps.holding():   # 3.0.1: an install under way stays on its line (Anki closed)
+            steps = addon_steps.AddonSteps(lambda text, tip: _small(card, text, tip), "sheetline", self._say, card,
+                                           url=self._anki_url, checked=lambda: self._anki_answered(None),
+                                           timer=addon_steps.ticker(self.win))
             steps.copy.setProperty("action", "copy_code")
-            steps.set_unsure(data["steps"] == "unsure")
+            steps.set_unsure(data.get("steps") == "unsure")
+            steps.want(bool(data.get("steps")))
             box.addWidget(steps)
             card.steps = steps
         watch = card.watch = addon_steps.Watch(card, addon_steps.ticker(self.win), self._anki_url, None)
@@ -1805,6 +1808,8 @@ class NeedsYou(QObject):
         `open_anki.kick_when_open`) — its waiting episodes go, and the card with them, within seconds, never at its
         2-minute look."""
         kick, read_settings = self.connect_calls.get("kick"), self.read_settings
+        if news is True:
+            addon_steps.answered()                      # an install's done line goes: AnkiConnect is in
         if news is True and kick is not None:
             from app.qt import applog
             bridge.run_in_worker(lambda: kick(read_settings() or {}), then=lambda _p: None,

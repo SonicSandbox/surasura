@@ -618,3 +618,27 @@ def test_a_cancel_during_the_speech_models_setup_ends_the_wait_at_once(fake):
     started = time.monotonic()
     assert no_subs.install_speech(miner, "ja", cancel=lambda: time.monotonic() - started > 0.5) == no_subs.STOPPED
     assert time.monotonic() - started < 4
+
+
+@pytest.mark.parametrize("film", [False, True])
+def test_a_beside_copy_the_learner_corrected_is_still_the_same_episode(film, fake):
+    """Why: the learner fixes a misheard word in the copy beside the video — other bytes now, so only the name pairs it
+    (the `from-audio` mark off the stem) and only the made item's verdict makes it a version (`_track_items`): never a
+    second item, never a fill over the made text."""
+    store, data_dir = _empty("ja")
+    src = _drive("driveA")
+    name = "君の名は (2016) [1080p].mkv" if film else f"[Grp] {_SHOW['ja']} - 05 (1080p).mkv"
+    video = _video(os.path.join(src, "映画" if film else _SHOW["ja"], name), body=b"\x1a\x45\xdf\xa3 x")
+    store.__enter__()
+    try:
+        root = store.add_source(src)
+        _look(store, "ja", root, first=True)
+        fake.set(heard_videos={name: _HEARD["ja"]}, **READY)
+        assert _make(store, "ja")["made"] == 1
+        before = _items(store)
+        with open(_beside(video, "ja"), "a", encoding="utf-8") as f:
+            f.write("\n4\n00:01:44,000 --> 00:01:46,000\nそれでは、カードを作りましょう。\n")
+        _look(store, "ja", root, full=True)
+        assert _items(store) == before
+    finally:
+        store.__exit__(None, None, None)

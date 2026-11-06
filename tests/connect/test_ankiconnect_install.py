@@ -664,3 +664,15 @@ def test_the_first_look_at_the_process_list_is_at_once_even_off_screen(anki, mon
     monkeypatch.setattr(open_anki, "running", lambda: looks.append(1) or False)
     assert _install(shown=lambda: False) == I.INSTALLED
     assert len(looks) == 2                             # the first wait's look, and the check before the rename
+
+
+def test_the_zip_check_alone_refuses_names_outside_the_add_on(tmp_path):
+    # the first layer, proven alone (the unpack's own check is the second)
+    for name in ("../evil.py", "/evil.py", "a/../../evil.py"):
+        path = tmp_path / "z.zip"
+        path.write_bytes(_zip(dict(FILES, **{name: "x"})))
+        with pytest.raises(I._Refused):
+            I._check_zip(str(path))
+    path.write_bytes(_zip(links=("link.py",)))
+    with pytest.raises(I._Refused):
+        I._check_zip(str(path))

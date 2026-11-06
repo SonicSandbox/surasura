@@ -652,6 +652,110 @@ def test_a_youtube_videos_thumbnail_is_fetched_only_with_the_switch_on(anilist):
     assert pen.covers[0][1:3] == ("youtube", "dQw4w9WgXcQ") and pen.covers[0][5] is True
 
 
+# --- the YouTube window's picture (Sonic 2026-11-02, Mado-Y2): the same request, only with the switch on ------------- #
+def _cache_files():
+    return sorted(n for n in os.listdir(path_utils.get_covers_cache_path()) if n.startswith(("youtube-", "video-")))
+
+
+def test_the_youtube_windows_picture_is_the_covers_own_request_and_only_with_the_switch_on(anilist):
+    """The video the YouTube window downloads shows its thumbnail only with *Download covers* on: the one request a
+    title's cover of it makes (`/vi/<id>/hqdefault.jpg`, Surasura's User-Agent, no Referer, no cookie), kept in the
+    covers cache and recorded on no title. Wrong, turning the window's picture on would send YouTube something the
+    learner never said yes to."""
+    pen = Pen()
+    before = _cache_files()
+    off = fetcher(pen, anilist, on=False)
+    assert off.video_cover("dQw4w9WgXcQ") is None and anilist.gets == [] and _cache_files() == before
+    on = fetcher(pen, anilist)
+    path = on.video_cover("dQw4w9WgXcQ")
+    assert path and path.startswith("cache:video-")
+    assert [p for p, _h in anilist.gets] == ["/vi/dQw4w9WgXcQ/hqdefault.jpg"] and anilist.posts == []
+    headers = {k.lower(): v for k, v in anilist.gets[0][1].items()}
+    assert headers["user-agent"] == f"Surasura/{__version__}" and "referer" not in headers and "cookie" not in headers
+    assert os.path.isfile(C.image_path("ja", C.Work(None, (), "youtube", "dQw4w9WgXcQ", path, False)))
+    assert pen.covers == [], "the window's picture is recorded on no title"
+
+
+def test_a_cached_thumbnail_is_used_with_no_request_by_the_window_and_then_by_the_titles_cover(anilist):
+    """Asked twice (a second run of the same video), the window's picture is the cached file — no second request; once
+    the transcript is a title in the library, its cover is that same file, recorded with no request either: the
+    picture costs YouTube nothing the covers wouldn't have asked. The switch off, the cache isn't even read."""
+    pen = Pen()
+    f = fetcher(pen, anilist)
+    first = f.video_cover("dQw4w9WgXcQ")
+    assert f.video_cover("dQw4w9WgXcQ") == first and len(anilist.gets) == 1
+    f.switch["covers_download"] = False
+    assert f.video_cover("dQw4w9WgXcQ") is None, "off: no picture, even a cached one"
+    f.switch["covers_download"] = True
+    video = want(5, "ゆっくり解説", video_id="dQw4w9WgXcQ", kind="youtube", media_type="youtube")
+    assert f.want([video]) == 1 and f.run_once() == 1
+    assert len(anilist.gets) == 1, "the title's cover took the window's file: nothing asked again"
+    assert pen.covers == [(5, "youtube", "dQw4w9WgXcQ", first, False, True)]
+
+
+def test_a_titles_cover_whose_cached_file_went_is_fetched_again_under_a_new_name_not_handed_its_old_one(anilist):
+    """S3 / S4 kept with the window's reuse: a title whose cached thumbnail went (another library's *Remove downloaded
+    covers*) is fetched again and lands under a new name, so its row repaints — never recorded as the name it had."""
+    pen = Pen()
+    f = fetcher(pen, anilist)
+    cached = f.video_cover("dQw4w9WgXcQ")
+    video = want(5, "ゆっくり解説", video_id="dQw4w9WgXcQ", kind="youtube", media_type="youtube", source="youtube",
+                 ref="dQw4w9WgXcQ", path=cached)
+    assert not O.fetchable(video), "its file is there: nothing to ask"
+    os.remove(C.image_path("ja", C.Work(None, (), "youtube", "dQw4w9WgXcQ", cached, False)))
+    assert f.want([video]) == 1 and f.run_once() == 1 and len(anilist.gets) == 2
+    assert pen.covers[0][3] != cached and pen.covers[0][3].startswith("cache:youtube-")
+
+
+@pytest.mark.parametrize("vid", ["", None, "not a video", "dQw4w9WgXc", "../../evil1", "dQw4w9WgXcQ/x"])
+def test_anything_but_a_videos_id_asks_nothing(anilist, vid):
+    """Only an 11-character video id is ever put in the address (a path or a longer text never is)."""
+    f = fetcher(Pen(), anilist)
+    assert f.video_cover(vid) is None and anilist.gets == []
+
+
+def test_the_windows_picture_takes_the_background_share_never_the_slots_kept_for_the_users_own_asks(anilist):
+    """The window's picture is no ask of the user's (*Find it online…*, a pick, *Paste a link*): it waits its turn with
+    the background covers, and never spends the minute's last slots those asks are kept."""
+    f = fetcher(Pen(), anilist)
+    turns = []
+    real = f.image_gate.wait
+    f.image_gate.wait = lambda go=None, first=False: turns.append(first) or real(go, first)
+    assert f.video_cover("dQw4w9WgXcQ") and turns == [False]
+
+
+def test_remove_downloaded_covers_deletes_the_windows_pictures_too_and_only_those_besides_the_records(anilist):
+    """*Remove downloaded covers* promises the downloaded pictures go: the window's thumbnails (recorded on no title)
+    go with the recorded ones; a title's cover file it doesn't name, or anything else in the cache, stays. A press the
+    writer couldn't take deletes nothing."""
+    pen = Pen()
+    f = fetcher(pen, anilist)
+    picture = f.video_cover("dQw4w9WgXcQ")
+    folder = path_utils.get_covers_cache_path()
+    other = write(os.path.join(folder, O._cache_name("ja", "youtube", "aaaaaaaaaaa", ".png")), png())
+    pen.forget_covers = lambda label=None: None
+    assert f.remove_downloaded() is None
+    assert os.path.isfile(os.path.join(folder, picture[len("cache:"):])), "nothing deleted when it couldn't be done"
+    pen.forget_covers = lambda label=None: 1
+    assert f.remove_downloaded() == 1
+    assert not os.path.exists(os.path.join(folder, picture[len("cache:"):])) and os.path.isfile(other)
+    assert f.video_cover("dQw4w9WgXcQ") == picture and len(anilist.gets) == 2, "asked again after the remove"
+
+
+def test_offline_or_a_broken_answer_is_quietly_no_picture_and_nothing_kept(anilist):
+    """Offline, a server's error or an answer that isn't an image: None (the window shows no picture), never an
+    error; nothing half-written in the cache; a stopped fetcher sends nothing."""
+    pen = Pen()
+    before = _cache_files()
+    f = fetcher(pen, anilist)
+    anilist.down = True
+    assert f.video_cover("dQw4w9WgXcQ") is None and len(anilist.gets) == 1
+    assert _cache_files() == before and pen.covers == []
+    anilist.down = False
+    f.stop()
+    assert f.video_cover("dQw4w9WgXcQ") is None and len(anilist.gets) == 1
+
+
 def test_wants_from_the_feed_finds_a_videos_id_and_leaves_books_and_bilibili_alone():
     items = [
         {"id": 1, "ord": 1, "work_id": 10, "source_type": "youtube", "rel_path": "YouTube/ゆっくり解説 [dQw4w9WgXcQ].txt"},

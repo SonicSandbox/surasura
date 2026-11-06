@@ -27,9 +27,13 @@ TMDB is skipped in 3.0's first cut (no key in source, CI or tests: the seam is `
   title, year, format); **`pick(want, candidate)`** fetches it and keeps it as the user's (`covers.keep_user_bytes`:
   `User Files/<lang>/covers/`, a dated backup of the user image it replaces, locked, on the Undo stack);
   **`paste(want, link)`** — *Paste a link*: AniList, TMDB or YouTube links only.
+- **`video_cover(video_id)`** (a worker's call; Sonic 2026-11-02, Mado-Y2) — the YouTube window's picture of the
+  video it downloads: the same request `_video` makes for a title's cover (its throttle, its headers, its cache — kept
+  there as `video-<hash>`, recorded on no title), only with the switch on; a thumbnail already cached is used with no
+  request, and `_video` uses the window's in turn.
 - **`remove_downloaded()`** — *Remove downloaded covers*: `Writer.forget_covers` (the records cleared, then the cache's
-  files they named deleted: `drop_cached`); the user's covers and the art beside their files stay; a book's cover comes
-  back with the next disk scan (N5).
+  files they named deleted: `drop_cached`) and the window's thumbnails (`video-*`) deleted; the user's covers and the
+  art beside their files stay; a book's cover comes back with the next disk scan (N5).
 """
 import json
 import os
@@ -61,6 +65,7 @@ WAIT_S = 0.5
 NOT_ANIME = ("drama", "youtube", "podcast", "audiobook", "book", "lightnovel", "manga", "text")
 #   a title its user (or its files) say isn't anime: AniList is never asked its name (books online: not at first, C6)
 _OPEN = (None, "generated")         # an unlocked cover a fetch may write over
+_VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")        # a YouTube video's id (`downloader.video_id`'s)
 
 Q_IDS = ("query ($ids: [Int]) { Page(perPage: 50) { media(id_in: $ids) { id coverImage { extraLarge large } } } }")
 Q_SEARCH = ("query ($search: String) { Page(perPage: 10) { media(search: $search, type: ANIME) { id format episodes "
@@ -339,6 +344,26 @@ def drop_cached(paths):
     return n
 
 
+def drop_window_pictures():
+    """(*Remove downloaded covers*, on its worker.) The YouTube window's thumbnails (`video-*`, `Fetcher.video_cover`)
+    deleted from the covers cache, with any `.part` beside them -> how many. A title's cover that took one is cleared
+    with the others first (`drop_cached`); another library's is asked again (S3 / S4)."""
+    folder = path_utils.get_covers_cache_path()
+    n = 0
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 0
+    for name in names:
+        if name.startswith("video-"):
+            try:
+                os.remove(os.path.join(folder, name))
+                n += not name.endswith(".part")
+            except OSError:
+                pass
+    return n
+
+
 # --- the pace ------------------------------------------------------------------------------------------------------ #
 class Throttle:
     """At most `per_minute` requests in any 60 s: `wait()` before each (sleeps, through `sleep`, until the oldest of
@@ -482,7 +507,10 @@ class Fetcher:
             self._done.clear()
             self._later.clear()
         self.airing.clear()
-        return self.writer.forget_covers()
+        number = self.writer.forget_covers()
+        if number is not None:
+            drop_window_pictures()
+        return number
 
     def _start(self):
         if self.background and self._thread is None and not self._stop:
@@ -615,7 +643,21 @@ class Fetcher:
     def _video(self, w):
         if not self._go():
             return 0
+        cached = self._cached_video(w.video_id)     # the YouTube window's picture of it (`video_cover`): no request
+        if cached is not None and "cache:" + cached != w.cover_path:
+            return self._record(w, "youtube", w.video_id, cached)
         return self._land(w, "youtube", w.video_id, f"{self.ytimg}/vi/{w.video_id}/hqdefault.jpg")
+
+    def _cached_video(self, video_id):
+        """The covers cache's file of a YouTube video's thumbnail in this language — the name `_land` gives it — or
+        None."""
+        folder = path_utils.get_covers_cache_path()
+        for source in ("youtube", "video"):         # a title's cover of it, then the window's (`video_cover`)
+            for ext in (".jpg", ".png", ".webp", ".gif"):
+                name = _cache_name(self.language, source, video_id, ext)
+                if os.path.isfile(os.path.join(folder, name)):
+                    return name
+        return None
 
     def _land(self, w, source, ref, url):
         """The image at `url` into the cache, recorded as a background cover once the writer's queue is empty."""
@@ -632,10 +674,36 @@ class Fetcher:
         if not covers._write_whole(os.path.join(path_utils.get_covers_cache_path(), name), data):
             self._failed(w)
             return 0
+        return self._record(w, source, ref, name)
+
+    def _record(self, w, source, ref, name):
+        """The cache's file `name` recorded as the title's background cover once the writer's queue is empty."""
         if not covers._my_turn(self.writer, lambda: self._stop):
             return 0
         self._finished(w)
         return 1 if self.writer.set_cover(w.id, source, ref=ref, path="cache:" + name, auto=True) is not None else 0
+
+    # --- the YouTube window's picture (Sonic 2026-11-02, Mado-Y2) ---------------------------------------------------- #
+    def video_cover(self, video_id):
+        """(A worker's call: waits for its answer.) The thumbnail of the YouTube video the window downloads, as a
+        'cache:<name>' path — the file already in the cache (fetched for the window, or a title's cover) with no
+        request; else fetched as `_video` fetches a title's (`i.ytimg.com/vi/<id>/hqdefault.jpg`: its throttle — the
+        background's share, never the slots kept for the user's own asks —, its headers) and kept in the cache as
+        `video-<hash>` (recorded nowhere; *Remove downloaded covers* deletes it). None, quietly: `covers_download` off
+        or the fetcher stopped (nothing sent, the cache not read), not a video's id, offline or failed."""
+        if not _VIDEO_ID.fullmatch(str(video_id or "")) or not self._go():
+            return None
+        cached = self._cached_video(video_id)
+        if cached is not None:
+            return "cache:" + cached
+        try:
+            data, ext = self._image(f"{self.ytimg}/vi/{video_id}/hqdefault.jpg")
+        except _Failed:
+            return None
+        name = _cache_name(self.language, "video", video_id, ext)
+        if not covers._write_whole(os.path.join(path_utils.get_covers_cache_path(), name), data):
+            return None
+        return "cache:" + name
 
     # --- requests ---------------------------------------------------------------------------------------------------- #
     def _find(self, name, first=False):

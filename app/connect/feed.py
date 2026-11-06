@@ -26,6 +26,10 @@ from collections import namedtuple
 EVERY_S = 3                     # the window's tick while Connect is on (the Tk row's; `services.status.TICKS`)
 
 Feed = namedtuple("Feed", "on mining items line state unseen updating")
+# `miner` (Michi-U): the Anki Miner Connect knows of — the setup record's stat and its installer's version, the status
+# stamp's last two parts (`miner_of`) — so a Feed moves when it does: the reader builds the rows' *Waits for Anki Miner*
+# again and *Needs you* gathers again (an update by hand, or *Update*'s, followed). None before any look
+Feed = namedtuple("Feed", Feed._fields + ("miner",), defaults=(None,))
 # `progress` / `doing` (laptop round 5 #23): a mining item's percent (0–99) and its step in words, else None
 # `stoppable` (laptop round 8 #47): True while the item's job can still be stopped (`actions.stop`: before its cards
 # are made, and not stopped already), else None
@@ -140,7 +144,17 @@ def build(record, language):
                               title=job.get("title") or None,
                               writing_cards=writing_cards)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
-                unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")))
+                unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")),
+                miner=miner_of((record or {}).get("stamp")))
+
+
+def miner_of(stamp):
+    """Michi-U: the Anki Miner part of a status stamp (`status.stamp`: the setup record's [size, mtime] and the
+    installer's version, its last two parts) as a hashable value, or None."""
+    if not isinstance(stamp, (list, tuple)) or len(stamp) < 2:
+        return None
+    record = stamp[-2]
+    return (tuple(record) if isinstance(record, (list, tuple)) else record, stamp[-1])
 
 
 def _next(running, rec):
@@ -224,6 +238,7 @@ class Provider:
         try:
             from app.connect import status
             now = (self._stamp or status.stamp)(languages=[self.language])
+            self._follow(settings, now)
             if self._last is not None and self._last[0] == now:
                 return self._last[1]
             record = (self._read or status.read)(languages=[self.language]) or {}
@@ -234,6 +249,22 @@ class Provider:
             print(f"Connect's status wasn't read: {e}")      # the last good read stays keyed on its own stamp
             return Feed(on=True, mining=frozenset(), items={}, line=UNREADABLE, state="waiting", unseen=0,
                         updating=False)
+
+    def _follow(self, settings, stamp):
+        """Michi-U: an Anki Miner updated by hand is followed at once — the stamp's last part is its installer's version
+        (`status.stamp`), and one the setup record doesn't hold yet has the checks run again on a thread and Connect
+        kicked (`setup.follow_in_background`: in memory each look, no Settings visit, no 15-minute wait)."""
+        if self._stamp is not None:
+            return                                  # a test's stand-in stamp: no installer's version in it
+        if not isinstance(stamp, (list, tuple)) or not stamp or not isinstance(stamp[-1], str):
+            return                                  # no installer's version (not installed by its installer)
+        try:
+            from app.connect import setup
+            if setup.to_follow(stamp[-1]):          # in memory each look; the settings copied only then
+                from app.services.settings import thaw
+                setup.follow_in_background(thaw(settings), self.language, stamp[-1])
+        except Exception as e:
+            print(f"Connect's feed couldn't follow Anki Miner's update: {e}")
 
     def mining(self):
         """`LibraryReader`'s hook: the item ids whose cards are being made."""

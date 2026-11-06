@@ -1339,6 +1339,9 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "find_settings_folder": ("Find it…", "Choose where this folder is on this computer: Connect looks there instead"),
     "drop_settings_folder": ("Stop looking there", "Take this folder out of Connect's video folders. Nothing on disk "
                                                    "is touched"),
+    # Michi-U: Anki Miner's line (titles wait only for the approved Anki Miner)
+    "update_miner": ("Update", "Get the Anki Miner Surasura has tested, free: its installer from its own GitHub "
+                               "release, checked before it opens.\n• Asks before it downloads"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
     # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
@@ -1434,6 +1437,10 @@ NEEDS_DISMISSED = "Taken off the list"
 NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
 NEEDS_ANKI_RUNNING = "Anki is already starting or open"
 NEEDS_ANKI_NOT_STARTED = "Anki couldn't be started from here: open it yourself"
+NEEDS_UPDATE_MINER_ASK = "Update Anki Miner to {version}?"
+NEEDS_MINER_UPDATED = "Anki Miner is updated · Connect makes the waiting cards by itself"
+NEEDS_MINER_NOT_UPDATED = "Anki Miner wasn't updated: its installer closed before it finished"
+NEEDS_MINER_BUSY = "Anki Miner is in use (Connect is making cards, or its window is open): Update again once it's free"
 NEEDS_SAVED_LOGS = "Logs saved to {path}"
 NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
 NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"

@@ -51,7 +51,7 @@ CALL_SITES = {
     "app/services/arrivals.py": 1,
     "app/services/chores.py": 1,
     "app/services/covers.py": 4,
-    "app/services/covers_online.py": 3,
+    "app/services/covers_online.py": 6,
     "app/services/first_run.py": 1,
     "app/services/generate.py": 1,
     "app/services/journey.py": 1,

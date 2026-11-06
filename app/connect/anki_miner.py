@@ -30,6 +30,7 @@ setup is incomplete: `check`'s items name what), `absent`.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -81,6 +82,15 @@ LOOK_UPS = frozenset(("version", "profiles", "check", "settings-export"))
 # episode's percent (`percent`). Measured on DevTest, two episodes of 50 words (fresh media): media 51–63 %, cards
 # 30–43 %, the rest a few % (laptop round 5, 2026-10-22).
 STAGE_SHARES = (0.05, 0.01, 0.57, 0.01, 0.36)
+# #BS0A1K (Sonic: "Taking forever to stop"): Anki Miner reads its cancel file between its steps, never inside one — a
+# book's whole parse (stage 1) ran 11 min past the press. It writes to Anki (the notes and their media) only in its
+# fifth stage, *Creating Anki cards*, announced in its progress file before the first write (3.11.0 ProgressFile
+# `on_stage`: written at once), and it looks at the cancel right before that stage. So a Stop it hasn't acted on this
+# long after its cancel file, its progress still before that stage, ends the program: nothing of it reached Anki.
+# Read in 3.11.0's source (an earlier one's progress may not say so first: it is waited for, as before)
+CARDS_STAGE = 5
+STOP_GRACE_S = 1.5
+ENDS_FROM = (3, 11, 0)
 
 # Anki Miner's `features` names (Z-4; 3.7.0 `cli/api/contract.py` FEATURES), and the ask each answers. A name not
 # here is a later addition: ignored until Surasura knows it.
@@ -753,15 +763,21 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     of its run that answered (laptop round 5 #23: the row moves while Anki Miner works). `known`: `preflight`'s.
     `should_stop()` (laptop round 8 #47, *Stop*): asked at every poll; True -> the run's cancel file (`cancel`), held at every
     poll from then on and removed once the call is over (Anki Miner 3.10 clears an unconsumed one as it starts):
-    Anki Miner ends at its own next check (0.2 s), every note it wrote whole. The answer then carries `stopped`
-    (an AnkiMinerError `cancelled` too, its `stopped` set). `show` (laptop round 8 #50, LF4-3): the title of the show
-    the episode belongs to: every card it makes also carries `runfile.from_tag(show)`. `reading` (Z-9): the book's or
+    Anki Miner ends at its own next check (0.2 s), every note it wrote whole; one it hasn't acted on STOP_GRACE_S
+    later while it has written nothing (`before_anki`) is ended, and the wait for another writer ends at the press
+    (#BS0A1K). The answer then carries `stopped` (an AnkiMinerError `cancelled` too, its `stopped` set). `show`
+    (laptop round 8 #50, LF4-3): the title of the show the episode belongs to: every card it makes also carries
+    `runfile.from_tag(show)`. `reading` (Z-9): the book's or
     the text's file Anki Miner reads (an Anki Miner naming `reading` only): `video` and `subtitle` unused, each word
     named by its sentence. `video` an audio file (`is_audio`, Z-16: an audiobook's, a podcast's): mined as Anki Miner's
     audio episode, the clips cut from it (an Anki Miner naming `audio-episodes` only)."""
     from app import anki_connect, locks
     try:
-        held = anki_connect.writer("Connect's mine step", wait=wait)
+        # #BS0A1K: a Stop pressed while another writer holds Anki (Junban's reorder) ends the wait for it at once
+        held = anki_connect.writer("Connect's mine step", wait=wait,
+                                   cancel=_Asked(should_stop) if should_stop is not None else None)
+    except locks.Cancelled:
+        raise stopping.Stopped() from None
     except locks.Busy as e:
         raise AnkiMinerError("writer-busy", anki_connect.busy_message(e)) from None
     with held:
@@ -782,6 +798,31 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
             done["tag_pending"] = [o["note_id"] for w, o in zip(words, done["outcomes"])
                                    if w.get("name") and o["outcome"] == "made" and o.get("note_id") is not None]
         return done
+
+
+class _Asked:
+    """A job's `should_stop()` as the `threading.Event` `locks.take` waits on: set once Stop is pressed."""
+
+    def __init__(self, should_stop):
+        self._asked = should_stop
+
+    def is_set(self):
+        return bool(self._asked())
+
+    def wait(self, timeout):
+        time.sleep(timeout)
+        return self.is_set()
+
+
+def before_anki(run_dir, run_id, progress):
+    """#BS0A1K: has this run surely written nothing to Anki yet? `progress`: its `read_progress` this poll — at a
+    stage before CARDS_STAGE; or none (None) while Anki Miner still sets up: neither its progress file nor its media
+    folder there yet (it makes that folder before its first stage). Anything else — a file that can't be read now, a
+    run at that stage, or one whose progress was never written: not sure (False)."""
+    if progress is not None:
+        return progress["stage"] < CARDS_STAGE
+    folder = os.path.join(run_dir, run_id)
+    return not os.path.exists(os.path.join(folder, PROGRESS)) and not os.path.exists(os.path.join(folder, "media"))
 
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
@@ -820,17 +861,20 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
             "error": None, "_before": before}
 
     cancelled = []                  # #47: a Stop asked during the call (asked until it is, then held)
+    ends = (version_tuple(info.get("app")) or (0, 0, 0)) >= ENDS_FROM      # #BS0A1K
 
     def poll():
         # the cancel file stands while the Stop does: Anki Miner 3.10 deletes an unconsumed one once, before its
         # setup (a second or two in) — written once, a Stop pressed as the call began was lost
         if should_stop is not None and (cancelled or should_stop()):
             cancel(run_dir, run_id)
-            cancelled[:] = [True]
-        if on_progress is not None:
-            progress = read_progress(run_dir, run_id)
-            if progress is not None:
-                on_progress(progress)
+            cancelled[:] = cancelled or [time.monotonic()]
+        late = ends and cancelled and time.monotonic() - cancelled[0] >= STOP_GRACE_S
+        progress = read_progress(run_dir, run_id) if on_progress is not None or late else None
+        if on_progress is not None and progress is not None:
+            on_progress(progress)
+        if late and before_anki(run_dir, run_id, progress):
+            return stopping.END     # #BS0A1K: in a step that never reads the cancel file, nothing written yet
     poll = poll if (on_progress is not None or should_stop is not None) else None
     try:
         return _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeout, poll, cancelled)
@@ -854,10 +898,17 @@ def _mine_call(path, run_dir, run_id, run_path, data, done, words, named, timeou
         verdict = api(path, ["mine", run_path], timeout=timeout, on_poll=poll)
         refused = (not verdict.get("ok") and verdict.get("error") == "BAD_RUN_FILE"
                    and any(k in (verdict.get("message") or "") for k in runfile.SENTENCE_KEYS))
+        if refused and cancelled:
+            raise stopping.Stopped()        # #BS0A1K: refused, nothing done: no second call after your Stop
         if refused and any(k in data.get("config", {}) for k in runfile.SENTENCE_KEYS):
             # A build that refuses the two sentence keys while it reports 3.6 (am-upstream D1): once more without them
             run_path = done["run_file"] = runfile.write(run_path, runfile.without_sentence_keys(data))
             verdict = api(path, ["mine", run_path], timeout=timeout, on_poll=poll)
+    except stopping.Stopped:
+        # #BS0A1K: ended at your Stop before its card-writing stage: nothing reached Anki, as Anki Miner's own
+        # CANCELLED before any write; the clips it cut go as its own clean-up would have taken them
+        shutil.rmtree(os.path.join(run_dir, run_id, "media"), ignore_errors=True)
+        raise AnkiMinerError("cancelled", "Stopped before Anki Miner made any card.", code="CANCELLED") from None
     except AnkiMinerError as e:
         # A crash or a timeout after the run: Anki Miner writes the result before its verdict, so a complete one
         # may be there. Without it, the batch is uncertain: the caller checks Anki by the job's tag (E11, E14).

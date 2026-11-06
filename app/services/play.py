@@ -19,6 +19,7 @@ on a worker of its own — never the window's thread, nor the reader's — and o
 (S19; the window track's `work/row55/NOTES.md`).
 """
 import itertools
+import json
 import os
 import re
 import threading
@@ -30,7 +31,9 @@ WHY = {
     "unreachable": "its folder can't be reached just now",        # the original's folder: a share offline (AD-2)
     "unreadable": "the library can't be read just now",           # read-only, busy or damaged: its record unread (AD-6)
     "moved": "its {word} isn't where it was ({folder})",           # MV-2: it left its folder, the source still there
+    "no-link": "its video's address wasn't kept",                 # an online video's: no id, no page (try a9.1)
 }
+SITES = {"youtube": "YouTube", "bilibili": "bilibili.tv"}      # an online item's `source_type` -> its site's name
 _UNLISTED = object()                # `runner.beside`'s answer for a folder that can't be listed
 
 
@@ -130,12 +133,51 @@ def _on_disk(path, listings, check=None):
     return False
 
 
-def to_open(language, item_id, rel_path, media):
-    """-> (path, None), or (None, why: plain words for the bar's *Couldn't open X: why*)."""
+def to_open(language, item_id, rel_path, media, online=None):
+    """-> (path, None), or (None, why: plain words for the bar's *Couldn't open X: why*). `online` (the item's
+    `source_type`, "youtube" or "bilibili"): its video's own page instead (`online_link`)."""
+    if online:
+        return online_link(language, rel_path, pairing(language, item_id))
     record, moved = pairing(language, item_id), {}
     if isinstance(record, dict) and record.get("producer") == "source":
         _pairings(language, [item_id], moved)       # D5 / MV-2: a source record's move, as `look` reads it
     return _find(language, rel_path, media, record, {}, _finder(language), moved.get(item_id))
+
+
+def online_link(language, rel_path, record=None):
+    """(A worker; never writes.) What ▶ opens for an online video (try a9.1, Sonic: "the play button for a youtube
+    video should be the video … opens up in the web browser"): its own page in the browser — YouTube's
+    `watch?v=<id>`, bilibili.tv's episode page — from what the downloader kept: the pairing record (`video_id`,
+    `url`), else the cue sidecar beside the transcript, else the id its name ends with (YouTube's; a bilibili.tv page
+    can't be built from its id). -> (link, None), or (None, why)."""
+    from app import path_utils
+    record = record if isinstance(record, dict) else {}
+    rel = rel_path or ""
+    stem = os.path.splitext(rel.rsplit("/", 1)[-1])[0]
+    held = []
+
+    def side():
+        """The cue sidecar beside the transcript, read once and only when the record lacks what is wanted."""
+        if not held:
+            got = {}
+            if rel:
+                try:
+                    path = os.path.join(path_utils.get_data_path(language), *rel.split("/"))
+                    with open(os.path.splitext(path)[0] + path_utils.SIDECAR_SUFFIX, encoding="utf-8") as f:
+                        got = json.load(f)
+                except (OSError, ValueError):
+                    pass
+            held.append(got if isinstance(got, dict) else {})
+        return held[0]
+    if path_utils._BILIBILI_ID_RE.search(stem) or str(record.get("content_key") or "").startswith("bilibili:"):
+        url = str(record.get("url") or side().get("url") or "").split("#", 1)[0]     # (yt-dlp's season fragment)
+        return (url, None) if url.startswith(("https://", "http://")) else (None, WHY["no-link"])
+    m = path_utils._YOUTUBE_ID_RE.search(stem)
+    for kept in (lambda: record.get("video_id"), lambda: side().get("video_id"), lambda: m.group(1) if m else None):
+        video = str(kept() or "").strip()
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", video):                # the first true id of the three
+            return f"https://www.youtube.com/watch?v={video}", None
+    return None, WHY["no-link"]
 
 
 _UNSURE = (WHY["unreachable"], WHY["unreadable"])     # `look`'s None: can't tell just now (a share offline, a busy store)

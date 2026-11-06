@@ -9,7 +9,10 @@ by clicking it if it's running. And if it's not running it wouldn't show"; PROVI
   (`strings.TOOL_MARKS`: 順, ▶, 声…, else its name's first letter; the Anki window Anki's star), the accent arc turning
   while the window works (`SecondaryWindow.at_work`: a write or a press of its).
 - **A click brings the window back** (`windows.bring_back`): out of the icon a minimise tucked it into (no bare title bar
-  in the desktop's corner any more), or to the front. Its hover: the window's name and what it is doing (its status
+  in the desktop's corner any more), or to the front. **A right-click** (or the keyboard's menu key; try a9.1, Sonic:
+  "they can right click on it for an option to stop it"): *Show* · *Stop* (while its window runs work it can stop,
+  `SecondaryWindow.stoppable`) · *Close* (`close_for_good`: what it is doing stops too) — one menu for every icon. Its
+  hover: the window's name and what it is doing (its status
   line, else *Working* / *Open*), then what a click does. One Tab stop per icon; Enter or Space brings it back.
 - **S19:** an icon repaints only when its look changed (`paints`), its hover is set only when its words changed; the
   arc's clock runs only while one turns. Told by the windows themselves (`SecondaryWindow.tell_icon`): opened, closed,
@@ -93,6 +96,7 @@ class ToolIcon(QAbstractButton):
         tucked = win.tucked()
         tip = strings.TOOL_TIP.format(name=win.tool_name, doing=doing)
         tip += "\n• " + (strings.TOOL_BACK_TIP if tucked else strings.TOOL_FRONT_TIP)
+        tip += "\n• " + strings.TOOL_MENU_TIP
         return working, tucked, tip
 
     def refresh(self):
@@ -142,6 +146,20 @@ class ToolIcon(QAbstractButton):
             p.setPen(style.qcolor(c["ink"] if working or tucked else c["ink-dim"]))
             p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.mark)
         p.end()
+
+    def menu(self):
+        """The icon's own menu: *Show* · *Stop* (while its window runs work it can stop) · *Close* — every icon's."""
+        win = self.win
+        return menu_of(self, [(pair, lambda do=do: None if win.gone else do())       # (one menu rule: menu_of)
+                              for pair, do, shown in ((strings.TOOL_SHOW, lambda: windows.bring_back(win), True),
+                                                      (strings.TOOL_STOP, win.stop_work, win.stoppable()),
+                                                      (strings.TOOL_CLOSE, win.close_for_good, True)) if shown])
+
+    def contextMenuEvent(self, event):
+        if not self.win.gone:
+            m = self.menu()
+            m.exec(event.globalPos())
+            m.deleteLater()                                 # (one menu a right-click, gone with it)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.isAutoRepeat():

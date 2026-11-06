@@ -1494,6 +1494,14 @@ def _same_place(tier, to):
     return tier == to or (tier in CURRENT and to in CURRENT)
 
 
+def _keep_value(value):
+    """`keep_watched` as meta holds it (text, an int from `Store._meta`, or absent): 1 when on, else 0."""
+    try:
+        return 1 if value is not None and int(value) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 class _Command:
     """The outermost command's bookkeeping, shared with any command nested inside it (§6.2: `register`
     → its pairing, `undo` → what it replays join the outer transaction): one version for the whole
@@ -1512,7 +1520,9 @@ class _Command:
         self.bump_pins = False
         self.logging = any(k.startswith("reader:") for k in meta)
         self.mine_n = meta.get("mine_line", MINE_LINE_DEFAULT)
-        self.mine_before = store._mine_ids(self.mine_n) if self.logging else None
+        # keep_watched from the meta read a moment ago, in the same transaction (R6: one read less a command)
+        self.mine_before = store._mine_ids(self.mine_n, _keep_value(meta.get("keep_watched"))) \
+            if self.logging else None
         self.events = []      # (item_id, kind, explicit)
         self.explicit = {}    # item_id -> explicit, for its crossing events
         self.quiet = set()    # items that log no event at all (a back-fill registration, P2.1)
@@ -1969,10 +1979,10 @@ class Store:
                                  "piece": r[10] if len(r) > 10 else None})
         return rows
 
-    def _mine_ids(self, n):
+    def _mine_ids(self, n, keep=None):
         """The mine line: the top N of Current's AVAILABLE items (a missing item never counts) that count (W-1: a
-        watched one while `keep_watched` is off has nothing left to mine)."""
-        rule = counts_sql(self._keep_watched())
+        watched one while `keep_watched` is off has nothing left to mine). `keep`: `keep_watched` as the caller read it."""
+        rule = counts_sql(self._keep_watched() if keep is None else keep)
         ids = [r[0] for r in self.conn.execute(
             f"SELECT id FROM items WHERE tier = 'now' AND availability = 'available' AND {rule} ORDER BY ord, id "
             "LIMIT ?", (n,))]
@@ -1985,10 +1995,7 @@ class Store:
     def _keep_watched(self):
         """The library's `keep_watched` option (W-1): 1 when on; absent (every library before it) is off."""
         row = self.conn.execute("SELECT value FROM meta WHERE key = 'keep_watched'").fetchone()
-        try:
-            return 1 if row and int(row[0]) else 0
-        except (TypeError, ValueError):
-            return 0
+        return _keep_value(row[0] if row else None)
 
     def _root_id(self):
         row = self.conn.execute("SELECT id FROM roots WHERE kind = 'library' ORDER BY id LIMIT 1").fetchone()
@@ -2356,18 +2363,19 @@ class Store:
     def _key(self, item_id):
         return self.conn.execute("SELECT id, ord FROM items WHERE id = ?", (item_id,)).fetchone()
 
-    def _put(self, tier, ids, where, changed_in):
+    def _put(self, tier, ids, where, changed_in, anchor=None):
         """Place `ids` (in order) contiguously in `tier` at `where` — ('after', id), ('before', id),
         ('top',) or ('end',) — touching only the rows that change: the placed items (tier, ord,
-        `changed_in`) and, when the gap is spent, a local window re-spaced (ord only, §6.5)."""
+        `changed_in`) and, when the gap is spent, a local window re-spaced (ord only, §6.5). `anchor`: the anchor's
+        (id, ord) when the caller read it in the same transaction."""
         excl = set(ids)
         kind = where[0]
         if kind == "after":
-            lo = self._key(where[1])
+            lo = anchor or self._key(where[1])
             nxt = self._beyond(tier, lo, excl, 1, 1)
             hi = nxt[0] if nxt else None
         elif kind == "before":
-            hi = self._key(where[1])
+            hi = anchor or self._key(where[1])
             prv = self._beyond(tier, hi, excl, -1, 1)
             lo = prv[0] if prv else None
         elif kind == "top":
@@ -2486,7 +2494,8 @@ class Store:
                 return None
             change = self._change(cmd, "move")
             self._before(change, ordered)
-            self._put(tier, block, where, cmd.version)
+            self._put(tier, block, where, cmd.version,
+                      (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None)
             # --- P4.1 L2 (TF fix 8, G1.6-10): out of Finished by any path, its cards come back into the order ---
             self._back_in_order(cmd, change, [r[0] for r in ordered if r[1] == "graduated" and tier != "graduated"])
             # --- end P4.1 L2 ---
@@ -3769,12 +3778,14 @@ class Store:
         items; LM11 G3: an undo puts a deleted group back under its own id, which nothing else can have taken)."""
         base = self.conn.execute("SELECT title, kind FROM pieces WHERE id = ?", (like,)).fetchone() if like else None
         kind = base[1] if base else "run"
-        piece = _next_id(self.conn, "pieces")
         cmd = self._cmd
-        if cmd is not None:      # inside a command: its sequence row written once, at its end (`_Command.finish`, R6)
-            piece = max(piece, cmd.piece_seq + 1)
+        if cmd is not None:      # inside a command: its sequence row written once, at its end (`_Command.finish`, R6);
+            # past the command's last new piece, which is past every id issued before it (an undo's pieces come back
+            # under ids issued earlier), so only the first needs the table read
+            piece = cmd.piece_seq + 1 if cmd.piece_seq else _next_id(self.conn, "pieces")
             cmd.piece_seq = piece
         else:
+            piece = _next_id(self.conn, "pieces")
             _set_seq(self.conn, "pieces", piece)
         self.conn.execute("INSERT INTO pieces (id, title, kind, created_at) VALUES (?, ?, ?, ?)",
                           (piece, None if kind == "group" else base[0] if base else title, kind, _now()))
@@ -3954,8 +3965,10 @@ class Store:
             news |= affected
             for run in pending:
                 work = info[run[0]][2]
-                before = self._side(run[0], -1)
-                after = self._side(run[-1], 1)
+                ends = {r[0]: r[1:] for r in conn.execute("SELECT id, tier, ord FROM items WHERE id IN (?, ?)",
+                                                          (run[0], run[-1]))}       # one read for both (R6)
+                before = self._side(run[0], -1, ends[run[0]])
+                after = self._side(run[-1], 1, ends[run[-1]])
                 if before is not None and before[2] == work and before[1] is not None and not is_group(before[1]):
                     piece = before[1]
                 elif after is not None and after[2] == work and after[1] is not None and not is_group(after[1]):
@@ -4026,9 +4039,11 @@ class Store:
                               [(p, cmd.version, i) for p, i in sets])
         cmd.fed_inline.update(i for _p, i in sets)
 
-    def _side(self, item_id, direction):
-        """(id, piece_id, work_id) of the row just before (-1) or after (1) an item in its tier, or None."""
-        row = self.conn.execute("SELECT tier, ord FROM items WHERE id = ?", (item_id,)).fetchone()
+    def _side(self, item_id, direction, row=None):
+        """(id, piece_id, work_id) of the row just before (-1) or after (1) an item in its tier, or None. `row`: the
+        item's (tier, ord) when the caller has read it."""
+        if row is None:
+            row = self.conn.execute("SELECT tier, ord FROM items WHERE id = ?", (item_id,)).fetchone()
         if direction < 0:
             sql = ("SELECT id, piece_id, work_id FROM items WHERE tier = ? AND (ord, id) < (?, ?) "
                    "ORDER BY ord DESC, id DESC LIMIT 1")

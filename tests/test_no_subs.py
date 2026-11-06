@@ -640,5 +640,9 @@ def test_a_beside_copy_the_learner_corrected_is_still_the_same_episode(film, fak
             f.write("\n4\n00:01:44,000 --> 00:01:46,000\nそれでは、カードを作りましょう。\n")
         _look(store, "ja", root, full=True)
         assert _items(store) == before
+        (item_id, _rel, _a), = before
+        # the look leaves it with its video's episode (never a record of its own); the made text stays the item's
+        assert not store.conn.execute("SELECT 1 FROM pairings WHERE content_key LIKE '%from-audio%'").fetchone()
+        assert library.pairing_of(store, item_id)["verdict"] == "transcribed"
     finally:
         store.__exit__(None, None, None)

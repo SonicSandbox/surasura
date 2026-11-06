@@ -329,8 +329,8 @@ def _new_folder(store, language, data_dir, root, src, folder, n):
 def test_the_show_key_index_is_kept_on_the_handle_and_reads_only_the_titles_changed_since(language, monkeypatch):
     """#289's regression (Kura-B, R6: an insert of one file at 100k, 8.3k titles, 1.4 → 41 ms): the show keys of every
     title were worked out again for each command bringing in a new show folder. Now they are kept on the handle and
-    brought up to date from `works.feed_in`: after the first, a new folder's command reads only the titles changed
-    since (its own new title, the candidate re-read) — never every title."""
+    brought up to date from `works.feed_in`: after the first (built in the set-up's own take-in), a new folder's
+    command reads only the titles changed since (its own new title, the candidate re-read) — never every title."""
     store, data_dir = _empty(language)
     src = _source_root()
     many = names(language)[90:110]
@@ -344,6 +344,49 @@ def test_the_show_key_index_is_kept_on_the_handle_and_reads_only_the_titles_chan
         bang = _work_of(store, rels[f"{many[0]}!"][0])
         assert _new_folder(store, language, data_dir, root, src, many[0], 2) == bang
         assert len(read) <= 3, read                     # the last command's new title + the candidate, not 21 titles
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_one_look_bringing_in_many_new_folders_reads_each_title_once(language, monkeypatch):
+    """Review SSI #1: one take-in of many new show folders (a library's first look) — each title's names are read once
+    in the command, never once for every later folder (it was N²: 5.8 s for 1,500 folders)."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    folders = [f"{names(language)[n % 60]} {n}" for n in range(120)]
+    read = []
+    real = ls._show_keys
+    monkeypatch.setattr(ls, "_show_keys", lambda k: read.append(k) or real(k))
+    with store:
+        root = store.add_source(src)
+        _take(store, language, data_dir, root, src, {f: (1,) for f in folders}, before_a8=False)
+        assert store.conn.execute("SELECT COUNT(*) FROM works").fetchone()[0] == len(folders)
+    assert len(read) <= 2 * len(folders) + 5, len(read)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_renamed_earlier_in_the_same_command_is_found_by_its_new_name(language):
+    """Review SSI #2: inside one command, a title gains a name (a rename, a record's title, a merge's) and then a new
+    folder of that name comes in — it joins that title (the command's own changes are read as written, not only after
+    it commits); a command that rolls back leaves the kept index to be read again."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    a, b = names(language)[117], names(language)[118]
+    with store:
+        root = store.add_source(src)
+        rels = _take(store, language, data_dir, root, src, {f"{a}!": (1,)}, before_a8=False)
+        wa = _work_of(store, rels[f"{a}!"][0])
+        assert _new_folder(store, language, data_dir, root, src, names(language)[119], 1)    # (the index is built)
+        f = _found(language, data_dir, src, b, f"{b} - 02.srt", 960)
+        with store._command("rename_then_take_in"):
+            store.rename_work(wa, f"{b}!")
+            store.take_in(root, [f])
+        assert _work_of(store, f["rel"]) == wa
+        assert store._shows is not None
+        with pytest.raises(RuntimeError):
+            with store._command("fails"):
+                store.rename_work(wa, f"{a}~")
+                raise RuntimeError("a command that fails")
+        assert store._shows is None and _works(store)[wa][0] == f"{b}!"
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

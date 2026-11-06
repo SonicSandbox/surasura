@@ -1564,6 +1564,7 @@ class _Command:
         self.meta = meta
         self.version = meta["state_version"] + 1
         self.epoch = meta["epoch"]
+        self.shows_read = set()                     # the titles of `fed_works` `Store._show_titles` read since written
         self.changed = False
         self.bump_order = False
         self.bump_avail = False
@@ -1938,6 +1939,9 @@ class Store:
             try:
                 yield cmd
                 deltas = cmd.finish()
+            except BaseException:
+                self._shows = None                  # (the kept show keys may hold what rolls back: read again)
+                raise
             finally:
                 self._cmd = None
         if deltas:
@@ -3352,19 +3356,31 @@ class Store:
 
     def _show_titles(self, cmd):
         """{"key": {show key: {work ids}}, ...}: every title by the show keys of its names (`episode_names.show_key`),
-        kept on this handle and brought up to date from `works.feed_in` (indexed; the change feed's own column: every
-        command stamps the titles it changed, a new title is made with its command's version) — only the titles changed
-        since are read again, never every title once a command (#289's regression: 41 ms an insert at 8.3k titles,
-        Kura-B's R6). Read once in full a handle (and again when the store's epoch moves: a rebuild). A title gone since
-        stays in it — `_same_show_folder` re-reads each candidate by its id. Its stamp never passes a version below this
-        command's: what this command writes is read again next time (a command that rolls back leaves nothing behind
-        but such stale entries)."""
+        kept on this handle — never every title read again once a command (#289's regression: 41 ms an insert at 8.3k
+        titles, Kura-B's R6). Brought up to date two ways: what other commands committed, from `works.feed_in` (indexed;
+        the change feed's own column — `_write_feed` stamps every title a command changed), only the versions after the
+        last read and before this command's; and what THIS command changed, from its `fed_works` (every writer of a
+        title records it there: a new title, its names, a merge's kept title, an Undo's), each read once until it is
+        written again (`_rekey_work`; review SSI #1, #2: a bulk look's thousands of new folders read once each, a title
+        renamed earlier in the same command found by its new name). Read in full once a handle, and again when the
+        epoch moves (a rebuild) or a command rolls back (`_command`). A title gone since stays in it —
+        `_same_show_folder` re-reads each candidate by its id."""
         kept = getattr(self, "_shows", None)
         if kept is None or kept["epoch"] != cmd.epoch:
             kept = self._shows = {"epoch": cmd.epoch, "stamp": -1, "work": {}, "key": {}}
+            cmd.shows_read.clear()                  # (a full read: this command's titles are in it as they are now)
+            rows = self.conn.execute("SELECT id, search_key, feed_in FROM works").fetchall()
+            cmd.shows_read.update(cmd.fed_works)
+        else:
+            rows = self.conn.execute("SELECT id, search_key, feed_in FROM works WHERE feed_in > ? AND feed_in < ?",
+                                     (kept["stamp"], cmd.version)).fetchall()
+            mine = cmd.fed_works - cmd.shows_read
+            for chunk in _chunks(sorted(mine), 500):
+                rows += self.conn.execute(f"SELECT id, search_key, feed_in FROM works WHERE id IN "
+                                          f"({','.join('?' * len(chunk))})", chunk).fetchall()
+            cmd.shows_read |= mine
         stamp = kept["stamp"]
-        for wid, keys, fed in self.conn.execute("SELECT id, search_key, feed_in FROM works WHERE feed_in > ?",
-                                                (kept["stamp"],)):
+        for wid, keys, fed in rows:
             new, old = _show_keys(keys), kept["work"].get(wid, frozenset())
             for k in old - new:
                 kept["key"][k].discard(wid)
@@ -3519,6 +3535,8 @@ class Store:
         title, titles = self.conn.execute("SELECT title, titles FROM works WHERE id = ?", (work_id,)).fetchone()
         self.conn.execute("UPDATE works SET search_key = ? WHERE id = ?",
                           (_work_search_key(title, json.loads(titles or "[]"), self.language), work_id))
+        if self._cmd is not None:
+            self._cmd.shows_read.discard(work_id)   # (its names changed again: `_show_titles` reads it again)
 
     def _work_row(self, work_id):
         cur = self.conn.execute("SELECT * FROM works WHERE id = ?", (work_id,))

@@ -549,7 +549,10 @@ def test_an_earlier_openings_late_list_never_lands_in_the_next_one(window, monke
     gates = _hold_listing(monkeypatch, [_entry("20261030-154000")], [])
     card = settings_sources.open_fresh(win, win)
     card.no.click()
+    first = card.sheet.relay
     assert settings_sources.open_fresh(win, win) is card
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert sip.isdeleted(first) and card.sheet.relay is not first           # (one relay an opening, never kept)
     gates[1].set()
     assert wait_until(lambda: card.sheet.backups == [], 5)
     gates[0].set()                                                                # the first opening's list, late

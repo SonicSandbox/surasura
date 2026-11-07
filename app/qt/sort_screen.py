@@ -29,7 +29,7 @@ import time
 from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFontMetricsF, QPainter, QPainterPath, QPalette, QPixmap, QPolygonF, QTextLayout, QTextOption
-from PyQt6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QStyle,
+from PyQt6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QStyle,
                              QStyleOptionButton, QStylePainter, QVBoxLayout, QWidget)
 
 from app import scrub, theme
@@ -587,6 +587,9 @@ class SortScreen(QWidget):
         self.win, self.door = win, door
         self.setObjectName("sortscreen")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # its ground painted by itself, opaque (`paintEvent`): Qt never paints what it covers — Current's list laid
+        # out again under it by a choice's placement was painted, and the screen over it, at every choice (WC B4)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setStyleSheet(sheet())
         self.setAccessibleName(S.SORT_NAME)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -608,6 +611,11 @@ class SortScreen(QWidget):
             groups = getattr(view, "arrival_groups", ()) if view is not None else ()
             if groups:
                 self.set_groups(groups)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), _c("bg"))          # the sheet's `background` (an opaque widget's isn't drawn by Qt)
+        p.end()
 
     # --- building ------------------------------------------------------------------------------------------------ #
     def _build(self):
@@ -971,14 +979,17 @@ class SortScreen(QWidget):
         return seq
 
     def _rest_menu(self):
-        m = QMenu(self.btn_rest)
-        m.setObjectName("rowmenu")
-        m.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        for name, label, tip, _key in S.SORT_CHOICES:
-            if name in PLACE_OF:
-                act = m.addAction(label)
-                act.setToolTip(tip)
-                act.triggered.connect(lambda _c=False, n=name: self.rest(n))
+        """*Put the rest in…*: its entries never change, so the menu is made once and kept hidden between opens (R5)."""
+        m = getattr(self, "_rest_kept", None)
+        if m is None:
+            from app.qt.drag import _KeptMenu            # (closed, it only hides: its native window kept too)
+            m = self._rest_kept = _KeptMenu(self.btn_rest)
+            m.setObjectName("rowmenu")
+            for name, label, tip, _key in S.SORT_CHOICES:
+                if name in PLACE_OF:
+                    act = m.addAction(label)
+                    act.setToolTip(tip)
+                    act.triggered.connect(lambda _c=False, n=name: self.rest(n))
         self.last_menu = m
         m.popup(self.btn_rest.mapToGlobal(self.btn_rest.rect().topLeft()))
         return m

@@ -262,6 +262,8 @@ class Results(motion.Overlay):
         self.scroll.setWidget(self.body)
         box.addWidget(self.scroll)
         self.hits = []                                   # the HitRows shown, in order
+        self._kept = {}                                  # (a fill) what the last one showed, to take back
+        self._made_f = None                              # the text size the rows shown were made at
         self.query = None
         self.groups = ()
         self.fills = 0                                   # times refilled (tests: a keystroke refills, never re-opens)
@@ -278,24 +280,25 @@ class Results(motion.Overlay):
         self.query, self.groups = query, tuple(groups or ())
         self.fills += 1
         self.setAccessibleName(strings.SEARCH_RESULTS_NAME.format(query=query))
+        # R5 (WC C2): the rows already made are kept and taken back — a hit's row by its hit, a line by its words —
+        # and only what this fill shows anew is made; what it no longer shows goes. A row's height and margins are
+        # its text size's (`_f`, set as it is made): after a text-size change every row is made anew.
+        f = _f()
+        same_size, self._made_f = f == self._made_f, f
+        self._kept = {}
         while self.lines.count():
-            item = self.lines.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-        self.hits, self.picked = [], -1
-        if not self.groups:
-            self._label("searchnone", strings.SEARCH_NONE.format(query=query.strip()))
-        for g in self.groups:
-            self._label("searchgroup", g.label.upper())
-            for hit in g.hits:
-                row = HitRow(hit, self.body)
-                row.clicked.connect(self.cut.reveal)
-                row.play.connect(self.cut.play)
-                row.top.connect(self.cut.top)
-                self.lines.addWidget(row)
-                self.hits.append(row)
-            if g.total > len(g.hits):
-                self._label("searchmore", strings.SEARCH_MORE.format(n=g.total - len(g.hits)))
+            w = self.lines.takeAt(0).widget()
+            if w is not None:
+                self._kept.setdefault((w.hit if isinstance(w, HitRow) else (w.objectName(), w.text()))
+                                      if same_size else object(), []).append(w)
+        try:
+            self._fill()
+        finally:
+            for gone in self._kept.values():
+                for w in gone:
+                    w.hide()
+                    w.deleteLater()
+            self._kept = {}
         self.place()
         if not self.isVisible() and motion.opening_of(self) is None:
             self.opens += 1
@@ -303,7 +306,38 @@ class Results(motion.Overlay):
         else:
             self.raise_()
 
+    def _fill(self):
+        """(`show_groups`) The lines for `self.groups`, each taken back from the last fill or made."""
+        query = self.query
+        for row in self.hits:
+            row.set_current(False)
+        self.hits, self.picked = [], -1
+        if not self.groups:
+            self._label("searchnone", strings.SEARCH_NONE.format(query=query.strip()))
+        for g in self.groups:
+            self._label("searchgroup", g.label.upper())
+            for hit in g.hits:
+                row = self._take(hit)
+                if row is None:
+                    row = HitRow(hit, self.body)
+                    row.clicked.connect(self.cut.reveal)
+                    row.play.connect(self.cut.play)
+                    row.top.connect(self.cut.top)
+                self.lines.addWidget(row)
+                self.hits.append(row)
+            if g.total > len(g.hits):
+                self._label("searchmore", strings.SEARCH_MORE.format(n=g.total - len(g.hits)))
+
+    def _take(self, key):
+        """A widget the last fill showed for `key` (a hit, or a line's (name, words)), taken back; else None."""
+        same = self._kept.get(key)
+        return same.pop(0) if same else None
+
     def _label(self, name, text):
+        label = self._take((name, text))
+        if label is not None:
+            self.lines.addWidget(label)
+            return label
         f = _f()
         label = QLabel(text, self.body)
         label.setObjectName(name)

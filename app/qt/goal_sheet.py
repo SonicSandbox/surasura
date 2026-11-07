@@ -29,7 +29,7 @@ import time
 
 from PyQt6.QtCore import QEvent, QObject, QRect, QRectF, Qt, QTimer
 from PyQt6.QtGui import QAction, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import QAbstractItemView, QApplication, QMenu, QScrollArea, QToolButton, QWidget
+from PyQt6.QtWidgets import QAbstractItemView, QApplication, QScrollArea, QToolButton, QWidget
 
 from app import path_utils, theme
 from app.qt import confirm, frame, motion, rows, shadow, strings, style
@@ -603,10 +603,8 @@ class GoalSheet(motion.Overlay):
         from app.qt import item_menu
         _moves, writer = self._writer()
         n = len(self.picked())
-        m = QMenu(self)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
-        m.aboutToHide.connect(m.deleteLater)
+        from app.qt import drag
+        m = drag.list_menu(self, strings.PICKS_TITLES.format(n=f"{n:,}"))     # R5: the sheet's one kept menu
         item_menu.fill_picks_menu(m, n, "goal", writer, self.send_picks, goal=True)
         self.last_menu = m
         m.popup(at if at is not None else tile.more.mapToGlobal(tile.more.rect().bottomLeft()))
@@ -647,10 +645,8 @@ class GoalSheet(motion.Overlay):
         if not writable:
             raw = (writer.reason() if writer is not None else None) or ""
             reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
-        m = QMenu(self)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
-        m.setAccessibleName(strings.MENU_NAME.format(title=work.title))
+        from app.qt import drag
+        m = drag.list_menu(self, work.title)            # R5 (WC C1): the sheet's one menu, emptied as it hides
         for name, label, tip, ok in menu_entries(work, writable, reason):
             if name == "folder":                                    # --- W3.2 L3: Change cover… after the moves
                 qcovers.add_cover_menu(m, work, writable, reason)

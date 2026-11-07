@@ -3794,6 +3794,9 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     eng = plan_engine.Engine(plan)
     eng.replan(order)
     result = eng.result(pick=True, texts=plan_texts(language, data_dir, store))
+    if not result.priority:
+        print("The journey can't be redrawn from the plan (no list): generating.")
+        return None                         # (a run with no list writes none: the Generate says so its own way)
     _progress("Writing your list")
 
     def _rows_as(path, rows):

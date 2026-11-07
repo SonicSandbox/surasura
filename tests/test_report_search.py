@@ -193,8 +193,9 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     caption cleaner, so a word's small-type reading row is no words (P1.3-1); 32, the 3.0 batch, keeps a repeated
     Japanese frequency-list word's commoner rank and lists a missing item from its cached words; 33 makes Finished
     content reference, its names the name tables' evidence as a watched episode's are; 34 marks a known sentence's set
-    phrases known, as it marks its words.)"""
-    assert analyzer.ENGINE_REVISION == 34
+    phrases known, as it marks its words; 35 makes Context 1 always the word's first sentence outside Only i+1; 36 keeps a
+    written number that opens a sentence (20,000人, 1.5倍) whole.)"""
+    assert analyzer.ENGINE_REVISION == 36
 
 
 # --------------------------------------------------------------------------- #

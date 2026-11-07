@@ -341,9 +341,19 @@ def described(row, text):
     return re.fullmatch(pattern, text, re.DOTALL) is not None
 
 
+# Help cards (§4.1, §6.4): the rows whose ? opens their area's help card on a click (its description stays the hover)
+ROW_CARDS = {"connect_enabled": "cards", "mine_line": "current", "anki_sync_auto": "known", "automation": "automation",
+             "placing_rules": "arrivals", "keep_watched": "stones", "finish_cards": "finished",
+             "enable_junban": "junban", "backfill_patterns": "backfill",
+             "level": "level"}
+
+
 class HelpMark(QLabel):
     """A row's ? (a9.1): its description in the bubble on hover, on keyboard focus (Tab) and on a click or Enter /
-    Space (the bubble's own rules, `tooltip.Tooltips`: wrapped to its width)."""
+    Space (the bubble's own rules, `tooltip.Tooltips`: wrapped to its width). A row with a help card (`ROW_CARDS`,
+    `card`): a click or Enter / Space opens that card instead (its hover says so)."""
+
+    card = None
 
     def __init__(self, parent=None):
         super().__init__(S.HELP_MARK, parent)
@@ -354,6 +364,10 @@ class HelpMark(QLabel):
         self.setVisible(False)
 
     def set_about(self, label, text):
+        if text and self.card is not None:
+            from app.services import help_cards
+            if help_cards.available(self.card):
+                text = S.HELP_MARK_CARD.format(text=text)
         if self.toolTip() != text:
             self.setToolTip(text)
             self.setAccessibleName(S.HELP_MARK_NAME.format(label=label) if label else S.HELP_MARK)
@@ -362,6 +376,10 @@ class HelpMark(QLabel):
             self.setVisible(bool(text))
 
     def _ask(self):
+        if self.card is not None and self.toolTip().endswith(S.HELP_MARK_CARD.split("{text}", 1)[1]):
+            from app.qt import help_card
+            help_card.open_card(self, self.card)
+            return
         tips = getattr(self.window(), "tooltips", None)
         if tips is not None and self.toolTip():
             tips.request(self)
@@ -428,6 +446,7 @@ class RowView(QWidget):
         self.help.setObjectName("settingshelp")
         self.help.setWordWrap(True)
         self.mark = HelpMark(self)
+        self.mark.card = ROW_CARDS.get(getattr(row, "id", None))
         self.title = QHBoxLayout()                # the label, its ?, room after
         self.title.addWidget(self.label, 1000)    # (as wide as its words, `_fit_title`; the room after takes the rest)
         self.title.addWidget(self.mark, 0, Qt.AlignmentFlag.AlignVCenter)

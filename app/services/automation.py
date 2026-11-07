@@ -38,6 +38,7 @@ import threading
 import time
 from collections import namedtuple
 
+from app.services import causes
 from app.services import generate as generate_module
 from app.services import jobs as jobs_module
 
@@ -54,6 +55,17 @@ IDLE, SYNCING, SYNCED, CLOSED, FAILED = "idle", "syncing", "synced", "anki-close
 SYNC_LABEL = "Updating known words from Anki"
 BACKLOG_LABEL = "Reading Anki's new cards"
 JUNBAN_LABEL = "Re-ordering Anki (automatic)"
+
+# Why each duty started by itself (the help cards' *Why?*, §5.1): its job's `cause`, by the trigger it was given. A
+# sync the user asked for (`sync_now`) has none: the press is its cause.
+WHY_OPENED = "Surasura opened"
+WHY_BACK = "You came back to Surasura (at most once every 5 minutes)"
+WHY_LANGUAGE = "You switched to {language}"
+WHY_SESSION = "Anki brought in your newest reviews"
+WHY_KNOWN = "Anki brought in words you know"
+WHY_JUNBAN_GENERATE = "Generate ended, and Re-order after Generate is on"
+WHY_BACKLOG = "Generate reads Anki's new cards"
+LANGUAGES = {"ja": "Japanese", "zh": "Chinese"}
 
 State = namedtuple("State", "sync language added known message junban seq shows", defaults=(None,))
 #   shows (Michi-C): the shows behind the backlog's last offer, as a short digest — a new one asks *Needs you* again
@@ -239,10 +251,10 @@ class AutoSync:
         self._owner = owner
         self._last = float("-inf")
 
-    def maybe(self, force=False, asked=False):
+    def maybe(self, force=False, asked=False, cause=None):
         """(The worker.) Start a sync when every gate allows: None, or why not (a short word, for tests and logs).
         `asked`: the user's own (`Automation.sync_now`) — the same job, run with the automatic sync switched off too,
-        and a user's job in the registry."""
+        and a user's job in the registry (no cause); `cause`: an automatic one's trigger (`causes.Cause`)."""
         o = self._owner
         settings = o.settings_now()
         if not (asked or settings.get("anki_sync_auto")) or os.environ.get("SURASURA_NO_ANKI_SYNC"):
@@ -264,7 +276,8 @@ class AutoSync:
         fields = list((settings.get("anki_sync_fields") or {}).get(language) or [])
         suspended = bool(settings.get("anki_sync_include_suspended", False))
         o.registry.submit("anki-sync", SYNC_LABEL, automatic=not asked, on_quit="detach",
-                          start=lambda job: o.thread(self._work, job, language, settings, decks, fields, suspended))
+                          start=lambda job: o.thread(self._work, job, language, settings, decks, fields, suspended),
+                          cause=None if asked else (cause or causes.Cause(WHY_BACK, time.time(), "known")))
         return None
 
     def _work(self, job, language, settings, decks, fields, suspended):
@@ -364,7 +377,7 @@ class AutoSync:
                 print(f"Anki backlog skipped: {e}")
             job.finish(ok=True)
         o.registry.submit("anki-backlog", BACKLOG_LABEL, automatic=True, on_quit="detach",
-                          start=lambda job: o.thread(work, job))
+                          start=lambda job: o.thread(work, job), cause=causes.Cause(WHY_BACKLOG, time.time(), "known"))
         return None
 
 
@@ -417,7 +430,8 @@ class AutoGenerate:
         print("Anki brought in words you know now — generating in the background; the report is not opened.")
         _set_up(o.language)
         o.sync.backlog()
-        o.controller.request(o.language, settings=_thaw(settings), quiet=True, settle=0, launcher=o.launcher)
+        o.controller.request(o.language, settings=_thaw(settings), quiet=True, settle=0, launcher=o.launcher,
+                             cause=causes.Cause(WHY_KNOWN, self.pending_at or time.time(), "generate"))
         return True
 
     def _arm(self, wait):
@@ -487,8 +501,9 @@ class AutoJunban:
         self._owner = owner
         self._last = float("-inf")
 
-    def maybe(self, force=False):
-        """(The worker.) None when the reorder was asked for, else why not."""
+    def maybe(self, force=False, cause=None):
+        """(The worker.) None when the reorder was asked for, else why not. `cause`: its trigger (`causes.Cause`;
+        none: the window came back into focus)."""
         o = self._owner
         now = o.clock()
         if not force and now - self._last < JUNBAN_EVERY:
@@ -523,7 +538,8 @@ class AutoJunban:
             if message:
                 o.publish(junban=message)
         o.registry.submit("junban", JUNBAN_LABEL, automatic=True, on_quit="wait",
-                          start=lambda job: o.thread(work, job))
+                          start=lambda job: o.thread(work, job),
+                          cause=cause or causes.Cause(WHY_BACK, time.time(), "junban"))
         return None
 
 
@@ -588,7 +604,8 @@ class Automation:
         with self.lock:
             if self.closed or self._start_timer is not None:
                 return
-            self._start_timer = self.timer(START_DELAY, lambda: self.worker.put(self.sync.maybe, True))
+            self._start_timer = self.timer(START_DELAY, lambda: self.worker.put(
+                self.sync.maybe, True, False, causes.Cause(WHY_OPENED, time.time(), "known")))
 
     def activated(self):
         """The window came back into focus (the Tk `<FocusIn>`): the journey asked again (`recheck`), the sync, 順 and
@@ -604,7 +621,8 @@ class Automation:
         with self.lock:
             self.language = language or "ja"
         self.worker.put(self._read_known)
-        self.worker.put(self.sync.maybe, True)
+        self.worker.put(self.sync.maybe, True, False, causes.Cause(
+            WHY_LANGUAGE.format(language=LANGUAGES.get(self.language, self.language)), time.time(), "known"))
         self.worker.put(self.generate.maybe)
 
     def known_changed(self):
@@ -628,7 +646,8 @@ class Automation:
         found) and after a focus's look whose session sync brought your phone's reviews in; else at its own pace (the
         Tk `_maybe_anki_sync(force=fresh)`). Any thread; returns at once. Nothing once closed."""
         if not self.closed:
-            self.worker.put(self.sync.maybe, bool(force))
+            self.worker.put(self.sync.maybe, bool(force), False,
+                            causes.Cause(WHY_SESSION if force else WHY_BACK, time.time(), "known"))
 
     def sync_now(self, then=None):
         """A sync the user asked for (a click on the bar's known-words count, Q30): the automatic sync's own job,
@@ -754,7 +773,7 @@ class Automation:
         if self.closed:
             return
         if outcome == "current":
-            self.worker.put(self.junban.maybe, True)
+            self.worker.put(self.junban.maybe, True, causes.Cause(WHY_JUNBAN_GENERATE, time.time(), "junban"))
         self.worker.put(self.generate.ended, run.language, outcome, getattr(run.job, "started_at", None))
 
     def _jobs_changed(self, views):

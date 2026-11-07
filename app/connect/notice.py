@@ -47,6 +47,13 @@ def _words(arrived):
     return f"{total} {noun} {verb} while Surasura was closed: {parts}"
 
 
+def names_arrivals(line):
+    """Whether a notice `at_open` gave names what arrived (its first part), not only Connect's lost track — the help
+    cards' *Why?* on it explains arrivals, never a gap."""
+    first = (line or "").split(" · ", 1)[0]
+    return " arrived " in first and first.find("while Surasura was closed") > 0
+
+
 def _lost_track(language):
     """Connect's gaps not yet named (✅ P2.1-3) -> their line, marked named; None when there's none. The ledger is only
     read when it exists: the window never makes one."""

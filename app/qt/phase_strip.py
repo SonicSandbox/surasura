@@ -58,7 +58,7 @@ from PyQt6.QtWidgets import QWidget
 from app import theme
 from app.qt import logos, motion, strings, style
 from app import replan_preview
-from app.services import phase
+from app.services import causes, phase
 from app.services import press as press_service
 
 LOGOS = {phase.MINER: "anki_miner", phase.ANKI: "anki_outline"}   # the circles that show a logo (`logos.CLEARED`'s
@@ -132,6 +132,7 @@ class PhaseStrip(QWidget):
         self._hand = False                     # the pointer shows the hand (over a circle that opens)
         self._asks = None                      # 順's line when it is a part of its own (a decision or a fault), or None
         self.lands = None                      # Go -> whether its place holds the decision now (the shell's, a7)
+        self.on_states = None                  # states -> None, after each refresh (the shell's one-time hints, HC-3)
         self.stops = None                      # circle -> whether its work can be stopped now (the shell's, try a9.1)
         self.can_show = None                   # circle -> whether there is a place its work is seen now (the shell's)
         self._timer = QTimer(self)
@@ -139,9 +140,30 @@ class PhaseStrip(QWidget):
         self._timer.timeout.connect(self.refresh)
         self._turn = motion.Turn(self, self._turned)
         self._looks = {c: self.look(c) for c in phase.CIRCLES}
-        side = theme.size("phase-circle")
-        self.setFixedSize(round(len(phase.CIRCLES) * side + (len(phase.CIRCLES) - 1) * theme.size("phase-gap")),
-                          round(side))
+        self.help = None                       # the ? after the circles (help cards, HC-2): the strip's own last mark
+        self._size()
+
+    def _size(self):
+        """Five circles and their gaps, and — once it has one — its ? after them, a gap on: the bar's line follows the
+        strip at the bar's own spacing (W3.1a's polish rule), never after a part of its own."""
+        side, gap = theme.size("phase-circle"), theme.size("phase-gap")
+        width = len(phase.CIRCLES) * side + (len(phase.CIRCLES) - 1) * gap
+        height = side
+        if self.help is not None:
+            hint = self.help.sizeHint()
+            self.help.setGeometry(round(width + gap), max(0, round((side - hint.height()) / 2)), hint.width(),
+                                  hint.height())
+            width += gap + hint.width()
+            height = max(height, hint.height())
+        self.setFixedSize(round(width), round(height))
+
+    def set_help(self, button):
+        """The circles' ? (`help_card.help_mark("circles", …)`), placed inside the strip after its five circles."""
+        button.setParent(self)
+        button.ensurePolished()
+        self.help = button
+        self._size()
+        button.show()
 
     # --- what comes in ---------------------------------------------------------------------------------------- #
     def set_jobs(self, views):
@@ -276,6 +298,8 @@ class PhaseStrip(QWidget):
         self._paint_changed()
         self._wake(now)
         self._retext()
+        if self.on_states is not None:
+            self.on_states(self.states)
 
     def _landed(self, st):
         """a7: amber only while its place holds the decision — a *Needs you* card put away
@@ -461,25 +485,33 @@ class PhaseStrip(QWidget):
             now = said[:1] or [strings.PHASE_STARTING]
         elif not now and circle in self._standing:
             now = [self._standing[circle]]
-        out += [esc(line) for line in now]
+        why = dict(getattr(st, "why", ()) or ())        # help cards: a line's cause, under it (dim)
+        for line in now:
+            out.append(esc(line))
+            if line in why:
+                out.append(f'<span style="color:{dim}">{esc(self.why_line(why[line]))}</span>')
         last = st.last
         if st.failed and (last is None or last.state != "failed" or last.id in self._seen):
             out.append(esc(strings.PHASE_FAILED_NOW.format(why=st.failed)))
         if not now and not st.failed and not st.needs:
             out.append(esc(strings.PHASE_IDLE))
         if last is not None:
-            at = time.strftime(strings.PHASE_TIME, time.localtime(last.at)) if last.at else ""
+            at = causes.when(last.at, self.now()) if last.at else ""     # the one time rule (help cards, §5.1)
             what = getattr(self._last.get(circle), "label", None) or strings.PHASE_NAMES[circle]   # the job's name
             if last.state == "failed":
-                out.append(esc(strings.PHASE_FAILED.format(what=what, time=at, why=last.words or "")))
+                said = strings.PHASE_FAILED.format(what=what, time=at, why=last.words or "")
             elif last.state == "needs" and st.needs:
-                out.append(esc(strings.PHASE_NEEDS.format(why=last.words)))
+                said = strings.PHASE_NEEDS.format(why=last.words)
             elif last.state == "needs":                 # (a7: it named no place to decide — no *Needs you*)
-                out.append(esc(strings.PHASE_ENDED_WAITING.format(what=what, time=at, why=last.words)))
+                said = strings.PHASE_ENDED_WAITING.format(what=what, time=at, why=last.words)
             elif last.state == "stopped":
-                out.append(esc(strings.PHASE_STOPPED.format(what=what, time=at)))
+                said = strings.PHASE_STOPPED.format(what=what, time=at)
             else:
-                out.append(esc(strings.PHASE_DONE.format(what=what, time=at)))
+                said = strings.PHASE_DONE.format(what=what, time=at)
+            cause = getattr(last, "cause", None)
+            if cause is not None and cause.line and not now:    # (live again: its own *Why:* says the newer cause)
+                said = strings.PHASE_LAST_WHY.format(last=said, line=cause.line)
+            out.append(esc(said))
         if self._pressable(circle):
             press = self.press_words(circle)
             out.append(f'<span style="color:{dim}">{esc(press)}</span>')
@@ -489,6 +521,20 @@ class PhaseStrip(QWidget):
             items = " · ".join(more)
             out.append(f'<span style="color:{dim}">{esc(strings.PHASE_MENU_TIP.format(items=items))}</span>')
         return '<p style="margin:0">' + "<br>".join(out) + "</p>"
+
+    def why_line(self, cause):
+        """A cause as the hover says it (*Why: you moved … · 14:02*), the one time rule."""
+        return causes.said(cause, self.now(), strings.PHASE_WHY, strings.PHASE_WHY_AT)
+
+    def causes(self):
+        """Every lit circle's live jobs and why each started by itself: [(circle, line, cause)], in the strip's
+        order — the `circles` help card's list (spec §5.1)."""
+        out = []
+        for c in phase.CIRCLES:
+            st = self.states[c]
+            for line, cause in getattr(st, "why", ()) or ():
+                out.append((c, line, cause))
+        return out
 
     def summary(self):
         """The strip read out (its accessible description): the circle in the keyboard's focus and what a press does,
@@ -627,6 +673,8 @@ class PhaseStrip(QWidget):
             self._set_hand(False)
             self._pressed = None
             self._leave_hover(self._focus if self.hasFocus() else None)   # (the keyboard's circle stays looked at)
+        elif et == QEvent.Type.LayoutRequest and self.help is not None:
+            self._size()                       # its ? took another size (the text size): placed again
         elif et == QEvent.Type.DevicePixelRatioChange:
             self._load_logos()                 # another screen's scale: decoded again at its ratio (PS-A8)
         elif et == QEvent.Type.MouseMove and self.tooltips is not None:

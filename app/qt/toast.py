@@ -10,6 +10,11 @@ the buckets): no input, its time still running; after the drop it is back, unani
 The message is plain text (a title is never read as markup). The window never waits on a toast; what Undo does is the
 caller's (W3.1's undo stack).
 
+**Why?** (the help cards, HG-2; spec §5.2): a toast for something Surasura did by itself carries its cause
+(`show(why=Cause)`): a text button *Why?* at its right end, outside `MAX_BUTTONS` (the message is shortened before it,
+never it). A press opens that cause's help card (`ToastHost.why_asked(cause, done)`, the shell's); the toast's time
+pauses while the card is open and runs on from where it was once `done()` is called, so its Undo is never lost.
+
 **Its write waiting** (round 8 row 45): a toast that stands for a write still on its way reads *"… · saving…"*
 (`set_saving`, the drag controller's one rule for every write's toast, wherever it shows — `drag.DragController`).
 **Nothing moves** as those words come and go: a toast that may say them keeps their room from the moment it shows
@@ -48,6 +53,7 @@ class ToastCard(motion.Overlay):
         row.addWidget(self.text, 1)
         self.buttons = []                   # made as a toast first needs them, each wired once (the wiring check)
         self._callbacks = []
+        self.why = None                     # *Why?* (help cards): made the first time a toast has a cause
         self.message = ""
         self.base = self.tail = ""          # the message's own words, and what follows them (*· saving…*), never elided
         self.room = ""                      # words whose room the card keeps while it shows (it never moves for them)
@@ -58,7 +64,11 @@ class ToastCard(motion.Overlay):
             b.setProperty("size", "sm")
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)       # reachable by Tab; a click never takes the keyboard
             b.clicked.connect(lambda _c=False, n=len(self.buttons): self._press(n))
-            self.layout().addWidget(b)
+            lay = self.layout()
+            if self.why is not None:                    # (*Why?* stays the last in the row)
+                lay.insertWidget(lay.indexOf(self.why), b)
+            else:
+                lay.addWidget(b)
             self.buttons.append(b)
         return self.buttons[i]
 
@@ -70,6 +80,25 @@ class ToastCard(motion.Overlay):
         self.base, self.tail = message, tail
         self.message = message + tail
         self.setAccessibleName(self.message)
+
+    def why_button(self, on_press):
+        """*Why?* — made once, the last in the row (help cards)."""
+        if self.why is None:
+            self.why = QPushButton(strings.TOAST_WHY, self)
+            self.why.setProperty("size", "sm")
+            self.why.setProperty("kind", "link")
+            self.why.setToolTip(strings.TOAST_WHY_TIP)
+            self.why.setAccessibleName(strings.TOAST_WHY_NAME)
+            self.why.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+            self.why.clicked.connect(lambda _c=False: self._why_press())
+            self.layout().addWidget(self.why)
+        self._on_why = on_press
+        return self.why
+
+    def _why_press(self):
+        call = getattr(self, "_on_why", None)
+        if call is not None:
+            call()
 
     def set_content(self, message, actions):
         """`actions`: [(label, tooltip, callback)], at most MAX_BUTTONS."""
@@ -93,7 +122,7 @@ class ToastCard(motion.Overlay):
         fm = QFontMetrics(self.text.font())
         width = fm.horizontalAdvance(self.base) + max(fm.horizontalAdvance(self.tail),
                                                       fm.horizontalAdvance(self.room)) + 2
-        for b in self.buttons:
+        for b in self.buttons + ([self.why] if self.why is not None else []):
             if not b.isHidden():
                 width += lay.spacing() + b.sizeHint().width()
         return width + m.left() + m.right()
@@ -135,11 +164,15 @@ class ToastHost(QObject):
         self.saving = False
         self.on_show = None                           # called as each toast shows (the drag controller's: which writes
         parent.installEventFilter(self)               # it stands for)
+        self.why_asked = None                         # (cause, done) -> the help card opened (the shell's); `done()`
+        self.cause = None                             # ... when it closes. The shown toast's cause, else None
+        self._paused = None                           # ms left while its card is open (the toast's time paused)
 
     # --- showing ---------------------------------------------------------------------------------------------- #
-    def show(self, message, undo=None, buttons=(), long=False):
+    def show(self, message, undo=None, buttons=(), long=False, why=None):
         """Show `message` (plain text). `undo`: a callback for *Undo*; `buttons`: [(label, tooltip, callback)] — each
-        click runs its callback and closes the toast. `long`: 12 s (the Anki offer), else 6.5 s."""
+        click runs its callback and closes the toast. `long`: 12 s (the Anki offer), else 6.5 s. `why`: what made it
+        happen (`causes.Cause`, for what Surasura did by itself): a *Why?* at the end, outside the buttons' count."""
         opening = motion.opening_of(self.card)
         if opening is not None:
             opening.finish()                          # replaced mid-rise: the old one lands, the new one shows in place
@@ -149,6 +182,11 @@ class ToastHost(QObject):
         actions.extend((label, tip, self._closing(cb)) for label, tip, cb in buttons)
         self.text, self.saving = message, False
         self.card.set_content(message, actions)
+        self.cause, self._paused = why, None
+        if why is not None and self.why_asked is not None:
+            self.card.why_button(self._why).setVisible(True)
+        elif self.card.why is not None:
+            self.card.why.setVisible(False)
         self.alive = True
         if self.on_show is not None:
             self.on_show()
@@ -180,9 +218,30 @@ class ToastHost(QObject):
             self.card.room = strings.TOAST_SAVING
             self.place()
 
+    def _why(self):
+        """*Why?* pressed: the toast's time paused, its card opened; the time runs on when the card closes."""
+        if not self.alive or self.cause is None or self.why_asked is None:
+            return
+        if self._paused is None and self.life.isActive():
+            self._paused = self.life.remainingTime()
+            self.life.stop()
+        shown = self.text
+        self.why_asked(self.cause, lambda: self._resume(shown))
+
+    def _resume(self, shown):
+        """The card closed: the same toast still up runs on from where its time was (a newer one has its own)."""
+        left, self._paused = self._paused, None
+        if left is not None and self.alive and self.text == shown and not self.life.isActive():
+            self.life.start(max(1, left))
+
+    @property
+    def paused(self):
+        return self._paused is not None
+
     def close(self):
         self.saving = False
         self.alive = False
+        self._paused = None
         self.life.stop()
         self.card.hide()
         self.card._callbacks = []                     # a late click on a closed toast does nothing

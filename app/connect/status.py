@@ -230,6 +230,7 @@ def _language(conn, lang, is_running, words):
             counts[outcome] = n
         entry = {"job": job["id"], "item": job["item_id"], "title": items.get(job["item_id"], {}).get("title"),
                  "kind": job.get("kind") or "mine", "state": job["state"], "reason": job.get("reason"),
+                 "since": job.get("reason_at") if job.get("reason") else None,   # help cards: the wait's *since*
                  "resume": job.get("resume"),  # row 56: the step a waiting job goes on at (the feed's Stop rule)
                  "step": STEP_WORDS.get(job["state"]) or STEP_WORDS.get(job.get("resume") or ""),
                  "words": len(_picked_words(job.get("picked"))), "made": counts.pop("made", 0),

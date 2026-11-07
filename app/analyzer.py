@@ -3762,6 +3762,148 @@ def _plan_is_this_runs(run_signature, results_dir=None):
     return header is not None and header.get("run_signature") == run_signature
 
 
+def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, library, store, args):
+    """F7: the journey for this order from the last Generate's plan, when it is that Generate's library in all but the
+    order (`plan_engine.check` None: the same files, known words, lists, settings and set-aside files, the run stamp
+    its own) — the plan engine re-planned to the order and its re-pick (`Engine.result(pick=True)`: the Generate's
+    pick, one rule). Writes what the order moves of the journey: both lists, word_stats.json's list rows, the list
+    words' entries in library_frequency.json, the file statistics in the order, the sidecars and the report; the
+    order recorded as analysed, and the redraw marker (`REDRAW_FILE`). The plan, the run stamp and everything else
+    stay the Generate's (D1: a word under the list's cut-off keeps its first file and score until the next one).
+    -> main()'s exit value once drawn (0, or 1: the report failed); None when the plan can't serve this library, before
+    anything is written: then a Generate runs."""
+    from app import plan_engine
+    import pandas as pd
+    plan_path = os.path.join(RESULTS_DIR, PLAN_FILE)
+    try:
+        plan = plan_engine.load(plan_path)
+    except plan_engine.PlanError as e:
+        print(f"The journey can't be redrawn from the plan ({e}): generating.")
+        return None
+    verdict = plan_engine.check(plan, language, engine_id(), read_run_stamp(RESULTS_DIR), sig_parts,
+                                (library or {}).get("epoch"))
+    if verdict is not None or plan.header.get("format") != plan_engine.FORMAT:
+        print(f"The journey can't be redrawn from the plan ({verdict}): generating.")
+        return None
+    prefix = os.path.join(data_dir, "")
+    order = []
+    for file_path, label, _weight, _type in found_files:
+        rel = (file_path[len(prefix):] if file_path.startswith(prefix) else os.path.relpath(file_path, data_dir))
+        order.append((rel.replace("\\", "/"), _PLAN_TIERS.get(label, "goal")))
+    _progress("Picking sentences")
+    eng = plan_engine.Engine(plan)
+    eng.replan(order)
+    result = eng.result(pick=True, texts=plan_texts(language, data_dir, store))
+    _progress("Writing your list")
+
+    def _rows_as(path, rows):
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            columns = next(csv.reader(f), None)
+        if not columns or (rows and set(columns) - set(rows[0])):
+            raise ValueError(f"{os.path.basename(path)}'s columns aren't the plan's")
+        return pd.DataFrame(rows, columns=columns)
+
+    df = _rows_as(OUTPUT_CSV, result.priority)
+    df_prog = _rows_as(OUTPUT_PROGRESSIVE, result.progressive)
+    write_list(lambda tmp: df.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_CSV)
+    if not df_prog.empty:
+        write_list(lambda tmp: df_prog.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_PROGRESSIVE)
+
+    # word_stats.json's list rows: what the order moves (Score, the tier counts, the first file, the sentences)
+    n_contexts = plan.header.get("max_contexts") or 0
+    word_stats_path = os.path.join(RESULTS_DIR, "word_stats.json")
+    with open(word_stats_path, encoding="utf-8") as f:
+        stats = json.load(f)
+    sequence = result.sequence
+    for row in result.priority:
+        key = (row["Word"], row["Reading"])
+        entry = stats.get(f"{key[0]}|{key[1]}")
+        if entry is None:
+            continue
+        high, low, goal = result.counts[key]
+        entry.update(score=result.score[key], high_count=high, low_count=low, goal_count=goal,
+                     min_seq=sequence.get(result.first.get(key), entry.get("min_seq")))
+        for i in range(1, n_contexts + 1):
+            entry[f"final_context_{i}"] = row.get(f"Context {i}", "")
+            entry[f"final_src_{i}"] = row.get(f"Src {i}", "")
+    with open(word_stats_path, 'w', encoding='utf-8') as f:
+        f.write(json.dumps(stats, indent=2, ensure_ascii=False))
+    try:
+        _write_sidecars(RESULTS_DIR, stats)
+    except Exception as e:
+        print(f"Warning: could not write Content Manager sidecars: {e}")
+
+    # library_frequency.json: each list word's first file, tier counts, Score and spelling in this order
+    try:
+        lib_path = os.path.join(RESULTS_DIR, "library_frequency.json")
+        with open(lib_path, encoding="utf-8") as f:
+            lib = json.load(f)
+        words = lib.get("words") or {}
+        for row in result.priority:
+            key = (row["Word"], row["Reading"])
+            entry = words.get(f"{key[0]}|{key[1]}")
+            if isinstance(entry, list) and len(entry) >= 7:
+                high, low, goal = result.counts[key]
+                entry[1:7] = [high, low, goal, sequence.get(result.first.get(key), entry[4]), result.score[key],
+                              row.get("Orth") or entry[6]]
+        with open(lib_path, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(lib, ensure_ascii=False))
+    except Exception as e:
+        print(f"Warning: could not update the library frequency map: {e}")
+
+    # The file statistics in this order (each file's own numbers don't move)
+    try:
+        stats_json = os.path.join(RESULTS_DIR, "file_statistics.json")
+        with open(stats_json, encoding="utf-8") as f:
+            file_stats = json.load(f)
+        if len(file_stats) == len(plan.files):
+            at = {entry[0]: i for i, entry in enumerate(plan.files)}
+            file_stats = [file_stats[at[rel]] for rel, _tier in order]
+            with open(OUTPUT_STATS, encoding="utf-8") as f:
+                head = f.read().split("\nFile: ", 1)[0].rstrip("\n") + "\n\n"
+            with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
+                f.write(head)
+                for stat in file_stats:
+                    f.write(f"File: {stat['File']}\n")
+                    f.write(f"  Total Words: {stat['Total Words']}\n")
+                    f.write(f"  Known Words: {stat['Known Count']}\n")
+                    f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
+                    f.write("\n")
+            with open(stats_json, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+    except Exception as e:
+        print(f"Warning: could not reorder the file statistics: {e}")
+
+    _progress("Writing the journey")
+    record_analysed(language, library, data_dir)
+    report_failed = False
+    if args.static:
+        try:
+            try:
+                from app import static_html_generator
+            except ImportError:
+                import static_html_generator
+            _html = os.path.join(RESULTS_DIR, "reading_list_static.html")
+            marks = None if args.theme in ZEN_THEMES else journey_marks(language)
+            made = _made_fingerprint(language)
+            rendering = time.time()
+            drawn = static_html_generator.generate_static_html(
+                theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
+                open_browser=not args.no_open, language=language, marks=marks)
+            report_failed = not _report_written(_html, rendering)
+            try:
+                store.set_meta("last_render_sig", signed_render(args, drawn, not report_failed, made))
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Error: Could not generate static HTML: {e}")
+            report_failed = True
+    with open(os.path.join(RESULTS_DIR, REDRAW_FILE), "w", encoding="utf-8") as f:
+        json.dump({"plan": plan.header["run_signature"], "run": run_sig}, f)
+    print("Redrew the journey from the plan (only the order moved).")
+    return 1 if report_failed else 0
+
+
 class _LazyTagger:
     """A Japanese tagger made the first time a sentence needs one (`strip_verse_number`: a sentence led by digits)."""
 
@@ -3868,6 +4010,9 @@ def _build_analysis_parser():
     parser.add_argument("--no-open", action="store_true", help="Write the report but do not open it")
     # The window's progress (W1.3): P0.3's JSON lines on stdout. Not an analysis input: out of compute_run_signature.
     parser.add_argument("--progress-json", action="store_true", help="Print progress as JSON lines (the window's)")
+    # F7: the journey keeper's catch-up after a plain move — the journey redrawn from the last Generate's plan when
+    # only the order moved since (`_redraw_from_plan`), else a Generate as ever. Not an analysis input.
+    parser.add_argument("--from-plan", action="store_true", help="Redraw the journey from the plan when only the order moved")
     return parser
 
 
@@ -4192,7 +4337,8 @@ def journey_is_current(args, language):
             stored = store.get_meta("last_run_signature")
         finally:
             store.close()
-        current = stored == sig and read_run_stamp(results_dir) == sig and _plan_kept(language, sig, results_dir)
+        current = (stored == sig and read_run_stamp(results_dir) == sig and _plan_kept(language, sig, results_dir)
+                   and redrawn_for(results_dir) is None)
         if current:
             record_analysed(language, library)
         return current
@@ -4240,7 +4386,7 @@ def journey_check(args, language):
                    ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json")):
             return False
         return (_token_store_meta(language, "last_run_signature") == sig and read_run_stamp(results_dir) == sig
-                and _plan_kept(language, sig, results_dir))
+                and _plan_kept(language, sig, results_dir) and redrawn_for(results_dir) is None)
     except Exception:
         return None
 
@@ -4665,6 +4811,27 @@ def _template_fingerprint():
 # changes. A stamp that is missing (results from before this existed) counts as a mismatch: one
 # full run, then back to skipping.
 RUN_STAMP_FILE = "run_signature.txt"
+# F7: the journey redrawn from the plan after a plain move (`_redraw_from_plan`): {"plan": the plan's run signature,
+# "run": the run signature of the order it was drawn for}. While it is there the outputs are that order's, not the
+# stamp's run's: no reuse reads them as current (`redrawn_for`), and a Generate removes it before it writes.
+REDRAW_FILE = "journey_redrawn.json"
+
+
+def redrawn_for(results_dir):
+    """The redraw marker in `results_dir` ({"plan", "run"}), or None (none, or unreadable). Never raises."""
+    try:
+        with open(os.path.join(results_dir, REDRAW_FILE), encoding="utf-8") as f:
+            marker = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return marker if isinstance(marker, dict) else None
+
+
+def _forget_redraw(results_dir):
+    try:
+        os.remove(os.path.join(results_dir, REDRAW_FILE))
+    except OSError:
+        pass
 
 
 def engine_id():
@@ -5096,6 +5263,7 @@ def main():
             and not os.environ.get("SURASURA_FORCE_RUN")         # surasura-cli generate --force
             and _store.get_meta("last_run_signature") == _run_sig
             and read_run_stamp(RESULTS_DIR) == _run_sig     # ...and results/ is THIS run's (above)
+            and redrawn_for(RESULTS_DIR) is None             # ...not redrawn for another order since (F7)
             and (not _plan_on or _plan_is_this_runs(_run_sig))):   # the preview's plan too (E1.2-1)
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
         _progress("Writing the journey")    # the sidecars and a re-render write results/: a cancel waits for the end
@@ -5144,10 +5312,23 @@ def main():
     # "nothing changed" skip path above never pays its ~0.35s import cost.
     import pandas as pd
 
+    # F7: only the order moved since the last Generate, and the journey keeper asks for the journey: redrawn from that
+    # Generate's plan — its re-pick is the Generate's pick — with no file read (else a Generate, below).
+    if getattr(args, "from_plan", False) and _store is not None and _run_sig and _analysis_outputs_present:
+        try:
+            _redrawn = _redraw_from_plan(language, data_dir, found_files, _sig_parts, _run_sig, _library, _store, args)
+        except Exception as e:
+            print(f"Warning: the journey couldn't be redrawn from the plan ({e}); generating instead.")
+            _redrawn = None
+        if _redrawn is not None:
+            _store.close()
+            return _redrawn
+
     # A real run is about to replace results/. Drop the stamp first, so a run that dies part-way
     # leaves outputs that no skip will ever mistake for a finished run. Re-stamped at the end.
     os.makedirs(RESULTS_DIR, exist_ok=True)     # made here as it is written (the import makes it only where it may)
     _set_run_stamp(RESULTS_DIR, None)
+    _forget_redraw(RESULTS_DIR)
     _PROGRESS["ran"] = True
     _progress("Reading your files", 0, len(found_files))
 

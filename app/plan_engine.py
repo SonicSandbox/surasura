@@ -457,8 +457,8 @@ def _what_moved(plan, parts, added=()):
             replan.append("files-added")
         elif name == "reference" and _only_left(plan, parts):
             replan.append("reference-removed")
-        elif name == "finished" and "reference" in moved and _only_left(plan, parts):
-            continue                        # (F7) the Finished files' order moves when one only left: the same
+        elif name == "finished" and "reference" in moved:
+            continue                        # (F7) the Finished files' order moves with them: "reference" says which
         else:
             return ("generate-first", name)
     if not replan:

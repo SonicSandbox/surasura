@@ -13,7 +13,7 @@ back what it moved, unmeasured.
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QPoint, QPointF, QRect, Qt
+from PyQt6.QtCore import QObject, QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
@@ -609,3 +609,89 @@ def test_r4_the_arrow_keys_step_the_ring_and_repaint_only_the_two_rows_it_moves_
     finally:
         lst.setCurrentIndex(first)
         settle(100)
+
+
+class _DeletedActions(QObject):
+    """QActions deleted later (their deferred deletes) while it is installed on the application."""
+    n = 0
+
+    def eventFilter(self, obj, event):
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QAction
+        if event.type() == QEvent.Type.DeferredDelete and isinstance(obj, QAction):
+            self.n += 1
+        return False
+
+
+def _menu_act(m, name):
+    return next(a for a in m.actions() if a.text() == strings.MENU_ITEMS[name][0])
+
+
+def test_r5_the_rows_menu_opened_again_makes_no_action_and_its_close_deletes_none(screen):
+    """⋯ on a row, closed, ⋯ on another, closed: the kept menu takes back the actions the last open used (`drag.
+    menu_action`) — the second open makes no QAction and its close deletes none. (Up next at 20,000 files: each ⋯ made
+    ~13 actions, deleted after the pick in ~13 deferred deletes, 2–5 ms each while the writer's and the reader's
+    threads ran: half the press's stretch.)"""
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QAction
+    seed, win, writer = screen
+    rs = win.page_widgets["current"].view_model.rows
+    at = win.mapToGlobal(QPoint(300, 300))
+    m = win.items.menu(rs[5], at)
+    settle(50)
+    m.close()
+    settle(50)
+    made = len(m.findChildren(QAction))
+    with wc.measure(win) as w:
+        m = win.items.menu(rs[4], at)
+        settle(50)
+        shown = len([a for a in m.actions() if not a.isSeparator()])
+        m.close()
+    assert shown >= 5 and w.kinds[QEvent.Type.DeferredDelete] == 0, w.report()
+    assert len(m.findChildren(QAction)) <= made + 2, (made, len(m.findChildren(QAction)))    # (the submenus' own)
+
+
+def test_r3_up_next_picked_in_the_menu_repaints_the_rows_it_moves_never_the_window_nor_lays_it_out(screen):
+    """⋯ › Up next, picked as a click picks it (the menu hidden, then its action): the rows from its old place to the top
+    are drawn afresh, nothing outside the list repaints but the toast and the bar's line — never the whole window as the
+    focus comes back from the menu (`shell.Central`: Qt repaints a widget whole as it gains the focus, and the central
+    widget is the whole window) — and no layout pass of the central widget or the window at the toast's words
+    (`toast.ToastCard.body`). The close deletes no action (`drag.menu_action`)."""
+    from PyQt6.QtCore import QEvent
+    seed, win, writer = screen
+    lst = lst_of(win)
+    win.activateWindow()
+    win._rest.setFocus()                                          # (where the focus rests: the bench's, a click's)
+    settle(30)
+    rs = list(win.moves.base().rows)
+    src = 6
+    row = rs[src]
+    rect = lst.visualRect(lst.model().index(next(i for i, e in enumerate(lst.model().entries)
+                                                  if getattr(e[1], "key", None) == row.key), 0))
+    at = lst.viewport().mapToGlobal(rect.bottomLeft())
+    m = win.items.menu(row, at)                                   # (a first open: the kept menu's actions made)
+    settle(50)
+    m.close()
+    settle(50)
+    m = win.items.menu(row, at)
+    settle(50)
+    act = _menu_act(m, "up-next")
+    reader = win.services.library
+    saved, built, renders = len(writer.saved), reader.builds, lst.delegate.renders
+    central = win.centralWidget()
+    actions = _DeletedActions()
+    QApplication.instance().installEventFilter(actions)
+    try:
+        with wc.measure(win, readers=[reader]) as w:
+            m.hide()
+            act.trigger()
+            assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [] and reader.builds > built,
+                              3)
+            settle(200)
+    finally:
+        QApplication.instance().removeEventFilter(actions)
+    assert [k for k in keys_of(win) if k is not None][0] == row.key, w.report()
+    assert 1 <= lst.delegate.renders - renders <= src + 2, w.report()   # the rows from its old place to the top
+    assert actions.n == 0, w.report()                                  # (13 before: every action of the menu)
+    assert w.layouts_of(central) == 0 and w.layouts_of(win) == 0, w.report()
+    assert w.paints_outside_rect(wc.rect_in_window(lst), *_allowed_outside_the_list(win)) == [], w.report()

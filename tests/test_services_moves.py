@@ -809,6 +809,30 @@ def test_a_raw_error_is_a_logged_note_and_the_queue_goes_on(stub_writer, capsys)
     assert "disk I/O error" in capsys.readouterr().out
 
 
+def test_a_deferred_press_is_written_only_after_the_windows_go(stub_writer):
+    """(Up next at 20,000 files.) The window defers its press's command until it has painted the press: the writer's
+    thread takes Python's lock in turns with the window's, so a write worked out during the paint doubled the press's
+    stretch. Nothing is tried before `go()`; after it, the command lands as ever."""
+    w, heard, store, _opener = stub_writer()
+    w.defer()
+    w.move([1], "goal", label="press")
+    time.sleep(0.1)                                    # (under DEFER_MAX_S: still waiting)
+    assert store.calls == [] and w.attempts == 0 and w.pending() == 1
+    w.go()
+    assert h.until(lambda: heard.saved)
+    assert heard.saved[0][1] == "press" and len(store.calls) == 1
+
+
+def test_a_deferred_press_whose_go_never_comes_is_written_after_DEFER_MAX_S(stub_writer):
+    """The window's go lost (it closed, an error before it): the write still happens, `DEFER_MAX_S` late at most."""
+    w, heard, store, _opener = stub_writer()
+    t0 = time.monotonic()
+    w.defer()
+    w.move([1], "goal")
+    assert h.until(lambda: heard.saved)
+    assert time.monotonic() - t0 >= M.DEFER_MAX_S * 0.9 and len(store.calls) == 1
+
+
 def test_a_value_error_outside_a_move_is_a_raw_error(stub_writer):
     w, heard, store, _opener = stub_writer()
     store.fail["set_tier"] = ValueError("unknown tier 'x'")
@@ -936,7 +960,7 @@ class Recorder:
     def __init__(self):
         self.moves, self.resyncs = [], 0
 
-    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None):
+    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None, landing=None):
         self.moves.append((list(ids), tier, before_id, after_id))
         return {}
 
@@ -1504,6 +1528,95 @@ def test_resync_after_the_windows_own_move_works_nothing_out_again(tmp_path):
     seed.library.commit(items=[{"id": goal[-1]["id"], "tier": "now", "ord": now[0]["ord"] - 1}], order=True)
     numbers.resync()
     assert numbers.idle(30) and numbers.renumbered == passes
+    numbers.close()
+
+
+def _goal_to_now_top(seed, analysed):
+    """(item, the store's write that puts it at NOW's top): a Goal item moved to Up next."""
+    goal = [r for r in analysed if r["tier"] == "goal"]
+    now = sorted((r for r in seed.library.items() if r["tier"] == "now"), key=lambda r: (r["ord"], r["id"]))
+    item = goal[-1]["id"]
+    return item, lambda: seed.library.commit(items=[{"id": item, "tier": "now", "ord": now[0]["ord"] - 1}], order=True)
+
+
+def test_a_resync_asked_while_a_followed_move_is_on_its_way_waits_for_it_and_works_nothing_out_again(tmp_path):
+    """(Up next at 20,000 files, the probes' rare full re-plan.) The reader asks the numbers again after every write,
+    so a resync from the last move can run after the writer's `after_move` for the next one and before that write
+    lands: it found the store a move behind, worked the old order out again (12 ms of the worker's time at 20k, the
+    window's thread waiting for Python's lock), then the new one once more after the write. A move on its way is waited
+    for: no full pass at all, and the figures stay the move's."""
+    seed, analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    passes = numbers.renumbered
+    item, write = _goal_to_now_top(seed, analysed)
+    landing = {}
+    assert numbers.after_move([item], "now", landing=landing) and landing.get("ahead")
+    moved = dict(numbers()[1])
+    numbers.resync()                                   # the last write's resync: the store a move behind
+    assert numbers.idle(30) and numbers.renumbered == passes
+    write()
+    numbers.landed()
+    numbers.resync()                                   # this write's
+    assert numbers.idle(30) and numbers.renumbered == passes and numbers()[1] == moved and numbers.why() is None
+    numbers.close()
+
+
+def test_a_resync_put_off_for_a_move_on_its_way_still_follows_another_programs_write(tmp_path):
+    """A resync waited for the window's move: once that lands, it runs — another program's write that came meanwhile
+    is worked out (never lost by the wait), and a resync with nothing written since reads no order at all."""
+    seed, analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    numbers.load()
+    assert numbers.idle(30)
+    passes = numbers.renumbered
+    item, write = _goal_to_now_top(seed, analysed)
+    landing = {}
+    numbers.after_move([item], "now", landing=landing)
+    soon = sorted((r for r in seed.library.items() if r["tier"] == "soon"), key=lambda r: (r["ord"], r["id"]))
+    other = soon[-1]["id"]                             # another program: Soon's last to Goal's top
+    goal_top = min(r["ord"] for r in seed.library.items() if r["tier"] == "goal")
+    seed.library.commit(items=[{"id": other, "tier": "goal", "ord": goal_top - 1}], order=True)
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes          # put off: the window's move is on its way
+    write()
+    numbers.landed()                                   # (the reader's resync for it not even asked: the put-off one runs)
+    assert numbers.idle(30) and numbers.renumbered == passes + 1
+    reads = []
+    real = numbers._order
+    numbers._order = lambda store: reads.append(1) or real(store)
+    numbers.resync()
+    assert numbers.idle(30) and reads == [] and numbers.renumbered == passes + 1
+    numbers.close()
+
+
+def test_a_move_followed_while_a_resync_reads_the_order_is_never_worked_back(tmp_path):
+    """The writer follows a move while the worker is reading the store's order (the read a move behind): that read is
+    thrown away and the order read again once the move lands — never the engine worked back to the old order."""
+    seed, analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    numbers.load()
+    assert numbers.idle(30)
+    passes = numbers.renumbered
+    item, write = _goal_to_now_top(seed, analysed)
+    real = numbers._order
+    landing = {}
+
+    def order(store):
+        out = real(store)
+        if not landing:
+            numbers.after_move([item], "now", landing=landing)     # (the writer's thread, mid-read)
+        return out
+    numbers._order = order
+    seed.library.commit(items=[], order=True)          # something written: the read isn't skipped
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes and landing.get("ahead")
+    moved = dict(numbers()[1])
+    write()
+    numbers.landed()
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes and numbers()[1] == moved
     numbers.close()
 
 

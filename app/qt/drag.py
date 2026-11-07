@@ -44,6 +44,7 @@ for Current's list — W3.2's tray and Goal sheet feed the same one through `beg
 import itertools
 import math
 import os
+import sys
 import time
 import weakref
 
@@ -829,18 +830,20 @@ class _KeptMenu(QMenu):
 def list_menu(lst, title):
     """List `lst`'s one ⋯ menu, empty, named for `title`: made once and kept hidden between opens (a new menu was a new
     native window at every open, its first show the slowest part of opening it). What an open put in it goes as it
-    hides (its actions deleted later: a pick still lands, after the hide), so a closed menu holds nothing."""
+    hides, so a closed menu holds nothing; its actions are kept, still wired (a pick lands after the hide), and taken
+    back by the next open (`menu_action`)."""
     m = getattr(lst, "row_menu", None)
     if m is None:
         m = _KeptMenu(lst)
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
-        m.aboutToHide.connect(lambda: _empty_menu(m))   # never exec() it, only popup(): exec's own loop could run
-        #                                                 the emptied actions' deleteLater before its pick is read
+        m.aboutToHide.connect(lambda: _empty_menu(m))   # never exec() it, only popup(): exec's own loop runs on
+        #                                                 between the hide and the pick
         lst.row_menu = m
     elif m.isVisible():
         m.hide()
     _empty_menu(m)
+    _take_back(m)
     m.fills = getattr(m, "fills", 0) + 1             # each open's own number: an answer asked by an earlier open (a
     #                                                  folder to skip) never lands in this one (`item_menu.offer_skip`)
     m.setAccessibleName(strings.MENU_NAME.format(title=title))
@@ -852,10 +855,8 @@ def sub_menu(menu, label, before=None):
     earlier open used is taken back, emptied as that open hid, so a later open makes no widget (R5: *What is it?*,
     *Split here…*, *Change cover…* were new menus, and new native windows, at every open); under a plain menu, a new
     one. -> the submenu (its action's tip and state set by the caller)."""
-    top = menu
-    while not isinstance(top, _KeptMenu) and isinstance(top.parent(), QMenu):
-        top = top.parent()
-    if not isinstance(top, _KeptMenu):
+    top = _kept_top(menu)
+    if top is None:
         sub = QMenu(label, menu)
     else:
         sub = _lend(top)
@@ -868,6 +869,67 @@ def sub_menu(menu, label, before=None):
     else:
         menu.addMenu(sub)
     return sub
+
+
+def _kept_top(menu):
+    """The kept menu (`list_menu`'s) `menu` is, or is a submenu of; None under a plain menu."""
+    top = menu
+    while not isinstance(top, _KeptMenu) and isinstance(top.parent(), QMenu):
+        top = top.parent()
+    return top if isinstance(top, _KeptMenu) else None
+
+
+def menu_action(menu, label, pick):
+    """A new entry for `menu`, `pick()` called when it is picked (the caller sets its tip and state, and adds it).
+    Inside a kept menu (`list_menu`): an action an earlier open used, taken back with its words set and the rest as
+    new (enabled, unchecked, no tip) — wired once, when it was made, to whatever pick it holds — so an open makes no
+    action and wires nothing, and its close deletes nothing. (Up next at 20,000 files: the ~13 actions each ⋯ made were
+    ~13 deferred deletes in the stretch after the pick, and each wire's own proxy one more when it went: 2–5 ms each
+    while the writer's and the reader's threads ran.) Under a plain menu, a new one wired to `pick`."""
+    top = _kept_top(menu)
+    if top is None:
+        act = QAction(label, menu)
+        act.triggered.connect(lambda _c=False: pick())
+        return act
+    pool = top.__dict__.get("pool")
+    if pool:
+        act = pool.pop()
+        act.setText(label)
+    else:
+        act = QAction(label, top)
+        act.triggered.connect(lambda _c=False, a=act: _picked(a))
+    act.__dict__["pick"] = pick
+    return act
+
+
+def _picked(act):
+    pick = act.__dict__.get("pick")
+    if pick is not None:
+        pick()
+
+
+def _take_back(m):
+    """The actions the last open used (kept, still holding their picks at its hide, `_empty_menu`: a pick lands after
+    the hide, and has by now), put back as new for this open's `menu_action` — as many as one open has used at most
+    (`m.most`); any past that, deleted (an action made elsewhere, `addAction(text)`, comes back here too)."""
+    used = m.__dict__.get("used")
+    if not used:
+        return
+    pool = m.__dict__.setdefault("pool", [])
+    most = m.__dict__["most"] = max(m.__dict__.get("most", 0), len(used))
+    for act in used:
+        if sip.isdeleted(act):
+            continue
+        if len(pool) >= most or "pick" not in act.__dict__:
+            act.deleteLater()                        # (not `menu_action`'s: wired by its maker, never taken back)
+            continue
+        act.__dict__["pick"] = None
+        act.setChecked(False)
+        act.setCheckable(False)
+        act.setEnabled(True)
+        act.setToolTip("")
+        pool.append(act)
+    used.clear()
 
 
 def _lend(top):
@@ -883,12 +945,15 @@ def _lend(top):
 
 def _empty_menu(m):
     lent = m.__dict__.get("lent") or []
+    used = m.__dict__.setdefault("used", [])
     for menu in [m] + lent:
         for act in menu.actions():
             menu.removeAction(act)
-            if act.parent() is menu:
+            if act.parent() is menu or act.parent() is m:
                 if act.isSeparator():
                     act.setParent(None)              # gone now: nothing can pick it (a pick lands after the hide)
+                elif act.parent() is m:
+                    used.append(act)                 # (`menu_action`'s: taken back by the next open, `_take_back`)
                 else:
                     act.deleteLater()
     if lent:
@@ -898,6 +963,44 @@ def _empty_menu(m):
     for sub in m.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly):
         if id(sub) not in kept:
             sub.deleteLater()
+
+
+# --- after the press's own paint ---------------------------------------------------------------------------------- #
+class _AfterPaint(QObject):
+    """Calls made once the window has painted what is waiting: each a posted event at Qt's low priority — the
+    priority Qt posts a window's update request at — so the loop delivers it after an update the press asked for
+    (posted before it), in the same pass when nothing waits to be painted."""
+    TYPE = QEvent.Type(QEvent.registerEventType())
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def post(self, fn):
+        self.calls.append(fn)
+        QApplication.postEvent(self, QEvent(self.TYPE), Qt.EventPriority.LowEventPriority.value)
+
+    def event(self, ev):
+        if ev.type() != self.TYPE:
+            return super().event(ev)
+        if self.calls:
+            fn = self.calls.pop(0)
+            try:
+                fn()
+            except Exception:
+                sys.excepthook(*sys.exc_info())
+        return True
+
+
+_after = []
+
+
+def after_paint(fn):
+    """`fn()` once the window has painted the press that asked for it (`_AfterPaint`): a press's write starts there,
+    so the writer's thread never takes Python's lock from the window's while it paints the press (`Writer.defer`)."""
+    if not _after or sip.isdeleted(_after[0]):
+        _after[:] = [_AfterPaint()]
+    _after[0].post(fn)
 
 
 # --- the writer's callbacks, on the window's thread -------------------------------------------------------------- #
@@ -2162,6 +2265,10 @@ class DragController(QObject):
             ticket.anki = anki
             self._anki_begin(ticket)
         self._urgent()
+        defer = getattr(self.writer, "defer", None)
+        if defer is not None:                        # its write starts once the press is painted (`after_paint`)
+            defer()
+            after_paint(self.writer.go)
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
             _tell(ticket, "refused")
@@ -3020,10 +3127,9 @@ class DragController(QObject):
         """⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown."""
         m = list_menu(self.lst, row.title)
         for name, label, tip, ok in self.menu_entries(row):
-            act = QAction(label, m)
+            act = menu_action(m, label, lambda n=name: self.menu_pick(row, n))
             act.setToolTip(tip)
             act.setEnabled(ok)
-            act.triggered.connect(lambda _c=False, n=name: self.menu_pick(row, n))
             m.addAction(act)
         self.last_menu = m
         m.popup(at)

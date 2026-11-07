@@ -537,6 +537,49 @@ def _rows():
                  [("{S}/{S} - 01.mkv", "V"), ("{S}/{S} - NCOP1.mkv", "V")], None,
                  {"{S}/{S} - 01.mkv": WAIT},
                  "only the episode waits"))
+    # Kura-G (2026-11-07, his Code Geass R2): subtitles that write a bare number (`<Show> Hangyaku 01.srt`: no ` - `,
+    # `Ep`, `E` before it) under another name beside one show's episode videos. By names alone that is also a bonus
+    # run (`<Show> Picture Drama 1.srt`, `2.srt`; `Omake`, `Vol`, `Part`): either could be, so the look pairs neither
+    # (A4: never a guess; a pairing by number made them versions of the episodes, Kura-G's adversary). They pair on
+    # the *no video* card's *Find videos* (the window's reading of the bare number, the learner's *Link these*:
+    # tests/test_services_needs.py's Code Geass test)
+    geass = [f"{{S}}_Ep{n:02d}_The_Title_[720p,BluRay,x264]_-_gg" for n in (1, 2, 3)]
+    rows.append(("bare-numbered subtitles beside marked videos", "laptop try (Code Geass R2)",
+                 "`<Show>/<Show>_Ep01_<title>_[720p,BluRay,x264]_-_gg.mkv` (01–03) and `<Show> Hangyaku 01.srt`, "
+                 "`02.srt` (a bare number, another name of the show)", "",
+                 [(f"{{S}}/{v}.mkv", "V") for v in geass]
+                 + [(f"{{S}}/{{S}} Hangyaku {n:02d}.srt", "J") for n in (1, 2)], None,
+                 {f"{{S}}/{{S}} Hangyaku {n:02d}.srt": f"{{S}}/{{S}} Hangyaku {n:02d}.srt" for n in (1, 2)},
+                 "two items, unpaired: by their names they could be the episodes or a bonus run, so the look never "
+                 "guesses; *Find videos* on the no-video card pairs them with the learner's yes"))
+    rows.append(("a bonus run beside the episodes", "convention (A4; Kura-G's adversary)",
+                 "`<Show>/[Grp] <Show> - 01.mkv`, `- 02.mkv`, their `.ja.srt`, and `<Show> Picture Drama 1.srt`, "
+                 "`2.srt` with no video", "",
+                 _pairs("{S}", ["[Grp] {S} - 01", "[Grp] {S} - 02"], ".{T}.srt")
+                 + [("{S}/{S} Picture Drama 1.srt", "J"), ("{S}/{S} Picture Drama 2.srt", "J")], None,
+                 {**{f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt": _ep(f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt",
+                                                                   f"{{S}}/[Grp] {{S}} - {n:02d}.mkv") for n in (1, 2)},
+                  "{S}/{S} Picture Drama 1.srt": "{S}/{S} Picture Drama 1.srt",
+                  "{S}/{S} Picture Drama 2.srt": "{S}/{S} Picture Drama 2.srt"},
+                 "four items: the episodes paired by name, the picture dramas their own — never versions of episodes "
+                 "1 and 2, never given their videos"))
+    rows.append(("a bonus run, its episodes' subtitles a look later", "convention (A4; Kura-G's adversary)",
+                 "`<Show> Picture Drama 1.srt`, `2.srt` beside `[Grp] <Show> - 01.mkv`, `- 02.mkv`; the episodes' "
+                 "`.ja.srt` arrive later", "",
+                 [("{S}/[Grp] {S} - 01.mkv", "V"), ("{S}/[Grp] {S} - 02.mkv", "V"),
+                  ("{S}/{S} Picture Drama 1.srt", "J"), ("{S}/{S} Picture Drama 2.srt", "J")],
+                 [(f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt", "J") for n in (1, 2)],
+                 {**{f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt": _ep(f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt",
+                                                                   f"{{S}}/[Grp] {{S}} - {n:02d}.mkv") for n in (1, 2)},
+                  "{S}/{S} Picture Drama 1.srt": "{S}/{S} Picture Drama 1.srt",
+                  "{S}/{S} Picture Drama 2.srt": "{S}/{S} Picture Drama 2.srt"},
+                 "the dramas never took the episodes' videos at the first look, so each episode's subtitle comes in "
+                 "and pairs with its own"))
+    rows.append(("one bare-numbered subtitle alone", "convention (A10)",
+                 "`<Show>/<Show> 100.srt` beside `<Show>/[Grp] <Show> - 01.mkv`", "",
+                 [("{S}/[Grp] {S} - 01.mkv", "V"), ("{S}/{S} 100.srt", "J")], None,
+                 {"{S}/{S} 100.srt": "{S}/{S} 100.srt"},
+                 "a title may end in a number (`Mob Psycho 100`): never paired with episode 1's video by a guess"))
     rows.append(("subtitle folder named sub / 字幕", "convention (LM1b, A11)",
                  "`<Show>/<Show> - 01.mkv` + `sub/`, `<Show> - 02.mkv` + `字幕/` each holding its subtitle", "",
                  [("{S}/{S} - 01.mkv", "V"), ("{S}/sub/{S} - 01.{T}.srt", "J"), ("{S2}/{S2} - 02.mkv", "V"),

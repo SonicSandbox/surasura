@@ -7,7 +7,8 @@ actions on (tag + suspend, as Sonic runs them) and a fake AnkiConnect holding a 
 one NOW episode holds alone. No new Junban code: a word the stone takes off the list goes to "Cards not on your list"
 exactly as a Finished show's does. What these prove, Connect on and off:
 
-  - mark → Generate → the episode's own words' cards are tagged `Surasura::later` and suspended, the rest in list order;
+  - mark → the episode's own words' cards are tagged `Surasura::later` and suspended at once (Haya-W: the re-plan),
+    the rest in list order — and still so after the Generate the mark asks for;
   - un-mark → Generate → those cards are unsuspended, the tag comes off, and every listed card is in list order;
   - *Undo the last reorder* right after the stone's re-order puts every card's due, suspended state and tag back;
   - a word the episode shares with a file still counted keeps its card on the list, unsuspended;
@@ -55,9 +56,18 @@ def _in_list_order(fake, root):
     return ranks == sorted(ranks)
 
 
-def _mark_and_generate(root, store, fake, host, episode, on=True):
+def _mark_and_generate(root, store, fake, host, episode, on=True, between=None):
+    """A stone re-orders Anki at once (Haya-W: the plan's re-plan), then its Generate's re-order; an un-marking after
+    that Generate (the new plan has no line for the episode) writes only after its own Generate. `between()`: checked
+    after the at-once job, before the Generate — what a learner sees for those seconds or minutes."""
     store.set_watched([episode], on)
-    assert _job(fake, host) == [], "a mark writes to Anki only after its Generate"
+    written = _job(fake, host)
+    if on:
+        assert written, "a stone re-orders Anki at once"
+    else:
+        assert written == [], "un-marking after the stone's Generate writes only after its own Generate"
+    if between is not None:
+        between()
     _generate(root)
     return _job(fake, host, "generate")
 
@@ -74,7 +84,8 @@ def test_a_stone_parks_its_own_words_cards_and_un_marking_brings_them_back_in_li
     with _patched(fake):
         host._job("catch-up")
         assert _in_list_order(fake, root)
-        _mark_and_generate(root, store, fake, host, episode)
+        _mark_and_generate(root, store, fake, host, episode,
+                           between=lambda: _suspended(fake, own) == set(own) or pytest.fail("not parked at once"))
         assert _suspended(fake, own) == set(own)
         assert all(LATER in _tags(fake, card_id) for card_id in own), "not on your list: the later tag on"
         assert _in_list_order(fake, root), "the cards still listed keep the list's order"
@@ -109,9 +120,15 @@ def test_a_word_the_episode_shares_with_a_counted_file_keeps_its_card_on_the_lis
     path = store.item(episode)["rel_path"]
     with open(os.path.join(root, "data", "ja", path), encoding="utf-8") as f:
         text = f.read()
+    from tests.test_replan_preview_watched import _episode_with_its_own_words
+    alone = set(_episode_with_its_own_words(store)[1])
+    early = _word_cards(fake, [w for w in _list_words(root, 40) if w in text and w not in alone])
+
+    def kept():
+        assert early and not _suspended(fake, early), "a word still counted elsewhere keeps its card (at once too)"
     with _patched(fake):
         host._job("catch-up")
-        _mark_and_generate(root, store, fake, host, episode)
+        _mark_and_generate(root, store, fake, host, episode, between=kept)
     shared = [word for word in _list_words(root, 40) if word in text]
     assert shared, "RP-2's episode shares listed words with other files"
     cards = _word_cards(fake, shared)
@@ -145,7 +162,16 @@ def test_a_word_below_the_lists_cut_off_in_a_counted_file_is_never_parked_by_a_s
     with _patched(fake):
         host._job("catch-up")
         assert not _suspended(fake, _word_cards(fake, [below])), "List first off: the library map places it"
-        _mark_and_generate(root, store, fake, host, episode)
+
+        def placed():                               # the re-plan's seconds before the Generate: never parked either
+            assert not _suspended(fake, _word_cards(fake, [below])), f"{below}: parked by the at-once re-plan"
+            # List first off: until the Generate rewrites the library map the stone's own words are placed by it —
+            # their file left the order, so after every listed card (`replan_preview.places`); parked after it
+            mine = set(_word_cards(fake, own))
+            listed = _word_cards(fake, [w for w in _list_words(root, 40) if w not in own])
+            last = max(fake.cards[c]["due"] for c in listed if fake.cards[c]["queue"] == 0 and c not in mine)
+            assert all(fake.cards[c]["due"] > last for c in mine if fake.cards[c]["queue"] == 0),                 "the stone's own cards still ahead of a listed card"
+        _mark_and_generate(root, store, fake, host, episode, between=placed)
     assert _suspended(fake, _word_cards(fake, own)) == set(_word_cards(fake, own)), "the stone parked its own words"
     card = _word_cards(fake, [below])
     assert card and not _suspended(fake, card), f"{below}: placed by the library map, never parked"
@@ -165,7 +191,10 @@ def test_a_pinned_episode_keeps_its_cards_when_it_is_marked_watched(lib, monkeyp
         host._job("catch-up")
         store.pin([episode])
         _job(fake, host)
-        _mark_and_generate(root, store, fake, host, episode)
+
+        def stays():
+            assert not _suspended(fake, own), "the pinned episode's cards stay at the stone's own re-order too"
+        _mark_and_generate(root, store, fake, host, episode, between=stays)
     assert not _suspended(fake, own), "the pinned episode's cards stay"
     assert not [card_id for card_id in own if LATER in _tags(fake, card_id)]
 

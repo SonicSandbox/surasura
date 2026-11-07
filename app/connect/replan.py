@@ -26,7 +26,7 @@ recipe: `replan_preview`'s `_snapshot`, `plan_path`, `places`) decides —
     is (its words keep their places; the raise only adds words) — and Generate after mining ("after");
   * anything else (no plan, another language or engine, a run that didn't finish, a changed or removed file, the store
     set up again, a level lowered — its Generate drops words the old list would have mined — another setting, the
-    args, a frequency list, the band with any of them, a band not found, the set-aside files — W-1: a watched mark
+    args, a frequency list, the band with any of them, a band not found, the set-aside files — W-1: a Finished drag
     either way, as the window's host reads it) and `stand-aside`: today's path, Generate first ("first").
 
 Any error reading it is "first" (logged): never worse than today. Read-only: nothing here writes the store, the plan

@@ -155,7 +155,7 @@ class Worker:
         plan = None
         if plan_stat is not None:
             try:
-                plan = plan_engine.load(self.plan_path)
+                plan = plan_engine.load(self.plan_path, pools=False)
             except plan_engine.PlanError:
                 plan = None
             if plan is not None and plan.header.get("language") != self.language:

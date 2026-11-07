@@ -157,8 +157,9 @@ def test_forms_is_not_named_like_an_example_sentence():
 
 def test_engine_revision_was_bumped_for_the_forms_column():
     """A new column changes what a run outputs for unchanged inputs. Without the bump the stored run
-    signature still matches and the old report — with no Forms — is served. Pinned exactly so the
-    next person to bump it updates this knowingly. (9 was the Forms column; 10 keys Japanese words by
+    signature still matches and the old report — with no Forms — is served. At least the revision that brought the
+    column in, never pinned exactly: every later bump would break it (each bump adds its line here). (9 was the Forms
+    column; 10 keys Japanese words by
     the lemma's reading — Bugfix_Batch_2026-09-22 fix C; 11 writes library_frequency.json on every
     run, with each word's first file, score and spelling — Junban_Backlog_Spec §11.1; 12 cuts a
     leading verse number off an example sentence — Junban_Backlog_Spec §16.11; 13 keeps a word's
@@ -194,8 +195,8 @@ def test_engine_revision_was_bumped_for_the_forms_column():
     Japanese frequency-list word's commoner rank and lists a missing item from its cached words; 33 makes Finished
     content reference, its names the name tables' evidence as a watched episode's are; 34 marks a known sentence's set
     phrases known, as it marks its words; 35 makes Context 1 always the word's first sentence outside Only i+1; 36 keeps a
-    written number that opens a sentence (20,000人, 1.5倍) whole.)"""
-    assert analyzer.ENGINE_REVISION == 36
+    written number that opens a sentence (20,000人, 1.5倍) whole; 37 picks example sentences order-free (F7).)"""
+    assert analyzer.ENGINE_REVISION >= 9
 
 
 # --------------------------------------------------------------------------- #

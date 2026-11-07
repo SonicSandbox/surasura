@@ -29,10 +29,12 @@ from tests import plan_file_cases as cases
 # --------------------------------------------------------------------------------------------------------------- #
 
 def load_plan(path):
-    """{"header", "files", "keys", "rows", "ties", "spell", "per_file"} from a plan file."""
+    """{"header", "files", "keys", "rows", "ties", "spell", "per_file"} from a plan file (format 3, F7: "finished",
+    "sentences", "cowords" and "pools" too)."""
     with gzip.open(path, "rt", encoding="utf-8") as f:
         lines = [json.loads(line) for line in f]
-    plan = {"header": lines[0], "files": [], "keys": [], "rows": [], "ties": [], "spell": [], "per_file": []}
+    plan = {"header": lines[0], "files": [], "keys": [], "rows": [], "ties": [], "spell": [], "per_file": [],
+            "finished": [], "sentences": [], "cowords": [], "pools": [], "firsts": []}
     for line in lines[1:]:
         if "f" in line:
             plan["per_file"].append(line)
@@ -235,7 +237,7 @@ def test_the_plan_adds_up_to_the_runs_own_lists(runs, case):
     _root, run = runs[case]
     plan = run["plan"]
     h = plan["header"]
-    assert h["format"] == analyzer.PLAN_FORMAT == 2 and h["language"] == cases.ALL_CASES[case][0]
+    assert h["format"] == analyzer.PLAN_FORMAT == 3 and h["language"] == cases.ALL_CASES[case][0]
     assert h["run_signature"] == run["stamp"]
     assert h["files"] == len(plan["files"]) == len(plan["per_file"])
     assert h["keys"] == len(plan["keys"]) == len(plan["rows"]) > 0

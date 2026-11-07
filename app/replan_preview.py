@@ -510,7 +510,7 @@ class Host:
         key = (st.st_mtime_ns, st.st_size)
         if key != self._plan_key or self._plan is None:
             try:
-                plan = plan_engine.load(path)
+                plan = plan_engine.load(path, pools=False)
             except plan_engine.PlanError as e:
                 self._plan = self._plan_key = self._engine = self._ids = None
                 return None, f"plan: {e}"

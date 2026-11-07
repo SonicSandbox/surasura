@@ -5,8 +5,8 @@ words you met recently — reinforcing what you just studied instead of vocabula
 
 The fixture is built so the competing sentences are IDENTICAL in every pre-existing criterion:
 same length, same structure, and every token except one shared across all of them. The only thing
-that separates them is WHEN the learner met that one differing word. If recency is off, the sort is
-stable and encounter order wins; if it's on, the recently-met word wins.
+that separates them is WHEN the learner met that one differing word. If recency is off, the shortlist's
+own order wins (F7: order-free, a hash of the text); if it's on, the recently-met word wins.
 """
 
 import json
@@ -15,22 +15,22 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from app import analyzer
+from app import analyzer, plan_rules
 
-# One file per "episode". 廃墟 is met in ep01 (long ago), 森 in ep02, 灯台 in ep06 (recent).
+# One file per "episode". 神殿 is met in ep01 (long ago), 森 in ep02, 灯台 in ep06 (recent).
 # ep07 introduces the target 遭遇 in three sentences that differ ONLY by which of those it reuses.
 EPISODES = {
-    "ep01.txt": "廃墟を歩いた。廃墟は静かだ。廃墟が見える。廃墟に入った。",
+    "ep01.txt": "神殿を歩いた。神殿は静かだ。神殿が見える。神殿に入った。",
     "ep02.txt": "森を歩いた。森は深い。森が広がる。森に入った。",
     "ep03.txt": "河川を眺めた。河川は広い。河川が流れる。河川に沿った。",
     "ep04.txt": "山脈を越えた。山脈は高い。山脈が続く。山脈に登った。",
     "ep05.txt": "青空を見上げた。青空は青い。青空が広がる。青空に雲がある。",
     "ep06.txt": "灯台を見た。灯台は白い。灯台が光る。灯台に登った。",
-    "ep07.txt": "森で遭遇した。廃墟で遭遇した。灯台で遭遇した。",
+    "ep07.txt": "森で遭遇した。神殿で遭遇した。灯台で遭遇した。",
 }
 
 FIRST = "森で遭遇した。"      # the word's own/original sentence — always pinned to Context 1
-OLD = "廃墟で遭遇した。"      # reuses a word met 6 files ago
+OLD = "神殿で遭遇した。"      # reuses a word met 6 files ago
 RECENT = "灯台で遭遇した。"   # reuses a word met 1 file ago
 
 
@@ -76,29 +76,35 @@ def _contexts(df, word):
 
 def test_recency_promotes_the_sentence_reusing_a_recently_met_word(env):
     """Default (recency_files=1): the sentence reusing 灯台 (met one file earlier) outranks the one
-    reusing 廃墟 (met six files earlier), even though both are equal on cost and length."""
+    reusing 神殿 (met six files earlier), even though both are equal on cost and length."""
     ctx = _contexts(_run(env), "遭遇")
     assert ctx[0] == FIRST, "Context 1 stays the word's own first sentence"
     assert ctx[1] == RECENT, f"the recently-met co-word should win the tiebreak, got {ctx[1]!r}"
     assert ctx[2] == OLD
 
 
-def test_recency_disabled_falls_back_to_encounter_order(env):
-    """recency_files=-1 turns the tiebreaker off — the stable sort then keeps encounter order, which
-    is exactly the behaviour before this feature. Proves the assertion above is caused by recency."""
+# Without the recency tiebreak, two sentences equal in every other way (the same file, F7) keep the shortlist's own
+# order: its order-free key, which ends with a hash of the text — never the order they were met in.
+BY_SHORTLIST = sorted([OLD, RECENT], key=plan_rules.text_hash_of)
+
+
+def test_recency_disabled_falls_back_to_the_shortlists_order(env):
+    """recency_files=-1 turns the tiebreaker off — the two sentences then keep the shortlist's order (F7: a hash of
+    the text, the same in any order of the library). Proves the assertion above is caused by recency: the shortlist
+    alone puts OLD first."""
+    assert BY_SHORTLIST == [OLD, RECENT], "the fixture: the shortlist's own order is the one recency turns round"
     with patch.dict(analyzer.LOGIC["context"], {"recency_files": -1}):
         ctx = _contexts(_run(env), "遭遇")
     assert ctx[0] == FIRST
-    assert ctx[1] == OLD, "without recency the earlier-encountered sentence keeps its place"
-    assert ctx[2] == RECENT
+    assert ctx[1:] == BY_SHORTLIST, "without recency the shortlist's order stands"
 
 
 def test_recency_window_of_zero_means_same_file_only(env):
     """recency_files=0 counts only co-words first met in the SAME file. Neither competitor qualifies
-    (both were met in earlier files), so the tiebreak goes inert and encounter order stands."""
+    (both were met in earlier files), so the tiebreak goes inert and the shortlist's order stands."""
     with patch.dict(analyzer.LOGIC["context"], {"recency_files": 0}):
         ctx = _contexts(_run(env), "遭遇")
-    assert ctx[1] == OLD
+    assert ctx[1:] == BY_SHORTLIST
 
 
 def test_recency_is_only_a_tiebreaker_never_beats_i_plus_one(env, tmp_path):

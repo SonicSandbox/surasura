@@ -327,8 +327,9 @@ BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generat
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
 # The dot's tip: "by itself" only while the automation is on (D29: the journey's Generate runs), else press Generate.
-JOURNEY_DOT_TIP = ("Your journey is catching up with your newest list by itself: when you open it, or after a few "
-                   "quiet minutes. It opens at once, with what it has")
+# F7: after a move the journey is redrawn from the plan in a moment, no Generate — PROVISIONAL (the lead, 2026-11-06).
+JOURNEY_DOT_TIP = ("Your journey is catching up with your newest list by itself, in a moment. It opens at once, with "
+                   "what it has")
 JOURNEY_DOT_TIP_PRESS = ("Your journey is catching up with your newest list: press Generate to bring it up to date. "
                          "It opens meanwhile, with what it has")
 
@@ -1836,7 +1837,7 @@ HELP_CARDS = {
     "backfill": ("Backfill (パターン · 例文)", "Fills two empty fields on your cards, from your library.",
                  "Empty パターン and 例文 → filled"),
     "generate": ("Your journey catches up", "After you move things, your journey catches up by itself.",
-                 "Move a row → the ● by Journey ↗ → it catches up when you open it, or after 5 quiet minutes"),
+                 "Move a row → the ● by Journey ↗ → it catches up in a moment, by itself"),
     "piyo": ("Piyo ぴよ", "A practice chat with your own AI, checked by Surasura.",
              "Copy the setup → paste it into your AI → play a round"),
     "automation": ("What runs by itself", "Seven things Surasura does for you. Each one can be turned off.", ""),

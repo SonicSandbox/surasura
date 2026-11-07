@@ -204,9 +204,9 @@ def landed(monkeypatch):
     done = []
     real = J.JourneyKeeper._landed
 
-    def land(keeper, previous):
+    def land(keeper, previous, *more):
         try:
-            real(keeper, previous)
+            real(keeper, previous, *more)
         finally:
             done.append(keeper)
 

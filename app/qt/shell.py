@@ -98,6 +98,16 @@ QUIT_THREAD_JOIN_S = 2.0
 
 
 # --- the services the window calls ------------------------------------------------------------------------------- #
+def _redraw_coming(services):
+    """(Any thread; at once.) F7: a reader's wish waits for the journey keeper's look (`Replan.journey_catching_up`) —
+    a plain move's redraw from the plan is about to be asked for (seconds)."""
+    replan = getattr(services, "replan", None)
+    try:
+        return bool(replan is not None and replan.journey_catching_up())
+    except Exception:
+        return False
+
+
 class Services:
     """The window's services, made once per window (the settings file is read here, before the first paint).
 
@@ -582,9 +592,10 @@ class Services:
         the user's to ask (the Generate button's mark says so) -> True then (its new look waits for that Generate); with
         the duties not made yet (the first moments) it opens as it is too, -> None.
 
-        A2 (Sonic 2026-11-06): it never waits for a background run (`journey_brought`): a journey owed only to moves is
-        asked for now and opens at once as it is, and so does one a background Generate is bringing in (the ● dot says
-        its sentences are catching up) -> None."""
+        A2 (Sonic 2026-11-06): it never waits for a background Generate (`journey_brought`): one bringing the journey
+        in opens it at once as it is (the ● dot says its sentences are catching up) -> None. F7: after a plain move the
+        journey is redrawn from the plan in seconds — asked for now (`journey_brought`'s ask), and waited for like the
+        keeper's re-render (`_redraw_coming`, then the run in flight)."""
         from app.services import generate as generate_module
         busy = (generate_module.QUEUED, generate_module.RUNNING, generate_module.CANCELLING)
         deadline = time.monotonic() + wait
@@ -592,7 +603,7 @@ class Services:
         while not self.closing.is_set() and self.controller is not None and time.monotonic() < deadline:
             if self.journey_brought("journey"):
                 return None
-            if self.controller.state().state in busy:
+            if _redraw_coming(self) or self.controller.state().state in busy:
                 self.closing.wait(0.1)                   # a run in flight or waiting: its end, then look again
                 continue
             try:

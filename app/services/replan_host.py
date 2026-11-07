@@ -466,7 +466,8 @@ class Replan:
         return self._pair()[0].want(reason)
 
     def journey_catching_up(self):
-        """The keeper's journey waits for a reader or the quiet minutes (`JourneyKeeper.catching_up`). No wait."""
+        """A reader's wish waits for the keeper's look (`JourneyKeeper.catching_up`; F7: a plain move's redraw on its
+        way). No wait."""
         return self._pair()[0].catching_up()
 
     def journey_background(self):

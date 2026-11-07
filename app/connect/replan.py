@@ -133,7 +133,7 @@ def _current(language, settings, store, previous):
         plan = previous.plan
     else:
         try:
-            plan = plan_engine.load(path)
+            plan = plan_engine.load(path, pools=False)
         except plan_engine.PlanError as e:
             log.warning("Connect couldn't read its plan (%s); it Generates first: %s", language, e)
             return Current(("generate-first", "plan"), "first", f"plan: {e}", versions=versions, key=at)

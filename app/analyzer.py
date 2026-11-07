@@ -6517,6 +6517,7 @@ def main():
         return tuple((k,) for k in rows_of_lemma.get(lr[0], ()))
 
     coword_of, cowords = {}, []                         # (lemma, reading) -> its id; [(its row or -1, clauses)]
+    coword_lrs = []                                     # id -> its (lemma, reading)
 
     def _coword(lr):
         c = coword_of.get(lr)
@@ -6526,6 +6527,7 @@ def main():
             if c >= 0:
                 own = row_of.get(lr, -1)
                 cowords.append((own if lr not in phrase_keys else -1, clauses))
+                coword_lrs.append(lr)
         return c
 
     phrase_row_ids = {index: row_of[key] for index, key in _phrase_row_of.items() if key in row_of}
@@ -6576,16 +6578,32 @@ def main():
         return len(sentences) + len(first_rows) - 1
 
     for f, record in enumerate(plan_files):
-        ids = []
+        held = []                                       # (row, record): by row, never the order the walk met them in
         for key, rec in record[3].items():
             k = row_of.get(key)
             if k is not None and key not in phrase_keys:
-                ids += (k, _slim(f, rec))
+                held.append((k, rec))
         for index, rec in record[4].items():
             k = row_of.get(phrase_row_key.get(index))
             if k is not None and phrase_keys.get(phrase_row_key.get(index)) == index:
-                ids += (k, _slim(f, rec))
+                held.append((k, rec))
+        held.sort(key=lambda kr: kr[0])
+        ids = []
+        for k, rec in held:
+            ids += (k, _slim(f, rec))
         plan_files[f] = record[:3] + (ids,)
+
+    # The co-words numbered by their key, each sentence's in that order: they arrive in the order a set gives them
+    # (a sentence's unknowns), which moves with the process's hash seed — the plan must be the same bytes run to run
+    order = sorted(range(len(cowords)), key=lambda c: (str(coword_lrs[c][0]), coword_lrs[c][1] is None,
+                                                        str(coword_lrs[c][1])))
+    renumber = [0] * len(cowords)
+    for new_id, c in enumerate(order):
+        renumber[c] = new_id
+    cowords[:] = [cowords[c] for c in order]
+    sentences[:] = [row[:5] + (tuple(sorted(renumber[c] for c in row[5])),) + row[6:] for row in sentences]
+    first_rows[:] = [row[:4] + (tuple(sorted(renumber[c] for c in row[4])),) + row[5:] for row in first_rows]
+    del renumber
 
     while len(src_place) < len(source_list):
         src_place.append((plan_rules.NOT_FINISHED, 0))

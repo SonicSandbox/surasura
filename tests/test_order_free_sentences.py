@@ -95,6 +95,24 @@ def test_a_word_met_in_one_file_keeps_every_good_sentence_it_has(tmp_path):
     assert all(shown) and len(set(shown)) == 3, shown
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_plan_is_the_same_bytes_whatever_the_processs_hash_seed(language):
+    # why: a sentence's unknown co-words are a set and a file's first sentences a dict filled in set order; numbered as
+    # they came, the plan moved with the hash seed — two runs of one library wrote two plans (#308's core 4/4: the
+    # progress flag's byte-identity test)
+    import gzip
+    from tests import services_helpers as h
+    from tests.test_services_progress import _analyzer
+    h.seed_library(language)
+    h.write_settings({"target_language": language, "anki_connect_url": "http://127.0.0.1:9"})
+    plans = []
+    for seed in ("1", "2"):
+        assert _analyzer(language, env={"SURASURA_FORCE_RUN": "1", "PYTHONHASHSEED": seed}).returncode == 0
+        with gzip.open(os.path.join(h.root(), "results", "plan.json.gz"), "rb") as f:
+            plans.append(f.read())
+    assert plans[0] == plans[1]
+
+
 # --------------------------------------------------------------------------- #
 # 2. Finished content: a source, never a count
 # --------------------------------------------------------------------------- #

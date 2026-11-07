@@ -41,8 +41,12 @@ def test_a_choice_by_its_key_soon_lays_the_sort_screen_out_once_and_the_next_tit
     second = screen.visible_rows()[1][1].key
     unit = wc.one_pass(screen, win)
     unit_asks = _layout_asks_of_one_pass(screen, win)
+    b0 = win.services.library.builds
     with wc.measure(win, readers=[win.services.library]) as w:
         press(screen, Qt.Key.Key_S)
+        landed = wait_until(lambda: win.services.library.builds > b0 and win.moves.tickets == [], 3)
+        wc.rest(150)
+    assert landed and w.builds == 1, w.report()                          # the choice's work landed inside the count
     assert top.key not in keys_shown(screen), w.report()
     assert keys_shown(screen)[0] == second, w.report()
     assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()
@@ -60,10 +64,10 @@ def test_a_choice_now_lays_the_screen_out_once_and_the_next_title_comes_up_in_on
     b0 = win.services.library.builds
     with wc.measure(win, readers=[win.services.library]) as w:
         press(screen, KEY_OF["now"])
-        wait_until(lambda: win.services.library.builds > b0 and win.moves.tickets == [], 3)
+        landed = wait_until(lambda: win.services.library.builds > b0 and win.moves.tickets == [], 3)
         wc.rest(150)
-    assert w.painted > 0, w.report()
-    assert w.builds == 1, w.report()
+    if not (landed and w.painted and w.builds == 1):             # setup, not the rule: never an AssertionError here
+        pytest.fail(f"the choice's work didn't land once inside the count: {w.report()}")
     assert w.hints <= wc.one_pass(screen, win) * wc.PASS_SLACK, w.report()
     assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()
 

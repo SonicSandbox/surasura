@@ -90,7 +90,8 @@ def test_confirm_asked_again_after_no_is_built_once_and_no_widget_is_made(second
     reuses the card that was built, making no widget."""
     card, answers = _ask(second)
     QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)
-    assert answers == [False] and _gone(card)
+    if not (answers == [False] and _gone(card)):                  # setup: never the xfail's AssertionError
+        pytest.fail(f"Esc didn't answer No and close the card: {answers}")
     with wc.measure(second) as w:
         card2, answers2 = _ask(second)
     try:

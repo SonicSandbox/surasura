@@ -623,6 +623,12 @@ def _own_bumps(db_path):
 
 ROLES = ("window", "helper", "analyzer", "register", "reader", "connect")
 
+# A record whose `verdict` says its text is its video's own (`fill_track`'s: "extracted", Michi-ST; "transcribed",
+# no-subs): the expression `pairings_extracted` indexes — written the same wherever it is read, so the index serves the
+# read ({p}: the table's alias and a dot, or nothing)
+_EXTRACTED = ("(CASE WHEN json_valid({p}pairing) THEN json_extract({p}pairing, '$.verdict') END) "
+              "IN ('extracted', 'transcribed')")
+
 SCHEMA_SQL = (
     "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     """CREATE TABLE roots (
@@ -658,6 +664,7 @@ SCHEMA_SQL = (
     "CREATE INDEX items_missing ON items (size) WHERE availability = 'missing'",   # D2: a scoped sync's missing items
     "CREATE INDEX items_watched ON items (tier) WHERE watched != 0",        # the journey's stones (`STONES_EXIST_SQL`)
     "CREATE INDEX items_available_size ON items (size) WHERE availability = 'available'",   # K5: `items_of_size`
+    "CREATE INDEX items_waiting ON items (id) WHERE availability = 'waiting'",   # R6: `_waiting_videos`
     """CREATE TABLE trash (
       id INTEGER PRIMARY KEY, item_id INTEGER NOT NULL, root_id INTEGER NOT NULL, rel_path TEXT NOT NULL,
       tier TEXT NOT NULL, prev_id INTEGER, next_id INTEGER,
@@ -680,6 +687,7 @@ SCHEMA_SQL = (
       pairing TEXT NOT NULL,
       paired_at TEXT NOT NULL)""",
     "CREATE INDEX pairings_item ON pairings (item_id)",   # an item's records (`_PREFERRED_ROW`, a show's episodes)
+    f"CREATE INDEX pairings_extracted ON pairings (item_id) WHERE {_EXTRACTED.format(p='')}",   # R6: `_track_items`
     """CREATE TABLE placement_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       item_id INTEGER NOT NULL,
@@ -722,8 +730,15 @@ ADDED_INDEXES_SQL = (
     # K5 (alpha 4): a look's check (b) per new file or book part (`items_of_size`) scanned every item without it: a first
     # look of 25k books spent minutes there. Dropped as easily (DROP INDEX): no row changes
     "CREATE INDEX IF NOT EXISTS items_available_size ON items (size) WHERE availability = 'available'",
+    # R6 (Kura-B, 2026-11-06): the records of a video's own extracted track (Michi-ST), which every take-in reads under
+    # the write lock (`_track_items`) — without it, each batch of a look parsed every origin's record (~45 ms at 20k)
+    f"CREATE INDEX IF NOT EXISTS pairings_extracted ON pairings (item_id) WHERE {_EXTRACTED.format(p='')}",
+    # R6: the items waiting for their subtitle (K5), which every take-in with a video reads (`_waiting_videos`) — without
+    # it, a scan of every item (~10 ms at 20k) under the write lock each batch
+    "CREATE INDEX IF NOT EXISTS items_waiting ON items (id) WHERE availability = 'waiting'",
 )
-ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_available_size")
+ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_available_size", "pairings_extracted",
+                 "items_waiting")
 # A4K-7 (alpha 4, Sonic 2026-10-28): each copy's content hash, kept for a look's check (b), which read and hashed every
 # copy of a new part's size (~56,000 files when 100 books came onto 60k parts). Made with the added indexes: an added
 # column (no row rewritten: NULL until a look fills it) and a trigger that forgets a hash whenever its row's file
@@ -884,6 +899,11 @@ def _connect(path, role, busy_ms=5000):
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_size_limit=4194304")
         conn.execute(f"PRAGMA wal_autocheckpoint={1000 if role == 'helper' else 0}")
+        # R6: a statement's own journal (and a sort's) in memory, never a temp file. Since the origins' log (F13b) a
+        # write on `items` fires a trigger that writes another table, so SQLite keeps a statement journal through the
+        # command; on disk that was a file written and truncated for every statement — an Add of a 50-file season
+        # 7 → 12 ms, its row writes 7× slower. Nothing here makes a temp table; the biggest sort is an upgrade's, once.
+        conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA query_only=1")
     except BaseException:
         conn.close()
@@ -1564,6 +1584,14 @@ def _same_place(tier, to):
     return tier == to or (tier in CURRENT and to in CURRENT)
 
 
+def _keep_value(value):
+    """`keep_watched` as meta holds it (text, an int from `Store._meta`, or absent): 1 when on, else 0."""
+    try:
+        return 1 if value is not None and int(value) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 class _Command:
     """The outermost command's bookkeeping, shared with any command nested inside it (§6.2: `register`
     → its pairing, `undo` → what it replays join the outer transaction): one version for the whole
@@ -1583,7 +1611,9 @@ class _Command:
         self.bump_pins = False
         self.logging = any(k.startswith("reader:") for k in meta)
         self.mine_n = meta.get("mine_line", MINE_LINE_DEFAULT)
-        self.mine_before = store._mine_ids(self.mine_n) if self.logging else None
+        # keep_watched from the meta read a moment ago, in the same transaction (R6: one read less a command)
+        self.mine_before = store._mine_ids(self.mine_n, _keep_value(meta.get("keep_watched"))) \
+            if self.logging else None
         self.events = []      # (item_id, kind, explicit)
         self.explicit = {}    # item_id -> explicit, for its crossing events
         self.quiet = set()    # items that log no event at all (a back-fill registration, P2.1)
@@ -1603,6 +1633,8 @@ class _Command:
         self.piece_fields = []  # LM11: (piece, column, old, new) — a piece's kind or title written, for undo
         self.dropped = []     # LM11: the pieces' rows deleted when emptied, for undo
         self.line_set = False  # set_soon_line: the line moved
+        self.root_id = None   # the library's root, read once a command (`Store._root_id`)
+        self.piece_seq = 0    # the highest piece id `_new_piece` issued in this command: its sequence row, at the end
 
     def touch(self, tiers=(), order=False, availability=False, pins=False, within=False):
         """Record a change: any tier in `tiers` that is analysed bumps `order_version`; so does a REFERENCE tier (W-1b:
@@ -1634,10 +1666,12 @@ class _Command:
     def finish(self):
         """Settle (the Soon line, the pieces, the feed: `Store._settle`), then write the versions and the log,
         inside the transaction. Returns the own-bump deltas."""
-        if not self.changed:
-            return None
         store = self.store
+        if not self.changed:
+            self._write_piece_seq()
+            return None
         store._settle(self)
+        self._write_piece_seq()
         if self.logging:
             after = store._mine_ids(self.mine_n)
             before = set(self.mine_before)
@@ -1666,6 +1700,12 @@ class _Command:
             updates.append(("pins_version", self.meta["pins_version"] + 1))
         store.conn.executemany("UPDATE meta SET value = ? WHERE key = ?", [(str(v), k) for k, v in updates])
         return {"order": int(self.bump_order), "availability": int(self.bump_avail)}
+
+    def _write_piece_seq(self):
+        """K30 / LM11 G3 for pieces: the sequence row past every piece id the command issued, one write a command (a
+        move that splits a show makes two pieces: one row write, not two)."""
+        if self.piece_seq:
+            _set_seq(self.store.conn, "pieces", self.piece_seq)
 
 
 
@@ -1781,6 +1821,7 @@ class _Seq:
 
 UNSORT_KINDS = ("move", "finish", "set_tier")    # Mado-O: the placements `Store.unsort` walks back itself
 _ROW = "id, tier, ord, changed_in, parent_folder, rel_path, availability, rel_key, graduated_at, entry, piece_id"
+_ROW_NO_ENTRY = _ROW.replace("entry", "NULL")     # the same places, without the row's largest text (a move's, R6)
 
 
 class Store:
@@ -1997,20 +2038,36 @@ class Store:
 
     # --- reading -------------------------------------------------------------------------------- #
 
-    def _rows(self, ids):
+    def _rows(self, ids, entry=True):
         """{id: row} for the ids that exist, row = (id, tier, ord, changed_in, folder, rel_path,
-        availability, rel_key, graduated_at, entry, piece_id)."""
+        availability, rel_key, graduated_at, entry, piece_id); `entry` False: None in its place."""
         out = {}
         ids = list(ids)
+        cols = _ROW if entry else _ROW_NO_ENTRY
         for chunk in _chunks(ids, 500):
             marks = ",".join("?" * len(chunk))
-            for row in self.conn.execute(f"SELECT {_ROW} FROM items WHERE id IN ({marks})", chunk):
+            for row in self.conn.execute(f"SELECT {cols} FROM items WHERE id IN ({marks})", chunk):
                 out[row[0]] = row
         return out
 
     def _tier_keys(self, tier):
         """[(id, ord)] of a tier, in order."""
         return self.conn.execute("SELECT id, ord FROM items WHERE tier = ? ORDER BY ord, id", (tier,)).fetchall()
+
+    def _rows_near(self, ids):
+        """(`_rows(ids, entry=False)`, `_neighbours` of those rows) in one statement a chunk: a move's read (R6)."""
+        rows, near = {}, {}
+        for chunk in _chunks(list(ids), 300):
+            sql = (f"SELECT {_ROW_NO_ENTRY.replace('id, tier, ord', 'x.id, x.tier, x.ord', 1)}, "
+                   "(SELECT i.id FROM items i WHERE i.tier = x.tier AND (i.ord, i.id) < (x.ord, x.id) "
+                   " ORDER BY i.ord DESC, i.id DESC LIMIT 1), "
+                   "(SELECT i.id FROM items i WHERE i.tier = x.tier AND (i.ord, i.id) > (x.ord, x.id) "
+                   " ORDER BY i.ord, i.id LIMIT 1) "
+                   f"FROM items x WHERE x.id IN ({','.join('?' * len(chunk))})")
+            for row in self.conn.execute(sql, chunk):
+                rows[row[0]] = row[:-2]
+                near[row[0]] = row[-2:]
+        return rows, near
 
     def _neighbours(self, rows):
         """{id: (prev_id, next_id)} in each row's tier, just before a change (one query per 300)."""
@@ -2027,10 +2084,12 @@ class Store:
                 out[item_id] = (prev_id, next_id)
         return out
 
-    def _before(self, change, rows, explicit=1):
-        """Record each row's place just before the change, in the previous order (§6.11)."""
+    def _before(self, change, rows, explicit=1, near=None):
+        """Record each row's place just before the change, in the previous order (§6.11). `near`: the rows'
+        `_neighbours`, when the caller has read them."""
         rows = sorted(rows, key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
-        near = self._neighbours(rows)
+        if near is None:
+            near = self._neighbours(rows)
         for r in rows:
             prev_id, next_id = near.get(r[0], (None, None))
             change.items.append({"id": r[0], "tier": r[1], "prev": prev_id, "next": next_id,
@@ -2038,10 +2097,10 @@ class Store:
                                  "piece": r[10] if len(r) > 10 else None})
         return rows
 
-    def _mine_ids(self, n):
+    def _mine_ids(self, n, keep=None):
         """The mine line: the top N of Current's AVAILABLE items (a missing item never counts) that count (W-1: a
-        watched one while `keep_watched` is off has nothing left to mine)."""
-        rule = counts_sql(self._keep_watched())
+        watched one while `keep_watched` is off has nothing left to mine). `keep`: `keep_watched` as the caller read it."""
+        rule = counts_sql(self._keep_watched() if keep is None else keep)
         ids = [r[0] for r in self.conn.execute(
             f"SELECT id FROM items WHERE tier = 'now' AND availability = 'available' AND {rule} ORDER BY ord, id "
             "LIMIT ?", (n,))]
@@ -2054,13 +2113,15 @@ class Store:
     def _keep_watched(self):
         """The library's `keep_watched` option (W-1): 1 when on; absent (every library before it) is off."""
         row = self.conn.execute("SELECT value FROM meta WHERE key = 'keep_watched'").fetchone()
-        try:
-            return 1 if row and int(row[0]) else 0
-        except (TypeError, ValueError):
-            return 0
+        return _keep_value(row[0] if row else None)
 
     def _root_id(self):
+        cmd = self._cmd                 # once a command (R6: an Add read it twice, a folder's look once a folder); no
+        if cmd is not None and cmd.root_id is not None:      # command makes or re-kinds the library's own root
+            return cmd.root_id
         row = self.conn.execute("SELECT id FROM roots WHERE kind = 'library' ORDER BY id LIMIT 1").fetchone()
+        if cmd is not None:
+            cmd.root_id = row[0]
         return row[0]
 
     def schedule(self, with_versions=False, with_aside=False):
@@ -2478,10 +2539,28 @@ class Store:
                 raise StoreConflict("a file this change adds was added meanwhile")
 
     def _rel(self, path):
-        """A path under the data folder as the manifest writes it (relative, '/'); a relative path as is."""
+        """A path under the data folder as the manifest writes it (relative, '/'); a relative path as is. A path under
+        the data folder is cut from its absolute form (what `relpath` gives it, without `relpath`'s per-part compares:
+        R6, an Add of a 50-file season spent a millisecond there); anything else goes through `relpath`."""
         if os.path.isabs(path):
-            path = os.path.relpath(path, self.data_dir)
+            base = self._data_abs()
+            full = os.path.abspath(path)
+            if base is not None and os.path.normcase(full).startswith(base):
+                path = full[len(base):]
+            else:
+                path = os.path.relpath(path, self.data_dir)
         return path.replace("\\", "/")
+
+    def _data_abs(self):
+        """normcase(abspath(data folder)) + the separator, kept while the data folder is absolute; None for a root."""
+        if not os.path.isabs(self.data_dir):
+            return None
+        cached = self.__dict__.get("_data_abs_of")
+        if cached is None or cached[0] != self.data_dir:
+            base = os.path.abspath(self.data_dir)
+            cached = (self.data_dir, None if base.endswith(os.sep) else os.path.normcase(base) + os.sep)
+            self._data_abs_of = cached
+        return cached[1]
 
     def _in_library(self, path):
         """Does `path` lie under the data folder? (`library_rel`)"""
@@ -2508,18 +2587,39 @@ class Store:
     def _key(self, item_id):
         return self.conn.execute("SELECT id, ord FROM items WHERE id = ?", (item_id,)).fetchone()
 
-    def _put(self, tier, ids, where, changed_in):
+    def _put(self, tier, ids, where, changed_in, anchor=None):
         """Place `ids` (in order) contiguously in `tier` at `where` — ('after', id), ('before', id),
         ('top',) or ('end',) — touching only the rows that change: the placed items (tier, ord,
-        `changed_in`) and, when the gap is spent, a local window re-spaced (ord only, §6.5)."""
+        `changed_in`) and, when the gap is spent, a local window re-spaced (ord only, §6.5). `anchor`: the anchor's
+        (id, ord) when the caller read it in the same transaction."""
+        keys, others = self._place_keys(tier, ids, where, anchor)
+        cmd = self._cmd
+        self.conn.executemany("UPDATE items SET tier = ?, ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
+                              [(tier, k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
+        self._placed(tier, ids, others)
+
+    def _placed(self, tier, ids, others):
+        """What `_put` records once its rows are written (and an Add's rows inserted in place, `_add_rows`): the
+        command's bookkeeping, and a re-space's other rows written."""
+        cmd = self._cmd
+        cmd.moved.update(ids)
+        cmd.fed_inline.update(ids)
+        cmd.tiers.add(tier)
+        if others:          # a re-space: each row carries its new key to the windows (§12.8)
+            self.conn.executemany("UPDATE items SET ord = ?, feed_in = ? WHERE id = ?",
+                                  [(k, cmd.version, i) for i, k in others])
+
+    def _place_keys(self, tier, ids, where, anchor=None):
+        """`_put`'s reads: the keys `ids` take at `where` in `tier`, and [(id, ord)] of a re-space's other rows. `ids`
+        are left out of every read (rows already, or not yet)."""
         excl = set(ids)
         kind = where[0]
         if kind == "after":
-            lo = self._key(where[1])
+            lo = anchor or self._key(where[1])
             nxt = self._beyond(tier, lo, excl, 1, 1)
             hi = nxt[0] if nxt else None
         elif kind == "before":
-            hi = self._key(where[1])
+            hi = anchor or self._key(where[1])
             prv = self._beyond(tier, hi, excl, -1, 1)
             lo = prv[0] if prv else None
         elif kind == "top":
@@ -2534,15 +2634,7 @@ class Store:
         others = []
         if not _valid(keys, lo[1] if lo else None, hi[1] if hi else None):
             keys, others = self._respace(tier, ids, lo, hi, excl)
-        cmd = self._cmd
-        self.conn.executemany("UPDATE items SET tier = ?, ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
-                              [(tier, k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
-        cmd.moved.update(ids)
-        cmd.fed_inline.update(ids)
-        cmd.tiers.add(tier)
-        if others:          # a re-space: each row carries its new key to the windows (§12.8)
-            self.conn.executemany("UPDATE items SET ord = ?, feed_in = ? WHERE id = ?",
-                                  [(k, cmd.version, i) for i, k in others])
+        return keys, others
 
     def _respace(self, tier, ids, lo, hi, excl):
         """Local re-space (§6.5): up to 16 rows each side of the gap, renumbered with the placed items
@@ -2622,11 +2714,13 @@ class Store:
             return None
         with self._command("move", by) as cmd:
             self._recheck(check)
-            rows = self._rows(ids)
+            # the anchor in the same read, the rows' neighbours too (the no-op check's and the undo record's); no entry:
+            # a move never reads it (R6)
+            rows, near = self._rows_near(ids if anchor is None else ids + [anchor])
+            a = rows.pop(anchor, None) if anchor is not None else None
             if not rows:
                 return None
             if anchor is not None:
-                a = self._rows([anchor]).get(anchor)
                 if a is None or a[1] != tier:
                     raise ValueError("the anchor is not in that tier")
             ordered = sorted(rows.values(), key=lambda r: (TIERS[r[1]][3], r[2], r[0]))
@@ -2634,11 +2728,12 @@ class Store:
             where = ("before", before_id) if before_id is not None else \
                 ("after", after_id) if after_id is not None else self._tier_top(tier, set(block))
             if self._in_place(tier, ordered, where[1] if where[0] == "before" else None,
-                              where[1] if where[0] == "after" else None, end=where[0] == "end"):
+                              where[1] if where[0] == "after" else None, end=where[0] == "end", near=near):
                 return None
             change = self._change(cmd, "move")
-            self._before(change, ordered)
-            self._put(tier, block, where, cmd.version)
+            self._before(change, ordered, near=near)
+            self._put(tier, block, where, cmd.version,
+                      (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None)
             # --- P4.1 L2 (TF fix 8, G1.6-10): out of Finished by any path, its cards come back into the order ---
             self._back_in_order(cmd, change, [r[0] for r in ordered if r[1] == "graduated" and tier != "graduated"])
             # --- end P4.1 L2 ---
@@ -2677,26 +2772,37 @@ class Store:
         change.status = list(change.status) + status
     # --- end P4.1 L2 ---
 
-    def _in_place(self, tier, ordered, before_id, after_id, end=False):
+    def _in_place(self, tier, ordered, before_id, after_id, end=False, near=None):
         """True when the move would leave every item in `tier` and the tier's sequence unchanged (`end`: the block
-        is to go to the tier's end)."""
+        is to go to the tier's end). `near`: the rows' `_neighbours` (prev, next in their tier), when read already."""
         if any(r[1] != tier for r in ordered):
             return False
         first, last = ordered[0], ordered[-1]
-        count = self.conn.execute(          # bounded: a scattered block never counts a whole tier
-            "SELECT COUNT(*) FROM (SELECT 1 FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= (?, ?) "
-            "LIMIT ?)", (tier, first[2], first[0], last[2], last[0], len(ordered) + 1)).fetchone()[0]
-        if count != len(ordered):
-            return False
+        if len(ordered) > 1:
+            count = self.conn.execute(          # bounded: a scattered block never counts a whole tier
+                "SELECT COUNT(*) FROM (SELECT 1 FROM items WHERE tier = ? AND (ord, id) >= (?, ?) AND (ord, id) <= "
+                "(?, ?) LIMIT ?)", (tier, first[2], first[0], last[2], last[0], len(ordered) + 1)).fetchone()[0]
+            if count != len(ordered):
+                return False
+
+        def nxt():
+            if near is not None:
+                return near.get(last[0], (None, None))[1]
+            row = self._beyond(tier, (last[0], last[2]), set(), 1, 1)
+            return row[0][0] if row else None
+
+        def prv():
+            if near is not None:
+                return near.get(first[0], (None, None))[0]
+            row = self._beyond(tier, (first[0], first[2]), set(), -1, 1)
+            return row[0][0] if row else None
         if before_id is not None:
-            nxt = self._beyond(tier, (last[0], last[2]), set(), 1, 1)
-            return bool(nxt) and nxt[0][0] == before_id
+            return nxt() == before_id
         if end:
-            return not self._beyond(tier, (last[0], last[2]), set(), 1, 1)
-        prv = self._beyond(tier, (first[0], first[2]), set(), -1, 1)
+            return nxt() is None
         if after_id is not None:
-            return bool(prv) and prv[0][0] == after_id
-        return not prv
+            return prv() == after_id
+        return prv() is None
 
     NUDGE_BATCH = 64
 
@@ -2916,7 +3022,8 @@ class Store:
         NOW or Soon → right after its last row there (reading NOW → Soon); a show with rows but none
         there → the top of NOW; a directory with no item yet → today's rule in `fallback_tier` (after the
         folder's last row, else the top). Soon's top is `_tier_top`'s (past a show the Soon line runs through, alpha 9);
-        `tops` keeps it for the call's other files (nothing is placed until every file has its place)."""
+        `tops` keeps it, and each folder's place, for the call's other files (nothing is placed until every file has its
+        place)."""
 
         def top(tier):
             if tier != "soon":
@@ -2934,36 +3041,60 @@ class Store:
             return ("top", "now")
         if folder_dir in TIER_OF_FOLDER:
             return top(TIER_OF_FOLDER[folder_dir])
+        folder = _entry_folder(entry)
+        # R6 (an Add Folder of a 50-file season, 24 % over §6.12): the call's other files of this folder land at the
+        # same place — read once a call, not three queries a file (nothing is written until every file has its place)
+        seen = ("at", folder_dir, folder, fallback_tier)
+        if tops is not None and seen in tops:
+            return tops[seen]
+        dest = None
         rows = self._dir_rows(folder_dir, excl) if folder_dir else []
         if rows:
             for tier in ("soon", "now"):
                 here = [r for r in rows if r[1] == tier]
                 if here:
                     last = max(here, key=lambda r: (r[2], r[0]))
-                    return ("after", self._past_group(last[0]), tier)        # LM11 (G4): never inside a group
-            return ("top", "now")
-        folder = _entry_folder(entry)
-        last = self._folder_last(fallback_tier, folder, excl) if folder else None
-        return ("after", self._past_group(last[0]), fallback_tier) if last else top(fallback_tier)
+                    dest = ("after", self._past_group(last[0]), tier)        # LM11 (G4): never inside a group
+                    break
+            else:
+                dest = ("top", "now")
+        else:
+            last = self._folder_last(fallback_tier, folder, excl) if folder else None
+            dest = ("after", self._past_group(last[0]), fallback_tier) if last else top(fallback_tier)
+        if tops is not None:
+            tops[seen] = dest
+        return dest
 
-    def _add_rows(self, prepared, version):
-        """Insert new item rows (ids issued past every id ever used, K30), placed later by `_put`."""
+    def _add_rows(self, prepared, version, place=None, works=None):
+        """Insert new item rows (ids issued past every id ever used, K30), placed later by `_put` — or, with `place`
+        ((tier, where): every row one destination), inserted at their place: `_put`'s keys, read before the rows
+        exist (no other new row is waiting at ord 0 to be read), written by the insert itself, not by an update of
+        each row after it (R6: an Add of a season wrote every row twice). `works`: each row's title when the caller
+        knows it, written by the insert too (else the settling step gives it its folder's, `_settle_works`)."""
         root = self._root_id()
         seq = self.conn.execute("SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'items'), 0), "
                                 "COALESCE((SELECT MAX(id) FROM items), 0)").fetchone()
         next_id = max(seq) + 1
+        ids = list(range(next_id, next_id + len(prepared)))
+        keys, others, fed = [0.0] * len(ids), [], None
+        if place is not None:
+            keys, others = self._place_keys(place[0], ids, place[1])
+            fed = self._cmd.version
         now = _now()
-        rows, ids = [], []
-        for path, rel, key, entry, (size, mtime_ns, availability), tier in prepared:
+        rows = []
+        for n, (item_id, k, (path, rel, key, entry, (size, mtime_ns, availability), tier)) in enumerate(
+                zip(ids, keys, prepared)):
             title, folder, source_type = _columns(entry)
-            rows.append((next_id, root, rel, key, tier, 0.0, _dumps(entry), title, folder, source_type,
-                         availability, size, mtime_ns, version, now, search_fold(title, self.language)))
-            ids.append(next_id)
-            next_id += 1
+            rows.append((item_id, root, rel, key, tier, k, _dumps(entry), title, folder, source_type,
+                         availability, size, mtime_ns, version, now, search_fold(title, self.language))
+                        + ((fed,) if fed is not None else ()) + ((works[n],) if works is not None else ()))
+        cols = ", feed_in" * (fed is not None) + ", work_id" * (works is not None)
         self.conn.executemany(
             "INSERT INTO items (id, root_id, rel_path, rel_key, tier, ord, entry, title, parent_folder, "
-            "source_type, availability, size, mtime_ns, changed_in, added_at, search_key) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+            f"source_type, availability, size, mtime_ns, changed_in, added_at, search_key{cols}) "
+            f"VALUES ({', '.join('?' * (16 + cols.count(',')))})", rows)
+        if place is not None:
+            self._placed(place[0], ids, others)
         return ids
 
     def _takeover(self, key, started_at):
@@ -2995,12 +3126,18 @@ class Store:
             self._recheck(check, takeover_ok=lambda i: self._takeover_id(i, started_at))
             change = self._change(cmd, kind)
             new, taken, seen = [], [], set()
+            held = {}                   # rel_key -> (id, tier): one read for the call's files, not one a file (R6)
+            for chunk in _chunks(list(dict.fromkeys(item[2] for item in prepared)), 500):
+                for key, item_id, item_tier in self.conn.execute(
+                        f"SELECT rel_key, id, tier FROM items WHERE rel_key IN ({','.join('?' * len(chunk))}) "
+                        "ORDER BY rel_key, id", chunk):
+                    held.setdefault(key, (item_id, item_tier))
             for item in prepared:
                 path, rel, key, entry, fp = item
                 if key in seen:
                     continue
                 seen.add(key)
-                row = self.conn.execute("SELECT id, tier FROM items WHERE rel_key = ?", (key,)).fetchone()
+                row = held.get(key)
                 if row is None:
                     new.append(item)
                 elif self._takeover(key, started_at) is not None:
@@ -3030,13 +3167,20 @@ class Store:
                     "WHERE id = ?",
                     [(_dumps(it[3]),) + _columns(it[3]) + (search_fold(_columns(it[3])[0], self.language), i)
                      for i, it in taken])
-            ids += self._add_rows([it + (t,) for it, t in zip(new, dest_tier[len(taken):])], cmd.version)
-            groups = {}
-            for item_id, dest, t in zip(ids, dests, dest_tier):
-                where = (dest[0], dest[1]) if dest[0] in ("after", "before") else (dest[0],)
-                groups.setdefault((t, where), []).append(item_id)
-            for (t, where), group in groups.items():
-                self._put(t, group, where, cmd.version)
+            spots = [(t, (d[0], d[1]) if d[0] in ("after", "before") else (d[0],)) for d, t in zip(dests, dest_tier)]
+            one = not taken and len(set(spots)) == 1               # the common Add: one place, new rows only
+            works = None
+            if one:                         # each row's title as the settling step would give it (`_settle_works`:
+                cache = {}                  # `_folder_work` reads titles and the other rows of its folder, never these)
+                works = [self._folder_work(it[1], _columns(it[3])[0], cmd, cache) for it in new]
+            ids += self._add_rows([it + (t,) for it, t in zip(new, dest_tier[len(taken):])], cmd.version,
+                                  place=spots[0] if one else None, works=works)
+            if not one:
+                groups = {}
+                for item_id, (t, where) in zip(ids, spots):
+                    groups.setdefault((t, where), []).append(item_id)
+                for (t, where), group in groups.items():
+                    self._put(t, group, where, cmd.version)
             change.added = ids
             if origins:
                 self._add_origins(zip(ids, [t[1] for t in taken] + new), origins)
@@ -3974,21 +4118,17 @@ class Store:
                                 (nxt,) + index[nxt][1:] if nxt is not None else none)
             else:
                 rest.append(item_id)
-        for chunk in _chunks(rest, 300):
-            sql = ("WITH m(id) AS (VALUES %s) SELECT x.id, "
+        for chunk in _chunks(rest, 300):        # the neighbours and their pieces in one statement (R6)
+            sql = ("WITH m(id) AS (VALUES %s), nb AS MATERIALIZED (SELECT x.id AS id, "
                    "(SELECT i.id FROM items i WHERE i.tier = x.tier AND (i.ord, i.id) < (x.ord, x.id) "
-                   " ORDER BY i.ord DESC, i.id DESC LIMIT 1), "
+                   " ORDER BY i.ord DESC, i.id DESC LIMIT 1) AS p, "
                    "(SELECT i.id FROM items i WHERE i.tier = x.tier AND (i.ord, i.id) > (x.ord, x.id) "
-                   " ORDER BY i.ord, i.id LIMIT 1) FROM m JOIN items x ON x.id = m.id" % ",".join("(?)" for _ in chunk))
-            pairs = self.conn.execute(sql, chunk).fetchall()
-            others = {v for _i, p, n in pairs for v in (p, n) if v is not None}
-            info = {}
-            for sub in _chunks(list(others), 500):
-                for r in self.conn.execute(f"SELECT id, piece_id, work_id FROM items WHERE id IN "
-                                           f"({','.join('?' * len(sub))})", sub):
-                    info[r[0]] = r
-            for item_id, p, n in pairs:
-                out[item_id] = (info.get(p, none), info.get(n, none))
+                   " ORDER BY i.ord, i.id LIMIT 1) AS n FROM m JOIN items x ON x.id = m.id) "
+                   "SELECT nb.id, nb.p, pp.piece_id, pp.work_id, nb.n, nn.piece_id, nn.work_id FROM nb "
+                   "LEFT JOIN items pp ON pp.id = nb.p LEFT JOIN items nn ON nn.id = nb.n"
+                   % ",".join("(?)" for _ in chunk))
+            for item_id, p, pp, pw, n, nn, nw in self.conn.execute(sql, chunk):
+                out[item_id] = ((p, pp, pw) if p is not None else none, (n, nn, nw) if n is not None else none)
         return out
 
     def _new_piece(self, like=None, title=None):
@@ -3997,8 +4137,15 @@ class Store:
         items; LM11 G3: an undo puts a deleted group back under its own id, which nothing else can have taken)."""
         base = self.conn.execute("SELECT title, kind FROM pieces WHERE id = ?", (like,)).fetchone() if like else None
         kind = base[1] if base else "run"
-        piece = _next_id(self.conn, "pieces")
-        _set_seq(self.conn, "pieces", piece)
+        cmd = self._cmd
+        if cmd is not None:      # inside a command: its sequence row written once, at its end (`_Command.finish`, R6);
+            # past the command's last new piece, which is past every id issued before it (an undo's pieces come back
+            # under ids issued earlier), so only the first needs the table read
+            piece = cmd.piece_seq + 1 if cmd.piece_seq else _next_id(self.conn, "pieces")
+            cmd.piece_seq = piece
+        else:
+            piece = _next_id(self.conn, "pieces")
+            _set_seq(self.conn, "pieces", piece)
         self.conn.execute("INSERT INTO pieces (id, title, kind, created_at) VALUES (?, ?, ?, ?)",
                           (piece, None if kind == "group" else base[0] if base else title, kind, _now()))
         return piece
@@ -4030,10 +4177,20 @@ class Store:
                                            chunk)}
             pieces = set(kinds)
             groups = {p for p, k in kinds.items() if k == "group"}
-            is_group = lambda p: p is not None and (p in groups if p in kinds else self._is_group(p))  # noqa: E731
-            whole = {}
-            for p in {v[1] for v in info.values() if v[1] is not None}:
-                ids = [r[0] for r in conn.execute("SELECT id FROM items WHERE piece_id = ?", (p,))]
+            def is_group(p):                    # a piece's kind read once a settle (R6); none changes until its end
+                if p is None:
+                    return False
+                if p not in kinds:
+                    kinds[p] = "group" if self._is_group(p) else "run"
+                    if kinds[p] == "group":
+                        groups.add(p)
+                return p in groups
+            whole, held = {}, {}
+            for chunk in _chunks(sorted({v[1] for v in info.values() if v[1] is not None}), 500):   # one read (R6)
+                for p, i in conn.execute(f"SELECT piece_id, id FROM items WHERE piece_id IN "
+                                         f"({','.join('?' * len(chunk))})", chunk):
+                    held.setdefault(p, []).append(i)
+            for p, ids in held.items():
                 whole[p] = all(i in info for i in ids) and \
                     not (p in groups and any(info[i][0] in NO_GROUP_TIERS for i in ids))     # LM11: out of the group
             sets, fresh, olds = [], set(), {}
@@ -4054,9 +4211,20 @@ class Store:
                 v[1] = want
                 if want is None:
                     fresh.add(item_id)
-            if sets:
-                self._set_pieces(cmd, sets)
+            # R6: a row leaving its piece is never written piece-less first — every such row gets its piece below (back
+            # in its group, a run joined, a new piece) and is written once then; until that write it is `stale`: the
+            # reads in between see it as having no piece (`unstale`), as if the NULL had been written
+            stale = {i for w, i in sets if w is None}
+            if any(w is not None for w, _i in sets):
+                self._set_pieces(cmd, [(w, i) for w, i in sets if w is not None])
+
+            def unstale(n):
+                return (n[0], None) + tuple(n[2:]) if n is not None and n[0] in stale else n
             view = self._order_view({v[0] for v in info.values()}) if len(info) > self.BIG_SETTLE else None
+            if view is not None and stale:
+                for index, _order in view.values():
+                    for i in stale & index.keys():
+                        index[i] = (index[i][0], None, index[i][2])
             # the neighbours that matter: every new item's, and the ends of every piece the command placed whole
             ends = {item_id: info[item_id][0] for item_id in fresh}
             by_piece = {}
@@ -4075,12 +4243,12 @@ class Store:
                 else:
                     for i in ids:
                         ends[i] = info[i][0]
-            near = self._near(ends, view)
+            near = {i: (unstale(b), unstale(a)) for i, (b, a) in self._near(ends, view).items()}
             # --- LM11: an item moved within its own group stays in it (beside another of its rows, or beside a row that
             # stays so): a reorder inside the group, never "a foreign drop"
             back = {}
             # G1: NOW and Soon are one tier for a group — a row at the line's edge has its neighbour across it
-            across = {i: self._line_edge(info[i][0]) for i in fresh if olds[i] in groups and
+            across = {i: unstale(self._line_edge(info[i][0])) for i in fresh if olds[i] in groups and
                       (info[i][0] == "soon" and near[i][0][0] is None or info[i][0] == "now" and near[i][1][0] is None)}
             while True:
                 more = {i: olds[i] for i in fresh if i not in back and olds[i] in groups
@@ -4096,6 +4264,7 @@ class Store:
                 for i, g in back.items():
                     info[i][1] = g
                 fresh -= set(back)
+                stale -= set(back)
             # --- end LM11
             # GI1, PROVISIONAL (Sonic 2026-10-21, accepted for building, to be checked in use; asked of him, LM11-Q1):
             # dropping in is putting in — a row (a new one, one moved, a whole part) landing between two rows of one
@@ -4151,6 +4320,7 @@ class Store:
                     cmd.repieced += [(i, None, before[1]) for i in run]
                     for i in run:
                         info[i][1] = before[1]
+                    stale.difference_update(run)
                 else:
                     pending.append(run)
             # the pieces the command touched: one run of one work in one tier each, the first run keeping the id
@@ -4158,13 +4328,30 @@ class Store:
             for before, after in near.values():
                 affected.update(p for p in (before[1], after[1]) if p is not None)
             placed = set(info)
+            # each piece's members read at once (R6: a 50-row move touched ~36 pieces, a read each): a split rewrites
+            # only its own piece's rows, so what one piece's split reads is the same read before the first
+            members = {}
+            for chunk in _chunks(sorted(affected), 500):
+                for row in conn.execute(f"SELECT piece_id, id, tier, ord, work_id FROM items WHERE piece_id IN "
+                                        f"({','.join('?' * len(chunk))}) ORDER BY piece_id, tier, ord, id", chunk):
+                    if row[1] not in stale:             # still in its old piece only on disk
+                        members.setdefault(row[0], []).append(row[1:])
+            split = []                          # nothing in the loop reads a row's piece: written after it, at once
             for p in sorted(affected):
-                news.update(self._split_runs(p, placed, cmd, view))
+                news.update(self._split_runs(p, placed, cmd, view, members.get(p, []),
+                                             group=p in groups if p in kinds else None, sets=split))
+            if split:
+                self._set_pieces(cmd, split)
             news |= affected
             for run in pending:
                 work = info[run[0]][2]
-                before = self._side(run[0], -1)
-                after = self._side(run[-1], 1)
+                # its two sides are `near`'s rows (nothing moves a row while the pieces settle); only their pieces may
+                # have changed since (a split, a run before this one): read now, both at once (R6)
+                sides = [n for n in (near[run[0]][0][0], near[run[-1]][1][0]) if n is not None]
+                now = {r[0]: r for r in conn.execute(f"SELECT id, piece_id, work_id FROM items WHERE id IN "
+                                                     f"({','.join('?' * len(sides))})", sides)} if sides else {}
+                before = unstale(now.get(near[run[0]][0][0]))
+                after = unstale(now.get(near[run[-1]][1][0]))
                 if before is not None and before[2] == work and before[1] is not None and not is_group(before[1]):
                     piece = before[1]
                 elif after is not None and after[2] == work and after[1] is not None and not is_group(after[1]):
@@ -4174,6 +4361,9 @@ class Store:
                     piece = self._new_piece(title=title[0] if title else None)
                 self._set_pieces(cmd, [(piece, i) for i in run])
                 cmd.repieced += [(i, None, piece) for i in run]
+                stale.difference_update(run)
+            if stale:                       # none is left (every run took a piece above); never a row on disk with a
+                self._set_pieces(cmd, [(None, i) for i in sorted(stale)])   # piece it left, whatever happens
         self._settle_kinds(cmd, news | cmd.pieces_left)                     # LM11
         if cmd.pieces_left:
             for chunk in _chunks(sorted(cmd.pieces_left), 500):
@@ -4210,7 +4400,10 @@ class Store:
         """LM11 (G4): a group left holding one work's items, or standing in Finished or New arrivals, is a run again
         (an emptied one is left to go whole: its row is the undo's)."""
         marks = ",".join("?" * len(NO_GROUP_TIERS))
-        for chunk in _chunks(sorted(p for p in pieces if p is not None), 500):
+        groups = [r[0] for chunk in _chunks(sorted(p for p in pieces if p is not None), 500)    # R6: most commands
+                  for r in self.conn.execute(f"SELECT id FROM pieces WHERE kind = 'group' AND id IN "  # touch no group:
+                                             f"({','.join('?' * len(chunk))})", chunk)]         # no join for them
+        for chunk in _chunks(groups, 500):
             for piece, works, apart in self.conn.execute(
                     f"SELECT p.id, COUNT(DISTINCT i.work_id), MAX(i.tier IN ({marks})) FROM pieces p "
                     f"JOIN items i ON i.piece_id = p.id WHERE p.kind = 'group' AND p.id IN "
@@ -4230,33 +4423,32 @@ class Store:
                                  (row[0],)).fetchone()[0]
 
     def _set_pieces(self, cmd, sets):
-        """[(piece, item_id)] written with the command's `feed_in` in the same row write."""
-        self.conn.executemany("UPDATE items SET piece_id = ?, feed_in = ? WHERE id = ?",
-                              [(p, cmd.version, i) for p, i in sets])
-        cmd.fed_inline.update(i for _p, i in sets)
+        """[(piece, item_id)] written with the command's `feed_in` in the same row write — a row already written with it
+        in this command (`fed_inline`: placed, or re-pieced before) keeps it unwritten: SQLite rewrites the feed's index
+        entry for every row whose SET names `feed_in`, the same value or not (R6: a moved row's was written three
+        times)."""
+        fed = cmd.fed_inline
+        again = [(p, i) for p, i in sets if i in fed]
+        fresh = [(p, cmd.version, i) for p, i in sets if i not in fed]
+        if again:
+            self.conn.executemany("UPDATE items SET piece_id = ? WHERE id = ?", again)
+        if fresh:
+            self.conn.executemany("UPDATE items SET piece_id = ?, feed_in = ? WHERE id = ?", fresh)
+        fed.update(i for _p, i in sets)
 
-    def _side(self, item_id, direction):
-        """(id, piece_id, work_id) of the row just before (-1) or after (1) an item in its tier, or None."""
-        row = self.conn.execute("SELECT tier, ord FROM items WHERE id = ?", (item_id,)).fetchone()
-        if direction < 0:
-            sql = ("SELECT id, piece_id, work_id FROM items WHERE tier = ? AND (ord, id) < (?, ?) "
-                   "ORDER BY ord DESC, id DESC LIMIT 1")
-        else:
-            sql = "SELECT id, piece_id, work_id FROM items WHERE tier = ? AND (ord, id) > (?, ?) ORDER BY ord, id LIMIT 1"
-        return self.conn.execute(sql, (row[0], row[1], item_id)).fetchone()
-
-    def _split_runs(self, piece, placed, cmd, view=None):
+    def _split_runs(self, piece, placed, cmd, view, members, group=None, sets=None):
         """Make `piece` one run again (05 §5.2 rules 1, 5): its members in (tier, ord, id), cut wherever the tier or
         the work changes or another row stands between two of them; the first run holding a member the command didn't
         place keeps the id (else the first run), each other run becomes a piece of its own. LM11: a group is cut where
         the tier changes or a row stands between, never where the work does (in Finished and New arrivals, where no
-        group lives, it is), and never at the Soon line (G1). -> the pieces it made."""
+        group lives, it is), and never at the Soon line (G1). `members`: its rows (id, tier, ord, work_id) in that order,
+        as the caller read them (`_fix_pieces`: every piece's at once, R6); `group`: its kind when the caller knows it;
+        `sets`: where the caller collects the new pieces' rows to write them at once. -> the pieces it made."""
         conn = self.conn
-        members = conn.execute("SELECT id, tier, ord, work_id FROM items WHERE piece_id = ? ORDER BY tier, ord, id",
-                               (piece,)).fetchall()
         if len(members) <= 1:
             return []
-        group = self._is_group(piece)
+        if group is None:                  # else the kind the caller read (`_fix_pieces`' kinds)
+            group = self._is_group(piece)
 
         first, last = members[0], members[-1]
         span = None                # {id: position} of the rows from its first member to its last, read at once
@@ -4304,7 +4496,10 @@ class Store:
             new = self._new_piece(like=piece)
             made.append(new)
             ids = [m[0] for m in r]
-            self._set_pieces(cmd, [(new, i) for i in ids])
+            if sets is None:
+                self._set_pieces(cmd, [(new, i) for i in ids])
+            else:                           # the caller writes every piece's splits in one go (R6)
+                sets += [(new, i) for i in ids]
             cmd.repieced += [(i, piece, new) for i in ids]
         return made
 
@@ -10366,8 +10561,7 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
     else:
         tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first if not waiting else False, waiting,
                                         episodes, runs)
-    item_id = self._add_rows([prepared + (tier,)], cmd.version)[0]
-    self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
+    item_id = self._add_rows([prepared + (tier,)], cmd.version, works=[work])[0]   # its title with its row (R6)
     if not waiting:
         self._keep_hash(item_id, prepared[4], f.get("copy_sha256"))    # A4K-7: its bytes are known — never read back
     self._write_origin(key, item_id, record)
@@ -10509,9 +10703,11 @@ def _store_track_items(self, held):
     comes beside the video later (the made copy beside it, Q4) is another version, never a second item."""
     if "items" not in held:
         held["items"] = {}
+        # through `pairings_extracted` (R6): the origin range's index left aside (`+`, in the order too), or the planner
+        # walks every origin
         for item_id, text in self.conn.execute(
-                f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_ORIGIN_ROW} AND NOT {_VERSION_ROW} AND "
-                f"json_valid(p.pairing) AND json_extract(p.pairing, '$.verdict') IN ('extracted', 'transcribed')"):
+                f"SELECT p.item_id, p.pairing FROM pairings p WHERE {_EXTRACTED.format(p='p.')} AND "
+                f"+p.content_key >= 'src:' AND +p.content_key < 'src;' AND NOT {_VERSION_ROW} ORDER BY +p.content_key"):
             for k in _video_keys(_json_dict(text) or {}):
                 held["items"][k] = item_id
     return held["items"]

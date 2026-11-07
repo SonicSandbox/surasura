@@ -125,7 +125,7 @@ def _press(w, settings, opened):
     def generate():
         return w.controller.request(w.language, settings=settings.get(), launcher=w.launches)
     services = SimpleNamespace(closing=threading.Event(), settings=settings, language=w.language,
-                               controller=w.controller, generate=generate)
+                               controller=w.controller, generate=generate, journey_brought=lambda _reason: False)
     t = threading.Thread(target=lambda: opened.append(shell.Services.draw_journey(services, wait=60)) or None)
     t.start()
     return t
@@ -178,7 +178,7 @@ class _Press:
         self.controller = GenerateController(JobRegistry(), settle=0) if controller else None
         self.services = SimpleNamespace(closing=threading.Event(), controller=self.controller, language="ja",
                                         settings=SimpleNamespace(get=lambda: {"target_language": "ja"}),
-                                        generate=self.generate)
+                                        generate=self.generate, journey_brought=lambda _reason: False)
         self.asked = 0
         self.done = threading.Event()
 

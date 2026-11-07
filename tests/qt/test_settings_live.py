@@ -674,7 +674,8 @@ def test_a_format_export_asks_the_format_then_the_file_then_runs_and_says_so(qap
     assert name == exports.save_as(fmt, exports.INITIAL_NAMES[live.EXPORTS[row_id]])[2] and ext in filters
     assert wait_until(lambda: shell.bar_line.lines[-1:] == [live.flat(fakes.outcome.message)])
     export_call = next(args for name_, _gui, args in fakes.calls if name_ == "run_export")
-    assert export_call == (live.EXPORTS[row_id], "ja", fmt, "D:\\書き出し\\list" + ext)
+    # (A: the window's services go with it: the export waits for the journey's catch-up)
+    assert export_call == (live.EXPORTS[row_id], "ja", fmt, "D:\\書き出し\\list" + ext, page.services)
     # (IK-1, Sonic decided: *Exporting …* is said only once the export has run 300 ms — this one is quicker)
     assert page.row(row_id).isEnabled()
 

@@ -69,6 +69,8 @@ STALE = "yt-dlp needs updating to download this video: open YouTube… and choos
 NO_FFMPEG = "Anki Miner can't find ffmpeg, which it needs to download videos."
 BILIBILI = "bilibili.tv videos can't be downloaded to make cards yet: ▶ opens its page."
 FAILED = "Its video couldn't be downloaded ({why})."
+# The language's troubles no other video gets past this run (`Steps.download`): asking each would only wait them out
+HELD = (OFFLINE, BOT, NO_ROOM)
 
 # What Anki Miner (and the yt-dlp lines it passes on) says -> the words above. First match wins; `standing` the
 # language's trouble (`Trouble.standing`)

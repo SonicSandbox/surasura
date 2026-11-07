@@ -335,3 +335,14 @@ def test_webvtt_entities_are_read_as_text(tmp_path):
     vtt = tmp_path / "x.ja.vtt"
     vtt.write_text("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n雨&amp;風&nbsp;です\n", encoding="utf-8")
     assert "雨&風\xa0です" in open(online.as_srt(str(vtt)), encoding="utf-8").read()
+
+
+def test_one_videos_format_trouble_never_holds_the_others(steps, fake_miner):
+    # why (review r2 S1): "requested format is not available" can be one video's alone (members' formats only)
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={"error": "FETCH_FAILED",
+                                                               "message": "Requested format is not available"})
+    for job in (JOB, dict(JOB, id=22, item_id=6)):
+        with pytest.raises(runner.Needs) as raised:
+            steps.download("ja", job, WEB)
+        assert raised.value.say == online.STALE
+    assert fake_miner.commands().count("fetch") == 2, "each video still tried"

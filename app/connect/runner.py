@@ -1015,10 +1015,9 @@ def _pick(steps, ledger, lang, job, record=True):
     # Stage B: its audiobook lined up first — before the step is written: a part waiting on the line-up writes its
     # row only when its line changes (review B-15)
     lined = _line_up(steps, ledger, lang, job, book) if book is not None else None
-    ledger.set_state(jid, "picking")
     web = _online(steps, lang, job) if book is None else None      # Michi-YT: an online title's episode
-    if web is not None:
-        ledger.set_state(jid, "picking", progress=None)            # (no download's percent from an earlier try)
+    # (an online one: no download's percent from an earlier try — in the same one write, S19)
+    ledger.set_state(jid, "picking", **({"progress": None} if web is not None else {}))
     subtitle = None
     if web is not None:
         fetched = _download(steps, ledger, lang, job, web)
@@ -1940,7 +1939,8 @@ class Steps:
             raise
         except online.Trouble as t:
             if t.standing:
-                self._online_trouble = dict(getattr(self, "_online_trouble", {}), **{lang: t.say})
+                if t.say in online.HELD:    # offline, a bot check, no room: no other fetch this run (review r2 S1)
+                    self._online_trouble = dict(getattr(self, "_online_trouble", {}), **{lang: t.say})
                 raise Needs(online.KIND, t.say, standing=True) from None
             raise own(t.say) from None
         except anki_miner.AnkiMinerError as e:

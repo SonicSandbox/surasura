@@ -296,7 +296,9 @@ class GenerateController:
     # --- the journey check -------------------------------------------------------------------------------------- #
     def check(self, settings, language, then=None):
         """Is the journey current? Asked on a worker; the state moves to `current` / `stale` (or `idle` when it
-        can't tell) unless a run is in flight. `then(answer)` after, on that worker."""
+        can't tell) unless a run is in flight — `current` too when only the order or the pins moved since the last
+        Generate (Sonic 2026-11-06, A: `journey.only_moved`; the engine already re-planned the list, and the journey
+        catches up when a reader wants it). `then(answer)` after (the analyzer's own answer), on that worker."""
         def work():
             from app import analyzer, run_args
             try:
@@ -304,8 +306,14 @@ class GenerateController:
             except Exception as e:
                 print(f"Generate: the journey check failed: {e}")
                 answer = None
+            settled = {True: CURRENT, False: STALE}.get(answer, IDLE)
+            if answer is False:
+                from app.services import journey
+                if journey.only_moved(settings, language):
+                    settled = CURRENT       # A: only the order moved — the list is the engine's; the journey's dot says
+                                            # its sentences are catching up (one rule: `journey.only_moved`)
             with self._lock:
-                self._settled = {True: CURRENT, False: STALE}.get(answer, IDLE)
+                self._settled = settled
                 if answer is True and self._failure and self._failure[2] == language:
                     self._failure = None    # current after all (another program generated cleanly): over
                 if self._run is None and self._pending is None:

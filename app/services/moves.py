@@ -151,17 +151,26 @@ def plan_check(language, settings):
     reason when a Generate must come first, else None — current, re-plan now (only the known words or the lists moved:
     *N new* still follows the order), or stands aside (`Numbers` says so itself)."""
     def check(plan, store):
-        from app import analyzer, plan_engine, run_args
-        from app.path_utils import get_user_file
+        from app import plan_engine
         values = settings() if callable(settings) else settings
-        schedule = store.schedule(with_aside=True)
-        found = analyzer.resolve_found_files(language, verbose=False, schedule=schedule, missing=True)
-        args = analyzer.parse_analysis_args(run_args.analyzer_args(values, language)[1:])
-        parts = analyzer.run_signature_parts(language, found, args, analyzer.aside_files(language, schedule))
-        stamp = analyzer.read_run_stamp(get_user_file("results"))
-        verdict = plan_engine.check(plan, language, analyzer.engine_id(), stamp, parts, store.versions().get("epoch"))
+        verdict = plan_engine.check(plan, language, *plan_inputs(language, values, store))
         return verdict[1] if verdict is not None and verdict[0] == "generate-first" else None
     return check
+
+
+def plan_inputs(language, values, store):
+    """What `plan_engine.check` reads of the library as it stands, after the plan: (engine, run stamp, the run
+    signature's parts, the store's epoch) — every file stat'd, a missing item keeping its place, the set-aside files
+    from the same read (the replan host's `_parts` / `_verdict`). One recipe: `plan_check`'s and the journey's
+    `only_moved`. A worker's call."""
+    from app import analyzer, run_args
+    from app.path_utils import get_user_file
+    schedule = store.schedule(with_aside=True)
+    found = analyzer.resolve_found_files(language, verbose=False, schedule=schedule, missing=True)
+    args = analyzer.parse_analysis_args(run_args.analyzer_args(values, language)[1:])
+    parts = analyzer.run_signature_parts(language, found, args, analyzer.aside_files(language, schedule))
+    stamp = analyzer.read_run_stamp(get_user_file("results"))
+    return analyzer.engine_id(), stamp, parts, store.versions().get("epoch")
 
 
 def open_library(language, check=None, log=None, **reader_kw):

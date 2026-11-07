@@ -1,0 +1,53 @@
+"""A plain move waits for a reader, wired as the window wires it (Sonic 2026-11-06, "into 3.0"; the generate-speed
+study's A): the window's writer on a real library store -> the reader's `Replan.store_moved` -> the re-order host (a
+recorder: "Anki moved" is its `poke`) and the real `JourneyKeeper`, whose real `pending` and real `only_moved` ask the
+analyzer and the plan file the last Generate wrote. The keeper's Generate is recorded (`_Launches`), never run.
+
+The work count of the move press: a burst of drags costs zero Generates — the re-order host is still told every one
+(the engine re-orders Anki without a Generate) — and the journey is catching up until a reader wants it. A Finish, the
+other way, still asks its Generate (D1's test in tests/qt/test_journey_stones_trigger.py runs it whole).
+"""
+import pytest
+
+from app.services.generate import QUEUED, RUNNING
+from tests import services_helpers as h
+from tests.qt.test_journey_stones_trigger import _verdict, window  # noqa: F401 (a fixture)
+from tests.test_journey_stones_quiet import _current, _kept_on, _the_childs_token_store  # noqa: F401 (autouse)
+from tests.test_library_store_support import LANGUAGES
+from tests.test_services_journey import _generates
+from tests.test_services_replan_host import fired, gate  # noqa: F401 (fixtures)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_burst_of_move_presses_starts_zero_generates_and_a_reader_starts_one(language, window, gate, fired):
+    store, ids, _names, root, _first = _kept_on(language)
+    w = window(language)
+    order = [ids[k] for k in ("A1", "A2", "A3", "B1", "B2", "B3")]
+    for n, item in enumerate(order[1:], 1):                # five drags, each to the top of NOW: the order reversed
+        w.writer.move([item], "now")
+        w.saved(n)
+        w.replan.store_moved(language, {"order_version": None})   # the reader's look sees the order move
+    assert _verdict(root, language, store) is None, "the plan is the library's in all but the order"
+    assert _current(language)[0] is False, "the journey is owed the moves"
+    assert h.until(w.keeper.catching_up, seconds=10)
+    assert w.launches.count() == 0 and w.keeper.asked == 0 and _generates(w.registry) == [], "zero Generates"
+    assert w.controller.state().state not in (QUEUED, RUNNING)
+    assert w.host_calls().count("poke") == 5, "Anki re-ordered from the engine for every drag"
+    assert w.replan.journey_wanted("journey") is True, "Journey ↗: the catch-up asked for"
+    assert h.until(lambda: w.launches.count() == 1, seconds=5) and w.keeper.asked == 1
+    assert w.launches.runs[0].quiet
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES[:1])
+def test_a_finish_press_still_asks_its_generate(language, window, gate, fired):
+    store, ids, _names, root, _first = _kept_on(language)
+    w = window(language)
+    w.writer.set_finished([ids["B3"]])
+    w.saved(1)
+    w.replan.store_moved(language, {"order_version": None})
+    assert _verdict(root, language, store)[0] == "generate-first"
+    assert fired.done(w.keeper)
+    assert h.until(lambda: w.launches.count() == 1, seconds=10), "a Finish moves what counts: its Generate"
+    assert not w.keeper.catching_up()
+    store.close()

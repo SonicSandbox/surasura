@@ -328,6 +328,16 @@ def check(plan, language, engine, run_stamp, signature_parts, epoch=None, added=
     return ("stand-aside", aside) if aside else verdict
 
 
+def only_order(header, language, engine, run_stamp, signature_parts, epoch=None):
+    """Whether `check` answers None — the plan is the library's in all but its order and its pins — for the plan whose
+    header (`read_header`) this is. `check` reads nothing but the header on its way to None (a signature that moved,
+    the one road to the plan's files, never ends in None), so the header alone answers it exactly (Sonic 2026-11-06,
+    A: the one question behind *no Generate after a plain move*). None (no readable header) is False."""
+    if not isinstance(header, dict):
+        return False
+    return check(Plan(header, [], [], [], [], None), language, engine, run_stamp, signature_parts, epoch) is None
+
+
 NUMBERS_EXACT = ("i+1",)          # stand-aside reasons whose *N new* the engine still follows exactly (`Engine`)
 
 

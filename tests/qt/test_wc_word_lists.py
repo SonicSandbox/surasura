@@ -61,3 +61,29 @@ def test_enter_adding_typed_words_grows_the_list_and_lays_it_out_once(main):
     # that invalidates every layout of the app asks its whole page again, whatever this window's own count says).
     elsewhere = [type(x).__name__ for x in w._layout_widgets.values() if x.window() is not win]
     assert not elsewhere, (elsewhere, w.report())
+
+
+def test_a_keystroke_in_the_search_filters_the_list_and_lays_it_out_once(main):
+    """A keystroke in the search: the list shows the matching words, and the press asks at most one layout pass of the
+    window (the filter does not invalidate every layout), moving no widget more than a pass would, and laying no widget
+    out more than once."""
+    _put("冒険\n冒険家\n毎日\n勉強\n")
+    win = _open(main)
+    assert wait_until(lambda: _rows(win) == ["冒険", "冒険家", "毎日", "勉強"], 3)
+    wc.settle()
+    wc.rest(150)
+    unit = wc.one_pass(win, main)
+    try:
+        win.search.setFocus()
+        wc.settle()
+        with wc.measure(main) as w:
+            for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+                QApplication.sendEvent(win.search, QKeyEvent(kind, Qt.Key.Key_unknown, Qt.KeyboardModifier.NoModifier, "冒"))
+            landed = wait_until(lambda: _rows(win) == ["冒険", "冒険家"], 3)
+            wc.rest(150)
+        assert landed, w.report()
+        assert w.hints <= unit * wc.PASS_SLACK, (unit, w.report())
+        assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()
+        assert w.most_layouts()[0] <= 1, w.report()
+    finally:
+        win.search.clear()

@@ -2810,3 +2810,19 @@ def test_an_arrival_to_finished_is_recorded_as_watched_and_undone_with_it(langua
     store.undo(change)
     assert store.item(a)["tier"] == "arrivals" and store.item(a)["watched"] == before
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_item_ids_answers_what_item_id_answers_for_each_path_in_one_read(language):
+    """R6: the re-plan reads its plan's every file's item in one query (`item_ids`), as `item_id` gave one a file: in
+    the order given, a path given twice twice, a path no item holds None, a path spelled in another case its item."""
+    store = migrated(language)
+    rels = [store.item(i)["rel_path"] for i in store.ids("soon")[:5]]
+    asked = [rels[2], rels[0], "LowPriority/存在しない/第01話.srt", rels[2], rels[4].upper(), rels[1]]
+    reads = []
+    store.conn.set_trace_callback(lambda sql: reads.append(sql) if sql.lstrip().upper().startswith("SELECT") else None)
+    got = store.item_ids(asked)
+    store.conn.set_trace_callback(None)
+    assert got == [store.item_id(p) for p in asked]
+    assert got[2] is None and got[0] == got[3] and len(reads) == 1
+    store.close()

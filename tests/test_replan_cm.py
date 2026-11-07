@@ -17,7 +17,7 @@ import tkinter as tk
 pytest.importorskip("modules.junban")
 
 from app import content_importer_gui as cig  # noqa: E402
-from app import replan_preview  # noqa: E402
+from app import library_store, replan_preview  # noqa: E402
 from app.content_importer_gui import ContentImporterApp  # noqa: E402
 from tests.test_replan_preview import (_deck, _move_later_to_top, _patched, _settings_file, lib)  # noqa: E402,F401
 
@@ -171,3 +171,29 @@ def test_a_host_in_the_windows_process_shares_the_interpreter_every_millisecond_
         assert sys.getswitchinterval() == pytest.approx(0.002)
     finally:
         sys.setswitchinterval(before)
+
+
+def test_a_re_order_job_opens_one_store_handle_a_role(lib, window, monkeypatch):
+    """R6: a job's own reads and Junban's inside it (`pins.read`, `read_out`, the journey's look) share one handle a
+    role (`library_store.held`): each open and close is ~20 ms of connection work, some of it under the interpreter
+    lock the window shares. A move's job opens the host's handle and at most one reader, never one a read."""
+    root_dir, store = lib
+    monkeypatch.setattr(replan_preview, "SETTLE_S", 0.05)
+    fake = _deck(root_dir)
+    app = window()
+    opened = []
+    real_init = library_store.Store.__init__
+
+    def counting(self, *a, **k):
+        real_init(self, *a, **k)
+        opened.append(self.role)
+    with _patched(fake):
+        app._start_replan()
+        host = app._replan
+        assert _pump(app, lambda: not host.busy(), 60)
+        fake.write_requests.clear()
+        monkeypatch.setattr(library_store.Store, "__init__", counting)
+        _move_in_window(app, store)
+        assert _pump(app, lambda: fake.write_requests and not host.busy(), 60), "no re-order after the move"
+        monkeypatch.setattr(library_store.Store, "__init__", real_init)
+    assert opened and all(opened.count(role) <= 1 for role in set(opened)), opened

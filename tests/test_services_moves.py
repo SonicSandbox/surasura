@@ -1319,7 +1319,7 @@ def test_the_same_stale_plan_is_not_read_again_on_every_resync(tmp_path, monkeyp
     seed, analysed, path = _small(tmp_path, drop=1)
     loads = []
     real = plan_engine.load
-    monkeypatch.setattr(plan_engine, "load", lambda p: loads.append(p) or real(p))
+    monkeypatch.setattr(plan_engine, "load", lambda p, **kw: loads.append(p) or real(p, **kw))
     numbers = M.Numbers(seed.opener, "ja", plan_file=path)
     numbers.load()
     numbers.resync()

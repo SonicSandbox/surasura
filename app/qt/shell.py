@@ -1353,8 +1353,12 @@ class ShellWindow(QMainWindow):
         self._quit_timer = None
         self._detached_card = None                        # row 35: the close's *Still finishing* sheet, while open
         self._detached_answered = False                   # ... answered (Quit or Stop and quit): asked once a close
+        from app.qt import hints as hints_module          # WP6: one helper for every one-time hint (HC-3 too)
+        self.hints = hints_module.Hints(self)
         self.bridge.jobs_changed.connect(self._jobs_changed)
         self.bridge.jobs_changed.connect(self.phase.set_jobs)
+        self.bridge.jobs_changed.connect(self.hints.jobs)    # HC-3: the first card wait, the first background Generate
+        self.phase.on_states = self.hints.strip              # ... and the first amber circle
         self.phase.set_jobs(services.registry.snapshot())
         self._library_needs = 0
         self._status_snap = None
@@ -1403,6 +1407,7 @@ class ShellWindow(QMainWindow):
         motion.install_mode_filter(QApplication.instance())
         self.bridge.settings_written.connect(self._settings_written)
         self.toasts = toast.ToastHost(central)
+        self.toasts.why_asked = self._why_asked           # help cards: a toast's *Why?* opens its card, the cause on top
         self.star_ask = star_ask.StarAsk(self)            # Surasura's star ask (once, when your own cards first land)
 
         # app-wide behaviour
@@ -2038,6 +2043,10 @@ class ShellWindow(QMainWindow):
         self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
         bridge.run_in_worker(_junban_here, then=self._junban_found)
         row.addWidget(self.phase)
+        # help cards (HC-2): one ? after the five circles opens their card — every lit circle with its *Why*
+        from app.qt import help_card
+        self.phase_help = help_card.help_mark("circles", footer)
+        self.phase.set_help(self.phase_help)              # inside the strip: the bar's line keeps its own edge
         # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line (and its ✕) while it applies, else
         # the update chip while it applies (`_attach_duties` puts it here), else the status line (the pulsing dot gave
         # way to the header's hairline: light never pulses)
@@ -2568,8 +2577,9 @@ class ShellWindow(QMainWindow):
         d.help.setAccessibleName(strings.HELP_NAME)
         d.help.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         d.help.setCursor(Qt.CursorShape.PointingHandCursor)
-        qpress.room(d.help)                             # a9.1: one item, so no menu — a click opens the online guide
-        d.help.clicked.connect(lambda _c=False: self._open_guide(control=d.help))
+        # help cards (HC-4): a click opens the help card of the screen in view (its foot: All help · What runs by
+        # itself · Online guide); no menu to read first. The card is a GUI-only overlay: no pending mark.
+        d.help.clicked.connect(lambda _c=False: self.open_help())
         d.journey_dot = QLabel(self.header)               # row 7: the sentences catching up (02-state-model, G10)
         d.journey_dot.setObjectName("journeydot")
         d.journey_dot.setTextFormat(Qt.TextFormat.PlainText)
@@ -2638,6 +2648,8 @@ class ShellWindow(QMainWindow):
             self.services.setup_open.set()
         elif self.services.setup_open.is_set():
             bridge.run_in_worker(self.services.setup_ended)
+        if not up and self.__dict__.pop("_tour_after_setup", False):
+            QTimer.singleShot(0, self.open_tour)          # help cards §6.6: setup's last page asked for the tour
 
     def _session_said(self, line):
         from app.qt import windows
@@ -2731,6 +2743,93 @@ class ShellWindow(QMainWindow):
         if path:
             qpress.open(self, path, control=self.duties.generate.log_button, key="open:generate-log")
 
+    # --- the help cards (Sonic 2026-11-06 "Ok do it"; spec tracks/window/work/help-cards) ------------------------- #
+    def open_help(self, card_id=None, cause=None, done=None):
+        """The help card `card_id` (None: the screen in view's, HC-4 — Settings' section in view where it has one, a
+        screen with none *All help*), opened over this window. -> the card."""
+        from app.qt import help_card
+        from app.services import help_cards
+        if card_id is None:
+            tab = self.current_tab()
+            card_id = help_cards.screen_card(tab, self._settings_section() if tab == "settings" else None)
+        card = help_card.card_for(self)
+        if card_id is None:
+            return card.show_all(done=done)
+        return card.show_card(card_id, cause=cause, done=done)
+
+    def open_tour(self):
+        """The tour of what runs by itself (item 11, HG-4): Settings' door and setup's last page."""
+        from app.qt import help_card
+        return help_card.card_for(self).show_tour()
+
+    def _why_asked(self, cause, done):
+        """A toast's *Why?*: its cause's card, the cause on top; `done()` (the toast's time runs on) when it closes."""
+        self.open_help(getattr(cause, "card", None) or "automation", cause=cause, done=done)
+
+    def _settings_section(self):
+        """The Settings section in view (its lit nav button), or None."""
+        page = getattr(self, "settings_page", None)
+        for section_id, b in (getattr(page, "nav", None) or {}).items():
+            if b.isChecked():
+                return section_id
+        return None
+
+    def help_try_ready(self, key):
+        """Whether *Try it* `key` can run now (§6.5): None, else what is missing (the card says it). GUI-only reads."""
+        settings = self.services.settings.get()
+        if key == "sync_known":
+            decks = (settings.get("anki_sync_decks") or {}).get(self.language) or []
+            return None if decks and self.services.automation is not None else strings.HELP_TRY_MISSING[key]
+        if key == "mine_top":
+            mine = getattr(self, "mine", None)
+            ok = (mine is not None and not getattr(mine, "off", None) and settings.get("connect_enabled")
+                  and self._top_to_mine() is not None)
+            return None if ok else strings.HELP_TRY_MISSING[key]
+        if key == "junban":
+            return None if self.phase is not None and phase_service.JUNBAN in self.phase.opens \
+                else strings.HELP_TRY_MISSING[key]
+        if key == "update_journey":
+            view = getattr(self.page_widgets.get("current"), "view_model", None)
+            ok = self.duties is not None and view is not None and bool(getattr(view, "rows", None))
+            gen = getattr(self.duties, "generate_state", None)
+            if ok and getattr(gen, "state", None) in ("queued", "running", "cancelling") and not getattr(gen, "quiet",
+                                                                                                         False):
+                return strings.HELP_TRY_BUSY            # (a background one: the press is yours, taking its place)
+            return None if ok else strings.HELP_TRY_MISSING[key]
+        return strings.HELP_TRY_MISSING.get(key)
+
+    def help_try(self, key, control=None):
+        """*Try it* `key` (§6.5): the press the window already has, with its own pending mark and its own undo —
+        the known-words sync (read-only on Anki), *Mine now* on the first episode above the line (*Undo this batch*),
+        順's window (its *Try it on my cards*), the Generate button's own request (the learner's, never quiet)."""
+        if self.help_try_ready(key) is not None:
+            return
+        if key == "sync_known":
+            self._known_clicked()
+        elif key == "mine_top":
+            got = self._top_to_mine()
+            if got is not None:
+                self.mine.mine_row(*got)
+        elif key == "junban":
+            self._open_junban()
+        elif key == "update_journey":
+            if self.duties is not None:
+                qpress.run(control, "generate", self.services.generate,
+                           failed=lambda info: self.say(str(info[0])), win=self)
+
+    def _top_to_mine(self):
+        """(row, ids) of the first row above the top-cards line with an episode *Mine now* would ask for, or None."""
+        from app.qt import rows as rows_module
+        view = getattr(self.page_widgets.get("current"), "view_model", None)
+        for row in getattr(view, "rows", None) or ():
+            episodes = getattr(row, "episodes", None) or ()
+            if not any(getattr(e, "in_top", False) for e in episodes):
+                continue
+            ids = [e.id for e in rows_module.asked_files("waiting", episodes) if e.in_top][:1]
+            if ids:
+                return row, ids
+        return None
+
     def _open_guide(self, _checked=False, control=None):
         """? (a9.1: a button, its one-item menu gone): `control`'s arc turns — else the bar's — until the browser was
         asked (a worker)."""
@@ -2791,7 +2890,7 @@ class ShellWindow(QMainWindow):
         junban = getattr(state, "junban", None)
         if junban and junban != d.junban_said:             # 順's line, once (the Tk `_on_junban_auto`: IK-23)
             d.junban_said = junban
-            self.toasts.show(junban)
+            self.toasts.show(junban, why=self._job_cause("junban"))   # help cards: the job's own cause (one record)
         known = getattr(state, "known", None)
         self._known_road()
         if d.known.set_known(known, strings.BAR_KNOWN_TIP):     # W3.1a: the known corner (repainted on a change only)
@@ -2990,11 +3089,23 @@ class ShellWindow(QMainWindow):
         if d.level.set_mark(mark) or changed:
             d.paints[d.level] = d.paints.get(d.level, 0) + 1
 
+    def _job_cause(self, kind):
+        """The newest `kind` job's cause in the registry (help cards §5.2: a toast reads its job's record, never a copy
+        of its own), or None."""
+        try:
+            views = [v for v in self.services.registry.snapshot() if v.kind == kind]
+        except Exception:
+            return None
+        return getattr(views[-1], "cause", None) if views else None
+
     def _show_chores(self, state):
         notice = getattr(state, "notice", None)
         if notice and notice != self.duties.notice:        # Connect's line, once: a toast
             self.duties.notice = notice
-            self.toasts.show(notice)
+            from app.connect import notice as notice_module    # help cards: the notice names what came, from where
+            from app.services import causes
+            why = causes.Cause(strings.WHY_NOTICE, None, "arrivals") if notice_module.names_arrivals(notice) else None
+            self.toasts.show(notice, why=why)
 
     # the update
     def _show_update(self, state, force_cards=False):

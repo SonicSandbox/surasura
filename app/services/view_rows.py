@@ -248,6 +248,8 @@ STRINGS = {
     "mining_pct": "Mining · {pct}%", "tip_mining_doing": "Making its cards now: {doing}",
     "tip_ask_battery": "{tip}\n• Click to mine this one now, on battery",
     "tip_ask_anki": "{tip}\n• Click: it goes first once Anki answers",
+    "tip_since": "{tip} · {since}",                 # help cards: a wait's reason and when it began
+    "since": "since {time}",
     "waiting": "Waiting", "waiting_kn": "{k}/{n} · Waiting", "mine_rest": "{k}/{n} · Mine rest", "mine": "Mine",
     "no_media": "No {word}", "no_media_n": "No {word} · {n}", "removed": "{Word} removed",
     "deleted": "No cards in Anki", "deleted_n": "No cards in Anki · {n}",
@@ -1228,9 +1230,25 @@ def _connected(st, item, word):
     # A3W-5, Sonic 2026-10-24 night; `runner.anki_needs_you`)
     tone = "warn" if item.kind in (connect_feed.ANKI, connect_feed.HELD) else "dim"
     tip = item.tip
+    since = since_words(getattr(item, "since", None))
+    if since:                               # help cards: the wait's *since 14:02* (the ledger's `reason_at`)
+        tip = STRINGS["tip_since"].format(tip=tip, since=since)
     if item.kind in (connect_feed.ANKI, connect_feed.ANKI_WAIT, connect_feed.BATTERY):
-        tip = STRINGS["tip_ask_battery" if item.kind == connect_feed.BATTERY else "tip_ask_anki"].format(tip=item.tip)
+        tip = STRINGS["tip_ask_battery" if item.kind == connect_feed.BATTERY else "tip_ask_anki"].format(tip=tip)
     return Status("waiting", st.label if st.kind == "waiting" else STRINGS["waiting"], tip, tone)
+
+
+def since_words(utc_text, now=None):
+    """*since 14:02* for a ledger time (`reason_at`: UTC, "2026-11-06T22:02:00Z"), in the one time rule
+    (`causes.when`); "" when there is none or it can't be read."""
+    if not utc_text:
+        return ""
+    try:
+        at = calendar.timegm(time.strptime(str(utc_text), "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    from app.services import causes
+    return STRINGS["since"].format(time=causes.when(at, now))
 
 
 def names_click(status):

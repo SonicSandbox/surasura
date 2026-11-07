@@ -34,6 +34,12 @@ once (IK S4); a job an ask made is of kind `asked`. `asks_from:<lang>` in meta: 
 set, every unanswered ask counts, F-2).
 Also P4.1: `generating:<lang>` in meta, set while Connect's own Generate runs (F9: the status line's
 *Connect is updating your list*), cleared when it ends and by the next run when a crash left it.
+
+The help cards (still SCHEMA 4, the P4.1 way: a SCHEMA bump would make a 3.0.0 refuse the ledger): a job's
+`reason_at`, when its `reason` was last set — the window's *since 14:02* on a wait. Kept by one SQLite trigger over
+every writer (`drop`, the wait, `set_state`, `reopen_skipped`, and any later): a new reason stamps it, the same reason
+written again keeps it, a cleared reason clears it; a job inserted with a reason is stamped too. Rows from before stay
+NULL (their wait shows no *since*). A Surasura before it ignores the column, and the trigger still runs harmlessly.
 """
 import datetime
 import json
@@ -132,7 +138,17 @@ _ADDED_COLUMNS = (("kind", "TEXT NOT NULL DEFAULT 'mine'"), ("words", "TEXT"),
                   ("attempt", "INTEGER NOT NULL DEFAULT 0"), ("failures", "INTEGER NOT NULL DEFAULT 0"),
                   ("skipped", "TEXT"), ("tag_pending", "TEXT"),
                   ("asked_at", "TEXT"),         # P4.1: the ask the job answers (no SCHEMA bump: see the docstring)
-                  ("progress", "TEXT"))         # laptop round 5 #23: where Anki Miner's run stands (JSON; as above)
+                  ("progress", "TEXT"),         # laptop round 5 #23: where Anki Miner's run stands (JSON; as above)
+                  ("reason_at", "TEXT"))        # help cards: when `reason` was last set (the trigger below; as above)
+# The help cards' *since*: `reason_at` follows `reason` through every writer (made after the column exists). The time
+# is `_now()`'s shape, in UTC, by SQLite's clock — the same clock as the rest of the ledger's times.
+_REASON_AT_SQL = (
+    """CREATE TRIGGER IF NOT EXISTS reason_since AFTER UPDATE OF reason ON jobs WHEN NEW.reason IS NOT OLD.reason
+       BEGIN UPDATE jobs SET reason_at = CASE WHEN NEW.reason IS NULL THEN NULL
+                                              ELSE strftime('%Y-%m-%dT%H:%M:%SZ', 'now') END WHERE id = NEW.id; END""",
+    """CREATE TRIGGER IF NOT EXISTS reason_since_new AFTER INSERT ON jobs WHEN NEW.reason IS NOT NULL
+       BEGIN UPDATE jobs SET reason_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.id; END""",
+)
 # P2.4's tables (made IF NOT EXISTS, like the rest)
 _RUNNER_SQL = (
     # N5, one Anki Miner call: `state` running · done · uncertain (words in doubt) · refused (it never ran)
@@ -247,6 +263,8 @@ class Ledger:
             for name, decl in _ADDED_COLUMNS:
                 if name not in have:
                     self.conn.execute(f"ALTER TABLE jobs ADD COLUMN {name} {decl}")
+            for sql in _REASON_AT_SQL:
+                self.conn.execute(sql)
             self._needs_v4()
             self.conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)", (str(SCHEMA),))
             # this ledger's own name in its jobs' tags: a ledger made again never reuses a lost one's tags

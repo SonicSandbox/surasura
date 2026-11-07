@@ -376,6 +376,7 @@ def _waits(items):
     episode)."""
     from app.connect import anki_session, feed as connect_feed, runner
     reasons = {}
+    firsts = {}
     for it in items:
         slot = CONNECT_WAITS.get(it.kind)
         if slot is None or it.tip == runner.STOPPED_BY_YOU:
@@ -385,9 +386,14 @@ def _waits(items):
         why = connect_feed.WORDS[it.kind] if slot == "needs" else ((it.tip or "").strip().rstrip(".") or it.words)
         reasons.setdefault(slot, {}).setdefault(why, 0)
         reasons[slot][why] += 1
+        since = getattr(it, "since", None)          # help cards: the oldest wait for this reason, *since 14:02*
+        if since and (why not in firsts.setdefault(slot, {}) or since < firsts[slot][why]):
+            firsts[slot][why] = since
     out = {}
+    from app.services.view_rows import since_words
     for slot, counts in reasons.items():
-        words = "; ".join(f"{why} · {_episodes(n)}" for why, n in counts.items())
+        words = "; ".join(" · ".join(x for x in (why, _episodes(n), since_words(firsts.get(slot, {}).get(why))) if x)
+                          for why, n in counts.items())
         out[slot] = (words, words) if slot in NEEDS_SLOTS else (words, None)
     return out
 

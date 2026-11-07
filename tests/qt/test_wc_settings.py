@@ -117,20 +117,27 @@ def test_r4_a_switch_that_reveals_nothing_repaints_only_inside_its_own_row(page)
         wc.settle()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found.md F1: the whole page in view repaints (rows above the switch too)")
 def test_r4_r1_a_sections_switch_repaints_nothing_above_itself_and_lays_the_page_out_once(page):
     """*Junban* off hides its section's rows (on brings them back): the page below the switch repaints, nothing
-    above it; one layout pass at most; no widget made or deleted (rows are hidden, never rebuilt)."""
+    above it — but what the switch reveals beside it: the nav from its section's *Backfill* button down (it goes or
+    comes, the ones under it move) and the scroll bar (the page's length changed); one layout pass at most; no widget made or
+    deleted (rows are hidden, never rebuilt). (found.md F1: the page's paused layouts resumed deepest first laid every
+    slab out twice, and the body, its column and the slabs repainted whole as they resized.)"""
     view = _in_view(page, page.rows["enable_junban"])
     toggle = view.controls[0]
     unit = wc.one_pass(page.body, page)
     top = wc.rect_in_window(view).top()
     below = QRect(0, top, page.width(), page.height() - top)
+    shown = page.nav["backfill"]                          # the nav button the switch takes away and brings back
+    assert shown.isVisible()
+    panel, at = wc.rect_in_window(page.nav_panel), wc.rect_in_window(shown).top()
+    nav = QRect(panel.left(), at, panel.width(), panel.bottom() - at + 1)    # it and the buttons under it
+    bar = wc.rect_in_window(page.scroll.verticalScrollBar())
     try:
         for _ in range(2):                                                 # off, then on again: both measured
             with wc.measure(page) as w:
                 change(toggle, not toggle.value())
-            assert w.paints_outside_rect(below) == [], w.report()
+            assert w.paints_outside_rect(below, nav, bar) == [], w.report()
             assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()
             assert w.hints <= unit * wc.PASS_SLACK, (unit, w.report())
             assert w.created == 0 and w.deleted == 0, w.report()
@@ -141,10 +148,12 @@ def test_r4_r1_a_sections_switch_repaints_nothing_above_itself_and_lays_the_page
 
 
 # --- R1: More options and the search: one layout pass ------------------------------------------------------------ #
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found.md F2: rows above the button repaint")
 def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_its_button(page):
     """*More options*: the section's other rows open in place below its button — one layout pass of the page at most,
-    nothing above the button repainted, nothing made. *Fewer options* the same."""
+    nothing above the button repainted but the scroll bar (the page's length changed), nothing made. *Fewer options*
+    the same. (found.md F2: the slabs laid out twice and repainted whole; the first open also showed the options' box
+    at a default 100 × 30 over the section's head before the layout placed it.)"""
+    bar = wc.rect_in_window(page.scroll.verticalScrollBar())
     section = next(s for s, slab in page.slabs.items() if not slab.more_row.isHidden() and s not in page.folds())
     more = _in_view(page, page.slabs[section].more)
     unit = wc.one_pass(page.body, page)
@@ -154,7 +163,7 @@ def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_it
             below = QRect(0, top, page.width(), page.height() - top)
             with wc.measure(page) as w:
                 page.fold(section)
-            assert w.paints_outside_rect(below) == [], w.report()
+            assert w.paints_outside_rect(below, bar) == [], w.report()
             assert w.hints <= unit * wc.PASS_SLACK, (unit, w.report())
             assert w.created == 0 and w.deleted == 0, w.report()
     finally:
@@ -163,13 +172,51 @@ def test_r1_r4_more_options_lays_the_page_out_once_and_repaints_nothing_above_it
         wc.settle()
 
 
+def _on_screen_as_painted_afresh(page):
+    """What the screen shows of the page (its backing store) is what a fresh paint of it draws."""
+    wc.settle()
+    shot = QApplication.primaryScreen().grabWindow(page.winId()).toImage()
+    return shot == page.grab().toImage().convertToFormat(shot.format())
+
+
+def test_what_only_repaints_in_part_leaves_nothing_stale_on_screen(page):
+    """The body, its column and the slabs repaint only what a resize changed (WA_StaticContents: F1, F2's fix) — the
+    slabs' rounded corners and bottom border painted again where they move to. After a section's switch, *More
+    options* both ways, search keystrokes and a narrower window, the screen is what a fresh paint draws: no corner or
+    border left where it was (without the slab's edge repaint, closing a fold left 296 stale pixels)."""
+    view = _in_view(page, page.rows["enable_junban"])
+    toggle = view.controls[0]
+    section = next(s for s, slab in page.slabs.items() if not slab.more_row.isHidden() and s not in page.folds())
+    size = page.size()
+    try:
+        for press in (lambda: change(toggle, not toggle.value()), lambda: change(toggle, not toggle.value()),
+                      lambda: (_in_view(page, page.slabs[section].more), page.fold(section)),
+                      lambda: page.fold(section),
+                      lambda: page.search.edit.setText("ann"), lambda: page.search.edit.setText("a"),
+                      lambda: page.search.edit.setText(""),
+                      lambda: page.resize(size.width() - 120, size.height()), lambda: page.resize(size)):
+            press()
+            assert _on_screen_as_painted_afresh(page)
+    finally:
+        if not toggle.value():
+            change(toggle, True)
+        if section in page.folds():
+            page.fold(section)
+        page.resize(size)
+        wc.settle()
+
+
 SEARCH_LAYERS = 12                  # today's most: ~9 viewports of paint summed over the nested layers (body, slab,
 #                                     row, label…) when a keystroke changes every row in view
-SEARCH_MOVES = 9                    # today's most: a row moved 7–8 times by one keystroke (found.md F3) — the rule is
-#                                     `wc.MOVES_PER_PASS`; lower this to it when F3's fix lands. Unpaused (a9.1's lag): 38
+SEARCH_MOVES = wc.MOVES_PER_PASS    # found.md F3: a row moved 7–8 times by one keystroke, the paused layouts resumed
+#                                     deepest first (each moved its rows again); one pass from the top since. Unpaused
+#                                     (a9.1's lag): 38
+_PAST_ITS_VIEW = pytest.mark.xfail(strict=True, raises=AssertionError,
+                                   reason="WC found.md F3 (what is left): the keystroke that makes the page longer than "
+                                          "its view (the scroll bar comes in) still moves a slab 5–6 times (was 7)")
 
 
-@pytest.mark.parametrize("typed", ["a", "an", "", "zzzz", "片仮名"])
+@pytest.mark.parametrize("typed", [pytest.param("a", marks=_PAST_ITS_VIEW), "an", "", "zzzz", "片仮名"])
 def test_r1_a_search_keystroke_lays_the_page_out_once_whatever_it_shows_or_hides(page, typed):
     """A keystroke hides and shows rows (a search cleared shows ~126 again): laid out once as the pass ends, never once
     a row shown (a9.1: 100 ms at 250 %). The page's paint is the viewport's worth at most each layer, never a widget

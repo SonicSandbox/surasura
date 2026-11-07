@@ -841,17 +841,60 @@ def list_menu(lst, title):
     elif m.isVisible():
         m.hide()
     _empty_menu(m)
+    m.fills = getattr(m, "fills", 0) + 1             # each open's own number: an answer asked by an earlier open (a
+    #                                                  folder to skip) never lands in this one (`item_menu.offer_skip`)
     m.setAccessibleName(strings.MENU_NAME.format(title=title))
     return m
 
 
+def sub_menu(menu, label, before=None):
+    """`menu.addMenu(label)` (put before the action `before`, if given). Inside a kept menu (`list_menu`) a submenu an
+    earlier open used is taken back, emptied as that open hid, so a later open makes no widget (R5: *What is it?*,
+    *Split here…*, *Change cover…* were new menus, and new native windows, at every open); under a plain menu, a new
+    one. -> the submenu (its action's tip and state set by the caller)."""
+    top = menu
+    while not isinstance(top, _KeptMenu) and isinstance(top.parent(), QMenu):
+        top = top.parent()
+    if not isinstance(top, _KeptMenu):
+        sub = QMenu(label, menu)
+    else:
+        sub = _lend(top)
+        sub.setTitle(label)
+        act = sub.menuAction()
+        act.setToolTip("")
+        act.setEnabled(True)
+    if before is not None:
+        menu.insertMenu(before, sub)
+    else:
+        menu.addMenu(sub)
+    return sub
+
+
+def _lend(top):
+    spare = top.__dict__.setdefault("spare", [])
+    sub = spare.pop() if spare else None
+    if sub is None:
+        sub = QMenu(top)                             # (the kept menu's child, whichever menu it shows under)
+        sub.setObjectName("rowmenu")
+        sub.setToolTipsVisible(True)
+    top.__dict__.setdefault("lent", []).append(sub)
+    return sub
+
+
 def _empty_menu(m):
-    for act in m.actions():
-        m.removeAction(act)
-        if act.parent() is m:
-            act.deleteLater()
+    lent = m.__dict__.get("lent") or []
+    for menu in [m] + lent:
+        for act in menu.actions():
+            menu.removeAction(act)
+            if act.parent() is menu:
+                act.deleteLater()
+    if lent:
+        m.spare.extend(lent)
+        lent.clear()
+    kept = set(map(id, m.__dict__.get("spare") or ()))
     for sub in m.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly):
-        sub.deleteLater()
+        if id(sub) not in kept:
+            sub.deleteLater()
 
 
 # --- the writer's callbacks, on the window's thread -------------------------------------------------------------- #

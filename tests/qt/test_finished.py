@@ -653,16 +653,21 @@ def test_L1_N5_a_file_already_in_the_library_dropped_on_finished_is_refused_with
     assert win.bar_line.full() == strings.FIN_IMPORT_IN_LIBRARY.format(name=os.path.basename(mine))
 
 
-def test_L1_N7_each_menu_is_deleted_once_it_closes(fin):
+def test_L1_N7_no_menu_is_left_behind_once_it_closes(fin):
+    """L1 N7, as R5 has it since 2026-11-06 (WC found-B B3): a row's ⋯ is the list's one menu — closed, it hides
+    holding nothing, and the next ⋯ is the same menu (never one more a click); the import's pick menu goes."""
     from PyQt6 import sip
     _seed, win, _w, _e = fin()
     _i, row = finished_rows(win)[0]
-    menus = [win.finished.menu(row, QPoint(10, 10))]
-    menus[0].close()
-    menus.append(win.finished.pick())
-    menus[1].close()
+    first = win.finished.menu(row, QPoint(10, 10))
+    first.close()
+    pick = win.finished.pick()
+    pick.close()
     QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    assert all(sip.isdeleted(m) for m in menus)
+    assert sip.isdeleted(pick)
+    assert not sip.isdeleted(first) and not first.isVisible() and first.actions() == []
+    assert win.finished.menu(row, QPoint(10, 10)) is first
+    first.close()
 
 
 def test_L1_IK1_the_finish_toasts_choice_says_what_finisheds_menu_says_and_never_that_anki_changed():

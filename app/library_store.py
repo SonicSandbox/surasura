@@ -3170,9 +3170,8 @@ class Store:
             spots = [(t, (d[0], d[1]) if d[0] in ("after", "before") else (d[0],)) for d, t in zip(dests, dest_tier)]
             one = not taken and len(set(spots)) == 1               # the common Add: one place, new rows only
             works = None
-            if one:                         # each row's title as the settling step would give it (`_settle_works`:
-                cache = {}                  # `_folder_work` reads titles and the other rows of its folder, never these)
-                works = [self._folder_work(it[1], _columns(it[3])[0], cmd, cache) for it in new]
+            if one:                         # each row's title as the settling step would give it, a folder before
+                works = self._folder_works([(it[1], _columns(it[3])[0]) for it in new], cmd)   # those below it
             ids += self._add_rows([it + (t,) for it, t in zip(new, dest_tier[len(taken):])], cmd.version,
                                   place=spots[0] if one else None, works=works)
             if not one:
@@ -3569,13 +3568,25 @@ class Store:
             cache[fk] = wid
         return wid
 
+    def _folder_works(self, rows, cmd, cache=None):
+        """The titles of new rows `[(rel, title)]` (`_folder_work`, one `cache` for the call), in the rows' order — worked
+        out with a folder before the folders below it, so a specials folder's file joins its show folder's title
+        (`_specials_work`) however the rows came: an Add's files as given (their titles written by the insert, R6),
+        a sync's or a merge's rows put back. The ONE place a batch of new rows gets its titles; a look's take-in gives
+        one file at a time in its shows' name order (a show's folder sorts before the folders below it)."""
+        cache = {} if cache is None else cache
+        out = [None] * len(rows)
+        for n in sorted(range(len(rows)), key=lambda n: rows[n][0].count("/")):
+            out[n] = self._folder_work(rows[n][0], rows[n][1], cmd, cache)
+        return out
+
     def _specials_work(self, rel, cache=None):
         """A specials folder's title (`specials_home`, Kura-G, PROVISIONAL): the title of the folder it sits in — the
         work holding that folder's key (this command's, from `cache`), else the ONE title of the files directly in it — so
         `<show> R1/extras/`'s picture dramas are R1's parts, one title. Only by the folders, never by a name: two shows
         sharing words never join here. None (a title of its own, `<show> Extras`, as before) when that folder has no
         title: `<show>/S01`, `<show>/S02` and `<show>/Specials` with nothing in `<show>/` itself. The folder above is
-        taken in first (a look takes shows in name order, `_settle_works` the shallow folders first)."""
+        taken in first (a look takes shows in name order, a batch of rows the shallow folders first: `_folder_works`)."""
         home = specials_home(_below_tier(rel))
         if home is None:
             return None
@@ -4037,13 +4048,12 @@ class Store:
         """Items the command added (or put back from a work merged away) get their work by their folder."""
         if not cmd.moved:
             return
-        cache, sets, rows = {}, [], []
+        rows = []
         for chunk in _chunks(list(cmd.moved), 500):
             rows += self.conn.execute(
                 f"SELECT id, rel_path, title FROM items WHERE work_id IS NULL AND id IN ({','.join('?' * len(chunk))})",
                 chunk).fetchall()
-        for item_id, rel, title in sorted(rows, key=lambda r: r[1].count("/")):   # a folder before the ones below it
-            sets.append((self._folder_work(rel, title, cmd, cache), item_id))      # (`_specials_work`)
+        sets = list(zip(self._folder_works([(rel, title) for _i, rel, title in rows], cmd), [r[0] for r in rows]))
         if sets:
             self.conn.executemany("UPDATE items SET work_id = ? WHERE id = ?", sets)
             cmd.fed.update(i for _w, i in sets)

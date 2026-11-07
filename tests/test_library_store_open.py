@@ -390,6 +390,30 @@ def test_a_cached_write_is_refused_through_every_way_in(language):
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_write_with_reads_run_inside_it_is_still_remembered(language):
+    """A statement run while a write is running (here an executemany's parameters read through the same connection)
+    never hides the write: it is remembered, and refused outside the helper though SQLite holds it compiled."""
+    store = migrated(language)
+    write = "UPDATE items SET ord = ord WHERE id = ?"
+
+    def ids():
+        for (item,) in store.conn.execute("SELECT id FROM items ORDER BY id LIMIT 3").fetchall():
+            store.conn.execute("SELECT COUNT(*) FROM items WHERE id = ?", (item,)).fetchone()
+            yield (item,)
+
+    try:
+        with store._writing():
+            store.conn.executemany(write, ids())
+        assert write in store.conn.gate.writes
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.executemany(write, [(1,)])
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.execute(write, (1,))
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_the_guard_forgets_its_writes_and_still_refuses_them(language, monkeypatch):
     """Past GUARD_REMEMBERS write statements the guard forgets them all and has SQLite recompile (and ask) again: the
     first one, still in Python's statement cache, is refused outside the helper all the same."""
@@ -434,7 +458,7 @@ def test_what_only_reads_runs_outside_the_helper(language, tmp_path):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_blob_is_written_only_inside_the_helper(language):
     store = migrated(language)
-    if not hasattr(store.conn, "blobopen"):                            # Python 3.11+
+    if not hasattr(sqlite3.Connection, "blobopen"):                    # Python 3.11+
         store.close()
         pytest.skip("no blobopen before Python 3.11")
     try:

@@ -941,11 +941,12 @@ class _GuardedCursor(sqlite3.Cursor):
     def _run(self, run, sql, *args):
         gate = self.connection.gate
         if gate.open:
-            gate.wrote = False
-            try:
+            outer, gate.wrote = gate.wrote, False    # a run nested in this one (a generator or a function reading
+            try:                                      # through this connection) never hides this one's write
                 return run(self, sql, *args)
             finally:
-                if gate.wrote:
+                wrote, gate.wrote = gate.wrote, outer or gate.wrote
+                if wrote:
                     if len(gate.writes) >= GUARD_REMEMBERS:      # forgotten: SQLite recompiles (and asks) again
                         gate.writes.clear()
                         self.connection.set_authorizer(gate.authorize)
@@ -991,10 +992,11 @@ class _Guarded(sqlite3.Connection):
     def executescript(self, sql_script):
         return _GuardedCursor(self).executescript(sql_script)
 
-    def blobopen(self, *args, readonly=False, **kwargs):
-        if not readonly and not self.gate.open:
-            raise sqlite3.OperationalError(GUARD_REFUSED)
-        return super().blobopen(*args, readonly=readonly, **kwargs)
+    if hasattr(sqlite3.Connection, "blobopen"):          # Python 3.11+
+        def blobopen(self, *args, readonly=False, **kwargs):
+            if not readonly and not self.gate.open:
+                raise sqlite3.OperationalError(GUARD_REFUSED)
+            return super().blobopen(*args, readonly=readonly, **kwargs)
 
 
 def _connect(path, role, busy_ms=5000):

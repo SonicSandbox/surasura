@@ -519,7 +519,7 @@ class Host:
 
     def _engine_for(self, store):
         from app import plan_engine
-        ids = [store.item_id(entry[0]) for entry in self._plan.files]
+        ids = store.item_ids([entry[0] for entry in self._plan.files])     # one read, not one a file (R6)
         if self._engine is None or ids != self._ids:
             self._engine, self._ids = plan_engine.Engine(self._plan, ids), ids
         return self._engine, ids
@@ -576,13 +576,18 @@ class Host:
             return
         self._aside = None
         self._sync_at = self._due_sync(settings)      # a write elsewhere (順's own run, a closed window) armed one
-        store = self._open_store()
-        if store is None:
-            return                                   # no library store (JSON mode): nothing to re-plan from
-        try:
-            self._run_job(kind, settings, store)
-        finally:
-            store.close()
+        from app import library_store
+        # one handle a store and role for the whole job (`held`): Junban's reads inside it (`pins.read`, `read_out`,
+        # the journey's look) were three more opens and closes, ~20 ms each and partly under the interpreter lock —
+        # in the window's own process the window's thread waited ~5 ms for one (R6, the timer probe: Kura-B)
+        with library_store.held():
+            store = self._open_store()
+            if store is None:
+                return                               # no library store (JSON mode): nothing to re-plan from
+            try:
+                self._run_job(kind, settings, store)
+            finally:
+                store.close()
 
     def _run_job(self, kind, settings, store):
         versions, order = _snapshot(store)

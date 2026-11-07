@@ -2395,6 +2395,18 @@ class Store:
         row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (path_key(rel_path),)).fetchone()
         return row[0] if row else None
 
+    def item_ids(self, rel_paths):
+        """`[item_id(p) for p in rel_paths]` in one read a 500 (the re-plan's every file of its plan: one query a file
+        was the job's longest stretch under the interpreter lock, R6). The lowest id where two rows share a key, as
+        `item_id`'s index read gives it."""
+        keys = [path_key(p) for p in rel_paths]
+        found = {}
+        for chunk in _chunks(list(dict.fromkeys(keys)), 500):
+            for key, item_id in self.conn.execute(f"SELECT rel_key, id FROM items WHERE rel_key IN "
+                                                  f"({','.join('?' * len(chunk))}) ORDER BY rel_key, id", chunk):
+                found.setdefault(key, item_id)
+        return [found.get(k) for k in keys]
+
     # --- change tokens (§6.6) -------------------------------------------------------------------- #
 
     def token(self):

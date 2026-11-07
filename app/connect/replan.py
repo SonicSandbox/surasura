@@ -160,7 +160,7 @@ def _current(language, settings, store, previous):
         return Current(verdict, "first", verdict[1], plan=plan, versions=versions, key=at, plan_key=plan_key)
     # The re-plan to the store's order (`Host._replan`): each plan file's item, ranked NOW, Soon, 6+ Months as the
     # store holds them; a plan file that left the counted tiers is dropped
-    ids = [store.item_id(entry[0]) for entry in plan.files]
+    ids = store.item_ids([entry[0] for entry in plan.files])          # one read, not one a file (R6)
     engine = plan_engine.Engine(plan, ids)
     ranked = sorted(order[k] + (item_id,) for k, item_id in
                     ((library_store.path_key(entry[0]), item_id) for entry, item_id in zip(plan.files, ids)

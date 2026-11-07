@@ -246,6 +246,23 @@ def test_on_battery_nothing_is_downloaded(tmp_path, ledger):
     assert ledger.jobs("ja")[0]["reason"] == runner.ON_BATTERY
 
 
+class UnpluggedSteps(OnlineSteps):
+    """Plugged in when the language's pass starts, on battery from the next look at it (the job's own)."""
+
+    def blocked(self, lang):
+        looks = sum(1 for e in self.log if e[0] == "blocked")
+        self.log.append(("blocked", lang))
+        return runner.ON_BATTERY if looks >= 1 else None
+
+
+def test_unplugged_after_the_pass_began_nothing_is_downloaded(tmp_path, ledger):
+    # why: the battery is asked again right before a download (gigabytes on a laptop's battery), as before each batch
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "online": [1]}
+    steps, summary = _run(tmp_path, ledger, plan, steps=UnpluggedSteps(str(tmp_path), plan))
+    assert not any(e[0] == "download" for e in steps.log)
+    assert ledger.jobs("ja")[0]["reason"] == runner.ON_BATTERY
+
+
 # --- a job resumed in a later run, its video dropped: fetched again, never mined from a missing file ------------- #
 def test_a_job_resumed_at_mining_whose_video_was_dropped_is_picked_and_downloaded_again(tmp_path, ledger):
     # why: the ledger keeps the old video's path; mining from it would be a crash, so the job picks again

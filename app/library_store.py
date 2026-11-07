@@ -197,6 +197,7 @@ SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold
 SHOWS_JOINED = "shows_joined"    # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
 JOIN_BATCH = 10                  # pairs a `join_same_shows` command joins: ~5 ms of write lock here (20k, a8 timed)
 SPECIALS_JOINED = "specials_joined"   # meta: the newest title feed version `join_specials` read
+LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
 
@@ -3042,12 +3043,21 @@ class Store:
         """Outside any transaction (§6.6): each file's rel path, key, entry and fingerprint."""
         marker_cache = {}
         out = []
+        rels = [self._rel(path) for path in files]
+        fulls = [os.path.join(self.data_dir, rel) for rel in rels]
+        places = [os.path.split(full) for full in fulls]
+        by_folder = {}
+        for folder, name in places:
+            by_folder.setdefault(folder, []).append(name)
+        listed = {}                     # a season's files: their fingerprints from one listing of their folder
+        for folder, names in by_folder.items():
+            if len(names) >= LISTED_STATS:
+                listed.update(((folder, k), st) for k, st in _listed_stats(folder, names).items())
         for n, path in enumerate(files):
-            rel = self._rel(path)
-            full = os.path.join(self.data_dir, rel)
+            rel, full = rels[n], fulls[n]
             entry = entries[n] if entries else make_entry(rel, origin, _detect_source_type(full, marker_cache))
             try:
-                st = os.stat(full)
+                st = listed.get(places[n]) or os.stat(full)
                 fp = (st.st_size, st.st_mtime_ns, "available")
             except OSError:
                 fp = (None, None, "missing")
@@ -6593,6 +6603,30 @@ def walk_tree(base, rel_prefix):
                 continue
         stack[0:0] = subdirs
     return files, bad
+
+
+def _listed_stats(folder, names):
+    """{name: stat} for the files `names` of `folder`, from one `os.scandir` listing of it: the fingerprints the disk
+    sync reads (`walk_tree`), with no handle opened per file (R6, Kura-B 2026-11-07: a 50-file season's 50 `os.stat`
+    ~1.0 ms on C:, its folder's listing ~0.2). Stops once every name is found, or after 2 × len(names) + 16 entries
+    (a big folder: the rest are stat'ed one by one). A name the listing spells otherwise (case, normalization), or
+    that isn't there, is left out: the caller stats it."""
+    want, out = set(names), {}
+    try:
+        with os.scandir(folder) as found:
+            for n, e in enumerate(found):
+                if e.name in want:
+                    try:
+                        out[e.name] = e.stat()
+                    except OSError:
+                        want.discard(e.name)
+                    if len(out) == len(want):
+                        break
+                if n >= 2 * len(names) + 16:
+                    break
+    except OSError:
+        pass
+    return out
 
 
 def _junban_current(user_files_dir):

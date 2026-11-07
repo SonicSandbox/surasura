@@ -2826,3 +2826,39 @@ def test_item_ids_answers_what_item_id_answers_for_each_path_in_one_read(languag
     assert got == [store.item_id(p) for p in asked]
     assert got[2] is None and got[0] == got[3] and len(reads) == 1
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_added_season_takes_its_fingerprints_from_one_listing_of_its_folder(language, monkeypatch):
+    """R6: an Add of a season reads its files' size and mtime from one listing of their folder (the fingerprints the
+    disk sync reads), with no `os.stat` a file — the same values `os.stat` gives. Files of a big folder past the
+    listing's reach, a file alone in its folder, and a file the listing spells another case are stat'ed one by one; a
+    file that isn't there is missing, as before."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    season = [touch(data_dir, f"LowPriority/{w[70]}/第{e:02d}話.srt", f"{w[e]}\r\n" * (e + 1)) for e in range(12)]
+    gone = os.path.join(data_dir, "LowPriority", w[70], "第99話.srt")             # never written
+    for n in range(40):                                                         # a big folder: these list first
+        touch(data_dir, f"LowPriority/{w[71]}/a{n:02d}.srt")
+    late = [touch(data_dir, f"LowPriority/{w[71]}/z{e:02d}.srt", w[e]) for e in range(4)]
+    alone = touch(data_dir, f"LowPriority/{w[72]}/第01話.srt")
+    spelled = [touch(data_dir, f"LowPriority/{w[73]}/Ep{e:02d}.srt") for e in range(4)]
+    if sys.platform != "win32":                                                 # (the case only Windows ignores)
+        spelled = []
+    asked = season + [gone] + late + [alone] + [p.replace(os.sep + "Ep", os.sep + "EP") for p in spelled]
+    stats = []
+    real_stat = os.stat
+    monkeypatch.setattr(ls.os, "stat", lambda p, *a, **k: (stats.append(os.path.normcase(os.fspath(p))),
+                                                           real_stat(p, *a, **k))[1])
+    store.insert(asked, "soon")
+    monkeypatch.setattr(ls.os, "stat", real_stat)
+    stated = {os.path.normcase(p) for p in late + [alone] + spelled}
+    assert not {os.path.normcase(p) for p in season} & set(stats), "the season: one listing, no stat a file"
+    assert stated <= set(stats), "past the listing's reach, alone, or spelled otherwise: stat'ed"
+    for p in season + late + [alone] + spelled:
+        item = store.item(store.item_id(os.path.relpath(p, data_dir).replace("\\", "/")))
+        st = real_stat(p)
+        assert (item["size"], item["mtime_ns"], item["availability"]) == (st.st_size, st.st_mtime_ns, "available"), p
+    assert store.item(store.item_id(os.path.relpath(gone, data_dir).replace("\\", "/")))["availability"] == "missing"
+    store.close()

@@ -373,16 +373,17 @@ def _what_moved(plan, parts, added=()):
         return ("generate-first", "signature")
     moved = sorted(name for name in set(kept) | set(now) if kept.get(name) != now.get(name))
     replan = []
+    memo = {}                                       # the counted files' digests, worked out once (20k files: ~80 ms)
     for name in moved:
         if name in ("known", "lists"):
             replan.append(name)
-        elif name == "files" and _only_removed(plan, parts):
+        elif name == "files" and _only_removed(plan, parts, memo):
             replan.append("files-removed")
-        elif name == "files" and _only_added(plan, parts, added):
+        elif name == "files" and _only_added(plan, parts, added, memo):
             replan.append("files-added")
         elif name == "reference" and _only_left(plan, parts):
             replan.append("reference-removed")
-        elif name == "reference" and _only_watched(plan, parts):
+        elif name == "reference" and _only_watched(plan, parts, memo):
             replan.append("reference-watched")
         else:
             return ("generate-first", name)
@@ -393,13 +394,20 @@ def _what_moved(plan, parts, added=()):
     return ("replan-now", tuple(replan))
 
 
-def _only_removed(plan, parts):
+def _counted(parts, memo):
+    """The digests (`plan_rules.file_digest`) of the files the library counts now, once per check (`memo`)."""
+    if "counted" not in memo:
+        memo["counted"] = {plan_rules.file_digest(entry) for entry in parts["files"]}
+    return memo["counted"]
+
+
+def _only_removed(plan, parts, memo=None):
     """True when every file the library counts now is one the plan holds, unchanged, and some plan file is gone."""
     held = {entry[2] for entry in plan.files if len(entry) > 2}
     if len(held) != len(plan.files):
         return False                                              # a plan from before the per-file digests
     try:
-        now = {plan_rules.file_digest(entry) for entry in parts["files"]}
+        now = _counted(parts, {} if memo is None else memo)
     except Exception:
         return False
     return now < held
@@ -418,7 +426,7 @@ def _only_left(plan, parts):
         return False
 
 
-def _only_watched(plan, parts):
+def _only_watched(plan, parts, memo=None):
     """True when every file new among the set-aside files is a file of the plan's that left the counted files,
     unchanged — a watched mark (Haya-W, Sonic 2026-11-06: "Responsiveness is key"): its digest is the one its plan line
     holds (`analyzer.aside_files` signs a set-aside file as the counted files are signed), so the engine drops its uses
@@ -434,21 +442,21 @@ def _only_watched(plan, parts):
         return False                                              # a plan from before the per-file digests
     try:
         joined = set(parts.get("reference") or ()) - set(held)
-        counted = {plan_rules.file_digest(entry) for entry in parts["files"]}
+        counted = _counted(parts, {} if memo is None else memo)
         watched = set(getattr(parts, "watched", ()))
     except Exception:
         return False
     return bool(joined) and joined <= (files - counted) & watched
 
 
-def _only_added(plan, parts, added):
+def _only_added(plan, parts, added, memo=None):
     """True when the library counts every plan file, unchanged, and more: each of them a file the engine added
     (`added`, their digests)."""
     held = {entry[2] for entry in plan.files if len(entry) > 2}
     if len(held) != len(plan.files) or not added:
         return False
     try:
-        now = {plan_rules.file_digest(entry) for entry in parts["files"]}
+        now = _counted(parts, {} if memo is None else memo)
     except Exception:
         return False
     return held < now and now - held <= set(added)

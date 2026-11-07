@@ -506,25 +506,6 @@ def _marker(text):
     return first
 
 
-def numbered(names):
-    """A10 for a show's or a folder's names (Kura-G 2026-11-07, PROVISIONAL; his Code Geass R2: `Code Geass Hangyaku
-    no Lelouch 01.srt` … `10.srt` beside `Code_Geass_Ep01_….mkv` read no episode, so none paired): the names whose last
-    bare number is their episode — two or more names of one show (the name before that number, folded, and its
-    season) with different numbers, each reading no episode by a marker (` - 05`, `E05`, `#05` …) and no special. One
-    name alone never (`Mob Psycho 100`, `86`: a title that ends in a number). The window reads every bare number
-    (`bare_numbers`, no folder to ask); the look reads these. -> {name}. Pure."""
-    shows = {}
-    for name in names:
-        n = identity(name)
-        if n.episode is not None or n.special:
-            continue
-        b = identity(name, bare_numbers=True)
-        if b.episode is None or b.special or not b.show:
-            continue
-        shows.setdefault((fold(b.show), b.season), {}).setdefault(b.episode, []).append(name)
-    return {name for episodes in shows.values() if len(episodes) >= 2 for named in episodes.values() for name in named}
-
-
 def _bare(text):
     """A10: the last bare number (with its version) of a name, never a year, a date or a resolution; None if none."""
     def blank(m):                                               # offsets kept: the caller cuts the name by them

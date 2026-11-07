@@ -1270,7 +1270,8 @@ def test_a_move_within_its_tier_rewrites_no_folder_index_and_an_old_store_swaps_
     """R6 (moves at their line): the folder index is (tier, parent_folder) — no `ord`, so a moved row never rewrites
     it — and a move within its tier writes no `tier` (SQLite rewrites an index's entry for every column a SET names).
     A folder's last row is still read by that index, never by walking the tier's order. A store made before (the old
-    `items_folder` with `ord`) has it swapped at a writer's open; the order and every placement are the same."""
+    `items_folder` with `ord`) has it swapped at a writer's open, and so has one an older Surasura opened since (its own
+    pass made the old index and the old log trigger back); the order and every placement are the same."""
     store = migrated(language)
     names_ = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
     assert "items_tier_folder" in names_ and "items_folder" not in names_
@@ -1287,15 +1288,17 @@ def test_a_move_within_its_tier_rewrites_no_folder_index_and_an_old_store_swaps_
         "DESC LIMIT ?", ("soon", "x", 1)).fetchall())
     assert "items_tier_folder" in plan, plan
     db = store.db_path
-    with store._writing():                                    # a store as an older Surasura left it
-        store.conn.execute("DROP INDEX items_tier_folder")
-        store.conn.execute("CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)")
+    with store._writing():                                    # a store as an older Surasura left it: its own pass
+        store.conn.execute("CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)")   # makes these back
+        store.conn.execute("CREATE TRIGGER origin_log_item_in AFTER INSERT ON items "
+                           "BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END")
     order = store.ids("soon")
     store.close()
     data_dir, user_files_dir = roots(language)
     again = ls.open_store(language, data_dir, user_files_dir)
-    names_ = {r[0] for r in again.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+    names_ = {r[0] for r in again.conn.execute("SELECT name FROM sqlite_master")}
     assert "items_tier_folder" in names_ and "items_folder" not in names_ and again.db_path == db
+    assert "origin_log_item_back" in names_ and "origin_log_item_in" not in names_, "never both kept for good"
     assert again.ids("soon") == order
     again.close()
 

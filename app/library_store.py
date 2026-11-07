@@ -732,6 +732,9 @@ ADDED_INDEXES_SQL = (
 )
 ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_available_size", "pairings_extracted",
                  "items_waiting", "items_tier_folder")
+# What those passes replace (R6): an older Surasura that opens the store makes them again (its own pass misses the new
+# names), so a writer's open that finds one runs the passes once more and drops it — never both kept for good
+REPLACED = ("items_folder", "origin_log_item_in")
 # A4K-7 (alpha 4, Sonic 2026-10-28): each copy's content hash, kept for a look's check (b), which read and hashed every
 # copy of a new part's size (~56,000 files when 100 books came onto 60k parts). Made with the added indexes: an added
 # column (no row rewritten: NULL until a look fills it) and a trigger that forgets a hash whenever its row's file
@@ -1855,8 +1858,10 @@ class Store:
         names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH,) + ORIGIN_LOG
         try:
             have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
-                                                    f"({','.join('?' * len(names))})", names)}
-            if "pairings" not in have or have.issuperset(names) or self._wlock.depth:
+                                                    f"({','.join('?' * (len(names) + len(REPLACED)))})",
+                                                    names + REPLACED)}
+            stale = have & set(REPLACED)        # an older Surasura opened it meanwhile and made one back
+            if "pairings" not in have or (have.issuperset(names) and not stale) or self._wlock.depth:
                 return
             if self.conn.execute("PRAGMA user_version").fetchone()[0] > STORE_SCHEMA:
                 return
@@ -1867,7 +1872,7 @@ class Store:
                     if sql.startswith("ALTER") and self._hash_column():   # another open made it meanwhile
                         continue
                     self.conn.execute(sql)
-                if not have.issuperset(ORIGIN_LOG):              # (its reset mark only with a trigger made)
+                if not have.issuperset(ORIGIN_LOG) or stale:     # (its reset mark only with a trigger made)
                     for sql in ORIGIN_LOG_SQL:
                         self.conn.execute(sql)
         except (StoreError, sqlite3.Error):

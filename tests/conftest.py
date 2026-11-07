@@ -101,6 +101,20 @@ def _no_gui_update_check(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _switch_interval_put_back():
+    """A re-order host in this process lowers Python's switch interval while it lives (`replan_preview`'s
+    `_share_the_window`); a test that never stops its host would leave the rest of the run at 1 ms, timed bounds
+    included. Each test starts and ends with the process's own interval and no host counted."""
+    before = sys.getswitchinterval()
+    yield
+    preview = sys.modules.get("app.replan_preview")
+    if preview is not None:
+        with preview._SHARING_LOCK:
+            preview._SHARING.update(hosts=0, was=None)
+    sys.setswitchinterval(before)
+
+
+@pytest.fixture(autouse=True)
 def _replan_in_process(monkeypatch):
     """The fast re-plan preview's host in the test's own process (`replan_preview.open_host`), never a helper process:
     the suites' fake AnkiConnect is a patch of this process's `urlopen`, which a helper would never see. The helper

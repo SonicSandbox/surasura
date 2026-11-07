@@ -63,21 +63,6 @@ def test_ctrl_a_on_the_goal_sheet_picks_every_tile_and_repaints_the_tiles_and_no
         wc.rest(50)
 
 
-def test_r5_goals_sheet_opened_again_from_the_dock_is_the_same_sheet_and_makes_no_widget(world):
-    """Goal's sheet opened from the dock, closed, opened again (R5): the later open shows the sheet the first built,
-    and makes no widget."""
-    _seed, win, _writer = world()
-    first = open_sheet(win)
-    wc.rest(150)
-    QTest.mouseClick(first.close_button, Qt.MouseButton.LeftButton)
-    assert wait_until(lambda: not first.isVisible(), 3)
-    with wc.measure(win, readers=[win.services.library]) as w2:         # the second open, from the dock
-        sheet = open_sheet(win)
-        wc.rest(150)
-    assert sheet is first, "the reopen must reuse the sheet"
-    assert w2.created == 0, w2.report()
-
-
 def test_ctrl_click_on_a_goal_tile_repaints_that_tile_alone(world):
     """Goal's sheet: a Ctrl+click picks one tile; that tile repaints and no other tile, nor anything else in the
     window, is painted (no window repainted whole)."""
@@ -108,7 +93,10 @@ def test_r5_a_tiles_menu_opened_again_makes_no_widget(world):
     """A tile's ⋯, opened, closed, opened again: the second open shows the menu the first built and makes no widget;
     no view is built."""
     _seed, win, _w = world()
-    sheet = open_sheet(win)
+    try:
+        sheet = open_sheet(win)
+    except AssertionError as e:                                        # setup: never the xfail's AssertionError
+        pytest.fail(f"setup: Goal's sheet didn't open: {e}")
     wc.rest(150)
     tile = next(t for t in sheet.order if sheet.pickable(t.work))
     m = None

@@ -397,9 +397,7 @@ def test_r3_a_ctrl_click_on_a_closed_row_repaints_that_row_and_nothing_else_in_t
         assert lst.delegate.renders - renders <= 2, w.report()    # the row itself, a ring at most
         assert w.builds == 0, w.report()
     finally:
-        lst.picked_rows.clear()
-        lst.picked_eps.clear()
-        lst.viewport().update()
+        lst.clear_picks()
         settle(100)
 
 

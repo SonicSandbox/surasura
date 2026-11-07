@@ -55,13 +55,19 @@ def test_r5_the_results_opened_closed_with_esc_and_opened_again_by_typing_make_n
     with the same hits, and the reopen makes no widget (R5: built once)."""
     seed, win, _writer = world()
     cut = win.search
-    results = ask(win, "星")
+    try:
+        results = ask(win, "星")
+    except AssertionError as e:                                        # setup: never the xfail's AssertionError
+        pytest.fail(f"setup: the results didn't open: {e}")
     shown = len(hits_of(results))
     QTest.keyClick(cut.edit, Qt.Key.Key_Escape)                      # cleared, results closed
     if results.isVisible() or cut.edit.text() != "":
         pytest.fail("Esc didn't clear the search and close its results")
     with wc.measure(win, readers=[win.services.library]) as w:
-        reopened = ask(win, "星")                                     # opened again by typing
+        try:
+            reopened = ask(win, "星")                                 # opened again by typing
+        except AssertionError as e:
+            pytest.fail(f"setup: the results didn't open again: {e}")
         wc.rest(150)
     if reopened is not results or len(hits_of(results)) != shown:
         pytest.fail(f"the reopen didn't show the same overlay with the same hits: {w.report()}")

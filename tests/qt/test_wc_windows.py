@@ -2,7 +2,7 @@
 what each press costs the window — paints and where they land, layout passes, widgets made, views built — counted,
 never timed. What a wrong answer would cost a learner: a window that repaints whole on each keystroke or tick.
 
-Each test opens its window with its neighbour's own fixtures (imported at the top; one `main` for all).
+Each test opens its window with its neighbour's own fixtures (imported at the top: one `main` for the main window's tests; the frequency lists' as `lists_main`).
 """
 import pytest
 
@@ -122,15 +122,18 @@ def test_typing_in_what_happened_repaints_only_the_box_and_the_buttons_that_chan
         assert w.save_button.isEnabled(), m.report()
         assert m.painted > 0, m.report()
         assert m.painted_in(w.save_button) > 0, m.report()           # (the part that changed did repaint)
+        assert w.send_button.isEnabled(), m.report()
+        # where: every px painted lies on the box or the two buttons (by area, not bounding rects: the form's ground
+        # repaints the region under them, whose bounding rect spans the form)
         parts = [wc.rect_in_window(b) for b in (w.what, w.save_button, w.send_button)]
-        assert m.union <= sum(r.width() * r.height() for r in parts), m.report()   # (the box and the two buttons)
+        assert m.union <= sum(m.union_in(r) for r in parts), m.report()
         with wc.measure(w) as m2:
             QTest.keyClicks(w.what, "y")
             wc.settle()
         assert w.what.toPlainText() == "xy", w.what.toPlainText()
         assert m2.painted > 0, m2.report()
         box = wc.rect_in_window(w.what)
-        assert m2.union <= box.width() * box.height(), m2.report()
+        assert m2.union <= m2.union_in(box), m2.report()                    # every px painted lies on the box
     finally:
         w.what.setPlainText("")                                       # put back, unmeasured
         wc.settle()

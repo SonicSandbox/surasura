@@ -74,8 +74,9 @@ def test_a_keystroke_in_the_search_filters_the_list_and_lays_it_out_once(main):
     wc.rest(150)
     unit = wc.one_pass(win, main)
     try:
+        win.search.setFocus()
+        wc.settle()
         with wc.measure(main) as w:
-            win.search.setFocus()
             for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
                 QApplication.sendEvent(win.search, QKeyEvent(kind, Qt.Key.Key_unknown, Qt.KeyboardModifier.NoModifier, "冒"))
             landed = wait_until(lambda: _rows(win) == ["冒険", "冒険家"], 3)

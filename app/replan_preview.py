@@ -527,7 +527,7 @@ class Host:
     def _parts(self, settings, store):
         """The run signature's parts for the library as it stands (stats every file: on this worker only). A missing
         item keeps its place, as Generate and the journey checks sign it (3.0, E2.2's K2: `missing=True`); the set-aside
-        files are its "reference" part (W-1: a watched mark is a Generate first, both ways)."""
+        files are its "reference" part (W-1; a watched mark re-plans at once, Haya-W: `plan_engine._only_watched`)."""
         from app import analyzer, run_args
         schedule = store.schedule(with_aside=True)
         found = analyzer.resolve_found_files(self.language, verbose=False, schedule=schedule, missing=True)

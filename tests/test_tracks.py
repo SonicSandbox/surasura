@@ -417,6 +417,36 @@ def test_a_subtitle_file_come_later_is_another_version_and_its_edits_never_overw
         store.__exit__(None, None, None)
 
 
+def test_a_take_in_reads_the_extracted_tracks_through_their_index_and_still_finds_one(fake, monkeypatch):
+    """Why (R6, G1): every take-in reads which items hold their video's own track under the write lock; walking every
+    origin's record there held the lock ~45 ms a batch at 20k origins. The read goes through `pairings_extracted` (a
+    look's batch then holds it briefly) and still finds the filled item, so the subtitle is a version, not an item."""
+    text, codec = _full("ja")
+    store, data_dir, src, (video,) = _library("ja")
+    name = os.path.basename(video)
+    fake.set(tracks={name: [_track(3, "jpn", codec)]}, track_files={f"{name}#3": text})
+    try:
+        assert tracks.fill(store, "ja", settings={}, path=FAKE)["filled"] == 1
+        assert store.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'pairings_extracted'").fetchone()
+        _subtitle_beside(video, _SRT_JA)
+        reads, waiting = [], []
+        store.conn.set_trace_callback(lambda sql: reads.append(sql) if "$.verdict" in sql and "SELECT p.item_id" in sql
+                                      else waiting.append(sql) if "availability = 'waiting'" in sql and
+                                      "CROSS JOIN pairings" in sql else None)
+        _look(store, "ja", _root(store), full=True)
+        store.conn.set_trace_callback(None)
+        assert reads, "the take-in read the extracted tracks"
+        plan = " ".join(str(r) for r in store.conn.execute("EXPLAIN QUERY PLAN " + reads[0]).fetchall())
+        assert "pairings_extracted" in plan, plan
+        if waiting:                                   # the waiting videos' read (K5) by its index too
+            plan = " ".join(str(r) for r in store.conn.execute("EXPLAIN QUERY PLAN " + waiting[0]).fetchall())
+            assert "items_waiting" in plan, plan
+        (item_id, rel, availability), = _item(store)
+        assert availability == "available"
+    finally:
+        store.__exit__(None, None, None)
+
+
 def test_a_fill_landing_while_a_look_brings_its_subtitle_never_makes_a_second_item(fake, monkeypatch):
     """Why (S2): the look read the video as waiting and planned its new subtitle into that gap; the track worker filled
     the gap first. The subtitle is then a version of that episode, its copy no item's — never a second item."""

@@ -719,6 +719,26 @@ def test_G1_an_episode_dragged_from_a_group_at_nows_end_to_the_top_of_soon_stays
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_two_episodes_dragged_out_of_a_group_together_leave_it_though_they_land_side_by_side(language):
+    """A row leaving its piece has no piece until it takes its new one (R6: the store never writes that blank, the
+    reads in between see it): two of a group's episodes dropped together in another tier sit beside each other — each
+    other's neighbour is no row of the group, so they leave it (their own title's part there), and the group stays."""
+    store = _three(language)
+    (pa, ma), (pb, mb) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:2]
+    store.join([pa, pb], how="group")
+    assert _kind(store, pa) == "group" and _members(store, pa) == ma + mb
+    store.move(mb[1:3], "soon", before_id=store.ids("soon")[0])
+    moved = {_piece(store, i) for i in mb[1:3]}
+    assert pa not in moved and len(moved) == 1, "out of the group, one part of their own title"
+    work = store.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                              (mb[1],)).fetchone()[0]
+    assert _title(store, moved.pop()) == work and _kind(store, _piece(store, mb[1])) == "run",         "a part of its own title, named by it — never a piece cut from the group (unnamed)"
+    assert _members(store, pa) == ma + [mb[0], mb[3]] and _kind(store, pa) == "group"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_G2_no_group_is_left_holding_one_title_and_each_undo_puts_it_back(language):
     """*Group…* / a drop onto a group taking a title's episodes out of another group — rows moving, or none — and a
     group of one title's two parts: no group is left holding one title; each undo puts the exact state back."""

@@ -66,7 +66,9 @@ def _strip(got):
     seconds on (an automatic wait shows after REVEAL_S)."""
     registry = JobRegistry()
     S.mirror_connect(registry, got)
-    return P.read(registry.snapshot(), now=time.time() + 5)
+    import re                                     # (each wait's *since* — the help cards' — is its own test's, below:
+    return {c: st._replace(lines=tuple(re.sub(r" · since [^;]*", "", line) for line in st.lines))   # these tests
+            for c, st in P.read(registry.snapshot(), now=time.time() + 5).items()}             # hold the words)
 
 
 # --- T1: which waits on Anki are amber ---------------------------------------------------------------------------- #
@@ -574,3 +576,22 @@ def test_a_mark_a_crash_left_is_cleared_when_connect_starts_again(tmp_path, runn
         steps = Steps(str(tmp_path), {"line": {"ja": [1]}, "queue": {"ja": [1]}, "absent": ["junban"]})
         runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=1)
     assert seen == [None]
+
+
+# --- help cards: a wait says since when (the ledger's `reason_at`, through the feed) ---------------------------------- #
+def test_a_waiting_rows_hover_and_its_circle_say_since_when_and_an_old_row_says_nothing_more():
+    """What a wrong answer would cost: a wait with no time (the learner can't tell it began an hour ago), or *since*
+    on a row from before the stamp existed (a time it never had)."""
+    items = items_of([("now", 1, 1, ["星降る街の小さな工房 - 01.srt", "星降る街の小さな工房 - 02.srt"], {})])
+    rows = [dict(_job_row(1, reason=runner.ANKI_CLOSED), since="2026-11-06T05:02:00Z"),
+            _job_row(2, reason=runner.ANKI_CLOSED)]
+    connect = _feed(rows)
+    since = vr.since_words("2026-11-06T05:02:00Z")
+    assert connect.items[1].since == "2026-11-06T05:02:00Z" and connect.items[2].since is None
+    st = {e.id: e.status for r in vr.build(items, {}, {"mine_line": 20}, connect=connect).rows for e in r.episodes}
+    assert st[1].tip == vr.STRINGS["tip_ask_anki"].format(tip=vr.STRINGS["tip_since"].format(tip=runner.ANKI_CLOSED,
+                                                                                               since=since))
+    assert st[2].tip == vr.STRINGS["tip_ask_anki"].format(tip=runner.ANKI_CLOSED)
+    assert vr.names_click(st[1]) and vr.names_click(st[2])         # its click line still says what a click does
+    words = S._waits(connect.items.values())
+    assert since in next(iter(words.values()))[0]                 # the oldest wait's time, on the circle's line

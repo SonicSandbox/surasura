@@ -238,6 +238,9 @@ def test_header_help_opens_the_online_guide_the_tk_dashboard_opens_too(world, mo
     help_button = world.d.help
     assert help_button.menu() is None and help_button.toolTip()      # a9.1: one item, so a button — no menu
     help_button.click()
+    card = world.win._help_card                                       # help cards (HC-4): this screen's card first,
+    assert card.isVisible() and card.card_id == "current"           # ... the online guide its foot's last line
+    card.guide.click()
     assert wait_until(lambda: opened)
     assert opened[0][0] == path_utils.GUIDE_URL and opened[0][1] is not threading.main_thread()
     from app import main as tk_dashboard

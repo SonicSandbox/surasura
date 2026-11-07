@@ -51,7 +51,9 @@ def _pump(app, until, timeout=10.0):
         app.root.update()
         if until():
             return True
-        time.sleep(0.005)
+        # The event loop's turn, as a window's loop wakes for its next timer. 5 ms here put a 5 ms floor under the
+        # timer probe below (its gaps measured this sleep, never the window: the R6 run, Kura-B 2026-11-06)
+        time.sleep(0.001)
     return False
 
 

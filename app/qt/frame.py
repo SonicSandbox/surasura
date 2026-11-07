@@ -408,7 +408,7 @@ class LevelPop(motion.Overlay):
         self.help.setAccessibleName(strings.LEVEL_POP_HELP_NAME)
         self.help.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.help.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.help.clicked.connect(lambda _c=False: self._to_settings())
+        self.help.clicked.connect(lambda _c=False: self._to_help())    # help cards (P15): Level's card, its settings on it
         head.addWidget(self.help)
         head.addStretch(1)
         self.auto_word = QLabel(strings.LEVEL_POP_AUTO_WORD, self)
@@ -524,6 +524,12 @@ class LevelPop(motion.Overlay):
     def _to_settings(self):
         self.close()
         self.settings_asked.emit()
+
+    def _to_help(self):
+        """? (help cards, P15): the pop closes and Level's help card opens (*Open its settings* is on it)."""
+        self.close()
+        from app.qt import help_card
+        help_card.open_card(self, "level")
 
     def place(self):
         """Under its ▾, its right edge on the ▾'s, kept inside the window."""

@@ -34,7 +34,8 @@ Generate. `JourneyKeeper` (one per window and language) runs that Generate by it
   after `CATCH_UP_S` (5 min) with no change (a burst's every move starts that clock again; a focus's or a start's look
   does not), whichever comes first. Everything else that can move a word across the list's cut-off Generates after the
   quiet time as before: the known words, the word lists, a setting or the level, a new file, a file that left the
-  counted tiers or a finished one (`files-removed`, `reference`, `reference-removed`: the cut-off is a share of the
+  counted tiers or a finished one (`files-removed`, `reference`, `reference-removed`, a watched mark's
+  `reference-watched` — Anki's order already re-planned, Haya-W: the cut-off is a share of the
   library's tokens and the words under it are not in the plan; the set-aside files are the name tables' evidence — the
   engine can't tell whether a word crosses, so it never guesses), no plan or one the engine stands aside from.
 - `close()` (the window closes, or its language changes) leaves nothing: no timer, its own run withdrawn, no listener.
@@ -116,6 +117,42 @@ def settle_seconds(settings, battery):
     if not 0 <= value < float("inf"):
         return default
     return min(value, SETTLE_MAX_S)
+
+
+# The background Generate's cause (the help cards' *Why?*, §5.1), by the newest reason the journey moved: a reader's
+# want, then the change kinds the window tells (`changed` / `marked`); anything else is the library's own change
+WHY_WANTED = "You asked for your journey: it catches up with your moves first"
+WHY_MOVES = "Your journey catches up with your moves, after a few quiet minutes"
+WHY_BY_REASON = {
+    "store": "Something in your library changed: a finish, a new file or a removed one",
+    "level": "Your level changed",
+    "settings": "Your journey's settings changed",
+    "stone": "You marked an episode watched",
+    "known": "Anki brought in words you know",
+    "start": "Your library changed since your journey was last made",
+}
+WHY_CHANGED = "Your library changed"
+
+
+def why(reasons, wanted=False, deferred=False, at=None):
+    """The `causes.Cause` of a background Generate asked for now: `reasons` the journey's since the last request (the
+    newest last), `wanted` a reader asked for it (`want`), `deferred` it was owed only to moves (A's catch-up), `at`
+    the newest change's wall time. Its card: `generate`."""
+    from app.services import causes
+    named = [r for r in reasons if r not in ("journey", "export", "settled", "move")
+             and not str(r).startswith("replan: ")]
+    beyond = [r for r in named if r != "store"]             # a change the engine can't serve: never "your moves"
+    if wanted:
+        line = WHY_WANTED
+    elif beyond:
+        line = WHY_BY_REASON.get(beyond[-1], WHY_CHANGED)
+    elif deferred:
+        line = WHY_MOVES
+    elif named:
+        line = WHY_BY_REASON.get(named[-1], WHY_CHANGED)
+    else:
+        line = WHY_CHANGED
+    return causes.Cause(line, at, "generate")
 
 
 def plan_file():
@@ -200,6 +237,8 @@ class JourneyKeeper:
         self._render_only = False   # the last look found the analysis current and only the report behind
         self._run_render_only = False   # ... and the run the keeper asked for is that re-render (`background_run`)
         self.reasons = []           # why the journey moved since the last request (the window's log; tests)
+        self._changed_at = None     # the wall clock of the newest `changed` / `marked` (its *Why:* line's time)
+        self._why_reasons = []      # every change and mark since the last request, newest last (help cards' *Why:*)
         self.asked = 0              # background runs asked for
         controller.on_end(self._ended)
         subscribe = getattr(controller, "subscribe", None)
@@ -221,7 +260,9 @@ class JourneyKeeper:
             if self._closed:
                 return
             self.reasons.append(reason)
+            self._why_reasons.append(reason)
             self._last_change = time.monotonic()
+            self._changed_at = time.time()
             if moved:
                 self._moved_at = self._last_change
             self._again = reason            # set before the state is read: a run that ends meanwhile still looks
@@ -288,6 +329,8 @@ class JourneyKeeper:
             if self._closed:
                 return
             self._again = reason
+            self._why_reasons.append(reason)
+            self._changed_at = time.time()
         if not self.generating():
             self._look_again()          # nothing in flight (or it ended as we looked): the look now
 
@@ -473,10 +516,13 @@ class JourneyKeeper:
                 return                      # closed, or a new move came while checking: its own timer asks
             self._previous = previous
             self.asked += 1
+            cause = why(self._why_reasons, self._wanted, self._deferred, self._changed_at)
+            self._why_reasons = []
             self.reasons = []
             render_only = self._render_only
         # Outside the lock: the controller tells its listeners from inside `request`.
-        run = self.controller.request(self.language, settings=settings, quiet=True, settle=0, launcher=self._launcher)
+        run = self.controller.request(self.language, settings=settings, quiet=True, settle=0, launcher=self._launcher,
+                                      cause=cause)
         with self._lock:
             self._deferred = self._wanted = False   # asked (after: a reader waiting on `catching_up` sees no gap)
             mine = run.quiet                # a user's request still settling keeps its place (`request`): not ours

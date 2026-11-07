@@ -46,6 +46,9 @@ FROM_FOLDERS_EVERY = 60.0   # W3.2 P0: a fresh language's store built from its f
 WARM_AT = 3.0
 INDEX_LABEL = "Indexing"
 MAINTAIN_LABEL = "Tidying your library"
+# Why each started by itself (the help cards' *Why?*, §5.1): the job's `cause`
+WHY_INDEX = "Files in your library changed since Surasura last read them"
+WHY_MAINTAIN = "Your library changed: Surasura keeps its own record of it tidy"
 LOG_NAME = "indexer-window.log"
 
 State = namedtuple("State", "notice koe_port seq")
@@ -282,10 +285,12 @@ class Chores:
             except Exception:
                 need = False
             if need and not self._update_staged() and not self._closed:
+                from app.services import causes
                 self.registry.submit("indexer", INDEX_LABEL, automatic=True, on_quit="cancel",
                                      start=lambda job: threading.Thread(target=self._run_indexer, args=(job, language),
                                                                         name="chores-indexer", daemon=True).start(),
-                                     cancel=self._cancel_indexer)
+                                     cancel=self._cancel_indexer,
+                                     cause=causes.Cause(WHY_INDEX, time.time(), "generate"))
                 submitted = True
         finally:
             if not submitted and self._not_busy():
@@ -442,7 +447,9 @@ class Chores:
             with lock:
                 if proc.poll() is None:
                     proc.kill()
-        job = self.registry.record("library-maintain", MAINTAIN_LABEL, cancel=stop, on_quit="detach")
+        from app.services import causes
+        job = self.registry.record("library-maintain", MAINTAIN_LABEL, cancel=stop, on_quit="detach",
+                                   cause=causes.Cause(WHY_MAINTAIN, time.time(), "arrivals"))
         job.started_process(getattr(proc, "pid", None))     # the update's wait list: this job's row alone
 
         def wait():

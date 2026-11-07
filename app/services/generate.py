@@ -131,12 +131,14 @@ class Labelled:
 class Run:
     """One Generate on its way: its argv, its job, and what its launcher reports (`started`, `feed`, `ended`)."""
 
-    def __init__(self, controller, argv, language, quiet, on_wait, cancel_event, launcher, inline, label=None):
+    def __init__(self, controller, argv, language, quiet, on_wait, cancel_event, launcher, inline, label=None,
+                 cause=None):
         self.controller = controller
         self.argv = argv
         self.language = language
         self.quiet = quiet
         self.label = label                 # the bar's words for its job (None: the controller's)
+        self.cause = cause if quiet else None   # why an automatic one was asked for (`causes.Cause`; help cards' *Why?*)
         self.on_wait = on_wait
         self.cancel_event = threading.Event()
         self.external_cancel = cancel_event
@@ -327,20 +329,21 @@ class GenerateController:
 
     # --- asking for a run --------------------------------------------------------------------------------------- #
     def request(self, language, settings=None, argv=None, quiet=False, restart=False, settle=None, launcher=None,
-                on_wait=None, cancel_event=None, inline=False, label=None):
+                on_wait=None, cancel_event=None, inline=False, label=None, cause=None):
         """Ask for a Generate. `argv` (`['analyzer.py', …]`) or `settings` (settings.json's shape) say what to run;
         `quiet`: automatic. Either way the journey is written, never opened (laptop fixes, Sonic: "the journey should
         never automatically pop up"; the header's *Journey ↗* opens it: `run_args`' `opens=False`). `launcher(run)`:
         start the child another way (else this controller spawns and reads it). `on_wait(holder)`: once, if another program's Generate holds `results`.
         `cancel_event`: another Event that also drops the run while it waits (the window's closing). `inline`: take a
         free `results` lock and launch on this thread (a test harness with no queue to drain). `label`: the bar's
-        words for its job (`labelled`). Returns at once."""
+        words for its job (`labelled`). `cause`: why a quiet one was asked for (`causes.Cause`: its job's, the phase
+        strip's *Why:* line); a user's request has none. Returns at once."""
         if argv is None:
             from app import run_args
             argv = run_args.analyzer_args(settings or {}, language, opens=False) + [PROGRESS_FLAG]
         if not isinstance(cancel_event, threading.Event):
             cancel_event = self.closing if isinstance(self.closing, threading.Event) else None
-        run = Run(self, list(argv), language, quiet, on_wait, cancel_event, launcher, inline, label)
+        run = Run(self, list(argv), language, quiet, on_wait, cancel_event, launcher, inline, label, cause)
         snap = None
         with self._lock:
             waiting = self._pending
@@ -440,7 +443,7 @@ class GenerateController:
                 return
             self._begin(run)
         job = self.registry.submit("generate", label, start=begin, cancel=lambda job: self._cancel_run(run),
-                                   automatic=run.quiet, on_quit="cancel")
+                                   automatic=run.quiet, on_quit="cancel", cause=run.cause)
         run.job = job
         if run.cancel_event.is_set() and job.state in (jobs_module.QUEUED, jobs_module.WAITING):
             job.cancel()                    # cancelled while the job was being made

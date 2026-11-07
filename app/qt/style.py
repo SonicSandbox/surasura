@@ -114,6 +114,10 @@ QPushButton[kind="primary"]:focus {{ border: 2px solid {c['ink']}; padding: 0 {r
 QPushButton[kind="chip"] {{ background: {c['bg']}; color: {c['ink-dim']}; border: 1px solid {c['line']}; border-radius: 7px;
   min-height: {px(22)}; padding: 0 {px(9)}; {font('status-pill')} }}
 QPushButton[kind="chip"]:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
+QPushButton[kind="link"] {{ background: transparent; color: {c['accent']}; border: 1px solid transparent;
+  padding: 0 {px(6)}; }}
+QPushButton[kind="link"]:hover {{ border-color: transparent; text-decoration: underline; }}
+QPushButton[kind="link"]:focus {{ border: 2px solid {c['accent']}; padding: 0 {round(6 * f) - 1}px; }}
 QToolButton {{ background: transparent; color: {c['ink-dim']}; border: 1px solid transparent; border-radius: 7px;
   padding: {px(4)}; }}
 QToolButton:hover {{ background: {c['raised']}; border-color: {c['line-hi']}; color: {c['ink']}; }}
@@ -172,6 +176,14 @@ QLabel#helpmark {{ color: {c['ink-faint']}; border: 1px solid {c['line-hi']}; bo
   min-width: {px(16)}; max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; {font('key-hint')} }}
 QLabel#helpmark:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
 QLabel#helpmark:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; }}
+QToolButton#helpmark {{ color: {c['ink-faint']}; border: 1px solid {c['line-hi']}; border-radius: {px(8)};
+  min-width: {px(16)}; max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; padding: 0; {font('key-hint')} }}
+QToolButton#helpmark:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
+QToolButton#helpmark:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; }}
+QLabel#helpcausehead {{ color: {c['ink-faint']}; {font('key-hint')} }}
+QLabel#helpcause {{ color: {c['accent']}; {font('body')} font-weight: 600; }}
+QLabel#helpafter {{ color: {c['ink']}; {font('body')} font-weight: 400; }}
+QLabel#helpalso {{ color: {c['ink-dim']}; {font('row-sub')} }}
 QWidget#statebar {{ background: {c['raised']}; border-radius: 7px; }}
 QLabel#statebartext {{ color: {c['ink-dim']}; padding: {px(5)} {px(10)}; {font('row-sub')} }}
 QListView#rows {{ background: {c['bg']}; border: 0; }}

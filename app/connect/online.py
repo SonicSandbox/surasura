@@ -119,8 +119,8 @@ def of(language, item, pairing=None):
 
 def folder():
     """<local data>/connect/online — every video Connect fetched, while its job runs."""
-    from app.path_utils import get_local_data_path
-    return os.path.join(get_local_data_path(), "connect", FOLDER)
+    from app.cli.verbs import _connect_folder           # Connect's one folder (the data roots' count: one place)
+    return os.path.join(_connect_folder(), FOLDER)
 
 
 def run_id(job_id):

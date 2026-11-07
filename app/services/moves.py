@@ -2505,7 +2505,7 @@ class Numbers:
             return
         key = (st.st_mtime_ns, st.st_size)
         try:
-            plan = plan_engine.load(path)
+            plan = plan_engine.load(path, pools=False)
         except plan_engine.PlanError as e:
             self._set(None, {}, f"plan: {e}", key)
             return

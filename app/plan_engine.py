@@ -65,10 +65,10 @@ class Plan:
     [[rows], …]], …] and `pools` {k: (first sentence or -1, [shortlist + Finished], [audio])}; empty before."""
 
     __slots__ = ("header", "files", "keys", "rows", "ties", "per_file", "spell", "finished", "sentences", "cowords",
-                 "pools")
+                 "pools", "picks")
 
     def __init__(self, header, files, keys, rows, ties, per_file, spell=None, finished=None, sentences=None,
-                 cowords=None, pools=None):
+                 cowords=None, pools=None, picks=True):
         self.header, self.files, self.keys, self.rows, self.ties, self.per_file = \
             header, files, keys, rows, ties, per_file
         self.spell = {} if spell is None else spell
@@ -76,13 +76,18 @@ class Plan:
         self.sentences = [] if sentences is None else sentences
         self.cowords = [] if cowords is None else cowords
         self.pools = {} if pools is None else pools
+        self.picks = picks                  # the example-sentence tables were read (`load(pools=…)`)
 
 
-def load(path):
+_PICK_TABLES = tuple(b'{"' + name + b'":' for name in (b"finished", b"sentences", b"cowords", b"pools"))
+
+
+def load(path, pools=True):
     """The plan file at `path`, checked whole. The file is read in one go and closed before anything is decoded, so a
     Generate replacing it never waits on this reader (Windows refuses to replace a file someone holds open). Raises
     PlanError: missing, unreadable, damaged (gzip CRC, a line that isn't JSON), another format, or tables that don't
-    fit together."""
+    fit together. `pools` False (the window's readers: the numbers, Anki's order, Connect): format 3's example-sentence
+    tables are left undecoded (F7; most of a large plan) — its engine re-picks nothing (`Engine.contexts` None)."""
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -94,6 +99,8 @@ def load(path):
         raise PlanError(f"the plan file is damaged ({e.__class__.__name__})") from None
     if lines and lines[-1] == b"":
         lines.pop()
+    if not pools:
+        lines = [line for line in lines if not line.startswith(_PICK_TABLES)]
     try:
         decoded = [json.loads(line) for line in lines]
     except ValueError:
@@ -127,7 +134,7 @@ def load(path):
         tables[name].extend(chunk)
     plan = Plan(header, tables["files"], tables["keys"], tables["rows"], tables["ties"], per_file,
                 _spell_table(tables.get("spell", ())), tables.get("finished"), tables.get("sentences"),
-                tables.get("cowords"), _pools_table(tables.get("pools", ())))
+                tables.get("cowords"), _pools_table(tables.get("pools", ())), picks=pools)
     _validate(plan)
     return plan
 
@@ -240,7 +247,7 @@ def _validate(plan):
             raise PlanError("the plan file's header 'phrase_entries' is damaged")
     elif plan.spell:
         raise PlanError("a format-1 plan file holds a spell table")
-    if h.get("format") == 3:
+    if h.get("format") == 3 and plan.picks:
         _validate_pools(plan)
     elif plan.sentences or plan.pools or plan.cowords or plan.finished or any("fs" in line for line in plan.per_file):
         raise PlanError("an older plan file holds example-sentence pools")
@@ -571,7 +578,7 @@ class Engine:
         # The engine keeps what it reads, not the plan's per-file lines (most of a loaded plan's memory): once the
         # caller lets its plan go, only the tables below stay.
         self.plan = Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None, plan.spell, plan.finished,
-                         plan.sentences, plan.cowords, plan.pools)
+                         plan.sentences, plan.cowords, plan.pools, plan.picks)
         files, keys = plan.files, plan.keys
         ids = [entry[0] for entry in files] if ids is None else list(ids)
         if len(ids) != len(files):
@@ -1147,7 +1154,7 @@ class Engine:
         pin and the pick fills its slots from the pools. A sentence of a file that left the order is no candidate."""
         plan = self.plan
         h = plan.header
-        if h.get("format") != 3:
+        if h.get("format") != 3 or not plan.picks:
             return None
         files, finished = plan.files, plan.finished
         n_files = len(files)
@@ -1197,6 +1204,7 @@ class Engine:
 
         n_contexts = h.get("max_contexts") or 0
         picker = plan_rules.ContextPicker(sentences, plan.cowords, n_contexts, place, audio,
+                                          only_i_plus_one=bool(h.get("only_i_plus_one")),
                                           ensure_audio=h.get("ensure_audio"), recency_files=h.get("recency_files", 1))
         out = {}
         for r in self._ranked:
@@ -1206,6 +1214,8 @@ class Engine:
             first = held.get(first) if first is not None else None
             _first, pool, audio_pool = plan.pools.get(k, (-1, (), ()))
             chosen = picker.pick(k, seq, first, live(pool), live(audio_pool))
+            if chosen is None:
+                continue                            # (Only i+1, no i+1 sentence: the word is skipped, never learned)
             picker.learn(k, bool(self._phrase[k]), seq)
             kept = []
             for s in chosen or ():

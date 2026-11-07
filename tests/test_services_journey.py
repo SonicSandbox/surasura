@@ -406,6 +406,8 @@ def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes
         store.close()
 
     landed = []
+    with open(os.path.join(root, "results", "library_frequency.json"), "rb") as f:
+        library_map = f.read()
     keeper = J.JourneyKeeper(controller, language, settings=lambda: settings, on_done=landed.append)
     assert J.moved_state(settings, language) == "owed", "the real rule: only the order moved since the plan"
     keeper.changed("move")
@@ -418,6 +420,22 @@ def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes
     assert plan_engine.load(plan_path).header["run_signature"] == previous.header["run_signature"]
     assert analyzer.redrawn_for(os.path.join(root, "results")) is not None
     assert J.moved_state(settings, language) == "drawn"
+    from app import run_args
+    args = run_args.analyzer_args(settings, language)
+    assert analyzer.journey_is_current(args, language) is True, "redrawn for this order: current (S19)"
+    assert analyzer.journey_check(args, language) is True, "and so says surasura-cli's status"
+    with open(os.path.join(root, "results", "library_frequency.json"), "rb") as f:
+        assert f.read() == library_map, "the library map keeps the plan's numbering (Junban reads it through the order)"
+    # A redraw stopped part-way (its marker written first, its order never): never current, redrawn at the next look
+    marker = os.path.join(root, "results", analyzer.REDRAW_FILE)
+    with open(marker, encoding="utf-8") as f:
+        kept = f.read()
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"plan": previous.header["run_signature"], "run": None}, f)
+    assert analyzer.journey_is_current(args, language) is False
+    assert J.moved_state(settings, language) == "owed"
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(kept)
     store = ls.open_store(language, data_dir, user_files)
     try:
         assert not store.journey_pending()
@@ -449,13 +467,11 @@ def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes
                  "file_statistics.json", "file_statistics.txt"):
         assert redrawn[name] == at_once[name], name
     _same_rows(json.loads(redrawn["word_stats.json"]), json.loads(at_once["word_stats.json"]), WORD_STATS_ORDERS)
-    lib_r, lib_g = (json.loads(x["library_frequency.json"])["words"] for x in (redrawn, at_once))
-    listed = {f"{r['Word']}|{r['Reading']}" for r in J._lists()["priority"]}
-    assert {k: lib_r[k] for k in listed} == {k: lib_g[k] for k in listed}, "the list words' first files and Scores"
 
 
-# What a redraw leaves as the last Generate wrote it (D1; F7): the plan and the run stamp (the Generate's own), a word
-# under the cut-off's first file and Score (library_frequency.json), the source table's order (sources.json: by path),
+# What a redraw leaves as the last Generate wrote it (D1; F7): the plan and the run stamp (the Generate's own), the
+# library map (library_frequency.json: the plan's file numbers, which Junban reads through the order itself, and a word
+# under the cut-off's Score), the source table's order (sources.json: by path),
 # and what word_stats.json keeps in the walk's order (a word's last-met surface, its sources as a set). Everything a
 # row shows is the Generate's.
 REDRAW_OWN = ["plan.json.gz", "run_signature.txt", "library_frequency.json", "sources.json", "word_stats.json",

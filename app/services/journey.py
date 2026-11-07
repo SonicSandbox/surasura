@@ -201,6 +201,7 @@ class JourneyKeeper:
         self._last_change = 0.0     # time.monotonic() of the last `changed`
         self._settle = SETTLE_S     # the quiet time as the timer last read it (settings, battery)
         self._run = None            # the background run this keeper asked for (withdrawn only by `close`)
+        self._redraw_run = None     # ... when it is a redraw from the plan (F7)
         self._previous = None       # the plan the run in flight will replace (shadow mode)
         self._closed = False
         self._last_plan = None      # the plan the last Generate wrote (shadow mode for a run the keeper didn't ask for)
@@ -490,6 +491,7 @@ class JourneyKeeper:
             late = mine and self._closed
             if mine and not late:
                 self._run = run             # a move while it was asked for: kept (a7); that move's look comes after it
+                self._redraw_run = run if redraw else None
                 self._run_render_only = render_only or redraw   # (seconds: a reader waits for it, `background_run`)
         if late:
             self.controller.withdraw(run)   # the window closed while it was being asked for
@@ -509,9 +511,10 @@ class JourneyKeeper:
             if self._closed:
                 return
             previous, self._previous = self._previous or self._last_plan, None
-        threading.Thread(target=self._landed, args=(previous,), name="journey-landed", daemon=True).start()
+            redraw = run is self._redraw_run
+        threading.Thread(target=self._landed, args=(previous, redraw), name="journey-landed", daemon=True).start()
 
-    def _landed(self, previous):
+    def _landed(self, previous, redraw=False):
         path = self._path()
         plan = _load_plan(path)
         if plan is None:
@@ -522,8 +525,9 @@ class JourneyKeeper:
         signature = plan.header.get("run_signature")
         with self._lock:
             self._last_plan = plan
-            # (F7) the plan the run found is still the one it left — a redraw from it writes none: nothing new
-            new = signature != self._handed and (previous is None or previous.header.get("run_signature") != signature)
+            # (F7) the keeper's redraw from the plan writes none: the plan it started from is no new one for the window
+            same = redraw and getattr(previous, "header", {}).get("run_signature") == signature
+            new = signature != self._handed and not same
         try:
             difference = shadow(previous, plan, _lists, stamp=True)   # read only once the stamp says they're the run's
         except Exception as e:              # a list that can't be read (damaged): said
@@ -552,7 +556,7 @@ PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Score", "O
 def _load_plan(path):
     try:
         from app import plan_engine
-        return plan_engine.load(path) if path and os.path.exists(path) else None
+        return plan_engine.load(path, pools=False) if path and os.path.exists(path) else None
     except Exception:
         return None
 

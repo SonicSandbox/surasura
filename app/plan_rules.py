@@ -240,13 +240,23 @@ def text_hash_of(text):
     return zlib.crc32(text.encode("utf-8"))
 
 
-def keep_best(pool, ctx, size, key_at, src_at, per_file=PER_FILE):
+def keep_best(pool, ctx, size, key_at, src_at, per_file=PER_FILE, text_at=None):
     """Offer `ctx` to `pool` (kept sorted by `ctx[key_at]`): the best `size` candidates with at most `per_file` from
     one source (`ctx[src_at]`), each key once. The result is the same set whatever order the candidates come in (the
-    best `per_file` of each file, then the best `size` of those), which is what makes the shortlist order-free."""
+    best `per_file` of each file, then the best `size` of those), which is what makes the shortlist order-free.
+    `text_at` (a pool with no cap a file): each text once, its best copy (a line said in every episode — a show's
+    song — would fill the pool with one sentence); the same in any order too (a text's best copy only gets better)."""
     key = ctx[key_at]
     if len(pool) >= size and key >= pool[-1][key_at]:
         return
+    if text_at is not None:
+        text = ctx[text_at]
+        for i, c in enumerate(pool):
+            if c[text_at] == text:
+                if c[key_at] <= key:
+                    return                          # a copy as good or better, kept already
+                del pool[i]
+                break
     src = ctx[src_at]
     same = [i for i, c in enumerate(pool) if c[src_at] == src]
     for i in same:
@@ -262,19 +272,27 @@ def keep_best(pool, ctx, size, key_at, src_at, per_file=PER_FILE):
     del pool[size:]
 
 
-def offer_spread(spread, best, ctx, size, key_at, src_at, per_file=PER_FILE):
+def offer_spread(spread, best, ctx, size, key_at, src_at, text_at, per_file=PER_FILE):
     """Offer `ctx` to a shortlist kept in two parts (`shortlist` joins them): `spread`, the best `size` with at most
-    `per_file` from one file, and `best`, the best `size` from any. Both are the same sets in any order."""
+    `per_file` from one file, and `best`, the best `size` texts from any (each text once). Both are the same sets in
+    any order."""
     keep_best(spread, ctx, size, key_at, src_at, per_file)
-    keep_best(best, ctx, size, key_at, src_at, size)
+    keep_best(best, ctx, size, key_at, src_at, size, text_at)
 
 
-def shortlist(spread, best, size, key_at):
+def shortlist(spread, best, size, key_at, text_at):
     """The shortlist from its two parts (`offer_spread`): every spread candidate first, then the best of the rest —
-    the best `size` of all, a file's candidates past its `per_file` best taken only when the spread can't fill the
-    shortlist (a word met in a few files keeps every good sentence it has; a common one's come from many files)."""
-    inside = {c[key_at] for c in spread}
-    return (list(spread) + [c for c in best if c[key_at] not in inside])[:size]
+    the best `size` texts of all, each text once (its first copy here), a file's candidates past its `per_file` best
+    taken only when the spread can't fill the shortlist (a word met in a few files keeps every good sentence it has;
+    a common one's come from many files)."""
+    out, texts = [], set()
+    for c in list(spread) + list(best):
+        if c[text_at] not in texts:
+            texts.add(c[text_at])
+            out.append(c)
+            if len(out) == size:
+                break
+    return out
 
 
 # Known-when formulas: a co-word stops being an unknown once ANY of its clauses has every one of its rows learned

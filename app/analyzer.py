@@ -9,6 +9,7 @@ import json
 import re
 import csv
 import hashlib
+import shutil
 import threading
 import time
 import unicodedata
@@ -3766,10 +3767,12 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     """F7: the journey for this order from the last Generate's plan, when it is that Generate's library in all but the
     order (`plan_engine.check` None: the same files, known words, lists, settings and set-aside files, the run stamp
     its own) — the plan engine re-planned to the order and its re-pick (`Engine.result(pick=True)`: the Generate's
-    pick, one rule). Writes what the order moves of the journey: both lists, word_stats.json's list rows, the list
-    words' entries in library_frequency.json, the file statistics in the order, the sidecars and the report; the
-    order recorded as analysed, and the redraw marker (`REDRAW_FILE`). The plan, the run stamp and everything else
-    stay the Generate's (D1: a word under the list's cut-off keeps its first file and score until the next one).
+    pick, one rule). Writes what the order moves of the journey: both lists, word_stats.json's list rows, the file
+    statistics in the order, the sidecars and the report; the order recorded as analysed, and the redraw marker
+    (`REDRAW_FILE`: from then on the outputs are this order's, `drawn_for`). The plan, the run stamp and everything
+    else stay the Generate's — library_frequency.json too: its file numbers are the plan's, which Junban reads through
+    the order itself (`spaced.Job.places`); a word under the list's cut-off keeps its Score until the next Generate
+    (the engine's D1).
     -> main()'s exit value once drawn (0, or 1: the report failed); None when the plan can't serve this library, before
     anything is written: then a Generate runs."""
     from app import plan_engine
@@ -3808,6 +3811,9 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
 
     df = _rows_as(OUTPUT_CSV, result.priority)
     df_prog = _rows_as(OUTPUT_PROGRESSIVE, result.progressive)
+    # From the first write on, the outputs are neither the stamp's run nor this order's until the marker says so:
+    # one stopped part-way is never current (`drawn_for` None), and the next look redraws it.
+    _write_redraw_marker(plan.header["run_signature"], None)
     write_list(lambda tmp: df.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_CSV)
     if not df_prog.empty:
         write_list(lambda tmp: df_prog.to_csv(tmp, index=False, encoding='utf-8-sig'), OUTPUT_PROGRESSIVE)
@@ -3836,28 +3842,15 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     except Exception as e:
         print(f"Warning: could not write Content Manager sidecars: {e}")
 
-    # library_frequency.json: each list word's first file, tier counts, Score and spelling in this order
-    try:
-        lib_path = os.path.join(RESULTS_DIR, "library_frequency.json")
-        with open(lib_path, encoding="utf-8") as f:
-            lib = json.load(f)
-        words = lib.get("words") or {}
-        for row in result.priority:
-            key = (row["Word"], row["Reading"])
-            entry = words.get(f"{key[0]}|{key[1]}")
-            if isinstance(entry, list) and len(entry) >= 7:
-                high, low, goal = result.counts[key]
-                entry[1:7] = [high, low, goal, sequence.get(result.first.get(key), entry[4]), result.score[key],
-                              row.get("Orth") or entry[6]]
-        with open(lib_path, 'w', encoding='utf-8') as f:
-            f.write(json.dumps(lib, ensure_ascii=False))
-    except Exception as e:
-        print(f"Warning: could not update the library frequency map: {e}")
-
     # The file statistics in this order (each file's own numbers don't move)
     try:
         stats_json = os.path.join(RESULTS_DIR, "file_statistics.json")
-        with open(stats_json, encoding="utf-8") as f:
+        # In the Generate's order, the plan's: kept the first time a redraw reorders them (a second redraw starts from
+        # it, never from the first one's order); a Generate removes it with the marker (`_forget_redraw`)
+        as_generated = os.path.join(RESULTS_DIR, REDRAW_STATS_FILE)
+        if not os.path.exists(as_generated):
+            shutil.copy2(stats_json, as_generated)
+        with open(as_generated, encoding="utf-8") as f:
             file_stats = json.load(f)
         if len(file_stats) == len(plan.files):
             at = {entry[0]: i for i, entry in enumerate(plan.files)}
@@ -3901,8 +3894,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         except Exception as e:
             print(f"Error: Could not generate static HTML: {e}")
             report_failed = True
-    with open(os.path.join(RESULTS_DIR, REDRAW_FILE), "w", encoding="utf-8") as f:
-        json.dump({"plan": plan.header["run_signature"], "run": run_sig}, f)
+    _write_redraw_marker(plan.header["run_signature"], run_sig)
     print("Redrew the journey from the plan (only the order moved).")
     return 1 if report_failed else 0
 
@@ -4340,8 +4332,10 @@ def journey_is_current(args, language):
             stored = store.get_meta("last_run_signature")
         finally:
             store.close()
-        current = (stored == sig and read_run_stamp(results_dir) == sig and _plan_kept(language, sig, results_dir)
-                   and redrawn_for(results_dir) is None)
+        stamp = read_run_stamp(results_dir)
+        # (F7: outputs redrawn from the plan for this very order are current too — the stamp and the plan the Generate's)
+        current = (stored == stamp and drawn_for(results_dir) == sig and bool(stamp)
+                   and _plan_kept(language, stamp, results_dir))
         if current:
             record_analysed(language, library)
         return current
@@ -4388,8 +4382,9 @@ def journey_check(args, language):
         if not all(os.path.exists(os.path.join(results_dir, name)) for name in
                    ("priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json")):
             return False
-        return (_token_store_meta(language, "last_run_signature") == sig and read_run_stamp(results_dir) == sig
-                and _plan_kept(language, sig, results_dir) and redrawn_for(results_dir) is None)
+        stamp = read_run_stamp(results_dir)
+        return (bool(stamp) and _token_store_meta(language, "last_run_signature") == stamp
+                and drawn_for(results_dir) == sig and _plan_kept(language, stamp, results_dir))
     except Exception:
         return None
 
@@ -4818,6 +4813,18 @@ RUN_STAMP_FILE = "run_signature.txt"
 # "run": the run signature of the order it was drawn for}. While it is there the outputs are that order's, not the
 # stamp's run's: no reuse reads them as current (`redrawn_for`), and a Generate removes it before it writes.
 REDRAW_FILE = "journey_redrawn.json"
+REDRAW_STATS_FILE = "file_statistics.generated.json"   # the Generate's file statistics, in its order (a redraw's)
+
+
+def drawn_for(results_dir):
+    """The run signature the outputs in `results_dir` are now: the run stamp's, or — redrawn from the plan since (F7,
+    `REDRAW_FILE`) — the order's it was redrawn for, while the marker names the stamp's plan; None when neither can be
+    told (no stamp, a redraw stopped part-way, a marker of another plan). Never raises."""
+    stamp = read_run_stamp(results_dir)
+    marker = redrawn_for(results_dir)
+    if marker is None:
+        return stamp
+    return marker.get("run") if stamp and marker.get("plan") == stamp else None
 
 
 def redrawn_for(results_dir):
@@ -4830,11 +4837,20 @@ def redrawn_for(results_dir):
     return marker if isinstance(marker, dict) else None
 
 
+def _write_redraw_marker(plan_signature, run_signature):
+    """The redraw marker, written whole (a temp file replaced): `run_signature` None while the redraw writes."""
+    path = os.path.join(RESULTS_DIR, REDRAW_FILE)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump({"plan": plan_signature, "run": run_signature}, f)
+    os.replace(path + ".tmp", path)
+
+
 def _forget_redraw(results_dir):
-    try:
-        os.remove(os.path.join(results_dir, REDRAW_FILE))
-    except OSError:
-        pass
+    for name in (REDRAW_FILE, REDRAW_STATS_FILE):
+        try:
+            os.remove(os.path.join(results_dir, name))
+        except OSError:
+            pass
 
 
 def engine_id():
@@ -5264,10 +5280,9 @@ def main():
                                  and os.path.exists(os.path.join(RESULTS_DIR, "word_stats.json")))
     if (_store is not None and _run_sig and _analysis_outputs_present
             and not os.environ.get("SURASURA_FORCE_RUN")         # surasura-cli generate --force
-            and _store.get_meta("last_run_signature") == _run_sig
-            and read_run_stamp(RESULTS_DIR) == _run_sig     # ...and results/ is THIS run's (above)
-            and redrawn_for(RESULTS_DIR) is None             # ...not redrawn for another order since (F7)
-            and (not _plan_on or _plan_is_this_runs(_run_sig))):   # the preview's plan too (E1.2-1)
+            and drawn_for(RESULTS_DIR) == _run_sig          # ...and results/ is THIS run's (above; F7: or redrawn for it)
+            and _store.get_meta("last_run_signature") == read_run_stamp(RESULTS_DIR)
+            and (not _plan_on or _plan_is_this_runs(read_run_stamp(RESULTS_DIR)))):   # its plan too (E1.2-1)
         print("Nothing affecting the analysis changed since the last run - reusing existing results.")
         _progress("Writing the journey")    # the sidecars and a re-render write results/: a cancel waits for the end
         record_analysed(language, _library, data_dir, user_files_dir)
@@ -5661,9 +5676,11 @@ def main():
         if not entry["first_context"]:
             entry["first_context"] = new_ctx
         if ENSURE_AUDIO_EXAMPLE and file_is_spoken and not is_over_hard_max:
-            plan_rules.keep_best(entry["audio_contexts"], new_ctx, plan_rules.AUDIO_POOL, 9, 5)
+            plan_rules.keep_best(entry["audio_contexts"], new_ctx, plan_rules.AUDIO_POOL, 9, 5,
+                                 plan_rules.AUDIO_POOL, 4)
         if not is_over_hard_max:
-            plan_rules.offer_spread(entry["candidate_contexts"], entry["best_contexts"], new_ctx, plan_rules.POOL, 7, 5)
+            plan_rules.offer_spread(entry["candidate_contexts"], entry["best_contexts"], new_ctx, plan_rules.POOL, 7,
+                                    5, 4)
 
     def _candidate(short, long, cost, lrs, s_text, src_idx, marks, n_unknown, text_hash, s_no, finished=None):
         """A candidate example as the shortlists keep it: (too short, too long, cost, its unknowns, the text, its
@@ -5692,9 +5709,14 @@ def main():
             if n:                       # (most of the table's compounds aren't in the library at all)
                 for part in _view.credits(compound):
                     _room[part] += n
-    if _plan_on and _counts is not None and floor_count is not None:
-        _plan_keys = {key for key in set(_counts).union(_room)
-                      if _counts.get(key, 0) - _pieces.get(key, 0) + _room.get(key, 0) >= floor_count}
+    # The words whose uses can reach the cut-off (above): the only ones that can be rows — so the only ones whose
+    # example sentences are kept (F7: the shortlists of every other word were work and memory for nothing).
+    _reachable = None
+    if _counts is not None and floor_count is not None:
+        _reachable = frozenset(key for key in set(_counts).union(_room)
+                               if _counts.get(key, 0) - _pieces.get(key, 0) + _room.get(key, 0) >= floor_count)
+    if _plan_on and _reachable is not None:
+        _plan_keys = _reachable
 
     # --- The shortlist's counts (F7) --------------------------------------------------------------------------- #
     # A word's candidate sentences are ranked by the whole library's counts, never the counts so far (which made the
@@ -6040,12 +6062,13 @@ def main():
             audio_too = ENSURE_AUDIO_EXAMPLE and file_is_spoken and not is_over_hard_max
 
             for key in targets:
+                if _reachable is not None and key not in _reachable:
+                    continue                # never a row: no example sentence of its is ever shown
                 entry = word_stats[key]
                 if entry.get("_fsq") != seq_idx:
-                    # The word's first sentence in this file: its Context 1 wherever the file goes (the plan's), for
-                    # a word that can reach the list
+                    # The word's first sentence in this file: its Context 1 wherever the file goes (the plan's)
                     entry["_fsq"] = seq_idx
-                    if _plan_keys is None or key in _plan_keys:
+                    if _plan_on:
                         file_firsts[key] = s_no
 
                 # Rank this candidate by how many of the sentence's OTHER unknown words are
@@ -6055,11 +6078,12 @@ def main():
                 cost = rolling_context_cost(_uses(key), unk_freqs)
                 candidates, best = entry["candidate_contexts"], entry["best_contexts"]
                 first = entry["first_context"]
-                if (first and not audio_too and len(candidates) >= plan_rules.POOL
-                        and (is_too_short, is_too_long, cost, n_unknown) > candidates[-1][7][:4]):
-                    # no chance of the shortlist: worse than the spread's worst, which is never better than the best
-                    # part's (the spread reaches deeper, a few a file) — its key isn't made
-                    continue
+                if first and not audio_too and len(candidates) >= plan_rules.POOL and len(best) >= plan_rules.POOL:
+                    head = (is_too_short, is_too_long, cost, n_unknown, s_hash)
+                    if head > candidates[-1][7][:5] and head > best[-1][7][:5]:
+                        # no chance of the shortlist: worse than either part's worst (each part is full), on its key's
+                        # first five parts already — its key isn't made
+                        continue
                 new_ctx = _candidate(is_too_short, is_too_long, cost, unique_lrs, s_text, src_idx, marks, n_unknown,
                                      s_hash, s_no)
                 if not first:
@@ -6071,13 +6095,14 @@ def main():
                 # same order-free key; roomier than it needs to be on purpose — the real i+1 cost isn't
                 # known until selection, which re-weighs every entry.
                 if audio_too:
-                    plan_rules.keep_best(entry["audio_contexts"], new_ctx, plan_rules.AUDIO_POOL, 9, 5)
+                    plan_rules.keep_best(entry["audio_contexts"], new_ctx, plan_rules.AUDIO_POOL, 9, 5,
+                                         plan_rules.AUDIO_POOL, 4)
 
                 # Very long sentences make poor secondary examples — keep them only as the
                 # word's own/original fallback (first_context above), not in the candidate pool.
                 if is_over_hard_max:
                     continue
-                plan_rules.offer_spread(candidates, best, new_ctx, plan_rules.POOL, 7, 5)
+                plan_rules.offer_spread(candidates, best, new_ctx, plan_rules.POOL, 7, 5, 4)
 
         
         file_token_cache[file_path] = file_counter
@@ -6262,7 +6287,8 @@ def main():
                     plan_rules.keep_best(entry.setdefault("finished_contexts", []),
                                          _candidate(short, long, rolling_context_cost(_phrase_uses_of(index), freqs),
                                                     lrs, s_text, src_idx, marks, len(freqs), s_hash, s_no, rank),
-                                         plan_rules.FINISHED_POOL, 7, 5, per_file=plan_rules.FINISHED_POOL)
+                                         plan_rules.FINISHED_POOL, 7, 5, per_file=plan_rules.FINISHED_POOL,
+                                         text_at=4)
                 if targets:
                     unk_freqs = _unknown_counts(unique_lrs)
                     for key in targets:
@@ -6270,7 +6296,8 @@ def main():
                                              _candidate(short, long, rolling_context_cost(_uses(key), unk_freqs),
                                                         unique_lrs, s_text, src_idx, marks, len(unk_freqs), s_hash,
                                                         s_no, rank),
-                                             plan_rules.FINISHED_POOL, 7, 5, per_file=plan_rules.FINISHED_POOL)
+                                             plan_rules.FINISHED_POOL, 7, 5, per_file=plan_rules.FINISHED_POOL,
+                                             text_at=4)
 
     # Output Priority CSV
 
@@ -6366,7 +6393,7 @@ def main():
             "Sources": source_display, # Moved to end
             "_MinSeq": data["min_seq"], # Helper for sorting
             "_CandidateContexts": plan_rules.shortlist(data["candidate_contexts"], data["best_contexts"],
-                                                       plan_rules.POOL, 7),
+                                                       plan_rules.POOL, 7, 4),
             "_FirstContext": data["first_context"]
         }
         preliminary_rows.append(row)

@@ -557,6 +557,21 @@ def test_a_format_1_plan_still_loads_and_replans_the_same(runs, tmp_path, case):
     _check_parity(r1, run)
 
 
+@pytest.mark.parametrize("case", ["rp2-ja", "every-ja"])
+def test_the_windows_lean_load_reads_no_sentences_and_gives_the_same_numbers(runs, case):
+    # why (F7): the window's readers (the numbers, Anki's order, Connect) never re-pick: their plan leaves the
+    # example-sentence tables undecoded — most of a large plan — and every number is the full load's
+    root, run = runs[case]
+    path = os.path.join(_results_dir(root), analyzer.PLAN_FILE)
+    lean, full = plan_engine.load(path, pools=False), plan_engine.load(path)
+    assert not lean.picks and lean.sentences == [] and lean.pools == {} and full.picks and full.sentences
+    a, b = plan_engine.Engine(lean), plan_engine.Engine(full)
+    assert a.contexts() is None and b.contexts()
+    ra, rb = a.result(pick=True), b.result()
+    assert (ra.priority, ra.progressive, ra.first, ra.n_new) == (rb.priority, rb.progressive, rb.first, rb.n_new)
+    _check_parity(ra, run)
+
+
 def test_load_holds_no_file_open(runs, tmp_path):
     """The loader reads the bytes and closes before decoding: a Generate replacing the plan right after (Windows
     refuses to replace a file someone holds open) succeeds."""

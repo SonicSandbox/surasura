@@ -18,10 +18,11 @@ from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
-from app.qt import rows
+from app.qt import rows, strings
+from app.qt.item_menu import ep_name
 from tests.qt import work_counts as wc
 from tests.qt.conftest import wait_until
-from tests.qt.test_drag import lift, move_global, release_global, row_point, settle
+from tests.qt.test_drag import lift, move_global, press, release, release_global, row_point, settle
 
 
 @pytest.fixture(scope="module")
@@ -85,6 +86,12 @@ def _allowed_outside_the_list(win):
 
 def _closed_row(lst, at_least=0):
     return next(i for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and i >= at_least)
+
+
+def part(lst, i, name):
+    """The painted parts of row `i` called `name` (as test_current.part): (name, rect, tip, extra) tuples."""
+    entry = lst.model().entries[i]
+    return [p for p in lst.delegate.parts(entry, lst.visualRect(lst.model().index(i, 0))) if p[0] == name]
 
 
 # --- R3: a move repaints the rows that changed ------------------------------------------------------------------- #
@@ -232,3 +239,68 @@ def test_r5_the_rows_menu_opened_again_makes_no_widget(screen):
     finally:
         m.close()
         settle(50)
+
+
+def test_r3_a_row_down_button_pressed_and_released_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_list(screen):
+    """A row's ↓ button, pressed and released by the mouse: it and the row under it trade places — those two repaint
+    (and the keyboard ring with them), never the list; outside it, only the toast and the bar's line."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    i = _closed_row(lst, 3)
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    settle(100)
+    downs = part(lst, i, "down")
+    assert downs, "the row shows its ↓ button"
+    at = downs[0][1].center()
+    saved = len(writer.saved)
+    renders = lst.delegate.renders
+    before = keys_of(win)
+    key = before[i]
+    assert key is not None, "the row has a key to follow"
+    with wc.measure(win, readers=[win.services.library]) as w:
+        press(lst, at)
+        release(lst, at)
+        assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3)
+        settle(150)
+    assert keys_of(win).index(key) == i + 1, "the row moved one place down, not up"
+    vp = wc.rect_in_window(lst.viewport())
+    band = _row_band(lst, i - 1, i + 1)                           # the pair, and one row's ring of slack above
+    in_list = [p for p in w.paints if vp.contains(p.rect)]
+    assert w.union_in(vp) <= band.width() * band.height() + vp.width() * wc.STRIP_SLACK_PX * 2, w.report()
+    assert all(band.intersects(p.rect) or p.rect.height() <= 8 for p in in_list), w.report()
+    outside = [p for p in w.paints if not vp.contains(p.rect) and not vp.intersects(p.rect)
+               and not any(r.contains(p.rect) for r in _allowed_outside_the_list(win))]
+    assert outside == [], (outside, w.report())
+    assert lst.delegate.renders - renders <= 2, w.report()        # the two rows' new pictures at most
+    assert w.builds == 0, w.report()
+
+
+def test_r5_the_episode_menu_opened_again_on_another_episode_makes_no_widget(screen):
+    """⋯ on an open row's episode, closed, then ⋯ on another episode: the list keeps its one menu (C4) — the second
+    open makes no widget."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    k = next(i for i, e in enumerate(lst.model().entries) if e[0] == rows.ROW and len(e[1].episodes) >= 2)
+    row = lst.model().entries[k][1]
+    at = win.mapToGlobal(QPoint(300, 300))
+    lst.toggle(lst.model().index(k, 0))
+    settle(100)
+    try:
+        first = win.items.episode_menu(row, row.episodes[0], at)
+        settle(50)
+        first.close()
+        settle(50)
+        with wc.measure(win) as w:
+            m = win.items.episode_menu(row, row.episodes[1], at)
+            settle(50)
+        try:
+            assert m is first                        # the list's one menu, reopened for episode 1
+            assert m.isVisible()
+            assert m.accessibleName() == strings.ITEM_EP_MENU_NAME.format(ep=ep_name(row, row.episodes[1]))
+            assert w.created == 0, w.report()
+        finally:
+            m.close()
+            settle(50)
+    finally:
+        lst.toggle(lst.model().index(k, 0))
+        settle(100)

@@ -113,17 +113,20 @@ def test_code_geass_two_series_each_with_extras_are_two_titles_in_one_take_in(la
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_2x_tier_folders_specials_written_on_disk_join_the_show_in_a_sync(language):
-    """The other way in: a 2.x tier folder's files found by the sync (`_settle_works`, items in no set order), the
-    specials folder deeper — one title, and a later special in it joins it too."""
+def test_a_2x_tier_folders_specials_added_first_join_the_show_and_a_sync_after_too(language):
+    """The other ways in: an Add of a 2.x tier folder's files, the specials one FIRST (it gets the lower item id, so
+    `_settle_works` reads it first unless it takes a folder before the folders below it) — one title; then a special
+    found by the sync joins it too."""
     store, data_dir = _empty(language)
     show = names(language)[81]
     with store:
-        touch(data_dir, f"HighPriority/{show}/Specials/{show} OVA - 01.srt")
-        touch(data_dir, f"HighPriority/{show}/{show} - 01.srt")
-        touch(data_dir, f"HighPriority/{show}/{show} - 02.srt")
-        added = store.sync_disk()["added"]
-        assert len(added) == 3 and len({store.item(i)["work_id"] for i in added}) == 1
+        paths = [touch(data_dir, f"HighPriority/{show}/Specials/{show} OVA - 01.srt"),
+                 touch(data_dir, f"HighPriority/{show}/{show} - 01.srt"),
+                 touch(data_dir, f"HighPriority/{show}/{show} - 02.srt")]
+        store.insert(paths, "now")
+        added = [store.item_id(os.path.relpath(p, data_dir).replace(os.sep, "/")) for p in paths]
+        assert None not in added and added[0] < added[1]
+        assert len({store.item(i)["work_id"] for i in added}) == 1
         touch(data_dir, f"HighPriority/{show}/Specials/{show} OVA - 02.srt")
         later = store.sync_disk()["added"]
         assert {store.item(i)["work_id"] for i in later} == {store.item(added[0])["work_id"]}
@@ -290,6 +293,30 @@ def test_the_helpers_run_joins_his_store_and_the_window_reads_the_works(language
         assert again.join_specials() == []
     finally:
         again.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_join_goes_on_across_its_commands_and_marks_the_store_only_at_the_end(language, monkeypatch):
+    """Commands of `JOIN_BATCH` pairs (the window's writes go between them): with one pair a command, both of his
+    extras titles are joined, and the store is marked only by the command that ends the list."""
+    monkeypatch.setattr(ls, "JOIN_BATCH", 1)
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[92]
+    with store:
+        root = store.add_source(src)
+        found, rels = _files(language, data_dir, src, _geass(show))
+        _before_rule(store, root, found)
+        marks = []
+        merge = ls.Store._merge_into
+
+        def watched(self, *a, **k):
+            marks.append(self._meta().get(ls.SPECIALS_JOINED))
+            return merge(self, *a, **k)
+        monkeypatch.setattr(ls.Store, "_merge_into", watched)
+        assert len(store.join_specials()) == 2
+        assert marks == [None, None] and store.meta()[ls.SPECIALS_JOINED] == 1
+        assert len(_works(store)) == 2
 
 
 @pytest.mark.parametrize("language", LANGUAGES)

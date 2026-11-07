@@ -511,6 +511,49 @@ def _rows():
                  [("{S}/{S} - 01.mkv", "V"), ("{S}/{S} - NCOP1.mkv", "V")], None,
                  {"{S}/{S} - 01.mkv": WAIT},
                  "only the episode waits"))
+    # Kura-G (2026-11-07, his Code Geass R2): subtitles that write a bare number (`<Show> Hangyaku no <N> 01.srt`, no
+    # ` - ` / `Ep` / `E` before it) beside videos that write `_Ep01_`: A10 reads the bare number where the show's names
+    # prove it (two or more names that differ only by it), never one name alone, never a guess between two shows
+    geass = [f"{{S}}_Ep{n:02d}_The_Title_[720p,BluRay,x264]_-_gg" for n in (1, 2, 3)]
+    rows.append(("bare-numbered subtitles beside marked videos", "laptop try (Code Geass R2)",
+                 "`<Show>/<Show>_Ep01_<title>_[720p,BluRay,x264]_-_gg.mkv` (01–03) and `<Show> Hangyaku 01.srt`, "
+                 "`02.srt` (a bare number, another name of the show)", "",
+                 [(f"{{S}}/{v}.mkv", "V") for v in geass]
+                 + [(f"{{S}}/{{S}} Hangyaku {n:02d}.srt", "J") for n in (1, 2)], None,
+                 {f"{{S}}/{{S}} Hangyaku {n:02d}.srt": _ep(f"{{S}}/{{S}} Hangyaku {n:02d}.srt", f"{{S}}/{geass[n - 1]}.mkv")
+                  for n in (1, 2)},
+                 "each subtitle is its episode (its names differ only by the number) and pairs with that episode's "
+                 "video: the folder's videos carry one show; the third video has no text yet and, in a folder with "
+                 "text, doesn't wait (K5, as before)"))
+    rows.append(("one bare-numbered subtitle alone", "convention (A10)",
+                 "`<Show>/<Show> 100.srt` beside `<Show>/[Grp] <Show> - 01.mkv`", "",
+                 [("{S}/[Grp] {S} - 01.mkv", "V"), ("{S}/{S} 100.srt", "J")], None,
+                 {"{S}/{S} 100.srt": "{S}/{S} 100.srt"},
+                 "one name proves nothing (a title may end in a number: `Mob Psycho 100`): no episode read, never "
+                 "paired with episode 1's video by a guess"))
+    rows.append(("bare-numbered subtitles beside two shows' videos", "convention (A10, A4)",
+                 "`<Show>/[Grp] <Show> - 01.mkv`, `<Show>/[Grp] <Show2> - 01.mkv` and `<Novel> 01.srt`, `02.srt`", "",
+                 [("{S}/[Grp] {S} - 01.mkv", "V"), ("{S}/[Grp] {S2} - 01.mkv", "V"),
+                  ("{S}/{N} 01.srt", "J"), ("{S}/{N} 02.srt", "J")], None,
+                 {"{S}/{N} 01.srt": "{S}/{N} 01.srt", "{S}/{N} 02.srt": "{S}/{N} 02.srt"},
+                 "the subtitles read episodes 1 and 2 of another name, and the videos carry two shows: either could "
+                 "be theirs, so neither is (A4: never a guess)"))
+    rows.append(("bare-numbered videos beside marked subtitles", "convention (A10)",
+                 "`<Show>/<Show> 01.mkv`, `02.mkv` and `[Grp] <Show> - 01.ja.srt`, `- 02.ja.srt`", "",
+                 [("{S}/{S} 01.mkv", "V"), ("{S}/{S} 02.mkv", "V"),
+                  ("{S}/[Grp] {S} - 01.{T}.srt", "J"), ("{S}/[Grp] {S} - 02.{T}.srt", "J")], None,
+                 {f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt": _ep(f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt",
+                                                                f"{{S}}/{{S}} {n:02d}.mkv") for n in (1, 2)},
+                 "the folder's videos prove their bare numbers: each subtitle pairs with its episode's video"))
+    rows.append(("bare-numbered subtitles, the next one a look later", "laptop try (Code Geass R2)",
+                 "as *bare-numbered subtitles beside marked videos*, then `<Show> Hangyaku 03.srt` arrives", "",
+                 [(f"{{S}}/{v}.mkv", "V") for v in geass]
+                 + [(f"{{S}}/{{S}} Hangyaku {n:02d}.srt", "J") for n in (1, 2)],
+                 [("{S}/{S} Hangyaku 03.srt", "J")],
+                 {f"{{S}}/{{S}} Hangyaku {n:02d}.srt": _ep(f"{{S}}/{{S}} Hangyaku {n:02d}.srt", f"{{S}}/{geass[n - 1]}.mkv")
+                  for n in (1, 2, 3)},
+                 "the show's names (its two in, and the new one) prove the new one's number: it pairs with episode "
+                 "3's video, as the first two did"))
     rows.append(("subtitle folder named sub / 字幕", "convention (LM1b, A11)",
                  "`<Show>/<Show> - 01.mkv` + `sub/`, `<Show> - 02.mkv` + `字幕/` each holding its subtitle", "",
                  [("{S}/{S} - 01.mkv", "V"), ("{S}/sub/{S} - 01.{T}.srt", "J"), ("{S2}/{S2} - 02.mkv", "V"),

@@ -970,3 +970,22 @@ def test_an_ab_tagged_subtitle_pairs_with_its_video_and_ours_beats_an_english_on
         assert sorted(os.path.basename(o.video_path or "") for o in texts.values()) == \
             [_AB.format(show=show, n=n)[:-len(".ab.srt")] + ".mkv" for n in (1, 2)]
         assert not any(o.origin.endswith(".en.srt") for o in store.origins().values())
+
+
+def test_a_bare_number_is_an_episode_only_where_other_names_of_its_show_prove_it():
+    """A10 in the look (Kura-G; his Code Geass R2: `Code Geass Hangyaku no Lelouch 01.srt` … `10.srt` read no
+    episode, so none paired with `Code_Geass_Ep01_….mkv`): `numbered` gives the names whose last bare number is their
+    episode — two or more names of one show (and season) with different numbers. Never one name alone (a title that
+    ends in a number), never two names of one number only, never a name a marker already reads, a special, a year or a
+    resolution; two shows each need their own proof."""
+    run = [f"Code Geass Hangyaku no Lelouch {n:02d}.srt" for n in range(1, 11)]
+    assert en.numbered(run) == set(run)
+    assert en.identity(run[0]).episode is None and en.identity(run[0], bare_numbers=True).episode == 1
+    assert en.numbered(["Mob Psycho 100.srt"]) == set()
+    assert en.numbered(["星の図書館 01.srt", "星の図書館 01.ass"]) == set(), "one number twice proves nothing"
+    assert en.numbered(["Show - 01.srt", "Show 02.srt"]) == set(), "a marker's name is no proof; one bare left"
+    assert en.numbered(["Show 2019.srt", "Show 2020.srt", "Show 1080p.srt", "Show 720p.srt"]) == set()
+    assert en.numbered(["Show OVA 01.srt", "Show OVA 02.srt"]) == set(), "a special reads its own number already"
+    two = ["灯下书简 01.srt", "灯下书简 02.srt", "Yeshi Xiaoji 05.srt"]
+    assert en.numbered(two) == set(two[:2])
+    assert en.numbered(["Show S2 01.srt", "Show 01.srt"]) == set(), "two seasons: one name each, no proof"

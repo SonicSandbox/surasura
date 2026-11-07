@@ -95,7 +95,7 @@ STATUS_NAME = "{name}: {words}"                  # the status mark, for screen r
 # --- the sections (the mock's order, with Language & Parsing after Level: 05 §5.7) --------------------------------- #
 SECTIONS = {
     "setup": "Your setup", "known": "Known words", "anki": "Anki & mining", "junban": "Junban — card order",
-    "backfill": "Backfill — fill your cards", "level": "Level — rarity", "parsing": "Language & Parsing",
+    "backfill": "Backfill — fill your cards", "level": "Level", "parsing": "Language & Parsing",
     "content": "Content", "arrivals": "New arrivals", "connect": "Connections", "reading": "Journey",
     "sentences": "Sentences", "export": "Export", "app": "App",
 }
@@ -153,7 +153,7 @@ ROWS = {
                        "back to it", "sync automatically anki open"),
     "anki_auto_generate": ("Re-generate when new words come in", "In the background, at most every 10 minutes",
                            "When a sync brings in words you now know, Generate runs on its own in the background, so "
-                           "your list is current — without opening the report. At most every 10 minutes, and never "
+                           "your list is current — without opening your journey. At most every 10 minutes, and never "
                            "while an import or a Generate is running", "generate automatically new known words"),
     "known_import": ("Import from", "Replaces your known words — a backup is kept",
                      "Import your known words from Migaku, Jiten or an Anki deck file", "import migaku jiten apkg"),
@@ -346,7 +346,7 @@ ROWS = {
                  "Level, or a target coverage of your content", "coverage mode strategy"),
     "target_coverage": ("Coverage", "The share of your content you aim to know", "Target coverage, in percent",
                         "coverage percent target"),
-    "show_words_per_day": ("Show target days on your journey", "", "Show 'Target Days' in your report",
+    "show_words_per_day": ("Show target days on your journey", "", "Show 'Target Days' on your journey",
                            "target days words per day"),
     "min_count": ("A word must appear at least", "", "Fewer appearances than this and a word is never listed",
                   "min count appear at least"),
@@ -481,10 +481,10 @@ ROWS = {
                           "they’re released", "More tools from Houseki", "houseki suite install tools"),
 
     # Journey
-    "theme": ("Look", "", "The report's look", "theme look dark flow report"),
+    "theme": ("Look", "", "Your journey's look", "theme look dark flow report journey"),
     "open_app_mode": ("Open in its own window",
                       "Its own browser window, so Yomitan and your other tools still work on it. Off: a tab",
-                      "Open the report in its own browser window", "open window tab browser"),
+                      "Open your journey in its own browser window", "open window tab browser"),
     "source_display": ("Where a sentence came from", "", "Show which file each example sentence came from",
                        "source badge file name"),
     "word_search_enabled": ("Word lookup button (⌕)", "More real sentences from Nadeshiko",
@@ -495,13 +495,13 @@ ROWS = {
                                  "label backlog anki waiting card mark"),
     "inline_completed_files": ("Show ‘Target met’ in place", "Met files keep their order instead of moving down",
                                "Keep met files in order instead of moving them down", "target met inline completed"),
-    "hide_audio_button": ("Hide the audio button", "No speaker icon on the report’s sentences",
-                          "Hide the speaker icon in the report", "audio button speaker hide"),
+    "hide_audio_button": ("Hide the audio button", "No speaker icon on your journey’s sentences",
+                          "Hide the speaker icon on your journey", "audio button speaker hide"),
     "word_search_category": ("Lookup examples from", "", "Which kind of sentences the lookup opens",
                              "lookup nadeshiko category anime"),
     "zen_limit": ("Zen mode shows", "", "How many words Zen mode shows", "zen limit"),
     "enable_koe": ("Speak sentences (Gemini)", "On your own key; each sentence goes to Google to be spoken",
-                   "Click a sentence's source badge in the report to hear it read aloud. Needs a Gemini API key and "
+                   "Click a sentence's source badge on your journey to hear it read aloud. Needs a Gemini API key and "
                    "sends that sentence to Google", "speech speak koe gemini voice"),
     "koe_door": ("Speech settings", "The key, voice and delivery", "Set the API key, voice and delivery",
                  "speech settings voice key"),
@@ -528,7 +528,7 @@ ROWS = {
     "export_reading_words": ("Reading words", "Words you’ll read more than hear",
                              "A Yomitan list of words you'll read but hardly ever hear", "reading words export"),
     "export_sentence_list": ("Sentence list for Anki", "A CSV of your list with its sentences",
-                             "An Anki-ready CSV with sentences from your report", "csv sentence list anki export"),
+                             "An Anki-ready CSV with sentences from your journey", "csv sentence list anki export"),
     "sentence_dictionary_source": ("Show where each sentence came from", "In the Yomitan popup",
                                    "A short file name under each sentence in the Yomitan popup",
                                    "source sentence dictionary"),
@@ -627,7 +627,7 @@ OPTION_LINES = {
 }
 # An option's own tooltip (a choice's or a tablet's), where its label alone doesn't say it
 OPTION_TIPS = {
-    "junban_only_markers": {"star": "High leverage: the words the report stars",
+    "junban_only_markers": {"star": "High leverage: the words your journey stars",
                             "lopsided": "Lopsided: words that come almost entirely from one part of your library",
                             "reading": "Reading: words you'll read but essentially never hear"},
     "junban_order_all": {False: "Your own cards go ahead of Connect's, in the order you made them",
@@ -753,6 +753,7 @@ PRACTICE_THEN = ("Then, to start a round:\n"
 PRACTICE_HELP = "?"
 PRACTICE_HELP_NAME = "About Piyo"
 PRACTICE_HELP_CLICK = "<br>• Click: its help card"
+HELP_MARK_CARD = "{text}\n• Click: its help card"         # a row's ? whose area has a help card
 # help cards (§6.6): the tour's door under *Run things by themselves*
 HELP_TOUR_DOOR = "Show me what runs by itself"
 HELP_TOUR_DOOR_TIP = "A short tour of what Surasura does by itself, one card each, with a Try it where one is safe"
@@ -804,7 +805,7 @@ NEW_CARDS_READING = "Reading Anki…"
 NEW_CARDS_NO_DECK = "Junban’s deck"
 NEW_CARDS_DECK = "“{deck}”"
 NEW_CARDS_FIELD_TIP = "The number to set in Anki: nothing changes there until you press Change in Anki… and say yes"
-NEW_CARDS_UNREAD_TIP = "{why} Until Anki can be read, this is the report's pace: new words a day."
+NEW_CARDS_UNREAD_TIP = "{why} Until Anki can be read, this is your journey's pace: new words a day."
 NEW_CARDS_ASK = "Change New cards a day in Anki?"
 NEW_CARDS_YES = "Set it to {n}"
 NEW_CARDS_YES_TIP = "Writes the new number into the deck's options group in Anki"

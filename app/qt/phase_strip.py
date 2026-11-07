@@ -132,6 +132,7 @@ class PhaseStrip(QWidget):
         self._hand = False                     # the pointer shows the hand (over a circle that opens)
         self._asks = None                      # 順's line when it is a part of its own (a decision or a fault), or None
         self.lands = None                      # Go -> whether its place holds the decision now (the shell's, a7)
+        self.on_states = None                  # states -> None, after each refresh (the shell's one-time hints, HC-3)
         self.stops = None                      # circle -> whether its work can be stopped now (the shell's, try a9.1)
         self.can_show = None                   # circle -> whether there is a place its work is seen now (the shell's)
         self._timer = QTimer(self)
@@ -276,6 +277,8 @@ class PhaseStrip(QWidget):
         self._paint_changed()
         self._wake(now)
         self._retext()
+        if self.on_states is not None:
+            self.on_states(self.states)
 
     def _landed(self, st):
         """a7: amber only while its place holds the decision — a *Needs you* card put away

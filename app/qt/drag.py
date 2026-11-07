@@ -2739,6 +2739,15 @@ class DragController(QObject):
         self._give(Ticket(text, (row.key,), tuple(ids)), mark, marks=on)
 
     # --- W-1: a hint shown once per library (settings.json's `hints_seen`: hint ids, each with the library's id) -- #
+    # (help cards WP6: read and written through the window's one helper, `app/qt/hints.py` — the store's id, the
+    # list's odd entries left out, a settings file that can't keep it never shows a hint every time)
+    def _hints(self):
+        hints = getattr(self.win, "hints", None)
+        if hints is None:
+            from app.qt import hints as hints_module
+            hints = self.win.__dict__.setdefault("_drag_hints", hints_module.Hints(self.win))
+        return hints
+
     def _hint_id(self, name):
         """`name`'s hint id for the library shown (its store id), or None before a read has found it: never keyed by
         the language, so a hint is never shown twice in one library."""
@@ -2750,10 +2759,7 @@ class DragController(QObject):
         return f"{name}:{store_id}" if store_id else None
 
     def _hints_seen(self):
-        """settings.json's `hints_seen` as a list of ids — a hand-edited value that isn't a list (a number, true, a text)
-        reads as none seen, its odd entries left out; the next write puts a clean list in its place."""
-        value = self.win.services.settings.get().get("hints_seen")
-        return [h for h in value if isinstance(h, str)] if isinstance(value, (list, tuple)) else []
+        return self._hints().seen_list()
 
     def _unseen(self, name):
         """`name`'s hint id for this library when it hasn't been shown here yet, else None."""
@@ -2768,9 +2774,8 @@ class DragController(QObject):
 
     def _seen(self, hint):
         """`hint` recorded as shown: its key alone written (`save_keys`' rule, the settings service's)."""
-        seen = self._hints_seen()
-        if hint not in seen:
-            self.win.services.settings.set({"hints_seen": seen + [hint]})
+        self._hints().mark(hint)
+        self._hints().last = self._hints().clock()   # (a hint shown: the next one waits its minute)
     # --- end W-1
 
     def to_finished(self, row, text=None):

@@ -1353,8 +1353,12 @@ class ShellWindow(QMainWindow):
         self._quit_timer = None
         self._detached_card = None                        # row 35: the close's *Still finishing* sheet, while open
         self._detached_answered = False                   # ... answered (Quit or Stop and quit): asked once a close
+        from app.qt import hints as hints_module          # WP6: one helper for every one-time hint (HC-3 too)
+        self.hints = hints_module.Hints(self)
         self.bridge.jobs_changed.connect(self._jobs_changed)
         self.bridge.jobs_changed.connect(self.phase.set_jobs)
+        self.bridge.jobs_changed.connect(self.hints.jobs)    # HC-3: the first card wait, the first background Generate
+        self.phase.on_states = self.hints.strip              # ... and the first amber circle
         self.phase.set_jobs(services.registry.snapshot())
         self._library_needs = 0
         self._status_snap = None

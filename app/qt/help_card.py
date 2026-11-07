@@ -25,7 +25,7 @@ import threading
 import time
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
+from PyQt6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer
 from PyQt6.QtGui import QImage, QImageReader, QPainter
 from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QToolButton, QVBoxLayout,
                              QWidget)
@@ -579,8 +579,12 @@ class HelpCard(motion.Overlay):
         lay = self.layout()
         lay.activate()
         height = lay.totalHeightForWidth(width) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
+        if self.tour is not None and self.isVisible() and self.width() == width:
+            height = max(height, self.height())     # (the tour never shrinks: the window behind is never re-exposed)
         height = min(height, max(1, w.height() - 2 * MARGIN))
-        self.setGeometry((w.width() - width) // 2, max(0, (w.height() - height) // 2), width, height)
+        geometry = QRect((w.width() - width) // 2, max(0, (w.height() - height) // 2), width, height)
+        if geometry != self.geometry():
+            self.setGeometry(geometry)
 
     def _open(self):
         self.place()
@@ -659,7 +663,7 @@ def lit_lines(strip):
         why.setdefault(circle, []).append(strip.why_line(cause))
     out = []
     for circle, st in strip.states.items():
-        if not (st.running or st.waiting or st.needs or st.failed):
+        if not (st.running or st.waiting or st.needs or st.failed or st.lines):
             continue
         first = st.needs or st.failed or (st.lines[0] if st.lines else "")
         name = strings.PHASE_NAMES[circle]

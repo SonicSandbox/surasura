@@ -247,7 +247,7 @@ STRING_WORDS = {
 BAR_NAME = "Status"
 BAR_FAILURE_PREFIX = "⚠ "
 BAR_LOGS = "Open the logs folder"
-BAR_LOGS_TIP = "Open the folder where Surasura keeps its logs, to look at them or send them"
+BAR_LOGS_TIP = "Surasura's logs\n• Click: open their folder, to look at them or send them"
 BAR_FAILURE_TIP = "The newest problem a command-line run reported. Its details are in the logs folder"
 STANDING_HIDE = "✕"                                         # round 8 row 54: every standing line's (app/qt/standing.py)
 STANDING_HIDE_TIP = "Hide this until it changes"
@@ -286,7 +286,7 @@ GENERATE_FAILED_TIP = "Generate didn't finish: {message}\n• Click to try again
 GENERATE_AUTO_TIP = ("Generating by itself, because Anki brought in words you know: {step}\n• Click to generate now: "
                      "your own run takes its place")
 GENERATE_LOG = "Open the log"
-GENERATE_LOG_TIP = "Open the last Generate's log, to see what went wrong"
+GENERATE_LOG_TIP = "The last Generate's log\n• Click: open it, to see what went wrong"
 GENERATE_PROGRESS_NAME = "Generate's progress"
 JOURNEY_TIP = "Your list with its sentences, in its own window\n• Click to open your journey"
 JOURNEY_NONE_TIP = "Your journey appears after your first Generate"
@@ -327,10 +327,10 @@ BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generat
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
 # The dot's tip: "by itself" only while the automation is on (D29: the journey's Generate runs), else press Generate.
-JOURNEY_DOT_TIP = ("Your journey's sentences are catching up with your newest list: a Generate brings them in by "
-                   "itself. Your journey opens meanwhile, with the sentences it has")
-JOURNEY_DOT_TIP_PRESS = ("Your journey's sentences are catching up with your newest list: press Generate to bring them "
-                         "in. Your journey opens meanwhile, with the sentences it has")
+JOURNEY_DOT_TIP = ("Your journey is catching up with your newest list by itself: when you open it, or after a few "
+                   "quiet minutes. It opens at once, with what it has")
+JOURNEY_DOT_TIP_PRESS = ("Your journey is catching up with your newest list: press Generate to bring it up to date. "
+                         "It opens meanwhile, with what it has")
 
 # The update: the bar's mark, the sheet, Needs you's cards.
 UPDATE_READY = "Update ready"
@@ -441,9 +441,9 @@ FOOT_KNOWN_REFUSED = {"update-staged": "Not synced: an update is waiting to inst
                       "failed": "Not synced: the sync with Anki couldn't be started (the log says why)"}
 WELLS = {"soon": "Soon", "goal": "Goal", "finished": "Finished"}
 WELL_SUBS = {"soon": "next in line", "goal": "someday · in no order", "finished": "newest first"}
-WELL_TIPS = {"soon": "Soon: drop it here and it comes up next in line",
-             "goal": "Goal: drop it here for someday, in no order",
-             "finished": "Finished: drop it here when you're done with it"}
+WELL_TIPS = {"soon": "Soon: next in line\n• Drop a row here",
+             "goal": "Goal: someday, in no order — it still counts\n• Drop a row here",
+             "finished": "Finished: what you're done with — its words leave your list\n• Drop a row here"}
 WELL_UNLIT_SPLIT = "Finished: a split's first part finishes with its last part, not on its own"
 WELL_UNLIT_MIX = "Finished: hato's mix never finishes, it keeps bringing new videos"
 WELLS_NAME = "Where it can go: {wells}"
@@ -847,7 +847,7 @@ CONFIRM_NO_TIP = "Leave everything as it is (Esc does the same)"
 
 # The frequency lists (from the Tk Frequency List Manager)
 FREQ_NAME = "Frequency lists"
-FREQ_TIP = "Add or remove general frequency lists (CSV): the report shows how common each word is in them"
+FREQ_TIP = "Add or remove general frequency lists (CSV): your journey shows how common each word is in them"
 FREQ_LIST_NAME = "Your frequency lists for this language"
 FREQ_LIST_TIP = ("Surasura already makes a frequency list from your own content. These general lists add a column, "
                  "to see how common each word is elsewhere")
@@ -1911,8 +1911,8 @@ HELP_TRY_FIX_TIP = "Settings, where it is set up"
 # the doors (§6.6) and the one-time hints (HC-3; §6.7)
 HINT_CARD_WAIT = "Cards wait: {reason}"
 HINT_AMBER = "A decision waits for you: press the amber circle"
-HINT_AUTO_GENERATE = "Your journey is catching up with your moves"
+HINT_AUTO_GENERATE = "Your journey is catching up by itself"
 HINT_WHY = {"first_card_wait": "Anki Miner makes cards only while Anki is open and free",
             "first_amber": "Amber means only you can decide something: the circle takes you to it",
-            "first_auto_generate": "After a move, your journey catches up by itself"}
+            "first_auto_generate": "After a move, new known words or a new file, your journey catches up by itself"}
 # --- end help cards

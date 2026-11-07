@@ -464,6 +464,20 @@ def window_screen(qapp, tmp_path_factory, name, writer="undo", **build):
             close_kept(win, services)
 
 
+def pointer_away(*views):
+    """The pointer parked off every window and the views told it left (`leaveEvent`: the row's hover, a stop's
+    *■ Stop*, the line's hover dropped): a press's count never holds a hover it didn't make — the one cursor is
+    wherever the last `QTest.mouseMove` left it, and a kept window keeps its hover between tests."""
+    from PyQt6.QtGui import QCursor
+    QCursor.setPos(-20000, -20000)
+    for v in views:
+        port = v.viewport() if hasattr(v, "viewport") else None
+        for w in (port, v):
+            if w is not None:
+                QApplication.sendEvent(w, QEvent(_E.Leave))
+    settle()
+
+
 def rest(ms=150):
     """The loop run for `ms` (workers' answers land: a view, a toast), then settled — between presses, unmeasured, or
     inside a measure after a press whose work lands from a worker."""

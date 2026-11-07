@@ -50,6 +50,7 @@ def _at_rest(screen, monkeypatch):
     win.show_tab("current")
     lst = lst_of(win)
     lst.verticalScrollBar().setValue(0)
+    wc.pointer_away(lst)                                           # its own pointer state, never a test before's
     order = keys_of(win)
     settle(150)
     yield
@@ -96,8 +97,10 @@ def part(lst, i, name):
 
 # --- R3: a move repaints the rows that changed ------------------------------------------------------------------- #
 def test_r3_a_nudge_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_list(screen):
-    """Alt+↓ on a row: it and the row under it trade places — those two repaint (and the keyboard ring with them, a
-    row's height at most more), never the list; outside it, only the toast and the bar's line."""
+    """Alt+↓ on a row: it and the row under it trade places — those two repaint, never the list; outside it, only
+    the toast and the bar's line. Both presses counted: the first one also turns the keyboard's ring on (its row
+    lifts and parts its neighbours — §3's hover: found.md F5's third row; the 8 px strip at the list's foot is the
+    toast's shadow coming over it), so it may reach one row above; the second, the ring already on, the pair alone."""
     seed, win, writer = screen
     lst = lst_of(win)
     i = _closed_row(lst, 3)
@@ -105,16 +108,29 @@ def test_r3_a_nudge_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_lis
     lst.setFocus()
     settle(100)
     saved = len(writer.saved)
+    with wc.measure(win, readers=[win.services.library]) as first:      # the first: the ring comes on with it
+        QTest.keyClick(lst, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)
+        if not wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3):
+            pytest.fail("the first Alt+↓ was never saved")
+        settle(150)
+    vp = wc.rect_in_window(lst.viewport())
+    band = _row_band(lst, i - 1, i + 1)                           # the pair, and the ring's one row above
+    assert first.union_in(vp) <= band.width() * band.height() + vp.width() * wc.STRIP_SLACK_PX * 2, first.report()
+    assert all(band.intersects(p.rect) or p.rect.height() <= 8 for p in first.paints if vp.contains(p.rect)),         first.report()
+    settle(600)                                                   # (its springs and its toast at rest)
+    i = lst.currentIndex().row()
+    saved = len(writer.saved)
     renders = lst.delegate.renders
     with wc.measure(win, readers=[win.services.library]) as w:
         QTest.keyClick(lst, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)
         assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3)
         settle(150)
     vp = wc.rect_in_window(lst.viewport())
-    band = _row_band(lst, i - 1, i + 1)                           # the pair, and one row's ring of slack above
+    j = lst.currentIndex().row()
+    band = _row_band(lst, min(i, j), max(i, j))                   # the pair
     in_list = [p for p in w.paints if vp.contains(p.rect)]
     assert w.union_in(vp) <= band.width() * band.height() + vp.width() * wc.STRIP_SLACK_PX * 2, w.report()
-    assert all(band.adjusted(0, 0, 0, 0).intersects(p.rect) or p.rect.height() <= 8 for p in in_list), w.report()
+    assert all(band.intersects(p.rect) or p.rect.height() <= 8 for p in in_list), w.report()
     outside = [p for p in w.paints if not vp.contains(p.rect) and not vp.intersects(p.rect)
                and not any(r.contains(p.rect) for r in _allowed_outside_the_list(win))]
     assert outside == [], (outside, w.report())
@@ -122,6 +138,35 @@ def test_r3_a_nudge_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_lis
     # (no view: the test's writer records a nudge without writing the stand-in store — the rows shown are the
     #  optimistic move's, which is what the learner sees at the press)
     assert w.builds == 0, w.report()
+
+
+def test_r4_down_moves_the_ring_repainting_only_its_two_rows_and_their_neighbours(screen):
+    """↓ with the keyboard's ring on: the ring leaves one row for the next — the row it left settles back and lets its
+    neighbours close, the row it reached lifts and parts its own (§3's hover: three rows while their springs run), so
+    those four rows repaint and nothing else; the two rows whose look changed drawn afresh at most, no view built. (Catalogue C09: found.md F7's
+    four-row paint is this, not waste: `theme.SPRINGS` neighbour-px 1.5.)"""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    i = _closed_row(lst, 3)
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    lst.setFocus()
+    settle(100)
+    QTest.keyClick(lst, Qt.Key.Key_Down)                          # the ring on, unmeasured
+    settle(600)
+    i = lst.currentIndex().row()
+    if not 1 <= i < lst.model().rowCount() - 2:
+        pytest.fail(f"the ring stands at row {i}: no room for the test's rows")
+    renders = lst.delegate.renders
+    with wc.measure(win, readers=[win.services.library]) as w:
+        QTest.keyClick(lst, Qt.Key.Key_Down)
+        settle(600)                                               # (both springs at rest)
+    if lst.currentIndex().row() != i + 1 or not w.painted:
+        pytest.fail(f"↓ didn't move the ring to the next row: {w.report()}")
+    vp = wc.rect_in_window(lst.viewport())
+    band = _row_band(lst, i - 1, i + 2)
+    assert w.paints_outside_rect(band, *_allowed_outside_the_list(win)) == [], w.report()
+    assert lst.delegate.renders - renders <= 2, w.report()        # the ring's two rows' pictures at most
+    assert w.builds == 0 and w.created == 0, w.report()
 
 
 def test_r3_a_drop_draws_afresh_only_the_rows_whose_place_changed(screen):
@@ -219,7 +264,6 @@ def test_r2_a_wheel_notch_paints_only_the_strip_that_came_into_view(screen):
 
 
 # --- R5: the ⋯ menu built once ------------------------------------------------------------------------------------- #
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found.md F4: each ⋯ open makes its submenus again (5 widgets)")
 def test_r5_the_rows_menu_opened_again_makes_no_widget(screen):
     """⋯ on a row, closed, then ⋯ on another: the list keeps one menu (C4) — the second open makes no widget and no
     native window."""
@@ -238,6 +282,32 @@ def test_r5_the_rows_menu_opened_again_makes_no_widget(screen):
         assert w.created == 0, w.report()
     finally:
         m.close()
+        settle(50)
+
+
+def test_r5_a_kept_menus_submenus_hold_only_this_opens_entries(screen):
+    """⋯ on a row, closed, and ⋯ on the same row again: the kept menu lends the same submenus back (R5), each emptied
+    as the menu hid — so each shows exactly the entries it showed the first time, never the last open's as well."""
+    seed, win, writer = screen
+    rs = win.page_widgets["current"].view_model.rows
+    at = win.mapToGlobal(QPoint(300, 300))
+
+    def shape(m):
+        return [(a.text(), [x.text() for x in a.menu().actions()] if a.menu() is not None else None)
+                for a in m.actions()]
+    row = next((r for r in rs[1:] if any(a.menu() is not None for a in win.items.menu(r, at).actions())), None)
+    win.items.last_menu.close()
+    settle(50)
+    if row is None:
+        pytest.fail("no row of the seed has a submenu in its ⋯")
+    first = shape(win.items.menu(row, at))
+    settle(50)
+    win.items.last_menu.close()
+    settle(50)
+    try:
+        assert shape(win.items.menu(row, at)) == first
+    finally:
+        win.items.last_menu.close()
         settle(50)
 
 

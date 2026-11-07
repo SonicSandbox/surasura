@@ -469,10 +469,7 @@ class FinishedActions(QObject):
         are picked, the picks' own (`picks_menu`)."""
         if row.key in self.lst.picked_rows and len(self.lst.picked_rows) > 1:
             return self.picks_menu(row, at)
-        m = QMenu(self.lst)
-        m.aboutToHide.connect(m.deleteLater)            # one menu per click, gone once it closes (L1 N7)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
+        m = drag.list_menu(self.lst, row.title)         # R5: the list's one menu, emptied as it hides (L1 N7)
         m.setAccessibleName(strings.FIN_MENU_NAME.format(title=row.title))
         for name, label, tip, ok, children in self.menu_entries(row):
             if name == "folder":                                    # --- W3.2 L3: Change cover… before Open its folder
@@ -482,7 +479,7 @@ class FinishedActions(QObject):
                 qcovers.add_cover_menu(m, row, writable, None if writable else strings.FIN_REFUSED_TIP.format(
                     reason=strings.READ_ONLY_REASONS.get(raw) or raw))
             if children is not None:
-                sub = m.addMenu(label)
+                sub = drag.sub_menu(m, label)
                 sub.setObjectName("rowmenu")
                 sub.setToolTipsVisible(True)
                 sub.menuAction().setToolTip(tip)

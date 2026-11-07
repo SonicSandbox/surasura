@@ -54,13 +54,17 @@ def test_a_choice_by_its_key_soon_lays_the_sort_screen_out_once_and_the_next_tit
     assert sum(w.layout_requests.values()) <= max(unit_asks, 1) * wc.PASS_SLACK, (unit_asks, w.report())
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="WC found-B B4: a Now press asks ~80 size hints, one forced pass of the screen asks 14")
 def test_a_choice_now_lays_the_screen_out_once_and_the_next_title_comes_up_in_one_pass(world):
     """Now (the right arrow) on the sort screen: the top title is placed through New arrivals and the next one comes up
-    on top; the press lays the screen out at most one pass (no row moved twice), and the view is built once."""
+    on top; the press lays the screen out as one pass does (no row moved twice; its at-once feedback and the view's
+    landing may come a turn apart), the view is built once, and nothing the screen covers is painted — the placement
+    lays Current's list out again under it, and the screen's ground is opaque (found-B B4: Current's list and the
+    whole screen over it were painted at every choice; 89 paints, 6.2 × the window. Its 78 hints also held the
+    screen's own opening, measured straight after it opened)."""
     _seed, win, writer = world()
     screen = open_sort(win)
+    unit = wc.one_pass(screen, win)                              # (the opening laid out and painted: unmeasured)
+    wc.rest(150)
     b0 = win.services.library.builds
     with wc.measure(win, readers=[win.services.library]) as w:
         press(screen, KEY_OF["now"])
@@ -68,11 +72,11 @@ def test_a_choice_now_lays_the_screen_out_once_and_the_next_title_comes_up_in_on
         wc.rest(150)
     if not (landed and w.painted and w.builds == 1):             # setup, not the rule: never an AssertionError here
         pytest.fail(f"the choice's work didn't land once inside the count: {w.report()}")
-    assert w.hints <= wc.one_pass(screen, win) * wc.PASS_SLACK, w.report()
+    assert w.painted_in(win.page_widgets["current"]) == 0, w.report()
+    assert w.hints <= unit * wc.PASS_SLACK, (unit, w.report())
     assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found-B B5: *Put the rest in…* makes its menu at each open")
 def test_put_the_rest_in_menu_opened_again_makes_no_widget(world):
     """*Put the rest in…* opened, closed and opened again: the second open makes no widget (R5)."""
     _seed, win, _writer = world()

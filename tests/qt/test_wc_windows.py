@@ -21,7 +21,7 @@ from tests.qt.test_frequency_lists_window import _open as _open_lists, ja_list  
 from tests.qt.test_frequency_lists_window import main as lists_main   # noqa: F401  (its own window, by its own name)
 from tests.qt.test_report_window import _press, main   # noqa: F401  (the window: the same one the Anki and confirm
 #                                                         tests open; one `main` here, so no import shadows another)
-from tests.qt.test_toast import JA, _up, clock, stage   # noqa: F401  (the toast's own fixtures)
+from tests.qt.test_toast import JA, ZH, _up, clock, stage   # noqa: F401  (the toast's own fixtures)
 
 
 def test_leaving_the_pictures_out_hides_them_making_no_widget(main):
@@ -62,6 +62,21 @@ def test_a_switch_toggled_in_the_anki_window_repaints_only_its_own_row(main, ank
         wc.rest(150)
 
 
+def test_a_toast_with_a_choice_shown_again_makes_no_widget(clock, stage):
+    """A toast with D14's choice (Undo and two buttons) shown, then another with as many buttons: the card's buttons
+    are made the first time a toast needs them and kept, so the second toast makes none (R5). (found.md F6: the ✓
+    *Finished* toast's +2 / +3 widgets were that first need; the six gone, the tray's emptied group's head.)"""
+    host = toast.ToastHost(stage)
+    choice = [("今すぐ", "tip", lambda: None), ("あとで", "tip", lambda: None)]
+    host.show(JA, undo=lambda: None, buttons=choice)
+    _up(host, clock)
+    with wc.measure(stage) as w:
+        host.show(ZH, undo=lambda: None, buttons=choice)
+        _up(host, clock)
+    assert w.created == 0 and w.deleted == 0, w.report()
+    assert [b.text() for b in host.card.buttons if not b.isHidden()][1:] == ["今すぐ", "あとで"], w.report()
+
+
 def test_an_undo_pressed_on_a_toast_repaints_the_toast_and_the_thing_it_undoes_alone(clock, stage):
     """An Undo pressed on a toast: the toast's card (with the shadow's reach, `shadow.margins('toast')`) and the one
     row the Undo puts back repaint, nothing else in the window; the put-back row is painted and the toast closes."""
@@ -86,7 +101,10 @@ def test_an_undo_pressed_on_a_toast_repaints_the_toast_and_the_thing_it_undoes_a
     assert w.paints_outside_rect(card, undone) == [], w.report()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found-B B7: each confirmation makes its card and its scrim again")
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="WC found-B B7: each confirmation makes its card and its scrim again — kept (Mado-WF): a card "
+                          "filled again for the window's next question broke one card = one question for the askers "
+                          "that hold theirs (Anki's Replace / Restore, Junban's follow-ups, the importers)")
 def test_confirm_asked_again_after_no_is_built_once_and_no_widget_is_made(second):
     """The confirmation card asked in a window, answered No (Esc), and asked again in that window: the second open
     reuses the card that was built, making no widget."""

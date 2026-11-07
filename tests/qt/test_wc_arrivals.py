@@ -46,6 +46,7 @@ def _at_rest(screen, monkeypatch):
     wc.home(monkeypatch, "arrivals")
     seed, win, writer = screen
     win.show_tab("current")
+    wc.pointer_away(win.page_widgets["current"].list)
     settle(200)
     yield
     if tray_of(win).isVisible():
@@ -202,11 +203,11 @@ def _tray_with_two_rows(seed, win):
     return rs
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="WC found-B B1: Down in the open tray repaints the whole tray (its list and its shadow)")
 def test_down_in_the_tray_repaints_only_the_two_rows_the_focus_moves_between(screen):
-    """Down in the open tray moves the focus from one row to the next: only those two rows are painted afresh,
-    nothing of the window outside them, and no view is built again."""
+    """Down in the open tray moves the focus from one row to the next: only those two rows are painted afresh (each
+    row's own section: the row and the spacing under it), nothing of the window outside them, and no view is built
+    again. (found-B B1 was the rows' places read through `part_rect`, whose `doItemsLayout` repainted the whole tray
+    inside the count — the menu key's ⋯ did it too.)"""
     seed, win, writer = screen
     rs = _tray_with_two_rows(seed, win)
     view = tray_of(win).view
@@ -215,7 +216,8 @@ def test_down_in_the_tray_repaints_only_the_two_rows_the_focus_moves_between(scr
     if view.currentIndex().row() != view.row_of(rs[0].key):
         pytest.fail("Tab didn't put the focus on the tray's first row")
     at = wc.rect_in_window(view.viewport()).topLeft()
-    moved = [rs[0].rect().translated(at), rs[1].rect().translated(at)]
+    rs[0].rect()                                                      # (scrolled to and laid out: unmeasured)
+    moved = [view.visualRect(view.model().index(view.row_of(r.key), 0)).translated(at) for r in rs[:2]]
     with wc.measure(win, readers=[win.services.library]) as w:
         QTest.keyClick(view, Qt.Key.Key_Down)
         stepped = wait_until(lambda: view.currentIndex().row() == view.row_of(rs[1].key), 3)
@@ -226,8 +228,6 @@ def test_down_in_the_tray_repaints_only_the_two_rows_the_focus_moves_between(scr
     assert w.builds == 0, w.report()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="WC found-B B2: each tray row's ⋯ open makes its menu again (a new QMenu per open)")
 def test_the_tray_row_menu_opened_again_makes_no_widget(screen):
     """⋯ on a tray row, closed, then ⋯ on another row: the second open makes no widget."""
     seed, win, writer = screen

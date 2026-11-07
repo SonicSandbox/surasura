@@ -29,6 +29,7 @@ def _at_rest(screen, monkeypatch):
     wc.home(monkeypatch, "header")
     seed, win, writer = screen
     win.show_tab("current")
+    wc.pointer_away(win.page_widgets["current"].list)
     wc.rest(200)
     yield
     wc.quiet(win)

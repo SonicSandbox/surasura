@@ -462,16 +462,19 @@ def test_open_its_folder_opens_the_arrivals_own_folder(world, monkeypatch):
     assert wait_until(lambda: opened == [above, want], 5) and calls(writer) == []
 
 
-def test_N1_after_its_show_is_greyed_while_none_of_its_show_is_in_current_and_N4_the_menu_goes_once_hidden(world):
+def test_N1_after_its_show_is_greyed_while_none_of_its_show_is_in_current_and_N4_the_menu_holds_nothing_once_hidden(world):
+    """N4, as R5 has it since 2026-11-06 (WC found-B B2): the tray keeps one menu — closed, it hides and lets its
+    entries go (nothing of the closed row's is left in it), and the next ⋯ opens the same menu, no new one."""
     seed, win, writer = world()
     open_tray(win)
     row = tray_rows(win)[0]                                           # a YouTube video: no part of it in Current
     menu = tray_of(win).menu(row.key)
     act = next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["after-show"][0])
     assert not act.isEnabled() and act.toolTip() == strings.TRAY_NO_SHOW
-    assert menu.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
     menu.close()
-    assert wait_until(lambda: sip.isdeleted(menu), 3)
+    assert wait_until(lambda: not menu.isVisible(), 3) and menu.actions() == []
+    assert not sip.isdeleted(menu) and tray_of(win).menu(tray_rows(win)[1].key) is menu
+    menu.close()
 
 
 def test_remove_asks_first_naming_the_count_esc_is_no_and_yes_removes_with_undo(world):

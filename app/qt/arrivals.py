@@ -47,7 +47,7 @@ from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize,
 from PyQt6.QtGui import (QAction, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QStandardItem,
                          QStandardItemModel)
 from PyQt6.QtWidgets import (QAbstractButton, QAbstractItemView, QApplication, QFrame, QHBoxLayout, QHeaderView,
-                             QLabel, QMenu, QSizePolicy, QStyledItemDelegate, QTableView, QToolButton, QToolTip,
+                             QLabel, QSizePolicy, QStyledItemDelegate, QTableView, QToolButton, QToolTip,
                              QVBoxLayout, QWidget)
 
 from app import theme
@@ -1664,13 +1664,15 @@ class ArrivalsTray(motion.Overlay):
         return [k for k in (self._target[1] if self._filling else self.model.keys) if not k.startswith(HEAD)]
 
     def part_rect(self, key, part="row"):
-        """Where a row's part is on the list's viewport (scrolled to first), or None off the list."""
+        """Where a row's part is on the list's viewport (scrolled to first), or None off the list. A layout still to come
+        is done first; a laid-out list is never laid out again (`doItemsLayout` repainted the whole tray: the menu
+        key's ⋯, WC found-B B1)."""
         row = self.view.row_of(key)
         if row < 0:
             return None
         idx = self.model.index(row, 0)
         self.view.scrollTo(idx)
-        self.view.doItemsLayout()
+        self.view.executeDelayedItemsLayout()
         return row_parts(self.view.visualRect(idx))[part]
 
     def tip(self, key, part):
@@ -2044,10 +2046,8 @@ class ArrivalsTray(motion.Overlay):
             writable = False
             raw = (moves.writer.reason() if moves is not None else None) or ""
             reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
-        m = QMenu(self.view)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
-        m.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        from app.qt import drag
+        m = drag.list_menu(self.view, "")                     # R5: the tray's one menu, emptied as it hides
         m.setAccessibleName(strings.TRAY_PICKS_MENU_NAME.format(n=n))
         for name, (label, tip) in strings.TRAY_PICKS_MENU.items():
             if name == "remove":
@@ -2187,10 +2187,8 @@ class ArrivalsTray(motion.Overlay):
             writable = False
             raw = (moves.writer.reason() if moves is not None else None) or ""
             reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
-        m = QMenu(self.view)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
-        m.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)         # N4: gone once hidden
+        from app.qt import drag
+        m = drag.list_menu(self.view, a.title)         # R5: the tray's one menu, kept and emptied as it hides (N4)
         m.setAccessibleName(strings.TRAY_MENU_NAME.format(title=a.title))
         for name, label, tip, ok in menu_entries(a, writable, reason, self._has_show(a)):
             if name == "folder":                                    # --- W3.2 L3: Change cover… after the moves

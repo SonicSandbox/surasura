@@ -647,7 +647,9 @@ SCHEMA_SQL = (
       in_learning_order INTEGER NOT NULL DEFAULT 1,
       UNIQUE (root_id, rel_key))""",
     "CREATE INDEX items_order ON items (tier, ord, id)",
-    "CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)",   # placement by folder (§12)
+    # placement by folder (§12, `_folder_last`: once a folder a command): without `ord`, so a moved row never rewrites
+    # it (R6: one index of four a move wrote for every row it placed)
+    "CREATE INDEX items_tier_folder ON items (tier, parent_folder)",
     "CREATE INDEX items_key ON items (rel_key)",                            # "is this file an item?" (§12)
     "CREATE INDEX items_missing ON items (size) WHERE availability = 'missing'",   # D2: a scoped sync's missing items
     "CREATE INDEX items_watched ON items (tier) WHERE watched != 0",        # the journey's stones (`STONES_EXIST_SQL`)
@@ -724,9 +726,12 @@ ADDED_INDEXES_SQL = (
     # R6: the items waiting for their subtitle (K5), which every take-in with a video reads (`_waiting_videos`) — without
     # it, a scan of every item (~10 ms at 20k) under the write lock each batch
     "CREATE INDEX IF NOT EXISTS items_waiting ON items (id) WHERE availability = 'waiting'",
+    # R6: the folder index without `ord` (SCHEMA_SQL's `items_tier_folder`): the old one, rewritten by every move
+    "CREATE INDEX IF NOT EXISTS items_tier_folder ON items (tier, parent_folder)",
+    "DROP INDEX IF EXISTS items_folder",
 )
 ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_available_size", "pairings_extracted",
-                 "items_waiting")
+                 "items_waiting", "items_tier_folder")
 # A4K-7 (alpha 4, Sonic 2026-10-28): each copy's content hash, kept for a look's check (b), which read and hashed every
 # copy of a new part's size (~56,000 files when 100 books came onto 60k parts). Made with the added indexes: an added
 # column (no row rewritten: NULL until a look fills it) and a trigger that forgets a hash whenever its row's file
@@ -2505,15 +2510,20 @@ class Store:
     def _key(self, item_id):
         return self.conn.execute("SELECT id, ord FROM items WHERE id = ?", (item_id,)).fetchone()
 
-    def _put(self, tier, ids, where, changed_in, anchor=None):
+    def _put(self, tier, ids, where, changed_in, anchor=None, in_tier=False):
         """Place `ids` (in order) contiguously in `tier` at `where` — ('after', id), ('before', id),
         ('top',) or ('end',) — touching only the rows that change: the placed items (tier, ord,
         `changed_in`) and, when the gap is spent, a local window re-spaced (ord only, §6.5). `anchor`: the anchor's
-        (id, ord) when the caller read it in the same transaction."""
+        (id, ord) when the caller read it in the same transaction. `in_tier`: every row is in `tier` already — its
+        tier isn't written (SQLite rewrites an index's entry for every column a SET names, the same value or not)."""
         keys, others = self._place_keys(tier, ids, where, anchor)
         cmd = self._cmd
-        self.conn.executemany("UPDATE items SET tier = ?, ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
-                              [(tier, k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
+        if in_tier:
+            self.conn.executemany("UPDATE items SET ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
+                                  [(k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
+        else:
+            self.conn.executemany("UPDATE items SET tier = ?, ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
+                                  [(tier, k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
         self._placed(tier, ids, others)
 
     def _placed(self, tier, ids, others):
@@ -2651,7 +2661,8 @@ class Store:
             change = self._change(cmd, "move")
             self._before(change, ordered, near=near)
             self._put(tier, block, where, cmd.version,
-                      (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None)
+                      (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None,
+                      in_tier=all(r[1] == tier for r in ordered))
             # --- P4.1 L2 (TF fix 8, G1.6-10): out of Finished by any path, its cards come back into the order ---
             self._back_in_order(cmd, change, [r[0] for r in ordered if r[1] == "graduated" and tier != "graduated"])
             # --- end P4.1 L2 ---

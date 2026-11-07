@@ -145,3 +145,29 @@ def test_junban_removed_reads_the_switch_as_off(lib, window, monkeypatch):
     assert app.__dict__.get("_replan") is None
     _move_in_window(app, store)
     assert app.replan_var.get() == ""
+
+
+def test_a_host_in_the_windows_process_shares_the_interpreter_every_millisecond_until_it_stops(monkeypatch):
+    """R6 (the timer probe above, 5–6 ms against 5): a Host in the window's own process (the suites', or one a helper
+    couldn't start for) runs its job's Python beside the window, and Python hands the lock between threads every 5 ms
+    by default. While one lives the lock changes hands every 1 ms (as the 3.0 window's process sets it); its stop puts
+    back what was there — and a setting someone else made meanwhile stays theirs."""
+    import sys
+    monkeypatch.setenv(replan_preview.IN_PROCESS_ENV, "1")
+    before = sys.getswitchinterval()
+    try:
+        sys.setswitchinterval(0.005)
+        host = replan_preview.open_host("ja")
+        other = replan_preview.open_host("ja")
+        assert sys.getswitchinterval() == pytest.approx(replan_preview.WINDOW_SWITCH_S)
+        host.stop()
+        host.stop()                                   # twice: counted once
+        assert sys.getswitchinterval() == pytest.approx(replan_preview.WINDOW_SWITCH_S), "the other still runs"
+        other.stop()
+        assert sys.getswitchinterval() == pytest.approx(0.005)
+        third = replan_preview.open_host("ja")
+        sys.setswitchinterval(0.002)                  # the window set its own meanwhile
+        third.stop()
+        assert sys.getswitchinterval() == pytest.approx(0.002)
+    finally:
+        sys.setswitchinterval(before)

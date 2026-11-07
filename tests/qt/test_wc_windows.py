@@ -133,6 +133,7 @@ def test_typing_in_what_happened_repaints_only_the_box_and_the_buttons_that_chan
         assert w.what.toPlainText() == "xy", w.what.toPlainText()
         assert m2.painted > 0, m2.report()
         box = wc.rect_in_window(w.what)
+        assert m2.union_in(box) > 0, m2.report()                            # the box did show the letter
         assert m2.union <= m2.union_in(box), m2.report()                    # every px painted lies on the box
     finally:
         w.what.setPlainText("")                                       # put back, unmeasured

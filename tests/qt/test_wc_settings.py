@@ -453,6 +453,7 @@ def test_r5_a_reveal_scrolls_the_page_to_the_row_washes_it_and_makes_no_widget(p
         page.scroll.verticalScrollBar().setValue(0)
         wc.settle()
         assert not _at_third(page, row)
+        levels.clear()                                               # the measured reveal's wash only
         with wc.measure(page) as w:
             assert page.reveal("known") is True
             wc.rest(150)

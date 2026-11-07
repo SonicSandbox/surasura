@@ -471,7 +471,7 @@ def test_r3_the_menus_soon_on_a_row_draws_afresh_only_the_rows_it_passes_and_wri
     assert w.paints_outside_rect(wc.rect_in_window(lst), *_allowed_outside_the_list(win)) == [], w.report()
 
 
-def test_r0_the_pointer_leaving_the_list_after_resting_on_a_row_repaints_only_that_rows_place(screen):
+def test_r0_the_pointer_leaving_the_list_after_resting_on_a_row_repaints_only_that_row_and_its_neighbours(screen):
     """The pointer rests on a row, then leaves the list: the hovered row repaints, with at most its two neighbours
     (the hover-neighbour spring releases them too) — no other row of the list, nothing outside it but the toast and
     the bar's line — and no row is drawn afresh. The paints are judged by where they fall (rows), not by how many

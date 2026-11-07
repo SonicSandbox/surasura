@@ -711,7 +711,9 @@ def _fetch(argv, plan):
         with open(sub, "w", encoding="utf-8") as f:
             f.write(spec.get("subtitle", "1\n00:00:01,000 --> 00:00:03,500\n今日はいい天気ですね\n"))
         if spec.get("outside"):
-            video = os.path.join(data["run_dir"], "..", "elsewhere.mp4")
+            video = os.path.join(data["run_dir"], "..", "elsewhere.mp4")    # a real file, outside its folder
+            with open(video, "w", encoding="utf-8") as f:
+                f.write("a video somewhere else")
         with open(os.path.join(folder, "fetch-1.json"), "w", encoding="utf-8") as f:
             json.dump({"schema": 1, "run_id": run_id, "video_file": video, "subtitle_file": sub, "sub_source": "manual",
                        "video_id": vid, "title": "a fetched video", "duration": 180,

@@ -85,7 +85,8 @@ def _made_two():
     return a
 
 
-def test_the_real_step_takes_a_deleted_card_off_the_row_with_nothing_to_mine():
+def test_the_real_step_takes_a_deleted_card_off_the_row_with_nothing_to_mine(monkeypatch):
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)     # Anki reachable here (a fake one)
     a = _made_two()
     steps = runner.Steps({"connect_enabled": True})
     anki = FakeAnki(still_there={KEPT_ID})
@@ -98,7 +99,8 @@ def test_the_real_step_takes_a_deleted_card_off_the_row_with_nothing_to_mine():
     assert steps.notes_gone("ja") == [] and anki.asked == 1, "once a run: prepare's look later asks Anki nothing"
 
 
-def test_a_look_anki_did_not_answer_is_asked_again_in_the_same_run():
+def test_a_look_anki_did_not_answer_is_asked_again_in_the_same_run(monkeypatch):
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
     a = _made_two()
     steps = runner.Steps({"connect_enabled": True})
     anki = FakeAnki(still_there=set(), down=1)
@@ -110,3 +112,40 @@ def test_a_look_anki_did_not_answer_is_asked_again_in_the_same_run():
     with c.store() as s:
         assert s.cards_of([a])[a] == [], "every card deleted: the row reads *No cards in Anki*"
     assert anki.asked == 2
+
+
+def test_a_run_whose_anki_is_closed_or_switched_off_looks_at_nothing(tmp_path):
+    # Anki's own state gates the look as it gates every Anki touch of a run (the adversary's MUST): never a request
+    # to Anki while it is closed, on another profile, or switched off for the run.
+    steps = LookingSteps(str(tmp_path), {"blocked": runner.ANKI_CLOSED})
+    with Ledger(str(tmp_path / "ledger.sqlite")) as ledger:
+        runner.run({}, ["ja"], steps=steps, ledger=ledger, sleep=lambda s: None, looks=3)
+    assert steps.looked == []
+
+
+def test_the_real_step_asks_anki_nothing_under_no_anki_sync():
+    # The suites' (and a developer's) SURASURA_NO_ANKI_SYNC: Anki is never reached, whatever the store holds.
+    a = _made_two()
+    steps = runner.Steps({"connect_enabled": True})
+    anki = FakeAnki(still_there=set())
+    steps._anki = lambda: anki
+    runner._gone_look(steps, "ja")
+    assert anki.asked == 0
+    with c.store() as s:
+        assert s.cards_of([a])[a] == [NOTE_ID, KEPT_ID]
+
+
+def test_anki_on_another_profile_marks_nothing_and_is_asked_again(monkeypatch):
+    # Anki switched to another profile between the look and its answer: nothing marked gone, and the language is
+    # not counted as looked — the next look this run asks again (the adversary's SHOULD).
+    monkeypatch.delenv("SURASURA_NO_ANKI_SYNC", raising=False)
+    a = _made_two()
+    answers = ["Anki is open on another profile", None]
+    monkeypatch.setattr(anki_session, "waiting", lambda url, settings: answers.pop(0) if answers else None)
+    steps = runner.Steps({"connect_enabled": True})
+    anki = FakeAnki(still_there={KEPT_ID})
+    steps._anki = lambda: anki
+    assert steps.notes_gone("ja") == []
+    with c.store() as s:
+        assert s.cards_of([a])[a] == [NOTE_ID, KEPT_ID]
+    assert steps.notes_gone("ja") == [NOTE_ID] and anki.asked == 2

@@ -708,6 +708,10 @@ def _gone_look(steps, lang):
     if look is None:
         return
     try:
+        # Anki's own state gates it as it gates every touch of Anki in a run (`SURASURA_NO_ANKI_SYNC`, Anki closed or
+        # busy, another profile, you reviewing); the battery doesn't: one read-only request (as an ask's, M-3)
+        if _blocked(steps, lang, None, asked=True) is not None:
+            return
         look(lang)
     except (Wait, Needs):
         pass                            # no store for this language, or it's busy: nothing to look at now
@@ -2216,8 +2220,8 @@ class Steps:
             ids = library.note_ids(store)
         gone = shelf.gone_notes(self._anki(), ids)
         if gone and anki_session.waiting(self.url, self.loaded) is not None:
-            gone = []
-        elif gone and len(gone) == len(ids) >= ALL_GONE_MIN:
+            return []                       # another profile now: nothing marked, asked again (never `looked`)
+        if gone and len(gone) == len(ids) >= ALL_GONE_MIN:
             log.warning("Connect's deleted-card check: Anki has none of the %d notes the library holds; nothing "
                         "marked gone", len(ids))
             gone = []

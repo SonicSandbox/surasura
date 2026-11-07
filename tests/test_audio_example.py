@@ -297,19 +297,19 @@ def test_i_plus_one_outranks_the_audio_preference():
     is an ordering guarantee, and an ordering is what a later edit would quietly change.
     """
     import inspect
-    from app import analyzer
+    from app import plan_rules
 
-    source = inspect.getsource(analyzer.main)
+    # F7: the pick is one rule, the analyzer's and the plan engine's (plan_rules.ContextPicker)
+    source = inspect.getsource(plan_rules.ContextPicker)
 
     # the guaranteed audio slot
-    assert "rank = (unknowns, src_audio_rank[ctx[5]], ctx[0], ctx[1])" in source
+    assert "key = (unknown, self.audio(src), short, long) + self.place(src) + (i,)" in source
 
-    # the ordinary selection, with the option on: unknown-count still leads (x[6], a set phrase still new in the
-    # sentence, comes right after it — it is part of how clean a sentence is, never an unknown of its own)
-    assert "key=lambda x: (x[2], x[6], src_audio_rank[x[5]], x[0], x[1], -x[4])" in source
-
-    # ...and with it off, the ranking is untouched
-    assert "evaluated_candidates.sort(key=lambda x: (x[2], x[6], x[0], x[1], -x[4]))" in source
+    # the ordinary selection: unknown-count leads (crowd, a set phrase still new in the sentence, comes right after
+    # it — part of how clean a sentence is, never an unknown of its own), the audio rank only with the option on, and
+    # every tie-break after (Finished first, recency, the nearest file)
+    assert ("return (unknown, crowd, self.audio(src) if self.ensure else 0, short, long, finished, -recent, seq, i)"
+            in source)
 
 
 def test_audio_preference_is_free_when_the_option_is_off(mixed_library):

@@ -351,16 +351,15 @@ def test_withdraw_drops_only_its_own_request():
 
 # --- the report then agrees with the plan (real Generates, RP-2's library) ----------------------------------------- #
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh"])
-def test_after_moves_the_journey_waits_for_a_reader_then_agrees_with_the_plan(case, monkeypatch):
-    """Moves in the library store → no Generate at the quiet time (Sonic 2026-11-06, A: owed only to moves, the real
-    rule on the real plan and store — `only_moved`), the journey catching up → a reader wants it (`want`) → one
-    background Generate through the controller → its lists equal the engine's for that order (shadow mode finds no
-    difference, writes no line), the window is handed the new plan, the journey is no longer pending — and every list
-    and the journey are byte for byte what a Generate of that order run at once writes (A changes when, never what)."""
+def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes_it(case, monkeypatch):
+    """Moves in the library store → at the quiet time the journey is redrawn from the plan (F7; Sonic 2026-11-06:
+    no Generate after a plain move — the real rule on the real plan and store, `moved_state`), never a Generate: the
+    plan stays the last Generate's (no new plan handed to the window), the journey is no longer pending, the next look
+    finds it drawn and asks nothing — and both lists, the journey and every list row's numbers and sentences are what
+    a Generate of that order run now writes (the redraw changes when, never what)."""
     import subprocess
     import sys
     from app import analyzer, library_store as ls, plan_engine
-    from app.path_utils import get_local_data_path
     from tests import plan_file_cases as cases
 
     root = h.root()
@@ -407,47 +406,56 @@ def test_after_moves_the_journey_waits_for_a_reader_then_agrees_with_the_plan(ca
         store.close()
 
     landed = []
-    compared = []
-    real_shadow = J.shadow
-
-    def spy(previous, plan, lists, stamp=False):
-        lists = lists() if callable(lists) else lists       # a7: the keeper hands the read itself
-        compared.append((previous is not None, bool(lists.get("priority"))))
-        return real_shadow(previous, plan, lists, stamp)
+    with open(os.path.join(root, "results", "library_frequency.json"), "rb") as f:
+        library_map = f.read()
     keeper = J.JourneyKeeper(controller, language, settings=lambda: settings, on_done=landed.append)
-    assert J.only_moved(settings, language), "the real rule: only the order moved since the plan"
-    J.shadow = spy
-    try:
-        keeper.changed("move")
-        keeper.changed("move")
-        assert h.until(keeper.catching_up, seconds=60), "owed only to moves: it waits for a reader"
-        time.sleep(FAST["journey_settle_s"] + 1.0)
-        assert keeper.asked == 0 and not landed and controller.state().state == G.CURRENT, "no Generate after the moves"
-        assert keeper.want("journey"), "a reader wants it: asked for at once"
-        assert h.until(lambda: landed, seconds=300), controller.state()
-    finally:
-        J.shadow = real_shadow
-    assert not keeper.catching_up()
-    assert compared == [(True, True)], "the keeper compared the new lists against a previous plan"
-    assert plan_engine.stands_aside(previous) is None
-    assert landed == [plan_path] and keeper.asked == 1
-    new = plan_engine.load(plan_path)
-    assert new.header["run_signature"] != previous.header["run_signature"]
-    assert new.header["order_free_signature"] == previous.header["order_free_signature"]
-    assert J.shadow(previous, new, J._lists()) == "", "the report agrees with the plan"
-    assert not os.path.exists(os.path.join(get_local_data_path(), "logs", J.SHADOW_LOG))
+    assert J.moved_state(settings, language) == "owed", "the real rule: only the order moved since the plan"
+    keeper.changed("move")
+    keeper.changed("move")
+    assert h.until(lambda: keeper.asked == 1 and controller._run is None
+                   and controller.state().state in (G.CURRENT, G.FAILED), seconds=120), controller.state()
+    assert controller.state().state == G.CURRENT
+    time.sleep(0.5)
+    assert landed == [], "the plan is the last Generate's still: nothing new for the window"
+    assert plan_engine.load(plan_path).header["run_signature"] == previous.header["run_signature"]
+    assert analyzer.redrawn_for(os.path.join(root, "results")) is not None
+    assert J.moved_state(settings, language) == "drawn"
+    from app import run_args
+    args = run_args.analyzer_args(settings, language)
+    assert analyzer.journey_is_current(args, language) is True, "redrawn for this order: current (S19)"
+    assert analyzer.journey_check(args, language) is True, "and so says surasura-cli's status"
+    with open(os.path.join(root, "results", "library_frequency.json"), "rb") as f:
+        assert f.read() == library_map, "the library map keeps the plan's numbering (Junban reads it through the order)"
+    # A redraw stopped part-way (its marker written first, its order never): never current, redrawn at the next look
+    marker = os.path.join(root, "results", analyzer.REDRAW_FILE)
+    with open(marker, encoding="utf-8") as f:
+        kept = f.read()
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"plan": previous.header["run_signature"], "run": None}, f)
+    assert analyzer.journey_is_current(args, language) is False
+    assert J.moved_state(settings, language) == "owed"
+    # ... and one another plan's redraw left (this order, but not this stamp's plan): never current either
+    drawn = json.loads(kept)
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"plan": "another plan's", "run": drawn["run"]}, f)
+    assert analyzer.journey_is_current(args, language) is False
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(kept)
     store = ls.open_store(language, data_dir, user_files)
     try:
         assert not store.journey_pending()
     finally:
         store.close()
+    keeper.changed("start")                                                 # a focus's look: drawn, nothing asked
+    time.sleep(FAST["journey_settle_s"] + 1.0)
+    assert keeper.asked == 1
     keeper.close()
 
-    # Byte for byte: the catch-up's outputs against a Generate of the same order run now (forced: today's at-once run)
+    # Against a Generate of the same order run now (forced: the redraw marker and the old stamp are its to replace)
     results = os.path.join(root, "results")
-    caught_up = _outputs(results)
+    redrawn = _outputs(results)
     assert {"priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json",
-            "reading_list_static.html"} <= set(caught_up)
+            "reading_list_static.html", analyzer.REDRAW_FILE} <= set(redrawn)
     os.environ["SURASURA_FORCE_RUN"] = "1"
     try:
         controller.request(language, settings=settings)
@@ -456,8 +464,33 @@ def test_after_moves_the_journey_waits_for_a_reader_then_agrees_with_the_plan(ca
         del os.environ["SURASURA_FORCE_RUN"]
     assert controller.state().state == G.CURRENT
     at_once = _outputs(results)
-    assert sorted(at_once) == sorted(caught_up)
-    assert [name for name in caught_up if caught_up[name] != at_once[name]] == [], "the same bytes, only later"
+    assert analyzer.REDRAW_FILE not in at_once, "a Generate removes the redraw's marker"
+    moved = sorted(name for name in at_once if redrawn.get(name) != at_once[name])
+    print("moved:", moved)
+    assert set(moved) <= set(REDRAW_OWN), moved
+    for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "reading_list_static.html",
+                 "file_statistics.json", "file_statistics.txt"):
+        assert redrawn[name] == at_once[name], name
+    _same_rows(json.loads(redrawn["word_stats.json"]), json.loads(at_once["word_stats.json"]), WORD_STATS_ORDERS)
+
+
+# What a redraw leaves as the last Generate wrote it (D1; F7): the plan and the run stamp (the Generate's own), the
+# library map (library_frequency.json: the plan's file numbers, which Junban reads through the order itself, and a word
+# under the cut-off's Score), the source table's order (sources.json: by path),
+# and what word_stats.json keeps in the walk's order (a word's last-met surface, its sources as a set). Everything a
+# row shows is the Generate's.
+REDRAW_OWN = ["plan.json.gz", "run_signature.txt", "library_frequency.json", "sources.json", "word_stats.json",
+              "file_words.json"]
+# word_stats.json's fields the order moves (the rest are the whole library's, or kept in the walk's order)
+WORD_STATS_ORDERS = ("score", "high_count", "low_count", "goal_count", "min_seq", "final_context_1", "final_src_1",
+                     "final_context_2", "final_src_2", "final_context_3", "final_src_3")
+
+
+def _same_rows(a, b, fields):
+    assert a.keys() == b.keys()
+    for key in a:
+        for field in fields:
+            assert a[key].get(field) == b[key].get(field), (key, field, a[key].get(field), b[key].get(field))
 
 
 # What a run writes that holds its own time or run: never compared (a run's stamp, logs, the plan file's header time)

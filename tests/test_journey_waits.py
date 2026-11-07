@@ -1,5 +1,7 @@
-"""A plain move waits for a reader (Sonic 2026-11-06, "into 3.0"; the generate-speed study's A + A2):
-`app/services/journey.py` (`only_moved`, the keeper's catch-up), `plan_engine.only_order`, the controller's check.
+"""A plain move is never a Generate (Sonic 2026-11-06, "into 3.0"; the generate-speed study's A + A2; since F7 the
+journey is redrawn from the plan instead — test_journey_redraw.py proves the redraw is the Generate's):
+`app/services/journey.py` (`only_moved` / `moved_state`, the keeper's redraw), `plan_engine.only_order`, the
+controller's check.
 
 What a wrong answer would cost a learner:
   * a Generate after every burst of moves (13 s at 2,000 files, 107 s at 20,000 here; ×2.2 on a laptop) that only
@@ -31,12 +33,12 @@ from tests.test_services_journey import _Launches, _generates
 SETTLE = {"journey_settle_s": 0.3, "journey_settle_battery_s": 0.3}
 
 
-def _keeper(only_moved=lambda: True, catch_up=30.0, pending=lambda: True, **kw):
+def _keeper(only_moved=lambda: True, pending=lambda: True, **kw):
     registry = JobRegistry()
     controller = GenerateController(registry, settle=0)
     launches = _Launches()
     keeper = J.JourneyKeeper(controller, "ja", settings=lambda: dict(SETTLE), pending=pending,
-                             battery=lambda: False, launcher=launches, only_moved=only_moved, catch_up=catch_up,
+                             battery=lambda: False, launcher=launches, only_moved=only_moved,
                              plan_path=os.path.join(h.root(), "no-plan.json.gz"), **kw)
     return keeper, controller, registry, launches
 
@@ -46,25 +48,34 @@ def _quiet(keeper):
     time.sleep(SETTLE["journey_settle_s"] + 0.6)
 
 
-# --- the keeper: moves wait, everything else Generates ------------------------------------------------------------- #
-def test_a_burst_of_moves_starts_no_generate_and_the_journey_is_catching_up():
-    # the work count of the move press: twenty moves, the quiet time over — zero Generates asked, none in the registry
-    keeper, _controller, registry, launches = _keeper()
+# --- the keeper: moves are redrawn from the plan (F7), everything else Generates --------------------------------- #
+def test_a_burst_of_moves_is_redrawn_from_the_plan_once_never_generated():
+    # F7: twenty moves, the quiet time over — one run, the redraw from the plan (the analyzer with --from-plan, quiet,
+    # never opening), never during the burst, no full Generate
+    keeper, controller, _registry, launches = _keeper()
     for _ in range(20):
         keeper.changed("store")
         time.sleep(0.01)
-    assert h.until(keeper.catching_up, seconds=5)
+    last = time.monotonic()
+    assert launches.count() == 0, "never during the burst"
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert launches.times[0] - last >= SETTLE["journey_settle_s"] - 0.05, "after the quiet time"
+    run = launches.runs[0]
+    assert run.quiet and J.REDRAW_ARG in run.argv and "--no-open" in run.argv
+    assert keeper.asked == 1 and not keeper.catching_up()
+    run.ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
     _quiet(keeper)
-    assert launches.count() == 0 and keeper.asked == 0 and _generates(registry) == []
+    assert launches.count() == 1, "one run for the burst"
     keeper.close()
-    assert not keeper.catching_up()
 
 
 def test_anything_but_moves_still_generates_after_the_quiet_time():
-    # a known word, a word list, a setting, a finish, a new file: the rule says no — the run comes as before
+    # a known word, a word list, a setting, a finish, a new file: the rule says no — a full Generate as before
     keeper, controller, _registry, launches = _keeper(only_moved=lambda: False)
     keeper.changed("store")
     assert h.until(lambda: launches.count() == 1, seconds=5)
+    assert J.REDRAW_ARG not in launches.runs[0].argv
     assert not keeper.catching_up() and keeper.asked == 1
     launches.runs[0].ended(0)
     assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
@@ -74,76 +85,46 @@ def test_anything_but_moves_still_generates_after_the_quiet_time():
 @pytest.mark.parametrize("reason", ["store", "replan: moves", "start", "level", "replan: replan-now: known"])
 def test_the_rule_decides_whatever_the_reason_is(reason):
     # every path into the keeper (a store change, the host's asks, the start's and a focus's look, the level) meets the
-    # one rule at the quiet time: moves only waits, anything else runs
-    for moves_only, runs in ((True, 0), (False, 1)):
+    # one rule at the quiet time: moves only are redrawn from the plan, anything else is a Generate
+    for moves_only, redraws in ((True, True), (False, False)):
         keeper, _controller, _registry, launches = _keeper(only_moved=lambda m=moves_only: m)
         keeper.changed(reason)
-        if runs:
-            assert h.until(lambda: launches.count() == 1, seconds=5)
-        else:
-            assert h.until(keeper.catching_up, seconds=5)
+        assert h.until(lambda: launches.count() == 1, seconds=5)
         _quiet(keeper)
-        assert launches.count() == runs, (reason, moves_only)
+        assert launches.count() == 1, (reason, moves_only)
+        assert (J.REDRAW_ARG in launches.runs[0].argv) is redraws, (reason, moves_only)
         keeper.close()
 
 
-def test_the_journey_is_generated_after_the_quiet_minutes_and_each_move_starts_them_again():
-    # the quiet timer: moves at 0, 0.4 and 0.8 s with a 1 s catch-up -> one run, no sooner than 1 s after the last
-    keeper, controller, _registry, launches = _keeper(catch_up=1.0)
-    for _ in range(3):
-        keeper.changed("store")
-        last = time.monotonic()
-        time.sleep(0.4)
-    assert launches.count() == 0, "never during the burst"
-    assert h.until(lambda: launches.count() == 1, seconds=5)
-    assert launches.times[0] - last >= 1.0 - 0.05, "the quiet minutes counted from the last move"
-    assert not keeper.catching_up() and keeper.asked == 1
-    launches.runs[0].ended(0)
-    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
-    time.sleep(1.5)
-    assert launches.count() == 1, "one run for the burst"
-    keeper.close()
-
-
-def test_a_focus_or_a_start_look_never_puts_the_catch_up_off():
-    # looks are not changes: a focus, a start's look or the host's ask never moves the catch-up's clock — the quiet
-    # minutes count from the move (a focus now and then must not keep the journey behind for ever)
-    keeper, _controller, _registry, launches = _keeper(catch_up=2.0)
-    keeper.changed("store")
-    moved, clock = time.monotonic(), keeper._moved_at
-    time.sleep(1.2)
-    for look in ("start", "replan: moves", "settled"):
+def test_a_journey_drawn_for_this_order_asks_nothing():
+    # F7: the redraw marker names this plan and this order (`moved_state` "drawn"): a later look — a focus, a start —
+    # finds nothing to do, no run of any kind
+    keeper, _controller, registry, launches = _keeper(only_moved=lambda: "drawn")
+    for look in ("start", "store"):
         keeper.changed(look)
-    assert keeper._moved_at == clock, "a look moved the clock"
-    keeper.changed("store")
-    assert keeper._moved_at > clock, "a move does"
-    keeper.close()
-    keeper, _controller, _registry, launches = _keeper(catch_up=2.0)
-    keeper.changed("store")
-    moved = time.monotonic()
-    time.sleep(1.2)
-    keeper.changed("start")                         # one focus, 1.2 s in: the run still comes ~2 s after the move
-    assert h.until(lambda: launches.count() == 1, seconds=6)
-    took = launches.times[0] - moved
-    assert 2.0 - 0.05 <= took < 3.0, f"counted from the move, not the look ({took:.2f} s; the look's would be 3.2)"
+        _quiet(keeper)
+    assert launches.count() == 0 and keeper.asked == 0 and _generates(registry) == []
+    assert not keeper.catching_up()
     keeper.close()
 
 
-def test_a_reader_gets_the_run_at_once_with_no_quiet_time_and_no_rest():
-    # Journey ↗ (or an export): want -> asked now, not after the settle, nor the rest after the last run
+def test_a_reader_gets_the_redraw_at_once_with_no_quiet_time_and_no_rest():
+    # Journey ↗ (or an export) a moment after a move: want -> the redraw asked now, not after the settle, nor the rest
+    # after the last run; until it is asked the journey is catching up (the reader waits for it: seconds)
     keeper, _controller, _registry, launches = _keeper()
-    keeper.changed("store")
-    assert h.until(keeper.catching_up, seconds=5)
     keeper._rest_until = time.monotonic() + 60       # a run just ended that took a minute
     keeper._settle = 30.0
+    keeper.changed("store")
     asked = time.monotonic()
-    assert keeper.want("journey") is True
+    assert keeper.want("journey") is False, "nothing to open without: the redraw is waited for"
+    assert keeper.catching_up() or launches.count() == 1
     assert h.until(lambda: launches.count() == 1, seconds=2)
-    assert launches.times[0] - asked < 1.0
+    assert launches.times[0] - asked < 1.0 and J.REDRAW_ARG in launches.runs[0].argv
     assert not keeper.catching_up()
-    assert keeper.want("journey") is False, "nothing owed any more: a second press asks nothing"
+    assert keeper.background_run() is False, "a redraw takes seconds: Journey ↗ waits for it"
+    assert keeper.want("journey") is False
     time.sleep(0.4)
-    assert launches.count() == 1
+    assert launches.count() == 1, "a second press asks nothing more"
     keeper.close()
 
 
@@ -151,7 +132,7 @@ def test_want_asks_nothing_when_nothing_is_owed():
     keeper, _controller, _registry, launches = _keeper()
     assert keeper.want("journey") is False
     time.sleep(0.3)
-    assert launches.count() == 0
+    assert launches.count() == 0 and not keeper.catching_up()
     keeper.close()
 
 
@@ -159,8 +140,8 @@ def test_a_reader_never_starts_a_run_beside_the_users_own():
     # a user's Generate in flight: the reader's wish waits for it; the look after it finds the journey current
     current = {"now": False}
     keeper, controller, registry, launches = _keeper(pending=lambda: not current["now"])
+    keeper._settle = 30.0
     keeper.changed("store")
-    assert h.until(keeper.catching_up, seconds=5)
     user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
     assert h.until(lambda: launches.count() == 1, seconds=5)
     assert keeper.want("journey") is False, "the user's run brings it: the reader waits for that one"
@@ -176,30 +157,32 @@ def test_a_reader_never_starts_a_run_beside_the_users_own():
 
 
 def test_with_the_background_generate_off_nothing_runs_by_itself():
-    # D29 off: no run after the quiet time, none after the minutes; a reader's wish asks nothing either
-    keeper, _controller, _registry, launches = _keeper(catch_up=0.5, enabled=lambda: False)
+    # D29 off: no run after the quiet time; a reader's wish asks nothing either, and no reader waits on it
+    keeper, _controller, _registry, launches = _keeper(enabled=lambda: False)
     keeper.changed("store")
     time.sleep(1.5)
     assert launches.count() == 0 and not keeper.catching_up()
     assert keeper.want("journey") is False
+    time.sleep(0.3)
+    assert launches.count() == 0 and not keeper.catching_up()
     keeper.close()
 
 
-def test_an_update_staged_holds_the_catch_up(monkeypatch):
+def test_an_update_staged_holds_the_redraw(monkeypatch):
     # the registry's hold while an update waits: the reader's run is queued, never started, until the hold ends
     keeper, controller, registry, launches = _keeper()
     held = {"now": True}
     registry.gate(lambda kind: "an update is waiting" if held["now"] and kind == "generate" else None)
+    keeper._settle = 30.0
     keeper.changed("store")
-    assert h.until(keeper.catching_up, seconds=5)
-    assert keeper.want("journey")
+    keeper.want("journey")
     assert h.until(lambda: keeper.asked == 1, seconds=5)
     time.sleep(0.5)
     assert launches.count() == 0, "held while the update waits"
     held["now"] = False
     registry.reschedule()
     assert h.until(lambda: launches.count() == 1, seconds=5)
-    assert launches.runs[0].quiet and "--no-open" in launches.runs[0].argv
+    assert launches.runs[0].quiet and "--no-open" in launches.runs[0].argv and J.REDRAW_ARG in launches.runs[0].argv
     keeper.close()
 
 
@@ -213,7 +196,7 @@ def test_a_report_only_re_render_is_never_put_off(monkeypatch):
     keeper, _controller, _registry, launches = _keeper(pending=None)
     keeper.changed("store")
     assert h.until(lambda: launches.count() == 1, seconds=5)
-    assert not keeper.catching_up()
+    assert not keeper.catching_up() and J.REDRAW_ARG not in launches.runs[0].argv, "a re-render, never a redraw"
     keeper.close()
 
 
@@ -430,24 +413,10 @@ def test_a_readers_wish_in_the_quiet_time_after_a_move_is_never_lost():
     keeper.close()
 
 
-def test_a_readers_wish_with_the_background_generate_switched_off_waits_on_nothing():
-    # R3: deferred, then D29 off: the reader's wish meets the switch — nothing runs, nothing is left owed
-    on = {"now": True}
-    keeper, _controller, _registry, launches = _keeper(enabled=lambda: on["now"])
-    keeper.changed("store")
-    assert h.until(keeper.catching_up, seconds=5)
-    on["now"] = False
-    assert keeper.want("journey") is True
-    assert h.until(lambda: not keeper.catching_up(), seconds=3), "no reader waits on a run that never comes"
-    assert launches.count() == 0
-    keeper.close()
-
-
 def test_a_users_generate_in_flight_takes_the_readers_wish_never_the_keeper():
-    # R1: deferred, then the user's Generate: Journey ↗ waits for that run as before (want says no)
+    # R1: a move, then the user's Generate: Journey ↗ waits for that run as before (want says no)
     keeper, controller, _registry, launches = _keeper()
     keeper.changed("store")
-    assert h.until(keeper.catching_up, seconds=5)
     user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
     assert h.until(lambda: launches.count() == 1, seconds=5)
     assert keeper.want("journey") is False and keeper.background_run() is False

@@ -1,5 +1,6 @@
-"""A2 (Sonic 2026-11-06, "into 3.0"; the generate-speed study): *Journey ↗* never waits for a background run, and the
-journey's readers ask for its catch-up (`Services.journey_brought`, `draw_journey`, `journey_for_reading`, the export).
+"""A2 (Sonic 2026-11-06, "into 3.0"; the generate-speed study): *Journey ↗* never waits for a background Generate, and
+the journey's readers ask for its catch-up (`Services.journey_brought`, `draw_journey`, `journey_for_reading`, the
+export). F7: after a plain move the catch-up is the keeper's redraw from the plan (seconds): a reader waits for it.
 
 What a wrong answer would cost a learner: *Journey ↗* frozen for up to a minute after a burst of moves (the old
 `JOURNEY_DRAW_WAIT` behind a background Generate); or a press that opens the journey and never brings its sentences in;
@@ -37,7 +38,7 @@ class _World:
         self.launches = _Launches()
         self.controller = GenerateController(JobRegistry(), settle=0)
         self.keeper = J.JourneyKeeper(self.controller, "ja", settings=lambda: dict(SETTLE), battery=lambda: False,
-                                      launcher=self.launches, only_moved=lambda: moves_only, catch_up=60.0,
+                                      launcher=self.launches, only_moved=lambda: moves_only,
                                       plan_path=os.path.join(h.root(), "no-plan.json.gz"))
         replan = SimpleNamespace(journey_wanted=self.keeper.want, journey_background=self.keeper.background_run,
                                  journey_catching_up=self.keeper.catching_up)
@@ -63,17 +64,25 @@ class _World:
         self.keeper.close()
 
 
-def test_after_moves_journey_opens_at_once_and_asks_the_catch_up(monkeypatch):
-    # the moves' journey waits for a reader: the press opens it as it is (the ● says it catches up) and asks the run
+def test_after_moves_journey_waits_for_the_redraw_then_opens(monkeypatch):
+    # F7: a press a moment after a move asks the keeper's redraw at once (no quiet time) and waits for it — seconds —
+    # so the journey it opens is the order's; never a run of the press's own
     w = _World(monkeypatch)
     try:
+        w.keeper._settings = lambda: dict(SETTLE, journey_settle_s=20.0)
         w.keeper.changed("store")
-        assert h.until(w.keeper.catching_up, seconds=5)
-        assert w.launches.count() == 0
-        answer, took = w.draw()
-        assert answer is None and took < 0.5, (answer, took)
-        assert h.until(lambda: w.launches.count() == 1, seconds=3), "the press asked the catch-up"
-        assert w.launches.runs[0].quiet and w.asked == 0, "the keeper's background run, not a run of the press's own"
+        done = []
+        t = threading.Thread(target=lambda: done.append(w.draw()), daemon=True)
+        t.start()
+        assert h.until(lambda: w.launches.count() == 1, seconds=3), "the press asked the redraw at once"
+        run = w.launches.runs[0]
+        assert run.quiet and J.REDRAW_ARG in run.argv and w.asked == 0, "the keeper's redraw, not the press's run"
+        time.sleep(0.4)
+        assert not done, "waits for the redraw"
+        w.halves.update(report=True)
+        run.ended(0)
+        t.join(5)
+        assert done and done[0][0] is None
     finally:
         w.close()
 
@@ -112,11 +121,10 @@ def test_journey_still_waits_for_the_users_own_generate(monkeypatch):
 
 
 def test_an_export_waits_for_the_catch_up_it_asked_for(monkeypatch):
-    # an export has no ● of its own: it asks the catch-up and writes once it has landed
+    # an export has no ● of its own: it writes once the redraw after the moves has landed
     w = _World(monkeypatch)
     try:
         w.keeper.changed("store")
-        assert h.until(w.keeper.catching_up, seconds=5)
         order = []
         monkeypatch.setattr("app.exports.frequency_list",
                             lambda language, fmt, dest: order.append(("export", w.launches.count(),
@@ -124,7 +132,8 @@ def test_an_export_waits_for_the_catch_up_it_asked_for(monkeypatch):
         t = threading.Thread(target=lambda: order.append(
             settings_live.run_export("frequency_list", "ja", "txt", "out.txt", w.services)), daemon=True)
         t.start()
-        assert h.until(lambda: w.launches.count() == 1, seconds=3), "the export asked the catch-up"
+        assert h.until(lambda: w.launches.count() == 1, seconds=3), "the redraw"
+        assert J.REDRAW_ARG in w.launches.runs[0].argv
         time.sleep(0.4)
         assert order == [], "and waits for it"
         w.halves.update(journey=True, report=True)
@@ -153,12 +162,12 @@ def test_before_the_duties_are_made_nothing_is_brought():
 
 
 def test_after_moves_and_the_users_generate_journey_waits_for_that_run(monkeypatch):
-    # R1: the journey was catching up, then the user pressed Generate: the press waits for that run (a6 #5), never
-    # opens the old journey at once
+    # R1: a move, then the user pressed Generate: the press waits for that run (a6 #5), never opens the old journey
+    # at once
     w = _World(monkeypatch)
     try:
+        w.keeper._settings = lambda: dict(SETTLE, journey_settle_s=20.0)
         w.keeper.changed("store")
-        assert h.until(w.keeper.catching_up, seconds=5)
         user = w.controller.request("ja", argv=["analyzer.py"], launcher=w.launches)
         assert h.until(lambda: w.launches.count() == 1, seconds=5)
         done = []

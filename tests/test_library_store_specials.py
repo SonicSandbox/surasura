@@ -8,8 +8,9 @@ Extras` and `… R2 Extras` (tiles 3 and 4).
 The rule is by folders only (`library_store.specials_home`): `<folder>/Extras` (`Specials`, `SPs`, `OVA`, `OAD`) joins
 the title of `<folder>`, when `<folder>` has one. Never by a name, so two shows that share words (the alpha's Peko Peko
 Vlog beside another channel) never join here; a season stays its own title; a specials folder with no title above it
-(`<show>/S01`, `<show>/S02`, `<show>/Specials`) stays `<show> Specials`. A store made before the rule is joined once,
-in the helper's run (`Store.join_specials`, a8's `join_same_shows` pattern).
+(`<show>/S01`, `<show>/S02`, `<show>/Specials`) stays `<show> Specials`. Titles made without the rule (a store made
+before it; specials that came in before their show) are joined in the helper's run (`Store.join_specials`, a8's
+`join_same_shows` way), each run reading only the titles changed since its last.
 
 What a wrong answer would cost: Code Geass as four tiles for good; or the join taking what the user said apart (his
 name, his split, his group, his *Keep apart*), moving an item, its order, its piece, its mark or its file, or a season
@@ -203,7 +204,8 @@ def test_his_store_joins_once_and_nothing_else_moves(language):
         assert _place(store) == before and store.token()[1] == order
         assert all(os.path.exists(os.path.join(data_dir, *r.split("/"))) for rs in rels.values() for r in rs)
         assert ids[f"{show} R1"] in store.search(extras_name)[0]
-        assert store.meta()[ls.SPECIALS_JOINED] == 1 and store.join_specials() == []
+        assert store.meta()[ls.SPECIALS_JOINED] == _top(store) and store.join_specials() == []
+        assert store.meta()[ls.SPECIALS_JOINED] == _top(store), "its own joins: never read again"
         later, more = _files(language, data_dir, src, {f"{show} R1/extras": [f"[Grp] {show} Picture Drama 22.25.srt"]})
         store.take_in(root, later)
         assert _work_of(store, more[f"{show} R1/extras"][0]) == ids[f"{show} R1"]
@@ -315,16 +317,148 @@ def test_the_join_goes_on_across_its_commands_and_marks_the_store_only_at_the_en
             return merge(self, *a, **k)
         monkeypatch.setattr(ls.Store, "_merge_into", watched)
         assert len(store.join_specials()) == 2
-        assert marks == [None, None] and store.meta()[ls.SPECIALS_JOINED] == 1
+        assert marks == [None, None] and store.meta()[ls.SPECIALS_JOINED] is not None
         assert len(_works(store)) == 2
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_an_empty_or_new_library_is_marked_at_once_with_nothing_to_join(language):
-    """A store with no specials title (an empty one, a new one): the first run marks it and joins nothing."""
+    """A store with no specials title (an empty one, a new one): the first run marks it and joins nothing; a mark
+    ahead of the store's feed (a store rebuilt under it) reads every title again."""
     store, _data_dir = _empty(language)
     with store:
-        assert store.meta()[ls.SPECIALS_JOINED] == 1
+        assert store.meta()[ls.SPECIALS_JOINED] == _top(store)
         with store._writing():
             store.conn.execute("DELETE FROM meta WHERE key = ?", (ls.SPECIALS_JOINED,))
-        assert store.join_specials() == [] and store.meta()[ls.SPECIALS_JOINED] == 1
+        assert store.join_specials() == [] and store.meta()[ls.SPECIALS_JOINED] == _top(store)
+        with store._writing():
+            store._set_meta({ls.SPECIALS_JOINED: _top(store) + 50})
+        assert store.join_specials() == [] and store.meta()[ls.SPECIALS_JOINED] == _top(store)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_specials_that_came_in_before_their_show_join_it_at_the_next_helper_run(language):
+    """Adversary #1: a look that found `<show>/Specials/` first (its show's copy locked, or the show downloaded
+    later) made `<show> Specials`; the show's own folder came in at a later look, a title of its own. The next helper
+    run (reading only the titles changed since its last) joins them; a run with nothing changed reads nothing."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[93]
+    with store:
+        root = store.add_source(src)
+        found, rels = _files(language, data_dir, src, {f"{show}/Specials": [f"{show} SP - 01.srt"]})
+        store.take_in(root, found, first=True)
+        assert store.join_specials() == []
+        sp = _work_of(store, rels[f"{show}/Specials"][0])
+        later, more = _files(language, data_dir, src, {show: [f"{show} - 01.srt", f"{show} - 02.srt"]})
+        store.take_in(root, later)
+        main = _work_of(store, more[show][0])
+        assert main != sp
+        assert store.join_specials() == [sp]
+        assert {_work_of(store, r) for rs in (rels, more) for f in rs for r in rs[f]} == {main}
+        assert _works(store)[main][0] == show
+        reads = []
+        execute = store.conn.execute
+        store.conn = _Counting(store.conn, reads)
+        try:
+            assert store.join_specials() == []
+        finally:
+            store.conn = store.conn.inner
+        assert not any("folder_key >" in q for q in reads), "nothing changed since: no title read"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_show_whose_title_was_merged_away_takes_its_specials_where_its_files_went(language):
+    """Adversary #2: the user made `<show>` part of `<other>` (*Same title as…*: `<show>`'s folder key went with it).
+    The helper's join and a new specials file give one answer: the title of `<show>/`'s files, `<other>`. A folder
+    whose title went the same way and whose files the user then split into two titles gives none (adversary #6):
+    its specials stay their own."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show, other, movies = names(language)[94], names(language)[95], names(language)[96]
+    with store:
+        root = store.add_source(src)
+        found, rels = _files(language, data_dir, src, {
+            show: [f"{show} - 01.srt"], f"{show}/Extras": [f"{show} SP - 01.srt"], other: [f"{other} - 01.srt"],
+            movies: [f"{movies} A.srt", f"{movies} B.srt"], f"{movies}/Extras": [f"{movies} SP - 01.srt"]})
+        _before_rule(store, root, found)
+        ids = {k: _work_of(store, v[0]) for k, v in rels.items()}
+        store.merge_works(ids[other], [ids[show], ids[movies]])
+        store.split_work([store.item_id(rels[movies][1])], f"{movies} B")
+        assert store.join_specials() == [ids[f"{show}/Extras"]]
+        assert _work_of(store, rels[f"{show}/Extras"][0]) == ids[other]
+        assert _work_of(store, rels[f"{movies}/Extras"][0]) == ids[f"{movies}/Extras"]
+        later, more = _files(language, data_dir, src, {f"{show}/OVA": [f"{show} OVA - 01.srt"],
+                                                      f"{movies}/OVA": [f"{movies} OVA - 01.srt"]})
+        store.take_in(root, later)
+        assert _work_of(store, more[f"{show}/OVA"][0]) == ids[other]
+        assert _work_of(store, more[f"{movies}/OVA"][0]) not in {_work_of(store, r) for r in rels[movies]}
+        assert len({_work_of(store, r) for r in rels[movies]}) == 2
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_no_id_or_matched_cover_travels_from_a_specials_title_to_its_show(language):
+    """Adversary #3: a specials title's AniList id is the OVA's entry, never the series': the join leaves the show
+    with its own id (none here) and its own cover, never the OVA's; a cover the user chose for the specials still
+    wins (nobody asked for the join)."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    a, b = names(language)[97], names(language)[98]
+    with store:
+        root = store.add_source(src)
+        found, rels = _files(language, data_dir, src, {a: [f"{a} - 01.srt"], f"{a}/OVA": [f"{a} OVA - 01.srt"],
+                                                      b: [f"{b} - 01.srt"], f"{b}/OVA": [f"{b} OVA - 01.srt"]})
+        _before_rule(store, root, found)
+        ids = {k: _work_of(store, v[0]) for k, v in rels.items()}
+        with store._command("test_ids", "sync") as cmd:
+            store.conn.execute("UPDATE works SET anilist_id = 999, cover_source = 'anilist', cover_ref = 'ova' "
+                               "WHERE id = ?", (ids[f"{a}/OVA"],))
+            store.conn.execute("UPDATE works SET cover_source = 'user', cover_ref = 'mine' WHERE id = ?",
+                               (ids[f"{b}/OVA"],))
+            cmd.touch()
+        assert sorted(store.join_specials()) == sorted([ids[f"{a}/OVA"], ids[f"{b}/OVA"]])
+        show_a, show_b = store._work_row(ids[a]), store._work_row(ids[b])
+        assert show_a["anilist_id"] is None and show_a["cover_source"] in (None, "generated")
+        assert show_b["cover_source"] == "user" and show_b["cover_ref"] == "mine"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_specials_title_of_another_type_stays_and_a_keep_apart_answer_moves_to_the_kept_title(language):
+    """Two types are two titles (a book's `Extras/` beside a show stays its own, `_media_family`); and a *Keep apart*
+    the user gave about the specials title and a third title is, after the join, about the show's title."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    a, b, c = names(language)[99], names(language)[100], names(language)[101]
+    with store:
+        root = store.add_source(src)
+        found, rels = _files(language, data_dir, src, {a: [f"{a} - 01.srt"], f"{a}/Extras": [f"{a} SP - 01.srt"],
+                                                      b: [f"{b} - 01.srt"], f"{b}/Extras": [f"{b} SP - 01.srt"],
+                                                      c: [f"{c} - 01.srt"]})
+        _before_rule(store, root, found)
+        ids = {k: _work_of(store, v[0]) for k, v in rels.items()}
+        with store._command("test_type", "sync") as cmd:
+            store.conn.execute("UPDATE works SET media_type = 'book', media_type_by = 'user' WHERE id = ?",
+                               (ids[f"{a}/Extras"],))
+            cmd.touch()
+        assert store.keep_apart([ids[f"{b}/Extras"], ids[c]])
+        assert store.join_specials() == [ids[f"{b}/Extras"]]
+        assert _work_of(store, rels[f"{a}/Extras"][0]) == ids[f"{a}/Extras"]
+        assert sorted([ids[b], ids[c]]) in json.loads(store.meta()["kept_apart"])
+
+
+class _Counting:
+    """The store's connection, every statement's text kept (what a run read)."""
+
+    def __init__(self, inner, out):
+        self.inner, self.out = inner, out
+
+    def execute(self, sql, *a):
+        self.out.append(sql)
+        return self.inner.execute(sql, *a)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def _top(store):
+    return store.conn.execute("SELECT MAX(feed_in) FROM works").fetchone()[0] or 0

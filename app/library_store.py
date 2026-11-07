@@ -186,7 +186,7 @@ SOON_LINE_NEW = 25               # a library 3.0 builds new: the Soon line after
 SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold` the stored keys were made with
 SHOWS_JOINED = "shows_joined"    # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
 JOIN_BATCH = 10                  # pairs a `join_same_shows` command joins: ~5 ms of write lock here (20k, a8 timed)
-SPECIALS_JOINED = "specials_joined"   # meta: 1 once the one-time join of specials folders' titles ran (`join_specials`)
+SPECIALS_JOINED = "specials_joined"   # meta: the newest title feed version `join_specials` read
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
 
@@ -2316,56 +2316,86 @@ class Store:
                     return gone
 
     def join_specials(self):
-        """Once, in the helper's run (Kura-G 2026-11-06, PROVISIONAL; `specials_home`'s rule for the titles a store
-        made before it): a specials folder's title (`<show> R1/extras` → `<show> R1 Extras`) becomes part of the title
-        of the folder it sits in — the laptop try's Code Geass, 4 titles in Goal for its 2 — by `_merge_into` as
-        `join_same_shows` does: the folder's title kept, the specials title's names among its titles (search finds
-        them), nobody's ask (`users_first`). Never a title the user named (`title_by_user`: his), split off (*Not part
-        of this title*: no folder key, never read here), kept apart, put in one group of his own with the other, of
-        another type, or one the ids say is another show; never when two titles hold the folder's key. No item, order,
-        piece, mark or file touched: only which title the items are; *Not part of this title* takes them apart again.
-        Done once a store (`meta.specials_joined`); new files take the rule as they come in (`_specials_work`). The
-        candidates are read once, outside the write lock; then commands of `JOIN_BATCH` pairs, each reading its pair's
-        rows again. Returns the ids that went."""
-        if self._meta().get(SPECIALS_JOINED):
+        """In the helper's run (Kura-G 2026-11-06, PROVISIONAL; `specials_home`'s rule for titles made without it): a
+        specials folder's title (`<show> R1/extras` → `<show> R1 Extras`) becomes part of the title of the folder it
+        sits in — the laptop try's Code Geass, 4 titles in Goal for its 2; or specials that came in before their show
+        (a look that found `<show>/Specials/` first) — that title found as a new file's is (`_specials_work`), joined
+        by `_merge_into` as `join_same_shows` does: the folder's title kept, the specials title's name among its
+        titles (search finds it; its folder's path not: `_work_by_record` would find the kept title by it before the
+        user's later split), nobody's ask (`users_first`). No id travels with it, nor a cover that isn't the user's (a
+        specials title's AniList id is the OVA's, never the series'). Never a title the user named (`title_by_user`),
+        split off (*Not part of this title*: no folder key), kept apart, put in one group of his own with the other, of
+        another type, or one the ids say is another show. No item, order, piece, mark or file touched: only which
+        title the items are; *Not part of this title* takes them apart again. Each run reads only the titles changed
+        since the last (`works.feed_in` after `meta.specials_joined`, the newest feed version read — its own last
+        command's, when nothing else wrote titles meanwhile; the first run, every title): a specials title, or a title
+        with specials folders' titles below its folder. The candidates are read outside the write lock; then commands
+        of `JOIN_BATCH`, each reading its rows again. Returns the ids that went."""
+        since = self._meta().get(SPECIALS_JOINED)
+        top = self.conn.execute("SELECT MAX(feed_in) FROM works").fetchone()[0] or 0
+        if since is not None and since == top:
             return []
-        homes = {}
-        for wid, fk in self.conn.execute("SELECT id, folder_key FROM works WHERE instr(folder_key, '/') > 0 "
-                                         "AND title_by_user = 0 ORDER BY id"):
-            home = specials_home(fk)
-            if home is not None:
-                homes[wid] = home
-        todo = sorted(homes.items())
-        gone = []
+        if since is not None and since > top:           # (a store rebuilt under it: every title again)
+            since = None
+        found = set()
+        for wid, fk in self.conn.execute("SELECT id, folder_key FROM works WHERE folder_key IS NOT NULL AND "
+                                         "feed_in > ? AND feed_in <= ?", (-1 if since is None else since, top)
+                                         ).fetchall():
+            if specials_home(fk) is not None:
+                found.add(wid)
+            for w, k in self.conn.execute("SELECT id, folder_key FROM works WHERE folder_key > ? AND folder_key < ?",
+                                          (fk + "/", fk + "0")):
+                if specials_home(k) == fk:
+                    found.add(w)
+        todo = sorted(found)
+        mark = self._meta().get(SPECIALS_JOINED)
+        gone, ours = [], set()
         for start in range(0, max(len(todo), 1), JOIN_BATCH):
             with self._command("join_specials", "sync") as cmd:
                 meta = self._meta()
-                if meta.get(SPECIALS_JOINED):
-                    return gone
+                if meta.get(SPECIALS_JOINED) != mark:
+                    return gone                         # another run read them meanwhile
                 apart = {tuple(sorted(p)) for p in json.loads(meta.get("kept_apart") or "[]")}
                 change = self._change(cmd, "join_specials")
-                for wid, home in todo[start:start + JOIN_BATCH]:
-                    row = self.conn.execute("SELECT folder_key, title_by_user FROM works WHERE id = ?",
-                                            (wid,)).fetchone()
-                    if row is None or row[1] or specials_home(row[0]) != home:
-                        continue                    # merged, renamed by the user or gone since the read
-                    keep = [w for (w,) in self.conn.execute("SELECT id FROM works WHERE folder_key = ?", (home,))]
-                    if len(keep) != 1 or keep[0] == wid:
+                for wid in todo[start:start + JOIN_BATCH]:
+                    keep = self._specials_home_of(wid)
+                    if keep is None:
                         continue
-                    ids = [keep[0], wid]
-                    if self._titles_apart(ids) or self._grouped_together(ids) or tuple(sorted(ids)) in apart or                             len({_media_family(self.media_type(w)[0]) for w in ids}) > 1:
+                    ids = [keep, wid]
+                    if self._titles_apart(ids) or self._grouped_together(ids) or tuple(sorted(ids)) in apart or \
+                            len({_media_family(self.media_type(w)[0]) for w in ids}) > 1:
                         continue
-                    if self._merge_into(cmd, change, keep[0], [wid], users_first=True):
-                        self._carry_apart(keep[0], [wid])
-                        titles = json.loads(self._work_row(keep[0])["titles"] or "[]")
-                        kept = [t for t in titles if path_key(t) != row[0]]
-                        if kept != titles:          # the extras folder's path goes (a new file's title never holds
-                            # it): a look's record naming that path would find this title before his later split
-                            self._set_work_fields(cmd, change, keep[0], {"titles": _dumps(kept)})
+                    w = self._work_row(wid)
+                    mine = {c: None for c in ("anilist_id", "tmdb_id", "youtube_channel") if w[c] is not None}
+                    if w["cover_source"] not in (None, "generated", "user") and not w["cover_locked"]:
+                        mine["cover_source"] = None
+                    if mine:
+                        self._set_work_fields(cmd, change, wid, mine)
+                    if self._merge_into(cmd, change, keep, [wid], users_first=True):
+                        self._carry_apart(keep, [wid])
+                        titles = json.loads(self._work_row(keep)["titles"] or "[]")
+                        kept = [t for t in titles if path_key(t) != w["folder_key"]]
+                        if kept != titles:
+                            self._set_work_fields(cmd, change, keep, {"titles": _dumps(kept)})
                         gone.append(wid)
+                        ours.add(keep)
                 if start + JOIN_BATCH >= len(todo):
-                    self._set_meta({SPECIALS_JOINED: 1})
-                    return gone
+                    since_top = {w for (w,) in self.conn.execute("SELECT id FROM works WHERE feed_in > ?", (top,))}
+                    self._set_meta({SPECIALS_JOINED: cmd.version if ours and since_top <= ours else top})
+                    return gone                         # (its own joins never read again; anyone else's are)
+
+    def _specials_home_of(self, wid):
+        """`join_specials`' title for the specials title `wid`, as it is now: the title of the folder its folder sits
+        in, found as a new file of it would find it (`_specials_work`, from one of its files in that folder), or None
+        (gone, the user's name, no folder key, no specials folder, no title above it, or itself)."""
+        w = self._work_row(wid)
+        if w is None or w["title_by_user"] or w["folder_key"] is None or specials_home(w["folder_key"]) is None:
+            return None
+        for (rel,) in self.conn.execute("SELECT rel_path FROM items WHERE work_id = ? ORDER BY id", (wid,)):
+            if folder_key_of(rel) == w["folder_key"]:
+                keep = self._specials_work(rel)
+                return keep if keep != wid else None
+        return None
 
     def _grouped_together(self, work_ids):
         """Do two of these titles' items share a group (a piece of kind 'group')? The user's own answer."""
@@ -3397,7 +3427,7 @@ class Store:
 
     def _specials_work(self, rel, cache=None):
         """A specials folder's title (`specials_home`, Kura-G, PROVISIONAL): the title of the folder it sits in — the
-        work holding that folder's key (this command's, from `cache`), else the work of the files directly in it — so
+        work holding that folder's key (this command's, from `cache`), else the ONE title of the files directly in it — so
         `<show> R1/extras/`'s picture dramas are R1's parts, one title. Only by the folders, never by a name: two shows
         sharing words never join here. None (a title of its own, `<show> Extras`, as before) when that folder has no
         title: `<show>/S01`, `<show>/S02` and `<show>/Specials` with nothing in `<show>/` itself. The folder above is
@@ -3409,13 +3439,13 @@ class Store:
         if cache is not None and hk in cache:
             return cache[hk]
         row = self.conn.execute("SELECT id FROM works WHERE folder_key = ? ORDER BY id LIMIT 1", (hk,)).fetchone()
-        if row is None:
-            base = path_key(_rel_dir(_rel_dir(_strip(rel)))) + "/"
-            row = self.conn.execute(
-                "SELECT work_id FROM items WHERE rel_key > ? AND rel_key < ? AND work_id IS NOT NULL "
-                "AND instr(substr(rel_key, ?), '/') = 0 ORDER BY ord DESC LIMIT 1",
-                (base, base[:-1] + "0", len(base) + 1)).fetchone()
-        return row[0] if row else None
+        if row is not None:
+            return row[0]
+        base = path_key(_rel_dir(_rel_dir(_strip(rel)))) + "/"      # its title merged away: its files' one title
+        found = self.conn.execute(
+            "SELECT DISTINCT work_id FROM items WHERE rel_key > ? AND rel_key < ? AND work_id IS NOT NULL "
+            "AND instr(substr(rel_key, ?), '/') = 0 LIMIT 2", (base, base[:-1] + "0", len(base) + 1)).fetchall()
+        return found[0][0] if len(found) == 1 else None         # (two: the user's split — none of them)
 
     def _same_show_folder(self, fk, rel, cmd):
         """A new show folder's title when no title holds its folder key and none of the files beside it has one (3.0.1

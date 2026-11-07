@@ -881,7 +881,7 @@ class Ticket:
     `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
     `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
     __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left",
-                 "marks", "rides")
+                 "marks", "rides", "why")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -895,6 +895,21 @@ class Ticket:
         self.left = None
         self.marks = None                            # a8: {file id: watched} its command marks (painted ahead)
         self.rides = False                           # a Finished choice the setting made: undone with its drop
+        self.why = None                              # help cards: what Surasura did more than the press said (a Cause)
+
+
+def mines_why(lines, place):
+    """*it mines itself*'s cause (help cards §5.2: the toast's *Why?*), or None when the place makes no cards."""
+    if place == 0 or not mines_itself(lines, place):
+        return None
+    from app.services import causes
+    return causes.Cause(strings.WHY_MINES, None, "cards")
+
+
+def done_why(kind):
+    """L6.3's cause (help cards §5.2): what the last Done did more than the press said — a fixed rule, no time."""
+    from app.services import causes
+    return causes.Cause(strings.WHY_DONE[kind], None, "stones")
 
 
 def _tell(ticket, event):
@@ -1890,6 +1905,7 @@ class DragController(QObject):
             (strings.DRAG_PLACED_MINES if mines_itself(new.lines, place) else strings.DRAG_PLACED).format(
                 title=d.title, n=place + 1)
         ticket = Ticket(text, keys=(d.key,), ids=d.ids)
+        ticket.why = mines_why(new.lines, place)
         self._end(d, repaint=False)
         self.held = None
         self.lst.landing = d.key
@@ -1986,7 +2002,7 @@ class DragController(QObject):
         else:
             self._finish(d.title, d.ids, keys)
 
-    def _finish(self, title, ids, keys=(), many=False, text=None):
+    def _finish(self, title, ids, keys=(), many=False, text=None, why=None):
         """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) as Settings' *When you finish
         something* says (`finish_choice`). `text`: the toast's words (a template with `{title}`; L6.3's for a finish by
         itself). finish-pending: the drop and *Leave its new cards out* each a press until the host's re-order for it
@@ -1996,6 +2012,7 @@ class DragController(QObject):
         if how == "out":
             template = strings.FINISHED_OUT.get(template, template)
         ticket = Ticket(template.format(title=title), keys, ids)
+        ticket.why = why
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False,
                       anki=on_bar) is None:
             return None
@@ -2130,7 +2147,7 @@ class DragController(QObject):
         ticket.toast = True
         self.toasted = ticket
         self._showing = (ticket,)                    # what this toast stands for (`_toast_shown`, as it shows)
-        self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons)
+        self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons, why=ticket.why)
 
     # --- round 8 row 45: a write's toast reads *· saving…* while it waits (one rule, wherever the toast shows) --- #
     def _toast_shown(self):
@@ -2764,7 +2781,8 @@ class DragController(QObject):
         base = self.base()
         if base is not None and any(r.key == row.key for r in base.rows):
             self._ahead(without(base, row.key, FINISHED), gone=(row.key, FINISHED))
-        self._finish(row.title, ids_of(row), (row.key,), text=text)
+        self._finish(row.title, ids_of(row), (row.key,), text=text,
+                     why=done_why("finish") if text == strings.DONE_FINISHED else None)
 
     def _by_itself(self, row, verdict):
         """L6.3: what Surasura does by itself once every file of `row` is watched (`when_done`'s "finish" or "join"),
@@ -2775,7 +2793,9 @@ class DragController(QObject):
             return
         _kind, pieces, ahead, ids, line = verdict
         text = (strings.DONE_JOINED if ahead else strings.DONE_CAME_UP).format(line=line)   # ahead: a Current part
-        self._give(Ticket(text, (row.key,), ids), lambda t: self.writer.join(pieces, label=t, ahead=ahead))
+        ticket = Ticket(text, (row.key,), ids)
+        ticket.why = done_why("joined" if ahead else "came_up")
+        self._give(ticket, lambda t: self.writer.join(pieces, label=t, ahead=ahead))
 
     def _ask_again(self, view, row, verdict):
         """Alpha 9 (M1): an offer made only because AniList hasn't answered yet (`airing.PENDING`, *Still asking*) is
@@ -2914,6 +2934,7 @@ class DragController(QObject):
                 title=row.title, n=place + 1)
         ids = ids_of(row)
         ticket = Ticket(text, (row.key,), ids)
+        ticket.why = mines_why(new.lines, place)
         self._ahead(new)
         if land == row.tier and getattr(row, "soon_from", None) is None:
             self._give(ticket, lambda t: self.writer.nudge(ids, "up" if step < 0 else "down", label=t))

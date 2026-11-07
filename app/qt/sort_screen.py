@@ -714,10 +714,19 @@ class SortScreen(QWidget):
                                 lambda: self.finish("done"), self)
         self.btn_done.setProperty("kind", "primary")
         foot.addWidget(self.btn_done)
+        self.btn_tour = None                    # help cards (§6.6): setup's last page — Done, then the tour
+        if self.door == "setup":
+            self.btn_tour = _button(S.SORT_TOUR, S.SORT_TOUR_TIP, self.done_then_tour, self)
+            self.btn_tour.setProperty("kind", "link")
         for b in self.findChildren(QPushButton):
             b.installEventFilter(self)
         box.addSpacing(_px(12))
         box.addLayout(foot)
+        if self.btn_tour is not None:
+            under = QHBoxLayout()
+            under.addStretch(1)
+            under.addWidget(self.btn_tour)
+            box.addLayout(under)
 
     # --- room (Mado-P: nothing cut off at any window size) ------------------------------------------------------- #
     def resizeEvent(self, event):
@@ -1170,6 +1179,15 @@ class SortScreen(QWidget):
         else:
             self._flash(what)
             self.choose(what)
+
+    def done_then_tour(self):
+        """*See what Surasura does by itself* (help cards §6.6): Done, and the tour opens once the window is up — on the
+        loop's next turn, after the sort screen has gone (never over it)."""
+        win = self.win
+        self.finish("done")
+        opener = getattr(win, "open_tour", None)
+        if opener is not None:
+            QTimer.singleShot(0, opener)
 
     def finish(self, how="done"):
         win = self.win

@@ -345,6 +345,12 @@ def test_the_question_mark_and_the_gear_open_settings_at_the_level_and_close_the
     _rare_by_hand(world)
     _open(world)
     getattr(world.d.pop, door).click()
+    if door == "help":
+        # help cards (P15): the ? opens Level's help card; its *Open its settings* reaches the level, one press on
+        card = world.win._help_card
+        assert card.isVisible() and card.card_id == "level" and not world.d.pop.isVisible() and asked == []
+        card.settings.click()
+        assert not card.isVisible()
     assert asked == ["level"] and not world.d.pop.isVisible()
 
 

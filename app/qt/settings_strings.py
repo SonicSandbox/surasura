@@ -752,6 +752,10 @@ PRACTICE_THEN = ("Then, to start a round:\n"
 # A7 (Sonic, 2026-10-30: the row's words no longer than *Download covers*'): what leaves and how to start, behind its ?
 PRACTICE_HELP = "?"
 PRACTICE_HELP_NAME = "About Piyo"
+PRACTICE_HELP_CLICK = "<br>• Click: its help card"
+# help cards (§6.6): the tour's door under *Run things by themselves*
+HELP_TOUR_DOOR = "Show me what runs by itself"
+HELP_TOUR_DOOR_TIP = "A short tour of what Surasura does by itself, one card each, with a Try it where one is safe"
 PRACTICE_LEAVES = ("<b>What leaves:</b> your AI app runs Surasura on this computer. What Surasura tells it (your known "
                    "words, your list's next words, lines from your library, what you kept from past rounds) goes to "
                    "that AI's company, as anything you type there does. Nothing else leaves.")

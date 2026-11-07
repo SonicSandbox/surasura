@@ -10,13 +10,15 @@ one the seed still has, or lands its own).
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QRect
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QWidget
 
+from app.qt import strings
 from tests.qt import work_counts as wc
 from tests.qt.conftest import wait_until
 from tests.qt.test_arrivals import _arrive, open_tray, tray_of, tray_rows
-from tests.qt.test_drag import settle
+from tests.qt.test_drag import calls, settle
 
 
 @pytest.fixture(scope="module")
@@ -44,6 +46,7 @@ def _at_rest(screen, monkeypatch):
     wc.home(monkeypatch, "arrivals")
     seed, win, writer = screen
     win.show_tab("current")
+    wc.pointer_away(win.page_widgets["current"].list)
     settle(200)
     yield
     if tray_of(win).isVisible():
@@ -136,3 +139,108 @@ def test_finished_on_a_watched_arrival_repaints_the_tray_and_its_toast_never_cur
     tabs = wc.rect_in_window(win.findChild(QWidget, "tabbar"))   # Finished's count: one more
     assert w.paints_outside_rect(tray, wc.rect_in_window(win.arrivals_inset), toast, bar, tabs) == [], w.report()
     assert w.builds == 1, w.report()
+
+
+def test_goal_from_the_row_menu_takes_the_arrival_off_the_tray_and_draws_no_row_of_current_afresh(screen):
+    """⋯ › *Goal* on a tray row: the row leaves the tray for Goal (someday, in no order) — the tray repaints where it
+    stood, the inset's count, the toast and the bar's line; no row of Current drawn afresh, nothing else of the window
+    repainted, one view built."""
+    seed, win, writer = screen
+    open_tray(win)
+    settle(200)
+    lst = win.page_widgets["current"].list
+    row = tray_rows(win)[0]
+    n = len(tray_rows(win))
+    renders = lst.delegate.renders
+    menu = tray_of(win).menu(row.key)
+    act = next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["goal"][0])
+    tray = _with_shadow(win, tray_of(win))
+    before = len(calls(writer, "place"))
+    b0 = win.services.library.builds
+    try:
+        with wc.measure(win, readers=[win.services.library]) as w:
+            act.trigger()
+            assert wait_until(lambda: len(tray_rows(win)) == n - 1 and win.services.library.builds > b0
+                              and win.moves.tickets == [], 5)
+            settle(200)
+    finally:
+        menu.close()
+    toast = wc.rect_in_window(win.toasts.card).adjusted(-48, -48, 48, 48)
+    bar = QRect(0, wc.rect_in_window(win.dock).top() - 24, win.width(), win.height())
+    assert calls(writer, "place")[before:] == [("place", list(row.arrival.item_ids), {"where": "goal"})], w.report()
+    assert lst.delegate.renders == renders, w.report()
+    assert w.paints_outside_rect(tray, wc.rect_in_window(win.arrivals_inset), toast, bar) == [], w.report()
+    assert w.builds == 1, w.report()
+
+
+# Arrivals the two-row tests land when the file's earlier tests have taken the seed's off the kept window's tray.
+_MORE = (("薬屋のひとりごと", "2026-10-17T08:00:00Z"), ("ダンジョン飯", "2026-10-17T09:00:00Z"))
+
+
+def _tray_with_two_rows(seed, win):
+    """The tray opened with two rows or more, landing our own arrivals first (unmeasured) when fewer are left. A
+    setup that can't be met fails the test (`pytest.fail`, not an AssertionError: a strict xfail's reason must be its
+    waste, never its setup)."""
+    for title, added in _MORE:
+        open_tray(win)
+        settle(200)
+        if len(tray_rows(win)) >= 2:
+            return tray_rows(win)
+        tray_of(win).close()
+        settle(100)
+        count = win.arrivals_inset.count
+        _arrive(seed, title=title, added=added)
+        if not wait_until(lambda: win.arrivals_inset.count == count + 1, 5):
+            pytest.fail(f"the arrival {title} never landed")
+        settle(200)
+    open_tray(win)
+    settle(200)
+    rs = tray_rows(win)
+    if len(rs) < 2:
+        pytest.fail(f"the tray shows {len(rs)} rows, two needed")
+    return rs
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="WC found-B B1: Down in the open tray repaints the whole tray (its list and its shadow)")
+def test_down_in_the_tray_repaints_only_the_two_rows_the_focus_moves_between(screen):
+    """Down in the open tray moves the focus from one row to the next: only those two rows are painted afresh,
+    nothing of the window outside them, and no view is built again."""
+    seed, win, writer = screen
+    rs = _tray_with_two_rows(seed, win)
+    view = tray_of(win).view
+    view.setFocus(Qt.FocusReason.TabFocusReason)                      # Tab into the list: its first row
+    QApplication.processEvents()
+    if view.currentIndex().row() != view.row_of(rs[0].key):
+        pytest.fail("Tab didn't put the focus on the tray's first row")
+    at = wc.rect_in_window(view.viewport()).topLeft()
+    moved = [rs[0].rect().translated(at), rs[1].rect().translated(at)]
+    with wc.measure(win, readers=[win.services.library]) as w:
+        QTest.keyClick(view, Qt.Key.Key_Down)
+        stepped = wait_until(lambda: view.currentIndex().row() == view.row_of(rs[1].key), 3)
+        settle(200)
+    if not stepped or not w.painted:
+        pytest.fail(f"Down didn't step to the next row and paint it: {w.report()}")
+    assert w.paints_outside_rect(*moved) == [], w.report()
+    assert w.builds == 0, w.report()
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError,
+                   reason="WC found-B B2: each tray row's ⋯ open makes its menu again (a new QMenu per open)")
+def test_the_tray_row_menu_opened_again_makes_no_widget(screen):
+    """⋯ on a tray row, closed, then ⋯ on another row: the second open makes no widget."""
+    seed, win, writer = screen
+    rs = _tray_with_two_rows(seed, win)
+    tray = tray_of(win)
+    first = tray.menu(rs[0].key)
+    settle(50)
+    first.close()
+    settle(50)
+    with wc.measure(win, readers=[win.services.library]) as w:
+        m = tray.menu(rs[1].key)
+        settle(50)
+    try:
+        assert w.created == 0, w.report()
+    finally:
+        m.close()
+        settle(50)

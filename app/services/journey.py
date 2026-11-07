@@ -483,6 +483,8 @@ class JourneyKeeper:
             argv = run_args.analyzer_args(settings, self.language, opens=False) + [generate_module.PROGRESS_FLAG,
                                                                                   REDRAW_ARG]
         # Outside the lock: the controller tells its listeners from inside `request`.
+        # (the window's controller labels the keeper's runs *Journey: updating sentences…* — a redraw's too: no Generate
+        # in the bar's words)
         run = self.controller.request(self.language, settings=settings, argv=argv, quiet=True, settle=0,
                                       launcher=self._launcher)
         with self._lock:

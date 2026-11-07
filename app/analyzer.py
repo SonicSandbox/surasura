@@ -4395,15 +4395,14 @@ def aside_files(language, schedule):
     """W-1: the library's set-aside files (`library_store.sets_aside`) — Finished (W-1b), and watched episodes while
     *Keep studying watched episodes* is off — from a
     schedule read with them (`Store.schedule(with_aside=True)`, `read_only_schedule(with_aside=True)`, in the same
-    transaction as the list): [(abs_path, source_type, finish rank)], for the run signature's "reference" and
-    "finished" parts. Never counted, their text is the name tables' evidence, 例文's sentences and — Finished only, its
-    finish rank set (0: the last finished), a watched episode's None — example sentences (F7). [] with none (JSON
-    mode, no store)."""
+    transaction as the list): [(abs_path, source_type, rank)], for the run signature's "reference" and "finished"
+    parts. Never counted, their text is the name tables' evidence, 例文's sentences and example sentences (F7: ranked,
+    0 first — the watched episodes set aside, then Finished, the newest first). [] with none (JSON mode, no store)."""
     ls = _library_store()
     if ls is None or not schedule:
         return []
     data_dir = get_data_path(language)
-    out, finished = [], []
+    out, finished, watched = [], [], []
     for n, entry in enumerate(schedule.get(ls.ASIDE) or ()):
         rel = str(entry.get("physical_path") or "")
         if rel.startswith("./"):
@@ -4411,10 +4410,14 @@ def aside_files(language, schedule):
         out.append([os.path.join(data_dir, rel), entry.get("source_type"), None])
         if isinstance(entry, dict) and "finished_at" in entry:
             finished.append((str(entry["finished_at"] or ""), n))
-    # F7: Finished content is a sentence source, the newest finished first among equally easy sentences — its finish
-    # rank (0: finished last; a tie, one finish of a whole show, the later in Finished's own order first; *Earlier*
-    # last). A watched episode set aside has none.
-    for rank, (_at, n) in enumerate(sorted(finished, reverse=True)):
+        else:
+            watched.append((out[-1][0], n))
+    # F7: what the learner has watched is a sentence source, the most recent first among equally easy sentences — its
+    # rank: a watched episode set aside first (the one being studied now; the store keeps no time it was watched, so
+    # by path among them: Sonic 2026-11-06, the lead's ruling), then Finished, the newest finished first (a tie, one
+    # finish of a whole show, the later in Finished's own order first; *Earlier* last). One rank each, 0 the first.
+    ranked = [n for _path, n in sorted(watched)] + [n for _at, n in sorted(finished, reverse=True)]
+    for rank, n in enumerate(ranked):
         out[n][2] = rank
     return [tuple(entry) for entry in out]
 
@@ -6168,11 +6171,12 @@ def main():
 
     # --- Finished content: example sentences, never counts (F7; Sonic 2026-11-06) ------------------------------ #
     # A line the learner has already watched or read is a good example ("finished would be more valuable. Then
-    # recent."): each list row keeps up to FINISHED_POOL of its sentences from Finished content — the easiest first,
-    # the newest finished first among equally easy ones — beside its shortlist, and the pick takes them first among
-    # sentences of equal ease. Read as the walk reads a sentence (the same word states, rare compounds as their
-    # parts, a word living inside its set phrase no example of it), sentences over the hard cap left out; never a
-    # count, a score, a tier, a first sentence or a plan use. A watched episode set aside is not Finished: not read.
+    # recent."; Sonic, 2026-11-06: a watched episode "as if finished"): each list row keeps up to FINISHED_POOL of its
+    # sentences from what was watched — the set-aside watched episodes and Finished content, ranked by `aside_files`
+    # — the easiest first, then the higher ranked, beside its shortlist, and the pick takes them first among sentences
+    # of equal ease. Read as the walk reads a sentence (the same word states, rare compounds as their parts, a word
+    # living inside its set phrase no example of it), sentences over the hard cap left out; never a count, a score, a
+    # tier, a first sentence or a plan use.
     # Each sentence's place: (its finish rank — NOT_FINISHED for counted content —, the study place of its file).
     src_place = [(plan_rules.NOT_FINISHED, i + 1) for i in range(len(source_list))]
     _listed_rows = {key for key, entry in word_stats.items() if entry["total_count"] >= floor_count}

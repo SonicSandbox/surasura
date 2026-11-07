@@ -6,11 +6,11 @@ What these prove, with Generate run as the dashboard starts it (`analyzer.py`, i
     unless the spread can't fill it — is the same in any order of the library (RP-2's orders A, B and D, Japanese and
     Chinese); only which of them a row shows is the order's (tests/test_plan_engine.py: the re-pick is each order's
     Generate);
-  - Finished content is a sentence source and never a count: with a show Finished, rows show its lines (their Src a
-    Finished file), and every count the list shows is what it is with the same show set aside as watched — which is
-    no sentence source (Sonic named Finished);
-  - among equally easy sentences, Finished first, the newest finished first — and finishing in another order is
-    another run (the signature's "finished" part);
+  - what the learner watched is a sentence source and never a count: with a show Finished, rows show its lines (their
+    Src a Finished file), and every count the list shows is what it is with the same show set aside as watched —
+    which lends its lines too (Sonic 2026-11-06: a watched episode "as if finished");
+  - among equally easy sentences, a set-aside watched episode first, then Finished, the newest finished first — and
+    finishing in another order is another run (the signature's "finished" part);
   - the shortlist's spread: a word met in one file keeps every good sentence it has there (no cap starves it);
   - the redraw from the plan (`--from-plan`) falls through to a Generate whenever more than the order moved.
 
@@ -99,9 +99,10 @@ def test_a_word_met_in_one_file_keeps_every_good_sentence_it_has(tmp_path):
 # 2. Finished content: a source, never a count
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_a_finished_show_lends_its_lines_and_counts_for_nothing(language):
-    # why: Sonic, 2026-11-06 — "pulling sentences from finished content ... finished would be more valuable"; a line
-    # already watched is a better example, but a Finished show is reference: never a use on the list
+def test_a_finished_or_watched_show_lends_its_lines_and_counts_for_nothing(language):
+    # why: Sonic, 2026-11-06 — "pulling sentences from finished content ... finished would be more valuable", and a
+    # watched episode "as if finished"; a line already watched is a better example, but both are reference: never a use
+    # on the list
     root = os.environ["SURASURA_TEST_ROOT"]
     store, paths, ids = _shows(language)
     show_a = [ids[f"A{n}"] for n in (1, 2, 3)]
@@ -117,17 +118,17 @@ def test_a_finished_show_lends_its_lines_and_counts_for_nothing(language):
 
     assert [{c: r[c] for c in COUNTS} for r in finished] == [{c: r[c] for c in COUNTS} for r in watched], \
         "every count the same: a Finished show is never a use"
-    from_finished = [r["Word"] for r in finished if any(src in a_rel for _c, src in _contexts(r))]
-    assert from_finished, "some rows show a Finished line"
-    assert not any(src in a_rel for r in watched for _c, src in _contexts(r)), "a watched episode lends none"
-    assert not any(src in a_rel for r in finished for _c, src in _contexts(r)[:1]), "never Context 1"
+    for lists, what in ((finished, "Finished"), (watched, "watched")):
+        assert any(src in a_rel for r in lists for _c, src in _contexts(r)), f"some rows show a {what} line"
+        assert not any(src in a_rel for r in lists for _c, src in _contexts(r)[:1]), "never Context 1"
 
 
 def _tiny(language="ja"):
-    """NOW: one file holding 灯台 once; two shows to finish, each with one line for 灯台 as easy as the other's (short,
-    no other unknown word): -> (store, {name: item id})."""
+    """NOW: one file holding 灯台 once, and one to mark watched; two shows to finish; each with one line for 灯台 as easy
+    as the others' (short, no other unknown word): -> (store, {name: item id})."""
     data_dir, user_files_dir = roots(language)
     files = {"HighPriority/now.txt": "灯台を見た。",
+             "HighPriority/watched.txt": "灯台さ。",
              f"{ls.GRADUATED_FOLDER}/一/a.txt": "灯台だ。",
              f"{ls.GRADUATED_FOLDER}/二/b.txt": "灯台か。"}
     for rel, text in files.items():
@@ -160,8 +161,13 @@ def test_among_equally_easy_lines_the_newest_finished_comes_first():
     store.finish([a])
     raw, said = _generate(root, "ja", said=True)
     assert "reusing existing results" not in said, "finishing in another order is another run"
-    row = next(r for r in _rows(raw) if r["Word"] == "灯台")
+    row = next(r for r in _rows(_generate(root, "ja")) if r["Word"] == "灯台")
     assert [c for c, _s in _contexts(row)] == ["灯台を見た。", "灯台だ。", "灯台か。"], _contexts(row)
+    # A NOW episode marked watched (set aside: Keep studying watched episodes is off) leads them: it is what the
+    # learner is studying now (the store keeps no time it was watched: ahead of every Finished one)
+    assert store.set_watched([ids["HighPriority/watched.txt"]]) is not None
+    row = next(r for r in _rows(_generate(root, "ja")) if r["Word"] == "灯台")
+    assert [c for c, _s in _contexts(row)] == ["灯台を見た。", "灯台さ。", "灯台だ。"], _contexts(row)
     store.close()
 
 
@@ -177,6 +183,8 @@ def test_the_signature_holds_the_finished_files_in_their_finish_order(tmp_path):
                                                         (files[2], "text", None)])
     two = analyzer.run_signature_parts("ja", [], args, [(files[0], "text", 0), (files[1], "text", 1),
                                                         (files[2], "text", None)])
+    # (a set-aside file with no rank is one aside_files never makes now — every set-aside file is ranked — but the
+    # part reads only the ranked ones)
     assert one["reference"] == two["reference"], "the same files set aside"
     assert len(one["finished"]) == 2 and one["finished"] == two["finished"][::-1]
     assert plan_rules.signature_digest(one) != plan_rules.signature_digest(two)

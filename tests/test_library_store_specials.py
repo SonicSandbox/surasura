@@ -462,3 +462,22 @@ class _Counting:
 
 def _top(store):
     return store.conn.execute("SELECT MAX(feed_in) FROM works").fetchone()[0] or 0
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_show_folder_joining_its_shows_title_takes_its_specials_with_it_in_the_same_sync(language):
+    """`<show>!` is a title; a 2.x tier's `<show>/` and its `Specials/` are found by one sync. `<show>/` joins the one
+    title of its show (item 12, `_same_show_folder`), and its specials go where it went — read from the command's own
+    answer for `<show>/`, since no title holds that folder key and its files have no title yet inside the command."""
+    store, data_dir = _empty(language)
+    src = _source_root()
+    show = names(language)[102]
+    with store:
+        root = store.add_source(src)
+        found, rels = _files(language, data_dir, src, {f"{show}!": [f"{show} - 01.srt"]})
+        store.take_in(root, found, first=True)
+        bang = _work_of(store, rels[f"{show}!"][0])
+        touch(data_dir, f"HighPriority/{show}/{show} - 02.srt")
+        touch(data_dir, f"HighPriority/{show}/Specials/{show} SP - 01.srt")
+        added = store.sync_disk()["added"]
+        assert len(added) == 2 and {store.item(i)["work_id"] for i in added} == {bang}

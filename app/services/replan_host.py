@@ -44,6 +44,10 @@ import time
 from app.services.automation import Worker
 
 LABEL = "Re-ordering Anki's new cards"     # the `replan` job's words (the bar, the update's list: `updater.REPLAN_ROW`)
+WHY_MOVED = "You moved something in your library: Anki's order follows"     # the job's *Why:* (help cards, §5.1)
+WHY_CATCH_UP = "Surasura opened: Anki's order catches up with your library"
+WHY_AFTER_GENERATE = "Generate ended: Anki's order follows your new list"
+WHY = {"poke": WHY_MOVED, "catch_up": WHY_CATCH_UP, "after_generate": WHY_AFTER_GENERATE}
 HOLDING = ("downloading", "waiting", "ready")  # the update service's states while it holds the children
 BUSY_LOOK = 0.05                           # at quit, how often the host is asked whether it still works
 
@@ -140,6 +144,8 @@ class ReplanHost:
         self._quitting = False              # the quit was asked (`close()`, at the call): nothing opens from here
         self._closed = False
         self._settle_until = 0.0            # monotonic: a move told until then may still be settling (`settling`)
+        self._trigger = None                # (call, wall time) of the newest call handed to the host: its write's
+                                            # *Why:* (help cards), used once by the `replan` job it starts
         self.worker = Worker("replan-host")
         self.opened = 0                     # hosts opened (tests)
 
@@ -237,6 +243,8 @@ class ReplanHost:
             host = self._open()
             if host is None:
                 return
+        with self._lock:
+            self._trigger = (call, time.time())
         getattr(host, call)()
 
     def _open(self):
@@ -342,7 +350,11 @@ class ReplanHost:
             if ended is not None and ended is not True:
                 ended.finish(ok=True)
             return
-        job = self.registry.record("replan", LABEL, automatic=True, on_quit="wait")
+        from app.services import causes
+        with self._lock:
+            trigger, self._trigger = self._trigger, None
+        cause = causes.Cause(WHY[trigger[0]], trigger[1], "junban") if trigger and trigger[0] in WHY else None
+        job = self.registry.record("replan", LABEL, automatic=True, on_quit="wait", cause=cause)
         with self._lock:
             mine = self._job is True and gen == self._gen
             if mine:

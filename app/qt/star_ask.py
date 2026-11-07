@@ -58,19 +58,20 @@ class StarAsk:
     def _star(self):
         qpress.open(self.win, settings_strings.STAR_URL, key="star:github")
 
+    def _hints(self):
+        """The window's one-time hints' helper (help cards WP6): its wait rule and its `hints_seen` reader."""
+        hints = getattr(self.win, "hints", None)
+        if hints is None:
+            from app.qt import hints as hints_module
+            hints = self.win.__dict__.setdefault("_star_hints", hints_module.Hints(self.win)) \
+                if hasattr(self.win, "__dict__") else hints_module.Hints(self.win)
+        return hints
+
     def _blocked(self):
-        services = getattr(self.win, "services", None)
-        setup = getattr(services, "setup_open", None)
-        toasts = getattr(self.win, "toasts", None)
-        sorting = self.win.__dict__.get("_sort_screen") if hasattr(self.win, "__dict__") else None
-        minimized = getattr(self.win, "isMinimized", None)
-        return (toasts is None or bool(getattr(toasts, "dragging", False)) or bool(getattr(toasts, "alive", False))
-                or (setup is not None and setup.is_set()) or sorting is not None
-                or (minimized is not None and minimized()))
+        return self._hints().blocked()
 
     def _list(self):
-        value = self.win.services.settings.get().get("hints_seen")
-        return [h for h in value if isinstance(h, str)] if isinstance(value, (list, tuple)) else []
+        return self._hints().seen_list()
 
     def _seen(self):
         try:

@@ -316,11 +316,10 @@ class FinishedPage(Page):
 
     def __init__(self, tooltips=None, language="ja", parent=None):
         super().__init__("finished", strings.FINISHED_HEADING, tooltips, language, parent)
-        self.help = QLabel(strings.FINISHED_HELP, self)
-        self.help.setObjectName("helpmark")
+        from app.qt import help_card                # help cards (§6.4): the ? is a press now — Finished's card
+        self.help = help_card.help_mark("finished", self)
         self.help.setToolTip(strings.FINISHED_HELP_TIP)
         self.help.setAccessibleName(strings.FINISHED_HELP_NAME)
-        self.help.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.head_row.insertWidget(1, self.help)
         # --- W3.2 Q4: what the rows ask for, handed to Finished's actions (`app/qt/finished.py`); until a hook is set,
         # nothing is written. The importer's button shows once its hook is set (a window with a writer).

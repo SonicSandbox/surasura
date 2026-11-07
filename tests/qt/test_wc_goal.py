@@ -61,3 +61,61 @@ def test_ctrl_a_on_the_goal_sheet_picks_every_tile_and_repaints_the_tiles_and_no
     finally:
         sheet.clear_picks()
         wc.rest(50)
+
+
+def test_ctrl_click_on_a_goal_tile_repaints_that_tile_alone(world):
+    """Goal's sheet: a Ctrl+click picks one tile; that tile repaints and no other tile, nor anything else in the
+    window, is painted (no window repainted whole)."""
+    _seed, win, _w = world()
+    sheet = open_sheet(win)
+    wc.rest(150)
+    pk = [t for t in sheet.order if sheet.pickable(t.work)]
+    assert len(pk) >= 2, [t.work.title for t in sheet.order]
+    tile = pk[0]
+    rect = wc.rect_in_window(tile).adjusted(-wc.STRIP_SLACK_PX, -wc.STRIP_SLACK_PX,
+                                            wc.STRIP_SLACK_PX, wc.STRIP_SLACK_PX)
+    try:
+        with wc.measure(win, readers=[win.services.library]) as w:
+            QTest.mouseClick(tile, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier,
+                             QPoint(tile.width() // 2, tile.height() // 3))
+        assert sheet.picks == {tile.work.key}, w.report()
+        assert w.painted_in(tile) > 0, w.report()
+        assert all(w.painted_in(t) == 0 for t in pk[1:]), w.report()
+        assert w.paints_outside_rect(rect) == [], w.report()
+    finally:
+        sheet.clear_picks()
+        wc.rest(50)
+
+
+# --- R5: the tile's ⋯ menu built once ------------------------------------------------------------------------------ #
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found-C C1: a Goal tile's ⋯ menu is made at each open")
+def test_r5_a_tiles_menu_opened_again_makes_no_widget(world):
+    """A tile's ⋯, opened, closed, opened again: the second open shows the menu the first built and makes no widget;
+    no view is built."""
+    _seed, win, _w = world()
+    try:
+        sheet = open_sheet(win)
+    except AssertionError as e:                                        # setup: never the xfail's AssertionError
+        pytest.fail(f"setup: Goal's sheet didn't open: {e}")
+    wc.rest(150)
+    tile = next(t for t in sheet.order if sheet.pickable(t.work))
+    m = None
+    try:
+        with wc.measure(win, readers=[win.services.library]) as w1:
+            m = sheet.menu(tile)
+            wc.rest(100)
+        if not m.isVisible():
+            pytest.fail(f"the first open showed no menu: {w1.report()}")
+        m.close()
+        wc.rest(100)
+        with wc.measure(win, readers=[win.services.library]) as w:
+            m = sheet.menu(tile)
+            wc.rest(100)
+        if not m.isVisible():
+            pytest.fail(f"the second open showed no menu: {w.report()}")
+        assert w.created == 0, w.report()
+        assert w.builds == 0, w.report()
+    finally:
+        if m is not None:
+            m.close()
+        wc.rest(50)

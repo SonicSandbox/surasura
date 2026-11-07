@@ -175,6 +175,8 @@ def test_goal_from_the_row_menu_takes_the_arrival_off_the_tray_and_draws_no_row_
 
 # Arrivals the two-row tests land when the file's earlier tests have taken the seed's off the kept window's tray.
 _MORE = (("薬屋のひとりごと", "2026-10-17T08:00:00Z"), ("ダンジョン飯", "2026-10-17T09:00:00Z"))
+# Watched arrivals *All to Finished* lands for itself (titles of their own: none of _MORE's).
+_WATCHED = (("チェンソーマン", "2026-10-18T08:00:00Z"), ("ヴィンランド・サガ", "2026-10-18T09:00:00Z"))
 
 
 def _tray_with_two_rows(seed, win):
@@ -243,3 +245,81 @@ def test_the_tray_row_menu_opened_again_makes_no_widget(screen):
     finally:
         m.close()
         settle(50)
+
+
+def test_ctrl_a_in_the_tray_repaints_every_row_and_nothing_outside_the_tray(screen):
+    """Ctrl+A in the open tray: every row is picked — each row of the tray is painted afresh over its whole area (its
+    pick mark), nothing outside the tray and its shadow, no row of Current drawn, no view built, no widget made."""
+    seed, win, writer = screen
+    rs = _tray_with_two_rows(seed, win)
+    tray = tray_of(win)
+    view = tray.view
+    lst = win.page_widgets["current"].list
+    renders = lst.delegate.renders
+    try:
+        view.setFocus(Qt.FocusReason.TabFocusReason)
+        QApplication.processEvents()
+        at = wc.rect_in_window(view.viewport()).topLeft()
+        vis = wc.rect_in_window(view.viewport())
+        rows = [r.rect().translated(at).intersected(vis) for r in rs]
+        with wc.measure(win, readers=[win.services.library]) as w:
+            QTest.keyClick(view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+            wait_until(lambda: len(tray.picks) >= len(rs), 3)
+            settle(200)
+        assert len(tray.picks) >= len(rs), w.report()
+        for rect in rows:
+            assert rect.width() * rect.height() > 0, w.report()
+            assert w.union_in(rect) == rect.width() * rect.height(), (rect, w.report())
+        assert w.paints_outside_rect(_with_shadow(win, tray)) == [], w.report()
+        assert lst.delegate.renders == renders, w.report()
+        assert w.builds == 0 and w.created == 0, w.report()
+    finally:
+        tray.clear_picks()
+        settle(50)
+
+
+def test_all_to_finished_takes_every_watched_arrival_off_the_tray_and_draws_no_row_of_current_afresh(screen):
+    """*Already watched › ✓ All to Finished*: every watched arrival leaves the tray for Finished (a page not shown) in
+    one command — the tray repaints where it stood, the inset's count, the toast and the bar's line; no row of Current
+    drawn afresh, nothing of Finished or the rest of the window repainted, one view built. The watched arrivals are
+    landed here (two, `_WATCHED`), never taken from what the seed still has."""
+    seed, win, writer = screen
+    count = win.arrivals_inset.count
+    for title, added in _WATCHED:
+        item = _arrive(seed, title=title, added=added)
+        seed.library.commit(items=[{"id": item, "watched": 1}])
+        count += 1
+        assert wait_until(lambda: win.arrivals_inset.count == count, 5)
+    settle(200)
+    open_tray(win)
+    settle(200)
+    tray = tray_of(win)
+    lst = win.page_widgets["current"].list
+    fin = win.page_widgets["finished"]
+    watched = len(tray.watched())
+    assert watched >= 2, watched
+    n = len(tray_rows(win))
+    ids = sorted(i for a in tray.watched() for i in a.item_ids)
+    keys_before = [r.key for r in tray_rows(win)]
+    renders = lst.delegate.renders
+    area = _with_shadow(win, tray)
+    before = len(calls(writer, "place"))
+    b0 = win.services.library.builds
+    with wc.measure(win, readers=[win.services.library]) as w:
+        tray.heads["watched"][2].click()
+        assert wait_until(lambda: len(tray_rows(win)) == n - watched and win.services.library.builds > b0
+                          and win.moves.tickets == [], 5)
+        settle(200)
+    toast = wc.rect_in_window(win.toasts.card).adjusted(-48, -48, 48, 48)
+    bar = QRect(0, wc.rect_in_window(win.dock).top() - 24, win.width(), win.height())
+    tabs = wc.rect_in_window(win.findChild(QWidget, "tabbar"))   # Finished's count: more
+    placed = calls(writer, "place")[before:]
+    assert len(placed) == 1, w.report()   # one command for all of them
+    assert sorted(placed[0][1]) == ids and placed[0][2] == {"where": "finished"}, placed
+    assert len(tray_of(win).watched()) == 0, w.report()
+    left = [r.key for r in tray_rows(win)]
+    assert len(left) == n - watched and set(left) <= set(keys_before), w.report()   # the unwatched rows stay
+    assert lst.delegate.renders == renders, w.report()
+    assert w.painted_in(fin) == 0, w.report()
+    assert w.paints_outside_rect(area, wc.rect_in_window(win.arrivals_inset), toast, bar, tabs) == [], w.report()
+    assert w.builds == 1, w.report()

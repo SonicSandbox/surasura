@@ -79,9 +79,13 @@ NEEDS_GO = {
     "mine-anki": Go("needs", ("anki-wait",)),
 }
 
-Circle = namedtuple("Circle", "running waiting needs failed done lines last go stepped", defaults=(None, False))
+Circle = namedtuple("Circle", "running waiting needs failed done lines last go stepped why",
+                    defaults=(None, False, ()))
+#   why (help cards, HG-2): ((line, cause), ...) — a live job's line and why it started by itself (`causes.Cause`), in
+#   the order of `lines`; a job you started has none
 IDLE = Circle(False, False, None, None, None, (), None)
-Ended = namedtuple("Ended", "state words at id")       # the hover's last line: `state` "done" · "stopped" · "failed"
+Ended = namedtuple("Ended", "state words at id cause", defaults=(None,))
+#   the hover's last line: `state` "done" · "stopped" · "failed"; `cause` the ended job's own (its *Last:* tail)
 
 
 def circle_of(view):
@@ -157,11 +161,12 @@ def fold(last, views):
 
 def ended(view):
     """The hover's last line of an ended job view."""
+    cause = getattr(view, "cause", None)
     if view.state == jobs_module.FAILED:
-        return Ended("failed", view.message or "", view.ended_at, view.id)
+        return Ended("failed", view.message or "", view.ended_at, view.id, cause)
     if view.needs:
-        return Ended("needs", view.needs, view.ended_at, view.id)
-    return Ended("stopped" if view.cancelled else "done", view.message or "", view.ended_at, view.id)
+        return Ended("needs", view.needs, view.ended_at, view.id, cause)
+    return Ended("stopped" if view.cancelled else "done", view.message or "", view.ended_at, view.id, cause)
 
 
 def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(), now=None):
@@ -174,7 +179,7 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
     now = time.time() if now is None else now
     last = last or {}
     got = {c: {"running": False, "waiting": False, "needs": [], "failed": None, "lines": [], "go": None,
-               "stepped": False} for c in CIRCLES}
+               "stepped": False, "why": []} for c in CIRCLES}
     live = {c: False for c in CIRCLES}
     for v in views:
         circle = circle_of(v)
@@ -182,6 +187,8 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
             continue
         g = got[circle]
         g["lines"].append(job_line(v))
+        if getattr(v, "cause", None) is not None:
+            g["why"].append((g["lines"][-1], v.cause))
         g["stepped"] = g["stepped"] or _stepped(v)
         if not shown(v, now):
             continue
@@ -251,5 +258,5 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
         if live[circle]:
             failed = None                       # the next run under way: the failure before it is over (Q3)
         out[circle] = Circle(g["running"], g["waiting"] and not g["running"], "; ".join(needs) or None, failed,
-                             done, tuple(g["lines"]), tail, go if needs else None, g["stepped"])
+                             done, tuple(g["lines"]), tail, go if needs else None, g["stepped"], tuple(g["why"]))
     return out

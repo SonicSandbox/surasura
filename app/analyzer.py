@@ -154,7 +154,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     was pinned only when the pick reached it, and the pick stops after enough clean sentences, so for 1–8 % of words
 #     another sentence stood in (航空's first sentence lost to a later one). The first sentence is now looked at first.
 #     *Only i+1* is unchanged. No tokenizing changed: SCHEMA_VERSION stays 20. 3.0, with 31–34.
-ENGINE_REVISION = 35
+# 36: a sentence that opens with a written number keeps it (strip_verse_number): 20,000人 was shown as ,000人 and
+#     １．５倍 as ．５倍 — UniDic tags "," a 記号 and "．" a noun, neither the punctuation that kept a number. The
+#     verse numbers (「13そこで…」) still go, and so does one before a fullwidth space (「13　そこで…」 kept its number:
+#     the space was read as punctuation). Only the sentence shown changes: SCHEMA_VERSION stays 20. 3.0, with 31–35.
+ENGINE_REVISION = 36
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -2007,6 +2011,9 @@ class JapaneseTokenizer(Tokenizer):
                 names.span(sentence, cand, a, before + counted, surfaces[cand.i:cand.j])
 
 _LEADING_DIGITS_RE = re.compile(r"^[0-9０-９]+")
+# A number written on past its first digits: a thousands separator or a decimal point, either width (20,000 /
+# ２０，０００ / 1.5 / １．５). Read from the text, not the tags: UniDic tags "," a 記号 and "．" a noun.
+_WRITTEN_NUMBER_RE = re.compile(r"^[0-9０-９]+[,.，．]")
 
 
 def strip_verse_number(sentence, tagger):
@@ -2014,21 +2021,26 @@ def strip_verse_number(sentence, tagger):
     モーサヤは…」 reads 「そこでモーサヤは…」 (a scripture-style book in the library numbered every
     verse, and those numbers were landing on cards). Only a number made of digits, and only when what
     follows is not what the number counts: a counter or suffix (3人, 2つ目, 10年前, 5番目, 12月,
-    1日中), another number (100万) or punctuation (2、3日) keeps it. Only the front is cut, so the
-    sentence is still a verbatim piece of its file and its source anchor still finds it.
+    1日中), another number (100万), punctuation or a symbol (2、3日, 1-2) keeps it, and so does a number
+    written on with a separator or a point (20,000人, 1.5倍): it is all one number. Only the front is cut, so
+    the sentence is still a verbatim piece of its file and its source anchor still finds it. A space after
+    the number, either width, is read as no space (「13　そこで」 is a verse, 「3　人で」 counts people).
 
     `tagger` is the fugashi tagger the run already holds; the digits are not a word, so nothing the
     analysis counted changes — only the sentence shown."""
-    if not sentence or not _LEADING_DIGITS_RE.match(sentence):
+    leading = _LEADING_DIGITS_RE.match(sentence or "")
+    if not leading or _WRITTEN_NUMBER_RE.match(sentence):
         return sentence
-    words = list(tagger(sentence))
+    # MeCab skips an ASCII space by itself, but tags a fullwidth one 空白 — and a counter after it is then a plain
+    # noun (3　人 reads 人 'person'): the number is read with the space gone, as an ASCII one is.
+    words = list(tagger(leading.group() + sentence[leading.end():].lstrip()))
     if len(words) < 2:
         return sentence
     first, following = words[0], words[1]
     if first.feature.pos2 != "数詞" or not _LEADING_DIGITS_RE.fullmatch(first.surface):
         return sentence
     feature = following.feature
-    if (feature.pos1 in ("接尾辞", "補助記号", "空白") or feature.pos2 == "数詞"
+    if (feature.pos1 in ("接尾辞", "補助記号", "記号") or feature.pos2 == "数詞"
             or str(feature.pos3 or "").startswith("助数詞")):
         return sentence
     return sentence[len(first.surface):].lstrip() or sentence

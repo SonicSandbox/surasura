@@ -247,7 +247,33 @@ def _rows():
                      {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv"),
                       f"{{S}}/{extra}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{extra}/{ep(1)}.{{T}}.srt",
                                                             f"{{S}}/{extra}/{ep(1)}.mkv")},
-                     f"`{extra}`'s 01 is not the show's episode 1: its own show beside it"))
+                     f"`{extra}`'s 01 is not the show's episode 1: its own episodes"
+                     + (" in a folder of its own, part of the show's title (Kura-G: a specials folder is part of the "
+                        "title of the folder it sits in)" if extra != "Bonus" else ": its own show beside it (`Bonus` "
+                                                                                    "names no specials folder)")))
+    # Kura-G (2026-11-06, the laptop try's Code Geass: 4 titles in Goal for its 2): the show's folder read itself,
+    # holding two series folders, each with an `extras/` of videos that have no subtitle (picture dramas, a creditless
+    # opening); R2 has a subtitle for two of its three videos (his R2's own-way names, `<Show> Hangyaku 01.srt` beside
+    # `<Show>_Ep01_….mkv`, pair with no video: a pairing gap, BOARD 2026-11-06 Kura-G, not this row's)
+    r1 = [f"[Grp]_{{S}}_{n:02d}_(1080p_BD)" for n in (1, 2)]
+    r2v = [f"{{S}}_Ep{n:02d}_Title_[720p,BluRay]" for n in (1, 2, 3)]
+    rows.append(("two series folders, each with extras/", "laptop try (Code Geass)",
+                 "`<Show>/<Show> R1/` videos + `.srt` 01–02 and `extras/` two picture dramas (videos only); "
+                 "`<Show>/<Show> R2/` videos 01–03, `.srt` 01–02, and `extras/` a creditless "
+                 "opening; the show's folder added itself", "{S}",
+                 _pairs("{S}/{S} R1", r1, ".srt")
+                 + [("{S}/{S} R1/extras/[Grp]_{S}_Picture_Drama_3.25_(1080p_BD).mkv", "V"),
+                    ("{S}/{S} R1/extras/[Grp]_{S}_Picture_Drama_9.75_(1080p_BD).mkv", "V")]
+                 + [(f"{{S}}/{{S}} R2/{v}.mkv", "V") for v in r2v]
+                 + [(f"{{S}}/{{S}} R2/{v}.srt", "J") for v in r2v[:2]]
+                 + [("{S}/{S} R2/extras/{S}_Creditless_OP1_[720p,BluRay].mkv", "V")], None,
+                 {**{f"{{S}} R1/{s}.srt": _ep(f"{{S}}/{{S}} R1/{s}.srt", f"{{S}}/{{S}} R1/{s}.mkv") for s in r1},
+                  "{S} R1/extras/[Grp]_{S}_Picture_Drama_3.25_(1080p_BD).mkv": WAIT,
+                  "{S} R1/extras/[Grp]_{S}_Picture_Drama_9.75_(1080p_BD).mkv": WAIT,
+                  **{f"{{S}} R2/{v}.srt": _ep(f"{{S}}/{{S}} R2/{v}.srt", f"{{S}}/{{S}} R2/{v}.mkv") for v in r2v[:2]}},
+                 "two titles, R1 and R2 (two series, each its own); each extras folder's videos wait as part of the "
+                 "title of the series folder they sit in, never a third and fourth title; the creditless opening "
+                 "never waits, nor (K5, as before) R2's third video in a folder that has text"))
     rows.append(("Movie folder", "convention",
                  "`<Show>/Movie/<Show> Movie (1080p).mkv` + `.ja.srt` beside the episodes", "",
                  _pairs("{S}", [ep(1)], ".{T}.srt") + _pairs("{S}/Movie", ["{S} Movie (1080p)"], ".{T}.srt"), None,
@@ -777,7 +803,11 @@ def _languages(row):
 CASES = [pytest.param(row, language, id=f"{row[0]}-{language}") for row in ROWS for language in _languages(row)]
 # the rows whose show folders are ONE title (3.0.1 item 12: a new show folder joins the one title of its show key);
 # every other row's folders are a title each
-_ONE_TITLE = ("`<Show>/` and `<Show>!/` beside a loose `<Show>`", "`<Show>'/` and `<Show>°/` beside a loose `<Show>`")
+_ONE_TITLE = ("`<Show>/` and `<Show>!/` beside a loose `<Show>`", "`<Show>'/` and `<Show>°/` beside a loose `<Show>`",
+              # Kura-G: a specials folder is part of the title of the folder it sits in (`library_store.specials_home`)
+              *(f"{extra} folder numbered from 01" for extra in ("Specials", "SP", "OVA", "Extras")))
+# rows with two titles or more, each {folder: its title's other folders} (the rest of the row's folders: a title each)
+_TITLES = {"two series folders, each with extras/": {"{S} R1": ("{S} R1/extras",)}}
 
 
 @pytest.mark.parametrize("row,language", CASES)
@@ -804,6 +834,10 @@ def test_a_layout_is_read_as_a_learner_would_want(row, language, record_property
     shows = sorted({os.path.dirname(k) for k in want})
     if _id in _ONE_TITLE:
         shows = [" + ".join(shows)]
+    for home, inside in _TITLES.get(_id, {}).items():
+        inside = [_fill(f, language) for f in inside]
+        shows = sorted([" + ".join(sorted([_fill(home, language)] + inside))]
+                       + [s for s in shows if s not in inside and s != _fill(home, language)])
     assert got == (shows, want)
     assert again == got, "a Refresh changed what the looks made"
 

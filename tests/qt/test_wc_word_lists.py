@@ -14,4 +14,50 @@ from PyQt6.QtWidgets import QApplication, QWidget
 
 from tests.qt import work_counts as wc
 from tests.qt.conftest import wait_until
-from tests.qt.test_word_lists_window import _fresh_session, _put, calls, main   # noqa: F401
+from tests.qt.test_word_lists_window import _fresh_session, _open, _put, _rows, calls, main   # noqa: F401
+
+
+BLACKLIST = ["毎日", "勉強", "友達", "学校", "電話", "旅行"]
+
+
+def test_the_blacklist_button_shows_its_words_in_one_layout_pass(main):
+    """Ignore list → Blacklist button: one click lays the word lists window out at most once, and no row is laid out
+    again for each row the blacklist shows. A click on the list already shown changes nothing, so it asks for no
+    layout at all."""
+    _put("冒険\n", "ignore")
+    _put("# ja Blacklist\n" + "".join(f"{word}\n" for word in BLACKLIST), "blacklist")
+    win = _open(main)
+    assert win.kind == "ignore"
+    unit = wc.one_pass(win, main)
+    with wc.measure(main) as w:                       # the list already shown: a press that changes nothing
+        win.kind_buttons["ignore"].click()
+    assert sum(w.layout_requests.values()) == 0, w.report()
+    with wc.measure(main) as w:
+        win.kind_buttons["blacklist"].click()
+        assert wait_until(lambda: sorted(_rows(win)) == sorted(BLACKLIST), 3)
+        wc.rest(150)
+    assert w.hints <= unit * wc.PASS_SLACK, w.report()
+    assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()
+
+
+# --- R1: one press, one layout pass at most ---------------------------------------------------------------------- #
+def test_enter_adding_typed_words_grows_the_list_and_lays_it_out_once(main):
+    """Enter in the add field with two new words typed: the list grows by them, in order, and the press asks at most
+    one layout pass of the window (the list is not laid out again row by row)."""
+    _put("冒険\n")
+    win = _open(main)
+    assert wait_until(lambda: _rows(win) == ["冒険"], 3)
+    win.add_field.setText("毎日 ストレート")
+    wc.rest(150)
+    unit = wc.one_pass(win, win)
+    with wc.measure(win) as w:
+        QTest.keyClick(win.add_field, Qt.Key.Key_Return)
+        landed = wait_until(lambda: _rows(win) == ["冒険", "毎日", "ストレート"], 3)
+        wc.rest(150)
+    assert landed, w.report()
+    assert w.hints <= unit * wc.PASS_SLACK, (unit, w.report())
+    assert w.most_moved()[0] <= wc.MOVES_PER_PASS, w.report()
+    # The press lays out this window and nothing else: no other top-level window's layouts are invalidated (a press
+    # that invalidates every layout of the app asks its whole page again, whatever this window's own count says).
+    elsewhere = [type(x).__name__ for x in w._layout_widgets.values() if x.window() is not win]
+    assert not elsewhere, (elsewhere, w.report())

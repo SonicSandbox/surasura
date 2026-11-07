@@ -43,7 +43,7 @@ class _Numbers:
     def __init__(self):
         self.calls = []
 
-    def after_move(self, ids, tier, before_id=None, after_id=None, landing=None):
+    def after_move(self, ids, tier, before_id=None, after_id=None, landing=None, order=None, aside=None):
         self.calls.append((list(ids), tier, before_id, after_id, threading.current_thread()))
         return {}
 

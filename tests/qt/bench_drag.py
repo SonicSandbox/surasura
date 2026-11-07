@@ -210,8 +210,12 @@ class StandinWriter:
     def _move_now(self, ids, tier, before_id=None, after_id=None, piece_id=None):
         """(The writer's thread.) The numbers, then the write — landed for the numbers once written, as
         `moves.Writer._landed` does (a resync meanwhile waits for it)."""
-        landing = {}
-        self.numbers.after_move(ids, tier, before_id=before_id, after_id=after_id, landing=landing)
+        from app.services import moves
+        from tests.fixtures.standin_store import StandinStore
+        store = StandinStore(self.library)              # (this thread's handle: the tier's order and the set-aside
+        landing = {}                                      # rule read as the real writer reads them — W-1)
+        self.numbers.after_move(ids, tier, before_id=before_id, after_id=after_id, landing=landing,
+                                order=lambda t: store.ids(t), aside=lambda i: moves._set_aside(store, i))
         try:
             _place(self.library, ids, tier, before_id, after_id, piece_id)
         finally:

@@ -155,3 +155,22 @@ def test_the_background_generate_after_a_stone_brings_anki_to_its_own_order(lib,
         assert _verdict(host, store) is None, "the Generate's plan is the library's"
         assert _job(fake, host) == [], "after the Generate's re-order, Anki holds the Generate's own order"
     assert _suspended(fake, own) == set(own)
+
+
+@pytest.mark.parametrize("lib", ["ja", "zh"], indirect=True)
+def test_the_parts_name_a_stone_watched_and_never_a_finished_file(lib):
+    # why: the one fact that tells a stone (re-plan now) from a Finished drag (a Generate first, D1) rides beside the
+    # signed parts; a Finished file named watched would take its show's cards out before the Generate
+    from app import plan_rules
+    root, store = lib
+    now = store.ids("now")
+    store.set_watched([now[0]])
+    store.finish([now[1]])
+    host, _lines = _host()
+    parts = host._parts(host._settings(), store)
+    plan = plan_engine.load(replan_preview.plan_path())
+    digest = {store.item_id(entry[0]): entry[2] for entry in plan.files}
+    assert isinstance(parts, plan_rules.SignatureParts)
+    assert set(parts["reference"]) == {digest[now[0]], digest[now[1]]}, "each set aside with its plan line's digest"
+    assert parts.watched == {digest[now[0]]}, "the stone is watched; the Finished file never"
+    assert _verdict(host, store) == ("generate-first", "reference"), "a stone with a Finished drag: the stricter wins"

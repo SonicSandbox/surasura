@@ -18,7 +18,7 @@ import unicodedata
 # no CSV, so it imports NONE of them; a Japanese run never loads jieba; a Chinese run never loads
 # fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, namedtuple
 from itertools import accumulate, compress, repeat
 from operator import attrgetter, eq, itemgetter
 from datetime import datetime
@@ -4192,6 +4192,11 @@ def compute_run_signature(language, found_files, args, order_free=False, aside=(
     return signature_digest(run_signature_parts(language, found_files, args, aside), order_free)
 
 
+# One set-aside file (`aside_files`), read by name, never unpacked: a lane that adds a field (F7's finish rank) can't
+# shift one into another's place.
+AsideFile = namedtuple("AsideFile", "path source_type watched")
+
+
 def aside_files(language, schedule):
     """W-1: the library's set-aside files (`library_store.sets_aside`) — Finished (W-1b), and watched episodes while
     *Keep studying watched episodes* is off — from a
@@ -4200,7 +4205,7 @@ def aside_files(language, schedule):
     text is the name tables' evidence and 例文's sentences, so they are part of what a run reads. [] with none (JSON
     mode, no store).
 
-    -> [(abs_path, source_type, watched)]: `source_type` as a run reads a counted file's (`_source_typer`), so a set-aside
+    -> [AsideFile(path, source_type, watched)]: `source_type` as a run reads a counted file's (`_source_typer`), so a set-aside
     file signs as it did while it counted — its digest is the one its plan line holds (Haya-W); `watched`: a watched
     episode set aside, not Finished (the fast re-plan re-plans a watched mark at once, `plan_engine._only_watched`)."""
     ls = _library_store()
@@ -4214,7 +4219,7 @@ def aside_files(language, schedule):
         if rel.startswith("./"):
             rel = rel[2:]
         path = os.path.join(data_dir, rel)
-        out.append((path, typer(path, entry.get("source_type")), "finished_at" not in entry))
+        out.append(AsideFile(path, typer(path, entry.get("source_type")), "finished_at" not in entry))
     return out
 
 
@@ -4372,7 +4377,8 @@ def run_signature_parts(language, found_files, args, aside=()):
             # W-1: the set-aside files, a part of its own present only then, so a library with none signs as before.
             # Each as the "files" part signs it (Haya-W: `aside_files`' type), so a counted file set aside keeps its
             # digest and the plan's line for it is found again; Finished ↔ watched moves nothing a run reads.
-            digests = [(plan_rules.file_digest([fp, _fsig(fp), None, None, st]), watched) for fp, st, watched in aside]
+            digests = [(plan_rules.file_digest([a.path, _fsig(a.path), None, None, a.source_type]), a.watched)
+                       for a in aside]
             _sig_parts["reference"] = sorted(d for d, _w in digests)
             _sig_parts.watched = frozenset(d for d, w in digests if w)
         # Q4-3: with Automatic rarity on, the band the library's store remembers helps pick the list (the second

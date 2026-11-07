@@ -3814,7 +3814,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
 
     def _rows_as(path, rows):
         with open(path, encoding="utf-8-sig", newline="") as f:
-            columns = next(path_utils.list_reader(f, header=False), None)
+            columns = next(list_reader(f, header=False), None)
         if not columns or (rows and set(columns) - set(rows[0])):
             raise ValueError(f"{os.path.basename(path)}'s columns aren't the plan's")
         return pd.DataFrame(rows, columns=columns)

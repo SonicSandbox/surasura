@@ -98,9 +98,9 @@ def part(lst, i, name):
 # --- R3: a move repaints the rows that changed ------------------------------------------------------------------- #
 def test_r3_a_nudge_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_list(screen):
     """Alt+↓ on a row: it and the row under it trade places — those two repaint, never the list; outside it, only
-    the toast and the bar's line. The count is the second Alt+↓: the first one also turned the keyboard's ring on
-    (its row lifts and parts its neighbours, three rows — §3's hover; found.md F5's third row; the 8 px strip at the
-    list's foot is the toast's shadow coming over it)."""
+    the toast and the bar's line. Both presses counted: the first one also turns the keyboard's ring on (its row
+    lifts and parts its neighbours — §3's hover: found.md F5's third row; the 8 px strip at the list's foot is the
+    toast's shadow coming over it), so it may reach one row above; the second, the ring already on, the pair alone."""
     seed, win, writer = screen
     lst = lst_of(win)
     i = _closed_row(lst, 3)
@@ -108,9 +108,15 @@ def test_r3_a_nudge_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_lis
     lst.setFocus()
     settle(100)
     saved = len(writer.saved)
-    QTest.keyClick(lst, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)       # the ring on, unmeasured
-    if not wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3):
-        pytest.fail("the first Alt+↓ was never saved")
+    with wc.measure(win, readers=[win.services.library]) as first:      # the first: the ring comes on with it
+        QTest.keyClick(lst, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)
+        if not wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3):
+            pytest.fail("the first Alt+↓ was never saved")
+        settle(150)
+    vp = wc.rect_in_window(lst.viewport())
+    band = _row_band(lst, i - 1, i + 1)                           # the pair, and the ring's one row above
+    assert first.union_in(vp) <= band.width() * band.height() + vp.width() * wc.STRIP_SLACK_PX * 2, first.report()
+    assert all(band.intersects(p.rect) or p.rect.height() <= 8 for p in first.paints if vp.contains(p.rect)),         first.report()
     settle(600)                                                   # (its springs and its toast at rest)
     i = lst.currentIndex().row()
     saved = len(writer.saved)

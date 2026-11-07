@@ -1373,7 +1373,8 @@ class SettingsPage(QWidget):
         for slab in self.slabs.values():
             layouts += [slab.main_box, slab.adv.layout(), slab.layout()]
         layouts += [self.column_box, self.body.layout()]
-        before = _shown_in(layouts)
+        watched = layouts + [slab.adv_box for slab in self.slabs.values()]     # (the options' rows: nested in adv)
+        before = _shown_in(watched)
         self._pausing = True
         for layout in layouts:
             layout.setEnabled(False)
@@ -1383,7 +1384,7 @@ class SettingsPage(QWidget):
             self._pausing = False
             for layout in layouts:
                 layout.setEnabled(True)
-            if _shown_in(layouts) == before:      # nothing shown, hidden or put in: nothing to lay out again
+            if _shown_in(watched) == before:      # nothing shown, hidden or put in: nothing to lay out again
                 for layout in layouts:
                     if layout.parentWidget().isVisible():
                         layout.activate()         # (a row's own change, if any, as it asked)

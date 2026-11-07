@@ -148,6 +148,39 @@ def test_an_answer_after_the_tray_menu_closed_adds_nothing(world):
     assert m.actions() == [] and _skip_menu(m) is None
 
 
+def test_a_late_answer_for_a_closed_menu_never_lands_in_the_picks_menu_opened_next(world):
+    # The tray's one kept menu (R5) is the picks' menu at the next open: the folder answer row A's ⋯ asked for, coming
+    # after it closed, must not add *Never read this folder* (for row A) to the picks' menu (Mado-WF review B1).
+    import threading
+    _seed, win, _writer, row = world()
+    held = []
+    looks = win.looks
+    real = looks.skippable
+
+    def hold(ids, then):
+        looks.asks.append(list(ids))
+        held.append(then)
+        return True
+    looks.skippable = hold
+    tray = tray_of(win)
+    m = tray.menu(row)
+    assert held
+    m.close()
+    rs = tray_rows(win)
+    tray.pick(rs[0].key)
+    tray.pick(rs[1].key)
+    picks = tray.menu(rs[0].key)
+    assert picks is m and picks.isVisible()
+    for then in held:                                 # the late answer, from the looks' worker
+        threading.Thread(target=then, args=(list(looks.choices),), daemon=True).start()
+    settle(300)
+    try:
+        assert _skip_menu(picks) is None
+    finally:
+        picks.close()
+        looks.skippable = real
+
+
 def test_E4_a_library_that_cant_be_written_greys_the_entry_with_the_writers_reason_and_writes_nothing(world):
     _seed, win, writer, row = world(writable=False)
     m = tray_of(win).menu(row)

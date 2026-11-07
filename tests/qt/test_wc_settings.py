@@ -119,8 +119,8 @@ def test_r4_a_switch_that_reveals_nothing_repaints_only_inside_its_own_row(page)
 
 def test_r4_r1_a_sections_switch_repaints_nothing_above_itself_and_lays_the_page_out_once(page):
     """*Junban* off hides its section's rows (on brings them back): the page below the switch repaints, nothing
-    above it — but what the switch reveals beside it: the nav (its section's *Backfill* button goes or comes, the
-    ones under it move) and the scroll bar (the page's length changed); one layout pass at most; no widget made or
+    above it — but what the switch reveals beside it: the nav from its section's *Backfill* button down (it goes or
+    comes, the ones under it move) and the scroll bar (the page's length changed); one layout pass at most; no widget made or
     deleted (rows are hidden, never rebuilt). (found.md F1: the page's paused layouts resumed deepest first laid every
     slab out twice, and the body, its column and the slabs repainted whole as they resized.)"""
     view = _in_view(page, page.rows["enable_junban"])
@@ -128,7 +128,10 @@ def test_r4_r1_a_sections_switch_repaints_nothing_above_itself_and_lays_the_page
     unit = wc.one_pass(page.body, page)
     top = wc.rect_in_window(view).top()
     below = QRect(0, top, page.width(), page.height() - top)
-    nav = wc.rect_in_window(page.nav_panel)
+    shown = page.nav["backfill"]                          # the nav button the switch takes away and brings back
+    assert shown.isVisible()
+    panel, at = wc.rect_in_window(page.nav_panel), wc.rect_in_window(shown).top()
+    nav = QRect(panel.left(), at, panel.width(), panel.bottom() - at + 1)    # it and the buttons under it
     bar = wc.rect_in_window(page.scroll.verticalScrollBar())
     try:
         for _ in range(2):                                                 # off, then on again: both measured

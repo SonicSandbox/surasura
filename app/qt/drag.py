@@ -841,6 +841,8 @@ def list_menu(lst, title):
     elif m.isVisible():
         m.hide()
     _empty_menu(m)
+    m.fills = getattr(m, "fills", 0) + 1             # each open's own number: an answer asked by an earlier open (a
+    #                                                  folder to skip) never lands in this one (`item_menu.offer_skip`)
     m.setAccessibleName(strings.MENU_NAME.format(title=title))
     return m
 

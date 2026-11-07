@@ -194,10 +194,11 @@ def offer_skip(owner, ids, m, add):
     if looks is None or not ids or not hasattr(looks, "skippable"):
         return False
     ask, relay = owner._skip_ask, bridge.Relay(owner)
+    fill = getattr(m, "fills", None)                 # a kept menu (`drag.list_menu`) is the same menu at its next open
 
     def found(folders):
         relay.deleteLater()
-        if folders and ask == owner._skip_ask and owner.last_menu is m and not sip.isdeleted(m) and m.isVisible():
+        if folders and ask == owner._skip_ask and owner.last_menu is m and not sip.isdeleted(m) and m.isVisible()                 and getattr(m, "fills", None) == fill:
             add(folders)
     relay.said.connect(found)
     if not looks.skippable(list(ids), relay.call):

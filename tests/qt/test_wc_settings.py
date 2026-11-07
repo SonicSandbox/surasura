@@ -51,7 +51,7 @@ def _at_rest(page, monkeypatch):
         page.search.edit.setText("")
     page.store_.land()
     page.scroll.verticalScrollBar().setValue(0)
-    wc.settle()
+    wc.pointer_away(page.scroll)
     yield
     page.store_.land()
     wc.settle()

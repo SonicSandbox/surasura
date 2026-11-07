@@ -50,6 +50,7 @@ def _at_rest(screen, monkeypatch):
     win.show_tab("current")
     lst = lst_of(win)
     lst.verticalScrollBar().setValue(0)
+    wc.pointer_away(lst)                                           # its own pointer state, never a test before's
     order = keys_of(win)
     settle(150)
     yield

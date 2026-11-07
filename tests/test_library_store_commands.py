@@ -1226,10 +1226,12 @@ def test_an_add_of_a_new_season_inserts_each_row_at_its_place_in_one_write(langu
     first = [touch(data_dir, f"LowPriority/{word}A/{word}_{e:03d}.srt") for e in range(20)]
     second = [touch(data_dir, f"LowPriority/{word}B/{word}_{e:03d}.srt") for e in range(5)]
     placing = []
+    logged = store.conn.execute("SELECT COUNT(*) FROM origin_changes").fetchone()[0]
     store.conn.set_trace_callback(lambda sql: placing.append(sql) if sql.lstrip().upper().startswith(
         ("UPDATE ITEMS SET TIER", "UPDATE ITEMS SET WORK_ID")) else None)
     a = store.insert(first, "soon")
     store.conn.set_trace_callback(None)
+    assert store.conn.execute("SELECT COUNT(*) FROM origin_changes").fetchone()[0] == logged,         "new items with no records log nothing for the origins' reader"
     assert placing == [], "the rows were inserted at their place, with their title"
     works = {r[0] for r in store.conn.execute(
         f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(a.added))})", a.added)}

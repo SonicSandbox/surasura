@@ -777,7 +777,12 @@ ORIGIN_LOG_SQL = (
     """CREATE TRIGGER IF NOT EXISTS origin_log_copy AFTER UPDATE OF rel_path, availability ON items
       WHEN NEW.rel_path IS NOT OLD.rel_path OR NEW.availability IS NOT OLD.availability
       BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END""",
-    """CREATE TRIGGER IF NOT EXISTS origin_log_item_in AFTER INSERT ON items
+    # an item that comes back under its old id (a Remove undone) brings its kept records back into `origins()`'s join;
+    # a new one (an id never issued, K30) has none, its records logged as they're written: no row for it (R6: one log
+    # row per new file was a season's Add's last ~0.4 ms). The first form, which logged every insert, goes
+    "DROP TRIGGER IF EXISTS origin_log_item_in",
+    """CREATE TRIGGER IF NOT EXISTS origin_log_item_back AFTER INSERT ON items
+      WHEN EXISTS (SELECT 1 FROM pairings WHERE item_id = NEW.id)
       BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END""",
     """CREATE TRIGGER IF NOT EXISTS origin_log_item_out AFTER DELETE ON items
       BEGIN INSERT INTO origin_changes (item_id) VALUES (OLD.id); END""",
@@ -787,7 +792,7 @@ ORIGIN_LOG_SQL = (
     f"INSERT OR REPLACE INTO meta (key, value) VALUES ('{ORIGIN_LOG_ID}', lower(hex(randomblob(8))))",
 )
 ORIGIN_LOG = ("origin_changes", "origin_log_replaced", "origin_log_in", "origin_log_set", "origin_log_out",
-              "origin_log_copy", "origin_log_item_in", "origin_log_item_out", "origin_log_prune")
+              "origin_log_copy", "origin_log_item_back", "origin_log_item_out", "origin_log_prune")
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then

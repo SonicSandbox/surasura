@@ -263,6 +263,7 @@ class Results(motion.Overlay):
         box.addWidget(self.scroll)
         self.hits = []                                   # the HitRows shown, in order
         self._kept = {}                                  # (a fill) what the last one showed, to take back
+        self._made_f = None                              # the text size the rows shown were made at
         self.query = None
         self.groups = ()
         self.fills = 0                                   # times refilled (tests: a keystroke refills, never re-opens)
@@ -280,12 +281,34 @@ class Results(motion.Overlay):
         self.fills += 1
         self.setAccessibleName(strings.SEARCH_RESULTS_NAME.format(query=query))
         # R5 (WC C2): the rows already made are kept and taken back — a hit's row by its hit, a line by its words —
-        # and only what this fill shows anew is made; what it no longer shows goes
+        # and only what this fill shows anew is made; what it no longer shows goes. A row's height and margins are
+        # its text size's (`_f`, set as it is made): after a text-size change every row is made anew.
+        f = _f()
+        same_size, self._made_f = f == self._made_f, f
         self._kept = {}
         while self.lines.count():
             w = self.lines.takeAt(0).widget()
             if w is not None:
-                self._kept.setdefault(w.hit if isinstance(w, HitRow) else (w.objectName(), w.text()), []).append(w)
+                self._kept.setdefault((w.hit if isinstance(w, HitRow) else (w.objectName(), w.text()))
+                                      if same_size else object(), []).append(w)
+        try:
+            self._fill()
+        finally:
+            for gone in self._kept.values():
+                for w in gone:
+                    w.hide()
+                    w.deleteLater()
+            self._kept = {}
+        self.place()
+        if not self.isVisible() and motion.opening_of(self) is None:
+            self.opens += 1
+            self.open()
+        else:
+            self.raise_()
+
+    def _fill(self):
+        """(`show_groups`) The lines for `self.groups`, each taken back from the last fill or made."""
+        query = self.query
         for row in self.hits:
             row.set_current(False)
         self.hits, self.picked = [], -1
@@ -304,17 +327,6 @@ class Results(motion.Overlay):
                 self.hits.append(row)
             if g.total > len(g.hits):
                 self._label("searchmore", strings.SEARCH_MORE.format(n=g.total - len(g.hits)))
-        for gone in self._kept.values():
-            for w in gone:
-                w.hide()
-                w.deleteLater()
-        self._kept = {}
-        self.place()
-        if not self.isVisible() and motion.opening_of(self) is None:
-            self.opens += 1
-            self.open()
-        else:
-            self.raise_()
 
     def _take(self, key):
         """A widget the last fill showed for `key` (a hit, or a line's (name, words)), taken back; else None."""

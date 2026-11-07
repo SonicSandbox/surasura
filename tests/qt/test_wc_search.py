@@ -90,3 +90,22 @@ def test_a_refill_with_fewer_hits_keeps_only_its_own_rows_showing(world):
     shown = [w for w in results.body.findChildren(HitRow) if w.isVisible()]
     assert sorted(map(id, shown)) == sorted(map(id, results.hits))
     assert [r.hit for r in results.hits] == [h for g in fewer for h in g.hits]
+
+
+def test_a_refill_after_a_text_size_change_makes_its_rows_at_the_new_size(world, monkeypatch):
+    """Rows are taken back only at the text size they were made at: a refill after Settings' text size changed (it
+    changes live) makes every row anew, as tall as the new size makes one — never a kept row at the old height beside
+    new ones (Mado-WF review: a taken-back row kept 51 px where the new size gives 57)."""
+    from app.qt import search as qsearch
+    seed, win, _writer = world()
+    try:
+        results = ask(win, "星")
+    except AssertionError as e:                                        # setup: never the rule's AssertionError
+        pytest.fail(f"setup: the results didn't open: {e}")
+    before = [r.height() for r in results.hits]
+    f = qsearch._f() * 1.3
+    monkeypatch.setattr(qsearch, "_f", lambda: f)
+    results.show_groups(results.query, results.groups)
+    wc.settle()
+    assert results.hits and all(r.height() == round(44 * f) for r in results.hits), (before, [r.height() for r in results.hits])
+

@@ -43,6 +43,7 @@ def pytest_collection_modifyitems(config, items):
 
 
 _errors = []
+_POINTER = []
 
 
 def _record(kind, value, tb):
@@ -54,6 +55,8 @@ def qapp():
     from PyQt6.QtWidgets import QApplication
     from app.qt import style
     app = QApplication.instance() or QApplication(["surasura-tests"])
+    from PyQt6.QtGui import QCursor
+    _POINTER.append(QCursor.pos())                # where the session's pointer starts: each test starts there again
     sys.excepthook = _record
     style.apply(app, "night", "M", "ja")
     yield app
@@ -121,6 +124,9 @@ def _per_test_window_state(request, monkeypatch):
         except RuntimeError:
             pass
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    if _POINTER:                                  # the one cursor put back where the session began: `QTest.mouseMove`
+        from PyQt6.QtGui import QCursor           # moves it for good, and a test after one that left it over a list
+        QCursor.setPos(_POINTER[0])               # met a hover it never made (train 18: r47 → the wheel's count)
     stones = sys.modules.get("app.qt.stones")
     if stones is not None:                        # (AD-13) a window that never painted nor went: its hold let go
         for token in list(stones._HELD):

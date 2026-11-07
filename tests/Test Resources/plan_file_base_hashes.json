@@ -1,9 +1,9 @@
 {
  "signatures": {
-  "ja-ordered": "bd9e21a0f3470e18aae1ecc19bbfed7eacbabdd448dc58bdaa9f5ad5c6097fba",
-  "ja-moved": "4ef84b29404cc48147c134f35955e45c26031063b24a73310e07fca29e61fc97",
-  "zh-ordered": "472ab9863ca19270f9d905e6a01c39648c7693ec8a3ea06145f9300148e87efb",
-  "ja-empty": "c848aa4723613bca67da5d0cc6bc9da2bde6a70d6f88ffb92aa8c4790bcdb815"
+  "ja-ordered": "7efa07437a1b5b8a71200c0dee150c2a47a754f905f2d34fdb068eef638a4808",
+  "ja-moved": "0b75aa60f3d2d9ee936d5f948db75b9803617917046918251f92013b04f0f4e8",
+  "zh-ordered": "5059f62f54169bd5869b027ff02dc46331dc4dbaf53ad92565d0f0c5d4be8f3e",
+  "ja-empty": "88513f9f4e4b6a9a31b9f848eb28a7631d4e9bae93951e4d64829bd9cd236360"
  },
  "samples-ja": {
   "analyzed_files.json": "add0fd27643999754930cb9b789b59feef62a42a00a8b5ae2545e9e5dbcf50f0",
@@ -50,12 +50,12 @@
   "file_statistics.txt": "c88326d738d3777f623b4173be88aefe232076f83debb3936bd16b64f95220fa",
   "file_words.json": "e7aca0a8105e2fd29a22bb42fa128efd8a1412b33796573dbd00935fd1e95069",
   "library_frequency.json": "b18f1a3458b5a72b0c09ec415f1ee3623cb1ad6ffa7f0b39988384471abd0084",
-  "priority_learning_list.csv": "61b8510cf0cc1a3d8841a5b500e455fbdca32000ccab8f0601b8a24245613881",
-  "progressive_learning_list.csv": "cf87dd63b480e836138cd0e85d103b6361b1c2e7425ded9416c881f70ed93d8a",
-  "reading_list_static.html": "533b5f54cfae3c9e36aff1065a03b6b84803521a88fdce186d4a3ec7b9b43673",
+  "priority_learning_list.csv": "1cc2cc7e08e223dc8124d991de2c2ab66e900e7dc217c6cb9910d9f07a6ac34c",
+  "progressive_learning_list.csv": "31404fa838f98a43e13a79ced60da3c145dab5d68df6dbdb09dee35871f18d50",
+  "reading_list_static.html": "01f07d78d9321a8ada771dbd23717449bde31540d8ef006d72f1a5ea246d0f99",
   "reading_words.csv": "96b920e3845ed40247e0b6ceefe8c19f397ee49af3436f4bd397ebf5c53fbc92",
   "sources.json": "1184449a27dc9861deac9c051912bf95bf8c5aacfccbe04ba3349cb7b12e479a",
-  "word_stats.json": "a3bbbb7fbcfd81256be34fbf661f4237967dce7c404d56473705d360a9934287"
+  "word_stats.json": "ccac0529bc09444a6bc512f51456908519022a2226409efa972cb2c898b30a77"
  },
- "_base": "9ba4218e3b76214f6e2a11d1362da21cbce0bcc2"
+ "_base": "8d98d03abd3953ab04c23b5084bc486326a6f036"
 }

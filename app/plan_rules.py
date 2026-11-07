@@ -5,11 +5,14 @@
 signature's digest (`signature_digest`). Pure: the standard library and the app's own data tables only — no pandas,
 no tokenizer, no settings — so the engine can import it in any process (E1.3.5's guard).
 """
+import base64
 import bisect
 import hashlib
 import json
 import re
+import sys
 import zlib
+from array import array
 
 from app.unicode_ranges import KANA_LETTERS
 
@@ -324,11 +327,97 @@ def clauses_and(*parts):
     return out
 
 
+# A sentence as the pick reads it: [text, shown (None: the text), too short, too long, source, co-words, set-phrase
+# rows, its number in its file, the hash of its text (what two sentences are told apart by), its length]. A row's
+# first sentence in each file is kept without its text (`Firsts`: text and shown None) — the plan holds every file's,
+# most of a large library's sentences — and only the few a pick shows are read (the caller's token store).
+TEXT, SHOWN, SHORT, LONG, SRC, COWORDS, CROWD, NUMBER, HASH, CHARS = range(10)
+_FIRSTS_INTS = ("src", "number", "chars", "cow_at", "cow", "crowd_at", "crowd")
+
+
+def pack_firsts(rows):
+    """The per-file first sentences as the plan file keeps them: one dict of base64 columns (fast to read whole: the
+    plan's largest table). `rows`: [(source, number, too short, too long, co-words, set-phrase rows, hash, length)]."""
+    cols = {name: array("i") for name in _FIRSTS_INTS}
+    flags, hashes = array("b"), array("I")
+    cols["cow_at"].append(0)
+    cols["crowd_at"].append(0)
+    for src, number, short, long, cowords, crowd, text_hash, chars in rows:
+        cols["src"].append(src)
+        cols["number"].append(number)
+        cols["chars"].append(chars)
+        flags.append(short | (long << 1))
+        hashes.append(text_hash)
+        cols["cow"].extend(cowords)
+        cols["cow_at"].append(len(cols["cow"]))
+        cols["crowd"].extend(crowd)
+        cols["crowd_at"].append(len(cols["crowd"]))
+    out = {"n": len(rows), "order": sys.byteorder}
+    for name, arr in list(cols.items()) + [("flags", flags), ("hash", hashes)]:
+        out[name] = base64.b64encode(arr.tobytes()).decode("ascii")
+    return out
+
+
+class Firsts:
+    """The per-file first sentences read back (`pack_firsts`): `firsts[j]` a sentence row with no text. ValueError
+    when the columns don't fit together."""
+
+    def __init__(self, packed):
+        if not isinstance(packed, dict) or packed.get("order") != sys.byteorder or type(packed.get("n")) is not int:
+            raise ValueError("the first sentences are damaged")
+        n = packed["n"]
+        cols = {}
+        for name, code in [(name, "i") for name in _FIRSTS_INTS] + [("flags", "b"), ("hash", "I")]:
+            arr = array(code)
+            try:
+                arr.frombytes(base64.b64decode(packed[name], validate=True))
+            except (KeyError, TypeError, ValueError):
+                raise ValueError("the first sentences are damaged") from None
+            cols[name] = arr
+        for name in ("src", "number", "chars", "flags", "hash"):
+            if len(cols[name]) != n:
+                raise ValueError("the first sentences are damaged")
+        for at, flat in (("cow_at", "cow"), ("crowd_at", "crowd")):
+            offsets = cols[at]
+            if len(offsets) != n + 1 or (n and (offsets[0] != 0 or offsets[-1] != len(cols[flat]))) or any(
+                    a > b for a, b in zip(offsets, offsets[1:])):
+                raise ValueError("the first sentences are damaged")
+        self.n, self.cols = n, cols
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, j):
+        c = self.cols
+        flags = c["flags"][j]
+        return (None, None, flags & 1, (flags >> 1) & 1, c["src"][j], tuple(c["cow"][c["cow_at"][j]:c["cow_at"][j + 1]]),
+                tuple(c["crowd"][c["crowd_at"][j]:c["crowd_at"][j + 1]]), c["number"][j], c["hash"][j], c["chars"][j])
+
+
+class SentenceView:
+    """The pick's sentences: a table of them with their text, then (ids from `len(table)` on) the `Firsts`."""
+
+    def __init__(self, table, firsts=None):
+        self.table, self.firsts, self.n = table, firsts, len(table)
+        self._cache = {}
+
+    def __len__(self):
+        return self.n + (len(self.firsts) if self.firsts is not None else 0)
+
+    def __getitem__(self, s):
+        if s < self.n:
+            return self.table[s]
+        found = self._cache.get(s)
+        if found is None:
+            found = self._cache[s] = self.firsts[s - self.n]
+        return found
+
+
 class ContextPicker:
     """The example sentences of each list row, down the list (one rule, the analyzer's and the plan engine's).
 
-    `sentences`: [(text, display, short, long, src, cowords, crowd, …)] — the text (stripped: what two sentences are told
-    apart by), what Context shows (None: the text), the lengths (0 / 1), the caller's source id, the sentence's unknown
+    `sentences`: rows (`TEXT` … `CHARS`, above), indexable — the text (stripped; None for one kept without it; its
+    hash is what two sentences are told apart by), what Context shows (None: the text), the lengths (0 / 1), the caller's source id, the sentence's unknown
     co-words (ids into `cowords`) and the set phrases in it that are list rows (row ids). `cowords`: [(its own row or
     -1, its clauses)]. `place(src)`: (finish rank — 0 the last finished, `NOT_FINISHED` for counted content —, the
     file's place in the study order); `audio(src)`: 0 YouTube, 1 other audio, 2 text. `recency_files`: a co-word
@@ -370,7 +459,7 @@ class ContextPicker:
         """(unknown co-words, the crowd of new set phrases, the co-words learned recently) of sentence `s` for `row`
         here; the unknowns stop at 1 under *Only i+1*."""
         sentence = self.sentences[s]
-        cowords, crowd = sentence[5], sentence[6]
+        cowords, crowd = sentence[COWORDS], sentence[CROWD]
         unknown = recent = 0
         own, known, learned, window = self._own, self._known, self._learned, self.recency
         for c in cowords:
@@ -403,18 +492,18 @@ class ContextPicker:
         sentences = self.sentences
         seen, candidates = set(), []
         pinned = None
-        if first is not None and not sentences[first][0]:
+        if first is not None and sentences[first][TEXT] == "":
             first = None
         if first is not None and not self.only:
             pinned = first
-            seen.add(sentences[first][0])
+            seen.add(sentences[first][HASH])
         elif first is not None and first not in pool:
             pool = [first] + list(pool)              # (`Only i+1`: a candidate like the rest, at the front)
         for i, s in enumerate(pool):
-            text = sentences[s][0]
-            if not text or text in seen:
+            sentence = sentences[s]
+            if sentence[TEXT] == "" or sentence[HASH] in seen:
                 continue
-            seen.add(text)
+            seen.add(sentence[HASH])
             unknown, crowd, recent = self._weigh(row, seq, s)
             if self.only and unknown:
                 continue
@@ -431,12 +520,12 @@ class ContextPicker:
             # One example the learner can hear: the best audio candidate (re-weighed here, against the words learned
             # above) takes the last slot — the free one, else the last one filled — and never under Only i+1 unless
             # it is i+1 itself.
-            texts = {sentences[s][0] for s in chosen}
+            texts = {sentences[s][HASH] for s in chosen}
             best = None
             for i, s in enumerate(audio_pool):
                 sentence = sentences[s]
-                text, short, long, src = sentence[0], sentence[2], sentence[3], sentence[4]
-                if not text or text in texts:
+                short, long, src = sentence[SHORT], sentence[LONG], sentence[SRC]
+                if sentence[TEXT] == "" or sentence[HASH] in texts:
                     continue
                 unknown = self._weigh(row, seq, s)[0]
                 if self.only and unknown:
@@ -452,8 +541,8 @@ class ContextPicker:
         return chosen
 
     def shown(self, s):
-        """What Context shows for sentence `s`."""
-        text, display = self.sentences[s][0], self.sentences[s][1]
+        """What Context shows for sentence `s` (None for one kept without its text: the caller reads it)."""
+        text, display = self.sentences[s][TEXT], self.sentences[s][SHOWN]
         return text if display is None else display
 
 

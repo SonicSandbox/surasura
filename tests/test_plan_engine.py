@@ -20,7 +20,7 @@ import sys
 
 import pytest
 
-from app import analyzer, anki_match, plan_engine, plan_rules
+from app import analyzer, anki_match, plan_engine, plan_rules, token_index
 from tests import plan_file_cases as cases
 from tests.test_plan_file import (PRIORITY_COLUMNS, PROGRESSIVE_COLUMNS, _same, read_csv, read_run, replay,
                                   _rp2_orders)
@@ -89,6 +89,13 @@ def _results_dir(root):
     return os.path.join(root, "results")
 
 
+def _texts(root, language):
+    """The re-pick's `texts` for a case's run (`analyzer.plan_texts`): its token store's cached sentences (F7: the
+    per-file first sentences are kept without their text)."""
+    store = token_index.open_store(language, os.path.join(root, "index", f"token_store_{language}.db"))
+    return analyzer.plan_texts(language, os.path.join(root, "data", language), store)
+
+
 def _context_columns(run):
     n = run["plan"]["header"].get("max_contexts") or 0
     return [f"{c} {i}" for i in range(1, n + 1) for c in ("Context", "Src")]
@@ -133,8 +140,9 @@ def test_the_engine_in_the_plans_own_order_is_the_generate(runs, case):
     _check_parity(result, run)
     _check_index(result, root, cases.ALL_CASES[case][0])
     # F7: re-picked in its own order, the sentences are the Generate's
-    _check_parity(eng.result(pick=True), run, contexts=True)
-    _check_index(eng.result(pick=True), root, cases.ALL_CASES[case][0])
+    texts = _texts(root, cases.ALL_CASES[case][0])
+    _check_parity(eng.result(pick=True, texts=texts), run, contexts=True)
+    _check_index(eng.result(pick=True, texts=texts), root, cases.ALL_CASES[case][0])
     reference = replay(run["plan"], [(f, entry[1]) for f, entry in enumerate(run["plan"]["files"])])
     assert [(r["Word"], r["Reading"], r["Score"]) for r in reference["priority"]] == \
         [(r["Word"], r["Reading"], r["Score"]) for r in result.priority]
@@ -212,7 +220,7 @@ def test_a_replan_in_another_order_is_that_orders_generate(runs, other_orders, c
     # F7: the re-pick in that order is that order's Generate on the example sentences too (Context 1 and the near
     # candidates from the plan's per-file first sentences), and so is Junban's index with its sentences
     language = cases.ALL_CASES[case][0]
-    picked = eng.result(pick=True)
+    picked = eng.result(pick=True, texts=_texts(root, language))
     _check_parity(picked, other, contexts=True)
     _check_index(picked, other_root, language)
 
@@ -240,7 +248,7 @@ def test_moves_that_make_another_order_give_that_orders_generate(runs, other_ord
     result = eng.result()
     _check_parity(result, other)
     _check_index(result, other_root, cases.ALL_CASES[case][0], same_sentences=False)
-    _check_parity(eng.result(pick=True), other, contexts=True)
+    _check_parity(eng.result(pick=True, texts=_texts(root, cases.ALL_CASES[case][0])), other, contexts=True)
 
 
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh", "every-ja"])
@@ -495,7 +503,10 @@ def test_a_damaged_or_foreign_plan_is_refused_whole(runs, tmp_path):
             (lambda t, f: _table(t, "pools").pop(), "pools"),
             (lambda t, f: _table(t, "pools").append(_table(t, "pools")[0]), "twice"),
             (lambda t, f: _table(t, "pools")[0].__setitem__(2, [-1]), "pools"),
-            (lambda t, f: f[0].__setitem__("fs", [header["keys"] + 1, 0]), "first sentences")):
+            (lambda t, f: f[0].__setitem__("fs", [header["keys"] + 1, 0]), "first sentences"),
+            # the packed per-file first sentences (kept without their text): a column that isn't base64, one cut short
+            (lambda t, f: _table(t, "firsts")[0].__setitem__("cow", "!!"), "first sentences"),
+            (lambda t, f: _table(t, "firsts")[0].__setitem__("n", _table(t, "firsts")[0]["n"] + 1), "first sentences")):
         t2, f2 = json.loads(json.dumps(tables)), json.loads(json.dumps(files))
         mutate(t2, f2)
         _write(bad, [header] + t2 + f2)
@@ -512,7 +523,7 @@ def _table(tables, name):
     return next(line for line in tables if name in line)[name]
 
 
-F7_TABLES = ("finished", "sentences", "cowords", "pools")
+F7_TABLES = ("finished", "sentences", "cowords", "pools", "firsts")
 
 
 def _older(lines, format):

@@ -34,7 +34,7 @@ def load_plan(path):
     with gzip.open(path, "rt", encoding="utf-8") as f:
         lines = [json.loads(line) for line in f]
     plan = {"header": lines[0], "files": [], "keys": [], "rows": [], "ties": [], "spell": [], "per_file": [],
-            "finished": [], "sentences": [], "cowords": [], "pools": []}
+            "finished": [], "sentences": [], "cowords": [], "pools": [], "firsts": []}
     for line in lines[1:]:
         if "f" in line:
             plan["per_file"].append(line)

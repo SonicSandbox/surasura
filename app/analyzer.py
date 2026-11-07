@@ -3612,6 +3612,7 @@ def plan_lines(run):
         "max_contexts": n_contexts, "files": len(found_files), "keys": len(keys),
         # The pick's own settings (F7): the recency window, the audio rule.
         "recency_files": run["pick"]["recency_files"], "ensure_audio": run["pick"]["ensure_audio"],
+        "max_chars": run["pick"]["max_chars"], "near_files": plan_rules.NEAR_FILES,
         "shared_phrases": sorted(index[key] for key in run["shared_phrases"] if key in index),
         # [k, the phrase whose entry holds the row] for each phrase row (format 2): an arrival's phrase counts for the
         # row only when it is that phrase (`_phrase_rows`), which the row's Word and Reading alone can't say.
@@ -3658,20 +3659,12 @@ def plan_lines(run):
                         ("pools", pools)):
         for start in range(0, len(table), _PLAN_CHUNK):
             yield _plan_json({name: table[start:start + _PLAN_CHUNK]})
-    row_phrase = {phrase_keys[key]: index[key] for key in phrase_keys if key in index}
 
     counted = [0] * len(keys)
     for f, (file_path, _label, _weight, _type) in enumerate(found_files):
-        uses, unusual, phrase_unusual, word_firsts, phrase_firsts = plan_files[f]
-        firsts = []                     # [k, its first sentence's number here, …] for the listed rows met here
-        for key, no in word_firsts.items():
-            k = index.get(key)
-            if k is not None and rows[k] is not None and key not in phrase_keys:
-                firsts += (k, no)
-        for phrase, no in phrase_firsts.items():
-            k = row_phrase.get(phrase)
-            if k is not None and rows[k] is not None:
-                firsts += (k, no)
+        uses, unusual, phrase_unusual, row_firsts = plan_files[f]
+        # [k, its first sentence here (an id in `sentences`), …] for the listed rows met here
+        firsts = [x for k, s in zip(row_firsts[0::2], row_firsts[1::2]) if rows[k] is not None for x in (k, s)]
         credits = run["credit_cache"].get(file_path) or {}
         main, spellings = [], []
         for key, n in uses.items():
@@ -3796,7 +3789,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     _progress("Picking sentences")
     eng = plan_engine.Engine(plan)
     eng.replan(order)
-    result = eng.result(pick=True, texts=plan_texts(language, data_dir, store))
+    result = eng.result(pick=True)
     if not result.priority:
         print("The journey can't be redrawn from the plan (no list): generating.")
         return None                         # (a run with no list writes none: the Generate says so its own way)
@@ -3897,37 +3890,6 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     _write_redraw_marker(plan.header["run_signature"], run_sig)
     print("Redrew the journey from the plan (only the order moved).")
     return 1 if report_failed else 0
-
-
-class _LazyTagger:
-    """A Japanese tagger made the first time a sentence needs one (`strip_verse_number`: a sentence led by digits)."""
-
-    def __init__(self):
-        self._tagger = None
-
-    def __call__(self, text):
-        if self._tagger is None:
-            self._tagger = JapaneseTokenizer().tagger
-        return self._tagger(text)
-
-
-def plan_texts(language, data_dir, store):
-    """The `texts` a re-pick asks for a row's first sentence the plan holds no text of (`plan_engine.Engine.contexts`,
-    F7): {rel_path: [sentence number, …]} -> {(rel_path, number): (text, what Context shows)}, read from the token
-    store's cached sentences of each file (`store`: an open token store; the numbers are the walk's, which reads the
-    same cache). A file the store doesn't hold, or a number past its end, is left out."""
-    tagger = _LazyTagger() if language == "ja" else None
-
-    def texts(asked):
-        out = {}
-        for rel, numbers in asked.items():
-            sentences = store.file_tokens(os.path.join(data_dir, rel))
-            for no in numbers:
-                if 0 <= no < len(sentences):
-                    text = sentences[no][0].strip()
-                    out[(rel, no)] = (text, strip_verse_number(text, tagger) if tagger is not None and text else text)
-        return out
-    return texts
 
 
 def write_plan_file(results_dir, lines):
@@ -5682,6 +5644,18 @@ def main():
             plan_rules.offer_spread(entry["candidate_contexts"], entry["best_contexts"], new_ctx, plan_rules.POOL, 7,
                                     5, 4)
 
+    def _first_here(entry, ctx, firsts, key):
+        """A row's first sentence in this file (F7): the plan's (`firsts`: Context 1 and a near candidate wherever the
+        file goes), and while the walk has met it in at most NEAR_FILES + 1 files, one of the files nearest its first
+        meeting in this order (`_near`; the first is its first sentence)."""
+        if _plan_on:
+            firsts[key] = ctx
+        near = entry.get("_near")
+        if near is None:
+            entry["_near"] = [ctx]
+        elif len(near) <= plan_rules.NEAR_FILES:
+            near.append(ctx)
+
     def _candidate(short, long, cost, lrs, s_text, src_idx, marks, n_unknown, text_hash, s_no, finished=None):
         """A candidate example as the shortlists keep it: (too short, too long, cost, its unknowns, the text, its
         source, its set phrases, the order-free key, its sentence number in its file, the audio key or None). A
@@ -6007,12 +5981,10 @@ def main():
                     if _phrase_known.get(index) or (_phrase_uses is not None and _phrase_uses[index] < floor_count):
                         continue
                     entry = phrase_stats[index]
-                    if entry.get("_fsq") != seq_idx:
-                        # The phrase's first sentence in this file (the plan's: Context 1 wherever the file goes)
-                        entry["_fsq"] = seq_idx
-                        if _plan_on:
-                            file_phrase_firsts[index] = s_no
-                    if not _could_take(entry, is_too_short, is_too_long, src_idx, file_is_spoken, is_over_hard_max):
+                    first_here = entry.get("_fsq") != seq_idx
+                    if first_here:
+                        entry["_fsq"] = seq_idx     # its first sentence in this file: below, whatever the shortlists
+                    elif not _could_take(entry, is_too_short, is_too_long, src_idx, file_is_spoken, is_over_hard_max):
                         continue
                     if unknown_uses is None:
                         unknown_uses = Counter(unknown_keys)
@@ -6036,10 +6008,11 @@ def main():
                         freqs = _unknown_counts(lrs)
                     if s_hash is None:
                         s_hash = plan_rules.text_hash_of(s_text)
-                    _offer_context(entry, _candidate(is_too_short, is_too_long,
-                                                     rolling_context_cost(_phrase_uses_of(index), freqs), lrs, s_text,
-                                                     src_idx, marks, len(freqs), s_hash, s_no),
-                                   file_is_spoken, is_over_hard_max)
+                    new_ctx = _candidate(is_too_short, is_too_long, rolling_context_cost(_phrase_uses_of(index), freqs),
+                                         lrs, s_text, src_idx, marks, len(freqs), s_hash, s_no)
+                    if first_here:
+                        _first_here(entry, new_ctx, file_phrase_firsts, index)
+                    _offer_context(entry, new_ctx, file_is_spoken, is_over_hard_max)
 
             # 3. Update Best Contexts (once per unique unknown per sentence)
             if not targets:
@@ -6065,11 +6038,9 @@ def main():
                 if _reachable is not None and key not in _reachable:
                     continue                # never a row: no example sentence of its is ever shown
                 entry = word_stats[key]
-                if entry.get("_fsq") != seq_idx:
-                    # The word's first sentence in this file: its Context 1 wherever the file goes (the plan's)
-                    entry["_fsq"] = seq_idx
-                    if _plan_on:
-                        file_firsts[key] = s_no
+                first_here = entry.get("_fsq") != seq_idx
+                if first_here:
+                    entry["_fsq"] = seq_idx         # its first sentence in this file: kept below, whatever the shortlists
 
                 # Rank this candidate by how many of the sentence's OTHER unknown words are
                 # rarer than this word — a proxy for how many stay unknown when the learner
@@ -6078,7 +6049,8 @@ def main():
                 cost = rolling_context_cost(_uses(key), unk_freqs)
                 candidates, best = entry["candidate_contexts"], entry["best_contexts"]
                 first = entry["first_context"]
-                if first and not audio_too and len(candidates) >= plan_rules.POOL and len(best) >= plan_rules.POOL:
+                if (not first_here and not audio_too and len(candidates) >= plan_rules.POOL
+                        and len(best) >= plan_rules.POOL):
                     head = (is_too_short, is_too_long, cost, n_unknown, s_hash)
                     if head > candidates[-1][7][:5] and head > best[-1][7][:5]:
                         # no chance of the shortlist: worse than either part's worst (each part is full), on its key's
@@ -6086,6 +6058,8 @@ def main():
                         continue
                 new_ctx = _candidate(is_too_short, is_too_long, cost, unique_lrs, s_text, src_idx, marks, n_unknown,
                                      s_hash, s_no)
+                if first_here:
+                    _first_here(entry, new_ctx, file_firsts, key)
                 if not first:
                     entry["first_context"] = new_ctx
 
@@ -6147,6 +6121,7 @@ def main():
         entry.pop("_fsq", None)         # (the file a word's first sentence there was last recorded for)
     for entry in phrase_stats.values():
         entry.pop("_fsq", None)
+    # (`_near`, the first sentences of the files nearest each row's first meeting, stays for the pick: popped there)
 
     # U9's "lower": a word the learner can read through its known word (利用者) scores half — as does a compound
     # none of whose parts is an unknown (上層部).
@@ -6456,15 +6431,32 @@ def main():
 
     _keep = {}
     picked = {}                                         # row -> (first, shortlist + Finished, audio): the plan file's
+    nearby = {}                                         # row -> its first sentences in the next files holding it
     for r in preliminary_rows:
         target_lr = (r["Word"], r["Reading"])
         data = word_stats[target_lr]
         first = data["first_context"]
         finished = data.get("finished_contexts") or ()
+        near = [s for s in map(_sentence, (data.pop("_near", None) or ())[1:]) if len(sentences[s][0]) <= max_chars]
         pool = [_sentence(c) for c in r["_CandidateContexts"]] + [_sentence(c) for c in finished]
         audio = ([_sentence(c) for c in data["audio_contexts"]]
                  + [_sentence(c) for c in finished if src_audio_rank[c[5]] < 2]) if ENSURE_AUDIO_EXAMPLE else []
         picked[row_of[target_lr]] = (None if first is None else _sentence(first), pool, audio)
+        nearby[row_of[target_lr]] = near             # (the order's: never the plan's pools)
+
+    # Every listed row's first sentence in each file (the plan's per-file "fs"): sentence ids, the ctx let go
+    phrase_row_key = {index: key for key, index in phrase_keys.items()}
+    for f, record in enumerate(plan_files):
+        ids = []
+        for key, ctx in record[3].items():
+            k = row_of.get(key)
+            if k is not None and key not in phrase_keys:
+                ids += (k, _sentence(ctx))
+        for index, ctx in record[4].items():
+            k = row_of.get(phrase_row_key.get(index))
+            if k is not None and phrase_keys.get(phrase_row_key.get(index)) == index:
+                ids += (k, _sentence(ctx))
+        plan_files[f] = record[:3] + (ids,)
 
     while len(src_place) < len(source_list):
         src_place.append((plan_rules.NOT_FINISHED, 0))
@@ -6479,7 +6471,7 @@ def main():
         target_seq = r["_MinSeq"]       # the file where the learner first meets THIS word
         k = row_of[target_lr]
         first, pool, audio = picked[k]
-        chosen = picker.pick(k, target_seq, first, pool, audio)
+        chosen = picker.pick(k, target_seq, first, pool + nearby[k], audio)
         if chosen is None:
             words_skipped_i_plus_one += 1
             continue                    # Only i+1 and no i+1 sentence: skip this word entirely
@@ -6989,7 +6981,8 @@ def main():
                 "prog": plan_prog,
                 "pick": {"keys": row_keys, "sentences": sentences, "numbers": sentence_nos, "cowords": cowords,
                          "picked": picked, "place": src_place, "sources": source_list,
-                         "recency_files": RECENCY_FILES, "ensure_audio": bool(ENSURE_AUDIO_EXAMPLE)}}))
+                         "recency_files": RECENCY_FILES, "ensure_audio": bool(ENSURE_AUDIO_EXAMPLE),
+                         "max_chars": max_chars}}))
             print(f"Saved the plan file ({_plan_size:,} bytes).")
         except Exception as e:
             print(f"Warning: could not write the plan file ({e}); the last one is left as it was.")

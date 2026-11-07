@@ -213,8 +213,9 @@ def progressive_pass(files, known, lemmas, lemma_of, keep, rank, target_coverage
 # --------------------------------------------------------------------------------------------------------------- #
 # Example sentences (F7, RP-11; Sonic 2026-11-06: "build it with the new version only. 60 is fine.")
 # --------------------------------------------------------------------------------------------------------------- #
-# A word's candidate sentences never depend on the order: the walk keeps, per list row, an order-free shortlist of
-# POOL sentences (the whole library's counts, then a hash of the text — `order_free_key`; at most PER_FILE from one
+# A word's candidate sentences never depend on the order: the walk keeps, per list row, its first sentence in every
+# file that holds it (Context 1 wherever the file goes, and — NEAR_FILES of them after its first meeting — the
+# sentences right after that meeting, whatever the order), an order-free shortlist of POOL sentences (the whole library's counts, then a hash of the text — `order_free_key`; at most PER_FILE from one
 # file, so a very common word's shortlist is spread across the library), an audio shortlist of AUDIO_POOL and up to
 # FINISHED_POOL sentences from Finished content (newest finished first among equally easy ones). Which three of them
 # a row shows is the order's: `ContextPicker`, down the list, against the words learned above it — the analyzer's
@@ -223,6 +224,7 @@ POOL = 60
 AUDIO_POOL = 24
 FINISHED_POOL = 15
 PER_FILE = 2
+NEAR_FILES = 10                 # the pick also weighs a row's first sentence in each of the next 10 files holding it
 NOT_FINISHED = 1 << 30          # a sentence's finish rank when it isn't from Finished content (0 = finished last)
 
 

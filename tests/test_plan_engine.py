@@ -20,7 +20,7 @@ import sys
 
 import pytest
 
-from app import analyzer, anki_match, plan_engine, plan_rules, token_index
+from app import analyzer, anki_match, plan_engine, plan_rules
 from tests import plan_file_cases as cases
 from tests.test_plan_file import (PRIORITY_COLUMNS, PROGRESSIVE_COLUMNS, _same, read_csv, read_run, replay,
                                   _rp2_orders)
@@ -89,12 +89,6 @@ def _results_dir(root):
     return os.path.join(root, "results")
 
 
-def _texts(root, language):
-    """The re-pick's `texts` for a case's run (`analyzer.plan_texts`): its token store's cached sentences."""
-    store = token_index.open_store(language, os.path.join(root, "index", f"token_store_{language}.db"))
-    return analyzer.plan_texts(language, os.path.join(root, "data", language), store)
-
-
 def _context_columns(run):
     n = run["plan"]["header"].get("max_contexts") or 0
     return [f"{c} {i}" for i in range(1, n + 1) for c in ("Context", "Src")]
@@ -138,8 +132,7 @@ def test_the_engine_in_the_plans_own_order_is_the_generate(runs, case):
     result = eng.result()
     _check_parity(result, run)
     _check_index(result, root, cases.ALL_CASES[case][0])
-    # F7: re-picked in its own order, the sentences are the Generate's — with no store at hand too (every first
-    # sentence is the plan's own here)
+    # F7: re-picked in its own order, the sentences are the Generate's
     _check_parity(eng.result(pick=True), run, contexts=True)
     _check_index(eng.result(pick=True), root, cases.ALL_CASES[case][0])
     reference = replay(run["plan"], [(f, entry[1]) for f, entry in enumerate(run["plan"]["files"])])
@@ -216,10 +209,10 @@ def test_a_replan_in_another_order_is_that_orders_generate(runs, other_orders, c
     result = eng.replan(_order_of(plan, _orders(cases.ALL_CASES[case][0])[name]))
     _check_parity(result, other)
     _check_index(result, other_root, cases.ALL_CASES[case][0], same_sentences=False)
-    # F7: the re-pick in that order is that order's Generate on the example sentences too (Context 1 read from the
-    # store where the order gave a word another first file), and so is Junban's index with its sentences
+    # F7: the re-pick in that order is that order's Generate on the example sentences too (Context 1 and the near
+    # candidates from the plan's per-file first sentences), and so is Junban's index with its sentences
     language = cases.ALL_CASES[case][0]
-    picked = eng.result(pick=True, texts=_texts(root, language))
+    picked = eng.result(pick=True)
     _check_parity(picked, other, contexts=True)
     _check_index(picked, other_root, language)
 
@@ -247,7 +240,7 @@ def test_moves_that_make_another_order_give_that_orders_generate(runs, other_ord
     result = eng.result()
     _check_parity(result, other)
     _check_index(result, other_root, cases.ALL_CASES[case][0], same_sentences=False)
-    _check_parity(eng.result(pick=True, texts=_texts(root, cases.ALL_CASES[case][0])), other, contexts=True)
+    _check_parity(eng.result(pick=True), other, contexts=True)
 
 
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh", "every-ja"])

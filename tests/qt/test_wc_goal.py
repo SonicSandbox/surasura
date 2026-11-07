@@ -88,7 +88,6 @@ def test_ctrl_click_on_a_goal_tile_repaints_that_tile_alone(world):
 
 
 # --- R5: the tile's ⋯ menu built once ------------------------------------------------------------------------------ #
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found-C C1: a Goal tile's ⋯ menu is made at each open")
 def test_r5_a_tiles_menu_opened_again_makes_no_widget(world):
     """A tile's ⋯, opened, closed, opened again: the second open shows the menu the first built and makes no widget;
     no view is built."""

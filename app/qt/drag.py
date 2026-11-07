@@ -887,7 +887,10 @@ def _empty_menu(m):
         for act in menu.actions():
             menu.removeAction(act)
             if act.parent() is menu:
-                act.deleteLater()
+                if act.isSeparator():
+                    act.setParent(None)              # gone now: nothing can pick it (a pick lands after the hide)
+                else:
+                    act.deleteLater()
     if lent:
         m.spare.extend(lent)
         lent.clear()

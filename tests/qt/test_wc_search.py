@@ -48,8 +48,6 @@ def test_down_in_the_results_repaints_only_the_two_hits_that_change(world):
     assert outside == [], (outside, w.report())
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="WC found-C C2: each fill of the results makes every hit row again (the same search too)")
 def test_r5_the_results_opened_closed_with_esc_and_opened_again_by_typing_make_no_widget(world):
     """The results opened, closed with Esc, and opened again by typing the same search: the same overlay comes back
     with the same hits, and the reopen makes no widget (R5: built once)."""

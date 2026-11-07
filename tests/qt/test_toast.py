@@ -233,3 +233,23 @@ def test_a_new_toast_lays_out_nothing_outside_the_toast(qapp):
     finally:
         stage.close()
         freeze.set_frozen(None)
+
+
+def test_a_first_toast_shown_at_once_fits_its_words_to_the_width_it_shows_at(qapp):
+    """Shown with no motion (frozen, or reduced to a fade's end): the row is laid out at the card's placed size before
+    the words are fitted — never at the hidden body's size from before, which elided a short message to its first
+    letter (the toast's row lives in `body`, whose own resize comes only once it shows)."""
+    freeze.set_frozen(True)
+    stage = QWidget()
+    try:
+        stage.resize(1000, 640)
+        stage.show()
+        host = toast.ToastHost(stage)
+        host.show(JA)
+        QApplication.processEvents()
+        card = host.card
+        assert card.isVisible() and card.text.text() == JA and card.text.width() >= card.width() // 2
+        assert card.body.geometry() == card.rect()
+    finally:
+        stage.close()
+        freeze.set_frozen(None)

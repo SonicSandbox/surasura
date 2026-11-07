@@ -143,9 +143,15 @@ class ToastCard(motion.Overlay):
 
     shown_fit = fit_text            # (Report a problem's picture mode fits it again, the message scrubbed)
 
+    def lay_out(self):
+        """The row laid out at the card's size now, shown or not (a hidden body's own resize comes only as it shows,
+        after the card's: the text would be fitted to the width it had before)."""
+        self.body.setGeometry(self.rect())
+        self.body.layout().setGeometry(self.body.rect())
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.body.setGeometry(self.rect())
+        self.lay_out()
         self.fit_text()
 
     def paintEvent(self, _event):
@@ -281,8 +287,7 @@ class ToastHost(QObject):
         x = (p.width() - width) // 2
         y = p.height() - theme.MOTION["toast-bottom"] - height
         card.setGeometry(x, y, width, height)
-        card.body.setGeometry(0, 0, width, height)  # (the card's own resize comes only once it shows)
-        lay.activate()                             # the text's width at this size (hidden, nothing else lays it out)
+        card.lay_out()                             # the text's width at this size (hidden, nothing else lays it out)
         card.fit_text()
 
     def eventFilter(self, obj, event):

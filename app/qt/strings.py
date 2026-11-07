@@ -548,12 +548,12 @@ PHASE_STRIP_NAME = "What's running"
 PHASE_NAMES = {"arrivals": "Arrivals", "surasura": "Surasura", "miner": "Anki Miner", "junban": "Junban 順",
                "anki": "Anki"}
 PHASE_MARKS = {"arrivals": "届", "surasura": "ス", "junban": "順"}       # Anki Miner and Anki show their logos
-PHASE_ABOUT = {                                    # beside the name: what it does, short and plain
-    "arrivals": "finds new episodes and books in your folders",
-    "surasura": "makes your word list",
-    "miner": "makes cards from your episodes",
-    "junban": "puts Anki's new cards in your list's order",
-    "anki": "reads the words you know, and shows when cards wait for Anki",
+PHASE_ABOUT = {                                    # beside the name: what it is, a few words (help cards, HC-2)
+    "arrivals": "new files in your folders",
+    "surasura": "your word list",
+    "miner": "makes your cards",
+    "junban": "Anki's order",
+    "anki": "your known words",
 }
 PHASE_IDLE = "Nothing running now"
 PHASE_DONE = "Last: {what} — done {time}"
@@ -583,11 +583,11 @@ TOOL_MENU_TIP = "Right-click: Show · Stop · Close"           # try a9.1: the i
 TOOL_SHOW = ("Show", "Bring the window back")
 TOOL_STOP = ("Stop", "Stop what it is doing — the window stays open")
 TOOL_CLOSE = ("Close", "Close the window — anything it is doing stops too")
-PHASE_PRESS = "Press to open its settings"         # the hover's last line, on a circle that has some (mouse or keys)
+PHASE_PRESS = "• Click: its settings"         # the hover's last line, on a circle that has some (mouse or keys)
 # a7 (Sonic 2026-10-29): an amber circle's last line — what waits for your decision, and where a press takes you to it
-PHASE_PRESS_NEEDS = "Waiting for your decision: press to answer it in Needs you"
-PHASE_PRESS_DECK = "Waiting for your decision: press to pick your deck in 順's window"
-PHASE_PRESS_RESTORE = "Waiting for your decision: press to undo the unfinished reorder in 順's window"
+PHASE_PRESS_NEEDS = "• Click: decide it in Needs you"
+PHASE_PRESS_DECK = "• Click: pick your deck in 順's window"
+PHASE_PRESS_RESTORE = "• Click: undo the unfinished reorder in 順's window"
 # T6: 届's words while a source folder is gone (its *Needs you* card stands)
 PHASE_FOLDER_GONE = "{name} was moved or deleted: Needs you asks what to do"
 PHASE_FOLDERS_GONE = "{n} folders were moved or deleted: Needs you asks what to do"
@@ -596,8 +596,8 @@ PHASE_STARTING = "Starting…"                       # lit by a press whose job 
 # work is under way and can be seen somewhere — the title Anki Miner makes cards for, 順's window — opens there; its
 # right-click is the bottom bar's one icon menu (`tool_icons.menu_of`): *Show* · *Stop* (where a stop exists) ·
 # *Settings*
-PHASE_PRESS_SHOW = "Press to see it"
-PHASE_MENU_TIP = "Right-click: {items}"
+PHASE_PRESS_SHOW = "• Click: see it"
+PHASE_MENU_TIP = "• Right-click: {items}"
 PHASE_SHOW = ("Show", "Go to where it is happening: the title Anki Miner is making cards for, or 順's window")
 PHASE_STOP = ("Stop", "Stop what it is doing now. Cards already made stay; one being written to Anki is finished first")
 PHASE_SETTINGS = ("Settings", "Open its settings")

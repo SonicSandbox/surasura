@@ -399,3 +399,25 @@ def test_update_my_journey_now_says_already_running_while_a_generate_is_on_its_w
     world.win.page_widgets["current"].view_model = type("V", (), {"rows": (object(),)})()
     world.controller.push(state=G.RUNNING, step="Counting words", done=1, total=2)
     assert wait_until(lambda: world.win.help_try_ready("update_journey") == strings.HELP_TRY_BUSY)
+
+
+def test_play_once_under_reduced_motion_steps_every_frame_and_rests_on_the_last(qapp, monkeypatch):
+    # the intent keeper: the clock runs no loop under Reduced, so ▶ (the learner's own press) steps the frames itself
+    from app.qt import freeze, motion
+    monkeypatch.setattr(freeze, "frozen", lambda: False)
+    motion.clock().mode.set_setting("reduced")
+    try:
+        stage = QWidget()
+        stage.resize(600, 400)
+        stage.show()
+        player = help_card.ClipPlayer(stage, reader_factory=lambda path, size: _FakeReader(3))
+        player.show()
+        player.set_clip("clip.webp", None, JA)
+        assert player.play.isVisibleTo(stage) and player.decoded == 0
+        player.play.click()
+        assert wait_until(lambda: player.swaps == 3)
+        assert wait_until(lambda: not player._once and player.play.isVisibleTo(stage))   # ▶ again: one more play
+        assert player._image is not None                                  # resting on its last frame, not the poster
+        stage.close()
+    finally:
+        motion.clock().mode.set_setting("full")

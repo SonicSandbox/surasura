@@ -2791,9 +2791,10 @@ class ShellWindow(QMainWindow):
         if key == "update_journey":
             view = getattr(self.page_widgets.get("current"), "view_model", None)
             ok = self.duties is not None and view is not None and bool(getattr(view, "rows", None))
-            state = getattr(getattr(self.duties, "generate_state", None), "state", None)
-            if ok and state in ("queued", "running", "cancelling"):
-                return strings.HELP_TRY_BUSY
+            gen = getattr(self.duties, "generate_state", None)
+            if ok and getattr(gen, "state", None) in ("queued", "running", "cancelling") and not getattr(gen, "quiet",
+                                                                                                         False):
+                return strings.HELP_TRY_BUSY            # (a background one: the press is yours, taking its place)
             return None if ok else strings.HELP_TRY_MISSING[key]
         return strings.HELP_TRY_MISSING.get(key)
 

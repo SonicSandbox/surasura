@@ -72,6 +72,7 @@ class ClipPlayer(QWidget):
         self._due = 0.0                     # time.monotonic() the next frame may show from
         self._anim = None
         self._once = False                  # ▶ pressed under Reduced motion: play to the end, once
+        self._rested = False                # ... and played: it rests on its last frame
         self._watched = None
         self.decoded = 0                    # frames decoded (tests)
         self.swaps = 0                      # frames shown (tests)
@@ -107,20 +108,37 @@ class ClipPlayer(QWidget):
         self._reader = {}
         self._busy = False
         self._image = self._poster = None
-        self._once = False
+        self._once = self._rested = False
         self.play.hide()
 
     def play_once(self):
         """▶ (Reduced motion): the clip once, from its start — the learner's own choice."""
         if not self.clip:
             return
-        self._once = True
+        self._once, self._rested = True, False
         self._token += 1
         self._ahead.clear()
         self._reader = {}
         self._busy = False
         self.play.hide()
+        if motion.clock().mode.reduced:             # (no loop on the clock under Reduced: stepped at its frames)
+            self._fill()
+            QTimer.singleShot(0, self._step_once)
+            return
         self._sync(force=True)
+
+    def _step_once(self):
+        """▶ under Reduced: the next frame, then the next at its own delay, until the clip ends — never a loop."""
+        if sip.isdeleted(self) or not self.isVisible() or not (self._once or self._ahead):
+            return                                  # (ended: the frames still decoded are shown, the last one stays)
+        delay = 40
+        if self._ahead:
+            image, delay = self._ahead.popleft()
+            self._image = image
+            self.swaps += 1
+            self.update()
+        self._fill()
+        QTimer.singleShot(max(20, int(delay or 0)), self._step_once)
 
     # --- the one clock ----------------------------------------------------------------------------------------- #
     def _wanted(self):
@@ -145,7 +163,7 @@ class ClipPlayer(QWidget):
             self._fill()
         else:
             self._end_anim()
-            if reduced and not self._once and self._image is not None and self._poster is not None:
+            if reduced and not self._once and not self._rested and self._image is not None                     and self._poster is not None:
                 self._image = None              # back on the poster (its *after*)
                 self.update()
 
@@ -186,6 +204,7 @@ class ClipPlayer(QWidget):
             self._ahead.append((image, delay))
         if ended and self._once:
             self._once = False                  # played once: it rests on its last frame
+            self._rested = True
             if not self._ahead and image is None:
                 self._end_anim()
             QTimer.singleShot(max(0, int(delay or 0)), self._sync)

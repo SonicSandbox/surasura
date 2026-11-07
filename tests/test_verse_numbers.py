@@ -136,6 +136,35 @@ def test_a_verse_number_still_goes_with_either_tagger(any_tagger, raw, shown):
     assert analyzer.strip_verse_number(raw, any_tagger) == shown
 
 
+# A fullwidth space after the number. MeCab skips an ASCII space but tags 「　」 空白, and 空白 kept the number, so
+# 「13　そこで…」 stayed whole; and after a fullwidth space UniDic reads 人 as a plain noun ('person'), not a counter —
+# so the space is read as none, as an ASCII one is.
+
+@pytest.mark.parametrize("raw, shown", [
+    ("13　そこでモーサヤは、主に命じられたとおりにした。", "そこでモーサヤは、主に命じられたとおりにした。"),
+    ("１３　そこでモーサヤは、主に命じられたとおりにした。", "そこでモーサヤは、主に命じられたとおりにした。"),
+    ("13　　そこで彼らは荒れ野へ退いた。", "そこで彼らは荒れ野へ退いた。"),      # two fullwidth spaces
+    ("13 そこで彼らは荒れ野へ退いた。", "そこで彼らは荒れ野へ退いた。"),        # the ASCII space, unchanged
+])
+def test_a_verse_number_before_a_space_of_either_width_is_dropped(any_tagger, raw, shown):
+    assert analyzer.strip_verse_number(raw, any_tagger) == shown
+
+
+@pytest.mark.parametrize("sentence", [
+    "3　人で行こう。",            # 人 after the space is tagged a plain noun: read without the space, it counts
+    "３　人で行こう。",
+    "10　年前に会った。",
+    "２　つ目の角を曲がって。",
+    "5　番目の部屋だ。",
+    "100　万円もするの？",
+    "3 人で行こう。",             # the ASCII space, unchanged
+    "13　「そこで」と言った。",    # punctuation after the space still keeps it
+    "13　",                        # nothing after the space
+])
+def test_a_counted_number_before_a_space_of_either_width_stays(any_tagger, sentence):
+    assert analyzer.strip_verse_number(sentence, any_tagger) == sentence
+
+
 def test_a_run_keeps_a_written_number_and_still_drops_the_verse_numbers(ja_env):
     """End to end: a book's numbered verses beside sentences that open with a written number, both widths — the
     Context columns show the verses without their numbers and the written numbers whole."""

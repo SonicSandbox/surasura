@@ -70,3 +70,23 @@ def test_r5_the_results_opened_closed_with_esc_and_opened_again_by_typing_make_n
     if reopened is not results or len(hits_of(results)) != shown:
         pytest.fail(f"the reopen didn't show the same overlay with the same hits: {w.report()}")
     assert w.created == 0, w.report()
+
+
+def test_a_refill_with_fewer_hits_keeps_only_its_own_rows_showing(world):
+    """The results kept their rows (R5, C2) — so a refill that shows fewer hits must let the others go: every hit row
+    left in the results is one the fill lists, none from the last fill stays on screen."""
+    from app.qt.search import HitRow
+    seed, win, _writer = world()
+    try:
+        results = ask(win, "星")
+    except AssertionError as e:                                        # setup: never the rule's AssertionError
+        pytest.fail(f"setup: the results didn't open: {e}")
+    groups = results.groups
+    if sum(len(g.hits) for g in groups) < 2:
+        pytest.fail("setup: the seed's search shows fewer than two hits")
+    fewer = tuple(g._replace(hits=g.hits[:1]) for g in groups)
+    results.show_groups(results.query, fewer)
+    wc.settle()
+    shown = [w for w in results.body.findChildren(HitRow) if w.isVisible()]
+    assert sorted(map(id, shown)) == sorted(map(id, results.hits))
+    assert [r.hit for r in results.hits] == [h for g in fewer for h in g.hits]

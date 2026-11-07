@@ -220,7 +220,6 @@ def test_r2_a_wheel_notch_paints_only_the_strip_that_came_into_view(screen):
 
 
 # --- R5: the ⋯ menu built once ------------------------------------------------------------------------------------- #
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found.md F4: each ⋯ open makes its submenus again (5 widgets)")
 def test_r5_the_rows_menu_opened_again_makes_no_widget(screen):
     """⋯ on a row, closed, then ⋯ on another: the list keeps one menu (C4) — the second open makes no widget and no
     native window."""

@@ -136,15 +136,16 @@ def test_an_arrival_from_no_folder_being_read_gets_no_entry(world):
     m.close()
 
 
-def test_an_answer_after_the_tray_menu_closed_and_went_adds_nothing(world):
-    # The tray's menu is deleted once hidden (N4): a late answer must neither paint into it nor raise.
-    from PyQt6 import sip
+def test_an_answer_after_the_tray_menu_closed_adds_nothing(world):
+    # The tray's menu is kept and emptied once hidden (N4, R5 since 2026-11-06): a late answer must neither put its
+    # entry into the closed menu (the next row's open would show it) nor raise.
     _seed, win, _writer, row = world()
     m = tray_of(win).menu(row)
     m.close()
-    assert wait_until(lambda: sip.isdeleted(m), 3)
+    assert wait_until(lambda: not m.isVisible(), 3)
     settle(100)
     assert win.looks.asks == [list(row.arrival.item_ids)]
+    assert m.actions() == [] and _skip_menu(m) is None
 
 
 def test_E4_a_library_that_cant_be_written_greys_the_entry_with_the_writers_reason_and_writes_nothing(world):

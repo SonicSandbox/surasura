@@ -83,7 +83,6 @@ from collections import namedtuple
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, QPoint, QTimer
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QMenu
 
 from app import library_store
 from app.qt import bridge, confirm, drag, finished, rows, strings
@@ -213,13 +212,9 @@ def skip_menu(m, folders, reason, pick):
     (E4); `pick(path)` when one is picked. -> the submenu."""
     writable = reason is None
     before = next((a for a in m.actions() if a.text() == strings.ITEM_MENU["folder"][0]), None)
-    sub = QMenu(strings.ITEM_SKIP[0], m)
+    sub = drag.sub_menu(m, strings.ITEM_SKIP[0], before)
     sub.setObjectName("rowmenu")
     sub.setToolTipsVisible(True)
-    if before is not None:
-        m.insertMenu(before, sub)
-    else:
-        m.addMenu(sub)
     sub.menuAction().setToolTip(strings.ITEM_SKIP[1] if writable else reason)
     sub.menuAction().setEnabled(writable)
     for path in folders:
@@ -607,7 +602,7 @@ class ItemActions(QObject):
     def _submenu(self, menu, row, label, tip, ok, children):
         """`children` in a submenu of `menu`: `MENU_PAGE` of them, then *More…* holding the rest, page by page (a long
         *Same show as…* or *Split here…* list never runs past the window). -> the submenu."""
-        sub = menu.addMenu(label)
+        sub = drag.sub_menu(menu, label)             # R5: a kept submenu (`list_menu`'s), never a new one
         sub.setObjectName("rowmenu")
         sub.setToolTipsVisible(True)
         sub.menuAction().setToolTip(tip)

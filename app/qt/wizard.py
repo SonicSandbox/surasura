@@ -3938,8 +3938,10 @@ class _AskFromWorker(QObject):
         self.card = confirm.ask(self.wiz, S.INSTALL_ASK_TITLE, S.INSTALL_ASK_BODY, S.INSTALL_ASK_YES,
                                 S.INSTALL_ASK_YES_TIP, no=S.INSTALL_ASK_NO, no_tip=S.INSTALL_ASK_NO_TIP,
                                 on_answer=self.answer_now)
-        # a card dropped with its window (✕, a hide) answers nothing: its end is the No (AD-4) — after a yes, nothing
-        self.card.destroyed.connect(lambda *_a: self.answer_now(False))
+        # a card dropped with its window (✕, a hide) answers nothing: its end is the No (AD-4) — after a yes, nothing;
+        # and only while it is still this question's card (`confirm.ask` fills a window's answered card again, R5)
+        card = self.card
+        card.destroyed.connect(lambda *_a: self.card is card and self.answer_now(False))
 
     def answer_now(self, yes):
         """The answer, the first one only (a card's end after *Download* never turns it to No)."""

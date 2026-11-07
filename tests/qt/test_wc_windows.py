@@ -84,7 +84,6 @@ def test_an_undo_pressed_on_a_toast_repaints_the_toast_and_the_thing_it_undoes_a
     assert w.paints_outside_rect(card, undone) == [], w.report()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found-B B7: each confirmation makes its card and its scrim again")
 def test_confirm_asked_again_after_no_is_built_once_and_no_widget_is_made(second):
     """The confirmation card asked in a window, answered No (Esc), and asked again in that window: the second open
     reuses the card that was built, making no widget."""

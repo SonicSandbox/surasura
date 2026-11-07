@@ -49,7 +49,6 @@ def test_finished_wheel_notch_paints_only_the_strip_that_came_into_view(fin):
         assert w.created == 0 and w.builds == 0, w.report()
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="WC found-B B3: a Finished row's ⋯ menu is made at each open (L1 N7: deleted on close)")
 def test_the_more_menu_opened_again_is_built_once_and_makes_no_widget(fin):
     """Press: a Finished row's ⋯ opened, closed, opened again. The rule: an overlay opened again is built once, so the
     second open makes no widget."""

@@ -18,7 +18,7 @@ import unicodedata
 # no CSV, so it imports NONE of them; a Japanese run never loads jieba; a Chinese run never loads
 # fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, namedtuple
 from itertools import accumulate, compress, repeat
 from operator import attrgetter, eq, itemgetter
 from datetime import datetime
@@ -150,7 +150,15 @@ ENSURE_AUDIO_EXAMPLE = False
 #     list of a learner whose cards' sentences hold it (load_known_words). No tokenizing changed: SCHEMA_VERSION stays
 #     20; the known-words cache reads every KnownWord.json again (its key holds the finder: Store._known_key). 3.0: one
 #     re-analysis with 31–33.
-ENGINE_REVISION = 34
+# 35: Context 1 is always the sentence the learner first meets the word in, outside *Only i+1* (Sonic 2026-11-06): it
+#     was pinned only when the pick reached it, and the pick stops after enough clean sentences, so for 1–8 % of words
+#     another sentence stood in (航空's first sentence lost to a later one). The first sentence is now looked at first.
+#     *Only i+1* is unchanged. No tokenizing changed: SCHEMA_VERSION stays 20. 3.0, with 31–34.
+# 36: a sentence that opens with a written number keeps it (strip_verse_number): 20,000人 was shown as ,000人 and
+#     １．５倍 as ．５倍 — UniDic tags "," a 記号 and "．" a noun, neither the punctuation that kept a number. The
+#     verse numbers (「13そこで…」) still go, and so does one before a fullwidth space (「13　そこで…」 kept its number:
+#     the space was read as punctuation). Only the sentence shown changes: SCHEMA_VERSION stays 20. 3.0, with 31–35.
+ENGINE_REVISION = 36
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -2003,6 +2011,9 @@ class JapaneseTokenizer(Tokenizer):
                 names.span(sentence, cand, a, before + counted, surfaces[cand.i:cand.j])
 
 _LEADING_DIGITS_RE = re.compile(r"^[0-9０-９]+")
+# A number written on past its first digits: a thousands separator or a decimal point, either width (20,000 /
+# ２０，０００ / 1.5 / １．５). Read from the text, not the tags: UniDic tags "," a 記号 and "．" a noun.
+_WRITTEN_NUMBER_RE = re.compile(r"^[0-9０-９]+[,.，．]")
 
 
 def strip_verse_number(sentence, tagger):
@@ -2010,21 +2021,26 @@ def strip_verse_number(sentence, tagger):
     モーサヤは…」 reads 「そこでモーサヤは…」 (a scripture-style book in the library numbered every
     verse, and those numbers were landing on cards). Only a number made of digits, and only when what
     follows is not what the number counts: a counter or suffix (3人, 2つ目, 10年前, 5番目, 12月,
-    1日中), another number (100万) or punctuation (2、3日) keeps it. Only the front is cut, so the
-    sentence is still a verbatim piece of its file and its source anchor still finds it.
+    1日中), another number (100万), punctuation or a symbol (2、3日, 1-2) keeps it, and so does a number
+    written on with a separator or a point (20,000人, 1.5倍): it is all one number. Only the front is cut, so
+    the sentence is still a verbatim piece of its file and its source anchor still finds it. A space after
+    the number, either width, is read as no space (「13　そこで」 is a verse, 「3　人で」 counts people).
 
     `tagger` is the fugashi tagger the run already holds; the digits are not a word, so nothing the
     analysis counted changes — only the sentence shown."""
-    if not sentence or not _LEADING_DIGITS_RE.match(sentence):
+    leading = _LEADING_DIGITS_RE.match(sentence or "")
+    if not leading or _WRITTEN_NUMBER_RE.match(sentence):
         return sentence
-    words = list(tagger(sentence))
+    # MeCab skips an ASCII space by itself, but tags a fullwidth one 空白 — and a counter after it is then a plain
+    # noun (3　人 reads 人 'person'): the number is read with the space gone, as an ASCII one is.
+    words = list(tagger(leading.group() + sentence[leading.end():].lstrip()))
     if len(words) < 2:
         return sentence
     first, following = words[0], words[1]
     if first.feature.pos2 != "数詞" or not _LEADING_DIGITS_RE.fullmatch(first.surface):
         return sentence
     feature = following.feature
-    if (feature.pos1 in ("接尾辞", "補助記号", "空白") or feature.pos2 == "数詞"
+    if (feature.pos1 in ("接尾辞", "補助記号", "記号") or feature.pos2 == "数詞"
             or str(feature.pos3 or "").startswith("助数詞")):
         return sentence
     return sentence[len(first.surface):].lstrip() or sentence
@@ -3892,6 +3908,25 @@ def record_analysed(language, library, data_dir=None, user_files_dir=None):
         pass
 
 
+def _source_typer():
+    """A file's source type as a run reads it — what the importer recorded (`declared`), then a producer's directory
+    marker (read ONCE per directory), then the filename: `typer(path, declared)`. One rule for the counted files
+    (`resolve_found_files`) and the set-aside ones (`aside_files`), so a file signs the same either way."""
+    marker_cache = {}
+
+    def typer(path, declared=None):
+        folder = os.path.dirname(path)
+
+        def _marker():
+            # Lazy + cached: a probe per DIRECTORY, and only for files the extension didn't settle.
+            if folder not in marker_cache:
+                marker_cache[folder] = read_source_marker(folder).get("source_type")
+            return marker_cache[folder]
+
+        return infer_source_type(path, declared=declared, marker_type=_marker)
+    return typer
+
+
 def resolve_found_files(language, verbose=True, schedule=None, read_store=True, missing=False):
     """Resolve the ordered [(abs_path, label, weight, source_type), ...] content files for a run —
     from the library store's schedule (phase order) when one is ready, else master_manifest.json, else a
@@ -3918,19 +3953,7 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True, 
         schedule, _versions = read_library_schedule(language, data_dir, user_files_dir)
     no_fallback = schedule is not None
     keep_missing = missing and no_fallback
-
-    _marker_cache = {}
-
-    def _stype(path, declared=None):
-        folder = os.path.dirname(path)
-
-        def _marker():
-            # Lazy + cached: a probe per DIRECTORY, and only for files the extension didn't settle.
-            if folder not in _marker_cache:
-                _marker_cache[folder] = read_source_marker(folder).get("source_type")
-            return _marker_cache[folder]
-
-        return infer_source_type(path, declared=declared, marker_type=_marker)
+    _stype = _source_typer()
 
     if no_fallback or os.path.exists(manifest_path):
         if verbose and no_fallback:
@@ -4185,23 +4208,34 @@ def compute_run_signature(language, found_files, args, order_free=False, aside=(
     return signature_digest(run_signature_parts(language, found_files, args, aside), order_free)
 
 
+# One set-aside file (`aside_files`), read by name, never unpacked: a lane that adds a field (F7's finish rank) can't
+# shift one into another's place.
+AsideFile = namedtuple("AsideFile", "path source_type watched")
+
+
 def aside_files(language, schedule):
     """W-1: the library's set-aside files (`library_store.sets_aside`) — Finished (W-1b), and watched episodes while
     *Keep studying watched episodes* is off — from a
     schedule read with them (`Store.schedule(with_aside=True)`, `read_only_schedule(with_aside=True)`, in the same
-    transaction as the list): [(abs_path, source_type)], for the run signature's "reference" part. Never counted, their
+    transaction as the list), for the run signature's "reference" part. Never counted, their
     text is the name tables' evidence and 例文's sentences, so they are part of what a run reads. [] with none (JSON
-    mode, no store)."""
+    mode, no store).
+
+    -> [AsideFile(path, source_type, watched)]: `source_type` as a run reads a counted file's (`_source_typer`), so a set-aside
+    file signs as it did while it counted — its digest is the one its plan line holds (Haya-W); `watched`: a watched
+    episode set aside, not Finished (the fast re-plan re-plans a watched mark at once, `plan_engine._only_watched`)."""
     ls = _library_store()
     if ls is None or not schedule:
         return []
     data_dir = get_data_path(language)
+    typer = _source_typer()
     out = []
     for entry in schedule.get(ls.ASIDE) or ():
         rel = str(entry.get("physical_path") or "")
         if rel.startswith("./"):
             rel = rel[2:]
-        out.append((os.path.join(data_dir, rel), entry.get("source_type")))
+        path = os.path.join(data_dir, rel)
+        out.append(AsideFile(path, typer(path, entry.get("source_type")), "finished_at" not in entry))
     return out
 
 
@@ -4305,10 +4339,11 @@ def settings_signature(settings, language):
 
 
 def run_signature_parts(language, found_files, args, aside=()):
-    """What the run signature hashes (`compute_run_signature`), as a dict; None when it can't be read. `aside`: the
-    set-aside files (`aside_files`) — "reference", each file's own digest (`plan_rules.file_digest`, as "files" are
-    told apart), sorted: a watched mark, its Undo, *Keep studying watched episodes* flipped or a set-aside file edited
-    moves it, so Generate runs (never skips) and the fast re-plan asks for a Generate first, both ways (W-1)."""
+    """What the run signature hashes (`compute_run_signature`), as a `plan_rules.SignatureParts`; None when it can't be
+    read. `aside`: the set-aside files (`aside_files`) — "reference", each file's own digest (`plan_rules.file_digest`,
+    as "files" are told apart), sorted: a watched mark, its Undo, *Keep studying watched episodes* flipped or a
+    set-aside file edited moves it, so Generate runs (never skips) (W-1); the fast re-plan re-plans a watched mark at
+    once (the parts' unsigned `watched`, Haya-W) and asks for a Generate first for the rest."""
     try:
         from app import token_index as _token_index
         user_files_dir = get_user_files_path(language)
@@ -4340,7 +4375,7 @@ def run_signature_parts(language, found_files, args, aside=()):
             pass
 
         from app import __version__ as _app_version
-        _sig_parts = {
+        _sig_parts = plan_rules.SignatureParts({
             "files": [[fp, _fsig(fp), _l, _w, _st] for (fp, _l, _w, _st) in found_files],
             "known": known_sig,
             "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
@@ -4353,12 +4388,15 @@ def run_signature_parts(language, found_files, args, aside=()):
                      args.context_min, args.context_max, args.max_contexts, script],
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
-        }
+        })
         if aside:
             # W-1: the set-aside files, a part of its own present only then, so a library with none signs as before.
-            # Path and stat only: the store and the copy may name a file's type differently, never its text.
-            _sig_parts["reference"] = sorted(plan_rules.file_digest([fp, _fsig(fp), None, None, None])
-                                             for fp, _st in aside)
+            # Each as the "files" part signs it (Haya-W: `aside_files`' type), so a counted file set aside keeps its
+            # digest and the plan's line for it is found again; Finished ↔ watched moves nothing a run reads.
+            digests = [(plan_rules.file_digest([a.path, _fsig(a.path), None, None, a.source_type]), a.watched)
+                       for a in aside]
+            _sig_parts["reference"] = sorted(d for d, _w in digests)
+            _sig_parts.watched = frozenset(d for d, w in digests if w)
         # Q4-3: with Automatic rarity on, the band the library's store remembers helps pick the list (the second
         # threshold): a part of its own, present only then, so no other library's signature moves.
         try:
@@ -5983,9 +6021,13 @@ def main():
         
         ctx_list = r["_CandidateContexts"]
         first_ctx_data = r.get("_FirstContext")
-        if first_ctx_data and first_ctx_data not in ctx_list:
-            ctx_list.insert(0, first_ctx_data)
-            
+        # Context 1 is the sentence the learner first meets the word in (below), so it is looked at first: the early
+        # exit can never stop before it. *Only i+1* never pins it (a first sentence with an unknown is skipped there by
+        # design), so there it keeps its place in the pool. A new list: the pool itself (word_stats) stays as aggregation
+        # kept it, which the SURASURA_DEBUG_WORD_STATS dump shows.
+        if first_ctx_data and (not ONLY_I_PLUS_ONE or first_ctx_data not in ctx_list):
+            ctx_list = [first_ctx_data] + [c for c in ctx_list if c != first_ctx_data]
+
         for ctx in ctx_list:
             sentence_text = ctx[4].strip()
             if not sentence_text or sentence_text in seen_sentences:

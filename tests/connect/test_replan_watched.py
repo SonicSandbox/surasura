@@ -1,14 +1,16 @@
-"""W-1: Connect reads a watched mark as the window's re-order host does — the cards follow the Generate the mark starts,
-in both directions (`replan.current`: the set-aside files are the run signature's "reference" part, and
-`plan_engine.check`, the one classifier, sends a part it can't re-plan to a Generate first).
+"""W-1: Connect reads a watched mark as the window's re-order host does (`replan.current`: the set-aside files are the
+run signature's "reference" part, and `plan_engine.check` is the one classifier) — since Haya-W (2026-11-06) a stone
+re-plans at once, as the host does: the episode leaves the counted files with the digest its plan line holds.
 
 On RP-2's libraries (tests/plan_file_cases.py: real Japanese and Chinese text across NOW, Soon and 6+ Months),
 generated per test:
 
-  - a stone → Generate "first", no re-plan (never mined or ordered from a plan that still counts the episode, nor
-    from one that has dropped its words before the Generate); after the Generate, nothing owed;
-  - its un-marking → the same (never "new files" mined around the Generate);
-  - *Keep studying watched episodes* flipped either way → the same;
+  - a stone → re-plan now ("after": mined and ordered from the plan without the episode, the Generate after); after
+    the Generate, nothing owed;
+  - its un-marking after that Generate → Generate "first" (the new plan has no line for it: never "new files" mined
+    around the Generate);
+  - *Keep studying watched episodes* turned on → Generate "first" (the watched episodes come back: the plan has no
+    line for them); turned off → re-plan now, as their marks would (each leaves the counted files as it was planned);
   - a stone and a Finished drag together → Generate "first" (the stricter wins);
   - a Finished drag alone → Generate "first" too (W-1b: Finished is set aside, as a watched episode is, so a drag in
     moves the set-aside files); so is a show finished with a watched episode in it; the watched episode alone, finished
@@ -42,11 +44,13 @@ def _waits(store, language):
     assert got.result is None and got.listed is None, "nothing mined or ordered from the plan before the Generate"
 
 
-def test_a_stone_and_its_un_marking_each_generate_first(lib):
+def test_a_stone_re_plans_now_and_its_un_marking_after_the_generate_generates_first(lib):
     root, store, case, language = lib
     episode = store.ids("now")[0]
     store.set_watched([episode])
-    _waits(store, language)
+    got = _current(store, language)
+    assert got.verdict == ("replan-now", ("files-removed", "reference-watched")) and got.generate == "after", got.verdict
+    assert got.result is not None and episode not in got.result.sequence, "mined and ordered without the episode"
     _generate(root, case, language)
     assert _current(store, language).verdict is None, "the Generate's plan is the library's"
     store.set_watched([episode], False)
@@ -55,7 +59,7 @@ def test_a_stone_and_its_un_marking_each_generate_first(lib):
     assert _current(store, language).verdict is None
 
 
-def test_keep_studying_watched_episodes_flipped_either_way_generates_first(lib):
+def test_keep_studying_watched_episodes_turned_on_generates_first_and_turned_off_re_plans_now(lib):
     root, store, case, language = lib
     store.set_watched([store.ids("now")[0]])
     _generate(root, case, language)
@@ -63,7 +67,8 @@ def test_keep_studying_watched_episodes_flipped_either_way_generates_first(lib):
     _waits(store, language)
     _generate(root, case, language)
     store.set_library_options(keep_watched=False)
-    _waits(store, language)
+    got = _current(store, language)
+    assert got.verdict == ("replan-now", ("files-removed", "reference-watched")) and got.generate == "after", got.verdict
 
 
 def test_a_stone_with_a_finished_drag_generates_first(lib):

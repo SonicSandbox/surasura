@@ -719,7 +719,8 @@ def add_cover_menu(menu, row, writable=True, reason=None):
     entries = change_cover_entries(row)
     if not entries:
         return None
-    sub = menu.addMenu(strings.ITEM_MENU["cover"][0])
+    from app.qt import drag
+    sub = drag.sub_menu(menu, strings.ITEM_MENU["cover"][0])
     sub.setObjectName("rowmenu")
     sub.setToolTipsVisible(True)
     sub.menuAction().setToolTip(strings.ITEM_MENU["cover"][1] if writable else (reason or ""))

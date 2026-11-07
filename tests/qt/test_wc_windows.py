@@ -2,7 +2,7 @@
 what each press costs the window — paints and where they land, layout passes, widgets made, views built — counted,
 never timed. What a wrong answer would cost a learner: a window that repaints whole on each keystroke or tick.
 
-Each test opens its window with its neighbour's own fixtures (imported at the top; one `main` for all).
+Each test opens its window with its neighbour's own fixtures (imported at the top: one `main` for the main window's tests; the frequency lists' as `lists_main`).
 """
 import pytest
 
@@ -17,6 +17,8 @@ from tests.qt import work_counts as wc
 from tests.qt.conftest import wait_until
 from tests.qt.test_anki_window import _choose, _gates_closed, _open, anki   # noqa: F401  (the Anki window's)
 from tests.qt.test_confirm import _ask, _gone, second   # noqa: F401  (the confirmation card's)
+from tests.qt.test_frequency_lists_window import _open as _open_lists, ja_list   # noqa: F401  (the lists window's)
+from tests.qt.test_frequency_lists_window import main as lists_main   # noqa: F401  (its own window, by its own name)
 from tests.qt.test_report_window import _press, main   # noqa: F401  (the window: the same one the Anki and confirm
 #                                                         tests open; one `main` here, so no import shadows another)
 from tests.qt.test_toast import JA, ZH, _up, clock, stage   # noqa: F401  (the toast's own fixtures)
@@ -117,3 +119,65 @@ def test_confirm_asked_again_after_no_is_built_once_and_no_widget_is_made(second
     finally:
         QTest.keyClick(QApplication.focusWidget(), Qt.Key.Key_Escape)     # put back, unmeasured
         wc.settle()
+
+
+def test_typing_in_what_happened_repaints_only_the_box_and_the_buttons_that_change(main):
+    """Typing in the report's *What happened* box: the first letter into an empty box repaints the box and the
+    Save and Send buttons it enables, nothing else of the form; the next letter changes no button, so only the box
+    repaints."""
+    w = _press(main)
+    assert QTest.qWaitForWindowExposed(w)
+    wc.settle()
+    w.what.setPlainText("")
+    w.what.setFocus()
+    wc.settle()
+    assert not w.save_button.isEnabled()
+    try:
+        with wc.measure(w) as m:
+            QTest.keyClicks(w.what, "x")
+            wc.settle()
+        assert w.what.toPlainText() == "x", w.what.toPlainText()
+        assert w.save_button.isEnabled(), m.report()
+        assert m.painted > 0, m.report()
+        assert m.painted_in(w.save_button) > 0, m.report()           # (the part that changed did repaint)
+        assert w.send_button.isEnabled(), m.report()
+        # where: every px painted lies on the box or the two buttons (by area, not bounding rects: the form's ground
+        # repaints the region under them, whose bounding rect spans the form)
+        parts = [wc.rect_in_window(b) for b in (w.what, w.save_button, w.send_button)]
+        assert m.union <= sum(m.union_in(r) for r in parts), m.report()
+        with wc.measure(w) as m2:
+            QTest.keyClicks(w.what, "y")
+            wc.settle()
+        assert w.what.toPlainText() == "xy", w.what.toPlainText()
+        assert m2.painted > 0, m2.report()
+        box = wc.rect_in_window(w.what)
+        assert m2.union_in(box) > 0, m2.report()                            # the box did show the letter
+        assert m2.union <= m2.union_in(box), m2.report()                    # every px painted lies on the box
+    finally:
+        w.what.setPlainText("")                                       # put back, unmeasured
+        wc.settle()
+
+
+def test_a_list_row_selected_in_the_frequency_lists_window_repaints_that_row_and_the_remove_button_alone(lists_main, ja_list):
+    """A list row clicked in the frequency lists window: the row itself repaints, and with it the Remove button that
+    turns on, nothing else in the window, no widget made."""
+    from app import frequency_lists
+    frequency_lists.add(ja_list, "ja")
+    w = _open_lists(lists_main)
+    wc.settle()                                                          # the window's own first-show paints land before the count
+    assert w.list.count() > 0
+    item = w.list.item(0)
+    viewport = w.list.viewport()
+    row = viewport.rect().intersected(w.list.visualItemRect(item)).translated(wc.rect_in_window(viewport).topLeft())
+    button = wc.rect_in_window(w.remove_button)
+    try:
+        with wc.measure(w) as m:
+            QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, pos=w.list.visualItemRect(item).center())
+        assert w.remove_button.isEnabled(), m.report()
+        assert m.union_in(row) > 0, m.report()                           # (the selected row did show it)
+        assert m.union_in(button) > 0, m.report()                        # (the Remove button did turn on)
+        assert m.paints_outside_rect(row, button) == [], m.report()
+        assert m.created == 0, m.report()
+    finally:
+        w.list.clearSelection()                                          # put back, unmeasured
+        wc.rest(150)

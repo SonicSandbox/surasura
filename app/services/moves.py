@@ -962,6 +962,9 @@ class Writer:
             elif cmd["op"] == "move" and not cmd.get("numbered"):
                 cmd["numbered"] = (cmd["before_id"], cmd["after_id"])   # the numbers follow the drop once, before its
                 self._numbers_move(cmd, store)                          # first write
+            elif cmd["op"] == "place" and cmd["where"] in PLACED_TOP and not cmd.get("numbered"):
+                cmd["numbered"] = (None, None)      # Up next · Goal's top: `Store.place` is a move to the tier's top —
+                self._numbers_move(cmd, store, tier=PLACED_TOP[cmd["where"]])   # followed as one
             self._apply(store, cmd)
         except lib.StoreBusy:
             self._busy(cmd)
@@ -1674,7 +1677,7 @@ class Writer:
     def _landed(self, cmd):
         """The head is done with (saved, let go or refused): out of the queue and out of the journal; a move the numbers
         followed ahead of the store, landed for them too (`Numbers.landed`)."""
-        if cmd.pop("ahead", False) and self.numbers is not None:
+        if cmd.pop("numbers_ahead", False) and self.numbers is not None:
             try:
                 self.numbers.landed()
             except Exception as e:
@@ -1864,12 +1867,12 @@ class Writer:
         return False
 
     # --- the numbers ---------------------------------------------------------------------------------------------- #
-    def _numbers_move(self, cmd, store):
+    def _numbers_move(self, cmd, store, tier=None):
         if self.numbers is None:
             return
         try:                                        # W-1: `order`, the tier's ids from this thread's handle (read only
-            self.numbers.after_move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"],   # for an anchor the numbers
-                                    after_id=cmd["after_id"], order=lambda tier: store.ids(tier),    # don't hold)
+            self.numbers.after_move(cmd["ids"], tier or cmd["tier"], before_id=cmd.get("before_id"),   # for an anchor
+                                    after_id=cmd.get("after_id"), order=lambda tier: store.ids(tier),  # they don't hold)
                                     aside=lambda ids: _set_aside(store, ids), landing=cmd)
         except Exception as e:
             print(f"Window writer: the numbers couldn't follow the move: {e!r}")
@@ -1895,6 +1898,10 @@ class Writer:
             print(f"Window writer: a listener failed: {e!r}")
 
 
+PLACED_TOP = {"top": "now", "goal": "goal"}
+#   `place` targets that are `Store.move` to the tier's very top (`Store._tier_top`; never Soon's: the slot below the
+#   Soon line): the numbers follow them before the write, as a move (Up next at 20,000 files: else each was a full
+#   re-plan after it, the reader's view of the save waiting on the numbers)
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
              "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source")
 #   commands that never change the order: the numbers aren't asked again after them — W-1 (K-W4): but a watched mark
@@ -2476,7 +2483,7 @@ class Numbers:
         store's ids in order, read only when the drop will be followed, before the lock) — so a drag of a show holding
         watched episodes keeps its numbers at the drop instead of a resync.
         `landing` (the writer's command): the engine followed the move before the store has it — marked
-        (`landing["ahead"]`) and on its way until the writer calls `landed()`; a resync meanwhile waits for it (it would
+        (`landing["numbers_ahead"]`, never journalled) and on its way until the writer calls `landed()`; a resync meanwhile waits for it (it would
         find the store a move behind and work the old order out again, then the new one once more)."""
         from app import plan_engine
         ids = list(dict.fromkeys(ids))
@@ -2524,7 +2531,7 @@ class Numbers:
             self._moves += 1
             self._at = None                         # (the engine is past what the store said)
             if landing is not None:
-                landing["ahead"] = True
+                landing["numbers_ahead"] = True     # (never "ahead": a join's own word, journalled)
                 self._ahead += 1
             after = eng._n_new
             files = {eng._f_of[i] for i in moved}

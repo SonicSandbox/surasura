@@ -215,7 +215,7 @@ class StandinWriter:
         try:
             _place(self.library, ids, tier, before_id, after_id, piece_id)
         finally:
-            if landing.get("ahead"):
+            if landing.get("numbers_ahead"):
                 self.numbers.landed()
 
     def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):

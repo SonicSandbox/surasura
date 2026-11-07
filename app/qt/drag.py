@@ -2266,11 +2266,12 @@ class DragController(QObject):
             self._anki_begin(ticket)
         self._urgent()
         defer = getattr(self.writer, "defer", None)
-        if defer is not None:                        # its write starts once the press is painted (`after_paint`)
+        if defer is not None:                        # its write starts once the press is painted (`after_paint`, below)
             defer()
-            after_paint(self.writer.go)
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
+            if defer is not None:
+                self.writer.go()                     # (nothing of this press waits)
             _tell(ticket, "refused")
             self._ended(ticket)
             self._anki_landed(ticket)                # (its press ends: the bar says why, below)
@@ -2294,6 +2295,8 @@ class DragController(QObject):
             self._marks_ahead(ticket, marks, ticket.keys[0] if ticket.keys else None)
         if toast:
             self._toast(ticket)
+        if defer is not None:                        # (posted after what the press painted asked for its update)
+            after_paint(self.writer.go)
         return seq
 
     def _toast(self, ticket, buttons=()):

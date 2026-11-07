@@ -958,10 +958,15 @@ def test_a_listener_that_raises_never_stops_the_writer(stub_writer):
 
 class Recorder:
     def __init__(self):
-        self.moves, self.resyncs = [], 0
+        self.moves, self.resyncs, self.landings = [], 0, 0
+
+    def landed(self):
+        self.landings += 1
 
     def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None, landing=None):
         self.moves.append((list(ids), tier, before_id, after_id))
+        if landing is not None:
+            landing["numbers_ahead"] = True             # (as `Numbers.after_move` marks a move it followed)
         return {}
 
     def resync(self):
@@ -1552,7 +1557,7 @@ def test_a_resync_asked_while_a_followed_move_is_on_its_way_waits_for_it_and_wor
     passes = numbers.renumbered
     item, write = _goal_to_now_top(seed, analysed)
     landing = {}
-    assert numbers.after_move([item], "now", landing=landing) and landing.get("ahead")
+    assert numbers.after_move([item], "now", landing=landing) and landing.get("numbers_ahead")
     moved = dict(numbers()[1])
     numbers.resync()                                   # the last write's resync: the store a move behind
     assert numbers.idle(30) and numbers.renumbered == passes
@@ -1611,7 +1616,7 @@ def test_a_move_followed_while_a_resync_reads_the_order_is_never_worked_back(tmp
     numbers._order = order
     seed.library.commit(items=[], order=True)          # something written: the read isn't skipped
     numbers.resync()
-    assert numbers.idle(30) and numbers.renumbered == passes and landing.get("ahead")
+    assert numbers.idle(30) and numbers.renumbered == passes and landing.get("numbers_ahead")
     moved = dict(numbers()[1])
     write()
     numbers.landed()
@@ -3883,6 +3888,44 @@ def test_an_arrival_dropped_on_finished_is_watched_and_one_undo_puts_it_back_wit
     assert h.until(lambda: heard.undone)
     assert lib.store.place_of(x)[0] == "arrivals" and lib.store.item(x)["watched"] != 1
     assert heard.notes == []
+
+
+def test_a_followed_move_lands_once_for_the_numbers_and_a_join_ahead_never(lib, make_writer):
+    """(Up next, the adversary's S1.) A move the numbers followed is landed for them exactly once, when its write is
+    done; a join placed `ahead` (its own word, journalled) is no move of theirs and never lands one — a stray landing
+    would let a resync read the store a move behind."""
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    show = lib.ids("now")[:4]
+    w.move([show[3]], "now", before_id=show[0], label="moved")
+    assert h.until(lambda: heard.saved)
+    assert len(numbers.moves) == 1 and numbers.landings == 1
+    piece = lib.store.item(show[0])["piece_id"]
+    lib.store.split(piece, show[2])
+    later = lib.store.item(show[2])["piece_id"]
+    w.join([later, piece], label="joined", ahead=True)
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert numbers.landings == 1
+
+
+def test_up_next_and_goal_by_the_rule_are_followed_by_the_numbers_before_their_write(lib, make_writer):
+    """(Up next at 20,000 files.) ⋯ › Up next is the writer's `place(…, "top")` — `Store.place` moves the block to the
+    tier's top — so the numbers follow it before the write, as a move (each was a full re-plan after the write, the
+    reader's view of the save waiting on the numbers meanwhile); Goal's top too. *Soon* (the slot below the Soon line,
+    the store's to find) and *after-show* are not: the numbers compare after their write, as before."""
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    now, goal = lib.ids("now"), lib.ids("goal")
+    w.place([now[5]], "top", label="up next")
+    assert h.until(lambda: heard.saved)
+    assert lib.ids("now")[0] == now[5] and numbers.moves == [([now[5]], "now", None, None)] and numbers.landings == 1
+    w.place([now[6]], "goal", label="goal")
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert lib.ids("goal")[0] == now[6] and numbers.moves[-1] == ([now[6]], "goal", None, None)
+    resyncs = numbers.resyncs
+    w.place([now[7]], "soon", label="soon")
+    assert h.until(lambda: len(heard.saved) == 3)
+    assert len(numbers.moves) == 2 and numbers.landings == 2 and numbers.resyncs == resyncs + 1
 
 
 def test_a_join_ahead_is_one_journalled_command_and_a_no_op_hands_its_label_back(lib, make_writer):

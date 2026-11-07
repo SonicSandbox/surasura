@@ -881,6 +881,11 @@ def _connect(path, role, busy_ms=5000):
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_size_limit=4194304")
         conn.execute(f"PRAGMA wal_autocheckpoint={1000 if role == 'helper' else 0}")
+        # R6: a statement's own journal (and a sort's) in memory, never a temp file. Since the origins' log (F13b) a
+        # write on `items` fires a trigger that writes another table, so SQLite keeps a statement journal through the
+        # command; on disk that was a file written and truncated for every statement — an Add of a 50-file season
+        # 7 → 12 ms, its row writes 7× slower. Nothing here makes a temp table; the biggest sort is an upgrade's, once.
+        conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA query_only=1")
     except BaseException:
         conn.close()
@@ -2956,11 +2961,12 @@ class Store:
             tops[seen] = dest
         return dest
 
-    def _add_rows(self, prepared, version, place=None):
+    def _add_rows(self, prepared, version, place=None, works=None):
         """Insert new item rows (ids issued past every id ever used, K30), placed later by `_put` — or, with `place`
         ((tier, where): every row one destination), inserted at their place: `_put`'s keys, read before the rows
         exist (no other new row is waiting at ord 0 to be read), written by the insert itself, not by an update of
-        each row after it (R6: an Add of a season wrote every row twice)."""
+        each row after it (R6: an Add of a season wrote every row twice). `works`: each row's title when the caller
+        knows it, written by the insert too (else the settling step gives it its folder's, `_settle_works`)."""
         root = self._root_id()
         seq = self.conn.execute("SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'items'), 0), "
                                 "COALESCE((SELECT MAX(id) FROM items), 0)").fetchone()
@@ -2972,16 +2978,17 @@ class Store:
             fed = self._cmd.version
         now = _now()
         rows = []
-        for item_id, k, (path, rel, key, entry, (size, mtime_ns, availability), tier) in zip(ids, keys, prepared):
+        for n, (item_id, k, (path, rel, key, entry, (size, mtime_ns, availability), tier)) in enumerate(
+                zip(ids, keys, prepared)):
             title, folder, source_type = _columns(entry)
             rows.append((item_id, root, rel, key, tier, k, _dumps(entry), title, folder, source_type,
                          availability, size, mtime_ns, version, now, search_fold(title, self.language))
-                        + ((fed,) if fed is not None else ()))
+                        + ((fed,) if fed is not None else ()) + ((works[n],) if works is not None else ()))
+        cols = ", feed_in" * (fed is not None) + ", work_id" * (works is not None)
         self.conn.executemany(
             "INSERT INTO items (id, root_id, rel_path, rel_key, tier, ord, entry, title, parent_folder, "
-            "source_type, availability, size, mtime_ns, changed_in, added_at, search_key"
-            + (", feed_in) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)" if fed is not None else
-               ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"), rows)
+            f"source_type, availability, size, mtime_ns, changed_in, added_at, search_key{cols}) "
+            f"VALUES ({', '.join('?' * (16 + cols.count(',')))})", rows)
         if place is not None:
             self._placed(place[0], ids, others)
         return ids
@@ -3058,8 +3065,12 @@ class Store:
                      for i, it in taken])
             spots = [(t, (d[0], d[1]) if d[0] in ("after", "before") else (d[0],)) for d, t in zip(dests, dest_tier)]
             one = not taken and len(set(spots)) == 1               # the common Add: one place, new rows only
+            works = None
+            if one:                         # each row's title as the settling step would give it (`_settle_works`:
+                cache = {}                  # `_folder_work` reads titles and the other rows of its folder, never these)
+                works = [self._folder_work(it[1], _columns(it[3])[0], cmd, cache) for it in new]
             ids += self._add_rows([it + (t,) for it, t in zip(new, dest_tier[len(taken):])], cmd.version,
-                                  place=spots[0] if one else None)
+                                  place=spots[0] if one else None, works=works)
             if not one:
                 groups = {}
                 for item_id, (t, where) in zip(ids, spots):
@@ -10384,8 +10395,7 @@ def _store_take_new(self, cmd, change, prepared, key, record, f, first, rules, w
     else:
         tier, where = self._source_spot(cmd, work, rel, f.get("episode"), first if not waiting else False, waiting,
                                         episodes, runs)
-    item_id = self._add_rows([prepared + (tier,)], cmd.version)[0]
-    self.conn.execute("UPDATE items SET work_id = ? WHERE id = ?", (work, item_id))
+    item_id = self._add_rows([prepared + (tier,)], cmd.version, works=[work])[0]   # its title with its row (R6)
     if not waiting:
         self._keep_hash(item_id, prepared[4], f.get("copy_sha256"))    # A4K-7: its bytes are known — never read back
     self._write_origin(key, item_id, record)

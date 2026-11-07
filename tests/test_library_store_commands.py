@@ -1217,8 +1217,8 @@ def test_an_add_of_two_shows_interleaved_reads_each_folder_once_and_each_file_la
 
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_an_add_of_a_new_season_inserts_each_row_at_its_place_in_one_write(language):
-    """R6 (§6.12): an Add with one destination and only new files inserts each row at its key — no update of the row
-    after its insert to place it — in the order given, at the top of the tab, each row fed this version; the next
+    """R6 (§6.12): an Add with one destination and only new files inserts each row at its key and with its title — no
+    update of the row after its insert to place it or title it — in the order given, at the top of the tab, each row fed this version; the next
     Add's season lands above it, as before."""
     store = migrated(language)
     data_dir, _u = roots(language)
@@ -1227,10 +1227,13 @@ def test_an_add_of_a_new_season_inserts_each_row_at_its_place_in_one_write(langu
     second = [touch(data_dir, f"LowPriority/{word}B/{word}_{e:03d}.srt") for e in range(5)]
     placing = []
     store.conn.set_trace_callback(lambda sql: placing.append(sql) if sql.lstrip().upper().startswith(
-        "UPDATE ITEMS SET TIER") else None)
+        ("UPDATE ITEMS SET TIER", "UPDATE ITEMS SET WORK_ID")) else None)
     a = store.insert(first, "soon")
     store.conn.set_trace_callback(None)
-    assert placing == [], "the rows were inserted at their place"
+    assert placing == [], "the rows were inserted at their place, with their title"
+    works = {r[0] for r in store.conn.execute(
+        f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(a.added))})", a.added)}
+    assert len(works) == 1 and None not in works, "one title, its folder's"
     b = store.insert(second, "soon")
     soon = store.ids("soon")
     assert [i for i in soon if i in set(a.added)] == a.added and [i for i in soon if i in set(b.added)] == b.added
@@ -1240,6 +1243,22 @@ def test_an_add_of_a_new_season_inserts_each_row_at_its_place_in_one_write(langu
     feeds = {r[0] for r in store.conn.execute(
         f"SELECT feed_in FROM items WHERE id IN ({','.join('?' * len(b.added))})", b.added)}
     assert feeds == {version}
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_keeps_its_statement_journals_in_memory_so_an_add_never_writes_a_temp_file_a_statement(language):
+    """R6: a write on `items` fires the origins' log trigger (another table), so SQLite keeps a statement journal for
+    the command's writes; in a temp file that was a file write per statement (a season's Add 7 → 12 ms at 100k). Every
+    handle that writes keeps it in memory; the Add still lands whole and in order."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    assert store.conn.execute("PRAGMA temp_store").fetchone()[0] == 2          # MEMORY
+    season = [touch(data_dir, f"LowPriority/{names(language)[99]}T/{e:03d}.srt") for e in range(12)]
+    change = store.insert(season, "soon")
+    soon = store.ids("soon")
+    assert [i for i in soon if i in set(change.added)] == change.added and len(change.added) == 12
     assert pieces_ok(store) is None
     store.close()
 

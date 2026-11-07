@@ -321,6 +321,13 @@ def test_every_kind_of_write_outside_the_helper_fails_and_nothing_reaches_the_st
                 with store._writing(begin=inside):
                     store.conn.execute(sql).fetchall()
         assert _as_another_reads_it(store.db_path) != before
+        # With sqlite_stat1 made (above, inside), ANALYZE writes only it: SQLite reports ANALYZE and reads, no INSERT
+        # (statements never compiled inside the helper, so the authorizer decides, not the remembered writes)
+        after = _as_another_reads_it(store.db_path)
+        for sql in ("ANALYZE items", "ANALYZE main"):
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store.conn.execute(sql).fetchall()
+        assert _as_another_reads_it(store.db_path) == after
     finally:
         store.close()
 

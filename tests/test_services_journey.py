@@ -351,10 +351,12 @@ def test_withdraw_drops_only_its_own_request():
 
 # --- the report then agrees with the plan (real Generates, RP-2's library) ----------------------------------------- #
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh"])
-def test_after_moves_the_background_run_agrees_with_the_plan(case):
-    """Moves in the library store → one background Generate through the controller → its lists equal the engine's for
-    that order (shadow mode finds no difference, writes no line), the window is handed the new plan, and the journey
-    is no longer pending."""
+def test_after_moves_the_journey_waits_for_a_reader_then_agrees_with_the_plan(case, monkeypatch):
+    """Moves in the library store → no Generate at the quiet time (Sonic 2026-11-06, A: owed only to moves, the real
+    rule on the real plan and store — `only_moved`), the journey catching up → a reader wants it (`want`) → one
+    background Generate through the controller → its lists equal the engine's for that order (shadow mode finds no
+    difference, writes no line), the window is handed the new plan, the journey is no longer pending — and every list
+    and the journey are byte for byte what a Generate of that order run at once writes (A changes when, never what)."""
     import subprocess
     import sys
     from app import analyzer, library_store as ls, plan_engine
@@ -362,6 +364,9 @@ def test_after_moves_the_background_run_agrees_with_the_plan(case):
     from tests import plan_file_cases as cases
 
     root = h.root()
+    # One hash seed for every child: word_stats.json's "sources" and file_words.json list a set as Python iterates it,
+    # so two runs in two processes may order them apart whatever the order of the library — not what is compared here
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
     language = cases.ALL_CASES[case][0]
     cases.build(root, case)
     settings = dict(FAST, target_language=language, anki_connect_url="http://127.0.0.1:9")
@@ -410,13 +415,19 @@ def test_after_moves_the_background_run_agrees_with_the_plan(case):
         compared.append((previous is not None, bool(lists.get("priority"))))
         return real_shadow(previous, plan, lists, stamp)
     keeper = J.JourneyKeeper(controller, language, settings=lambda: settings, on_done=landed.append)
+    assert J.only_moved(settings, language), "the real rule: only the order moved since the plan"
     J.shadow = spy
     try:
         keeper.changed("move")
         keeper.changed("move")
+        assert h.until(keeper.catching_up, seconds=60), "owed only to moves: it waits for a reader"
+        time.sleep(FAST["journey_settle_s"] + 1.0)
+        assert keeper.asked == 0 and not landed and controller.state().state == G.CURRENT, "no Generate after the moves"
+        assert keeper.want("journey"), "a reader wants it: asked for at once"
         assert h.until(lambda: landed, seconds=300), controller.state()
     finally:
         J.shadow = real_shadow
+    assert not keeper.catching_up()
     assert compared == [(True, True)], "the keeper compared the new lists against a previous plan"
     assert plan_engine.stands_aside(previous) is None
     assert landed == [plan_path] and keeper.asked == 1
@@ -431,6 +442,37 @@ def test_after_moves_the_background_run_agrees_with_the_plan(case):
     finally:
         store.close()
     keeper.close()
+
+    # Byte for byte: the catch-up's outputs against a Generate of the same order run now (forced: today's at-once run)
+    results = os.path.join(root, "results")
+    caught_up = _outputs(results)
+    assert {"priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json",
+            "reading_list_static.html"} <= set(caught_up)
+    os.environ["SURASURA_FORCE_RUN"] = "1"
+    try:
+        controller.request(language, settings=settings)
+        assert h.until(lambda: controller.state().state in (G.CURRENT, G.FAILED) and controller._run is None, 300)
+    finally:
+        del os.environ["SURASURA_FORCE_RUN"]
+    assert controller.state().state == G.CURRENT
+    at_once = _outputs(results)
+    assert sorted(at_once) == sorted(caught_up)
+    assert [name for name in caught_up if caught_up[name] != at_once[name]] == [], "the same bytes, only later"
+
+
+# What a run writes that holds its own time or run: never compared (a run's stamp, logs, the plan file's header time)
+_RUN_OWN = (".log", ".flag", ".lock")
+
+
+def _outputs(results):
+    """{name: bytes} of every file a Generate leaves in `results/` (its lists, word stats, the journey's HTML)."""
+    out = {}
+    for name in sorted(os.listdir(results)):
+        path = os.path.join(results, name)
+        if os.path.isfile(path) and not name.endswith(_RUN_OWN):
+            with open(path, "rb") as f:
+                out[name] = f.read()
+    return out
 
 
 def test_shadow_names_the_first_difference():

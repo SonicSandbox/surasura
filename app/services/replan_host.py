@@ -447,6 +447,20 @@ class Replan:
         keeper, _host = self._pair()
         keeper.marked("settings")
 
+    def journey_wanted(self, reason="journey"):
+        """A reader wants the journey now (*Journey ↗*, an export, the YouTube preview; Sonic 2026-11-06, A): the
+        keeper's catch-up owed only to moves asked for at once (`JourneyKeeper.want`). -> True when one was owed (the
+        reader goes on with what is there). Returns at once."""
+        return self._pair()[0].want(reason)
+
+    def journey_catching_up(self):
+        """The keeper's journey waits for a reader or the quiet minutes (`JourneyKeeper.catching_up`). No wait."""
+        return self._pair()[0].catching_up()
+
+    def journey_background(self):
+        """A2: a background Generate in flight brings the journey (`JourneyKeeper.background_run`). No wait."""
+        return self._pair()[0].background_run()
+
     def update_state(self, state):
         """The update service's state: while it holds the children the host is let go; when the hold ends, back."""
         holding = state in HOLDING

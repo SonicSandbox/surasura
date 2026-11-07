@@ -794,3 +794,29 @@ def test_two_gone_pieces_of_one_work_give_the_same_row_whatever_order_they_are_l
     assert rows[0], "the two missing pieces should give a gone row"
     for got in rows[1:]:
         assert got == rows[0]
+
+
+def test_find_videos_finds_his_code_geass_r2_episodes_whose_subtitles_write_a_bare_number(tmp_path, monkeypatch):
+    """Kura-G (2026-11-07), his Code Geass R2 as it is on his drive: `Code Geass Hangyaku no Lelouch 01.srt` … beside
+    `Code_Geass_Ep01_<title>_[720p,BluRay,x264]_-_gg-THORA.mkv` …, R1 beside it with its own `01`, `02`. The look
+    never pairs them: by names alone the subtitles could as well be a bonus run (`<Show> Picture Drama 1.srt`, `2.srt`
+    beside the episodes), so it never guesses (the scenario matrix's *bare-numbered* rows). This card is where they
+    pair: *Find videos* reads the bare number (the window's reading) and offers, in the show's own source, the one
+    video of that number in the folder named like the title — R2's, never R1's — and the learner links them."""
+    title = "Code Geass Lelouch of the Rebellion R2"
+    work(7, title)
+    view = view_of([(7, f"Library/{title}", [f"Code Geass Hangyaku no Lelouch {n:02d}.srt" for n in (1, 2)], {})])
+    entry = needs.entries(view, connect=no_video_jobs(1, 2))[0]
+    source = tmp_path / "Anime" / "Code Geass"
+    r1, r2 = source / "Code Geass Lelouch of the Rebellion R1", source / title
+    for n in (1, 2):
+        _touch(str(r1 / f"[Coalgirls]_Code_Geass_{n:02d}_(1920x1080_Blu-ray_FLAC)_[A1B4310{n}].mkv"))
+    for n, name in ((1, "The_Day_the_Demon_was_Born"), (2, "The_Awakening_of_the_White_Knight")):
+        _touch(str(r2 / f"Code_Geass_Ep{n:02d}_{name}_[720p,BluRay,x264]_-_gg-THORA.mkv"))
+    _touch(str(r2 / "Code_Geass_OP1_[720p,BluRay,x264]_-_gg-THORA.mkv"))
+    _touch(str(r2 / "extras" / "Code_Geass_Creditless_OP1_[720p,BluRay,x264]_-_gg-THORA.mkv"))
+    monkeypatch.setattr(needs, "_sources", lambda language, data_dir: [str(source)])
+    found = needs.find_videos("ja", entry, {}, data_dir=str(tmp_path / "d"))
+    assert [(label, os.path.basename(path or "")) for label, path, _why in found] == [
+        (found[0][0], "Code_Geass_Ep01_The_Day_the_Demon_was_Born_[720p,BluRay,x264]_-_gg-THORA.mkv"),
+        (found[1][0], "Code_Geass_Ep02_The_Awakening_of_the_White_Knight_[720p,BluRay,x264]_-_gg-THORA.mkv")]

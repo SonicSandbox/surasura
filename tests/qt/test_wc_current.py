@@ -676,6 +676,8 @@ def test_r3_up_next_picked_in_the_menu_repaints_the_rows_it_moves_never_the_wind
     m = win.items.menu(row, at)
     settle(50)
     act = _menu_act(m, "up-next")
+    win.toasts.show(strings.DRAG_UP_NEXT.format(title=rs[1].title), undo=lambda: None)   # (the last move's, still up)
+    settle(30)
     reader = win.services.library
     saved, built, renders = len(writer.saved), reader.builds, lst.delegate.renders
     central = win.centralWidget()

@@ -2844,8 +2844,8 @@ def test_an_added_season_takes_its_fingerprints_from_one_listing_of_its_folder(l
     late = [touch(data_dir, f"LowPriority/{w[71]}/z{e:02d}.srt", w[e]) for e in range(4)]
     alone = touch(data_dir, f"LowPriority/{w[72]}/第01話.srt")
     spelled = [touch(data_dir, f"LowPriority/{w[73]}/Ep{e:02d}.srt") for e in range(4)]
-    if sys.platform != "win32":                                                 # (the case only Windows ignores)
-        spelled = []
+    if sys.platform != "win32":     # (the case only Windows ignores; the listing's name order only NTFS keeps)
+        spelled, late = [], []
     asked = season + [gone] + late + [alone] + [p.replace(os.sep + "Ep", os.sep + "EP") for p in spelled]
     stats = []
     real_stat = os.stat

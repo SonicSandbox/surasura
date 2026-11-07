@@ -6622,7 +6622,7 @@ def _listed_stats(folder, names):
                         want.discard(e.name)
                     if len(out) == len(want):
                         break
-                if n >= 2 * len(names) + 16:
+                if n + 1 >= 2 * len(names) + 16:
                     break
     except OSError:
         pass

@@ -52,8 +52,11 @@ class OnlineSteps(FakeSteps):
         return {"site": "youtube", "url": LINK, "names": list(NAMES)}
 
     def download(self, lang, job, web, on_progress=None):
-        self.log.append(("download", job["item_id"]))
         out = os.path.join(self._place(job), "fetch-1")
+        kept = os.path.join(out, "dQw4w9WgXcQ.mp4")
+        if os.path.isfile(kept) and not (self.plan.get("download_fails") or {}).get(str(job["item_id"])):
+            return kept, os.path.join(out, "dQw4w9WgXcQ.ja.srt")       # as Steps.download: kept for this run
+        self.log.append(("download", job["item_id"]))
         os.makedirs(out, exist_ok=True)
         video, subtitle = os.path.join(out, "dQw4w9WgXcQ.mp4"), os.path.join(out, "dQw4w9WgXcQ.ja.srt")
         with open(video, "w", encoding="utf-8") as f:
@@ -69,7 +72,7 @@ class OnlineSteps(FakeSteps):
                 raise stopping.Stopped()
             if kind == "update":
                 raise runner.Wait(runner.STOPPED_FOR_UPDATE, look=False)
-            raise runner.Needs(online.KIND, words, standing=kind == "standing")
+            raise runner.Needs(online.KIND, words, standing=kind == "standing", once=kind == "own")
         return video, subtitle
 
     def drop_online(self, job):
@@ -270,7 +273,8 @@ def test_a_job_resumed_at_mining_whose_video_was_dropped_is_picked_and_downloade
     with ledger.transaction():
         ledger.queue("ja", 1, "user", None, store_id="store-1")
     job = ledger.jobs("ja")[0]
-    ledger.set_state(job["id"], "mining", picked={"words": [], "video": gone, "subtitle": gone, "online": "youtube",
+    ledger.set_state(job["id"], "mining", picked={"words": [{"word": "天気", "reading": "テンキ", "line_start": 1.0}],
+                                                  "video": gone, "subtitle": gone, "online": "youtube",
                                                   "names": NAMES, "pairing": None, "profile": "p1"})
     with pytest.raises(runner.Repick):
         runner._mine(OnlineSteps(str(tmp_path), {}), ledger, "ja", ledger.job_by_id(job["id"]))
@@ -281,3 +285,36 @@ def test_a_job_resumed_at_mining_whose_video_was_dropped_is_picked_and_downloade
     steps, summary = _run(tmp_path, ledger, {"queue": {"ja": []}})
     assert ("download", 1) in steps.log and ledger.jobs("ja")[0]["state"] == "done"
     assert _online_left(tmp_path) == []
+
+
+# --- review round 1 ------------------------------------------------------------------------------------------------ #
+class BusyOnceSteps(OnlineSteps):
+    """Anki Miner's window open at the first mine call (a wait Connect looks at again), closed by the next look."""
+
+    def mine(self, lang, job, picked, words, attempt):
+        if not self.plan.pop("busy_done", False) and not getattr(self, "_was_busy", False):
+            self._was_busy = True
+            raise runner.Wait(runner.ANKI_MINER_OPEN)
+        return super().mine(lang, job, picked, words, attempt)
+
+
+def test_a_wait_looked_at_again_keeps_the_video_for_that_look_never_downloads_it_again(tmp_path, ledger):
+    # why (review M1): a 2-minute wait (Anki Miner's window open) must not fetch the whole video again at each look
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "online": [1]}
+    steps = BusyOnceSteps(str(tmp_path), plan)
+    _run(tmp_path, ledger, plan, looks=2, steps=steps)
+    assert [e for e in steps.log if e[0] == "download"] == [("download", 1)], "one download for the two looks"
+    assert ledger.jobs("ja")[0]["state"] == "done"
+    assert _online_left(tmp_path) == [], "gone once mined, and the run's end sweeps anything left"
+
+
+def test_a_videos_own_trouble_once_seen_never_counts_again_at_the_next_start(tmp_path, ledger):
+    # why (review M2): a private video in the top 20 would light the badge at every start after you looked at it
+    say = f"Example Show - 01: {online.PRIVATE}"
+    plan = {"line": {"ja": [1]}, "queue": {"ja": [1]}, "online": [1], "download_fails": {"1": ("own", say)}}
+    steps = OnlineSteps(str(tmp_path), plan)
+    _run(tmp_path, ledger, plan, steps=steps)
+    ledger.mark_seen([n["id"] for n in ledger.needs("ja")])
+    _run(tmp_path, ledger, plan, steps=steps)
+    assert not ledger.needs("ja", unseen=True), "seen once: not counted again while it stands"
+    assert [n["say"] for n in ledger.needs("ja")] == [say], "still listed"

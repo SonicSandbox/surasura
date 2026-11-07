@@ -187,11 +187,12 @@ class Needs(Exception):
     `whole`: the language's trouble, never the episode's (a setting, Anki Miner's setup, the library): recorded once
     for the language (no item), whatever the number of episodes it stops (alpha 6 try #6). `standing` (Michi-YT): the
     language's trouble recorded once as `whole` is (no item), but only the episodes it reaches wait on it (an online
-    title's download: the others go on)."""
+    title's download: the others go on). `once` (Michi-YT): the episode's own trouble that stays as it is (a private
+    video): counted once while it stands, never again at each start once seen (`Ledger.need(standing=)`)."""
 
-    def __init__(self, kind, say, whole=False, standing=False):
+    def __init__(self, kind, say, whole=False, standing=False, once=False):
         super().__init__(say)
-        self.kind, self.say, self.whole, self.standing = kind, say, whole, standing
+        self.kind, self.say, self.whole, self.standing, self.once = kind, say, whole, standing, once
 
 
 class Skip(Exception):
@@ -570,8 +571,9 @@ def _language(steps, ledger, lang, prepared, parked, out):
                 out["needs"].append(say)
             _wait(ledger, job, Wait(say, look=False, resume=_resume_of(ledger.job_by_id(job["id"]))), out, parked)
         finally:
-            _drop_online(steps, job)        # Michi-YT: its downloaded video goes however the job ended (a re-mine
-            #                                 downloads it again)
+            if not _looks_again(ledger, job, parked):
+                _drop_online(steps, job)    # Michi-YT: its downloaded video goes however the job ended (a re-mine
+            #                                 downloads it again) — kept only for a wait this run looks at again
         if _stop(steps):
             break
     return outside
@@ -667,7 +669,8 @@ def _need(ledger, lang, need, job):
     if getattr(need, "standing", False) and not need.whole:
         return ledger.need(lang, need.kind, need.say, job_id=job["id"], standing=True)     # Michi-YT: once
     if not need.whole:
-        return ledger.need(lang, need.kind, need.say, item_id=job["item_id"], job_id=job["id"])
+        return ledger.need(lang, need.kind, need.say, item_id=job["item_id"], job_id=job["id"],
+                           standing=bool(getattr(need, "once", False)))
     _fixed_said(ledger, lang, (need.say,))
     return ledger.need(lang, need.kind, need.say, standing=True)     # a state: never counted again while it stands
 
@@ -1014,6 +1017,8 @@ def _pick(steps, ledger, lang, job, record=True):
     lined = _line_up(steps, ledger, lang, job, book) if book is not None else None
     ledger.set_state(jid, "picking")
     web = _online(steps, lang, job) if book is None else None      # Michi-YT: an online title's episode
+    if web is not None:
+        ledger.set_state(jid, "picking", progress=None)            # (no download's percent from an earlier try)
     subtitle = None
     if web is not None:
         fetched = _download(steps, ledger, lang, job, web)
@@ -1118,6 +1123,17 @@ def _download(steps, ledger, lang, job, web):
         from app.connect import online
         _fixed(ledger, lang, kinds=(online.KIND,))
     return got
+
+
+def _looks_again(ledger, job, parked):
+    """Michi-YT (review M1): is the job waiting on something this run looks at again (Anki Miner's window open, you
+    reviewing, another writer: a 2-minute look)? Then its downloaded video stays for that look — a wait never fetches
+    the whole video again each look; the run's end sweeps it. A job ended, stopped, or parked for the next start: no."""
+    try:
+        now = ledger.job_by_id(job["id"]) or {}
+    except Exception:
+        return False
+    return now.get("state") == "waiting" and job["id"] not in parked and now.get("reason") != STOPPED_BY_YOU
 
 
 def _drop_online(steps, job):
@@ -1261,8 +1277,6 @@ def _mine(steps, ledger, lang, job, record=True):
     (skipped, failed)."""
     jid = job["id"]
     picked = ledger.picked(jid) or {}
-    if picked.get("online") and not _on_disk(picked.get("video") or ""):
-        raise Repick()                      # Michi-YT: resumed in a later run, its video dropped: fetched again
     words = picked.get("words") or []
     by_key = {(w["word"], w["reading"]): w for w in words}
     ran = False                     # a batch ran in this call: the next one waits for an update staged meanwhile
@@ -1278,6 +1292,9 @@ def _mine(steps, ledger, lang, job, record=True):
         todo = [w for w in words if _outcome(ledger, jid, w) in UNSETTLED]
         if not todo:
             break
+        if picked.get("online") and not _on_disk(picked.get("video") or ""):
+            raise Repick()                  # Michi-YT: resumed in a later run, its video dropped: fetched again —
+            #                                 only while a word is left to send (a batch in doubt read back first)
         doubt = any(_outcome(ledger, jid, w) == "uncertain" for w in todo)
         if doubt and _failures(ledger, jid) >= 2:
             _fail_mining(steps, ledger, lang, job, record)
@@ -1888,7 +1905,10 @@ class Steps:
 
         def own(say):
             title = self.title(lang, job)
-            return Needs(online.KIND, f"{title}: {say}" if title else say)
+            return Needs(online.KIND, f"{title}: {say}" if title else say, once=True)
+        held = getattr(self, "_online_trouble", {}).get(lang)
+        if held:                            # review S4: offline / a bot check this run: no other fetch tried
+            raise Needs(online.KIND, held, standing=True)
         if web.get("site") != "youtube":
             raise own(online.BILIBILI)
         if not web.get("url"):
@@ -1919,7 +1939,10 @@ class Steps:
                 raise Wait(STOPPED_FOR_UPDATE, look=False) from None
             raise
         except online.Trouble as t:
-            raise (Needs(online.KIND, t.say, standing=True) if t.standing else own(t.say)) from None
+            if t.standing:
+                self._online_trouble = dict(getattr(self, "_online_trouble", {}), **{lang: t.say})
+                raise Needs(online.KIND, t.say, standing=True) from None
+            raise own(t.say) from None
         except anki_miner.AnkiMinerError as e:
             self._anki_miner_held(lang).clear()
             raise _miner_wait_or_needs(e, self.url) from None

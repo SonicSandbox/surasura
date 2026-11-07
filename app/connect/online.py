@@ -28,6 +28,7 @@ bilibili.tv (`SITES`) is told plainly, never fetched: Anki Miner's `fetch` takes
 Standard library only; no Qt. The network call itself is Anki Miner's (CLAUDE.md §1, Module-driven: the network map's
 item).
 """
+import html
 import json
 import logging
 import os
@@ -44,7 +45,7 @@ KIND = "online-video"                   # Connect's *Needs you* kind for all of 
 FOLDER = "online"                       # <connect>/online: every fetched video, and nothing else
 FLOOR = 3 * 1024 ** 3                   # free bytes before a fetch: a 2-hour 720p video (Anki Miner's longest) fits
 FETCH_TIMEOUT = 2 * 60 * 60.0           # one video, probed and downloaded (Anki Miner's own probe and download limits)
-UPDATE_EVERY = 5                        # polls between two looks for an update staged (each a few stats)
+UPDATE_EVERY = 2                        # polls (a second each) between two looks for an update staged
 
 # The words (PROVISIONAL: lean A, asked of the lead) — the language's own trouble, once for it
 NOT_TICKED = ("Its video is downloaded to make its cards once you tick “I understand the risks” in YouTube… "
@@ -130,12 +131,19 @@ def place(job_id):
 
 
 def _remove(path, tries=10, pause=0.2):
-    """`path` (a folder) gone -> True; tried again a few times while a just-ended program still holds a file (Windows:
-    yt-dlp's or ffmpeg's handle lets go a moment after it is ended) -> False when it stays (the next sweep takes it)."""
+    """`path` (a folder, or a file: a killed fetch's own file) gone -> True; tried again a few times while a just-ended
+    program still holds a file (Windows: yt-dlp's or ffmpeg's handle lets go a moment after it is ended) -> False when
+    it stays (the next sweep takes it)."""
     for n in range(tries):
         if not os.path.lexists(path):
             return True
-        shutil.rmtree(path, ignore_errors=True)
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
         if not os.path.lexists(path):
             return True
         if n + 1 < tries:
@@ -224,8 +232,8 @@ def plain(message, transient=False):
 
 def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None, env=None):
     """Anki Miner's `fetch` of one YouTube video for job `job_id` -> (video, subtitle): both inside `place(job_id)`.
-    Raises Trouble (plain words), `stopping.Stopped` (the job's *Stop*, or `should_end()` true: an update staged — the
-    program ended within a second either way, its folder left for the caller's `drop`), and AnkiMinerError for a call
+    Raises Trouble (plain words), `stopping.Stopped` (the job's *Stop* — the program ended within a second —, or
+    `should_end()` true, asked every UPDATE_EVERY polls: an update staged, ended within a few seconds, its folder left for the caller's `drop`), and AnkiMinerError for a call
     with no verdict (absent, crashed, timeout). `on_progress(percent)`: the download's own percent, as it goes."""
     from app.connect import anki_miner
     if not room():
@@ -265,9 +273,7 @@ def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None
         code, message = verdict.get("error"), verdict.get("message") or ""
         if code == "SETUP_ERROR" and re.search(r"yt.?dlp", message, re.I):
             raise Trouble(NO_YTDLP, standing=True)
-        if code == "SETUP_ERROR":
-            raise Trouble(plain(message or code)[0], standing=True)
-        raise Trouble(*plain(message or code))
+        raise Trouble(plain(message or code)[0], standing=True)    # the whole call: the language's (review S3)
     if not run.get("ok"):
         code, message = run.get("error"), run.get("message") or ""
         if code == "CANCELLED":
@@ -277,7 +283,7 @@ def fetch(exe, profile, language, job_id, url, on_progress=None, should_end=None
         if code == "SETUP_ERROR":
             raise Trouble(plain(message or code)[0], standing=True)
         return _refused(code, message, bool(run.get("failure_is_transient")))
-    return _made(rid, run)
+    return _made(rid, run, language)
 
 
 def _refused(code, message, transient):
@@ -289,7 +295,7 @@ def _refused(code, message, transient):
     raise Trouble(*plain(message or code, transient))
 
 
-def _made(rid, run):
+def _made(rid, run, language="ja"):
     """The files a run's `fetch-<n>.json` names -> (video, subtitle), each a file inside the job's folder (a caption
     file in WebVTT copied to SubRip beside it, the cue reader's)."""
     own = os.path.join(folder(), rid)
@@ -304,7 +310,7 @@ def _made(rid, run):
         if not isinstance(path, str) or not _inside(path, own) or not os.path.isfile(path):
             raise Trouble(FAILED.format(why="its files aren't where Anki Miner said"))
     if subtitle.lower().endswith(".vtt"):
-        subtitle = as_srt(subtitle)
+        subtitle = as_srt(subtitle, language)
     return video, subtitle
 
 
@@ -326,12 +332,12 @@ def _srt_time(stamp):
     return f"{int(h):02d}:{int(m):02d}:{int(sec):02d},{(frac + '000')[:3]}"
 
 
-def as_srt(vtt):
+def as_srt(vtt, language="ja"):
     """A WebVTT caption file written beside itself as SubRip (`<stem>.srt`): each cue's times and its lines, tags and
     cue settings off, numbered from 1; NOTE / STYLE blocks and the header left out -> the .srt's path."""
     from app.path_utils import read_text
     blocks, cue = [], None
-    for line in read_text(vtt, "ja").splitlines():
+    for line in read_text(vtt, language).splitlines():
         m = _VTT_TIME.match(line)
         if m:
             cue = [_srt_time(m.group(1)), _srt_time(m.group(2)), []]
@@ -339,7 +345,7 @@ def as_srt(vtt):
         elif not line.strip():
             cue = None
         elif cue is not None:
-            text = _TAG.sub("", line).strip()
+            text = html.unescape(_TAG.sub("", line)).strip()
             if text:
                 cue[2].append(text)
     out = os.path.splitext(vtt)[0] + ".srt"

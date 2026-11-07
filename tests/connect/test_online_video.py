@@ -243,6 +243,7 @@ def test_a_videos_own_trouble_carries_its_title(steps, fake_miner):
     with pytest.raises(runner.Needs) as raised:
         steps.download("ja", JOB, WEB)
     assert raised.value.say == f"ゆっくり日本語 - 第3話: {online.PRIVATE}" and not raised.value.standing
+    assert raised.value.once, "counted once while it stands (review M2)"
 
 
 def test_an_update_staged_mid_download_is_the_updates_wait(steps, fake_miner, monkeypatch):
@@ -300,3 +301,37 @@ def test_an_online_title_with_a_no_video_from_before_is_a_wait_never_no_video():
     got = vr._connected(st, item, "video", online="youtube")
     assert got.kind == "waiting" and got.tip == feed.NEXT_START
     assert vr._connected(st, item, "video").kind == "no_media", "an episode on disk keeps its *No video*"
+
+
+# --- review round 1 ------------------------------------------------------------------------------------------------ #
+def test_the_sweep_removes_a_killed_fetchs_own_file_too():
+    # why (review S2): a Connect killed mid-fetch leaves `fetch-v<job>.json` beside the folders
+    os.makedirs(online.folder())
+    with open(os.path.join(online.folder(), "fetch-v5.json"), "w", encoding="utf-8") as f:
+        f.write("{}")
+    online.sweep()
+    assert os.listdir(online.folder()) == []
+
+
+def test_a_whole_call_refusal_is_the_languages_trouble(fake_miner, monkeypatch):
+    # why (review S3): a profile Anki Miner can't read refuses every video alike: once for the language
+    with pytest.raises(online.Trouble) as raised:
+        _fetch(fake_miner, monkeypatch, call="PROFILE_UNREADABLE", message="The profile can't be read.")
+    assert raised.value.standing
+
+
+def test_after_the_languages_trouble_no_other_video_is_fetched_this_run(steps, fake_miner):
+    # why (review S4): offline once, every other online episode would wait out a fetch of its own
+    fake_miner.plan(app="3.11.0", features=["fetch"], fetch={"error": "FETCH_FAILED", "transient": True,
+                                                               "message": "getaddrinfo failed"})
+    for job in (JOB, dict(JOB, id=22, item_id=6)):
+        with pytest.raises(runner.Needs) as raised:
+            steps.download("ja", job, WEB)
+        assert raised.value.say == online.OFFLINE and raised.value.standing
+    assert fake_miner.commands().count("fetch") == 1
+
+
+def test_webvtt_entities_are_read_as_text(tmp_path):
+    vtt = tmp_path / "x.ja.vtt"
+    vtt.write_text("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n雨&amp;風&nbsp;です\n", encoding="utf-8")
+    assert "雨&風\xa0です" in open(online.as_srt(str(vtt)), encoding="utf-8").read()

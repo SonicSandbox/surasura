@@ -285,6 +285,32 @@ def test_r5_the_rows_menu_opened_again_makes_no_widget(screen):
         settle(50)
 
 
+def test_r5_a_kept_menus_submenus_hold_only_this_opens_entries(screen):
+    """⋯ on a row, closed, and ⋯ on the same row again: the kept menu lends the same submenus back (R5), each emptied
+    as the menu hid — so each shows exactly the entries it showed the first time, never the last open's as well."""
+    seed, win, writer = screen
+    rs = win.page_widgets["current"].view_model.rows
+    at = win.mapToGlobal(QPoint(300, 300))
+
+    def shape(m):
+        return [(a.text(), [x.text() for x in a.menu().actions()] if a.menu() is not None else None)
+                for a in m.actions()]
+    row = next((r for r in rs[1:] if any(a.menu() is not None for a in win.items.menu(r, at).actions())), None)
+    win.items.last_menu.close()
+    settle(50)
+    if row is None:
+        pytest.fail("no row of the seed has a submenu in its ⋯")
+    first = shape(win.items.menu(row, at))
+    settle(50)
+    win.items.last_menu.close()
+    settle(50)
+    try:
+        assert shape(win.items.menu(row, at)) == first
+    finally:
+        win.items.last_menu.close()
+        settle(50)
+
+
 def test_r3_a_row_down_button_pressed_and_released_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_list(screen):
     """A row's ↓ button, pressed and released by the mouse: it and the row under it trade places — those two repaint
     (and the keyboard ring with them), never the list; outside it, only the toast and the bar's line."""

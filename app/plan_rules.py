@@ -108,6 +108,14 @@ def display_forms(lemma, orths, surfaces):
 SIGNATURE_ENCODER = json.JSONEncoder(sort_keys=True, ensure_ascii=False, default=str)
 
 
+class SignatureParts(dict):
+    """The run signature's parts (`analyzer.run_signature_parts`): a dict, signed whole — and beside it, never signed,
+    `watched`: the "reference" digests that are watched episodes set aside, not Finished (Haya-W). The fast re-plan's
+    check reads it to tell a watched mark (re-plan now) from a Finished drag (a Generate first, D1); parts built any
+    other way have none, and the check then answers as before."""
+    watched = frozenset()
+
+
 def signature_digest(parts, order_free=False, chunked=True):
     """sha256 of the signature's parts (`run_signature_parts`) as sorted-key JSON, or None for none. `chunked`: encoded
     chunk by chunk into the hash (`iterencode`) — the same text `json.dumps` writes, so the same digest, but no single

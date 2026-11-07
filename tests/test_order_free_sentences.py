@@ -179,16 +179,18 @@ def test_the_signature_holds_the_finished_files_in_their_finish_order(tmp_path):
         with open(path, "w", encoding="utf-8") as f:
             f.write("灯台")
     args = analyzer.parse_analysis_args(["--language=ja"])
-    one = analyzer.run_signature_parts("ja", [], args, [(files[0], "text", 1), (files[1], "text", 0),
-                                                        (files[2], "text", None)])
-    two = analyzer.run_signature_parts("ja", [], args, [(files[0], "text", 0), (files[1], "text", 1),
-                                                        (files[2], "text", None)])
+    one = analyzer.run_signature_parts("ja", [], args, [
+        analyzer.AsideFile(files[0], "text", False, 1), analyzer.AsideFile(files[1], "text", False, 0),
+        analyzer.AsideFile(files[2], "text", True, None)])
+    two = analyzer.run_signature_parts("ja", [], args, [
+        analyzer.AsideFile(files[0], "text", False, 0), analyzer.AsideFile(files[1], "text", False, 1),
+        analyzer.AsideFile(files[2], "text", True, None)])
     # (a set-aside file with no rank is one aside_files never makes now — every set-aside file is ranked — but the
     # part reads only the ranked ones)
     assert one["reference"] == two["reference"], "the same files set aside"
     assert len(one["finished"]) == 2 and one["finished"] == two["finished"][::-1]
     assert plan_rules.signature_digest(one) != plan_rules.signature_digest(two)
-    none = analyzer.run_signature_parts("ja", [], args, [(files[2], "text", None)])
+    none = analyzer.run_signature_parts("ja", [], args, [analyzer.AsideFile(files[2], "text", True, None)])
     assert "finished" not in none, "no Finished content: the part isn't there (a library without signs as before)"
 
 

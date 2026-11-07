@@ -19,7 +19,7 @@ import unicodedata
 # no CSV, so it imports NONE of them; a Japanese run never loads jieba; a Chinese run never loads
 # fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, namedtuple
 from itertools import accumulate, compress, repeat
 from operator import attrgetter, eq, itemgetter
 from datetime import datetime
@@ -4159,6 +4159,25 @@ def record_analysed(language, library, data_dir=None, user_files_dir=None):
         pass
 
 
+def _source_typer():
+    """A file's source type as a run reads it — what the importer recorded (`declared`), then a producer's directory
+    marker (read ONCE per directory), then the filename: `typer(path, declared)`. One rule for the counted files
+    (`resolve_found_files`) and the set-aside ones (`aside_files`), so a file signs the same either way."""
+    marker_cache = {}
+
+    def typer(path, declared=None):
+        folder = os.path.dirname(path)
+
+        def _marker():
+            # Lazy + cached: a probe per DIRECTORY, and only for files the extension didn't settle.
+            if folder not in marker_cache:
+                marker_cache[folder] = read_source_marker(folder).get("source_type")
+            return marker_cache[folder]
+
+        return infer_source_type(path, declared=declared, marker_type=_marker)
+    return typer
+
+
 def resolve_found_files(language, verbose=True, schedule=None, read_store=True, missing=False):
     """Resolve the ordered [(abs_path, label, weight, source_type), ...] content files for a run —
     from the library store's schedule (phase order) when one is ready, else master_manifest.json, else a
@@ -4185,19 +4204,7 @@ def resolve_found_files(language, verbose=True, schedule=None, read_store=True, 
         schedule, _versions = read_library_schedule(language, data_dir, user_files_dir)
     no_fallback = schedule is not None
     keep_missing = missing and no_fallback
-
-    _marker_cache = {}
-
-    def _stype(path, declared=None):
-        folder = os.path.dirname(path)
-
-        def _marker():
-            # Lazy + cached: a probe per DIRECTORY, and only for files the extension didn't settle.
-            if folder not in _marker_cache:
-                _marker_cache[folder] = read_source_marker(folder).get("source_type")
-            return _marker_cache[folder]
-
-        return infer_source_type(path, declared=declared, marker_type=_marker)
+    _stype = _source_typer()
 
     if no_fallback or os.path.exists(manifest_path):
         if verbose and no_fallback:
@@ -4456,35 +4463,49 @@ def compute_run_signature(language, found_files, args, order_free=False, aside=(
     return signature_digest(run_signature_parts(language, found_files, args, aside), order_free)
 
 
+# One set-aside file (`aside_files`), read by name, never unpacked: a lane that adds a field (F7's finish rank) can't
+# shift one into another's place.
+AsideFile = namedtuple("AsideFile", "path source_type watched rank")
+
+
 def aside_files(language, schedule):
     """W-1: the library's set-aside files (`library_store.sets_aside`) — Finished (W-1b), and watched episodes while
     *Keep studying watched episodes* is off — from a
     schedule read with them (`Store.schedule(with_aside=True)`, `read_only_schedule(with_aside=True)`, in the same
-    transaction as the list): [(abs_path, source_type, rank)], for the run signature's "reference" and "finished"
-    parts. Never counted, their text is the name tables' evidence, 例文's sentences and example sentences (F7: ranked,
-    0 first — the watched episodes set aside, then Finished, the newest first). [] with none (JSON mode, no store)."""
+    transaction as the list), for the run signature's "reference" and "finished" parts. Never counted, their text is
+    the name tables' evidence, 例文's sentences and example sentences (F7), so they are part of what a run reads. []
+    with none (JSON mode, no store).
+
+    -> [AsideFile(path, source_type, watched, rank)]: `source_type` as a run reads a counted file's (`_source_typer`),
+    so a set-aside file signs as it did while it counted — its digest is the one its plan line holds (Haya-W);
+    `watched`: a watched episode set aside, not Finished (the fast re-plan re-plans a watched mark at once,
+    `plan_engine._only_watched`); `rank` (F7): its place as a sentence source, 0 first — the watched episodes set
+    aside, then Finished, the newest finished first."""
     ls = _library_store()
     if ls is None or not schedule:
         return []
     data_dir = get_data_path(language)
+    typer = _source_typer()
     out, finished, watched = [], [], []
     for n, entry in enumerate(schedule.get(ls.ASIDE) or ()):
         rel = str(entry.get("physical_path") or "")
         if rel.startswith("./"):
             rel = rel[2:]
-        out.append([os.path.join(data_dir, rel), entry.get("source_type"), None])
-        if isinstance(entry, dict) and "finished_at" in entry:
-            finished.append((str(entry["finished_at"] or ""), n))
+        path = os.path.join(data_dir, rel)
+        is_watched = "finished_at" not in entry
+        out.append(AsideFile(path, typer(path, entry.get("source_type")), is_watched, None))
+        if is_watched:
+            watched.append((path, n))
         else:
-            watched.append((out[-1][0], n))
+            finished.append((str(entry["finished_at"] or ""), n))
     # F7: what the learner has watched is a sentence source, the most recent first among equally easy sentences — its
     # rank: a watched episode set aside first (the one being studied now; the store keeps no time it was watched, so
     # by path among them: Sonic 2026-11-06, the lead's ruling), then Finished, the newest finished first (a tie, one
     # finish of a whole show, the later in Finished's own order first; *Earlier* last). One rank each, 0 the first.
     ranked = [n for _path, n in sorted(watched)] + [n for _at, n in sorted(finished, reverse=True)]
     for rank, n in enumerate(ranked):
-        out[n][2] = rank
-    return [tuple(entry) for entry in out]
+        out[n] = out[n]._replace(rank=rank)
+    return out
 
 
 # The run signature's digest: one encoder and one rule, the analyzer's and the fast re-plan's (app/plan_rules.py).
@@ -4587,10 +4608,11 @@ def settings_signature(settings, language):
 
 
 def run_signature_parts(language, found_files, args, aside=()):
-    """What the run signature hashes (`compute_run_signature`), as a dict; None when it can't be read. `aside`: the
-    set-aside files (`aside_files`) — "reference", each file's own digest (`plan_rules.file_digest`, as "files" are
-    told apart), sorted: a watched mark, its Undo, *Keep studying watched episodes* flipped or a set-aside file edited
-    moves it, so Generate runs (never skips) and the fast re-plan asks for a Generate first, both ways (W-1)."""
+    """What the run signature hashes (`compute_run_signature`), as a `plan_rules.SignatureParts`; None when it can't be
+    read. `aside`: the set-aside files (`aside_files`) — "reference", each file's own digest (`plan_rules.file_digest`,
+    as "files" are told apart), sorted: a watched mark, its Undo, *Keep studying watched episodes* flipped or a
+    set-aside file edited moves it, so Generate runs (never skips) (W-1); the fast re-plan re-plans a watched mark at
+    once (the parts' unsigned `watched`, Haya-W) and asks for a Generate first for the rest."""
     try:
         from app import token_index as _token_index
         user_files_dir = get_user_files_path(language)
@@ -4622,7 +4644,7 @@ def run_signature_parts(language, found_files, args, aside=()):
             pass
 
         from app import __version__ as _app_version
-        _sig_parts = {
+        _sig_parts = plan_rules.SignatureParts({
             "files": [[fp, _fsig(fp), _l, _w, _st] for (fp, _l, _w, _st) in found_files],
             "known": known_sig,
             "lists": [_fsig(p) for p in (ignore_list_file, black_list_file, graduated_list_file)],
@@ -4635,18 +4657,20 @@ def run_signature_parts(language, found_files, args, aside=()):
                      args.context_min, args.context_max, args.max_contexts, script],
             "engine": f"{_app_version}|schema{_token_index.SCHEMA_VERSION}|rev{ENGINE_REVISION}",
             "debug_word_stats": bool(os.environ.get("SURASURA_DEBUG_WORD_STATS")),
-        }
+        })
         if aside:
             # W-1: the set-aside files, a part of its own present only then, so a library with none signs as before.
-            # Path and stat only: the store and the copy may name a file's type differently, never its text.
-            _sig_parts["reference"] = sorted(plan_rules.file_digest([fp, _fsig(fp), None, None, None])
-                                             for fp, *_rest in aside)
-            # F7: the Finished files in the order they rank (newest finished first): example sentences follow it, so
-            # finishing in another order is another run. Present only with Finished content.
-            ranked = sorted((entry[2], entry[0]) for entry in aside if len(entry) > 2 and entry[2] is not None)
+            # Each as the "files" part signs it (Haya-W: `aside_files`' type), so a counted file set aside keeps its
+            # digest and the plan's line for it is found again; Finished ↔ watched moves no counted file here (F7: their ranks below).
+            digests = [(plan_rules.file_digest([a.path, _fsig(a.path), None, None, a.source_type]), a.watched)
+                       for a in aside]
+            _sig_parts["reference"] = sorted(d for d, _w in digests)
+            _sig_parts.watched = frozenset(d for d, w in digests if w)
+            # F7: the set-aside files in the order they rank as sentence sources (watched, then Finished newest
+            # first): example sentences follow it, so another order is another run. Present only with set-aside files.
+            ranked = sorted((a.rank, d) for a, (d, _w) in zip(aside, digests) if a.rank is not None)
             if ranked:
-                _sig_parts["finished"] = [plan_rules.file_digest([fp, _fsig(fp), None, None, None])
-                                          for _rank, fp in ranked]
+                _sig_parts["finished"] = [d for _rank, d in ranked]
         # Q4-3: with Automatic rarity on, the band the library's store remembers helps pick the list (the second
         # threshold): a part of its own, present only then, so no other library's signature moves.
         try:
@@ -6272,8 +6296,8 @@ def main():
     src_place = [(plan_rules.NOT_FINISHED, i + 1) for i in range(len(source_list))]
     _listed_rows = {key for key, entry in word_stats.items() if entry["total_count"] >= floor_count}
     _phrase_row_of = {index: key for key, index in phrase_keys.items() if key in _listed_rows}
-    _finished = sorted((entry[2], entry[0], entry[1]) for entry in aside_files(language, _library["schedule"])
-                       if len(entry) > 2 and entry[2] is not None)
+    _finished = sorted((a.rank, a.path, a.source_type) for a in aside_files(language, _library["schedule"])
+                       if a.rank is not None)
     if _finished and _listed_rows:
         if _phrase_set is not None and _store is not None:
             try:

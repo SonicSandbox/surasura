@@ -48,8 +48,6 @@ def test_down_in_the_results_repaints_only_the_two_hits_that_change(world):
     assert outside == [], (outside, w.report())
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError,
-                   reason="WC found-C C2: each fill of the results makes every hit row again (the same search too)")
 def test_r5_the_results_opened_closed_with_esc_and_opened_again_by_typing_make_no_widget(world):
     """The results opened, closed with Esc, and opened again by typing the same search: the same overlay comes back
     with the same hits, and the reopen makes no widget (R5: built once)."""
@@ -72,3 +70,42 @@ def test_r5_the_results_opened_closed_with_esc_and_opened_again_by_typing_make_n
     if reopened is not results or len(hits_of(results)) != shown:
         pytest.fail(f"the reopen didn't show the same overlay with the same hits: {w.report()}")
     assert w.created == 0, w.report()
+
+
+def test_a_refill_with_fewer_hits_keeps_only_its_own_rows_showing(world):
+    """The results kept their rows (R5, C2) — so a refill that shows fewer hits must let the others go: every hit row
+    left in the results is one the fill lists, none from the last fill stays on screen."""
+    from app.qt.search import HitRow
+    seed, win, _writer = world()
+    try:
+        results = ask(win, "星")
+    except AssertionError as e:                                        # setup: never the rule's AssertionError
+        pytest.fail(f"setup: the results didn't open: {e}")
+    groups = results.groups
+    if sum(len(g.hits) for g in groups) < 2:
+        pytest.fail("setup: the seed's search shows fewer than two hits")
+    fewer = tuple(g._replace(hits=g.hits[:1]) for g in groups)
+    results.show_groups(results.query, fewer)
+    wc.settle()
+    shown = [w for w in results.body.findChildren(HitRow) if w.isVisible()]
+    assert sorted(map(id, shown)) == sorted(map(id, results.hits))
+    assert [r.hit for r in results.hits] == [h for g in fewer for h in g.hits]
+
+
+def test_a_refill_after_a_text_size_change_makes_its_rows_at_the_new_size(world, monkeypatch):
+    """Rows are taken back only at the text size they were made at: a refill after Settings' text size changed (it
+    changes live) makes every row anew, as tall as the new size makes one — never a kept row at the old height beside
+    new ones (Mado-WF review: a taken-back row kept 51 px where the new size gives 57)."""
+    from app.qt import search as qsearch
+    seed, win, _writer = world()
+    try:
+        results = ask(win, "星")
+    except AssertionError as e:                                        # setup: never the rule's AssertionError
+        pytest.fail(f"setup: the results didn't open: {e}")
+    before = [r.height() for r in results.hits]
+    f = qsearch._f() * 1.3
+    monkeypatch.setattr(qsearch, "_f", lambda: f)
+    results.show_groups(results.query, results.groups)
+    wc.settle()
+    assert results.hits and all(r.height() == round(44 * f) for r in results.hits), (before, [r.height() for r in results.hits])
+

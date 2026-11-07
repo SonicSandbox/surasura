@@ -3773,7 +3773,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     import pandas as pd
     plan_path = os.path.join(RESULTS_DIR, PLAN_FILE)
     try:
-        plan = plan_engine.load(plan_path)
+        plan = plan_engine.load(plan_path, trusted=True)
     except plan_engine.PlanError as e:
         print(f"The journey can't be redrawn from the plan ({e}): generating.")
         return None
@@ -3789,8 +3789,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         order.append((rel.replace("\\", "/"), _PLAN_TIERS.get(label, "goal")))
     _progress("Picking sentences")
     eng = plan_engine.Engine(plan)
-    eng.replan(order)
-    result = eng.result(pick=True, texts=plan_texts(language, data_dir, store))
+    result = eng.replan(order, pick=True, texts=plan_texts(language, data_dir, store))
     if not result.priority:
         print("The journey can't be redrawn from the plan (no list): generating.")
         return None                         # (a run with no list writes none: the Generate says so its own way)
@@ -3829,10 +3828,18 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         for i in range(1, n_contexts + 1):
             entry[f"final_context_{i}"] = row.get(f"Context {i}", "")
             entry[f"final_src_{i}"] = row.get(f"Src {i}", "")
+    # One write, the fast encoder (no indent: the same data, every reader parses it); the sidecars hold each file's
+    # words (sources), which no order moves: only their times follow word_stats.json's (the Content Manager's newer-
+    # than rule), written again only when one is missing
     with open(word_stats_path, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(stats, indent=2, ensure_ascii=False))
+        f.write(json.dumps(stats, ensure_ascii=False))
     try:
-        _write_sidecars(RESULTS_DIR, stats)
+        sidecars = [os.path.join(RESULTS_DIR, name) for name in ("analyzed_files.json", "file_words.json")]
+        if all(os.path.exists(p) for p in sidecars):
+            for p in sidecars:
+                os.utime(p)
+        else:
+            _write_sidecars(RESULTS_DIR, stats)
     except Exception as e:
         print(f"Warning: could not write Content Manager sidecars: {e}")
 
@@ -3848,7 +3855,8 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             file_stats = json.load(f)
         if len(file_stats) == len(plan.files):
             at = {entry[0]: i for i, entry in enumerate(plan.files)}
-            file_stats = [file_stats[at[rel]] for rel, _tier in order]
+            moved = [at[rel] for rel, _tier in order]
+            file_stats = [file_stats[i] for i in moved]
             with open(OUTPUT_STATS, encoding="utf-8") as f:
                 head = f.read().split("\nFile: ", 1)[0].rstrip("\n") + "\n\n"
             with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
@@ -3859,8 +3867,15 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
                     f.write(f"  Known Words: {stat['Known Count']}\n")
                     f.write(f"  Coverage: {stat['Coverage (%)']}%\n")
                     f.write("\n")
+            # The Generate's own text, its entries moved whole (re-encoding with an indent is the slow encoder)
+            with open(as_generated, encoding="utf-8") as f:
+                text = f.read()
+            blocks = _json_list_entries(text) if text.startswith("[\n    {") else None
             with open(stats_json, 'w', encoding='utf-8') as f:
-                f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
+                if blocks is not None and len(blocks) == len(moved):
+                    f.write("[\n" + ",\n".join(blocks[i] for i in moved) + "\n]")
+                else:
+                    f.write(json.dumps(file_stats, indent=4, ensure_ascii=False))
     except Exception as e:
         print(f"Warning: could not reorder the file statistics: {e}")
 
@@ -3879,7 +3894,7 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
             rendering = time.time()
             drawn = static_html_generator.generate_static_html(
                 theme=args.theme, app_mode=args.app_mode, zen_limit=args.zen_limit,
-                open_browser=not args.no_open, language=language, marks=marks)
+                open_browser=not args.no_open, language=language, marks=marks, found=found_files)
             report_failed = not _report_written(_html, rendering)
             try:
                 store.set_meta("last_render_sig", signed_render(args, drawn, not report_failed, made))
@@ -4832,6 +4847,18 @@ def redrawn_for(results_dir):
     except (OSError, ValueError):
         return None
     return marker if isinstance(marker, dict) else None
+
+
+def _json_list_entries(text):
+    """The entries of a JSON list written with `indent=4` (file_statistics.json), each its own text: the list's top-level
+    objects are the only lines that are "    }" or "    {" — None when the text isn't that shape."""
+    body = text[2:-2] if text.endswith("\n]") else None
+    if not body:
+        return None
+    parts = body.split("\n    },\n    {")
+    if len(parts) == 1:
+        return [body]
+    return [parts[0] + "\n    }"] + ["    {" + p + "\n    }" for p in parts[1:-1]] + ["    {" + parts[-1]]
 
 
 def _write_redraw_marker(plan_signature, run_signature):

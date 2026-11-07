@@ -362,7 +362,7 @@ class Firsts:
     """The per-file first sentences read back (`pack_firsts`): `firsts[j]` a sentence row with no text. ValueError
     when the columns don't fit together."""
 
-    def __init__(self, packed):
+    def __init__(self, packed, deep=True):
         if not isinstance(packed, dict) or packed.get("order") != sys.byteorder or type(packed.get("n")) is not int:
             raise ValueError("the first sentences are damaged")
         n = packed["n"]
@@ -379,8 +379,8 @@ class Firsts:
                 raise ValueError("the first sentences are damaged")
         for at, flat in (("cow_at", "cow"), ("crowd_at", "crowd")):
             offsets = cols[at]
-            if len(offsets) != n + 1 or (n and (offsets[0] != 0 or offsets[-1] != len(cols[flat]))) or any(
-                    a > b for a, b in zip(offsets, offsets[1:])):
+            if len(offsets) != n + 1 or (n and (offsets[0] != 0 or offsets[-1] != len(cols[flat]))) or (deep and any(
+                    a > b for a, b in zip(offsets, offsets[1:]))):
                 raise ValueError("the first sentences are damaged")
         self.n, self.cols = n, cols
 

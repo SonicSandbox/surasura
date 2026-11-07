@@ -1006,11 +1006,13 @@ def _journey_folds(data, file_order, marks, inline=False):
         data["folds"] = folds
 
 
-def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None):
+def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None,
+                         found=None):
     """Write the report. `language`: the run's (the analyzer's `--language`), whose journey's stones it draws (None:
     settings.json's); `marks`: those stones as the run read them (None: read here). Returns the marks the journey was
     drawn from — None for Zen or without a library store, `library_store.UNREAD` when they couldn't be read — for the
-    run's render signature (`analyzer.signed_render`)."""
+    run's render signature (`analyzer.signed_render`). `found`: the run's own `resolve_found_files` list, when it has
+    one (F7's redraw: every library file stat'd once a run)."""
     print(f"Generating static HTML (Theme: {theme})...")
     
     # Pre-load settings
@@ -1077,7 +1079,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     try:
         from app import analyzer as _analyzer
         goal_files = {os.path.basename(path) for path, label, _weight, _type
-                      in _analyzer.resolve_found_files(target_lang, verbose=False)
+                      in (found if found is not None else _analyzer.resolve_found_files(target_lang, verbose=False))
                       if label == "GoalContent"}
     except Exception as e:
         print(f"Warning: could not read the library tiers for the report: {e}")

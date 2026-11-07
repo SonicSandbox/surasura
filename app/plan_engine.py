@@ -83,12 +83,15 @@ class Plan:
 _PICK_TABLES = tuple(b'{"' + name + b'":' for name in (b"finished", b"sentences", b"cowords", b"pools", b"firsts"))
 
 
-def load(path, pools=True):
+def load(path, pools=True, trusted=False):
     """The plan file at `path`, checked whole. The file is read in one go and closed before anything is decoded, so a
     Generate replacing it never waits on this reader (Windows refuses to replace a file someone holds open). Raises
     PlanError: missing, unreadable, damaged (gzip CRC, a line that isn't JSON), another format, or tables that don't
     fit together. `pools` False (the window's readers: the numbers, Anki's order, Connect): format 3's example-sentence
-    tables are left undecoded (F7; most of a large plan) — its engine re-picks nothing (`Engine.contexts` None)."""
+    tables are left undecoded (F7; most of a large plan) — its engine re-picks nothing (`Engine.contexts` None).
+    `trusted` (the analyzer's redraw, of the plan its own Generate wrote: F7): the gzip and JSON checks, the header and
+    every table's size against it, but not each value's type and range — a damaged value there is an error the
+    redraw catches, and it Generates instead; a plan of another library or run is `check`'s to refuse, as ever."""
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -136,19 +139,19 @@ def load(path, pools=True):
     plan = Plan(header, tables["files"], tables["keys"], tables["rows"], tables["ties"], per_file,
                 _spell_table(tables.get("spell", ())), tables.get("finished"), tables.get("sentences"),
                 tables.get("cowords"), _pools_table(tables.get("pools", ())), picks=pools,
-                firsts=_firsts_table(tables.get("firsts")))
-    _validate(plan)
+                firsts=_firsts_table(tables.get("firsts"), deep=not trusted))
+    _validate(plan, deep=not trusted)
     return plan
 
 
-def _firsts_table(chunks):
+def _firsts_table(chunks, deep=True):
     """The packed per-file first sentences (`plan_rules.Firsts`), or None (an older plan, a lean load)."""
     if not chunks:
         return None
     if len(chunks) != 1:
         raise PlanError("the plan file's first sentences are damaged")
     try:
-        return plan_rules.Firsts(chunks[0])
+        return plan_rules.Firsts(chunks[0], deep)
     except ValueError as e:
         raise PlanError(f"the plan file's {e}") from None
 
@@ -200,7 +203,7 @@ def read_header(path):
     return header
 
 
-def _validate(plan):
+def _validate(plan, deep=True):
     """Every value the engine reads, checked by type and range, every table against the header: a damaged or
     hand-edited plan is refused whole with a PlanError, never half-used and never a crash later (a TypeError in
     `result()` on a worker). `format` 1 or 2 as `analyzer.plan_lines` writes it (01 §7; 2 adds `spell` and the
@@ -262,10 +265,12 @@ def _validate(plan):
     elif plan.spell:
         raise PlanError("a format-1 plan file holds a spell table")
     if h.get("format") == 3:
-        if plan.picks:
+        if plan.picks and deep:
             _validate_pools(plan)
     elif plan.sentences or plan.pools or plan.cowords or plan.finished or any("fs" in line for line in plan.per_file):
         raise PlanError("an older plan file holds example-sentence pools")
+    if not deep:
+        return                              # (`load(trusted=True)`: the sizes above are the plan's own)
     uses = [0] * n_keys
     phrases = {k for k, key in enumerate(plan.keys) if key[2]}
     for line in plan.per_file:
@@ -670,7 +675,7 @@ class Engine:
     # From scratch (02 §2): the referee
     # ----------------------------------------------------------------------------------------------------------- #
 
-    def replan(self, order, pins=None):
+    def replan(self, order, pins=None, pick=False, texts=None):
         """The order's live numbers from scratch. `order`: [(item_id, tier)] — the analysed tiers' items, NOW then
         Soon then 6+ Months, each in the store's order. An item the plan doesn't hold is a PlanError (the library
         changed: Generate first); a plan item not in `order` is dropped (it left the counted tiers, 02 §6: the
@@ -678,7 +683,7 @@ class Engine:
         self._numbers(order)
         if pins is not None:
             self.set_pins(pins)
-        return self.result()
+        return self.result(pick, texts)
 
     def _numbers(self, order):
         """The live numbers from scratch for `order` (replan's checks and work, without the result)."""
@@ -1234,13 +1239,22 @@ class Engine:
                 continue                            # (Only i+1, no i+1 sentence: the word is skipped, never learned)
             picker.learn(k, bool(self._phrase[k]), seq)
             out[k] = list(chosen or ())
-        # The text of those kept without it, read once each (a handful of files: the ones nearest each first meeting)
+        # The text of those kept without it: the sentence table's own where it holds the same sentence (the last
+        # Generate's shortlists and its nearest files), else read once each (the files a move brought nearer)
+        held = None
         wanted = {}
         for chosen in out.values():
-            for s in chosen:
+            for j, s in enumerate(chosen):
                 if sentences[s][plan_rules.TEXT] is None:
                     st = sentences[s]
-                    wanted.setdefault(files[st[plan_rules.SRC]][0], set()).add(st[plan_rules.NUMBER])
+                    if held is None:
+                        held = {(t[plan_rules.SRC], t[plan_rules.NUMBER], t[plan_rules.HASH]): i
+                                for i, t in enumerate(plan.sentences)}
+                    twin = held.get((st[plan_rules.SRC], st[plan_rules.NUMBER], st[plan_rules.HASH]))
+                    if twin is not None:
+                        chosen[j] = twin
+                    else:
+                        wanted.setdefault(files[st[plan_rules.SRC]][0], set()).add(st[plan_rules.NUMBER])
         answered = {}
         if wanted and texts is not None:
             try:

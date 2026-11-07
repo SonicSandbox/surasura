@@ -304,3 +304,240 @@ def test_r5_the_episode_menu_opened_again_on_another_episode_makes_no_widget(scr
     finally:
         lst.toggle(lst.model().index(k, 0))
         settle(100)
+
+
+# --- R4: a fold line pressed -------------------------------------------------------------------------------------- #
+def test_r4_a_fold_line_pressed_draws_afresh_only_its_row_and_the_parts_it_lists(screen):
+    """A fold line pressed (its group's parts listed after it), then pressed again (folded): S19's written skip (a
+    relayout repaints the viewport, from pictures): listing draws the fold's line and its parts afresh at most
+    (and does draw), folding draws nothing afresh; the fold flips; nothing above the pressed row, nor outside the
+    list, repaints; no widget made."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    model = lst.model()
+    k, fold = next(((i, f) for i, e in enumerate(model.entries) if e[0] in (rows.HERO, rows.ROW)
+                    for f in rows.row_folds(e[1], e[2]) if f.ids), (None, None))
+    assert fold is not None, "the seed has a row with a fold"
+    lst.toggle(model.index(k, 0))
+    settle(100)
+    box = wc.rect_in_window(lst)
+    vp = wc.rect_in_window(lst.viewport())
+
+    def fold_line():
+        return next((item for _r, item in lst.delegate.episode_lines(
+            model.entries[k], lst.visualRect(model.index(k, 0))) if item.ids == fold.ids), None)
+
+    presses = 0
+    try:
+        for _press in range(2):
+            line = fold_line()
+            assert line is not None, "a fold line is shown"
+            opening = not lst.fold_open(fold)
+            renders = lst.delegate.renders
+            with wc.measure(win, readers=[win.services.library]) as w:
+                lst.toggle_fold(line)
+                presses += 1
+                settle(100)
+            drawn = lst.delegate.renders - renders
+            assert bool(lst.fold_open(fold)) is opening, (opening, "the press flipped the fold")
+            assert drawn <= (1 + len(line.ids) if opening else 0), (opening, drawn, w.report())
+            assert w.paints_outside_rect(box) == [], w.report()
+            assert w.created == 0 and w.builds == 0, w.report()
+            # nothing above the pressed row repaints: its picture and the rows after it (moved, from pictures) only
+            top = lst.visualRect(model.index(k, 0)).top()
+            below = QRect(vp.left(), vp.top() + top, vp.width(), vp.height() - top)
+            in_list = [p for p in w.paints if vp.contains(p.rect)]
+            assert all(below.intersects(p.rect) or p.rect.height() <= 8 for p in in_list), (opening, w.report())
+            assert w.union_in(below) > 0, (opening, w.report())
+            if opening:
+                assert drawn >= 1, (opening, drawn, w.report())
+    finally:
+        if presses % 2 == 1:
+            f = fold_line()
+            if f is not None:
+                lst.toggle_fold(f)
+            settle(100)
+
+
+def test_r3_a_ctrl_click_on_a_closed_row_repaints_that_row_and_nothing_else_in_the_list(screen):
+    """Ctrl+click on a closed row's title: the row is picked — its row repaints (drawn afresh, painted), never the
+    list; outside it, only the toast and the bar's line."""
+    from PyQt6.QtCore import QEvent
+    from tests.qt.test_drag import mouse
+    seed, win, writer = screen
+    lst = lst_of(win)
+    i = _closed_row(lst, 3)
+    key = keys_of(win)[i]
+    assert key is not None, "the row has a key to pick by"
+    g = lst.delegate.line_geometry(lst.model().entries[i][1], lst.delegate.slab_of(lst.visualRect(lst.model().index(i, 0))))
+    at = QPoint(g["main"].left() + 20, g["main"].center().y())
+    ctrl = Qt.KeyboardModifier.ControlModifier
+    left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+
+    def click():
+        mouse(lst.viewport(), QEvent.Type.MouseButtonPress, at, left, left, ctrl)
+        mouse(lst.viewport(), QEvent.Type.MouseButtonRelease, at, left, none, ctrl)
+
+    renders = lst.delegate.renders
+    try:
+        with wc.measure(win, readers=[win.services.library]) as w:
+            click()
+            settle(150)
+        assert key in lst.picked_rows, "the row is picked"
+        vp = wc.rect_in_window(lst.viewport())
+        band = _row_band(lst, i, i)
+        slack = vp.width() * wc.STRIP_SLACK_PX * 2
+        assert w.union_in(band) > 0, w.report()                   # the picked row was painted
+        assert w.union_in(vp) <= band.width() * band.height() + slack, w.report()
+        in_list = [p for p in w.paints if vp.contains(p.rect)]
+        assert all(band.intersects(p.rect) or p.rect.height() <= 8 for p in in_list), w.report()
+        outside = [p for p in w.paints if not vp.contains(p.rect) and not vp.intersects(p.rect)
+                   and not any(r.contains(p.rect) for r in _allowed_outside_the_list(win))]
+        assert outside == [], (outside, w.report())
+        assert lst.delegate.renders - renders <= 2, w.report()    # the row itself, a ring at most
+        assert w.builds == 0, w.report()
+    finally:
+        lst.picked_rows.clear()
+        lst.picked_eps.clear()
+        lst.viewport().update()
+        settle(100)
+
+
+def test_r3_ctrl_z_after_a_drop_draws_afresh_only_the_rows_it_puts_back(screen):
+    """Ctrl+Z after a drop: the newest move is undone — the rows go back, one view, only the rows the drop had moved
+    drawn afresh, nothing outside the list but the toast and the bar's line."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    before = keys_of(win)
+    lift(win, 6)
+    target = row_point(win, 2)
+    move_global(win, target)
+    release_global(win, target)
+    assert wait_until(lambda: writer.saved and win.moves.tickets == [], 3)
+    settle(300)
+    moved = keys_of(win)
+    assert moved != before
+    undone = len(writer.undone)
+    renders = lst.delegate.renders
+    reader = win.services.library
+    built = reader.builds
+    with wc.measure(win, readers=[reader]) as w:
+        QTest.keyClick(win, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        assert wait_until(lambda: len(writer.undone) > undone and reader.builds > built and win.moves.tickets == [], 3)
+        settle(200)
+    writer.saved.pop()                                             # undone: nothing for the clean-up to undo
+    assert keys_of(win) == before, w.report()                      # the newest move is the one put back
+    assert lst.delegate.renders - renders <= 6 - 2 + 1, w.report()          # rows 2…6, no other
+    assert 1 <= w.builds <= 2, w.report()                          # (the undo's view; the optimistic one at most)
+    assert w.paints_outside_rect(wc.rect_in_window(lst), *_allowed_outside_the_list(win)) == [], w.report()
+    assert w.created == 0, w.report()
+
+
+def test_r3_the_menus_soon_on_a_row_draws_afresh_only_the_rows_it_passes_and_writes_a_soon_move(screen):
+    """⋯ › Soon on a row: it goes to the top of Soon — the write is a Soon move after the anchor the rule gives, the
+    order is the rule's, and only the rows it passed (a few, the move is pinned short) are drawn afresh, the paints
+    staying in the list but for the toast and the bar's line."""
+    from app.qt import drag
+    seed, win, writer = screen
+    lst = lst_of(win)
+    rs = list(win.moves.base().rows)
+    src, row = None, None
+    for n, r in enumerate(rs):
+        if r.tier != "soon" and 2 <= drag.soon_slot(rs, n)[0] - n <= 5:
+            src, row = n, r
+            break
+    assert row is not None, [(r.key, r.tier) for r in rs]
+    slot, files, after_id = drag.soon_slot(rs, src)
+    expected = drag.order_after([r.key for r in rs], row.key, slot)
+    place = expected.index(row.key)
+    changed = abs(place - src) + 1
+    assert changed <= 6
+    calls = len(writer.calls)
+    saved = len(writer.saved)
+    renders = lst.delegate.renders
+    reader = win.services.library
+    built = reader.builds
+    with wc.measure(win, readers=[reader]) as w:
+        win.moves.menu_pick(row, "soon")
+        assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [] and reader.builds > built, 3)
+        settle(200)
+    op, ids, kw = writer.calls[-1]
+    assert len(writer.calls) == calls + 1 and op == "move" and kw["tier"] == "soon", writer.calls[-1]
+    assert kw["after_id"] == after_id, writer.calls[-1]
+    assert [k for k in keys_of(win) if k is not None] == expected, w.report()
+    entry = next(e[1] for e in lst.model().entries if getattr(e[1], "key", None) == row.key)
+    assert entry.tier == "soon", w.report()
+    drawn = lst.delegate.renders - renders
+    assert 1 <= drawn <= changed + 1, w.report()                  # the rows from its old place to its new, no other
+    assert w.builds == 1, w.report()
+    assert w.paints_outside_rect(wc.rect_in_window(lst), *_allowed_outside_the_list(win)) == [], w.report()
+
+
+def test_r0_the_pointer_leaving_the_list_after_resting_on_a_row_repaints_only_that_rows_place(screen):
+    """The pointer rests on a row, then leaves the list: the hovered row repaints, with at most its two neighbours
+    (the hover-neighbour spring releases them too) — no other row of the list, nothing outside it but the toast and
+    the bar's line — and no row is drawn afresh. The paints are judged by where they fall (rows), not by how many
+    frames the release spring takes."""
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QMouseEvent
+    seed, win, writer = screen
+    lst = lst_of(win)
+    i = _closed_row(lst, 3)
+    pos = QPointF(lst.visualRect(lst.model().index(i, 0)).center())
+    QApplication.sendEvent(lst.viewport(), QMouseEvent(QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton,
+                                                       Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+    try:
+        assert wait_until(lambda: lst._hover == i, 3)                  # the row is hovered: the press is not a no-op
+        assert wait_until(lambda: not lst._hover_warm.isActive() and not lst._warm.isActive(), 3)
+        settle(300)                                                    # the lift's springs ended before we measure
+        wc.quiet(win)
+        renders = lst.delegate.renders
+        paints = lst.delegate.paints
+        band = _row_band(lst, i - 1, i + 1)
+        row_i = _row_band(lst, i, i)
+        with wc.measure(win, readers=[win.services.library]) as w:
+            QApplication.sendEvent(lst, QEvent(QEvent.Type.Leave))
+            wc.rest(500)                                               # long enough for the release springs to end
+        assert lst._hover is None, w.report()
+        assert lst.delegate.paints > paints, w.report()                # the release did paint something
+        assert any(row_i.intersects(p.rect) for p in w.paints), w.report()   # the hovered row itself repainted
+        assert w.paints_outside_rect(band, *_allowed_outside_the_list(win)) == [], w.report()
+        assert lst.delegate.renders == renders, w.report()             # from kept pictures: nothing drawn afresh
+    finally:
+        try:
+            QApplication.sendEvent(lst, QEvent(QEvent.Type.Leave))
+        except RuntimeError:
+            pass
+        settle(100)
+        wc.quiet(win)
+
+
+def test_r4_the_arrow_keys_step_the_ring_and_repaint_only_the_two_rows_it_moves_between(screen):
+    """↓ then ↑ on the list (no Alt): the keyboard ring steps from one closed row to the next and back — only those
+    two rows repaint (a row's height of slack above and below), never the list; nothing outside it, nothing made."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    ents = lst.model().entries
+    i = next(k for k in range(3, len(ents) - 1) if ents[k][0] == rows.ROW and ents[k + 1][0] == rows.ROW)
+    first = lst.currentIndex()
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    lst.setFocus()
+    settle(150)
+    try:
+        band = _row_band(lst, i - 1, i + 2)                       # the pair, and one row's ring of slack each side
+        vp = wc.rect_in_window(lst.viewport())
+        for key, want in ((Qt.Key.Key_Down, i + 1), (Qt.Key.Key_Up, i)):
+            with wc.measure(win, readers=[win.services.library]) as w:
+                QTest.keyClick(lst, key)
+                settle(150)
+            assert lst.currentIndex().row() == want, w.report()
+            assert w.painted > 0, w.report()
+            assert w.union_in(vp) <= band.width() * band.height(), w.report()
+            assert all(band.intersects(p.rect) for p in w.paints if vp.contains(p.rect)), w.report()
+            outside = [p for p in w.paints if not vp.intersects(p.rect)
+                       and not any(r.contains(p.rect) for r in _allowed_outside_the_list(win))]
+            assert outside == [], (outside, w.report())
+            assert w.created == 0 and w.builds == 0, w.report()
+    finally:
+        lst.setCurrentIndex(first)
+        settle(100)

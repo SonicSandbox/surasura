@@ -140,9 +140,30 @@ class PhaseStrip(QWidget):
         self._timer.timeout.connect(self.refresh)
         self._turn = motion.Turn(self, self._turned)
         self._looks = {c: self.look(c) for c in phase.CIRCLES}
-        side = theme.size("phase-circle")
-        self.setFixedSize(round(len(phase.CIRCLES) * side + (len(phase.CIRCLES) - 1) * theme.size("phase-gap")),
-                          round(side))
+        self.help = None                       # the ? after the circles (help cards, HC-2): the strip's own last mark
+        self._size()
+
+    def _size(self):
+        """Five circles and their gaps, and — once it has one — its ? after them, a gap on: the bar's line follows the
+        strip at the bar's own spacing (W3.1a's polish rule), never after a part of its own."""
+        side, gap = theme.size("phase-circle"), theme.size("phase-gap")
+        width = len(phase.CIRCLES) * side + (len(phase.CIRCLES) - 1) * gap
+        height = side
+        if self.help is not None:
+            hint = self.help.sizeHint()
+            self.help.setGeometry(round(width + gap), max(0, round((side - hint.height()) / 2)), hint.width(),
+                                  hint.height())
+            width += gap + hint.width()
+            height = max(height, hint.height())
+        self.setFixedSize(round(width), round(height))
+
+    def set_help(self, button):
+        """The circles' ? (`help_card.help_mark("circles", …)`), placed inside the strip after its five circles."""
+        button.setParent(self)
+        button.ensurePolished()
+        self.help = button
+        self._size()
+        button.show()
 
     # --- what comes in ---------------------------------------------------------------------------------------- #
     def set_jobs(self, views):
@@ -652,6 +673,8 @@ class PhaseStrip(QWidget):
             self._set_hand(False)
             self._pressed = None
             self._leave_hover(self._focus if self.hasFocus() else None)   # (the keyboard's circle stays looked at)
+        elif et == QEvent.Type.LayoutRequest and self.help is not None:
+            self._size()                       # its ? took another size (the text size): placed again
         elif et == QEvent.Type.DevicePixelRatioChange:
             self._load_logos()                 # another screen's scale: decoded again at its ratio (PS-A8)
         elif et == QEvent.Type.MouseMove and self.tooltips is not None:

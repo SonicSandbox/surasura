@@ -421,3 +421,11 @@ def test_play_once_under_reduced_motion_steps_every_frame_and_rests_on_the_last(
         stage.close()
     finally:
         motion.clock().mode.set_setting("full")
+
+
+def test_the_circles_question_mark_is_the_strips_own_last_mark_so_the_bars_line_keeps_its_edge(world):
+    # train 18's red (test_polish): a ? of its own between the strip and the bar's line pushed the line ~30 px on
+    strip, mark = world.win.phase, world.win.phase_help
+    assert mark.parentWidget() is strip and strip.rect().contains(mark.geometry())
+    assert mark.geometry().left() > strip.rect_of("anki").right()           # after the five circles
+    assert strip.circle_at(mark.geometry().center()) is None               # never read as a circle

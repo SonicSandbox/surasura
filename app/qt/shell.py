@@ -2046,7 +2046,7 @@ class ShellWindow(QMainWindow):
         # help cards (HC-2): one ? after the five circles opens their card — every lit circle with its *Why*
         from app.qt import help_card
         self.phase_help = help_card.help_mark("circles", footer)
-        row.addWidget(self.phase_help)
+        self.phase.set_help(self.phase_help)              # inside the strip: the bar's line keeps its own edge
         # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line (and its ✕) while it applies, else
         # the update chip while it applies (`_attach_duties` puts it here), else the status line (the pulsing dot gave
         # way to the header's hairline: light never pulses)

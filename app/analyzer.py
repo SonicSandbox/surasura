@@ -6052,9 +6052,11 @@ def main():
                 cost = rolling_context_cost(_uses(key), unk_freqs)
                 candidates, best = entry["candidate_contexts"], entry["best_contexts"]
                 first = entry["first_context"]
-                if (first and not audio_too and len(best) >= plan_rules.POOL
-                        and (is_too_short, is_too_long, cost, n_unknown) > best[-1][7][:4]):
-                    continue                # no chance of the shortlist (nor of its spread, a subset): its key unmade
+                if (first and not audio_too and len(candidates) >= plan_rules.POOL
+                        and (is_too_short, is_too_long, cost, n_unknown) > candidates[-1][7][:4]):
+                    # no chance of the shortlist: worse than the spread's worst, which is never better than the best
+                    # part's (the spread reaches deeper, a few a file) — its key isn't made
+                    continue
                 new_ctx = _candidate(is_too_short, is_too_long, cost, unique_lrs, s_text, src_idx, marks, n_unknown,
                                      s_hash, s_no)
                 if not first:

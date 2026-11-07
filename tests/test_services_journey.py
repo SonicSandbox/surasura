@@ -434,6 +434,11 @@ def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes
         json.dump({"plan": previous.header["run_signature"], "run": None}, f)
     assert analyzer.journey_is_current(args, language) is False
     assert J.moved_state(settings, language) == "owed"
+    # ... and one another plan's redraw left (this order, but not this stamp's plan): never current either
+    drawn = json.loads(kept)
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"plan": "another plan's", "run": drawn["run"]}, f)
+    assert analyzer.journey_is_current(args, language) is False
     with open(marker, "w", encoding="utf-8") as f:
         f.write(kept)
     store = ls.open_store(language, data_dir, user_files)

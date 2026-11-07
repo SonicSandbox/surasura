@@ -20,7 +20,7 @@ import sys
 
 import pytest
 
-from app import analyzer, anki_match, plan_engine, plan_rules
+from app import analyzer, anki_match, plan_engine, plan_rules, token_index
 from tests import plan_file_cases as cases
 from tests.test_plan_file import (PRIORITY_COLUMNS, PROGRESSIVE_COLUMNS, _same, read_csv, read_run, replay,
                                   _rp2_orders)
@@ -89,10 +89,23 @@ def _results_dir(root):
     return os.path.join(root, "results")
 
 
-def _check_parity(result, run):
-    """The engine's result against a Generate's own files: both lists, column by column; first places."""
-    _same(run["priority"], result.priority, PRIORITY_COLUMNS)
-    _same(run["progressive"], result.progressive, PROGRESSIVE_COLUMNS)
+def _texts(root, language):
+    """The re-pick's `texts` for a case's run (`analyzer.plan_texts`): its token store's cached sentences."""
+    store = token_index.open_store(language, os.path.join(root, "index", f"token_store_{language}.db"))
+    return analyzer.plan_texts(language, os.path.join(root, "data", language), store)
+
+
+def _context_columns(run):
+    n = run["plan"]["header"].get("max_contexts") or 0
+    return [f"{c} {i}" for i in range(1, n + 1) for c in ("Context", "Src")]
+
+
+def _check_parity(result, run, contexts=False):
+    """The engine's result against a Generate's own files: both lists, column by column; first places. `contexts`
+    (F7): the example sentences too — the engine's re-pick (`result(pick=True)`) is that Generate's pick."""
+    extra = _context_columns(run) if contexts else []
+    _same(run["priority"], result.priority, PRIORITY_COLUMNS + extra)
+    _same(run["progressive"], result.progressive, PROGRESSIVE_COLUMNS + extra)
     plan = run["plan"]
     seq = result.sequence
     for word, reading, *_rest in plan["keys"]:
@@ -125,6 +138,10 @@ def test_the_engine_in_the_plans_own_order_is_the_generate(runs, case):
     result = eng.result()
     _check_parity(result, run)
     _check_index(result, root, cases.ALL_CASES[case][0])
+    # F7: re-picked in its own order, the sentences are the Generate's — with no store at hand too (every first
+    # sentence is the plan's own here)
+    _check_parity(eng.result(pick=True), run, contexts=True)
+    _check_index(eng.result(pick=True), root, cases.ALL_CASES[case][0])
     reference = replay(run["plan"], [(f, entry[1]) for f, entry in enumerate(run["plan"]["files"])])
     assert [(r["Word"], r["Reading"], r["Score"]) for r in reference["priority"]] == \
         [(r["Word"], r["Reading"], r["Score"]) for r in result.priority]
@@ -199,6 +216,12 @@ def test_a_replan_in_another_order_is_that_orders_generate(runs, other_orders, c
     result = eng.replan(_order_of(plan, _orders(cases.ALL_CASES[case][0])[name]))
     _check_parity(result, other)
     _check_index(result, other_root, cases.ALL_CASES[case][0], same_sentences=False)
+    # F7: the re-pick in that order is that order's Generate on the example sentences too (Context 1 read from the
+    # store where the order gave a word another first file), and so is Junban's index with its sentences
+    language = cases.ALL_CASES[case][0]
+    picked = eng.result(pick=True, texts=_texts(root, language))
+    _check_parity(picked, other, contexts=True)
+    _check_index(picked, other_root, language)
 
 
 def _moves_to(eng, plan, target):
@@ -224,6 +247,7 @@ def test_moves_that_make_another_order_give_that_orders_generate(runs, other_ord
     result = eng.result()
     _check_parity(result, other)
     _check_index(result, other_root, cases.ALL_CASES[case][0], same_sentences=False)
+    _check_parity(eng.result(pick=True, texts=_texts(root, cases.ALL_CASES[case][0])), other, contexts=True)
 
 
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh", "every-ja"])
@@ -436,7 +460,8 @@ def test_a_damaged_or_foreign_plan_is_refused_whole(runs, tmp_path):
 
     lines = _lines(good)
     header, rest = lines[0], lines[1:]
-    for broken, match in ((dict(header, format=3), "format"), (dict(header, format=1), "unknown table"),
+    for broken, match in ((dict(header, format=4), "format"), (dict(header, format=1), "unknown table"),
+                          ({k: v for k, v in header.items() if k != "recency_files"}, "pick settings"),
                           ({k: v for k, v in header.items() if k != "phrase_entries"}, "phrase_entries"),
                           (dict(header, files=header["files"] + 1), "files"),
                           (dict(header, keys=header["keys"] - 1), "keys"),
@@ -467,7 +492,17 @@ def test_a_damaged_or_foreign_plan_is_refused_whole(runs, tmp_path):
             # Format 2's spell table: a listed word's counts missing, a count that isn't one, a word twice.
             (lambda t, f: _spell_line(t)["spell"].pop(), "spell"),
             (lambda t, f: _spell_line(t)["spell"][0][1].__setitem__("x", "2"), "spell"),
-            (lambda t, f: _spell_line(t)["spell"].append(_spell_line(t)["spell"][0]), "twice")):
+            (lambda t, f: _spell_line(t)["spell"].append(_spell_line(t)["spell"][0]), "twice"),
+            # Format 3's example-sentence tables (F7): a sentence's source, co-word or length out of range, a co-word's
+            # clause naming no row, a listed row's pools missing or twice, a first sentence for a row not listed.
+            (lambda t, f: _table(t, "sentences")[0].__setitem__(4, 10 ** 6), "sentences"),
+            (lambda t, f: _table(t, "sentences")[0].__setitem__(2, 2), "sentences"),
+            (lambda t, f: _table(t, "sentences")[0].__setitem__(5, [10 ** 6]), "sentences"),
+            (lambda t, f: _table(t, "cowords")[0].__setitem__(1, [[]]), "co-words"),
+            (lambda t, f: _table(t, "pools").pop(), "pools"),
+            (lambda t, f: _table(t, "pools").append(_table(t, "pools")[0]), "twice"),
+            (lambda t, f: _table(t, "pools")[0].__setitem__(2, [-1]), "pools"),
+            (lambda t, f: f[0].__setitem__("fs", [header["keys"] + 1, 0]), "first sentences")):
         t2, f2 = json.loads(json.dumps(tables)), json.loads(json.dumps(files))
         mutate(t2, f2)
         _write(bad, [header] + t2 + f2)
@@ -480,15 +515,38 @@ def _spell_line(tables):
     return next(line for line in tables if "spell" in line)
 
 
+def _table(tables, name):
+    return next(line for line in tables if name in line)[name]
+
+
+F7_TABLES = ("finished", "sentences", "cowords", "pools")
+
+
+def _older(lines, format):
+    """A format-3 plan's lines as an older Generate wrote them: format 2 without the example-sentence tables (F7), the
+    files' kind or the per-file first sentences; format 1 without `spell` and `phrase_entries` too."""
+    header = {k: v for k, v in lines[0].items() if k not in ("recency_files", "ensure_audio")}
+    if format == 1:
+        header.pop("phrase_entries", None)
+    out = [dict(header, format=format)]
+    for line in lines[1:]:
+        if "f" in line:
+            out.append({k: v for k, v in line.items() if k != "fs"})
+        elif "files" in line:
+            out.append({"files": [entry[:3] for entry in line["files"]]})
+        elif not any(name in line for name in F7_TABLES + (("spell",) if format == 1 else ())):
+            out.append(line)
+    return out
+
+
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh"])
 def test_a_format_1_plan_still_loads_and_replans_the_same(runs, tmp_path, case):
     """A plan a 2.x Generate wrote (format 1: no `spell`, no `phrase_entries`) loads with an empty `spell` and gives
     the very result its format-2 twin gives — the tables format 2 adds change no column."""
     root, run = runs[case]
     lines = _lines(os.path.join(_results_dir(root), analyzer.PLAN_FILE))
-    header = {k: v for k, v in lines[0].items() if k != "phrase_entries"}
     old = str(tmp_path / "plan.json.gz")
-    _write(old, [dict(header, format=1)] + [line for line in lines[1:] if "spell" not in line])
+    _write(old, _older(lines, 1))
     plan1, plan2 = plan_engine.load(old), _plan(root)
     assert plan1.spell == {} and plan2.spell
     assert all(row is None or k in plan2.spell or k in {t[0] for t in plan2.ties} for k, row in enumerate(plan2.rows))

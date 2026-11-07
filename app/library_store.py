@@ -134,6 +134,16 @@ def sets_aside(tier, watched, keep_watched=False):
     return tier in REFERENCE or (tier in ANALYSED and not counts(tier, watched, keep_watched))
 
 
+def _aside_entry(physical_path, source_type, tier, graduated_at):
+    """A set-aside item's entry in `schedule(with_aside=True)`'s `ASIDE` (and the copy's): {physical_path,
+    source_type}, and for Finished content `finished_at` too (its `graduated_at`, None for *Earlier*) — the run ranks
+    Finished sentences newest finished first (F7, `analyzer.aside_files`)."""
+    entry = {"physical_path": physical_path, "source_type": source_type}
+    if tier in REFERENCE:
+        entry["finished_at"] = graduated_at
+    return entry
+
+
 def sets_aside_sql(keep_watched=False, alias=""):
     """`sets_aside` as an SQL condition on `items` (`alias`: the table's name in the query)."""
     col = f"{alias}." if alias else ""
@@ -2070,8 +2080,8 @@ class Store:
                         f"SELECT rel_path, source_type, title, parent_folder FROM items WHERE {scheduled} "
                         "ORDER BY ord, id", (tier,))]
             if with_aside:
-                out[ASIDE] = [{"physical_path": p, "source_type": s} for p, s in self.conn.execute(
-                    f"SELECT rel_path, source_type FROM items WHERE {sets_aside_sql(keep)} "
+                out[ASIDE] = [_aside_entry(p, s, t, g) for p, s, t, g in self.conn.execute(
+                    f"SELECT rel_path, source_type, tier, graduated_at FROM items WHERE {sets_aside_sql(keep)} "
                     "AND availability != 'waiting' ORDER BY tier, ord, id")]
             versions = self._versions() if with_versions else None
         return (out, versions) if with_versions else out
@@ -8530,8 +8540,10 @@ def read_only_schedule(language, data_dir, user_files_dir, with_aside=False):
             if not isinstance(e, dict):
                 continue
             key = path_key(_strip(str(e.get("physical_path") or "")))
-            if (records.get(key) or {}).get("availability") != "waiting":    # no text yet, as the store leaves it
-                aside.append({"physical_path": e.get("physical_path"), "source_type": e.get("source_type")})
+            record = records.get(key) or {}
+            if record.get("availability") != "waiting":    # no text yet, as the store leaves it
+                aside.append(_aside_entry(e.get("physical_path"), e.get("source_type"), tier,
+                                          record.get("graduated_at")))
     if watched:
         for tier in ANALYSED:
             kept = []

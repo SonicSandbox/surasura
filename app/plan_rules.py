@@ -5,9 +5,11 @@
 signature's digest (`signature_digest`). Pure: the standard library and the app's own data tables only — no pandas,
 no tokenizer, no settings — so the engine can import it in any process (E1.3.5's guard).
 """
+import bisect
 import hashlib
 import json
 import re
+import zlib
 
 from app.unicode_ranges import KANA_LETTERS
 
@@ -206,6 +208,233 @@ def progressive_pass(files, known, lemmas, lemma_of, keep, rank, target_coverage
             known.add(row[0])
             lemmas.add(lemma_of(row[0]))
         yield rows, round((baseline / total * 100) if total > 0 else 0, 2), total
+
+
+# --------------------------------------------------------------------------------------------------------------- #
+# Example sentences (F7, RP-11; Sonic 2026-11-06: "build it with the new version only. 60 is fine.")
+# --------------------------------------------------------------------------------------------------------------- #
+# A word's candidate sentences never depend on the order: the walk keeps, per list row, an order-free shortlist of
+# POOL sentences (the whole library's counts, then a hash of the text — `order_free_key`; at most PER_FILE from one
+# file, so a very common word's shortlist is spread across the library), an audio shortlist of AUDIO_POOL and up to
+# FINISHED_POOL sentences from Finished content (newest finished first among equally easy ones). Which three of them
+# a row shows is the order's: `ContextPicker`, down the list, against the words learned above it — the analyzer's
+# selection pass and the plan engine's re-pick call this one implementation.
+POOL = 60
+AUDIO_POOL = 24
+FINISHED_POOL = 15
+PER_FILE = 2
+NOT_FINISHED = 1 << 30          # a sentence's finish rank when it isn't from Finished content (0 = finished last)
+
+
+def order_free_key(short, long, cost, unknowns, text, where, text_hash=None):
+    """How a shortlist ranks a candidate, the same in any order of the library: too short, too long, the co-words
+    rarer than the word by the whole library's counts (`cost`), every unknown co-word (`unknowns`), then a hash of
+    the text (`text_hash`, `text_hash_of`; worked out when not given) — never the text itself first (a text order
+    picked "..."-led lines: Haya-D, 2026-11-06) — and the text and its file's path (`where`) last, so no two
+    candidates tie."""
+    return (short, long, cost, unknowns, text_hash_of(text) if text_hash is None else text_hash, text, where)
+
+
+def text_hash_of(text):
+    """The hash `order_free_key` ranks a text by (CRC-32 of its UTF-8: the same in every process and run)."""
+    return zlib.crc32(text.encode("utf-8"))
+
+
+def keep_best(pool, ctx, size, key_at, src_at, per_file=PER_FILE):
+    """Offer `ctx` to `pool` (kept sorted by `ctx[key_at]`): the best `size` candidates with at most `per_file` from
+    one source (`ctx[src_at]`), each key once. The result is the same set whatever order the candidates come in (the
+    best `per_file` of each file, then the best `size` of those), which is what makes the shortlist order-free."""
+    key = ctx[key_at]
+    if len(pool) >= size and key >= pool[-1][key_at]:
+        return
+    src = ctx[src_at]
+    same = [i for i, c in enumerate(pool) if c[src_at] == src]
+    for i in same:
+        if pool[i][key_at] == key:
+            return                                  # this very sentence, kept already
+    if len(same) >= per_file:
+        worst = same[-1]                            # the pool is sorted: the file's last is its worst
+        if key >= pool[worst][key_at]:
+            return
+        del pool[worst]
+    at = bisect.bisect_left([c[key_at] for c in pool], key)
+    pool.insert(at, ctx)
+    del pool[size:]
+
+
+def offer_spread(spread, best, ctx, size, key_at, src_at, per_file=PER_FILE):
+    """Offer `ctx` to a shortlist kept in two parts (`shortlist` joins them): `spread`, the best `size` with at most
+    `per_file` from one file, and `best`, the best `size` from any. Both are the same sets in any order."""
+    keep_best(spread, ctx, size, key_at, src_at, per_file)
+    keep_best(best, ctx, size, key_at, src_at, size)
+
+
+def shortlist(spread, best, size, key_at):
+    """The shortlist from its two parts (`offer_spread`): every spread candidate first, then the best of the rest —
+    the best `size` of all, a file's candidates past its `per_file` best taken only when the spread can't fill the
+    shortlist (a word met in a few files keeps every good sentence it has; a common one's come from many files)."""
+    inside = {c[key_at] for c in spread}
+    return (list(spread) + [c for c in best if c[key_at] not in inside])[:size]
+
+
+# Known-when formulas: a co-word stops being an unknown once ANY of its clauses has every one of its rows learned
+# above the word (a clause: a tuple of list rows). TRUE (known from the start): one empty clause; FALSE: none.
+TRUE = ((),)
+FALSE = ()
+
+
+def clauses_or(*parts):
+    """The clauses of either formula, each kept once and none that holds another (it adds nothing)."""
+    found = sorted({tuple(sorted(set(c))) for part in parts for c in part}, key=len)
+    out = []
+    for c in found:
+        s = set(c)
+        if not any(s.issuperset(o) for o in out):
+            out.append(c)
+    return tuple(out)
+
+
+def clauses_and(*parts):
+    """The clauses of both formulas (every pair of clauses joined)."""
+    out = TRUE
+    for part in parts:
+        if not part:
+            return FALSE
+        out = clauses_or([a + b for a in out for b in part])
+    return out
+
+
+class ContextPicker:
+    """The example sentences of each list row, down the list (one rule, the analyzer's and the plan engine's).
+
+    `sentences`: [(text, display, short, long, src, cowords, crowd, …)] — the text (stripped: what two sentences are told
+    apart by), what Context shows (None: the text), the lengths (0 / 1), the caller's source id, the sentence's unknown
+    co-words (ids into `cowords`) and the set phrases in it that are list rows (row ids). `cowords`: [(its own row or
+    -1, its clauses)]. `place(src)`: (finish rank — 0 the last finished, `NOT_FINISHED` for counted content —, the
+    file's place in the study order); `audio(src)`: 0 YouTube, 1 other audio, 2 text. `recency_files`: a co-word
+    learned in the word's own file or up to this many files before it counts as recently learned (< 0: off).
+
+    For each row, in list order: `pick(row, seq, first, pool, audio_pool)` -> the sentence ids chosen (None: *Only
+    i+1* has no sentence for it, so it is skipped and never learned), then `learn(row, is_phrase, seq)` once it is."""
+
+    def __init__(self, sentences, cowords, max_contexts, place, audio, only_i_plus_one=False, ensure_audio=False,
+                 recency_files=1):
+        self.sentences, self.max, self.place, self.audio = sentences, max_contexts, place, audio
+        self.only, self.ensure, self.recency = bool(only_i_plus_one), bool(ensure_audio), recency_files
+        self._own = [own for own, _clauses in cowords]
+        self._known = [False] * len(cowords)
+        self._left = []
+        self._by_row = {}
+        for c, (_own, clauses) in enumerate(cowords):
+            self._left.append([len(clause) for clause in clauses])
+            for i, clause in enumerate(clauses):
+                for r in clause:
+                    self._by_row.setdefault(r, []).append((c, i))
+        self._learned = {}              # row -> the file it is learned in (its first file's place)
+        self._phrases = set()           # the phrase rows learned
+
+    def learn(self, row, is_phrase, seq):
+        """`row` is learned (its sentences are chosen): a phrase row only takes the sentences it is in out of the
+        crowd; a word's row makes known every co-word one of whose clauses it completes."""
+        if is_phrase:
+            self._phrases.add(row)
+            return
+        self._learned[row] = seq
+        left, known = self._left, self._known
+        for c, i in self._by_row.get(row, ()):
+            left[c][i] -= 1
+            if not left[c][i]:
+                known[c] = True
+
+    def _weigh(self, row, seq, s):
+        """(unknown co-words, the crowd of new set phrases, the co-words learned recently) of sentence `s` for `row`
+        here; the unknowns stop at 1 under *Only i+1*."""
+        sentence = self.sentences[s]
+        cowords, crowd = sentence[5], sentence[6]
+        unknown = recent = 0
+        own, known, learned, window = self._own, self._known, self._learned, self.recency
+        for c in cowords:
+            r = own[c]
+            if r == row:
+                continue                            # the word itself
+            if not known[c]:
+                unknown += 1
+                if self.only:
+                    break
+            elif window >= 0 and r in learned and 0 <= seq - learned[r] <= window:
+                recent += 1
+        phrases = self._phrases
+        n_crowd = sum(1 for r in set(crowd) if r != row and r not in phrases) if crowd else 0
+        return unknown, n_crowd, recent
+
+    def _key(self, s, unknown, crowd, recent, i):
+        sentence = self.sentences[s]
+        short, long, src = sentence[2], sentence[3], sentence[4]
+        finished, seq = self.place(src)
+        return (unknown, crowd, self.audio(src) if self.ensure else 0, short, long, finished, -recent, seq, i)
+
+    def pick(self, row, seq, first, pool, audio_pool=()):
+        """The sentences for `row` (first met in the file at `seq`), best first. `first`: its first sentence (Context
+        1 outside *Only i+1*, whatever it holds; under it, one more candidate), or None; `pool`: its shortlist then its
+        Finished sentences; `audio_pool`: its audio shortlist (with *Ensure an audio example*). Among sentences of equal
+        ease (unknowns, a new set phrase, the audio rule, the lengths): Finished content first, the newest finished
+        first, then the sentences that reinforce what was just learned, then the files nearest after the word's first
+        meeting, then the shortlist's own order."""
+        sentences = self.sentences
+        seen, candidates = set(), []
+        pinned = None
+        if first is not None and not sentences[first][0]:
+            first = None
+        if first is not None and not self.only:
+            pinned = first
+            seen.add(sentences[first][0])
+        elif first is not None and first not in pool:
+            pool = [first] + list(pool)              # (`Only i+1`: a candidate like the rest, at the front)
+        for i, s in enumerate(pool):
+            text = sentences[s][0]
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            unknown, crowd, recent = self._weigh(row, seq, s)
+            if self.only and unknown:
+                continue
+            candidates.append((self._key(s, unknown, crowd, recent, i), s))
+        if self.only and not candidates:
+            return None
+        candidates.sort()
+        chosen = [] if pinned is None else [pinned]
+        for _key, s in candidates:
+            if len(chosen) >= self.max:
+                break
+            chosen.append(s)
+        if self.ensure and self.max >= 2 and chosen and not any(self.audio(sentences[s][4]) < 2 for s in chosen):
+            # One example the learner can hear: the best audio candidate (re-weighed here, against the words learned
+            # above) takes the last slot — the free one, else the last one filled — and never under Only i+1 unless
+            # it is i+1 itself.
+            texts = {sentences[s][0] for s in chosen}
+            best = None
+            for i, s in enumerate(audio_pool):
+                sentence = sentences[s]
+                text, short, long, src = sentence[0], sentence[2], sentence[3], sentence[4]
+                if not text or text in texts:
+                    continue
+                unknown = self._weigh(row, seq, s)[0]
+                if self.only and unknown:
+                    continue
+                key = (unknown, self.audio(src), short, long) + self.place(src) + (i,)
+                if best is None or key < best[0]:
+                    best = (key, s)
+            if best is not None:
+                if len(chosen) < self.max:
+                    chosen.append(best[1])
+                else:
+                    chosen[-1] = best[1]
+        return chosen
+
+    def shown(self, s):
+        """What Context shows for sentence `s`."""
+        text, display = self.sentences[s][0], self.sentences[s][1]
+        return text if display is None else display
 
 
 # --------------------------------------------------------------------------------------------------------------- #

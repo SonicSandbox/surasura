@@ -29,10 +29,12 @@ from tests import plan_file_cases as cases
 # --------------------------------------------------------------------------------------------------------------- #
 
 def load_plan(path):
-    """{"header", "files", "keys", "rows", "ties", "spell", "per_file"} from a plan file."""
+    """{"header", "files", "keys", "rows", "ties", "spell", "per_file"} from a plan file (format 3, F7: "finished",
+    "sentences", "cowords" and "pools" too)."""
     with gzip.open(path, "rt", encoding="utf-8") as f:
         lines = [json.loads(line) for line in f]
-    plan = {"header": lines[0], "files": [], "keys": [], "rows": [], "ties": [], "spell": [], "per_file": []}
+    plan = {"header": lines[0], "files": [], "keys": [], "rows": [], "ties": [], "spell": [], "per_file": [],
+            "finished": [], "sentences": [], "cowords": [], "pools": []}
     for line in lines[1:]:
         if "f" in line:
             plan["per_file"].append(line)

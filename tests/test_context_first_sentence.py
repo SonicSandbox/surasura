@@ -5,12 +5,12 @@ The pick looks at a word's sentences and stops once it holds enough clean ones (
 default). The first sentence was pinned to Context 1 only when the pick had reached it, so a first sentence the pool
 kept behind 6 clean ones — its cost at the time the walk met it was higher (the word said twice in it, with a rarer word
 beside it) — never showed, and a later sentence stood in for it (Haya-D's measurement: 1–8 % of words; 航空's first
-sentence lost to a later one). Outside *Only i+1* the first sentence is looked at first now; *Only i+1* keeps its old
-pick, where a first sentence with an unknown is skipped by design.
+sentence lost to a later one). Outside *Only i+1* the first sentence is looked at first now; under *Only i+1* a first
+sentence with an unknown is skipped by design. Since F7 (ENGINE 36) the pick weighs every candidate (no early exit), so
+under *Only i+1* an i+1 first sentence is one more candidate, and wins among equals as the nearest.
 
 Every fixture below is built so the first sentence sits LAST in the pool, behind 8 clean sentences: each test of the
-new rule is red on the code before the fix, and the *Only i+1* ones are red if the fix ever reaches that mode (both
-checked by hand when they were written).
+rule was red on the code before #297's fix (checked by hand when they were written).
 """
 
 import csv
@@ -130,13 +130,13 @@ def test_only_i_plus_one_still_skips_a_first_sentence_with_a_new_word(tmp_path):
     assert ctx == JA_CLEAN[:3]
 
 
-def test_only_i_plus_one_keeps_its_pick_when_the_first_sentence_is_i_plus_one(tmp_path):
-    """*Only i+1* never pins the first sentence, and its pick is unchanged: an i+1 first sentence the pool keeps behind
-    8 clean ones is still never reached there (looked at first, it would tie with the clean ones and come first).
+def test_only_i_plus_one_weighs_an_i_plus_one_first_sentence_like_any_other(tmp_path):
+    """*Only i+1* never pins the first sentence; it is one more candidate (F7: the pick weighs every one, no early
+    exit). Here it is i+1 at 灯台's place, as clean as the others and in the file nearest the word's first meeting —
+    its own —, so among equals it leads.
 
     景色 and 見える are said 15 times each, each in an i+1 sentence of its own (ep13, ep14), so both come before 灯台
-    on the list, in *Only i+1* too: at 灯台's place the first sentence is i+1, though the walk filed it last (at the
-    time, they were rarer than 灯台)."""
+    on the list, in *Only i+1* too: at 灯台's place the first sentence is i+1."""
     first = "灯台から灯台へ、美しい景色が見えました。"
     places = ["山", "川", "町", "森", "空", "島", "港", "村", "橋", "庭", "駅", "寺", "城", "湖", "谷"]
     files = _episodes(first, JA_CLEAN, JA_OTHER)
@@ -147,7 +147,8 @@ def test_only_i_plus_one_keeps_its_pick_when_the_first_sentence_is_i_plus_one(tm
     assert _contexts(_run(root, "ja")["灯台"])[0] == first, "outside *Only i+1* it is Context 1"
     (root / "results" / "priority_learning_list.csv").unlink()
     strict = _contexts(_run(root, "ja", ["--only-i-plus-one"])["灯台"])
-    assert strict == JA_CLEAN[:3], f"*Only i+1*'s pick moved: {strict}"
+    assert strict[0] == first, f"*Only i+1*: the nearest of equally clean sentences first: {strict}"
+    assert set(strict[1:]) <= set(JA_CLEAN), strict
 
 
 

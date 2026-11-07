@@ -34,8 +34,9 @@ from array import array
 
 from app import plan_rules
 
-FORMAT = 2                                 # the newest plan file this engine reads; FORMATS: every one it reads
-FORMATS = (1, 2)                           # 1 (2.x), 2 (3.0: `spell` and `phrase_entries`, E2.2 D8)
+FORMAT = 3                                 # the newest plan file this engine reads; FORMATS: every one it reads
+FORMATS = (1, 2, 3)                        # 1 (2.x), 2 (3.0: `spell` and `phrase_entries`, E2.2 D8), 3 (F7: the rows'
+                                           # example-sentence pools, `finished`, `sentences`, `cowords`, `pools`, `fs`)
 TIERS = ("now", "soon", "goal")            # the analysed tiers, in the order a Generate reads them
 _SLOT = {"now": 0, "soon": 1, "goal": 2}
 _GAP = 1 << 40                             # room between two items' places: a move takes a place between its
@@ -54,18 +55,27 @@ class PlanError(Exception):
 # --------------------------------------------------------------------------------------------------------------- #
 
 class Plan:
-    """A plan file read: `header` (dict), `files` [[rel_path, tier, digest], …], `keys` [[Word, Reading, is_phrase,
-    half, Occurrences], …], `rows` (parallel to keys: [Tier, phrase Tier, Modality, Sources, Orth, Forms, [Context 1,
-    Src 1, …]] or None), `ties` [[k, {orth: n}, {surface: n}, {orth: Tier} | None], …], `per_file` (one dict per
-    file, in the run's order: "main", "ph", "sp", "prog") and `spell` ({k: ({orth: n}, {surface: n})} for every
-    other listed word, each in the order first met — format 2; empty for format 1)."""
+    """A plan file read: `header` (dict), `files` [[rel_path, tier, digest(, kind)], …], `keys` [[Word, Reading,
+    is_phrase, half, Occurrences], …], `rows` (parallel to keys: [Tier, phrase Tier, Modality, Sources, Orth, Forms,
+    [Context 1, Src 1, …]] or None), `ties` [[k, {orth: n}, {surface: n}, {orth: Tier} | None], …], `per_file` (one
+    dict per file, in the run's order: "main", "ph", "sp", "prog", "fs") and `spell` ({k: ({orth: n}, {surface: n})}
+    for every other listed word, each in the order first met — format 2; empty for format 1). Format 3 (F7), the
+    example sentences: `finished` [[rel_path, kind, finish rank], …] (sources after the files), `sentences` [[text,
+    shown or None, short, long, source, [co-words], [phrase rows], sentence number], …], `cowords` [[own row or -1,
+    [[rows], …]], …] and `pools` {k: (first sentence or -1, [shortlist + Finished], [audio])}; empty before."""
 
-    __slots__ = ("header", "files", "keys", "rows", "ties", "per_file", "spell")
+    __slots__ = ("header", "files", "keys", "rows", "ties", "per_file", "spell", "finished", "sentences", "cowords",
+                 "pools")
 
-    def __init__(self, header, files, keys, rows, ties, per_file, spell=None):
+    def __init__(self, header, files, keys, rows, ties, per_file, spell=None, finished=None, sentences=None,
+                 cowords=None, pools=None):
         self.header, self.files, self.keys, self.rows, self.ties, self.per_file = \
             header, files, keys, rows, ties, per_file
         self.spell = {} if spell is None else spell
+        self.finished = [] if finished is None else finished
+        self.sentences = [] if sentences is None else sentences
+        self.cowords = [] if cowords is None else cowords
+        self.pools = {} if pools is None else pools
 
 
 def load(path):
@@ -96,6 +106,8 @@ def load(path):
     tables = {"files": [], "keys": [], "rows": [], "ties": []}
     if header["format"] >= 2:
         tables["spell"] = []
+    if header["format"] >= 3:
+        tables.update(finished=[], sentences=[], cowords=[], pools=[])
     per_file = []
     for line in decoded[1:]:
         if not isinstance(line, dict):
@@ -114,9 +126,24 @@ def load(path):
             raise PlanError("the plan file's tables come after its files")
         tables[name].extend(chunk)
     plan = Plan(header, tables["files"], tables["keys"], tables["rows"], tables["ties"], per_file,
-                _spell_table(tables.get("spell", ())))
+                _spell_table(tables.get("spell", ())), tables.get("finished"), tables.get("sentences"),
+                tables.get("cowords"), _pools_table(tables.get("pools", ())))
     _validate(plan)
     return plan
+
+
+def _pools_table(rows):
+    """{k: (first, pool, audio)} from the `pools` table's rows; a row that isn't [k, first, […], […]] or lists a row
+    twice is a PlanError (`_validate` checks the rest)."""
+    pools = {}
+    for row in rows:
+        if not (isinstance(row, list) and len(row) == 4 and type(row[0]) is int and type(row[1]) is int
+                and isinstance(row[2], list) and isinstance(row[3], list)):
+            raise PlanError("the plan file's pools are damaged")
+        if row[0] in pools:
+            raise PlanError("the plan file's pools list a row twice")
+        pools[row[0]] = (row[1], row[2], row[3])
+    return pools
 
 
 def _spell_table(rows):
@@ -177,8 +204,8 @@ def _validate(plan):
     if set(weights) != set(TIERS) or not all(_number(w) for w in weights.values()):
         raise PlanError("the plan file's weights are damaged")
     for entry in plan.files:
-        if not (isinstance(entry, list) and len(entry) in (2, 3) and isinstance(entry[0], str)
-                and isinstance(entry[1], str) and entry[1] in _SLOT and (len(entry) == 2 or isinstance(entry[2], str))):
+        if not (isinstance(entry, list) and len(entry) in (2, 3, 4) and isinstance(entry[0], str)
+                and isinstance(entry[1], str) and entry[1] in _SLOT and all(isinstance(x, str) for x in entry[2:])):
             raise PlanError("the plan file's files table is damaged")
     seen = set()
     for key in plan.keys:
@@ -200,9 +227,9 @@ def _validate(plan):
                                         and set(tie[3]) <= set(tie[1])))):
             raise PlanError("the plan file's ties table is damaged")
     ties = {tie[0]: tie for tie in plan.ties}
-    # Format 2: every listed word not in `ties` has its spelling counts (`spell`), and each phrase row names the phrase
+    # Format 2 and on: every listed word not in `ties` has its spelling counts (`spell`), and each phrase row names the phrase
     # whose entry holds it. A format-1 plan holds neither.
-    if h.get("format") == 2:
+    if h.get("format") in (2, 3):
         listed_untied = {k for k, row in enumerate(plan.rows) if row is not None and k not in ties}
         if set(plan.spell) != listed_untied or not all(_counts(o) and _counts(s) for o, s in plan.spell.values()):
             raise PlanError("the plan file's spell table is damaged")
@@ -213,6 +240,10 @@ def _validate(plan):
             raise PlanError("the plan file's header 'phrase_entries' is damaged")
     elif plan.spell:
         raise PlanError("a format-1 plan file holds a spell table")
+    if h.get("format") == 3:
+        _validate_pools(plan)
+    elif plan.sentences or plan.pools or plan.cowords or plan.finished or any("fs" in line for line in plan.per_file):
+        raise PlanError("an older plan file holds example-sentence pools")
     uses = [0] * n_keys
     phrases = {k for k, key in enumerate(plan.keys) if key[2]}
     for line in plan.per_file:
@@ -246,6 +277,51 @@ def _validate(plan):
             raise PlanError("a file's progressive record is damaged")
     if uses != [key[4] for key in plan.keys]:
         raise PlanError("the plan file's uses don't add up to its words' Occurrences")
+
+
+def _validate_pools(plan):
+    """Format 3's example-sentence tables (F7), checked as the rest: every source, co-word, row and sentence an index
+    that exists, the lengths 0 or 1, every listed row's pools there once and no other row's."""
+    h = plan.header
+    n_files, n_keys = len(plan.files), len(plan.keys)
+    if not (type(h.get("recency_files")) is int and isinstance(h.get("ensure_audio"), bool)):
+        raise PlanError("the plan file's header has no pick settings")
+    if any(len(entry) != 4 for entry in plan.files):
+        raise PlanError("the plan file's files table is damaged")
+    for entry in plan.finished:
+        if not (isinstance(entry, list) and len(entry) == 3 and isinstance(entry[0], str) and isinstance(entry[1], str)
+                and _count(entry[2])):
+            raise PlanError("the plan file's finished table is damaged")
+    n_sources, n_cowords, n_sentences = n_files + len(plan.finished), len(plan.cowords), len(plan.sentences)
+    for c in plan.cowords:
+        if not (isinstance(c, list) and len(c) == 2 and type(c[0]) is int and -1 <= c[0] < n_keys
+                and isinstance(c[1], list) and all(isinstance(clause, list) and clause for clause in c[1])):
+            raise PlanError("the plan file's co-words are damaged")
+        for clause in c[1]:
+            if not set(map(type, clause)) <= {int} or min(clause) < 0 or max(clause) >= n_keys:
+                raise PlanError("the plan file's co-words are damaged")
+    for st in plan.sentences:
+        if not (isinstance(st, list) and len(st) == 8 and isinstance(st[0], str)
+                and (st[1] is None or isinstance(st[1], str)) and type(st[2]) is int and type(st[3]) is int
+                and st[2] in (0, 1) and st[3] in (0, 1) and _index(st[4], n_sources) and _count(st[7])
+                and isinstance(st[5], list) and isinstance(st[6], list)):
+            raise PlanError("the plan file's sentences are damaged")
+        for ids, n in ((st[5], n_cowords), (st[6], n_keys)):
+            if ids and (not set(map(type, ids)) <= {int} or min(ids) < 0 or max(ids) >= n):
+                raise PlanError("the plan file's sentences are damaged")
+    listed = {k for k, row in enumerate(plan.rows) if row is not None}
+    if set(plan.pools) != listed:
+        raise PlanError("the plan file's pools don't match its rows")
+    for first, pool, audio in plan.pools.values():
+        if not (first == -1 or _index(first, n_sentences)):
+            raise PlanError("the plan file's pools are damaged")
+        for ids in (pool, audio):
+            if ids and (not set(map(type, ids)) <= {int} or min(ids) < 0 or max(ids) >= n_sentences):
+                raise PlanError("the plan file's pools are damaged")
+    for line in plan.per_file:
+        ks, _nos = _pairs(line.get("fs", []), n_keys, "a file's first sentences are damaged")
+        if not set(ks) <= listed or len(set(ks)) != len(ks):
+            raise PlanError("a file's first sentences are damaged")
 
 
 def _pairs(table, n, damaged):
@@ -381,6 +457,8 @@ def _what_moved(plan, parts, added=()):
             replan.append("files-added")
         elif name == "reference" and _only_left(plan, parts):
             replan.append("reference-removed")
+        elif name == "finished" and "reference" in moved and _only_left(plan, parts):
+            continue                        # (F7) the Finished files' order moves when one only left: the same
         else:
             return ("generate-first", name)
     if not replan:
@@ -492,7 +570,8 @@ class Engine:
         self.numbers_only = ", ".join(reasons) or None      # why the list is refused (None: the engine's whole)
         # The engine keeps what it reads, not the plan's per-file lines (most of a loaded plan's memory): once the
         # caller lets its plan go, only the tables below stay.
-        self.plan = Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None, plan.spell)
+        self.plan = Plan(plan.header, plan.files, plan.keys, plan.rows, plan.ties, None, plan.spell, plan.finished,
+                         plan.sentences, plan.cowords, plan.pools)
         files, keys = plan.files, plan.keys
         ids = [entry[0] for entry in files] if ids is None else list(ids)
         if len(ids) != len(files):
@@ -537,6 +616,9 @@ class Engine:
         # insertion order (`_numbers`). None for a common key, which the walk finds.
         self._idx_in = [None if k in self._common else idx_in[k] for k in range(n)]
         self._prog = [self._prog_file(line) for line in plan.per_file]   # the progressive pass's input
+        # F7: each file's listed rows and their first sentence there ([k, sentence number, …]): a row's Context 1 is
+        # its first sentence in its first file, wherever the order puts that file (`contexts`).
+        self._fs = [array("i", line.get("fs", ())) for line in plan.per_file]
         self._ties = {tie[0]: tie for tie in plan.ties}
         self._sp = {}
         for f, line in enumerate(plan.per_file):
@@ -872,6 +954,7 @@ class Engine:
         self._uses.append((ks, us))
         self._source.append(str(record.get("name") or str(item_id).replace("\\", "/").rsplit("/", 1)[-1]))
         self._prog.append(prog)
+        self._fs.append(array("i"))         # (its sentences aren't the plan's: none is a row's, until the Generate)
         if sp:
             self._sp[f] = sp
         for i, k in enumerate(ks):
@@ -993,9 +1076,11 @@ class Engine:
     # The result
     # ----------------------------------------------------------------------------------------------------------- #
 
-    def result(self):
+    def result(self, pick=False, texts=None):
         """The order's columns (02 §1): the live numbers as kept, the priority rows in rank order, and the progressive
-        list and spelling ties worked out again for this order. Never for a numbers-only engine (its list can't be)."""
+        list and spelling ties worked out again for this order. Never for a numbers-only engine (its list can't be).
+        `pick` (F7, a format-3 plan): the example sentences too — this order's re-pick (`contexts`), the Generate's
+        own; else (and for an older plan) they stay as the last Generate wrote them (D1)."""
         if self.numbers_only:
             raise PlanError(f"the engine stands aside: {self.numbers_only}; its numbers only")
         plan, keys, rows = self.plan, self.plan.keys, self.plan.rows
@@ -1006,6 +1091,7 @@ class Engine:
         score = [self._score(k) for k in range(self._n)]
         counts = self._counts
         n_contexts = plan.header.get("max_contexts") or 0
+        picked = (self.contexts(texts) if pick else None) or {}
 
         priority = []
         for r in self._ranked:
@@ -1015,7 +1101,7 @@ class Engine:
             out = {"Word": keys[k][0], "Reading": keys[k][1], "Orth": orth, "Forms": forms, "Tier": tier,
                    "Score": score[k], "Occurrences": self._occ[k], "Count (High)": counts[k][0],
                    "Count (Low)": counts[k][1], "Count (Goal)": counts[k][2], "Sources": row[3], "Modality": row[2]}
-            _contexts(out, row[6], n_contexts)
+            _contexts(out, picked.get(k, row[6]), n_contexts)
             priority.append(out)
 
         progressive = []
@@ -1033,7 +1119,7 @@ class Engine:
                        "Occurrences (Global)": self._occ[k], "Occurrences (File)": count,
                        "Count (High)": counts[k][0],
                        "Count (Low)": counts[k][1], "Count (Goal)": counts[k][2], "Modality": row[2]}
-                _contexts(out, row[6], n_contexts)
+                _contexts(out, picked.get(k, row[6]), n_contexts)
                 out.update({"Baseline %": baseline_pct, "Current %": start_pct, "New %": end_pct,
                             "Known Count": known_count, "Total Count": total})
                 progressive.append(out)
@@ -1051,6 +1137,81 @@ class Engine:
             dropped=[ids[f] for f in range(len(ids)) if ids[f] is not None and self._pos[f] is None],
             added=list(self._added), provisional=[item for item in self._added if item in self._reasons],
             reasons={item: list(gates) for item, gates in self._reasons.items()})
+
+    def contexts(self, texts=None):
+        """F7: every listed row's example sentences for this order — the Generate's pick (`plan_rules.ContextPicker`,
+        one rule) down this order's list, on the plan's order-free pools: {k: [Context 1, Src 1, …]}; None for a plan
+        before format 3. Context 1 is a row's first sentence in its first file: one the plan doesn't hold the text of
+        (the order moved a word's first file) is asked of `texts({rel_path: [sentence number, …]}) -> {(rel_path,
+        number): (text, shown)}` (the caller's token store); without it, or unanswered, the row has no Context 1 to
+        pin and the pick fills its slots from the pools. A sentence of a file that left the order is no candidate."""
+        plan = self.plan
+        h = plan.header
+        if h.get("format") != 3:
+            return None
+        files, finished = plan.files, plan.finished
+        n_files = len(files)
+        pos, order = self._pos, self._order
+        seq_of = {f: i for i, f in enumerate(order, 1)}
+        firsts = {}                                 # k -> (file, sentence number): its first sentence in this order
+        for f in order:
+            fs = self._fs[f]
+            for j in range(0, len(fs), 2):
+                if fs[j] not in firsts:
+                    firsts[fs[j]] = (f, fs[j + 1])
+        sentences = plan.sentences
+        held = {(st[4], st[7]): i for i, st in enumerate(sentences)}
+        wanted = {}                                 # (file, number) of each first sentence the plan has no text of
+        for f, no in firsts.values():
+            if (f, no) not in held and f < n_files:
+                wanted[(f, no)] = None
+        if wanted and texts is not None:
+            asked = {}
+            for f, no in sorted(wanted):
+                asked.setdefault(files[f][0], []).append(no)
+            try:
+                answered = texts(asked) or {}
+            except Exception:
+                answered = {}
+            sentences = list(sentences)
+            for f, no in sorted(wanted):
+                found = answered.get((files[f][0], no))
+                if found and found[0]:
+                    held[(f, no)] = len(sentences)
+                    sentences.append([found[0], None if found[1] == found[0] else found[1], 0, 0, f, [], [], no])
+
+        def place(src):
+            if src >= n_files:
+                return (finished[src - n_files][2], 0)
+            return (plan_rules.NOT_FINISHED, seq_of.get(src, 0))
+
+        def audio(src):
+            kind = files[src][3] if src < n_files else finished[src - n_files][1]
+            return 0 if kind == "youtube" else (1 if kind in ("subtitle", "bilibili") else 2)
+
+        def where(src):
+            return files[src][0] if src < n_files else finished[src - n_files][0]
+
+        def live(ids):
+            return [s for s in ids if sentences[s][4] >= n_files or pos[sentences[s][4]] is not None]
+
+        n_contexts = h.get("max_contexts") or 0
+        picker = plan_rules.ContextPicker(sentences, plan.cowords, n_contexts, place, audio,
+                                          ensure_audio=h.get("ensure_audio"), recency_files=h.get("recency_files", 1))
+        out = {}
+        for r in self._ranked:
+            k = r[-1]
+            seq = seq_of[self._first[k]]
+            first = firsts.get(k)
+            first = held.get(first) if first is not None else None
+            _first, pool, audio_pool = plan.pools.get(k, (-1, (), ()))
+            chosen = picker.pick(k, seq, first, live(pool), live(audio_pool))
+            picker.learn(k, bool(self._phrase[k]), seq)
+            kept = []
+            for s in chosen or ():
+                kept += (picker.shown(s), where(sentences[s][4]))
+            out[k] = kept
+        return out
 
     @staticmethod
     def _prog_file(line):

@@ -97,8 +97,10 @@ def part(lst, i, name):
 
 # --- R3: a move repaints the rows that changed ------------------------------------------------------------------- #
 def test_r3_a_nudge_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_list(screen):
-    """Alt+↓ on a row: it and the row under it trade places — those two repaint (and the keyboard ring with them, a
-    row's height at most more), never the list; outside it, only the toast and the bar's line."""
+    """Alt+↓ on a row: it and the row under it trade places — those two repaint, never the list; outside it, only
+    the toast and the bar's line. The count is the second Alt+↓: the first one also turned the keyboard's ring on
+    (its row lifts and parts its neighbours, three rows — §3's hover; found.md F5's third row; the 8 px strip at the
+    list's foot is the toast's shadow coming over it)."""
     seed, win, writer = screen
     lst = lst_of(win)
     i = _closed_row(lst, 3)
@@ -106,16 +108,23 @@ def test_r3_a_nudge_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_lis
     lst.setFocus()
     settle(100)
     saved = len(writer.saved)
+    QTest.keyClick(lst, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)       # the ring on, unmeasured
+    if not wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3):
+        pytest.fail("the first Alt+↓ was never saved")
+    settle(600)                                                   # (its springs and its toast at rest)
+    i = lst.currentIndex().row()
+    saved = len(writer.saved)
     renders = lst.delegate.renders
     with wc.measure(win, readers=[win.services.library]) as w:
         QTest.keyClick(lst, Qt.Key.Key_Down, Qt.KeyboardModifier.AltModifier)
         assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3)
         settle(150)
     vp = wc.rect_in_window(lst.viewport())
-    band = _row_band(lst, i - 1, i + 1)                           # the pair, and one row's ring of slack above
+    j = lst.currentIndex().row()
+    band = _row_band(lst, min(i, j), max(i, j))                   # the pair
     in_list = [p for p in w.paints if vp.contains(p.rect)]
     assert w.union_in(vp) <= band.width() * band.height() + vp.width() * wc.STRIP_SLACK_PX * 2, w.report()
-    assert all(band.adjusted(0, 0, 0, 0).intersects(p.rect) or p.rect.height() <= 8 for p in in_list), w.report()
+    assert all(band.intersects(p.rect) or p.rect.height() <= 8 for p in in_list), w.report()
     outside = [p for p in w.paints if not vp.contains(p.rect) and not vp.intersects(p.rect)
                and not any(r.contains(p.rect) for r in _allowed_outside_the_list(win))]
     assert outside == [], (outside, w.report())
@@ -123,6 +132,35 @@ def test_r3_a_nudge_repaints_the_two_rows_it_swapped_and_nothing_else_in_the_lis
     # (no view: the test's writer records a nudge without writing the stand-in store — the rows shown are the
     #  optimistic move's, which is what the learner sees at the press)
     assert w.builds == 0, w.report()
+
+
+def test_r4_down_moves_the_ring_repainting_only_its_two_rows_and_their_neighbours(screen):
+    """↓ with the keyboard's ring on: the ring leaves one row for the next — the row it left settles back and lets its
+    neighbours close, the row it reached lifts and parts its own (§3's hover: three rows while their springs run), so
+    those four rows repaint and nothing else; the two rows whose look changed drawn afresh at most, no view built. (Catalogue C09: found.md F7's
+    four-row paint is this, not waste: `theme.SPRINGS` neighbour-px 1.5.)"""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    i = _closed_row(lst, 3)
+    lst.setCurrentIndex(lst.model().index(i, 0))
+    lst.setFocus()
+    settle(100)
+    QTest.keyClick(lst, Qt.Key.Key_Down)                          # the ring on, unmeasured
+    settle(600)
+    i = lst.currentIndex().row()
+    if not 1 <= i < lst.model().rowCount() - 2:
+        pytest.fail(f"the ring stands at row {i}: no room for the test's rows")
+    renders = lst.delegate.renders
+    with wc.measure(win, readers=[win.services.library]) as w:
+        QTest.keyClick(lst, Qt.Key.Key_Down)
+        settle(600)                                               # (both springs at rest)
+    if lst.currentIndex().row() != i + 1 or not w.painted:
+        pytest.fail(f"↓ didn't move the ring to the next row: {w.report()}")
+    vp = wc.rect_in_window(lst.viewport())
+    band = _row_band(lst, i - 1, i + 2)
+    assert w.paints_outside_rect(band, *_allowed_outside_the_list(win)) == [], w.report()
+    assert lst.delegate.renders - renders <= 2, w.report()        # the ring's two rows' pictures at most
+    assert w.builds == 0 and w.created == 0, w.report()
 
 
 def test_r3_a_drop_draws_afresh_only_the_rows_whose_place_changed(screen):

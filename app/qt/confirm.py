@@ -12,15 +12,11 @@ window closed or was hidden (a window closing with a question open answers nothi
 answer comes (No leaves it False). An optional `field` (LM11b G3: the group's *Rename…*) is a line of text under the
 words, prefilled with it, in focus and selected as the card opens; Enter in it is Yes; its text is the card's `text`
 when the answer comes (No leaves it None). A card its asker sets `keep` on (Fresh library's sheet) is hidden at its
-answer instead of let go, and asked again with `again(on_answer)` — built once, opened as a new one opens. Any other
-card answered while its window stays shown is kept hidden as that window's spare, and the window's next question of the
-same shape (its buttons, check and field; no parts of its own) fills it and opens it (R5: a question asked again makes
-no widget): a card kept after its answer may be asking another question later — read `answer` while it is open only.
+answer instead of let go, and asked again with `again(on_answer)` — built once, opened as a new one opens.
 
 The looks are the stylesheet's (`QLabel#confirmtitle` / `#confirmline`, `kind="primary"` / `kind="danger"`) and the
 theme's tokens (the `scrim` colour, the `dialog` radius and shadow): re-skinned with W3.3's surfaces.
 """
-from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QRectF, Qt
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
@@ -140,9 +136,6 @@ class Confirm(motion.Overlay):
         if self.field is not None and self.yes is not None:
             self.field.returnPressed.connect(self.yes.click)          # Enter in the field: Yes
         self.default = self.no if default_no or self.yes is None else self.yes
-        self.shape = (yes is not None, check is not None, field is not None)    # what `ask` can fill again (R5)
-        self.made_in = style.current()
-        self.plain = False                                # (`ask`'s, with no parts of its own: parked as a spare)
         self.scrim = Scrim(window, self.close)
         self.shadow = shadow.Follower(self, self.shadow_name)
         window.installEventFilter(self)
@@ -231,11 +224,9 @@ class Confirm(motion.Overlay):
         if self.isVisible() or motion.opening_of(self) is not None:
             self.close()
         self.scrim.hide()
-        if (self.keep or self.plain) and alive:          # (kept: hidden, asked again with `again`; its window's
+        if self.keep and alive:                           # (kept: hidden, asked again with `again`; its window's
             self._window.removeEventFilter(self)          # ... events unheard meanwhile)
             self._window.removeEventFilter(self.scrim)
-            if not self.keep:                             # R5: the window's next plain question fills this card
-                _park(self)
         else:
             self.keep = False
             self.scrim.deleteLater()
@@ -249,35 +240,6 @@ class Confirm(motion.Overlay):
             before.setFocus(Qt.FocusReason.OtherFocusReason)
         if alive and callback is not None:                # never once its window closed or was hidden
             callback(self.answer)
-
-    def fill(self, title, body, yes, yes_tip, no=None, no_tip=None, default_no=False, danger=False, check=None,
-             check_tip=None, field=None):
-        """A spare card's words made `ask`'s new ones — every text, tip and name `__init__` sets, its default button
-        and its primary's kind — before `again` opens it (R5: the card and its scrim made once a window)."""
-        self.setAccessibleName(title)
-        self.title.setText(title)
-        self.body.setText(body)
-        self.body.setVisible(bool(body))
-        if self.check is not None:
-            self.check.setText(check)
-            self.check.setToolTip(check_tip or "")
-            self.check.setAccessibleName(check)
-        if self.field is not None:
-            self.field.setText(field)
-            self.field.setAccessibleName(title)
-        self.no.setText(no or strings.CONFIRM_NO)
-        self.no.setToolTip(no_tip or strings.CONFIRM_NO_TIP)
-        self.no.setAccessibleName(self.no.text())
-        if self.yes is not None:
-            self.yes.setText(yes)
-            self.yes.setToolTip(yes_tip)
-            self.yes.setAccessibleName(yes)
-            kind = "danger" if danger else "primary"
-            if self.yes.property("kind") != kind:         # (the stylesheet reads it at polish)
-                self.yes.setProperty("kind", kind)
-                self.yes.style().unpolish(self.yes)
-                self.yes.style().polish(self.yes)
-        self.default = self.no if default_no or self.yes is None else self.yes
 
     def again(self, on_answer):
         """A kept card (`keep`) asked again: unanswered, its check off, and opened as a new one opens; `on_answer(yes)`
@@ -347,38 +309,10 @@ def ask(window, title, body, yes, yes_tip, *, no=None, no_tip=None, default_no=F
     sheet) made into it before it opens — never one by one into a card on screen. -> the card (answered later through
     `on_answer(yes)`)."""
     window = window.window()
-    spare = _spare(window, (yes is not None, check is not None, field is not None)) if build is None else None
-    if spare is not None:                                 # R5: the window's last answered card, filled again
-        spare.fill(title, body, yes, yes_tip, no=no, no_tip=no_tip, default_no=default_no, danger=danger, check=check,
-                   check_tip=check_tip, field=field)
-        return spare.again(on_answer)
     card = Confirm(window, title, body, yes, yes_tip, no=no, no_tip=no_tip, default_no=default_no, danger=danger,
                    on_answer=on_answer, check=check, check_tip=check_tip, field=field)
-    card.plain = build is None
     if build is not None:
         build(card)
     _register(window, card)
     card.open()
-    return card
-
-
-def _park(card):
-    """An answered plain card (its window still shown) kept hidden as its window's spare, the one before let go."""
-    window = card._window
-    old = getattr(window, "_spare_card", None)
-    if old is not None and old is not card and not sip.isdeleted(old):
-        old.scrim.deleteLater()
-        old.deleteLater()
-    window._spare_card = card
-
-
-def _spare(window, shape):
-    """The window's spare card when the question `ask` is asking has its shape (the same buttons, check and field) and
-    the looks it was built in (a text size changed since: a new one) — taken, so two questions never share it."""
-    card = getattr(window, "_spare_card", None)
-    if card is None or sip.isdeleted(card):
-        return None
-    if card.shape != shape or card.made_in != style.current() or card.answer is None or card.isVisible():
-        return None
-    window._spare_card = None
     return card

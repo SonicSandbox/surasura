@@ -143,7 +143,25 @@ def _show(widget, shows):
     `when` says no (a row built hidden after its slab first showed)."""
     explicit = widget.testAttribute(Qt.WidgetAttribute.WA_WState_ExplicitShowHide)
     if widget.isHidden() == shows or not explicit:
+        _unsized(widget, shows)
         widget.setVisible(shows)
+
+
+def _unsized(widget, shows):
+    """A widget shown for the first time under a paused layout (`SettingsPage._paused`) given no room yet: never
+    sized, Qt shows it at a default 100 × 30 at its parent's top left — over the rows there, which repainted (WC F2:
+    *More options*' first open painted its section's head) — until the layout places it."""
+    if shows and not widget.testAttribute(Qt.WidgetAttribute.WA_Resized):
+        widget.resize(0, 0)
+
+
+def _shown_in(layouts):
+    """What `layouts` hold and which of it shows: (`SettingsPage._paused`'s before and after)."""
+    out = []
+    for layout in layouts:
+        items = (layout.itemAt(i) for i in range(layout.count()))
+        out.append(tuple((w, w.isHidden()) for w in (it.widget() for it in items) if w is not None))
+    return out
 
 
 def _alive(w):
@@ -171,11 +189,13 @@ class _Scroll(QScrollArea):
 class _Body(QWidget):
     """The scrolled body, opaque: it paints its own ground (the stylesheet's `settingsbody` colour), so a scroll moves
     what is already on screen and paints only the strip it uncovers — Qt moves a widget that way only when it is
-    opaque; before, every wheel notch and glide frame painted the whole page in view (a9.1)."""
+    opaque; before, every wheel notch and glide frame painted the whole page in view (a9.1). Its contents static: a
+    new height (rows shown or hidden) paints only the part it gained, never the page in view again (WC F1, F2)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -280,7 +300,20 @@ class Slab(QWidget):
         self.adv.setVisible(False)
         self.placed = {"main": [], "adv": []}          # catalog index of each widget placed, per container
         self._fold = None
+        # resized (a row shown or hidden in it), only what changed repaints: the part it gained and the edge its
+        # rounded corners and bottom border move to (`resizeEvent`) — never its head and rows above (WC F1, F2)
+        self.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)
         self.restyle()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        old, new = event.oldSize(), event.size()
+        if old.isValid():
+            edge = theme.RADII["r"] + 2                # the corners' radius and the borders
+            if old.height() != new.height():
+                self.update(0, min(old.height(), new.height()) - edge, new.width(), edge)
+            if old.width() != new.width():
+                self.update(min(old.width(), new.width()) - edge, 0, edge, new.height())
 
     def place(self, widget, index, adv):
         """`widget` into its container at the place of its catalog `index` (a slice may build out of order)."""
@@ -699,6 +732,7 @@ class SettingsPage(QWidget):
         self.body = style.styled(_Body(), "settingsbody")
         outer = QHBoxLayout(self.body)
         self.column = QWidget(self.body)
+        self.column.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)     # (it paints nothing: as the body)
         outer.addWidget(self.column, 1)
         outer.addStretch(0)
         self.column_box = QVBoxLayout(self.column)
@@ -1327,9 +1361,11 @@ class SettingsPage(QWidget):
     def _paused(self):
         """Rows shown and hidden with the page's layouts paused, laid out once as the pass ends: Qt lays out every
         ancestor of a widget it shows at once, so each row shown laid the whole page out again — a search cleared
-        showed 126 rows in ~100 ms at 250 % (a9.1). Resumed deepest first, each shown one laid out at once (a hidden
-        one is laid out as it shows; the scroll area's own range follows in the settle, or the loop's turn). Nested:
-        the outermost resumes."""
+        showed 126 rows in ~100 ms at 250 % (a9.1). Resumed in one pass from the top (WC F1–F3): every size asked
+        afresh first (a row shown or hidden under a paused layout never told its slab's), the body given its new
+        height by the scroll area, then each layout laid out at its container's final size, outermost first — resumed
+        deepest first, each one laid out inside its container's old size and again once the body grew: every slab
+        moved twice and the page in view repainted, rows above the change too. Nested: the outermost resumes."""
         if getattr(self, "_pausing", False):
             yield
             return
@@ -1337,6 +1373,7 @@ class SettingsPage(QWidget):
         for slab in self.slabs.values():
             layouts += [slab.main_box, slab.adv.layout(), slab.layout()]
         layouts += [self.column_box, self.body.layout()]
+        before = _shown_in(layouts)
         self._pausing = True
         for layout in layouts:
             layout.setEnabled(False)
@@ -1346,9 +1383,18 @@ class SettingsPage(QWidget):
             self._pausing = False
             for layout in layouts:
                 layout.setEnabled(True)
-            for layout in layouts:
-                if layout.parentWidget().isVisible():
-                    layout.activate()             # nothing to do when nothing in it moved
+            if _shown_in(layouts) == before:      # nothing shown, hidden or put in: nothing to lay out again
+                for layout in layouts:
+                    if layout.parentWidget().isVisible():
+                        layout.activate()         # (a row's own change, if any, as it asked)
+            else:
+                for layout in layouts:            # deepest first: sizes asked afresh, nothing laid out yet
+                    layout.invalidate()
+                    layout.parentWidget().updateGeometry()
+                # the body at its new height: the scroll area resizes it, and the resize lays each layout out in turn
+                # from the top, each at its container's final size (an invalidated layout lays out as its widget
+                # resizes)
+                QApplication.sendEvent(self.scroll, QEvent(QEvent.Type.LayoutRequest))
 
     def _show_section(self, section_id, settings, ctx, matches, openers=None, tint=True):
         """`section_id`'s nav button, slab, rows, group names and fold shown as the rules (and the search) say — each
@@ -1389,8 +1435,10 @@ class SettingsPage(QWidget):
             _show(group, shows)
         opened = adv_count > 0 and (section_id in self._open or matches is not None)
         if slab.adv.isHidden() == opened:
+            _unsized(slab.adv, opened)
             slab.adv.setVisible(opened)
         if slab.more_row.isHidden() == (adv_count > 0):
+            _unsized(slab.more_row, adv_count > 0)
             slab.more_row.setVisible(adv_count > 0)
         slab.set_open(opened, adv_count)
         slab_shows = bool(any_main or adv_count)

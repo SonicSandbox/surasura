@@ -232,3 +232,115 @@ def test_r4_the_level_sliders_release_repaints_its_own_row_and_lays_nothing_out(
     finally:
         change(slider, before)
         wc.settle()
+
+
+# --- R4: a Choice and a switch, by the mouse and the keyboard ---------------------------------------------------- #
+def test_r4_a_choice_clicked_on_another_value_repaints_only_inside_its_own_row(page):
+    """A Choice pressed on another of its values (the row's *split books by* choice, which reveals nothing): the
+    choice shows the new value, its own row alone repaints, no layout pass, no widget made."""
+    view = _in_view(page, page.rows["split_books_by"])
+    choice = view.controls[0]
+    assert isinstance(choice, sc.Choice)
+    before = choice.value()
+    target = 0 if before == "even" else 1                                 # the other value's option
+    back = 1 - target
+    try:
+        with wc.measure(page) as w:
+            QTest.mouseClick(choice, Qt.MouseButton.LeftButton, pos=choice._rects()[target].center().toPoint())
+        assert choice.value() != before, w.report()
+        assert w.painted > 0, w.report()
+        assert w.paints_outside(view) == [], w.report()
+        assert w.hints <= wc.one_pass(page.body, page) * wc.PASS_SLACK, w.report()
+        assert w.created == 0, w.report()
+    finally:
+        QTest.mouseClick(choice, Qt.MouseButton.LeftButton, pos=choice._rects()[back].center().toPoint())   # put back, unmeasured
+        wc.settle()
+
+
+def test_r4_a_choice_moved_by_the_arrow_keys_repaints_only_inside_its_own_row(page):
+    """An arrow key moving a Choice's cursor (nothing chosen): its own row repainted, nothing else on the page, no
+    layout pass, no widget made."""
+    view = _in_view(page, page.rows["app_motion"])
+    assert isinstance(view.controls[0], sc.Choice), view.controls[0]
+    choice = view.controls[0]
+    choice.setFocus()
+    wc.settle()
+    try:
+        QTest.keyClick(choice, Qt.Key.Key_Home)                            # the cursor to the first option, unmeasured
+        wc.settle()
+        with wc.measure(page) as w:
+            QTest.keyClick(choice, Qt.Key.Key_Right)
+        rect = wc.rect_in_window(view)
+        assert w.painted > 0, w.report()                                  # (the cursor did move and paint)
+        assert w.paints_outside(view) == [], w.report()
+        assert w.union <= rect.width() * rect.height(), w.report()
+        assert w.hints <= wc.one_pass(page.body, page) * wc.PASS_SLACK, w.report()
+        assert w.created == 0, w.report()
+    finally:
+        QTest.keyClick(choice, Qt.Key.Key_Home)                            # the cursor back, unmeasured
+        choice.clearFocus()
+        wc.settle()
+
+
+def test_r4_a_space_on_a_switch_repaints_only_inside_its_own_row(page):
+    """A switch toggled by Space from the keyboard: its own row repainted, nothing else on the page, no layout pass,
+    no widget made."""
+    view = _quiet_toggle(page)
+    toggle = view.controls[0]
+    before = toggle.value()
+    try:
+        with wc.measure(page) as w:
+            QTest.keyClick(toggle, Qt.Key.Key_Space)
+        assert toggle.value() != before, w.report()                       # (the Space really flipped the switch)
+        assert w.painted > 0, w.report()                                  # (the switch did show its new value)
+        assert w.paints_outside(view) == [], w.report()
+        assert w.union <= wc.rect_in_window(view).width() * wc.rect_in_window(view).height(), w.report()
+        assert w.hints <= wc.one_pass(page.body, page) * wc.PASS_SLACK, w.report()
+        assert w.created == 0, w.report()
+    finally:
+        if toggle.value() != before:
+            QTest.keyClick(toggle, Qt.Key.Key_Space)                       # put back, unmeasured
+        wc.settle()
+
+
+# --- R5: an overlay opened again is built once ------------------------------------------------------------------- #
+def test_r5_a_select_menu_opened_closed_and_opened_again_makes_no_widget(page):
+    """A Select's menu opened by a click, closed, and opened again: the menu was built with the control, so the second
+    open makes no widget."""
+    select = _in_view(page, page.rows["theme"]).controls[0]
+    assert isinstance(select, sc.Select)
+    try:
+        _click(select)
+        assert select.menu.isVisible()
+        select.menu.close()
+        wc.settle()
+        with wc.measure(page) as w:
+            _click(select)
+        assert select.menu.isVisible(), w.report()
+        assert w.created == 0, w.report()
+    finally:
+        select.menu.close()
+        wc.settle()
+
+
+# --- R4: the level slider by an arrow key ------------------------------------------------------------------------ #
+def test_r4_a_level_sliders_arrow_key_repaints_its_own_row_and_lays_nothing_out(page):
+    """An arrow key moves the level slider one band: the slider's row repaints (what it shows of the new band), and
+    the rest of the page doesn't; no layout pass, nothing made."""
+    view = _in_view(page, page.rows["level"])
+    slider = view.controls[0]
+    before = slider.value()
+    bands = [b for b, _n in slider._bands]
+    step = Qt.Key.Key_Right if bands.index(before) < len(bands) - 1 else Qt.Key.Key_Left
+    try:
+        with wc.measure(page) as w:
+            QTest.keyClick(slider, step)
+        expected = bands.index(before) + (1 if step == Qt.Key.Key_Right else -1)
+        assert bands.index(slider.value()) == expected, w.report()
+        assert w.painted > 0, w.report()
+        assert w.paints_outside(view) == [], w.report()
+        assert w.hints <= wc.one_pass(page.body, page) * wc.PASS_SLACK, w.report()
+        assert w.created == 0, w.report()
+    finally:
+        change(slider, before)
+        wc.settle()

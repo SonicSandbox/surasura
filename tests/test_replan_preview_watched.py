@@ -1,20 +1,18 @@
-"""W-1: a watched mark moves cards the same way both ways — after the Generate the mark starts, never on the window's
-fast re-order (app/replan_preview.py: the set-aside files are the run signature's "reference" part, so
-`plan_engine.check` asks for a Generate first whichever way a mark moves them).
+"""W-1, W-1b: the set-aside files move cards — a Finished drag after the Generate it starts (D1, PROVISIONAL), never on
+the window's fast re-order (app/replan_preview.py: the set-aside files are the run signature's "reference" part, and
+`plan_engine.check` asks for a Generate first when a file joins them as Finished). A watched mark re-plans at once since
+Haya-W (2026-11-06, "Responsiveness is key"): `tests/test_watched_replan.py`.
 
 On RP-2's Japanese library (tests/plan_file_cases.py: twelve files of real text across NOW, Soon and 6+ Months), with
 your 順 actions on (tag + suspend, as Sonic runs them) and a fake AnkiConnect holding a card for every listed word.
 What these prove:
 
-  - a stone on an episode whose words live nowhere else: the host's job writes nothing to Anki — no position, no tag,
-    no suspend — and asks for the Generate; the Generate's own re-order then steps those cards back;
-  - its un-marking: the same — nothing written until the Generate, which brings the cards back;
   - a stone and a Finished drag in one settle: the stricter wins (nothing until the Generate);
   - a Finished drag alone, and its Undo: the same as a stone (W-1b: Finished is set aside, as a watched episode is) —
     nothing written until the Generate, which steps the show's words back, and brings them back after the Undo.
 
-What a wrong answer would cost a learner: a mis-clicked stone suspends cards within seconds while its Undo waits for a
-whole Generate to bring them back.
+What a wrong answer would cost a learner: a mis-dragged show's cards taken out within seconds while its Undo waits for
+a whole Generate to bring them back.
 """
 import pytest
 
@@ -89,33 +87,6 @@ def _job(fake, host, kind="move"):
 
 def _suspended(fake, card_ids):
     return {card_id for card_id in card_ids if fake.cards[card_id]["queue"] == -1}
-
-
-def test_a_stone_and_its_un_marking_each_wait_for_the_generate_before_any_card_moves(lib, monkeypatch):
-    root, store = lib
-    episode, own, fake = _acting(root, store, monkeypatch)
-    asked = []
-    host, _lines = _host(generate=asked.append)
-    with _patched(fake):
-        host._job("catch-up")                          # the ladder laid, the plan recorded: nothing owed
-        assert not _suspended(fake, own)
-        asked.clear()
-
-        store.set_watched([episode])
-        assert _job(fake, host) == [], "a stone wrote to Anki before the Generate"
-        assert not _suspended(fake, own), "a stone suspended its words' cards before the Generate"
-        assert asked == ["generate-first: reference"], asked
-        _generate(root)                                # the Generate the mark started (the journey keeper's)
-        _job(fake, host, "generate")
-        assert _suspended(fake, own) == set(own), "after the Generate the stone's words step back"
-
-        asked.clear()
-        store.set_watched([episode], False)
-        assert _job(fake, host) == [], "un-marking wrote to Anki before the Generate"
-        assert _suspended(fake, own) == set(own), "nothing moves back before the Generate either"
-        _generate(root)
-        _job(fake, host, "generate")
-    assert not _suspended(fake, own), "after the Generate the words and their cards are back"
 
 
 def test_a_stone_and_a_finished_drag_in_one_settle_wait_for_the_generate(lib, monkeypatch):

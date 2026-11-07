@@ -34,7 +34,8 @@ Generate. `JourneyKeeper` (one per window and language) runs that Generate by it
   after `CATCH_UP_S` (5 min) with no change (a burst's every move starts that clock again; a focus's or a start's look
   does not), whichever comes first. Everything else that can move a word across the list's cut-off Generates after the
   quiet time as before: the known words, the word lists, a setting or the level, a new file, a file that left the
-  counted tiers or a finished one (`files-removed`, `reference`, `reference-removed`: the cut-off is a share of the
+  counted tiers or a finished one (`files-removed`, `reference`, `reference-removed`, a watched mark's
+  `reference-watched` — Anki's order already re-planned, Haya-W: the cut-off is a share of the
   library's tokens and the words under it are not in the plan; the set-aside files are the name tables' evidence — the
   engine can't tell whether a word crosses, so it never guesses), no plan or one the engine stands aside from.
 - `close()` (the window closes, or its language changes) leaves nothing: no timer, its own run withdrawn, no listener.

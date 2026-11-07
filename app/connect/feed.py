@@ -39,8 +39,9 @@ Feed = namedtuple("Feed", Feed._fields + ("miner",), defaults=(None,))
 # phase strip's 鉱 line names the episode being mined; else None
 # `writing_cards` (#BS0A1K): True while a stopping job's Anki Miner is in its card-writing stage (never ended there:
 # it finishes adding the cards it has ready), else None
-Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved title writing_cards",
-                  defaults=(None, None, None, None, None, None, None))
+# `since` (help cards): when its wait's reason was set (the ledger's `reason_at`, UTC "…Z"), else None
+Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved title writing_cards "
+                          "since", defaults=(None, None, None, None, None, None, None, None))
 
 # ANKI waits on Anki for you to act (closed, a prompt, another profile or none: `runner.anki_needs_you`, amber);
 # ANKI_WAIT waits on Anki for something that clears by itself (you reviewing, Anki busy, another writer, one slow
@@ -148,7 +149,7 @@ def build(record, language):
                               stoppable=stoppable, stopping=stopping,
                               moved=runner.moved_folder(reason) if kind == NO_VIDEO else None,
                               title=job.get("title") or None,
-                              writing_cards=writing_cards)
+                              writing_cards=writing_cards, since=job.get("since") if reason else None)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
                 unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")),
                 miner=miner_of((record or {}).get("stamp")))

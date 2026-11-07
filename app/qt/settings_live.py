@@ -603,6 +603,14 @@ class Live(QObject):
             self.parts[row_id] = {"hint": hint}
         elif row_id == "level":
             self._paint_level(keep=False)
+        elif row_id == "automation":                    # help cards (§6.6): the tour's door, under the row's words
+            tour = sc.Door(S.HELP_TOUR_DOOR, tooltip=S.HELP_TOUR_DOOR_TIP, name=S.HELP_TOUR_DOOR)
+            tour.clicked.connect(lambda _c=False: self.open_tour())
+            line = QHBoxLayout()
+            line.addWidget(tour)
+            line.addStretch(1)
+            self.page.row(row_id).layout().itemAt(0).layout().addLayout(line)
+            self.parts[row_id] = {"tour": tour}
         elif row_id == "auto_update_enabled":
             offer = sc.Door(S.OFFER_AGAIN_NAME, tooltip=S.OFFER_AGAIN_TIP)
             offer.clicked.connect(lambda _c=False: self.offer_again())
@@ -659,12 +667,12 @@ class Live(QObject):
             words = view.layout().itemAt(0).layout()                      # the row's words column
             starter = sc.Door(S.PRACTICE_STARTER, tooltip=S.PRACTICE_STARTER_TIP, name=S.PRACTICE_STARTER)
             starter.clicked.connect(lambda _c=False: self.copy_practice("starter"))
-            then = QLabel(S.PRACTICE_HELP, view)
-            then.setObjectName("helpmark")
-            then.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            from app.qt import help_card           # help cards (§6.4): the ? is a press now — Piyo's card
+            then = help_card.help_mark("piyo", view)
             then.setAccessibleName(S.PRACTICE_HELP_NAME)
             then.setToolTip(S.PRACTICE_LEAVES + "<br><br>"
-                            + html.escape(S.PRACTICE_THEN.format(starter=STARTER), quote=False).replace("\n", "<br>"))
+                            + html.escape(S.PRACTICE_THEN.format(starter=STARTER), quote=False).replace("\n", "<br>")
+                            + S.PRACTICE_HELP_CLICK)
             line = QHBoxLayout()
             line.addWidget(starter)
             line.addSpacing(8)
@@ -938,6 +946,12 @@ class Live(QObject):
         if offer.isHidden() == bool(version):
             with self.page._keeping(self.page._last):
                 offer.setVisible(bool(version))
+
+    def open_tour(self):
+        """*Show me what runs by itself* (help cards §6.6): the tour, over the window (a GUI-only overlay: no pending)."""
+        opener = getattr(self.shell, "open_tour", None)
+        if opener is not None:
+            opener()
 
     def offer_again(self):
         updates = getattr(self.services, "updates", None)

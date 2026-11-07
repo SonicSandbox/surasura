@@ -3790,6 +3790,9 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
     _progress("Picking sentences")
     eng = plan_engine.Engine(plan)
     result = eng.replan(order, pick=True, texts=plan_texts(language, data_dir, store))
+    if eng.unread:
+        print(f"The journey can't be redrawn from the plan ({eng.unread} sentences' text can't be read): generating.")
+        return None
     if not result.priority:
         print("The journey can't be redrawn from the plan (no list): generating.")
         return None                         # (a run with no list writes none: the Generate says so its own way)
@@ -3850,7 +3853,8 @@ def _redraw_from_plan(language, data_dir, found_files, sig_parts, run_sig, libra
         # it, never from the first one's order); a Generate removes it with the marker (`_forget_redraw`)
         as_generated = os.path.join(RESULTS_DIR, REDRAW_STATS_FILE)
         if not os.path.exists(as_generated):
-            shutil.copy2(stats_json, as_generated)
+            shutil.copy2(stats_json, as_generated + ".tmp")
+            os.replace(as_generated + ".tmp", as_generated)
         with open(as_generated, encoding="utf-8") as f:
             file_stats = json.load(f)
         if len(file_stats) == len(plan.files):
@@ -6688,6 +6692,7 @@ def main():
 
         key = f"{lemma}|{reading}"
         serializable_data = data.copy()
+        serializable_data.pop("_near", None)    # (F7: the pick's working list, never an output)
         serializable_data["sources"] = list(data["sources"])
         # `series` is a set like `sources`; JSON has no set type. Kept as a COUNT rather than the
         # names — nothing reads the names back, and on a large library storing them would inflate

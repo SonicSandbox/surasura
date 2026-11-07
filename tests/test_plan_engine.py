@@ -225,6 +225,27 @@ def test_a_replan_in_another_order_is_that_orders_generate(runs, other_orders, c
     _check_index(picked, other_root, language)
 
 
+@pytest.mark.parametrize("case,name", [("rp2-ja", "E"), ("rp2-zh", "C")])
+def test_a_shown_sentence_whose_text_cant_be_read_is_counted_never_shown_blank_silently(runs, other_orders, case,
+                                                                                        name):
+    # why (F7 re-check 2): a per-file first sentence is kept without its text; one the store can't give back (an empty
+    # cache, a file gone) must make the redraw Generate instead of writing a blank Context
+    root, _run = runs[case]
+    plan, eng = _engine(root)
+    # (no sentence of the table stands in for a first sentence here: its number made unknown — every per-file first
+    # sentence shown is read from the store)
+    eng.plan.sentences = [row[:plan_rules.NUMBER] + [-1] + row[plan_rules.NUMBER + 1:] for row in eng.plan.sentences]
+    eng.replan(_order_of(plan, _orders(cases.ALL_CASES[case][0])[name]))
+    eng.result(pick=True, texts=_texts(root, cases.ALL_CASES[case][0]))
+    assert eng.unread == 0, "every shown sentence's text read"
+    eng.result(pick=True, texts=lambda asked: {})
+    asked = []
+    eng.result(pick=True, texts=lambda wanted: asked.append(wanted) or {})
+    asked_for = sum(len(v) for w in asked for v in w.values())     # each sentence asked once; shown maybe by more rows
+    assert eng.unread >= asked_for > 0, (eng.unread, asked_for)
+    assert asked, "this order shows some sentence the plan keeps without its text (else the case proves nothing)"
+
+
 def _moves_to(eng, plan, target):
     """Move the engine's items one by one into `target`'s order ([(item_id, tier)]), as a user drags them: each item,
     front to back, placed after the one before it (the first at its tier's top)."""

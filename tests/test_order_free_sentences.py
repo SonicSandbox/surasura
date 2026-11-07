@@ -214,3 +214,28 @@ def test_a_redraw_asked_after_a_known_word_change_is_a_generate():
     results = os.path.join(root, "results")
     assert analyzer.redrawn_for(results) is None, "a Generate: no redraw marker"
     assert analyzer.read_run_stamp(results) not in (None, stamp), "stamped as the new run"
+
+
+def test_a_generate_whose_list_is_empty_writes_its_word_stats_whole():
+    # why (F7 re-check 2): with no list (Only i+1, no word has an i+1 sentence) every word's stats are written, and the
+    # pick's working list of the nearest files' sentences (sets inside) must never reach word_stats.json
+    import json
+    import subprocess
+    import sys
+    root = os.environ["SURASURA_TEST_ROOT"]
+    data_dir, user_files_dir = roots("ja")
+    path = os.path.join(data_dir, "HighPriority", "hard.txt")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("古い灯台が静かに光る。白い灯台が遠くで光る。")
+    doc = {"schedule": {p: [] for p in ls.PHASES}}
+    doc["schedule"][ls.TIERS["now"][0]].append(entry("HighPriority/hard.txt"))
+    write_manifest(user_files_dir, doc)
+    assert ls.maintain("ja", data_dir, user_files_dir) == ls.EXIT_DONE
+    p = subprocess.run([sys.executable, os.path.join(cases.REPO, "app", "analyzer.py"), "--language=ja", "--static",
+                        "--no-open", "--min-freq", "1", "--only-i-plus-one"], cwd=cases.REPO, env=cases.child_env(root),
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
+    with open(os.path.join(root, "results", "word_stats.json"), encoding="utf-8") as f:
+        stats = json.load(f)
+    assert stats and not any("_near" in entry for entry in stats.values())

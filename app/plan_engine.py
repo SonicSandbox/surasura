@@ -660,7 +660,7 @@ class Engine:
         # F7: each file's listed rows and their first sentence there ([k, sentence id, …]): a row's Context 1 is its
         # first sentence in its first file, wherever the order puts that file, and those of the next NEAR_FILES
         # files holding it are candidates too (`contexts`).
-        self._fs = [array("i", line.get("fs", ())) for line in plan.per_file]
+        self._fs = [array("i", line.get("fs", ()) if plan.picks else ()) for line in plan.per_file]
         self._ties = {tie[0]: tie for tie in plan.ties}
         self._sp = {}
         for f, line in enumerate(plan.per_file):
@@ -669,6 +669,7 @@ class Engine:
         self._pins = []
         self._added, self._reasons = [], {}     # the items `add` placed, in order; {item: [gates]}: those not exact
         self.renumbered = 0                  # how many times a move found no room and spaced every item afresh
+        self.unread = 0                      # (F7) the shown sentences the last re-pick couldn't read the text of
         self._numbers([(ids[f], entry[1]) for f, entry in enumerate(files) if ids[f] is not None])
 
     # ----------------------------------------------------------------------------------------------------------- #
@@ -1261,6 +1262,7 @@ class Engine:
                 answered = texts({rel: sorted(numbers) for rel, numbers in wanted.items()}) or {}
             except Exception:
                 answered = {}
+        self.unread = 0
         for k, chosen in out.items():
             kept = []
             for s in chosen:
@@ -1269,6 +1271,7 @@ class Engine:
                 if shown is None:
                     found = answered.get((files[st[plan_rules.SRC]][0], st[plan_rules.NUMBER]))
                     shown = found[1] if found else ""
+                    self.unread += not found        # (the caller decides: the redraw Generates instead)
                 kept += (shown, where(st[plan_rules.SRC]))
             out[k] = kept
         return out

@@ -2865,8 +2865,10 @@ class Store:
 
     def _folder_last(self, tier, folder, excl):
         """The last row of `folder` (the placement key) in `tier`, skipping `excl`: (id, ord) or None."""
+        # by the folder's index (`items_tier_folder`), its rows sorted here: `ord + 0` keeps the planner off walking
+        # the whole tier's order backwards for a folder with no row in it (R6: 42 ms at 100k)
         for row in self.conn.execute("SELECT id, ord FROM items WHERE tier = ? AND parent_folder = ? "
-                                     "ORDER BY ord DESC, id DESC LIMIT ?", (tier, folder, len(excl) + 1)):
+                                     "ORDER BY ord + 0 DESC, id DESC LIMIT ?", (tier, folder, len(excl) + 1)):
             if row[0] not in excl:
                 return row
         return None

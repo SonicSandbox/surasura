@@ -1264,6 +1264,41 @@ def test_a_store_keeps_its_statement_journals_in_memory_so_an_add_never_writes_a
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_within_its_tier_rewrites_no_folder_index_and_an_old_store_swaps_its_folder_index_at_open(language):
+    """R6 (moves at their line): the folder index is (tier, parent_folder) — no `ord`, so a moved row never rewrites
+    it — and a move within its tier writes no `tier` (SQLite rewrites an index's entry for every column a SET names).
+    A folder's last row is still read by that index, never by walking the tier's order. A store made before (the old
+    `items_folder` with `ord`) has it swapped at a writer's open; the order and every placement are the same."""
+    store = migrated(language)
+    names_ = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+    assert "items_tier_folder" in names_ and "items_folder" not in names_
+    soon = store.ids("soon")
+    sets = []
+    store.conn.set_trace_callback(lambda sql: sets.append(sql) if sql.lstrip().upper().startswith("UPDATE ITEMS SET")
+                                  else None)
+    store.move([soon[0]], "soon", after_id=soon[2])
+    store.conn.set_trace_callback(None)
+    placing = [s for s in sets if " ord = " in s]
+    assert placing and not any("tier =" in s.split("WHERE")[0] for s in placing), placing
+    plan = " ".join(str(r) for r in store.conn.execute(
+        "EXPLAIN QUERY PLAN SELECT id, ord FROM items WHERE tier = ? AND parent_folder = ? ORDER BY ord + 0 DESC, id "
+        "DESC LIMIT ?", ("soon", "x", 1)).fetchall())
+    assert "items_tier_folder" in plan, plan
+    db = store.db_path
+    with store._writing():                                    # a store as an older Surasura left it
+        store.conn.execute("DROP INDEX items_tier_folder")
+        store.conn.execute("CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)")
+    order = store.ids("soon")
+    store.close()
+    data_dir, user_files_dir = roots(language)
+    again = ls.open_store(language, data_dir, user_files_dir)
+    names_ = {r[0] for r in again.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+    assert "items_tier_folder" in names_ and "items_folder" not in names_ and again.db_path == db
+    assert again.ids("soon") == order
+    again.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_a_move_that_splits_a_show_writes_the_piece_sequence_once_and_past_every_piece(language):
     """K30 / LM11 G3 for pieces, written once a command (R6: a move into another show made two pieces and wrote the
     sequence row twice — one write more than the 100k move's count allows): the row is past every piece id issued,

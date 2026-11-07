@@ -344,7 +344,7 @@ def described(row, text):
 # Help cards (§4.1, §6.4): the rows whose ? opens their area's help card on a click (its description stays the hover)
 ROW_CARDS = {"connect_enabled": "cards", "mine_line": "current", "anki_sync_auto": "known", "automation": "automation",
              "placing_rules": "arrivals", "keep_watched": "stones", "finish_cards": "finished",
-             "enable_junban": "junban", "backfill_patterns": "backfill", "journey_settle_s": "generate",
+             "enable_junban": "junban", "backfill_patterns": "backfill",
              "level": "level"}
 
 

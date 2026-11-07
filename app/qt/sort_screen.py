@@ -1181,13 +1181,12 @@ class SortScreen(QWidget):
             self.choose(what)
 
     def done_then_tour(self):
-        """*See what Surasura does by itself* (help cards §6.6): Done, and the tour opens once the window is up — on the
-        loop's next turn, after the sort screen has gone (never over it)."""
+        """*See what Surasura does by itself* (help cards §6.6): Done, and the tour opens once the window is up — when
+        setup has ended (`ShellWindow.setup_held(False)`), never over the wizard's later pages."""
         win = self.win
+        if win is not None and hasattr(win, "__dict__"):
+            win.__dict__["_tour_after_setup"] = True
         self.finish("done")
-        opener = getattr(win, "open_tour", None)
-        if opener is not None:
-            QTimer.singleShot(0, opener)
 
     def finish(self, how="done"):
         win = self.win

@@ -138,9 +138,13 @@ def why(reasons, wanted=False, deferred=False, at=None):
     newest last), `wanted` a reader asked for it (`want`), `deferred` it was owed only to moves (A's catch-up), `at`
     the newest change's wall time. Its card: `generate`."""
     from app.services import causes
-    named = [r for r in reasons if r not in ("journey", "export", "settled") and not str(r).startswith("replan: ")]
+    named = [r for r in reasons if r not in ("journey", "export", "settled", "move")
+             and not str(r).startswith("replan: ")]
+    beyond = [r for r in named if r != "store"]             # a change the engine can't serve: never "your moves"
     if wanted:
         line = WHY_WANTED
+    elif beyond:
+        line = WHY_BY_REASON.get(beyond[-1], WHY_CHANGED)
     elif deferred:
         line = WHY_MOVES
     elif named:
@@ -232,7 +236,8 @@ class JourneyKeeper:
         self._render_only = False   # the last look found the analysis current and only the report behind
         self._run_render_only = False   # ... and the run the keeper asked for is that re-render (`background_run`)
         self.reasons = []           # why the journey moved since the last request (the window's log; tests)
-        self._changed_at = None     # the wall clock of the newest `changed` (its *Why:* line's time)
+        self._changed_at = None     # the wall clock of the newest `changed` / `marked` (its *Why:* line's time)
+        self._why_reasons = []      # every change and mark since the last request, newest last (help cards' *Why:*)
         self.asked = 0              # background runs asked for
         controller.on_end(self._ended)
         subscribe = getattr(controller, "subscribe", None)
@@ -254,6 +259,7 @@ class JourneyKeeper:
             if self._closed:
                 return
             self.reasons.append(reason)
+            self._why_reasons.append(reason)
             self._last_change = time.monotonic()
             self._changed_at = time.time()
             if moved:
@@ -322,6 +328,8 @@ class JourneyKeeper:
             if self._closed:
                 return
             self._again = reason
+            self._why_reasons.append(reason)
+            self._changed_at = time.time()
         if not self.generating():
             self._look_again()          # nothing in flight (or it ended as we looked): the look now
 
@@ -507,7 +515,8 @@ class JourneyKeeper:
                 return                      # closed, or a new move came while checking: its own timer asks
             self._previous = previous
             self.asked += 1
-            cause = why(self.reasons, self._wanted, self._deferred, self._changed_at)
+            cause = why(self._why_reasons, self._wanted, self._deferred, self._changed_at)
+            self._why_reasons = []
             self.reasons = []
             render_only = self._render_only
         # Outside the lock: the controller tells its listeners from inside `request`.

@@ -363,3 +363,39 @@ def test_the_star_ask_and_keep_watched_read_the_one_helper():
     assert ask._seen() and ask._list() == ["star_ask"]          # the odd entries left out, as before
     win.toasts.dragging = True
     assert ask._blocked()
+
+
+def test_an_hc3_hint_held_back_is_never_shown_after_its_moment_and_never_behind_a_help_card():
+    # review #5, #6: a moment that passed while a toast or a card covered the window shows no stale hint later
+    win = _Win()
+    now = [0.0]
+    h = hints_module.Hints(win, clock=lambda: now[0])
+    shown = []
+    win.toasts.alive = True
+    assert not h.once("first_amber", lambda: shown.append("amber"), owe=False) and h.owed == {}
+    win.toasts.alive = False
+    assert not h.again() and shown == []                       # the amber was answered meanwhile: nothing stale
+    win._help_card = type("C", (), {"isVisible": lambda self: True})()
+    assert h.blocked()
+    del win._help_card
+    assert h.once("first_amber", lambda: shown.append("amber"), owe=False) and shown == ["amber"]
+
+
+def test_the_setup_doors_tour_opens_only_once_setup_has_ended(world):
+    # review #1: never on top of the wizard's later pages
+    win = world.win
+    win.__dict__["_tour_after_setup"] = True
+    win.setup_held(True)
+    QApplication.processEvents()
+    assert getattr(win, "_help_card", None) is None or not win._help_card.isVisible()
+    win.setup_held(False)
+    assert wait_until(lambda: getattr(win, "_help_card", None) is not None and win._help_card.isVisible())
+    assert win._help_card.tour is not None and "_tour_after_setup" not in win.__dict__
+    win._help_card.close()
+
+
+def test_update_my_journey_now_says_already_running_while_a_generate_is_on_its_way(world):
+    from app.services import generate as G
+    world.win.page_widgets["current"].view_model = type("V", (), {"rows": (object(),)})()
+    world.controller.push(state=G.RUNNING, step="Counting words", done=1, total=2)
+    assert wait_until(lambda: world.win.help_try_ready("update_journey") == strings.HELP_TRY_BUSY)

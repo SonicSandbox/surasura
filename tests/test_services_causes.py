@@ -97,3 +97,39 @@ def test_the_journeys_background_generate_names_its_newest_reason():
     assert journey_why(["journey", "settled"]).line == "Your library changed"     # (looks name nothing)
     c = journey_why(["level"], at=at)
     assert c.at == at and c.card == "generate"
+
+
+def test_a_change_the_engine_cant_serve_names_itself_even_when_moves_were_waiting_their_minutes():
+    # review #3: a move (owed only to moves), then a level change: the Generate is the level's, never "quiet minutes"
+    assert journey_why(["store", "level"], deferred=True).line == "Your level changed"
+    assert journey_why(["store", "store"], deferred=True).line.startswith("Your journey catches up with your moves")
+
+
+def test_the_startup_notices_why_is_only_for_what_arrived():
+    from app.connect import notice
+    assert notice.names_arrivals("3 episodes arrived from hato while Surasura was closed")
+    assert notice.names_arrivals("2 episodes arrived from hato while Surasura was closed · Connect lost track")
+    assert not notice.names_arrivals("Connect lost track of your moves from 2026-11-01 to 2026-11-02")
+    assert not notice.names_arrivals(None)
+
+
+def test_the_replan_jobs_cause_is_the_call_that_started_its_write_used_once():
+    # review #2: a move's cause never sticks to a later write (after a Generate, a catch-up)
+    from app.services import replan_host as R
+    from app.services.jobs import JobRegistry
+    reg = JobRegistry()
+    host = R.ReplanHost(reg, lambda: {}, "ja")
+    try:
+        host._trigger = ("poke", 100.0)
+        host._working(host._gen, True)
+        host._working(host._gen, False)
+        host._working(host._gen, True)                  # a second write with no call handed over since: no cause
+        host._working(host._gen, False)
+        got = [v.cause for v in reg.snapshot() if v.kind == "replan"]
+        assert got[0].line == R.WHY_MOVED and got[0].at == 100.0 and got[1] is None
+        host._trigger = ("after_generate", 200.0)
+        host._working(host._gen, True)
+        assert [v.cause for v in reg.snapshot() if v.kind == "replan"][-1].line == R.WHY_AFTER_GENERATE
+        host._working(host._gen, False)
+    finally:
+        host.close()

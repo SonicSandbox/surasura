@@ -397,7 +397,8 @@ class HelpCard(motion.Overlay):
         title, line, after = strings.HELP_CARDS[card_id]
         self.setAccessibleName(title)
         self.title.setText(title)
-        said = causes_service.said(cause, None, "{line}", "{line} · {time}") if cause is not None else ""
+        said = causes_service.said(cause, None, strings.HELP_CAUSE_WHY, strings.HELP_CAUSE_WHY_AT) \
+            if cause is not None else ""
         self.cause_head.setVisible(bool(said))
         self.cause_line.setVisible(bool(said))
         self.cause_line.setText(said)

@@ -1906,6 +1906,9 @@ HELP_TRY_MISSING = {
     "junban": "順 isn't installed",
     "update_journey": "Add something to your library first",
 }
+HELP_TRY_BUSY = "Already running: your journey is being brought up to date"
+HELP_CAUSE_WHY = "{line}"                                  # the card's cause line (its heading says *Why*)
+HELP_CAUSE_WHY_AT = "{line} · {time}"
 HELP_TRY_FIX = "Open its settings"
 HELP_TRY_FIX_TIP = "Settings, where it is set up"
 # the doors (§6.6) and the one-time hints (HC-3; §6.7)

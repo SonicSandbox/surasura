@@ -33,7 +33,7 @@ class Hints:
         self.last = None                # when the newest hint showed (the clock's)
         self.owed = {}                  # name -> the show it waits to run (blocked when its moment came)
         self.shown = []                 # names shown this session (tests)
-        self.done = set()               # names found seen: never read again this session (each snapshot asks: S19)
+        self.done = set()               # hint ids found seen: never read again this session (each snapshot asks)
 
     # --- the one record --------------------------------------------------------------------------------------- #
     def seen_list(self):
@@ -79,7 +79,12 @@ class Hints:
         toasts = getattr(win, "toasts", None)
         sorting = win.__dict__.get("_sort_screen") if hasattr(win, "__dict__") else None
         minimized = getattr(win, "isMinimized", None)
-        return (toasts is None or bool(getattr(toasts, "dragging", False))
+        card = win.__dict__.get("_help_card") if hasattr(win, "__dict__") else None
+        try:
+            covered = card is not None and card.isVisible()          # a help card's sheet over the window
+        except RuntimeError:
+            covered = False
+        return (toasts is None or bool(getattr(toasts, "dragging", False)) or covered
                 or (not toast_ok and bool(getattr(toasts, "alive", False)))
                 or (setup is not None and setup.is_set()) or sorting is not None
                 or (minimized is not None and minimized()))
@@ -87,20 +92,24 @@ class Hints:
     def too_soon(self):
         return self.last is not None and self.clock() - self.last < GAP_S
 
-    def once(self, name, show, per_library=True, toast_ok=False):
+    def once(self, name, show, per_library=True, toast_ok=False, owe=True):
         """Show hint `name` once (`show()` makes its toast): now if nothing holds it, else owed for its next moment
-        (`again`). -> True when it showed."""
-        if name in self.done:
-            return False
+        (`again`; `owe=False`: the moment itself asks again while it lasts — an HC-3 hint is never shown after its
+        moment has passed). -> True when it showed."""
         hint = self.hint_id(name, per_library)
-        if hint is not None and self.unseen(name, per_library) is None:
-            self.done.add(name)             # (seen, or nowhere to keep it: never asked again this session)
-            hint = None
-        if hint is None:
+        if hint is None or hint in self.done:
+            return False
+        try:
+            seen = hint in self.seen_list()
+        except Exception:
+            seen = True                     # nowhere to keep it: never a hint shown every time
+        if seen:
+            self.done.add(hint)             # never read again this session
             self.owed.pop(name, None)
             return False
         if self.blocked(toast_ok) or self.too_soon():
-            self.owed[name] = (show, per_library, toast_ok)
+            if owe:
+                self.owed[name] = (show, per_library, toast_ok)
             return False
         self.owed.pop(name, None)
         try:
@@ -108,7 +117,7 @@ class Hints:
         except Exception:
             return False
         self.last = self.clock()
-        self.done.add(name)
+        self.done.add(hint)
         self.shown.append(name)
         show()
         return True
@@ -121,6 +130,11 @@ class Hints:
         return False
 
     # --- HC-3: the three moments ---------------------------------------------------------------------------------- #
+    def hc3_done(self):
+        """Whether the three HC-3 hints are all shown here (each snapshot stops looking then)."""
+        ids = [self.hint_id(name) for name in HC3]
+        return all(i is not None and i in self.done for i in ids)
+
     def toast(self, name, words):
         """An HC-3 hint's toast: its words, and *Why?* → its card."""
         cause = causes.Cause(strings.HINT_WHY[name], None, CARD[name])
@@ -128,17 +142,19 @@ class Hints:
 
     def jobs(self, views):
         """(Each registry snapshot.) The first card wait on Anki, the first background Generate."""
-        live = [v for v in views if v.state in ("queued", "waiting", "running")]
-        wait = next((v for v in live if v.kind == "mine-anki" and v.reason), None)
-        if wait is not None:
-            self.once("first_card_wait", self.toast("first_card_wait", strings.HINT_CARD_WAIT.format(
-                reason=wait.reason)))
-        if any(v.kind == "generate" and v.automatic and v.state == "running" for v in live):
-            self.once("first_auto_generate", self.toast("first_auto_generate", strings.HINT_AUTO_GENERATE))
         if self.owed:
             self.again()
+        if len(self.done) >= len(HC3) and self.hc3_done():
+            return
+        live = [v for v in views if v.state in ("queued", "waiting", "running")]
+        wait = next((v for v in live if v.kind == "mine-anki" and v.reason), None)
+        if wait is not None:                # (asked again by each snapshot while it lasts: never owed past it)
+            self.once("first_card_wait", self.toast("first_card_wait", strings.HINT_CARD_WAIT.format(
+                reason=wait.reason)), owe=False)
+        if any(v.kind == "generate" and v.automatic and v.state == "running" for v in live):
+            self.once("first_auto_generate", self.toast("first_auto_generate", strings.HINT_AUTO_GENERATE), owe=False)
 
     def strip(self, states):
         """(The strip's states, each refresh.) The first amber circle."""
         if any(st.needs and st.go is not None for st in states.values()):
-            self.once("first_amber", self.toast("first_amber", strings.HINT_AMBER))
+            self.once("first_amber", self.toast("first_amber", strings.HINT_AMBER), owe=False)

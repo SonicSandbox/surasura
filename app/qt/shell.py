@@ -2648,6 +2648,8 @@ class ShellWindow(QMainWindow):
             self.services.setup_open.set()
         elif self.services.setup_open.is_set():
             bridge.run_in_worker(self.services.setup_ended)
+        if not up and self.__dict__.pop("_tour_after_setup", False):
+            QTimer.singleShot(0, self.open_tour)          # help cards §6.6: setup's last page asked for the tour
 
     def _session_said(self, line):
         from app.qt import windows
@@ -2789,6 +2791,9 @@ class ShellWindow(QMainWindow):
         if key == "update_journey":
             view = getattr(self.page_widgets.get("current"), "view_model", None)
             ok = self.duties is not None and view is not None and bool(getattr(view, "rows", None))
+            state = getattr(getattr(self.duties, "generate_state", None), "state", None)
+            if ok and state in ("queued", "running", "cancelling"):
+                return strings.HELP_TRY_BUSY
             return None if ok else strings.HELP_TRY_MISSING[key]
         return strings.HELP_TRY_MISSING.get(key)
 
@@ -3096,8 +3101,10 @@ class ShellWindow(QMainWindow):
         notice = getattr(state, "notice", None)
         if notice and notice != self.duties.notice:        # Connect's line, once: a toast
             self.duties.notice = notice
-            from app.services import causes                # help cards: the notice names what came and from where
-            self.toasts.show(notice, why=causes.Cause(strings.WHY_NOTICE, None, "arrivals"))
+            from app.connect import notice as notice_module    # help cards: the notice names what came, from where
+            from app.services import causes
+            why = causes.Cause(strings.WHY_NOTICE, None, "arrivals") if notice_module.names_arrivals(notice) else None
+            self.toasts.show(notice, why=why)
 
     # the update
     def _show_update(self, state, force_cards=False):

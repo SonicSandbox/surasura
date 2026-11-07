@@ -40,7 +40,7 @@ CARDS = (
     Card("cards", "anki", settings="connect_enabled", try_it="mine_top"),
     Card("junban", "anki", settings="enable_junban", try_it="junban"),
     Card("backfill", "anki", settings="backfill_patterns", clip=False, stills=1),
-    Card("generate", "automatic", settings="journey_settle_s", try_it="update_journey"),
+    Card("generate", "automatic", settings="automation", try_it="update_journey"),
     Card("piyo", "more", settings="practice_ai", clip=False, stills=1),
     Card("automation", "automatic", settings="automation", clip=False, stills=1),
 )

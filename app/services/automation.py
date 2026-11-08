@@ -522,6 +522,10 @@ class AutoJunban:
             return "update-staged"
         if o.registry.live("junban"):
             return "running"
+        if auto.window_open():
+            # 順's window is open (a lock look, on this worker): the step would do nothing, and a `junban` job ending
+            # tells that window Anki moved — its preview thrown away for a re-order that never ran (Mattias, alpha 3)
+            return "window"
         self._last = now
         language = o.language
 

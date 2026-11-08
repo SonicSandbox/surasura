@@ -199,10 +199,10 @@ class PhaseStrip(QWidget):
             self.setAccessibleDescription(self.summary())
 
     def go(self, circle):
-        """Where `circle`'s decision is (`phase.Go`) while it is amber, else None: its press opens that place, the row
+        """Where `circle`'s decision is (`phase.Go`) while it is amber — or while its last run is a failure that waits on
+        you (`phase.FAILED_GO`: 順's Reorder refused until its Undo) — else None: its press opens that place, the row
         highlighted, instead of its settings (a7)."""
-        st = self.states[circle]
-        return st.go if st.needs else None
+        return self.states[circle].go
 
     def press_words(self, circle):
         """What a press on `circle` does, as its hover's last line says it: while it is amber, what to decide and where."""

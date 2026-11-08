@@ -248,6 +248,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
                     undos_looked.add(lang)
                     _finish_undos(steps, ledger, lang)
                 if not _open_jobs(ledger, lang, parked):
+                    _gone_look(steps, lang)     # nothing to mine: the deleted-cards look all the same (once a run)
                     continue
                 work = True
                 if lang not in begun:
@@ -709,6 +710,25 @@ def _finish_undos(steps, ledger, lang):
         finish(lang, ledger)
     except Exception:
         log.exception("Connect couldn't finish an undo left half-way; it tries again next run")
+
+
+def _gone_look(steps, lang):
+    """Row 2.4.14's look (`steps.notes_gone`, once a run) for a language with no open job too: before, only `prepare`
+    asked it, so cards deleted in Anki kept their episode's ✓ *N in Anki* until another episode was mined (Mattias,
+    alpha 3). Read-only on Anki; Anki not answering leaves it for the next pass (logged, never a reason to stop)."""
+    look = getattr(steps, "notes_gone", None)
+    if look is None:
+        return
+    try:
+        # Anki's own state gates it as it gates every touch of Anki in a run (`SURASURA_NO_ANKI_SYNC`, Anki closed or
+        # busy, another profile, you reviewing); the battery doesn't: one read-only request (as an ask's, M-3)
+        if _blocked(steps, lang, None, asked=True) is not None:
+            return
+        look(lang)
+    except (Wait, Needs):
+        pass                            # no store for this language, or it's busy: nothing to look at now
+    except Exception as e:
+        log.warning("Connect's deleted-card check didn't finish; it looks again: %s", e)
 
 
 def _blocked(steps, lang, resume, asked=False):
@@ -1668,6 +1688,7 @@ class Steps:
         self._served = set()        # the languages whose run plan the engine serves (prepare's, the Generate after
                                     # mining's): a plan read since that it can't serve defers the re-order (#4)
         self._anki_miner_sets = {}  # {lang: the set}: this run's Anki Miner look-ups, read once (LF-mining row 25)
+        self._gone_looked = set()   # the languages whose deleted-cards look ran this run (`notes_gone`: once a run)
 
     # --- the run ------------------------------------------------------------------------------------------- #
     def lower_priority(self):
@@ -2386,20 +2407,24 @@ class Steps:
         told to the store (`Store.notes_gone`, L3.3). Nothing when Anki doesn't answer, when it is open on another
         profile now (known-sync and Generate ran since the run's first look), or when every one of 10 or more notes
         reads as gone (another collection answering, never a learner's day: logged, looked at again next run;
-        adversary L3.3 wiring #4)."""
+        adversary L3.3 wiring #4). Once a run per language (`prepare`'s, or `run`'s for a language with nothing to
+        mine): a look Anki didn't answer is asked again."""
+        if lang in self._gone_looked:
+            return []
         from app.connect import anki_session, library, shelf
         with self._open(lang) as store:
             ids = library.note_ids(store)
         gone = shelf.gone_notes(self._anki(), ids)
         if gone and anki_session.waiting(self.url, self.loaded) is not None:
-            return []
+            return []                       # another profile now: nothing marked, asked again (never `looked`)
         if gone and len(gone) == len(ids) >= ALL_GONE_MIN:
             log.warning("Connect's deleted-card check: Anki has none of the %d notes the library holds; nothing "
                         "marked gone", len(ids))
-            return []
-        if gone:
+            gone = []
+        elif gone:
             with self._open(lang) as store:
                 library.notes_gone(store, gone)
+        self._gone_looked.add(lang)         # only once the look is done: one that raised is asked again
         return gone
 
     def name_media(self, lang, job, picked, lines):

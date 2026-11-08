@@ -902,7 +902,7 @@ def _ep_status(ep, word, line_n, connect, said):
     while there is a feed (`connect`) — `_episode`'s, and `topped`'s for a file that moved in or out of the top."""
     st, mark = status_of([_Shim(ep, bool(ep.cards))], word, line_n)
     if connect is not None:                          # --- P4.1 L2: what Connect says of it (row 4.1.10)
-        st = _connected(st, said, word)
+        st = _connected(st, said, word, online=getattr(ep, "online", None))
     return st, mark
 
 
@@ -1121,7 +1121,7 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
     # (`play.Looks`, its answers `playable`) found the file — never asked where it can't be, nor where Connect says
     # *No video* of what ▶ would open as a video (the two never disagree; Connect's lookup is a video's: IK-3); with
     # no looker (`playable` None) as before. Asked and not answered yet: `looking` (R55-A)
-    no_video = said is not None and said.kind == connect_feed.NO_VIDEO and word == "video"
+    no_video = said is not None and said.kind == connect_feed.NO_VIDEO and word == "video" and not online
     ask = None if missing or waiting or online or no_video else (item.get("rel_path"), media)
     looking = ask is not None and playable is not None and item["id"] not in playable
     can_play = online or (ask is not None and (playable is None or bool(playable.get(item["id"]))))
@@ -1179,16 +1179,20 @@ def _episode(item, work, media, numbers, cards, mining, in_top, line_n, connect=
 
 
 # --- P4.1 L2: Connect's feed in the statuses (row 4.1.10, W-A1) -------------------------------------------------- #
-def _connected(st, item, word):
+def _connected(st, item, word, online=None):
     """A status as Connect's feed tells it (`feed.Item`, or None: as it was). An item with its cards in Anki, or with
     no file on disk (the disk's *No video*), keeps its own; *Mining* gives way only to *Mining*. Connect's *Mining*
     counts its cards made of the words picked (*Mining · 3/12*); its *No video* (the subtitle's video not found) is
     the amber warning; *Not timed* waits on *Mine anyway* in Needs you; a job asked for that Connect has read is
     *Asked* (R47: its own status, its reason as its tip); a job waiting (on Anki, on battery, its turn) is *Waiting*
     with the job's own reason as its tip (C7). R47: a *Mining* job that can be stopped carries its job (`stop`: the
-    pill's *Stop*), one stopping says *Stopping…*."""
+    pill's *Stop*), one stopping says *Stopping…*. `online` (Michi-YT): an online title's episode is never *No video*
+    — Connect downloads it; a *No video* a Connect from before left is a wait for its next start."""
     if item is None or st.kind in ("in_anki", "no_media") or (st.kind == "mining" and item.kind != connect_feed.MINING):
         return st
+    if online and item.kind == connect_feed.NO_VIDEO:
+        item = item._replace(kind=connect_feed.WAITING, words=connect_feed.WORDS[connect_feed.WAITING],
+                             tip=connect_feed.NEXT_START, moved=None)
     if item.kind == connect_feed.MINING:
         # R47 (laptop rows 47 + 56): *Stop* pressed, the job not stopped yet -> *Stopping…*; while it can be stopped
         # its *Stop* (`stop`: the job); past the stop point (naming its clips) its hover says it is finishing
@@ -1269,7 +1273,7 @@ def _row_connected(st, eps, connect, word):
             continue
         item = connect.get(e.id)
         if item is not None:
-            new = _connected(st, item, word)
+            new = _connected(st, item, word, online=getattr(e, "online", None))
             if new is not st:
                 return new
     return st

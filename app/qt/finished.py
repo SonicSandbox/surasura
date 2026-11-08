@@ -31,7 +31,7 @@ import os
 import time
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QPainter
+from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QToolButton,
                              QVBoxLayout)
 
@@ -492,10 +492,9 @@ class FinishedActions(QObject):
         return m
 
     def _action(self, menu, row, name, label, tip, ok):
-        act = QAction(label, menu)
+        act = drag.menu_action(menu, label, lambda n=name: self.menu_pick(row, n))
         act.setToolTip(tip)
         act.setEnabled(ok)
-        act.triggered.connect(lambda _c=False, n=name: self.menu_pick(row, n))
         menu.addAction(act)
         return act
 
@@ -579,9 +578,8 @@ class FinishedActions(QObject):
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
         for (label, tip), how in ((strings.FIN_IMPORT_FILES, "files"), (strings.FIN_IMPORT_FOLDER, "folder")):
-            act = QAction(label, m)
+            act = drag.menu_action(m, label, lambda h=how: self._choose(h))
             act.setToolTip(tip)
-            act.triggered.connect(lambda _c=False, h=how: self._choose(h))
             m.addAction(act)
         self.last_menu = m
         b = self.page.importer

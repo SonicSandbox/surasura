@@ -400,3 +400,34 @@ def test_A6_a_write_that_lands_as_nothing_takes_its_toast_away(world):
     win.moves._give(drag.Ticket(text, (), (103,)), lambda t: writer.move([103], "now", label=t))
     assert _toast_words(win) == text + strings.TOAST_SAVING
     assert wait_until(lambda: not win.toasts.alive, 5)
+
+
+# --- a press's write starts once the press is painted (Up next at 20,000 files) --------------------------------------- #
+def test_a_moves_write_is_let_go_only_after_the_window_painted_the_press(world):
+    """Alt+↑ on a Current row: the command is queued at the press (deferred: `Writer.defer`), the window paints the
+    swap, and only then is the writer told to go (`drag.after_paint`) — its thread no longer takes Python's lock in
+    turns with the window's while the press paints (~20 ms of Up next's stretch at 20,000 files)."""
+    _seed, win, writer = world()
+    lst = win.page_widgets["current"].list
+    log = []
+    writer.defer = lambda: log.append("defer")
+    writer.go = lambda: log.append("go")
+
+    class Painted(QObject):
+        def eventFilter(self, obj, event):
+            if obj is lst.viewport() and event.type() == QEvent.Type.Paint:
+                log.append("paint")
+            return False
+    painted = Painted()
+    QApplication.instance().installEventFilter(painted)
+    try:
+        settle(100)
+        log.clear()
+        calls = len(writer.calls)
+        row = win.moves.base().rows[3]
+        win.moves.nudge(row, -1)
+        assert log == ["defer"] and len(writer.calls) == calls + 1     # queued at the press, its write held back
+        settle(50)
+    finally:
+        QApplication.instance().removeEventFilter(painted)
+    assert "go" in log and "paint" in log and log.index("paint") < log.index("go"), log

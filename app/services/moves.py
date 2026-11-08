@@ -64,6 +64,7 @@ SAVING_AFTER_S = 0.3            # a command waiting this long marks its rows *sa
 RETRY_S = 0.25                  # a busy store is asked again this often (a write itself waits LOCK_TIMEOUT first)
 WAIT_S = 0.5                    # the thread looks at its queue at least this often
 MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this often (`can_write` reads the answer)
+DEFER_MAX_S = 0.25              # a press's command waits at most this long for the window's go (`Writer.defer`)
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
@@ -256,6 +257,7 @@ class Writer:
         self._stop = False
         self._abandoned = False
         self._mode_at = 0.0
+        self._defer_until = 0.0                     # a press's command waits until then, or the window's `go()`
         self._thread = None
         self._copier = Worker(f"window-copier-{language}")    # an Explorer drop's files, off the writer's thread
         self._copying = 0                           # drops whose files are being copied (not queued yet)
@@ -759,6 +761,21 @@ class Writer:
             self._held = False
             self._cond.notify_all()
 
+    def defer(self):
+        """(The window's thread, at a press, before it gives its command.) What is queued waits for `go()` — the window
+        calls it once it has painted the press — or `DEFER_MAX_S`: the writer's thread never takes Python's lock from
+        the window's while it paints the press (Up next at 20,000 files: ~20 ms of the press's stretch was the two
+        threads taking turns)."""
+        with self._cond:
+            self._defer_until = time.monotonic() + DEFER_MAX_S
+
+    def go(self):
+        """(Any thread.) The press is painted: what `defer` held back is written now."""
+        with self._cond:
+            if self._defer_until:
+                self._defer_until = 0.0
+                self._cond.notify_all()
+
     def replay(self):
         """At start: the journal's moves (a crash, or a quit that ran out of time) go first in the queue, applied by id;
         those whose items changed meanwhile are listed once. Nothing while the store can't be written (ask again: the
@@ -793,6 +810,7 @@ class Writer:
             if self._stop:
                 return not self._pending            # finished already: the journal is as that left it
             self._held = False
+            self._defer_until = 0.0
             waiting = bool(self._pending or self._copying)
             self._cond.notify_all()
         if waiting:
@@ -880,7 +898,7 @@ class Writer:
                     self._replay_due = False
                     return "replay", None
                 now = time.monotonic()
-                blocked = self._held or now < self._retry_at
+                blocked = self._held or now < self._retry_at or now < self._defer_until
                 if self._pending and not blocked:
                     return "apply", self._pending[0]
                 if self._journal_dirty and self._pending:
@@ -891,6 +909,8 @@ class Writer:
                 wait = WAIT_S
                 if not self._held and now < self._retry_at:
                     wait = min(wait, self._retry_at - now)
+                if not self._held and now < self._defer_until:
+                    wait = min(wait, self._defer_until - now)
                 self._cond.wait(wait)
 
     def _check(self):
@@ -942,6 +962,9 @@ class Writer:
             elif cmd["op"] == "move" and not cmd.get("numbered"):
                 cmd["numbered"] = (cmd["before_id"], cmd["after_id"])   # the numbers follow the drop once, before its
                 self._numbers_move(cmd, store)                          # first write
+            elif cmd["op"] == "place" and cmd["where"] in PLACED_TOP and not cmd.get("numbered"):
+                cmd["numbered"] = (None, None)      # Up next · Goal's top: `Store.place` is a move to the tier's top —
+                self._numbers_move(cmd, store, tier=PLACED_TOP[cmd["where"]])   # followed as one
             self._apply(store, cmd)
         except lib.StoreBusy:
             self._busy(cmd)
@@ -1652,7 +1675,13 @@ class Writer:
                 del self._let_go[:-64]
 
     def _landed(self, cmd):
-        """The head is done with (saved, let go or refused): out of the queue and out of the journal."""
+        """The head is done with (saved, let go or refused): out of the queue and out of the journal; a move the numbers
+        followed ahead of the store, landed for them too (`Numbers.landed`)."""
+        if cmd.pop("numbers_ahead", False) and self.numbers is not None:
+            try:
+                self.numbers.landed()
+            except Exception as e:
+                print(f"Window writer: the numbers couldn't be told a move landed: {e!r}")
         with self._cond:
             if self._pending and self._pending[0] is cmd:
                 self._pending.popleft()
@@ -1838,13 +1867,13 @@ class Writer:
         return False
 
     # --- the numbers ---------------------------------------------------------------------------------------------- #
-    def _numbers_move(self, cmd, store):
+    def _numbers_move(self, cmd, store, tier=None):
         if self.numbers is None:
             return
         try:                                        # W-1: `order`, the tier's ids from this thread's handle (read only
-            self.numbers.after_move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"],   # for an anchor the numbers
-                                    after_id=cmd["after_id"], order=lambda tier: store.ids(tier),    # don't hold)
-                                    aside=lambda ids: _set_aside(store, ids))
+            self.numbers.after_move(cmd["ids"], tier or cmd["tier"], before_id=cmd.get("before_id"),   # for an anchor
+                                    after_id=cmd.get("after_id"), order=lambda tier: store.ids(tier),  # they don't hold)
+                                    aside=lambda ids: _set_aside(store, ids), landing=cmd)
         except Exception as e:
             print(f"Window writer: the numbers couldn't follow the move: {e!r}")
 
@@ -1869,6 +1898,10 @@ class Writer:
             print(f"Window writer: a listener failed: {e!r}")
 
 
+PLACED_TOP = {"top": "now", "goal": "goal"}
+#   `place` targets that are `Store.move` to the tier's very top (`Store._tier_top`; never Soon's: the slot below the
+#   Soon line): the numbers follow them before the write, as a move (Up next at 20,000 files: else each was a full
+#   re-plan after it, the reader's view of the save waiting on the numbers)
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
              "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source")
 #   commands that never change the order: the numbers aren't asked again after them — W-1 (K-W4): but a watched mark
@@ -1884,6 +1917,15 @@ def _stamp(store):
     try:
         v = store.versions()
         return {k: v.get(k, 0) for k in ("epoch", "order_version", "pins_version")}
+    except Exception:
+        return None
+
+
+def _versions_of(store):
+    """The store's versions (one meta read; `state_version` moves with every write), or None when unreadable: equal
+    twice, nothing was written between the two reads."""
+    try:
+        return tuple(sorted(store.versions().items()))
     except Exception:
         return None
 
@@ -2361,6 +2403,11 @@ class Numbers:
         self._plan_key = None
         self._why = "not read yet"
         self._changed = {}                          # version -> the item ids it changed (None: all)
+        self._ahead = 0                             # moves the engine followed (`after_move`) not landed in the store
+        #                                             yet (`landed`): the store's order is behind the engine's meanwhile
+        self._moves = 0                             # moves followed, ever (a resync's read of the order outlived by one)
+        self._put_off = False                       # a resync came while one was on its way: run once none is
+        self._at = None                             # the store's versions the engine was last found to follow
         self.worker = Worker(f"window-numbers-{language}")
         self.renumbered = 0                         # full passes (tests)
 
@@ -2413,7 +2460,18 @@ class Numbers:
         self.worker.put(self._close_handle)
         self.worker.close()
 
-    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None):
+    def landed(self):
+        """(The writer's thread.) A move `after_move(landing=…)` followed is in the store now, or was let go: once none
+        is on its way, a resync put off meanwhile runs."""
+        with self._lock:
+            self._ahead = max(0, self._ahead - 1)
+            again = self._put_off and not self._ahead
+            if again:
+                self._put_off = False
+        if again:
+            self.worker.put(self._resync)
+
+    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None, landing=None):
         """The window's drop, as `Store.move` places it: the touched rows' new figures {item_id: (known, counted,
         n_new)} — the moved items and every item whose *N new* changed — and a new version; {} when the engine can't
         follow (see `why()`), the rows keeping their figures.
@@ -2423,7 +2481,10 @@ class Numbers:
         the last Generate) will count, so the numbers are worked out again, as before. An anchor the engine doesn't
         hold gives way to the nearest neighbour it does, in the tier's order as the store holds it (`order(tier)`: the
         store's ids in order, read only when the drop will be followed, before the lock) — so a drag of a show holding
-        watched episodes keeps its numbers at the drop instead of a resync."""
+        watched episodes keeps its numbers at the drop instead of a resync.
+        `landing` (the writer's command): the engine followed the move before the store has it — marked
+        (`landing["numbers_ahead"]`, never journalled) and on its way until the writer calls `landed()`; a resync meanwhile waits for it (it would
+        find the store a move behind and work the old order out again, then the new one once more)."""
         from app import plan_engine
         ids = list(dict.fromkeys(ids))
         anchor = before_id if before_id is not None else after_id
@@ -2467,6 +2528,11 @@ class Numbers:
                 self.worker.put(self._resync)
                 print(f"Window numbers: the move couldn't be followed: {e}")
                 return {}
+            self._moves += 1
+            self._at = None                         # (the engine is past what the store said)
+            if landing is not None:
+                landing["numbers_ahead"] = True     # (never "ahead": a join's own word, journalled)
+                self._ahead += 1
             after = eng._n_new
             files = {eng._f_of[i] for i in moved}
             files.update(f for f, (a, b) in enumerate(zip(before, after)) if a != b)
@@ -2581,13 +2647,25 @@ class Numbers:
         store = self._store()
         if store is None:
             return
+        at = _versions_of(store)                    # read before the order: the order read is at least this far
+        with self._lock:
+            if self._ahead:                         # a move the engine followed isn't in the store yet: compared once
+                self._put_off = True                # it is (`landed`), never against the order a move behind
+                return
+            if at is not None and at == self._at and self._engine is eng:
+                return                              # nothing written since the engine was found to follow the store
+            moves = self._moves
         order = self._order(store)
         plan_engine = _plan_engine()
         said = None
         with self._lock:
             if self._engine is not eng:
                 return
+            if self._moves != moves:                # a move followed while the order was read: read it again
+                self.worker.put(self._resync)
+                return
             if [(eng._ids[f], ANALYSED[eng._tier[f]]) for f in eng._order] == order:
+                self._at = at
                 return                              # the window's own moves, already followed
             counts = self._table
             try:
@@ -2601,6 +2679,7 @@ class Numbers:
                 self._publish(kept, _faded_ids(counts, kept))
             else:
                 self.renumbered += 1
+                self._at = at
                 table = self._figures(eng, counts)
                 changed = {i for i, v in table.items() if counts.get(i) != v}
                 if not changed:
@@ -2638,6 +2717,7 @@ class Numbers:
         with self._lock:
             said = self._why
             self._engine, self._why, self._plan_key = eng, why, key
+            self._at = None
             self._publish(table, changed if self._table is last else None)
         if why != said:
             self._say(why)

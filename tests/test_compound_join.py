@@ -197,9 +197,43 @@ def test_a_pronoun_is_a_part_where_the_run_spells_a_headword(tokenizer):
     assert _surfaces(tokenizer, "私生活", {})[:2] == ["私", "生活"]          # no table word: the pieces
 
 
+@pytest.mark.parametrize("text, entry, pieces", [
+    ("この前だれに会ったの？", "前だれ", ["前", "だれ"]),        # 誰 after 前 — never 前垂れ 'apron'
+    ("このはしわたしのです。", "はしわたし", ["はし", "わたし"]),  # 'this chopstick is mine'
+    ("ぼくのほんそれだよ", "ほんそれ", ["ほん", "それ"]),
+    ("何年ぶりだろう。", "何年", ["何", "年"]),                  # 何 + a counter asks for a number: no word
+])
+def test_a_pronoun_only_leads_a_compound_in_kana_before_a_kanji_and_never_before_a_counter(tokenizer, text, entry,
+                                                                                          pieces):
+    # The tagger reads kana pieces as pronouns (だれ, わたし, ほん): even a table offering the run leaves it in pieces.
+    # A pronoun only starts a compound, one in kana alone only before a part holding a kanji (これ + 以上).
+    table = {entry: _entry(entry, "")}
+    out = _surfaces(tokenizer, text, table)
+    assert entry not in out
+    assert any(out[k:k + len(pieces)] == pieces for k in range(len(out)))
+
+
+def test_the_pronoun_switch_is_about_suffixes_never_a_pronouns_compound(tokenizer, monkeypatch):
+    # "Pronouns with a suffix as one word" off: 何様 is 何 + 様 again, while 私生活 stays one word.
+    monkeypatch.setitem(analyzer.LOGIC, "pronoun_bases", False)
+    joins = {"何様": ["何様", "ナニサマ"]}
+    assert _surfaces(tokenizer, "何様のつもりだ。", {}, joins)[:2] == ["何", "様"]
+    assert _surfaces(tokenizer, "私生活を守る。", {"私生活": _entry("私生活", "シセイカツ")}, joins)[0] == "私生活"
+
+
+@pytest.mark.parametrize("text", ["私自身", "私自身\r\n", "そう、私自身。", "ABC私自身xyz"])
+def test_a_pronouns_compound_at_the_end_of_a_line_and_among_other_scripts(tokenizer, text):
+    table = {"私自身": _entry("私自身", "ワタシジシン")}
+    assert "私自身" in _surfaces(tokenizer, text, table)
+
+
 def test_the_shipped_table_joins_a_pronouns_compound(tokenizer, sanitized):
     assert ("私生活", "シセイカツ") in _keys(tokenizer, "休みの日は私生活を大事にしたい。")
     assert ("私自身", "ワタシジシン") in _keys(tokenizer, "私自身もそう思っている。")
+    assert ("これ以上", "コレイジョウ") in _keys(tokenizer, "これ以上は待てない。")
+    # 私企業 'private enterprise': the text writes 私 シ there, a noun — the word keeps the text's reading
+    assert ("私企業", "シキギョウ") in _keys(tokenizer, "彼は私企業で働いている。")
+    assert "前だれ" not in [w for w, _r in _keys(tokenizer, "それでこの前だれに会ったの？")]
 
 
 def test_a_grammar_stem_is_no_part(tokenizer):

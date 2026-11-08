@@ -1036,7 +1036,8 @@ def _joins_here(words, i, run, entry, fringe):
         test = "Q"                              # a numeral inside the word counts nothing in it (精 + 一 + 杯)
     else:
         test = "Q" if kind == "Q" else "N"
-    return all(_compound_part(w, test) for w in run) and not _plural(_read(run[-1]), entry[1])
+    return (all(_compound_part(w, test) for w in run) and _pronoun_leads(run)
+            and not _plural(_read(run[-1]), entry[1]))
 
 
 _STEMS = 8                      # the dictionaries' mark: a verb's stem may stand in this noun compound (§ above)
@@ -1050,6 +1051,24 @@ def _stem(word):
     return f.pos1 == "動詞" and not word.is_unk and f.lemma != "為る" and str(f.cForm) == "連用形-一般"
 
 
+_HAN_RE = re.compile(f"[{HAN}]")
+
+
+def _pronoun_leads(run):
+    """Does a pronoun among `run`'s parts stand where a compound may hold one (`_compound_part`)? Only first — 私 +
+    生活, これ + 以上, 何 + 一 + つ — and one written in kana alone only before a part holding a kanji: the tagger reads
+    kana pieces as pronouns (だれ in この前だれ, ほん, タ), and 前だれ, ほんそれ, はしわたし are no words there. Never
+    before a counter: 何 + 年, 何 + 回 ask for a number, and a number + its counter is no word (§ above)."""
+    if not any(w.feature.pos1 == "代名詞" for w in run):
+        return True
+    first = run[0]
+    if first.feature.pos1 != "代名詞" or any(w.feature.pos1 == "代名詞" for w in run[1:]) or len(run) < 2:
+        return False
+    if _counter(run[1]):
+        return False
+    return bool(_HAN_RE.search(_read(first)) or _HAN_RE.search(_read(run[1])))
+
+
 def _joins_with_stems(words, i, run, entry, fringe):
     """May `run` (words[i:i + len(run)]), nouns and at least one verb's stem, be joined as the noun compound `entry`
     — one a verb's stem may stand in (the mark 8, § above)? A run ending in a noun joins anywhere (待ち + 時間); one
@@ -1057,7 +1076,8 @@ def _joins_with_stems(words, i, run, entry, fringe):
     that is the word (出来る + 損なう) — never in a sentence, where 位置づけ + て is the verb. The guards of any compound
     hold: never after a number that counts its first part, never a plural."""
     if (entry[2] != "N" or not entry[3] & _STEMS or (entry[3] & 1 and not fringe) or len(run) > 3
-            or not any(_stem(w) for w in run) or not all(_stem(w) or _compound_part(w, "N") for w in run)):
+            or not any(_stem(w) for w in run) or not all(_stem(w) or _compound_part(w, "N") for w in run)
+            or not _pronoun_leads(run)):
         return False
     if i and words[i - 1].feature.pos2 == "数詞" and _counter(run[0]):
         return False

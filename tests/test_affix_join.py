@@ -168,6 +168,14 @@ def test_a_verbs_stem_never_takes_a_suffix_that_makes_an_adjective_or_a_verb():
     assert (joined.feature.pos1, joined.feature.lemma) == ("名詞", "言い方")    # a noun, the headword its lemma
 
 
+def test_a_stems_noun_is_read_through_its_verb():
+    # As 利用者 is read through 利用 (U9), 言い方 is read through 言う: a learner who knows 言う meets 言い方 lower on the
+    # list and never as an unknown when sentences are chosen.
+    tagger = analyzer.JapaneseTokenizer().tagger
+    table = {"言い方": ["言い方", "イイカタ"]}
+    assert analyzer.see_through_base("言い方", "イイカタ", tagger, table) == ("言う", "イウ")
+
+
 def test_a_joined_word_reads_as_the_dictionary_reads_it(tokenizer, sanitized):
     # unidic-lite reads the suffix 人 as ニン everywhere (日本人 would be ニッポンニン), 中 as チュウ and 上 as
     # ウエ-less ジョウ — the reading comes from the dictionary list instead.

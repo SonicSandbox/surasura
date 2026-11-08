@@ -142,6 +142,8 @@ class StandinWriter:
         self.library, self.numbers, self.moments = library, numbers, None
         self.on_saved = self.on_saving = self.on_reread = self.on_note = self.on_undone = None
         self._pending = 0
+        self._go = threading.Event()                      # `defer` / `go`, as `moves.Writer`'s: a press's write waits
+        self._go.set()                                    # for the window's paint of it (`drag.after_paint`)
         self.gate = None                                  # a8: another program holds the store until it is set
         if cover_scan:
             self.idle = self._idle
@@ -171,6 +173,12 @@ class StandinWriter:
     def release(self):
         pass
 
+    def defer(self):
+        self._go.clear()
+
+    def go(self):
+        self._go.set()
+
     def pending(self):
         return self._pending
 
@@ -187,6 +195,7 @@ class StandinWriter:
         name = moments.reps[-1][0] if moments is not None and moments.reps else None
 
         def run():
+            self._go.wait(0.25)                           # (`moves.DEFER_MAX_S`)
             gate = self.gate
             if gate is not None:
                 gate.wait(30)
@@ -199,9 +208,19 @@ class StandinWriter:
         return 1
 
     def _move_now(self, ids, tier, before_id=None, after_id=None, piece_id=None):
-        """(The writer's thread.) The numbers, then the write."""
-        self.numbers.after_move(ids, tier, before_id=before_id, after_id=after_id)
-        _place(self.library, ids, tier, before_id, after_id, piece_id)
+        """(The writer's thread.) The numbers, then the write — landed for the numbers once written, as
+        `moves.Writer._landed` does (a resync meanwhile waits for it)."""
+        from app.services import moves
+        from tests.fixtures.standin_store import StandinStore
+        store = StandinStore(self.library)              # (this thread's handle: the tier's order and the set-aside
+        landing = {}                                      # rule read as the real writer reads them — W-1)
+        self.numbers.after_move(ids, tier, before_id=before_id, after_id=after_id, landing=landing,
+                                order=lambda t: store.ids(t), aside=lambda i: moves._set_aside(store, i))
+        try:
+            _place(self.library, ids, tier, before_id, after_id, piece_id)
+        finally:
+            if landing.get("numbers_ahead"):
+                self.numbers.landed()
 
     def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
         return self._run(ids, label, lambda: self._move_now(ids, tier, before_id, after_id))

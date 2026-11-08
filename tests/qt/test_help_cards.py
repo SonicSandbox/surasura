@@ -100,7 +100,7 @@ def test_a_toast_with_a_cause_has_why_and_one_without_has_none(host):
     shown = [b for b in host.card.buttons if b.isVisibleTo(host.card)]
     assert len(shown) == toast.MAX_BUTTONS                                  # Undo + two: *Why?* is outside the count
     assert host.card.why.isVisibleTo(host.card) and host.card.why.toolTip()
-    lay = host.card.layout()
+    lay = host.card.body.layout()
     assert lay.indexOf(host.card.why) == lay.count() - 1                   # the last in the row
     host.card.why.click()
     assert asked and asked[0][0] == why

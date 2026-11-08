@@ -1259,6 +1259,19 @@ class AppFilter(QObject):
 _FILTERED = tooltip.Tooltips.TYPES | EscapeRouter.TYPES
 
 
+class Central(QWidget):
+    """The window's content (the central widget) and where the focus rests (no ring: `ClickFocus`). It paints nothing
+    that follows the focus, so the focus coming or going repaints nothing: QWidget's own focus events repaint the whole
+    widget — here the whole window, each time ⋯ closed and the focus came back to it (Up next at 20,000 files: 15–20 ms
+    of the press's stretch; S19)."""
+
+    def focusInEvent(self, event):
+        event.accept()
+
+    def focusOutEvent(self, event):
+        event.accept()
+
+
 class _Duties:
     """W3.5: the duties' controls, and the newest state each showed (the window's view of them)."""
 
@@ -1313,7 +1326,7 @@ class ShellWindow(QMainWindow):
             self.setWindowIcon(QIcon(icon))
         self.setMinimumSize(*theme.WINDOW_MIN)
 
-        central = QWidget(self)
+        central = Central(self)
         central.setObjectName("central")
         central.setFocusPolicy(Qt.FocusPolicy.ClickFocus)     # where focus rests at start: no ring until Tab is used
         self._rest = central

@@ -2284,8 +2284,11 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
     else:
         fin_pieces = _pieces(fin_items)
         before = set(cache._next) if cache is not None else None
-        fin_rows = [_cached_row(cache, 0, "graduated", p, works, numbers, cards, mining, (), line_n, True, guessed,
-                                False, feed_items) for p in fin_pieces]
+        fin_rows = []
+        for p in fin_pieces:
+            pause()                                 # (Up next 3: as Current's rows)
+            fin_rows.append(_cached_row(cache, 0, "graduated", p, works, numbers, cards, mining, (), line_n, True,
+                                        guessed, False, feed_items))
         stamp_of = {}
         for p in fin_pieces:
             key = f"p{p[0]['piece_id']}" if p[0].get("piece_id") is not None else f"i{p[0]['id']}"

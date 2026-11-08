@@ -31,6 +31,7 @@ import threading
 import time
 
 from app.services import view_rows
+from app.services import window_idle
 
 AIRING = ("RELEASING", "NOT_YET_RELEASED", "HIATUS")     # AniList's statuses that hold a show back
 ENDED = ("FINISHED", "CANCELLED")
@@ -134,6 +135,7 @@ def title_due(entry, now):
 def _near(rows):
     """Current's rows of one work with at most one of its files (`view_rows.to_finish`'s) left unwatched (A1)."""
     for r in rows:
+        window_idle.pause()                         # (Up next 3: the reader's thread, a young window stretch waited out)
         if getattr(r, "group", False) or r.work_id is None:
             continue
         eps = view_rows.to_finish(r.episodes)

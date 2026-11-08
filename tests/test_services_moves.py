@@ -849,6 +849,73 @@ def test_a_write_starts_only_while_the_window_rests(stub_writer):
         window_idle.rest()
 
 
+class MovingOpener(StubOpener):
+    """A store whose mode moves under the writer once (LM11b): its look says "store", then the handle it asks for is
+    gone — another thread's look settling on the shared opener. The next look is a store again."""
+
+    def __init__(self, store):
+        super().__init__(store)
+        self.moved = 1
+
+    def handle(self):
+        if self.moved:
+            self.moved -= 1
+            return None
+        return super().handle()
+
+
+def test_LM11b_a_store_whose_mode_moves_under_the_writer_keeps_the_move_and_writes_it_next(tmp_path):
+    """(LM11b, Up next 4: a language switch with a busy store lost the queued nudge 1 time in ~100.) The writer looked,
+    the store said "store", and the handle it asked for next was gone — the shared opener's mode moved under it, a look
+    on another thread settling. That was a refusal: the move neither written nor journalled. Now it is busy: kept,
+    asked again, written."""
+    store = StubStore()
+    opener = MovingOpener(store)
+    heard = Heard()
+    w = M.Writer(opener, "ja", journal_file=str(tmp_path / "window_pending_ja.json"), words=WORDS, retry=0.02,
+                 **heard.kw())
+    w.start()
+    try:
+        w.nudge([1], "up", label="nudge")
+        assert h.until(lambda: heard.saved or heard.notes)
+        assert heard.notes == [] and [c[0] for c in store.calls] == ["nudge"] and heard.saved[0][1] == "nudge"
+        assert opener.moved == 0
+    finally:
+        w.finish(time.monotonic() + 5)
+
+
+def test_LM11b_the_openers_mode_and_reason_are_read_as_one_answer_while_a_look_settles_on_another_thread(
+        monkeypatch, tmp_path):
+    """The opener's (mode, reason) is replaced whole: a reader on another thread (the writer) never sees a new mode
+    with an old reason — "json" with None, neither a store nor busy, the pair that made the writer refuse its move."""
+    answers = [("store", None), ("json", "busy")]
+    turn = [0]
+
+    def check_mode(language, data_dir, busy_wait=0.0):
+        turn[0] += 1
+        return answers[turn[0] % 2]
+    monkeypatch.setattr(ls, "check_mode", check_mode)
+    opener = ls.StoreOpener("ja", str(tmp_path), str(tmp_path))
+    stop = threading.Event()
+
+    def settle():
+        while not stop.is_set():
+            opener._settle()
+    t = threading.Thread(target=settle, daemon=True)
+    t.start()
+    seen = set()
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            seen.add(opener.state())
+            seen.add(M._state_of(opener))
+    finally:
+        stop.set()
+        t.join(5)
+    assert seen <= set(answers) | {("json", "not checked")}, seen
+    assert seen & set(answers)
+
+
 def test_a_value_error_outside_a_move_is_a_raw_error(stub_writer):
     w, heard, store, _opener = stub_writer()
     store.fail["set_tier"] = ValueError("unknown tier 'x'")

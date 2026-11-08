@@ -1323,10 +1323,34 @@ class StoreOpener:
 
     def __init__(self, language, data_dir, user_files_dir, role="window"):
         self.language, self.data_dir, self.user_files_dir, self.role = language, data_dir, user_files_dir, role
-        self.mode, self.reason = "json", "not checked"
+        self._state = ("json", "not checked")
         self._worker = None
         self._local = threading.local()
         self._guard = threading.Lock()
+
+    # The mode and its reason are one answer, kept as one tuple and replaced whole: the opener is shared by the
+    # window's reader, numbers and writer, and a look settling on one thread (`_settle`) wrote them as two stores — a
+    # thread reading them apart saw the new mode with the old reason ("json" and None: neither a store nor busy), and
+    # the writer refused the move it held, lost (LM11b, Up next 4). Read both at once with `state()`.
+    def state(self):
+        """(mode, reason) as one answer."""
+        return self._state
+
+    @property
+    def mode(self):
+        return self._state[0]
+
+    @mode.setter
+    def mode(self, value):
+        self._state = (value, self._state[1])
+
+    @property
+    def reason(self):
+        return self._state[1]
+
+    @reason.setter
+    def reason(self, value):
+        self._state = (self._state[0], value)
 
     def check(self):
         """The mode now (L3.3: read through this thread's open handle when it has one — a store already open stays
@@ -1339,7 +1363,7 @@ class StoreOpener:
         if store is not None and not os.path.exists(damaged_marker(store.db_path)):
             try:
                 if _mode_on(store.conn)[0] == "store":
-                    self.mode, self.reason = "store", None
+                    self._state = ("store", None)
                     return "store"
             except sqlite3.Error:
                 pass
@@ -1350,12 +1374,11 @@ class StoreOpener:
                     self._worker = threading.Thread(target=self._settle, daemon=True)
                     self._worker.start()
             return self.mode
-        self.mode, self.reason = mode, reason
+        self._state = (mode, reason)
         return mode
 
     def _settle(self):
-        mode, reason = check_mode(self.language, self.data_dir, busy_wait=BUSY_AT_OPEN)
-        self.mode, self.reason = mode, reason
+        self._state = check_mode(self.language, self.data_dir, busy_wait=BUSY_AT_OPEN)
 
     def handle(self):
         """This thread's long-lived handle, opened on first use, or None outside store mode."""

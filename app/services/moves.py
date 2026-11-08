@@ -285,7 +285,8 @@ class Writer:
         return False
 
     def _writable(self):
-        return self.opener.mode == "store" or getattr(self.opener, "reason", None) == "busy"
+        mode, reason = _state_of(self.opener)
+        return mode == "store" or reason == "busy"
 
     def reason(self):
         """The store's reason when it can't be written (the read-only bar's words), else None."""
@@ -923,20 +924,24 @@ class Writer:
             print(f"Window writer: the store's mode couldn't be read: {e!r}")
 
     def _store(self):
-        """(handle, busy): this thread's handle, or None with whether the store is only busy."""
+        """(handle, busy): this thread's handle, or None with whether the store is only busy. The opener's answer read
+        as one (`_state_of`); a store whose handle is gone by the time it is asked for (the opener's mode moved under
+        it: another thread's look settling on the shared opener) is busy — asked again, never a refusal: a refusal lets
+        the move go unwritten and unjournalled (LM11b, Up next 4)."""
         self._check()
-        if self.opener.mode == "store":
+        mode, reason = _state_of(self.opener)
+        if mode == "store":
             h = self.opener.handle()
-            if h is not None:
-                return h, False
-        return None, getattr(self.opener, "reason", None) == "busy"
+            return (h, False) if h is not None else (None, True)
+        return None, reason == "busy"
 
     def _attempt(self, cmd):
         lib = _ls()
         cmd.setdefault("first_try", time.monotonic())
         store, busy = self._store()
         if store is None and not busy:
-            reason = getattr(self.opener, "reason", None) or self.opener.mode
+            mode, reason = _state_of(self.opener)
+            reason = reason or mode
             cmd["refused"] = f"{reason}"
             self._landed(cmd)
             self._empty(cmd)
@@ -1957,6 +1962,13 @@ def _stamp(store):
         return {k: v.get(k, 0) for k in ("epoch", "order_version", "pins_version")}
     except Exception:
         return None
+
+
+def _state_of(opener):
+    """An opener's (mode, reason) read as one answer (`StoreOpener.state`; a stand-in without it: its two
+    attributes)."""
+    state = getattr(opener, "state", None)
+    return state() if state is not None else (opener.mode, getattr(opener, "reason", None))
 
 
 def _follows_after(cmd):

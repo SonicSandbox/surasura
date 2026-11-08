@@ -31,7 +31,7 @@ from collections import Counter
 
 import pytest
 
-from app import analyzer, library_store as ls, plan_engine, token_index as ti
+from app import analyzer, library_store as ls, phrases, plan_engine, token_index as ti
 from tests.plan_file_cases import _split_lines, _split_srt, child_env
 from tests.test_library_store_support import LANGUAGES, entry, roots, write_manifest
 
@@ -118,13 +118,17 @@ def _occurrences(raw):
 def _uses(language, paths):
     """{name: Counter((lemma, reading) -> uses)}: each file tokenized alone by the token store's own tokenizer
     (`token_index.make_tokenizer`), counted as the store counts a file — every word holding the language's script,
-    less a one-kanji word's uses as a piece of something else."""
+    less a one-kanji word's uses as a piece of something else, and less the uses a set phrase or a grammar
+    expression's row takes (`phrases.tally`: する in として, 知れる in かもしれない — ENGINE 38)."""
     tokenize = ti.make_tokenizer(language)
+    found = phrases.load() if language == "ja" and ti.phrase_rows_on(language) else None
     out = {}
     for name, path in paths.items():
         got = tokenize(path)
         counts = Counter(got["counts"])
         counts.subtract(got.get("bound") or {})
+        if found is not None:
+            counts.subtract(phrases.tally(got["sentences"], found)[1])
         out[name] = Counter({tuple(key.split("|", 1)): n for key, n in counts.items() if n > 0})
     return out
 

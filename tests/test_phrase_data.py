@@ -29,14 +29,17 @@ def test_the_table_decodes_and_holds_what_its_header_says(rows):
 
 
 def test_every_phrase_is_two_to_five_words_in_the_matchers_shape(rows):
-    """Lemmas and readings `|`-joined, one role per word, a spelling and a reading to show, the pre-noun mark; no key
-    holds a space or an empty lemma; every phrase has a real word in it."""
-    for key, readings, roles, shown, reading, prenoun in rows:
+    """Lemmas and readings `|`-joined, one role per word, a spelling and a reading to show, the pre-noun mark, the
+    grammar mark; no key holds a space or an empty lemma; every phrase has a real word in it — a grammar expression's
+    every word that isn't grammar is the expression's (b), and it starts with grammar."""
+    for key, readings, roles, shown, reading, prenoun, grammar in rows:
         lemmas = key.split("|")
         assert 2 <= len(lemmas) <= 5 and all(lemmas) and " " not in key, key
         assert len(readings.split("|")) == len(lemmas) == len(roles), key
         assert set(roles) <= set("cblg") and set(roles) & set("cb"), key
-        assert shown and reading and prenoun in (0, 1, 2), key
+        assert shown and reading and prenoun in (0, 1, 2) and grammar in (0, 1, 2), key
+        assert not grammar or (roles[0] == "g" and set(roles) == {"g", "b"}), key
+    assert sum(1 for row in rows if row[6]) >= 40, "the grammar expressions (RG) are in the table"
     assert len({row[0] for row in rows}) == len(rows), "one row per phrase"
 
 

@@ -1641,6 +1641,36 @@ def test_a_move_followed_while_a_resync_reads_the_order_is_never_worked_back(tmp
     numbers.close()
 
 
+def test_a_nudge_written_while_a_resync_reads_the_order_is_never_worked_out_whole(tmp_path):
+    """(Up next 2) A nudge's write lands while the worker reads the store's order (its read sees the nudge, the engine
+    not yet: the writer follows it from the store's result after the write): the resync puts itself off for the move on
+    its way (`expect`), and the follow and its landing leave nothing to work out — no full pass."""
+    seed, analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    numbers.load()
+    assert numbers.idle(30)
+    passes = numbers.renumbered
+    item, write = _goal_to_now_top(seed, analysed)
+    real = numbers._order
+    landing = {}
+
+    def order(store):
+        if not landing:
+            numbers.expect(landing)                    # (the writer's thread: told before its write ...)
+            write()                                    # (... and the write landing mid-read)
+        return real(store)
+    numbers._order = order
+    seed.library.commit(items=[], order=True)          # something written: the read isn't skipped
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes and landing.get("numbers_ahead")
+    numbers._order = real
+    numbers.after_move([item], "now")                  # the writer's follow, from where the store put it
+    numbers.landed()
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes
+    numbers.close()
+
+
 def test_changed_across_a_whole_new_table_is_unknown(tmp_path):
     """(M47) A version that replaced every figure (a load) can't be read as a set of ids."""
     seed, analysed, path = _small(tmp_path)

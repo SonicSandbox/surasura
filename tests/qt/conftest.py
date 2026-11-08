@@ -88,6 +88,9 @@ def _per_test_window_state(request, monkeypatch):
     #                                               cards show no toast it didn't ask for; test_star_ask.py asks for it
     before = list(app.children())                 # (some children aren't hashable: compared by identity)
     yield
+    from app.qt import shell as shell_module      # a test that ran `shell.main` / `prepare_process`: the window's idle
+    if shell_module._IDLE_WIRED:                  # no longer told (a test loop wakes without resting: every later
+        shell_module.unwire_idle()                # worker's step would wait `window_idle.CAP_S`)
     qt_bridge = sys.modules.get("app.qt.bridge")
     if qt_bridge is not None and hasattr(qt_bridge, "drop_answers"):
         qt_bridge.drop_answers()                  # before any window goes: an answer on its way lands on nothing (a

@@ -58,6 +58,7 @@ import time
 from collections import deque
 
 from app.services.automation import Worker
+from app.services import window_idle
 
 UNDO_DEPTH = 40                 # A2: Ctrl+Z and every move toast's Undo reach this far back
 SAVING_AFTER_S = 0.3            # a command waiting this long marks its rows *saving…* (04 §4.5)
@@ -874,6 +875,7 @@ class Writer:
                     elif job == "check":
                         self._check()
                     else:
+                        window_idle.wait()          # Up next 2: a write starts while the window rests
                         self._attempt(cmd)
                 except Exception as e:              # never dies: the command is let go with a note, the queue goes on
                     print(f"Window writer: {e!r}")
@@ -965,6 +967,8 @@ class Writer:
             elif cmd["op"] == "place" and cmd["where"] in PLACED_TOP and not cmd.get("numbered"):
                 cmd["numbered"] = (None, None)      # Up next · Goal's top: `Store.place` is a move to the tier's top —
                 self._numbers_move(cmd, store, tier=PLACED_TOP[cmd["where"]])   # followed as one
+            elif _follows_after(cmd) and not cmd.get("numbered") and self._numbers_expect(cmd):
+                cmd["numbered"] = "after"           # a nudge, a place by its rule: followed from the store's own result
             self._apply(store, cmd)
         except lib.StoreBusy:
             self._busy(cmd)
@@ -1037,6 +1041,8 @@ class Writer:
             change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
         self._refresh_before(store, cmd, change)
+        if cmd.get("numbered") == "after":          # (before it lands for the numbers and before `on_saved`)
+            cmd["followed"] = change is not None and note is None and self._numbers_follow(cmd, store)
         stacked = not cmd.get("replay") and change is not None and not cmd.get("auto")   # B1: a background cover is
         if stacked:                                 # nobody's to undo. On the stack before it leaves the queue: while it
             with self._cond:                        # waits there `newest` says "not known" (review ITEM12 #3: never the
@@ -1066,8 +1072,9 @@ class Writer:
             if change is None:                  # W3.2 (S5): its ticket settles, others pending
                 self._empty(cmd)
             self._call(self.on_reread)
-        if op not in UNORDERED and (op != "move" or change is None or note is not None or
-                                    cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
+        if op not in UNORDERED and not cmd.get("followed") and (
+                op != "move" or change is None or note is not None or
+                cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
             self._numbers_resync()                  # (a tier's end that moved between the numbers and the write too)
         elif cmd.get("counted"):                    # W-1 (K-W4): a watched mark that moved what counts, only then
             self._counted()
@@ -1884,6 +1891,37 @@ class Writer:
         self._numbers_resync()
         self._call(self.on_counted)
 
+    def _numbers_expect(self, cmd):
+        """A command whose result only the store knows (a nudge, a place by its rule): the numbers told before its
+        write that the order is about to move without them (`Numbers.expect`: on its way until it lands). -> whether
+        they were (a provider without `expect` asks again after the write, as before)."""
+        expect = getattr(self.numbers, "expect", None)
+        if expect is None:
+            return False
+        try:
+            expect(cmd)
+            return True
+        except Exception as e:
+            print(f"Window writer: the numbers couldn't be told a move is coming: {e!r}")
+            return False
+
+    def _numbers_follow(self, cmd, store):
+        """(After the write, before it lands.) The numbers follow the block to where the store put it — its tier and
+        the item just before it there (none: the tier's top), as a move: the one rule that every command moving the
+        order is followed once, never worked out again whole (a nudge was a full re-plan of 20,000 files at each
+        Alt+↑ / ↓). -> True when followed (else the numbers compare after the write, as before)."""
+        try:
+            at = _placed(store, cmd["ids"])
+            if at is None:
+                return False
+            tier, block, prev = at
+            self.numbers.after_move(block, tier, after_id=prev, order=lambda t: store.ids(t),
+                                    aside=lambda ids: _set_aside(store, ids))
+            return True
+        except Exception as e:
+            print(f"Window writer: the numbers couldn't follow the store's move: {e!r}")
+            return False
+
     def _numbers_resync(self):
         if self.numbers is not None:
             try:
@@ -1919,6 +1957,31 @@ def _stamp(store):
         return {k: v.get(k, 0) for k in ("epoch", "order_version", "pins_version")}
     except Exception:
         return None
+
+
+def _follows_after(cmd):
+    """The commands whose place only the store's rule decides (`Store.nudge`'s group jumps, Soon's slot below its line,
+    after-show): the numbers follow them from the store's result, after the write (`Writer._numbers_follow`)."""
+    return cmd["op"] == "nudge" or (cmd["op"] == "place" and cmd.get("where") in ("soon", "after-show"))
+
+
+def _placed(store, ids):
+    """(tier, the block in the store's order, the item just before it in that tier or None at its top): where `ids`
+    stand now — two short reads. None: none of them is there."""
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return None
+    q = ",".join("?" * len(ids))
+    rows = store.conn.execute(f"SELECT id, tier, ord FROM items WHERE id IN ({q})", ids).fetchall()
+    if not rows:
+        return None
+    tiers = [r[1] for r in rows]                    # the block's tier: where most of it is (each tier's `ord` is its
+    tier = max(dict.fromkeys(tiers), key=tiers.count)  # own: never compared across tiers)
+    block = [r[0] for r in sorted((r for r in rows if r[1] == tier), key=lambda r: (r[2], r[0]))]
+    first = next(r for r in rows if r[0] == block[0])
+    prev = store.conn.execute("SELECT id FROM items WHERE tier = ? AND (ord < ? OR (ord = ? AND id < ?)) "
+                              "ORDER BY ord DESC, id DESC LIMIT 1", (tier, first[2], first[2], first[0])).fetchone()
+    return tier, block, prev[0] if prev is not None else None
 
 
 def _versions_of(store):
@@ -2460,6 +2523,15 @@ class Numbers:
         self.worker.put(self._close_handle)
         self.worker.close()
 
+    def expect(self, landing):
+        """(The writer's thread, before a write whose result only the store knows: a nudge, a place by its rule.) The
+        store's order is about to move ahead of the engine: on its way until `landed()` (`landing["numbers_ahead"]`), as
+        a followed move — a resync meanwhile waits for it; the writer then follows the store's result (`after_move`)."""
+        with self._lock:
+            self._ahead += 1
+            self._at = None
+        landing["numbers_ahead"] = True
+
     def landed(self):
         """(The writer's thread.) A move `after_move(landing=…)` followed is in the store now, or was let go: once none
         is on its way, a resync put off meanwhile runs."""
@@ -2631,6 +2703,7 @@ class Numbers:
         return store.scheduled_ids()
 
     def _resync(self):
+        window_idle.wait()                          # Up next 2: the order read and compared while the window rests
         path = self._plan_path()
         try:
             st = os.stat(path)
@@ -2663,6 +2736,9 @@ class Numbers:
                 return
             if self._moves != moves:                # a move followed while the order was read: read it again
                 self.worker.put(self._resync)
+                return
+            if self._ahead:                         # one began meanwhile (the store may hold it, the engine not yet)
+                self._put_off = True
                 return
             if [(eng._ids[f], ANALYSED[eng._tier[f]]) for f in eng._order] == order:
                 self._at = at

@@ -337,6 +337,26 @@ def test_the_window_process_hands_pythons_lock_on_every_millisecond(monkeypatch)
         assert sys.excepthook is shell._log_unhandled
     finally:
         sys.excepthook, _ = before_hook, sys.setswitchinterval(before_interval)
+        shell.unwire_idle()                                     # (the rest of the session: no worker waits)
+
+
+def test_the_window_process_tells_its_background_when_the_window_rests(qapp):
+    """(Up next 2) The event dispatcher's own signals, wired once a process: inside a stretch of the window's thread
+    (a slot running) the window is busy — a worker's step waits — and once the loop goes back to wait it is idle."""
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtTest import QTest
+    from app.services import window_idle
+    seen = []
+    try:
+        shell.wire_idle()
+        shell.wire_idle()                                       # (once a process)
+        assert len(shell._IDLE_WIRED) == 1
+        QTimer.singleShot(0, lambda: seen.append(window_idle.idle()))
+        QTest.qWait(30)
+        assert seen == [False]
+    finally:
+        shell.unwire_idle()
+    assert window_idle.idle() and shell._IDLE_WIRED == []
 
 
 def test_quitting_flushes_settings_and_tells_the_jobs(qapp, monkeypatch):

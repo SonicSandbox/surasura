@@ -22,6 +22,8 @@ import traceback
 
 from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, pyqtSignal, pyqtSlot
 
+from app.services import window_idle
+
 
 class Gate:
     """(Any thread.) `obj`'s signals as a service's callbacks. `emit(name, *args)` emits `obj.<name>` unless the gate
@@ -157,8 +159,9 @@ class _Job(QRunnable):
         self.setAutoDelete(True)
 
     def run(self):
-        try:
-            value = self.fn(*self.args)
+        window_idle.wait()                         # Up next 2: a job starts while the window rests (never taking turns
+        try:                                       # at Python's lock with the window's stretch: Needs you's gather at
+            value = self.fn(*self.args)            # each Goal move)
         except BaseException as e:                 # the answer is the failure; the worker thread never dies of it
             self.gate.emit("failed", (e, traceback.format_exc()))
             return

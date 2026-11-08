@@ -315,3 +315,22 @@ def test_waiting_for_the_workers_gives_up_at_its_limit(qapp):
     finally:
         gate.set()
         assert bridge.wait_for_workers(5000) is True
+
+
+def test_a_pool_job_starts_only_while_the_window_rests(qapp, monkeypatch):
+    """(Up next 2) A worker job (`run_in_worker`) waits while the window's thread is busy (`window_idle`): Needs you's
+    gather at each Goal move took turns at Python's lock with the window's stretch. The window resting lets it run."""
+    import time
+    from app.services import window_idle
+    from tests.qt.conftest import wait_until
+    monkeypatch.setattr(window_idle, "CAP_S", 5.0)
+    ran, answered = [], []
+    window_idle.busy()
+    try:
+        bridge.run_in_worker(lambda: ran.append(1) or "ok", then=answered.append)
+        time.sleep(0.05)
+        assert ran == []
+        window_idle.rest()
+        assert wait_until(lambda: answered == ["ok"], 5)
+    finally:
+        window_idle.rest()

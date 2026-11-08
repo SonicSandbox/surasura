@@ -65,6 +65,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from app.services import window_idle                                  # noqa: E402
 from tests.qt import bench_moments                                    # noqa: E402
 
 DRAG = ("pickup", "slide", "autoscroll", "drop")
@@ -196,6 +197,7 @@ class StandinWriter:
 
         def run():
             self._go.wait(0.25)                           # (`moves.DEFER_MAX_S`)
+            window_idle.wait()                            # (as `moves.Writer`: a write starts while the window rests)
             gate = self.gate
             if gate is not None:
                 gate.wait(30)

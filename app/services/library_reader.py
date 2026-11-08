@@ -74,6 +74,7 @@ import weakref
 
 from app.services import airing as airing_module
 from app.services import view_rows
+from app.services import window_idle
 
 POLL_S = 0.1                     # the store's FEED_POLL
 _THAWED = [False]                # A4 P-gil: a reader stopped since the last freeze (its library may still be held)
@@ -546,6 +547,9 @@ class LibraryReader:
         except Exception:
             pass                                    # a cache that can't be read is no cache
         while not self._stop.is_set():
+            window_idle.wait()                      # Up next 2: a look starts while the window rests (its stretch
+            if self._stop.is_set():                 # never takes turns at Python's lock with a view's build)
+                break                               # (stopped meanwhile: no look)
             paused = self._pause_gc()               # A4 P-gil
             try:
                 self._look()

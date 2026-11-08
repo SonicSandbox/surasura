@@ -13,6 +13,8 @@ import re
 import sys
 import zlib
 from array import array
+from itertools import accumulate, chain
+from operator import itemgetter
 
 from app.unicode_ranges import KANA_LETTERS
 
@@ -293,6 +295,62 @@ def offer_spread(spread, best, ctx, size, key_at, src_at, text_at, per_file=PER_
     keep_best(best, ctx, size, key_at, src_at, size, text_at)
 
 
+FOLD = 64                       # offers a shortlist takes in at once (`offer_spread_later`)
+
+
+def offer_spread_later(spread, best, offers, ctx, size, key_at, src_at, text_at, per_file=PER_FILE):
+    """`offer_spread`, put off: `ctx` waits in `offers` (unless neither full part could take it now) and every FOLD
+    of them are taken in at once (`fold_spread`) — one sort for many offers, where `keep_best` searched its pool for
+    each. The caller folds what is left before it reads the parts."""
+    if len(spread) >= size and len(best) >= size:
+        key = ctx[key_at]
+        if key >= spread[-1][key_at] and key >= best[-1][key_at]:
+            return                                  # worse than both parts' worst: neither would ever take it
+    offers.append(ctx)
+    if len(offers) >= FOLD:
+        fold_spread(spread, best, offers, size, key_at, src_at, text_at, per_file)
+
+
+def fold_spread(spread, best, offers, size, key_at, src_at, text_at, per_file=PER_FILE):
+    """Take `offers` (in the order they were offered) into both parts at once: the parts `offer_spread` would keep
+    after offering each of them in turn — each the same set in any order (`keep_best`), and among candidates with the
+    same key the one offered first (the sort is stable, a part's own before the new ones). A key names its file
+    (`order_free_key`'s `where`, one source a path), so two candidates of one key are the same line again in the same
+    file. (Not so only for a legacy manifest naming one file twice in two spellings — a file it counts twice already:
+    `keep_best` kept both copies there, the fold keeps one.) `offers` is emptied."""
+    if not offers:
+        return
+    by_key = itemgetter(key_at)
+    merged = spread + offers
+    merged.sort(key=by_key)
+    out, per, last = [], {}, None
+    for c in merged:
+        key = c[key_at]
+        if key == last:
+            continue                                # this very sentence again: the first offered is kept
+        last = key
+        src = c[src_at]
+        n = per.get(src, 0)
+        if n < per_file:
+            per[src] = n + 1
+            out.append(c)
+            if len(out) == size:
+                break
+    spread[:] = out
+    merged = best + offers
+    merged.sort(key=by_key)
+    out, texts = [], set()
+    for c in merged:                                # each text once, its best copy (the first: sorted by key)
+        text = c[text_at]
+        if text not in texts:
+            texts.add(text)
+            out.append(c)
+            if len(out) == size:
+                break
+    best[:] = out
+    offers.clear()
+
+
 def shortlist(spread, best, size, key_at, text_at):
     """The shortlist from its two parts (`offer_spread`): every spread candidate first, then the best of the rest —
     the best `size` texts of all, each text once (its first copy here), a file's candidates past its `per_file` best
@@ -346,20 +404,14 @@ _FIRSTS_INTS = ("src", "number", "chars", "cow_at", "cow", "crowd_at", "crowd")
 def pack_firsts(rows):
     """The per-file first sentences as the plan file keeps them: one dict of base64 columns (fast to read whole: the
     plan's largest table). `rows`: [(source, number, too short, too long, co-words, set-phrase rows, hash, length)]."""
-    cols = {name: array("i") for name in _FIRSTS_INTS}
-    flags, hashes = array("b"), array("I")
-    cols["cow_at"].append(0)
-    cols["crowd_at"].append(0)
-    for src, number, short, long, cowords, crowd, text_hash, chars in rows:
-        cols["src"].append(src)
-        cols["number"].append(number)
-        cols["chars"].append(chars)
-        flags.append(short | (long << 1))
-        hashes.append(text_hash)
-        cols["cow"].extend(cowords)
-        cols["cow_at"].append(len(cols["cow"]))
-        cols["crowd"].extend(crowd)
-        cols["crowd_at"].append(len(cols["crowd"]))
+    cols = {"src": array("i", [row[0] for row in rows]), "number": array("i", [row[1] for row in rows]),
+            "chars": array("i", [row[7] for row in rows]),
+            "cow_at": array("i", [0, *accumulate(len(row[4]) for row in rows)]),
+            "cow": array("i", list(chain.from_iterable(row[4] for row in rows))),
+            "crowd_at": array("i", [0, *accumulate(len(row[5]) for row in rows)]),
+            "crowd": array("i", list(chain.from_iterable(row[5] for row in rows)))}
+    flags = array("b", [row[2] | (row[3] << 1) for row in rows])
+    hashes = array("I", [row[6] for row in rows])
     out = {"n": len(rows), "order": sys.byteorder}
     for name, arr in list(cols.items()) + [("flags", flags), ("hash", hashes)]:
         out[name] = base64.b64encode(arr.tobytes()).decode("ascii")

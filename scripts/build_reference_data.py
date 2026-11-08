@@ -1566,11 +1566,8 @@ def build_compounds(tagger, headwords, affix, lists, workers=WORKERS, in_text=No
     candidates, verbs, shapes, plurals = compound_candidates(tagger, headwords, affix)
     added = {}
     for word, words in (in_text or {}).get("nouns", {}).items():
-        held = candidates.get(word)
-        if word in affix or (held and not any(w.feature.pos1 == "代名詞" for w in held[1])):
+        if word in candidates or word in affix:
             continue                        # (none: such a word reads otherwise alone)
-        # One read alone with a pronoun that the text writes as nouns (私企業: 私 シ there) takes the text's reading:
-        # the even odds then weigh the parts the text holds, not a pronoun that meets every noun by chance.
         if plural(words, headwords[word][0]):
             plurals.append(word)
             continue

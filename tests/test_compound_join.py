@@ -231,8 +231,6 @@ def test_the_shipped_table_joins_a_pronouns_compound(tokenizer, sanitized):
     assert ("私生活", "シセイカツ") in _keys(tokenizer, "休みの日は私生活を大事にしたい。")
     assert ("私自身", "ワタシジシン") in _keys(tokenizer, "私自身もそう思っている。")
     assert ("これ以上", "コレイジョウ") in _keys(tokenizer, "これ以上は待てない。")
-    # 私企業 'private enterprise': the text writes 私 シ there, a noun — the word keeps the text's reading
-    assert ("私企業", "シキギョウ") in _keys(tokenizer, "彼は私企業で働いている。")
     assert "前だれ" not in [w for w, _r in _keys(tokenizer, "それでこの前だれに会ったの？")]
 
 

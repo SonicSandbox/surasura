@@ -1226,10 +1226,12 @@ def test_an_add_of_a_new_season_inserts_each_row_at_its_place_in_one_write(langu
     first = [touch(data_dir, f"LowPriority/{word}A/{word}_{e:03d}.srt") for e in range(20)]
     second = [touch(data_dir, f"LowPriority/{word}B/{word}_{e:03d}.srt") for e in range(5)]
     placing = []
+    logged = store.conn.execute("SELECT COUNT(*) FROM origin_changes").fetchone()[0]
     store.conn.set_trace_callback(lambda sql: placing.append(sql) if sql.lstrip().upper().startswith(
         ("UPDATE ITEMS SET TIER", "UPDATE ITEMS SET WORK_ID")) else None)
     a = store.insert(first, "soon")
     store.conn.set_trace_callback(None)
+    assert store.conn.execute("SELECT COUNT(*) FROM origin_changes").fetchone()[0] == logged,         "new items with no records log nothing for the origins' reader"
     assert placing == [], "the rows were inserted at their place, with their title"
     works = {r[0] for r in store.conn.execute(
         f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(a.added))})", a.added)}
@@ -1261,6 +1263,44 @@ def test_a_store_keeps_its_statement_journals_in_memory_so_an_add_never_writes_a
     assert [i for i in soon if i in set(change.added)] == change.added and len(change.added) == 12
     assert pieces_ok(store) is None
     store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_within_its_tier_rewrites_no_folder_index_and_an_old_store_swaps_its_folder_index_at_open(language):
+    """R6 (moves at their line): the folder index is (tier, parent_folder) — no `ord`, so a moved row never rewrites
+    it — and a move within its tier writes no `tier` (SQLite rewrites an index's entry for every column a SET names).
+    A folder's last row is still read by that index, never by walking the tier's order. A store made before (the old
+    `items_folder` with `ord`) has it swapped at a writer's open, and so has one an older Surasura opened since (its own
+    pass made the old index and the old log trigger back); the order and every placement are the same."""
+    store = migrated(language)
+    names_ = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+    assert "items_tier_folder" in names_ and "items_folder" not in names_
+    soon = store.ids("soon")
+    sets = []
+    store.conn.set_trace_callback(lambda sql: sets.append(sql) if sql.lstrip().upper().startswith("UPDATE ITEMS SET")
+                                  else None)
+    store.move([soon[0]], "soon", after_id=soon[2])
+    store.conn.set_trace_callback(None)
+    placing = [s for s in sets if " ord = " in s]
+    assert placing and not any("tier =" in s.split("WHERE")[0] for s in placing), placing
+    plan = " ".join(str(r) for r in store.conn.execute(
+        "EXPLAIN QUERY PLAN SELECT id, ord FROM items WHERE tier = ? AND parent_folder = ? ORDER BY ord + 0 DESC, id "
+        "DESC LIMIT ?", ("soon", "x", 1)).fetchall())
+    assert "items_tier_folder" in plan, plan
+    db = store.db_path
+    with store._writing():                                    # a store as an older Surasura left it: its own pass
+        store.conn.execute("CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)")   # makes these back
+        store.conn.execute("CREATE TRIGGER origin_log_item_in AFTER INSERT ON items "
+                           "BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END")
+    order = store.ids("soon")
+    store.close()
+    data_dir, user_files_dir = roots(language)
+    again = ls.open_store(language, data_dir, user_files_dir)
+    names_ = {r[0] for r in again.conn.execute("SELECT name FROM sqlite_master")}
+    assert "items_tier_folder" in names_ and "items_folder" not in names_ and again.db_path == db
+    assert "origin_log_item_back" in names_ and "origin_log_item_in" not in names_, "never both kept for good"
+    assert again.ids("soon") == order
+    again.close()
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
@@ -2769,4 +2809,56 @@ def test_an_arrival_to_finished_is_recorded_as_watched_and_undone_with_it(langua
     assert store.item(b)["watched"] != 1, "only what came from New arrivals"
     store.undo(change)
     assert store.item(a)["tier"] == "arrivals" and store.item(a)["watched"] == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_item_ids_answers_what_item_id_answers_for_each_path_in_one_read(language):
+    """R6: the re-plan reads its plan's every file's item in one query (`item_ids`), as `item_id` gave one a file: in
+    the order given, a path given twice twice, a path no item holds None, a path spelled in another case its item."""
+    store = migrated(language)
+    rels = [store.item(i)["rel_path"] for i in store.ids("soon")[:5]]
+    asked = [rels[2], rels[0], "LowPriority/存在しない/第01話.srt", rels[2], rels[4].upper(), rels[1]]
+    reads = []
+    store.conn.set_trace_callback(lambda sql: reads.append(sql) if sql.lstrip().upper().startswith("SELECT") else None)
+    got = store.item_ids(asked)
+    store.conn.set_trace_callback(None)
+    assert got == [store.item_id(p) for p in asked]
+    assert got[2] is None and got[0] == got[3] and len(reads) == 1
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_added_season_takes_its_fingerprints_from_one_listing_of_its_folder(language, monkeypatch):
+    """R6: an Add of a season reads its files' size and mtime from one listing of their folder (the fingerprints the
+    disk sync reads), with no `os.stat` a file — the same values `os.stat` gives. Files of a big folder past the
+    listing's reach, a file alone in its folder, and a file the listing spells another case are stat'ed one by one; a
+    file that isn't there is missing, as before."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    season = [touch(data_dir, f"LowPriority/{w[70]}/第{e:02d}話.srt", f"{w[e]}\r\n" * (e + 1)) for e in range(12)]
+    gone = os.path.join(data_dir, "LowPriority", w[70], "第99話.srt")             # never written
+    for n in range(40):                                                         # a big folder: these list first
+        touch(data_dir, f"LowPriority/{w[71]}/a{n:02d}.srt")
+    late = [touch(data_dir, f"LowPriority/{w[71]}/z{e:02d}.srt", w[e]) for e in range(4)]
+    alone = touch(data_dir, f"LowPriority/{w[72]}/第01話.srt")
+    spelled = [touch(data_dir, f"LowPriority/{w[73]}/Ep{e:02d}.srt") for e in range(4)]
+    if sys.platform != "win32":     # (the case only Windows ignores; the listing's name order only NTFS keeps)
+        spelled, late = [], []
+    asked = season + [gone] + late + [alone] + [p.replace(os.sep + "Ep", os.sep + "EP") for p in spelled]
+    stats = []
+    real_stat = os.stat
+    monkeypatch.setattr(ls.os, "stat", lambda p, *a, **k: (stats.append(os.path.normcase(os.fspath(p))),
+                                                           real_stat(p, *a, **k))[1])
+    store.insert(asked, "soon")
+    monkeypatch.setattr(ls.os, "stat", real_stat)
+    stated = {os.path.normcase(p) for p in late + [alone] + spelled}
+    assert not {os.path.normcase(p) for p in season} & set(stats), "the season: one listing, no stat a file"
+    assert stated <= set(stats), "past the listing's reach, alone, or spelled otherwise: stat'ed"
+    for p in season + late + [alone] + spelled:
+        item = store.item(store.item_id(os.path.relpath(p, data_dir).replace("\\", "/")))
+        st = real_stat(p)
+        assert (item["size"], item["mtime_ns"], item["availability"]) == (st.st_size, st.st_mtime_ns, "available"), p
+    assert store.item(store.item_id(os.path.relpath(gone, data_dir).replace("\\", "/")))["availability"] == "missing"
     store.close()

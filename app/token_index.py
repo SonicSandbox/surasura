@@ -117,7 +117,10 @@ from operator import itemgetter
 #    once with v8–v18.
 # v20 an .ass file is read through the caption cleaner (app/caption_clean.py, ENGINE_REVISION 31): a v19 blob holds a
 #    TV caption's small-type reading rows as words — the release after 2.5, so users rebuild once (P1.3-1 a).
-SCHEMA_VERSION = 20
+# v21 (kept for the grammar expressions on the branch kotoba/grammar-kansai.)
+# v22 a pronoun is a compound's part and a verb's stem carries a suffix that makes a noun (私生活, 言い方 — ENGINE_REVISION
+#    39): a v20 blob holds them in pieces — 3.0, so users rebuild once with v20.
+SCHEMA_VERSION = 22
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

@@ -186,6 +186,22 @@ def test_never_across_a_space(tokenizer):
     assert _surfaces(tokenizer, "上層部の決定。", table)[0] == "上層部"
 
 
+def test_a_pronoun_is_a_part_where_the_run_spells_a_headword(tokenizer):
+    # 私生活 'private life' is 私 + 生活 to UniDic, 私 a pronoun (read ワタクシ): the lists carry 私生活 (シセイカツ),
+    # so it is one word with the list's reading. A pronoun stays a word of its own wherever no headword is spelled.
+    table = {"私生活": _entry("私生活", "シセイカツ"), "私自身": _entry("私自身", "ワタシジシン")}
+    assert _surfaces(tokenizer, "休みの日は私生活を大事にしたい。", table)[4] == "私生活"
+    assert _word(tokenizer, "私生活を守る。", "私生活", table).feature.lForm == "シセイカツ"
+    assert _surfaces(tokenizer, "私自身もそう思う。", table)[0] == "私自身"
+    assert _surfaces(tokenizer, "私の生活は静かだ。", table)[:3] == ["私", "の", "生活"]
+    assert _surfaces(tokenizer, "私生活", {})[:2] == ["私", "生活"]          # no table word: the pieces
+
+
+def test_the_shipped_table_joins_a_pronouns_compound(tokenizer, sanitized):
+    assert ("私生活", "シセイカツ") in _keys(tokenizer, "休みの日は私生活を大事にしたい。")
+    assert ("私自身", "ワタシジシン") in _keys(tokenizer, "私自身もそう思っている。")
+
+
 def test_a_grammar_stem_is_no_part(tokenizer):
     # みたい is UniDic's 形状詞・助動詞語幹 — grammar ('like'), not a な-word: バカみたい is バカ + みたい.
     table = {"バカみたい": _entry("バカみたい", "バカミタイ")}

@@ -20,7 +20,7 @@ import unicodedata
 # fugashi. (Python caches imports, so the repeated `import` inside a method is a cheap dict lookup.)
 import bisect
 from collections import defaultdict, Counter, namedtuple
-from itertools import accumulate, compress, repeat
+from itertools import accumulate, chain, compress, repeat
 from operator import attrgetter, eq, itemgetter
 from datetime import datetime
 import abc
@@ -3661,8 +3661,7 @@ def plan_lines(run):
     sources = pick["sources"]
     finished = [[sources[i]["path"], sources[i]["type"] or "", pick["place"][i][0]]
                 for i in range(n_files, len(sources))]
-    sentence_table = [[text, shown, short, long, src, list(cowords), list(crowd), no, text_hash, chars]
-                      for text, shown, short, long, src, cowords, crowd, no, text_hash, chars in pick["sentences"]]
+    sentence_table = pick["sentences"]      # (tuples: JSON writes them as the lists they are read back as)
     pools = [[k, -1 if first is None else first, pool, audio]
              for k, (first, pool, audio) in sorted(pick["picked"].items()) if rows[k] is not None]
     for name, table in (("files", files),
@@ -3670,7 +3669,7 @@ def plan_lines(run):
                                    word_stats[key]["total_count"]] for key in keys]),
                         ("rows", rows), ("ties", ties), ("spell", spell), ("finished", finished),
                         ("sentences", sentence_table),
-                        ("cowords", [[own, [list(c) for c in clauses]] for own, clauses in pick["cowords"]]),
+                        ("cowords", pick["cowords"]),
                         ("pools", pools), ("firsts", [plan_rules.pack_firsts(pick["firsts"])])):
         for start in range(0, len(table), _PLAN_CHUNK):
             yield _plan_json({name: table[start:start + _PLAN_CHUNK]})
@@ -3957,6 +3956,57 @@ def plan_texts(language, data_dir, store):
     return texts
 
 
+_PLAN_WRITE_CHUNK = 1 << 20     # bytes of lines handed to the compressing thread at once
+
+
+def _write_plan_lines(gz, lines):
+    """Write `lines` to `gz`, each with its newline, compressed on a second thread while the next lines are made
+    (zlib lets go of the interpreter while it compresses; F7's plan is mostly sentence tables, a second of it). The
+    bytes are those of one write a line: deflate's output doesn't depend on how its input is cut. An error on either
+    side is raised here, after the thread has stopped."""
+    import queue
+    chunks, failed = queue.Queue(maxsize=4), []
+
+    def compress():
+        while True:
+            chunk = chunks.get()
+            if chunk is None:
+                return
+            if not failed:              # (after an error, the rest is drained unwritten)
+                try:
+                    gz.write(chunk)
+                except BaseException as e:
+                    failed.append(e)
+
+    worker = threading.Thread(target=compress, name="plan-gzip", daemon=True)
+    worker.start()
+    try:
+        held, size = [], 0
+        for line in lines:
+            if failed:
+                break
+            data = line.encode("utf-8")
+            if len(data) >= _PLAN_WRITE_CHUNK:      # a large line (the first sentences') goes as it is: never copied
+                if held:
+                    chunks.put(b"".join(held))
+                    held, size = [], 0
+                chunks.put(data)
+                chunks.put(b"\n")
+                continue
+            held += (data, b"\n")
+            size += len(data) + 1
+            if size >= _PLAN_WRITE_CHUNK:
+                chunks.put(b"".join(held))
+                held, size = [], 0
+        if held and not failed:
+            chunks.put(b"".join(held))
+    finally:
+        chunks.put(None)
+        worker.join()
+    if failed:
+        raise failed[0]
+
+
 def write_plan_file(results_dir, lines):
     """Write the plan file atomically: a temp file, gzip level 3, flushed and fsynced, read back whole (the gzip CRC,
     and the header's JSON — every line is `json.dumps`' own), then `os.replace`. On any error the temp is removed, the
@@ -3978,9 +4028,7 @@ def write_plan_file(results_dir, lines):
             # Level 3: a quarter of level 6's time for a tenth more bytes (E1.2.3). mtime=0: the bytes are the
             # content's alone — the same run writes the same file.
             with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=3, mtime=0) as gz:
-                for line in lines:
-                    gz.write(line.encode("utf-8"))
-                    gz.write(b"\n")
+                _write_plan_lines(gz, lines)
             raw.flush()
             os.fsync(raw.fileno())
         with gzip.open(tmp, "rb") as gz:
@@ -5635,8 +5683,8 @@ def main():
     file_piece_cache = {}
     # The unknowns read already with the known words the run started with (利用者 with 利用 known, 上層部 with its parts
     # known): those don't change during the aggregation, so each word is judged once — `_judged` — and a sentence's
-    # difficulty below takes a set lookup per word.
-    _judged, _read_already = set(), set()
+    # difficulty below takes a lookup per word: its whole library's uses, or None when it is read already.
+    _judged, _unknown_use = set(), {}
     # (lemma, reading) -> (what the aggregation's per-token tests say of the word, its key as first met), asked once per
     # word (below).
     _word_state = {}
@@ -5719,8 +5767,9 @@ def main():
         fresh = lrs.difference(_judged)
         if fresh:
             _judged.update(fresh)
-            _read_already.update(lr for lr in fresh if _readable(lr, known_words_initial, known_lemmas_initial))
-        return sorted([_uses(lr) for lr in lrs if lr not in _read_already])
+            for lr in fresh:
+                _unknown_use[lr] = None if _readable(lr, known_words_initial, known_lemmas_initial) else _uses(lr)
+        return sorted([n for n in map(_unknown_use.__getitem__, lrs) if n is not None])
 
     def _could_take(entry, short, long, src_idx, file_is_spoken, is_over_hard_max):
         """Could a sentence of these lengths join a phrase's examples (`_offer_context`) at any cost? Not when both
@@ -5745,8 +5794,15 @@ def main():
             plan_rules.keep_best(entry["audio_contexts"], new_ctx, plan_rules.AUDIO_POOL, 9, 5,
                                  plan_rules.AUDIO_POOL, 4)
         if not is_over_hard_max:
-            plan_rules.offer_spread(entry["candidate_contexts"], entry["best_contexts"], new_ctx, plan_rules.POOL, 7,
-                                    5, 4)
+            plan_rules.offer_spread_later(entry["candidate_contexts"], entry["best_contexts"], _offers_of(entry), new_ctx,
+                                          plan_rules.POOL, 7, 5, 4)
+
+    def _offers_of(entry):
+        """A row's offers its shortlist takes in later (`plan_rules.offer_spread_later`; folded in after the walk)."""
+        offers = entry.get("_offers")
+        if offers is None:
+            offers = entry["_offers"] = []
+        return offers
 
     def _near_wanted(entry):
         """Is a row's first sentence in this file one of the files nearest its first meeting in this order (the walk
@@ -6194,7 +6250,7 @@ def main():
                 # word's own/original fallback (first_context above), not in the candidate pool.
                 if is_over_hard_max:
                     continue
-                plan_rules.offer_spread(candidates, best, new_ctx, plan_rules.POOL, 7, 5, 4)
+                plan_rules.offer_spread_later(candidates, best, _offers_of(entry), new_ctx, plan_rules.POOL, 7, 5, 4)
 
         
         file_token_cache[file_path] = file_counter
@@ -6237,8 +6293,14 @@ def main():
     for entry in word_stats.values():
         entry.pop("_plan", None)        # the plan file's per-file records (above): no output carries them
         entry.pop("_fsq", None)         # (the file a word's first sentence there was last recorded for)
+        offers = entry.pop("_offers", None)     # the offers its shortlist hasn't taken in yet
+        if offers:
+            plan_rules.fold_spread(entry["candidate_contexts"], entry["best_contexts"], offers, plan_rules.POOL, 7, 5, 4)
     for entry in phrase_stats.values():
         entry.pop("_fsq", None)
+        offers = entry.pop("_offers", None)
+        if offers:
+            plan_rules.fold_spread(entry["candidate_contexts"], entry["best_contexts"], offers, plan_rules.POOL, 7, 5, 4)
     # (`_near`, the first sentences of the files nearest each row's first meeting, stays for the pick: popped there)
 
     # U9's "lower": a word the learner can read through its known word (利用者) scores half — as does a compound
@@ -6530,6 +6592,14 @@ def main():
                 coword_lrs.append(lr)
         return c
 
+    def _ids(lrs):
+        """A sentence's co-word ids, ascending (one known from the start, -1, left out)."""
+        try:
+            ids = sorted(map(coword_of.__getitem__, lrs))   # (each one numbered by key before the table: below)
+        except KeyError:
+            ids = sorted(map(_coword, lrs))
+        return tuple(ids[bisect.bisect_left(ids, 0):])
+
     phrase_row_ids = {index: row_of[key] for index, key in _phrase_row_of.items() if key in row_of}
     sentence_of, sentences = {}, []                     # a candidate -> its id; the picker's table (with texts)
     _tagger = tokenizer.tagger if language == "ja" else None
@@ -6542,13 +6612,52 @@ def main():
         if s is None:
             text = ctx[4].strip()
             shown = strip_verse_number(text, _tagger) if _tagger is not None and text else text
-            ids = tuple(c for c in map(_coword, ctx[3]) if c >= 0)
+            ids = _ids(ctx[3])
             crowd = tuple(sorted({phrase_row_ids[i] for i in ctx[6] if i in phrase_row_ids})) if ctx[6] else ()
             s = sentence_of[found] = len(sentences)
             sentences.append((text, None if shown == text else shown, ctx[0], ctx[1], ctx[5], ids, crowd, ctx[8],
                               plan_rules.text_hash_of(ctx[4]), len(ctx[4])))
             _keep[found] = ctx                  # (the candidate stays alive while its id is: id(ctx[3]) is its key)
         return s
+
+    # Every listed row's first sentence in each file (the plan's per-file "fs"), by row — never the order the walk met
+    # them in (packed below, after the table)
+    phrase_row_key = {index: key for key, index in phrase_keys.items()}
+    held_of = []                                        # per file: [(row, record)]
+    for record in plan_files:
+        held = []
+        for key, rec in record[3].items():
+            k = row_of.get(key)
+            if k is not None and key not in phrase_keys:
+                held.append((k, rec))
+        for index, rec in record[4].items():
+            k = row_of.get(phrase_row_key.get(index))
+            if k is not None and phrase_keys.get(phrase_row_key.get(index)) == index:
+                held.append((k, rec))
+        held.sort(key=lambda kr: kr[0])
+        held_of.append(held)
+
+    # The co-words numbered by their key before any sentence names one, each sentence's in that order: they arrive in
+    # the order a set gives them (a sentence's unknowns), which moves with the process's hash seed — the plan must be
+    # the same bytes run to run. Every co-word the table and the first sentences below will name: each row's first
+    # sentence, shortlist, Finished, audio and near sentences', and each listed row's first sentence in each file's.
+    def _coword_key(lr):
+        return str(lr[0]), lr[1] is None, str(lr[1])
+
+    named = set()
+    lrs_of = itemgetter(3)
+    for r in preliminary_rows:
+        data = word_stats[(r["Word"], r["Reading"])]
+        if data["first_context"] is not None:
+            named.update(data["first_context"][3])
+        for part in (r["_CandidateContexts"], data.get("finished_contexts") or (), (data.get("_near") or ())[1:],
+                     data["audio_contexts"] if ENSURE_AUDIO_EXAMPLE else ()):
+            named.update(chain.from_iterable(map(lrs_of, part)))
+    for held in held_of:
+        named.update(chain.from_iterable(rec[3] for _k, rec in held))
+    for lr in sorted(named, key=_coword_key):
+        _coword(lr)
+    del named
 
     _keep = {}
     picked = {}                                         # row -> (first, shortlist + Finished, audio): the plan file's
@@ -6564,46 +6673,38 @@ def main():
                  + [_sentence(c) for c in finished if src_audio_rank[c[5]] < 2]) if ENSURE_AUDIO_EXAMPLE else []
         picked[row_of[target_lr]] = (None if first is None else _sentence(first), pool, audio)
         nearby[row_of[target_lr]] = near             # (the order's: never the plan's pools)
+    sentence_of.clear()                                 # (the table is whole: its lookup is done with)
+    _keep.clear()
 
     # Every listed row's first sentence in each file (the plan's per-file "fs"): kept without its text (`Firsts`),
     # their ids after the table's, the compact records let go as they are packed
-    phrase_row_key = {index: key for key, index in phrase_keys.items()}
     first_rows = []
 
     def _slim(f, rec):
         s_no, short, long, lrs, marks, text_hash, chars = rec
-        ids = tuple(c for c in map(_coword, lrs) if c >= 0)
+        ids = _ids(lrs)
         crowd = tuple(sorted({phrase_row_ids[i] for i in marks if i in phrase_row_ids})) if marks else ()
         first_rows.append((f, s_no, short, long, ids, crowd, text_hash, chars))
         return len(sentences) + len(first_rows) - 1
 
     for f, record in enumerate(plan_files):
-        held = []                                       # (row, record): by row, never the order the walk met them in
-        for key, rec in record[3].items():
-            k = row_of.get(key)
-            if k is not None and key not in phrase_keys:
-                held.append((k, rec))
-        for index, rec in record[4].items():
-            k = row_of.get(phrase_row_key.get(index))
-            if k is not None and phrase_keys.get(phrase_row_key.get(index)) == index:
-                held.append((k, rec))
-        held.sort(key=lambda kr: kr[0])
         ids = []
-        for k, rec in held:
+        for k, rec in held_of[f]:
             ids += (k, _slim(f, rec))
+        held_of[f] = None                               # (its records let go with the file's old line)
         plan_files[f] = record[:3] + (ids,)
+    del held_of
 
-    # The co-words numbered by their key, each sentence's in that order: they arrive in the order a set gives them
-    # (a sentence's unknowns), which moves with the process's hash seed — the plan must be the same bytes run to run
-    order = sorted(range(len(cowords)), key=lambda c: (str(coword_lrs[c][0]), coword_lrs[c][1] is None,
-                                                        str(coword_lrs[c][1])))
-    renumber = [0] * len(cowords)
-    for new_id, c in enumerate(order):
-        renumber[c] = new_id
-    cowords[:] = [cowords[c] for c in order]
-    sentences[:] = [row[:5] + (tuple(sorted(renumber[c] for c in row[5])),) + row[6:] for row in sentences]
-    first_rows[:] = [row[:4] + (tuple(sorted(renumber[c] for c in row[4])),) + row[5:] for row in first_rows]
-    del renumber
+    # (Numbered by key above; a co-word named nowhere there would come after them: put back in order.)
+    order = sorted(range(len(cowords)), key=lambda c: _coword_key(coword_lrs[c]))
+    if order != list(range(len(cowords))):
+        renumber = [0] * len(cowords)
+        for new_id, c in enumerate(order):
+            renumber[c] = new_id
+        cowords[:] = [cowords[c] for c in order]
+        sentences[:] = [row[:5] + (tuple(sorted(renumber[c] for c in row[5])),) + row[6:] for row in sentences]
+        first_rows[:] = [row[:4] + (tuple(sorted(renumber[c] for c in row[4])),) + row[5:] for row in first_rows]
+        del renumber
 
     while len(src_place) < len(source_list):
         src_place.append((plan_rules.NOT_FINISHED, 0))

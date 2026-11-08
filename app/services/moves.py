@@ -289,8 +289,9 @@ class Writer:
         return mode == "store" or reason == "busy"
 
     def reason(self):
-        """The store's reason when it can't be written (the read-only bar's words), else None."""
-        return None if self._writable() else (getattr(self.opener, "reason", None) or self.opener.mode)
+        """The store's reason when it can't be written (the read-only bar's words), else None — from one answer."""
+        mode, reason = _state_of(self.opener)
+        return None if mode == "store" or reason == "busy" else (reason or mode)
 
     def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
         """`Store.move`. `near`: [(item_id, "before" | "after"), …], the nearest first — where the window would place the

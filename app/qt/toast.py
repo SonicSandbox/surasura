@@ -22,7 +22,7 @@ pauses while the card is open and runs on from where it was once `done()` is cal
 """
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QFontMetrics, QPainter
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 
 from app import scrub, theme
 from app.qt import motion, shadow, strings, style
@@ -33,7 +33,12 @@ PAD = (16, 10, 12, 10)                          # left, top, right, bottom (the 
 
 
 class ToastCard(motion.Overlay):
-    """The toast itself: the `toast` fill, a `line-hi` border, radius 12; the message and its buttons."""
+    """The toast itself: the `toast` fill, a `line-hi` border, radius 12; the message and its buttons.
+
+    **Its row is laid out in `body`, never in the card** (the card has no layout, placed by hand: `ToastHost.place`):
+    a layout's pass asks its widget's parent to lay out again (Qt's `updateGeometry`), and the card's parent is the
+    window's central widget — so a toast's new words laid out the central widget and the window at every move's toast.
+    The body's parent is the card, which has no layout to ask: a toast's change stops there."""
     how = "rise"
     shadow_name = "toast"
 
@@ -42,11 +47,13 @@ class ToastCard(motion.Overlay):
         self.setObjectName("toast")
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)          # a toast never takes the keyboard from the window
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        row = QHBoxLayout(self)
+        self.body = QWidget(self)
+        self.body.setObjectName("toastbody")
+        row = QHBoxLayout(self.body)
         f = theme.text_factor(style.current()[1])
         row.setContentsMargins(*(round(v * f) for v in PAD))
         row.setSpacing(round(12 * f))
-        self.text = QLabel(self)
+        self.text = QLabel(self.body)
         self.text.setObjectName("toasttext")
         self.text.setTextFormat(Qt.TextFormat.PlainText)
         self.text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -60,11 +67,11 @@ class ToastCard(motion.Overlay):
 
     def _button(self, i):
         while len(self.buttons) <= i:
-            b = QPushButton(self)
+            b = QPushButton(self.body)
             b.setProperty("size", "sm")
             b.setFocusPolicy(Qt.FocusPolicy.TabFocus)       # reachable by Tab; a click never takes the keyboard
             b.clicked.connect(lambda _c=False, n=len(self.buttons): self._press(n))
-            lay = self.layout()
+            lay = self.body.layout()
             if self.why is not None:                    # (*Why?* stays the last in the row)
                 lay.insertWidget(lay.indexOf(self.why), b)
             else:
@@ -84,14 +91,14 @@ class ToastCard(motion.Overlay):
     def why_button(self, on_press):
         """*Why?* — made once, the last in the row (help cards)."""
         if self.why is None:
-            self.why = QPushButton(strings.TOAST_WHY, self)
+            self.why = QPushButton(strings.TOAST_WHY, self.body)
             self.why.setProperty("size", "sm")
             self.why.setProperty("kind", "link")
             self.why.setToolTip(strings.TOAST_WHY_TIP)
             self.why.setAccessibleName(strings.TOAST_WHY_NAME)
             self.why.setFocusPolicy(Qt.FocusPolicy.TabFocus)
             self.why.clicked.connect(lambda _c=False: self._why_press())
-            self.layout().addWidget(self.why)
+            self.body.layout().addWidget(self.why)
         self._on_why = on_press
         return self.why
 
@@ -117,7 +124,7 @@ class ToastCard(motion.Overlay):
 
     def natural_width(self):
         """The width that shows the whole message and the buttons."""
-        lay = self.layout()
+        lay = self.body.layout()
         m = lay.contentsMargins()
         fm = QFontMetrics(self.text.font())
         width = fm.horizontalAdvance(self.base) + max(fm.horizontalAdvance(self.tail),
@@ -136,8 +143,15 @@ class ToastCard(motion.Overlay):
 
     shown_fit = fit_text            # (Report a problem's picture mode fits it again, the message scrubbed)
 
+    def lay_out(self):
+        """The row laid out at the card's size now, shown or not (a hidden body's own resize comes only as it shows,
+        after the card's: the text would be fitted to the width it had before)."""
+        self.body.setGeometry(self.rect())
+        self.body.layout().setGeometry(self.body.rect())
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self.lay_out()
         self.fit_text()
 
     def paintEvent(self, _event):
@@ -266,13 +280,14 @@ class ToastHost(QObject):
         card = self.card
         card.ensurePolished()                      # the stylesheet's font, before anything is measured
         card.text.ensurePolished()
-        card.layout().activate()
-        height = max(card.sizeHint().height(), round(theme.size("button-sm", style.current()[1])) + 2 * PAD[1])
+        lay = card.body.layout()
+        lay.activate()
+        height = max(card.body.sizeHint().height(), round(theme.size("button-sm", style.current()[1])) + 2 * PAD[1])
         width = min(card.natural_width(), int(p.width() * WIDTH_SHARE))
         x = (p.width() - width) // 2
         y = p.height() - theme.MOTION["toast-bottom"] - height
         card.setGeometry(x, y, width, height)
-        card.layout().activate()                   # the text's width at this size (hidden, nothing else lays it out)
+        card.lay_out()                             # the text's width at this size (hidden, nothing else lays it out)
         card.fit_text()
 
     def eventFilter(self, obj, event):

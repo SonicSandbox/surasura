@@ -185,11 +185,14 @@ class Wait(Exception):
 class Needs(Exception):
     """Something only you can fix: named once in *Needs you* (`kind`, `say`); the job waits for the next start.
     `whole`: the language's trouble, never the episode's (a setting, Anki Miner's setup, the library): recorded once
-    for the language (no item), whatever the number of episodes it stops (alpha 6 try #6)."""
+    for the language (no item), whatever the number of episodes it stops (alpha 6 try #6). `standing` (Michi-YT): the
+    language's trouble recorded once as `whole` is (no item), but only the episodes it reaches wait on it (an online
+    title's download: the others go on). `once` (Michi-YT): the episode's own trouble that stays as it is (a private
+    video): counted once while it stands, never again at each start once seen (`Ledger.need(standing=)`)."""
 
-    def __init__(self, kind, say, whole=False):
+    def __init__(self, kind, say, whole=False, standing=False, once=False):
         super().__init__(say)
-        self.kind, self.say, self.whole = kind, say, whole
+        self.kind, self.say, self.whole, self.standing, self.once = kind, say, whole, standing, once
 
 
 class Skip(Exception):
@@ -216,6 +219,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
     ended early by an update staged)."""
     steps = steps or Steps(loaded, live=True)
     steps.lower_priority()
+    _sweep_online(steps)                    # Michi-YT: a video a killed Connect left goes before anything else
     _release_check(loaded)
     own = ledger is None
     ledger = ledger or Ledger()
@@ -279,6 +283,7 @@ def run(loaded, languages, steps=None, ledger=None, sleep=None, cancel=None, loo
             steps.settle()                  # a pending sync is sent before Connect exits (P2.3)
         except Exception:
             log.exception("Connect's pending sync wasn't sent")
+        _sweep_online(steps)                # Michi-YT: no downloaded video outlives the run
 
 
 def _release_check(loaded):
@@ -566,6 +571,10 @@ def _language(steps, ledger, lang, prepared, parked, out):
             if ledger.need(lang, "error", say, item_id=job["item_id"], job_id=job["id"]):
                 out["needs"].append(say)
             _wait(ledger, job, Wait(say, look=False, resume=_resume_of(ledger.job_by_id(job["id"]))), out, parked)
+        finally:
+            if not _looks_again(ledger, job, parked):
+                _drop_online(steps, job)    # Michi-YT: its downloaded video goes however the job ended (a re-mine
+            #                                 downloads it again) — kept only for a wait this run looks at again
         if _stop(steps):
             break
     return outside
@@ -658,8 +667,11 @@ OLD_SAYS = {"picking": ("UNFINISHED",), "filling": ("BACKFILL_ONE_DECK",), "orde
 def _need(ledger, lang, need, job):
     """`need` recorded -> True when it counts (`Ledger.need`): the episode's own, or once for the language
     (`Needs.whole`: no item); the copies an earlier Connect recorded per episode go (`_fixed_said`)."""
+    if getattr(need, "standing", False) and not need.whole:
+        return ledger.need(lang, need.kind, need.say, job_id=job["id"], standing=True)     # Michi-YT: once
     if not need.whole:
-        return ledger.need(lang, need.kind, need.say, item_id=job["item_id"], job_id=job["id"])
+        return ledger.need(lang, need.kind, need.say, item_id=job["item_id"], job_id=job["id"],
+                           standing=bool(getattr(need, "once", False)))
     _fixed_said(ledger, lang, (need.say,))
     return ledger.need(lang, need.kind, need.say, standing=True)     # a state: never counted again while it stands
 
@@ -875,6 +887,7 @@ def _job(steps, ledger, lang, job, store_now, line, out):
                     if step == "mining":
                         _stop_here(steps, ledger, lang, job, step, record)
                         _mine(steps, ledger, lang, job, record=record)
+                        _drop_online(steps, job)    # Michi-YT: its clips and pictures are made: the video goes now
                         step = "filling"
                     break
                 except Repick:
@@ -1022,8 +1035,19 @@ def _pick(steps, ledger, lang, job, record=True):
     # Stage B: its audiobook lined up first — before the step is written: a part waiting on the line-up writes its
     # row only when its line changes (review B-15)
     lined = _line_up(steps, ledger, lang, job, book) if book is not None else None
-    ledger.set_state(jid, "picking")
-    video = steps.video(lang, job) if book is None else None
+    web = _online(steps, lang, job) if book is None else None      # Michi-YT: an online title's episode
+    # (an online one: no download's percent from an earlier try — in the same one write, S19)
+    ledger.set_state(jid, "picking", **({"progress": None} if web is not None else {}))
+    subtitle = None
+    if web is not None:
+        fetched = _download(steps, ledger, lang, job, web)
+        if fetched is None:                         # no Anki Miner to fetch it: as a pick that finds none
+            _record_made(steps, ledger, lang, job, record)
+            ledger.set_state(jid, "skipped", reason=MINER_ABSENT, skipped={"mining": MINER_ABSENT})
+            raise _Finished("skipped")
+        video, subtitle = fetched
+    else:
+        video = steps.video(lang, job) if book is None else None
     heard = None                                    # Z-16: an audio item's own wait line, when nothing is found
     if book is None and video is None:
         video, heard = _audio(steps, lang, job)     # an audio file, once Anki Miner mines audio
@@ -1038,7 +1062,12 @@ def _pick(steps, ledger, lang, job, record=True):
         folder = steps.video_moved(lang, job)
         raise Wait(MOVED.format(folder=folder) if folder else NO_VIDEO, look=False)
     pairing = steps.pairing(lang, job)
-    got = steps.pick(lang, job, video) if book is None else steps.pick(lang, job, None, reading=book[0])
+    if book is not None:
+        got = steps.pick(lang, job, None, reading=book[0])
+    elif subtitle is not None:
+        got = steps.pick(lang, job, video, subtitle=subtitle)      # its own captions, fetched with it
+    else:
+        got = steps.pick(lang, job, video)
     declined = ledger.declined(lang, job["item_id"])     # Anki Miner turned them down once: never sent again (#19)
     if got.get("anki_miner"):
         # laptop round 8 #52 (LF4-4 ⭐ A): a word this Anki Miner has no definition for, in any episode, is no card here
@@ -1050,6 +1079,8 @@ def _pick(steps, ledger, lang, job, record=True):
               "anki_miner": got.get("anki_miner")}
     if isinstance(pairing, dict) and pairing.get("verdict") == "transcribed":
         picked["from_audio"] = True                 # Michi-NS (Q5): its subtitle was made from its audio: tagged
+    if web is not None:
+        picked["online"], picked["names"] = web["site"], web["names"]     # Michi-YT: its Source names the transcript
     if book is not None:
         picked["reading"], picked["book"] = book    # the file Anki Miner reads; the EPUB its cards are placed in
         if lined:
@@ -1074,6 +1105,73 @@ def _pick(steps, ledger, lang, job, record=True):
         return None
     ledger.set_state(jid, "fit-check", picked=picked)
     return picked
+
+
+def _online(steps, lang, job):
+    """Michi-YT: the online title a job's episode is (`Steps.online`: {"site", "url", "names"}), or None — a stand-in
+    Steps without the look is never one."""
+    look = getattr(steps, "online", None)
+    return look(lang, job) if look is not None else None
+
+
+DOWNLOADING = "downloading"     # the job's saved progress step while its video comes down (`status._progress`)
+
+
+def _download(steps, ledger, lang, job, web):
+    """Michi-YT: an online title's video and its captions for the job (`Steps.download`, Anki Miner's `fetch`) ->
+    (video, subtitle), or None when there's no Anki Miner. On mains power only, as any mining (an ask on battery is
+    its yes, M-3 A): the wait before any download. Its percent saved as it goes (`DOWNLOADING`, every PROGRESS_STEP);
+    the language's download trouble fixed once a video came down. Raises Wait / Needs / `stopping.Stopped`."""
+    wait = _blocked(steps, lang, None, asked=bool(job.get("asked_at")))
+    if wait is not None:
+        raise wait
+    jid, shown = job["id"], [None]
+
+    def progress(percent):
+        if percent // PROGRESS_STEP == shown[0]:
+            return
+        shown[0] = percent // PROGRESS_STEP
+        try:
+            ledger.set_state(jid, "picking", progress={"step": DOWNLOADING, "percent": int(percent)})
+        except Exception:
+            log.warning("Connect couldn't save the download's progress", exc_info=True)
+    progress(0)
+    got = steps.download(lang, job, web, progress)
+    ledger.set_state(jid, "picking", progress=None)
+    if got is not None:
+        from app.connect import online
+        _fixed(ledger, lang, kinds=(online.KIND,))
+    return got
+
+
+def _looks_again(ledger, job, parked):
+    """Michi-YT (review M1): is the job waiting on something this run looks at again (Anki Miner's window open, you
+    reviewing, another writer: a 2-minute look)? Then its downloaded video stays for that look — a wait never fetches
+    the whole video again each look; the run's end sweeps it. A job ended, stopped, or parked for the next start: no."""
+    try:
+        now = ledger.job_by_id(job["id"]) or {}
+    except Exception:
+        return False
+    return now.get("state") == "waiting" and job["id"] not in parked and now.get("reason") != STOPPED_BY_YOU
+
+
+def _drop_online(steps, job):
+    """Michi-YT: the job's downloaded video gone (none: nothing done) — never a reason for the job to fail."""
+    drop = getattr(steps, "drop_online", None)
+    if drop is not None:
+        try:
+            drop(job)
+        except Exception:
+            log.exception("Connect couldn't remove job %s's downloaded video", job.get("id"))
+
+
+def _sweep_online(steps):
+    sweep = getattr(steps, "sweep_online", None)
+    if sweep is not None:
+        try:
+            sweep()
+        except Exception:
+            log.exception("Connect couldn't look for downloaded videos left from before")
 
 
 def _audio(steps, lang, job):
@@ -1153,6 +1251,15 @@ def _fit(steps, ledger, lang, job):
         picked["offset"] = 0.0              # Z-9: a book's sentences have no times: nothing to check
         ledger.set_state(jid, "mining", picked=picked)
         return
+    if picked.get("online"):
+        # Michi-YT: an online title's video and its captions came down together (Anki Miner's `fetch`), timed to that
+        # video by YouTube — mined at their own times (as fit_check releases Surasura's own `youtube` records); a
+        # video gone since (a later run: it was dropped) is fetched again by a new pick
+        if not _on_disk(picked.get("video") or ""):
+            raise Repick()
+        picked["offset"] = 0.0
+        ledger.set_state(jid, "mining", picked=picked)
+        return
     if picked.get("forced"):
         # *Mine anyway* (G1.3-6, E16; P4.1 row 4.1.9): you chose to mine it not timed — tsubasa isn't asked, and the
         # lines are cut where the subtitle puts them (no shift)
@@ -1204,6 +1311,9 @@ def _mine(steps, ledger, lang, job, record=True):
         todo = [w for w in words if _outcome(ledger, jid, w) in UNSETTLED]
         if not todo:
             break
+        if picked.get("online") and not _on_disk(picked.get("video") or ""):
+            raise Repick()                  # Michi-YT: resumed in a later run, its video dropped: fetched again —
+            #                                 only while a word is left to send (a batch in doubt read back first)
         doubt = any(_outcome(ledger, jid, w) == "uncertain" for w in todo)
         if doubt and _failures(ledger, jid) >= 2:
             _fail_mining(steps, ledger, lang, job, record)
@@ -1785,6 +1895,92 @@ class Steps:
         moved = moved_video(was()) if pairing.get("producer") == "source" else None    # a source record's own
         return beside(subtitle) or beside_origin(pairing) or moved or self._videos(lang).find(names)
 
+    def online(self, lang, job):
+        """Michi-YT: the online title the job's episode is (its item a YouTube or bilibili.tv transcript) ->
+        `online.of`'s {"site", "url", "names"}, else None. A busy store is a Wait."""
+        from app.connect import online
+        with _held():
+            with self._open(lang) as store:
+                item = store.item(job["item_id"]) or {}
+            if not online.is_online(item):
+                return None
+            pairing = self.pairing(lang, job)
+        return online.of(lang, item, pairing)
+
+    def download(self, lang, job, web, on_progress=None):
+        """Michi-YT (Sonic 2026-11-07): the online title's video and its captions, fetched by Anki Miner (`online.fetch`)
+        into Connect's own folder for this job -> (video, subtitle); kept for the job while this run works on it (a
+        pick again after a profile change fetches nothing); None when Anki Miner isn't installed. The YouTube risk tick
+        (`youtube_risk_acknowledged`, the downloader's own) is its yes. Raises Needs (`online.KIND`: the language's
+        trouble `standing`, else the episode's, with its title), Wait (an update staged mid-download: it ended, the
+        video goes), `stopping.Stopped` (your *Stop*: Anki Miner ended within a second)."""
+        from app.cli import verbs
+        from app.cli.contract import CliError
+        from app.connect import anki_miner, online
+        kept = getattr(self, "_fetched", {}).get(str(job["id"]))
+        if kept and all(_on_disk(p) for p in kept):
+            return kept
+        if self._settings(lang).get("youtube_risk_acknowledged") is not True:
+            raise Needs(online.KIND, online.NOT_TICKED, standing=True)
+
+        def own(say):
+            title = self.title(lang, job)
+            return Needs(online.KIND, f"{title}: {say}" if title else say, once=True)
+        held = getattr(self, "_online_trouble", {}).get(lang)
+        if held:                            # review S4: offline / a bot check this run: no other fetch tried
+            raise Needs(online.KIND, held, standing=True)
+        if web.get("site") != "youtube":
+            raise own(online.BILIBILI)
+        if not web.get("url"):
+            raise own(online.NO_LINK)
+        miner = anki_miner.find(self.loaded)
+        if miner is None:
+            return None
+        try:
+            setup = verbs._anki_miner_setup(self.loaded, lang, self.run_dir(job), held=self._anki_miner_held(lang))
+        except CliError as e:
+            raise _wait_or_needs(e, None, self.url) from None
+        if setup is None:
+            return None
+        if "Z-8" not in anki_miner.features(setup[0]):
+            raise Needs(online.KIND, online.NO_FETCH, standing=True)
+        staged = []
+
+        def should_end():
+            if self.update_staged():
+                staged.append(True)
+                return True
+            return False
+        try:
+            got = online.fetch(miner, setup[1], lang, job["id"], web["url"], on_progress=on_progress,
+                               should_end=should_end)
+        except stopping.Stopped:
+            if staged:
+                raise Wait(STOPPED_FOR_UPDATE, look=False) from None
+            raise
+        except online.Trouble as t:
+            if t.standing:
+                if t.say in online.HELD:    # offline, a bot check, no room: no other fetch this run (review r2 S1)
+                    self._online_trouble = dict(getattr(self, "_online_trouble", {}), **{lang: t.say})
+                raise Needs(online.KIND, t.say, standing=True) from None
+            raise own(t.say) from None
+        except anki_miner.AnkiMinerError as e:
+            self._anki_miner_held(lang).clear()
+            raise _miner_wait_or_needs(e, self.url) from None
+        self._fetched = dict(getattr(self, "_fetched", {}), **{str(job["id"]): got})
+        return got
+
+    def drop_online(self, job):
+        """Michi-YT: the job's downloaded video gone (`online.drop`), and forgotten."""
+        from app.connect import online
+        getattr(self, "_fetched", {}).pop(str(job["id"]), None)
+        online.drop(job["id"])
+
+    def sweep_online(self):
+        from app.connect import online
+        self._fetched = {}
+        online.sweep()
+
     def audio(self, lang, job):
         """Z-16 (Michi-AB A1, PROVISIONAL): the audio file an episode with no video is cut from -> (path, None); else
         (None, the wait line for an audio item — `NO_AUDIO`, `SEVERAL_FILES`, `NO_TEXT` — or None for any other item:
@@ -2310,12 +2506,15 @@ class Steps:
             log.info("Connect: job %s reads the whole book %s (%s)", job["id"], os.path.basename(epub), why)
         return named
 
-    def pick(self, lang, job, video, reading=None):
+    def pick(self, lang, job, video, reading=None, subtitle=None):
+        """`subtitle` (Michi-YT): the file the words are picked from instead of the library's (an online title's own
+        captions, fetched with its video: the transcript keeps whole seconds only)."""
         from app.cli import verbs
         from app.cli.contract import CliError
         from app.connect import library
+        given = subtitle
         with _held():                       # the store's reads, one open; never around `verbs.pick` (Anki Miner)
-            subtitle = self.subtitle(lang, job)
+            subtitle = given or self.subtitle(lang, job)
             with self._open(lang) as store:      # every word Connect ever made, or no pick at all
                 made = library.made_words_for(store, job)   # P4.1: an asked job makes a deleted card again (N15)
             # P3.3: the re-plan's ranks (a move served), else the list's (None) — its look at the store's versions in
@@ -2590,7 +2789,7 @@ class Steps:
                                          on_progress=getattr(self, "on_progress", None), known=setup[:2],
                                          should_stop=getattr(self, "should_stop", None),
                                          show=self.show(lang, job), reading=picked.get("reading"),
-                                         from_audio=bool(picked.get("from_audio")))
+                                         from_audio=bool(picked.get("from_audio")), names=picked.get("names"))
         except anki_miner.AnkiMinerError as e:
             held.clear()                        # any Anki Miner failure (a profile changed too): read again next time
             if e.kind == "profile-changed":

@@ -82,7 +82,6 @@ from collections import namedtuple
 
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, QPoint, QTimer
-from PyQt6.QtGui import QAction
 
 from app import library_store
 from app.qt import bridge, confirm, drag, finished, rows, strings
@@ -220,10 +219,9 @@ def skip_menu(m, folders, reason, pick):
     sub.menuAction().setToolTip(strings.ITEM_SKIP[1] if writable else reason)
     sub.menuAction().setEnabled(writable)
     for path in folders:
-        act = QAction(os.path.basename(path) or path, sub)
+        act = drag.menu_action(sub, os.path.basename(path) or path, lambda p=path: pick(p))
         act.setToolTip(strings.ITEM_SKIP_TIP.format(path=path) if writable else reason)
         act.setEnabled(writable)
-        act.triggered.connect(lambda _c=False, p=path: pick(p))
         sub.addAction(act)
     return sub
 
@@ -275,10 +273,9 @@ def fill_picks_menu(m, n, own, writer, act, grey=None, goal=False):
     for name, label, tip, ok in picks_entries(n, own, writer, grey, goal):
         if name == "remove":
             m.addSeparator()
-        a = QAction(label, m)
+        a = drag.menu_action(m, label, lambda nm=name: act(nm))
         a.setToolTip(tip)
         a.setEnabled(ok)
-        a.triggered.connect(lambda _c=False, nm=name: act(nm))
         m.addAction(a)
     return m
 
@@ -583,10 +580,9 @@ class ItemActions(QObject):
             self._action(m, row, group)
             m.addSeparator()
         for name, label, tip, ok in self.moves.menu_entries(row):
-            act = QAction(label, m)
+            act = drag.menu_action(m, label, lambda n=name: self.moves.menu_pick(row, n))
             act.setToolTip(tip)
             act.setEnabled(ok)
-            act.triggered.connect(lambda _c=False, n=name: self.moves.menu_pick(row, n))
             m.addAction(act)
         for e in self.entries(row):
             if e.name == "remove":
@@ -617,13 +613,12 @@ class ItemActions(QObject):
         return sub
 
     def _action(self, menu, row, e):
-        act = QAction(e.label, menu)
+        act = drag.menu_action(menu, e.label, lambda n=e.name, pl=e.payload: self.menu_pick(row, n, pl))
         act.setToolTip(e.tip)
         act.setEnabled(e.ok)
         if e.checked is not None:
             act.setCheckable(True)
             act.setChecked(e.checked)
-        act.triggered.connect(lambda _c=False, n=e.name, pl=e.payload: self.menu_pick(row, n, pl))
         menu.addAction(act)
         return act
 
@@ -704,10 +699,9 @@ class ItemActions(QObject):
         for e in own + hooked:
             if hooked and e is hooked[0]:
                 m.addSeparator()                     # the modules' entries apart from the episode's own (AD-8)
-            act = QAction(e.label, m)
+            act = drag.menu_action(m, e.label, lambda n=e.name, pl=e.payload: self.episode_pick(row, ep, n, pl))
             act.setToolTip(e.tip)
             act.setEnabled(e.ok)
-            act.triggered.connect(lambda _c=False, n=e.name, pl=e.payload: self.episode_pick(row, ep, n, pl))
             m.addAction(act)
         self.last_menu = m
         m.popup(at)

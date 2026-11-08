@@ -39,6 +39,7 @@ switch is off.
 import functools
 import re
 from collections import namedtuple
+from itertools import compress
 
 from app.unicode_ranges import HAN
 
@@ -168,7 +169,7 @@ class PhraseSet:
         if firsts.isdisjoint(lemmas):
             return []
         found, n, after, fixed, entries = [], len(lemmas), 0, self._fixed, self.entries
-        for i in [i for i, lemma in enumerate(lemmas) if lemma in firsts]:     # where a phrase can start
+        for i in list(compress(range(n), map(firsts.__contains__, lemmas))):   # where a phrase can start (in C)
             if i < after:
                 continue                    # inside the phrase just found
             node, ends, j = trie[lemmas[i]], [], i + 1

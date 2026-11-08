@@ -1525,15 +1525,20 @@ def _short_stem(word):
 
 
 def _kansai(words):
-    """join_affixes' Kansai forms (§ above): `words` read again — the same list when there is none."""
+    """join_affixes' Kansai forms (§ above): `words` read again — the same list when there is none. Only the tokens
+    whose surface a rule starts from are looked at (found in C); the rest are copied over in slices."""
     table, heads, starts = _kansai_tables()
-    surfaces = list(map(_SURFACE, words))
-    if starts.isdisjoint(surfaces):
-        return words
-    out, n, i, changed = [], len(words), 0, False
-    while i < n:
+    if starts.isdisjoint(map(_SURFACE, words)):
+        return words                    # nearly every line (88 % of the shared set's): one pass in C
+    hits = list(compress(range(len(words)), map(starts.__contains__, map(_SURFACE, words))))
+    out, n, last, changed = [], len(words), 0, False
+    for i in hits:
+        if i < last:
+            continue                    # taken by the word just read
+        out.extend(words[last:i])
+        last = i
         w = words[i]
-        s, f = surfaces[i], w.feature
+        s, f = w.surface, w.feature
         prev = out[-1] if out else None
         pf = prev.feature if prev is not None else None
         nxt = words[i + 1] if i + 1 < n else None
@@ -1552,25 +1557,20 @@ def _kansai(words):
                          else _kansai_drawn(verb, prev.surface))
                 out[-2:] = [drawn, _kansai_ending(w, s)]
             else:
-                out.append(w)
-                i += 1
                 continue
-            changed, i = True, i + 1
-            continue
-        if (f.pos1 == "助動詞" and f.lemma == "へん" and glued and prev is not None and prev.surface in ("え", "い")
+            last = i + 1
+        elif (f.pos1 == "助動詞" and f.lemma == "へん" and glued and prev is not None and prev.surface in ("え", "い")
                 and pf.pos1 == "動詞" and not getattr(prev, "white_space", "") and len(out) > 1
                 and _short_stem(out[-2])):
             out[-2:] = [_kansai_drawn(out[-2], prev.surface)]           # 寝えへんかった: え read as 得る
             out.append(w)
-            changed, i = True, i + 1
-            continue
-        if (s == "きへん" and f.pos1 == "名詞" and glued and prev is not None and prev.surface == "で"
+            last = i + 1
+        elif (s == "きへん" and f.pos1 == "名詞" and glued and prev is not None and prev.surface == "で"
                 and not getattr(prev, "white_space", "")):
             out[-1] = _kansai_verb(prev, "でき", "出来る")                # できへん: never で + 木偏
             out.append(_kansai_ending(w, "へん"))
-            changed, i = True, i + 1
-            continue
-        if s == "えへん" and f.pos1 == "感動詞" and glued and prev is not None:
+            last = i + 1
+        elif s == "えへん" and f.pos1 == "感動詞" and glued and prev is not None:
             if _short_stem(prev):
                 out[-1] = _kansai_drawn(prev, "え")                      # 寝えへん, 出えへん
             elif pf.pos1 == "接頭辞" and prev.surface == "来":
@@ -1578,55 +1578,45 @@ def _kansai(words):
             elif pf.pos1 == "感動詞" and prev.surface == "け":
                 out[-1] = _kansai_verb(prev, "けえ", "来る")             # けえへん
             else:
-                out.append(w)
-                i += 1
                 continue
             out.append(_kansai_ending(w, "へん"))
-            changed, i = True, i + 1
-            continue
-        if (s == "いひ" and f.lemma == "言う" and glued and nxt is not None and nxt.surface == "ん"
+            last = i + 1
+        elif (s == "いひ" and f.lemma == "言う" and glued and nxt is not None and nxt.surface == "ん"
                 and not getattr(nxt, "white_space", "") and prev is not None and _short_stem(prev)):
             out[-1] = _kansai_drawn(prev, "い")                          # 見いひん, 似いひん
             out.append(_kansai_ending(w, "ひん"))
-            changed, i = True, i + 2
-            continue
-        if s == "ひん" and f.lemma == "干る" and glued and prev is not None:
+            last = i + 2
+        elif s == "ひん" and f.lemma == "干る" and glued and prev is not None:
             if pf.pos1 == "動詞":
                 out.append(_kansai_ending(w, s))                        # 来いひん
             elif prev.surface == "しい" and pf.lemma == "椎":
                 out[-1] = _kansai_verb(prev, "しい", "為る")             # しいひん
                 out.append(_kansai_ending(w, s))
             else:
-                out.append(w)
-                i += 1
                 continue
-            changed, i = True, i + 1
-            continue
-        if (s in _CHAU and f.pos1 == "助動詞" and f.lemma == "ちゃう" and (s == "ちゃう" or (
+            last = i + 1
+        elif (s in _CHAU and f.pos1 == "助動詞" and f.lemma == "ちゃう" and (s == "ちゃう" or (
                 nxt is not None and nxt.feature.lemma == "ます"))
                 and (prev is None or prev.surface == "ちゃう" or not (
                     pf.pos1 in ("動詞", "助動詞", "形容詞") or str(pf.cForm).startswith("連用形")))):
             out.append(_kansai_as(w, s, pos1="動詞", pos2="一般", cType="五段-ワア行", lForm="チガウ", lemma="違う",
                                   orthBase="ちゃう", pronBase="チガウ", kanaBase="チガウ", formBase="チガウ"))
-            changed, i = True, i + 1                                    # ちゃうちゃう, それちゃうで
-            continue
-        if s in heads:
+            last = i + 1                                                # ちゃうちゃう, それちゃうで
+        elif s in heads:
             spelled, end = s, i + 1
             while end < n and end - i < 5 and not getattr(words[end], "white_space", ""):
-                spelled += surfaces[end]
+                spelled += words[end].surface
                 end += 1
                 entry = table.get(spelled)
                 if entry is not None and any(map(_made_up, words[i:end])):
                     out.append(_joined(words[i:end], spelled, entry[2], (entry[0], entry[1])))   # あかん, おかん
-                    changed, i = True, end
+                    last = end
                     break
-            else:
-                out.append(w)
-                i += 1
-            continue
-        out.append(w)
-        i += 1
-    return out if changed else words
+        changed = changed or last > i
+    if not changed:
+        return words                    # no rule fired
+    out.extend(words[last:])
+    return out
 
 
 def see_through_base(lemma, reading, tagger, joins=None):

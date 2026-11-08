@@ -603,7 +603,11 @@ class LibraryReader:
                                                          now - self._mode_at >= MODE_RECHECK_S)
         if stale:
             mode = self.opener.check()
-            reason = getattr(self.opener, "reason", None)
+            state = getattr(self.opener, "state", None)              # (mode, reason) as one answer (LM11b): never
+            if state is not None:                                     # a new mode with the old reason
+                mode, reason = state()
+            else:
+                reason = getattr(self.opener, "reason", None)
             self._mode_at, self._recheck = now, False
         else:
             mode, reason = self._mode

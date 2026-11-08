@@ -21,8 +21,9 @@ Rules that bite (spec §6.2, §8)
 -------------------------------
 - **Every write goes through `Store._writing()`**, under the cross-process write lock (`<db>.wlock`):
   SQLite 3.39.4, which 2.5 ships, carries the WAL-reset bug (two connections writing or checkpointing at
-  the same instant can corrupt the database silently). `query_only` is on outside the helper, so a bare
-  write anywhere else fails. No `wal_checkpoint` outside `Store.checkpoint` (a test scans for it).
+  the same instant can corrupt the database silently). Every store connection is guarded (`_Guarded`, K32): outside
+  the helper it refuses any statement that writes, so a bare write anywhere else fails. No `wal_checkpoint` outside
+  `Store.checkpoint` (a test scans for it).
 - **One connection per thread** (never `check_same_thread=False`); a worker opens its own `Store`.
 - **A command that changes nothing commits nothing**: no version bump, no write, no mtime change.
 - **The store never moves a file** (I3). File work stays with the caller, outside transactions.
@@ -907,16 +908,121 @@ ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mti
 _UPGRADES = {}
 
 
+# --- K32's guard: the guarded connection (§6.2) ------------------------------------------------------------------ #
+# Outside `Store._writing`, a store connection refuses every statement that writes. SQLite's authorizer, set once at
+# the open, is asked about each action of a statement while SQLite compiles it: a write outside the helper is denied
+# there. A write statement compiled inside the helper is remembered, because SQLite runs it compiled again later
+# without asking the authorizer (Python's statement cache): outside the helper it is refused before it runs. Never
+# `PRAGMA query_only` toggled per command, nor the authorizer set again per command: SQLite recompiles every statement
+# the connection holds after either, ~0.5 ms a command (Kura-B, 2026-11-07).
+_READ_ACTIONS = frozenset((sqlite3.SQLITE_READ, sqlite3.SQLITE_SELECT, sqlite3.SQLITE_FUNCTION,
+                           sqlite3.SQLITE_RECURSIVE, sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT,
+                           sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH))   # every other action code is a write
+_PRAGMA_WRITES = frozenset(("wal_checkpoint", "incremental_vacuum", "optimize"))   # with no value, still a write
+_PRAGMA_LOOKS = frozenset(("table_info", "table_xinfo", "table_list", "index_info", "index_xinfo", "index_list",
+                           "foreign_key_list", "foreign_key_check", "integrity_check", "quick_check"))  # value = a name
+GUARD_REMEMBERS = 1024        # write statements a connection remembers; past it, all forgotten and recompiled once
+GUARD_REFUSED = "attempt to write a readonly database: outside the library store's write helper (K32)"
+
+
+class _Gate:
+    """A guarded connection's state, apart from the connection (no reference cycle: the connection closes when its
+    last reference goes, never at a collection, §6.12). `open` only inside `Store._writing`."""
+    __slots__ = ("open", "wrote", "denied", "writes")
+
+    def __init__(self):
+        self.open = self.wrote = self.denied = False
+        self.writes = set()
+
+    def authorize(self, action, name, value, _db, _trigger):
+        if action in _READ_ACTIONS:
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_PRAGMA:
+            name = name.lower()
+            if name in _PRAGMA_LOOKS if value is not None else name not in _PRAGMA_WRITES:
+                return sqlite3.SQLITE_OK
+        if self.open:
+            self.wrote = True
+            return sqlite3.SQLITE_OK
+        self.denied = True
+        return sqlite3.SQLITE_DENY
+
+
+class _GuardedCursor(sqlite3.Cursor):
+    """Every statement on a store connection runs through here (the connection's `execute`, `executemany`,
+    `executescript` and `cursor()` alike)."""
+
+    def _run(self, run, sql, *args):
+        gate = self.connection.gate
+        if gate.open:
+            outer, gate.wrote = gate.wrote, False    # a run nested in this one (a generator or a function reading
+            try:                                      # through this connection) never hides this one's write
+                return run(self, sql, *args)
+            finally:
+                wrote, gate.wrote = gate.wrote, outer or gate.wrote
+                if wrote:
+                    if len(gate.writes) >= GUARD_REMEMBERS:      # forgotten: SQLite recompiles (and asks) again
+                        gate.writes.clear()
+                        self.connection.set_authorizer(gate.authorize)
+                    gate.writes.add(sql)
+        if sql in gate.writes:
+            raise sqlite3.OperationalError(GUARD_REFUSED)
+        try:
+            return run(self, sql, *args)
+        except sqlite3.DatabaseError as exc:
+            if not gate.denied:
+                raise
+            gate.denied = False
+            raise sqlite3.OperationalError(GUARD_REFUSED) from exc
+
+    def execute(self, sql, parameters=()):
+        return self._run(sqlite3.Cursor.execute, sql, parameters)
+
+    def executemany(self, sql, seq_of_parameters):
+        return self._run(sqlite3.Cursor.executemany, sql, seq_of_parameters)
+
+    def executescript(self, sql_script):
+        return self._run(sqlite3.Cursor.executescript, sql_script)
+
+
+class _Guarded(sqlite3.Connection):
+    """A store connection (K32): every statement through `_GuardedCursor`; `_connect` sets the authorizer last."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gate = _Gate()
+
+    def cursor(self, factory=_GuardedCursor):
+        if not (isinstance(factory, type) and issubclass(factory, _GuardedCursor)):
+            raise TypeError("a library store connection's cursors are guarded (K32)")
+        return super().cursor(factory)
+
+    def execute(self, sql, parameters=()):
+        return _GuardedCursor(self).execute(sql, parameters)
+
+    def executemany(self, sql, seq_of_parameters):
+        return _GuardedCursor(self).executemany(sql, seq_of_parameters)
+
+    def executescript(self, sql_script):
+        return _GuardedCursor(self).executescript(sql_script)
+
+    if hasattr(sqlite3.Connection, "blobopen"):          # Python 3.11+
+        def blobopen(self, *args, readonly=False, **kwargs):
+            if not readonly and not self.gate.open:
+                raise sqlite3.OperationalError(GUARD_REFUSED)
+            return super().blobopen(*args, readonly=readonly, **kwargs)
+
+
 def _connect(path, role, busy_ms=5000):
     """A connection by the spec's rules (§6.2): Python opens no transaction of its own (every BEGIN is
-    ours), WAL + synchronous=FULL, foreign keys on, `query_only` until the write helper lifts it, and no
-    auto-checkpoint except in the helper, which checkpoints under the write lock."""
+    ours), WAL + synchronous=FULL, foreign keys on, guarded (`_Guarded`: no write outside the write helper, K32), and
+    no auto-checkpoint except in the helper, which checkpoints under the write lock."""
     if role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
     if sys.version_info >= (3, 12):
-        conn = sqlite3.connect(path, timeout=LOCK_TIMEOUT, autocommit=True)
+        conn = sqlite3.connect(path, timeout=LOCK_TIMEOUT, autocommit=True, factory=_Guarded)
     else:
-        conn = sqlite3.connect(path, timeout=LOCK_TIMEOUT, isolation_level=None)
+        conn = sqlite3.connect(path, timeout=LOCK_TIMEOUT, isolation_level=None, factory=_Guarded)
     try:
         conn.execute(f"PRAGMA busy_timeout={int(busy_ms)}")
         conn.execute("PRAGMA synchronous=FULL")
@@ -928,7 +1034,7 @@ def _connect(path, role, busy_ms=5000):
         # command; on disk that was a file written and truncated for every statement — an Add of a 50-file season
         # 7 → 12 ms, its row writes 7× slower. Nothing here makes a temp table; the biggest sort is an upgrade's, once.
         conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA query_only=1")
+        conn.set_authorizer(conn.gate.authorize)   # K32: from here on, no write outside `Store._writing`
     except BaseException:
         conn.close()
         raise
@@ -1926,7 +2032,7 @@ class Store:
     def _writing(self, begin=True, wait=LOCK_TIMEOUT):
         """Every write and every explicit checkpoint, under the write lock (waited for `wait` s, then StoreBusy).
         Re-entrant: a command called inside another joins the outer transaction; only the outermost call takes the
-        OS lock, begins and commits. `query_only` is lifted here and nowhere else."""
+        OS lock, begins and commits. The connection's gate (K32) opens here and nowhere else."""
         if self._depth:
             self._depth += 1
             try:
@@ -1940,7 +2046,7 @@ class Store:
         committed = wrote = False
         try:
             changes = self.conn.total_changes
-            self.conn.execute("PRAGMA query_only=0")
+            self.conn.gate.open = True
             if begin:
                 try:
                     self.conn.execute("BEGIN IMMEDIATE")
@@ -1973,7 +2079,7 @@ class Store:
         finally:
             self._depth = 0
             try:
-                self.conn.execute("PRAGMA query_only=1")
+                self.conn.gate.open = False
             finally:
                 self._wlock.release()
                 if committed:

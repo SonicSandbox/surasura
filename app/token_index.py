@@ -120,7 +120,9 @@ from operator import itemgetter
 # v21 Kansai forms are read as Kansai (analyzer § Kansai, ENGINE_REVISION 38): the negative after a verb (やってへん,
 #    来えへん, 見いひん) is the verb + its ending, Kansai's ちゃう is 違う, and JMdict's Kansai words the tagger can't read
 #    are one word (あかん, おかん): a v20 blob holds 辺, 干る, 彼 and fillers there — 3.0, so users rebuild once.
-SCHEMA_VERSION = 21
+# v22 a pronoun is a compound's part and a verb's stem carries a suffix that makes a noun (私生活, 言い方 — ENGINE_REVISION
+#    39): a v21 blob holds them in pieces — 3.0, so users rebuild once with v20–v21.
+SCHEMA_VERSION = 22
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

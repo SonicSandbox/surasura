@@ -74,6 +74,7 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.analyzer import (_SAME_CHARACTER, _STRETCH_DROPPED_RE, JoinedWord, ReadNode, _compound_part,  # noqa: E402
+                          _pronoun_leads,
                           _join_affix_runs, _join_compounds, _lone_marks, _plural, _read, _sanitize_term, _stretched,
                           join_affixes, tagger_text)
 from app.analyzer import _stem as _plain_stem  # noqa: E402  (a verb's plain 連用形: 出来, 損ない, 待ち)
@@ -413,6 +414,8 @@ def compound_shape(words, word):
         return "V"
     if not 2 <= n <= 4 or "".join(_read(w) for w in words) != word:
         return None
+    if not _pronoun_leads(words):
+        return None                         # a pronoun only leads a compound (analyzer._pronoun_leads)
     if n <= 3 and all(_compound_part(w, "N") for w in words):
         return "N"
     if (any(_number(w) for w in words) and not _number(words[-1]) and not _noun_suffix(words[0])
@@ -862,7 +865,7 @@ def _run_shape(words):
 def _run_kind(words):
     """"N" for a run of nouns (the compound part test), "S" for nouns and at least one verb's stem, else None."""
     stems = [_plain_stem(w) for w in words]
-    if not all(s or _compound_part(w, "N") for s, w in zip(stems, words)):
+    if not all(s or _compound_part(w, "N") for s, w in zip(stems, words)) or not _pronoun_leads(words):
         return None
     return "S" if any(stems) else "N"
 

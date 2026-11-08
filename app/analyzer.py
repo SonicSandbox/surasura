@@ -174,7 +174,11 @@ ENSURE_AUDIO_EXAMPLE = False
 #     (§ Kansai): やってへん counts やる and the ending — never 辺 —, 来えへん 来る, ちゃう 違う, and JMdict's Kansai
 #     words the tagger can't read are words (あかん, おかん — app/kansai_data.py). SCHEMA_VERSION 21: every file is
 #     tokenized again. 3.0, with 31–37.
-ENGINE_REVISION = 38
+# 39: Words the lists carry that the part tests left in pieces are one word: a pronoun is a compound's part (私生活 =
+#     私 + 生活), and a verb's stem carries a suffix that makes a noun of it (言い方 = 言い + 方, 書き手); one that makes an
+#     adjective or a verb of it stays the verb with its grammar (読み + やすい). The reference data is rebuilt (+279
+#     affix joins, +149 compounds): SCHEMA_VERSION 22. 3.0, with 31–38.
+ENGINE_REVISION = 39
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -590,6 +594,9 @@ def word_lemma(word):
 # they count as their parts (何 + 様). Never a plural: the table's build reads 方 by the lists' reading, so あなた方
 # (アナタガタ) is never a word here, though the tagger reads its 方 カタ.
 _NEVER_JOINED = frozenset(("たち", "達", "ら", "等", "ども", "共", "がた"))
+# A verb's stem carries a suffix that makes a noun of it — 言い + 方, 書き + 手, 焼き + たて: the lists' words, as
+# a noun after a stem is a compound (待ち + 時間) — never one that makes an adjective or a verb of it: 読み + やすい and
+# 分かり + づらい are the verb with its grammar, as 食べ + 始める is (`_join_affix_runs`).
 # A nominalizer after a な-word stays a token of its own: 不自然さ counts toward 不自然 (the user, U2). UniDic
 # files most な-words as nouns that can be one (複雑, 便利: 形状詞可能) — 複雑さ and 便利さ stay apart too, while
 # 人間味 and よそみ, whose み is 味 and 見, still join. After a pronoun it is never one: これ + さ is これ and the
@@ -932,7 +939,8 @@ def _join_affix_runs(words, joins):
                     if own and own[0] > found[0]:
                         found = None
         elif (i + 1 < n and (words[i + 1].feature.pos1 == "接尾辞" or _read(words[i + 1]) in _NOUN_SUFFIXES)
-                and (_is_base(w) or (pronouns and f.pos1 == "代名詞" and not w.is_unk))
+                and (_is_base(w) or (pronouns and f.pos1 == "代名詞" and not w.is_unk)
+                     or (_stem(w) and words[i + 1].feature.pos1 == "接尾辞" and words[i + 1].feature.pos2 == "名詞的"))
                 and not (i and words[i - 1].feature.pos2 == "数詞")):
             found = _suffixed(words, i, _read(w), f.pos1, joins)
         if found and found[0] > i:
@@ -952,10 +960,10 @@ def _join_affix_runs(words, joins):
 # JPDB 2024 or Jiten that the tagger reads as those words, distilled at build time into reference_data's
 # compound table with the list's reading (株式会社 カブシキガイシャ, never the parts' カイシャ) — minus the
 # spellings whose parts meet in general text no more often than chance would have them meet. Kinds:
-#   N  two or three nouns — places (日本語, 鳥取県) and な-words (自信満々) among them; a な-word last makes a
-#      な-word (一生懸命に). Never a number, a person's name, a word the dictionary lacks, or a grammar stem:
-#      バカみたい is バカ + みたい. Also a headword the tagger reads otherwise alone that general text writes as
-#      nouns (出来損ない: 出来 + 損ない in a sentence, 出来る + 損なう alone).
+#   N  two or three nouns — places (日本語, 鳥取県), な-words (自信満々) and pronouns (私生活: 私 + 生活)
+#      among them; a な-word last makes a な-word (一生懸命に). Never a number, a person's name, a word the
+#      dictionary lacks, or a grammar stem: バカみたい is バカ + みたい. Also a headword the tagger reads otherwise
+#      alone that general text writes as nouns (出来損ない: 出来 + 損ない in a sentence, 出来る + 損なう alone).
 #      A verb's stem may stand in a noun compound JMdict lists as a noun that the text, or the word alone, writes
 #      with one (the dictionaries' mark 8): 立ち[立つ] + 位置, 待ち[待つ] + 時間, a card's 出来る + 損なう. A run of
 #      nouns and stems (a verb's plain 連用形, never する's) spelling it joins as the noun — anywhere when it ends
@@ -976,8 +984,8 @@ def _join_affix_runs(words, joins):
 # katakana run that app/names.py would make one name from the tagger's own pieces, its pieces go back and the name
 # stays one word (ビルデイング, never ビルデ + イング); one they list keeps its join (フジテレビ + アナウンサー). A compound
 # keeps its parts: a known compound marks them known, and パターン counts them in context.
-_FIRST_POS1 = frozenset(("名詞", "形状詞", "動詞"))            # what a compound can start with (a number is a 名詞)
-_LATER_POS1 = frozenset(("名詞", "形状詞", "動詞", "接尾辞"))   # ...and go on with (a numeral word's 歳, 日)
+_FIRST_POS1 = frozenset(("名詞", "形状詞", "動詞", "代名詞"))     # what a compound can start with (a number is a 名詞)
+_LATER_POS1 = frozenset(("名詞", "形状詞", "動詞", "接尾辞", "代名詞"))  # ...and go on with (a numeral word's 歳, 日)
 _NA_WORD_CLASSES = frozenset(("一般", "タリ"))                   # a な-word proper — never 助動詞語幹 (みたい, そう)
 _COUNTER_CLASSES = frozenset(("助数詞", "助数詞可能"))            # UniDic's own counters (日, 円, 階, 歳)
 # A plural or collective suffix, and how the lists read it when it is one: 先生方 is センセイガタ (the tagger
@@ -988,7 +996,8 @@ _PLURAL_READINGS = {"たち": ("タチ", "ダチ"), "達": ("タチ", "ダチ"),
 
 def _compound_part(word, kind="N"):
     """Can `word` be a part of a dictionary compound of `kind` (§ above)? Never a word the dictionary lacks.
-    N: a noun that can carry an affix (`_is_base` — no number, no person's name; a place can: 日本 + 語) or a
+    N: a noun that can carry an affix (`_is_base` — no number, no person's name; a place can: 日本 + 語), a
+    pronoun (私 + 生活: a pronoun is a word like a noun, and the table holds only the lists' headwords) or a
     な-word proper (懸命, 満々 — never a grammar stem: みたい, そう). A word joined with its affixes is a part like
     any noun (お味噌 + 汁). Q: also a number or a noun suffix (二十 + 歳, 十 + 人 + 十 + 色). V: a verb other
     than する."""
@@ -1001,7 +1010,7 @@ def _compound_part(word, kind="N"):
         return True
     if f.pos1 == "形状詞":
         return f.pos2 in _NA_WORD_CLASSES
-    return f.pos1 == "名詞" and _is_base(word)
+    return f.pos1 == "代名詞" or (f.pos1 == "名詞" and _is_base(word))
 
 
 def _counter(word):
@@ -1034,7 +1043,8 @@ def _joins_here(words, i, run, entry, fringe):
         test = "Q"                              # a numeral inside the word counts nothing in it (精 + 一 + 杯)
     else:
         test = "Q" if kind == "Q" else "N"
-    return all(_compound_part(w, test) for w in run) and not _plural(_read(run[-1]), entry[1])
+    return (all(_compound_part(w, test) for w in run) and _pronoun_leads(run)
+            and not _plural(_read(run[-1]), entry[1]))
 
 
 _STEMS = 8                      # the dictionaries' mark: a verb's stem may stand in this noun compound (§ above)
@@ -1048,6 +1058,24 @@ def _stem(word):
     return f.pos1 == "動詞" and not word.is_unk and f.lemma != "為る" and str(f.cForm) == "連用形-一般"
 
 
+_HAN_RE = re.compile(f"[{HAN}]")
+
+
+def _pronoun_leads(run):
+    """Does a pronoun among `run`'s parts stand where a compound may hold one (`_compound_part`)? Only first — 私 +
+    生活, これ + 以上, 何 + 一 + つ — and one written in kana alone only before a part holding a kanji: the tagger reads
+    kana pieces as pronouns (だれ in この前だれ, ほん, タ), and 前だれ, ほんそれ, はしわたし are no words there. Never
+    before a counter: 何 + 年, 何 + 回 ask for a number, and a number + its counter is no word (§ above)."""
+    if not any(w.feature.pos1 == "代名詞" for w in run):
+        return True
+    first = run[0]
+    if first.feature.pos1 != "代名詞" or any(w.feature.pos1 == "代名詞" for w in run[1:]) or len(run) < 2:
+        return False
+    if _counter(run[1]):
+        return False
+    return bool(_HAN_RE.search(_read(first)) or _HAN_RE.search(_read(run[1])))
+
+
 def _joins_with_stems(words, i, run, entry, fringe):
     """May `run` (words[i:i + len(run)]), nouns and at least one verb's stem, be joined as the noun compound `entry`
     — one a verb's stem may stand in (the mark 8, § above)? A run ending in a noun joins anywhere (待ち + 時間); one
@@ -1055,7 +1083,8 @@ def _joins_with_stems(words, i, run, entry, fringe):
     that is the word (出来る + 損なう) — never in a sentence, where 位置づけ + て is the verb. The guards of any compound
     hold: never after a number that counts its first part, never a plural."""
     if (entry[2] != "N" or not entry[3] & _STEMS or (entry[3] & 1 and not fringe) or len(run) > 3
-            or not any(_stem(w) for w in run) or not all(_stem(w) or _compound_part(w, "N") for w in run)):
+            or not any(_stem(w) for w in run) or not all(_stem(w) or _compound_part(w, "N") for w in run)
+            or not _pronoun_leads(run)):
         return False
     if i and words[i - 1].feature.pos2 == "数詞" and _counter(run[0]):
         return False

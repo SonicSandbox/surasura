@@ -1,22 +1,22 @@
 {
  "signatures": {
-  "ja-ordered": "69433590a8e6d50a89f17f6e2a8a2007323c26a0d4cd061e08ec0c04182948ff",
-  "ja-moved": "031d6cfbab29c1a58c9fc28316b0a23578d90296f207c020b4d7decb27fee2c7",
-  "zh-ordered": "5975e8a6bc15dbb9af90ce4d044633518fad62bb69b616be780de32ad667100f",
-  "ja-empty": "b016dd8c08ada9ec33137ae37f4ce63c1567820a85bdb179fa5658607ffb9448"
+  "ja-ordered": "2d69ffc45a58a499ab0b59932cd3e7cf4e504d37ff0874f4ce7258ed74686720",
+  "ja-moved": "d1131be8bacc6f8431c3df4d6d76485fa3b9dc7c6a5608bfc1f140fbdcfc0020",
+  "zh-ordered": "c4d0ae76f8d5c62102693f5bc07e6b4ae4ab4ada513d0e35ebe254af45b5f27c",
+  "ja-empty": "e68408838c64aaef03b2c4315cc201317ae6b95b5af5862d0be66c7066d107fa"
  },
  "samples-ja": {
   "analyzed_files.json": "add0fd27643999754930cb9b789b59feef62a42a00a8b5ae2545e9e5dbcf50f0",
-  "file_statistics.json": "77c6d0aaff5763c47d55bb3958be962fcf85176a3633c7816ac44568d71626c9",
-  "file_statistics.txt": "0d268603b37aa870b0b7213af543ae63e2d6c89ed3b5708ef8dfb38c770617f6",
-  "file_words.json": "405624fdd2972518d6484e77d8026dd9cbb92e507ae39c894eb04fd7f87f8e44",
-  "library_frequency.json": "ad0f4b23f43c22d99dfa0c49dc94594b5aaa8b857eb60bb57b1b5952e472e6ec",
-  "priority_learning_list.csv": "17f0ad8a2e5f9ac858681eab8c5f302119615a3fead35d9ff16e4e88d89758a0",
-  "progressive_learning_list.csv": "8388fa71e4aeb18a3a837d526b164db3bef4821ee5c2ccda0c922e3250723710",
-  "reading_list_static.html": "03c74c8c5035069d16c884022ba523c74e2b884dd7a5b472e11d03c2fca1b8bf",
+  "file_statistics.json": "4730ef48c0191a9c3c4de6e9b99ac529567e697db046fc4559702f3ea18c74a9",
+  "file_statistics.txt": "aff9ae9cec042e75bfd8fb30f6def2342ca790f56ec8108553cbe3a86402eef4",
+  "file_words.json": "235d26961e2c8755a017a30c593c94e83627deba05a43f6a165719ffd64a7d43",
+  "library_frequency.json": "183140db4be517200b9323eb4e319890b026849368e4bb6cf7fdc141daab9f4b",
+  "priority_learning_list.csv": "145dc93c25ff95dfd5b7d70c6ec31c65a76d8846b7cfebf72012342f5dc88198",
+  "progressive_learning_list.csv": "d61be502d62b50eacdae8ac25f1f2bc8c026a1e19fdb62d9288bd85d27b109b5",
+  "reading_list_static.html": "abd4ffd269e571b4698148129938613a982907d1e135cc1f24d79a40b3f52f6c",
   "reading_words.csv": "eb7a445e96a81deb8e71fddd8e4f4b48ff7fe0534414f08282761ed5babc79d2",
   "sources.json": "7e1b5c82c13e55378664bcc4bdb464bcf503e3fd6b4650705b79e1ac9ffc2153",
-  "word_stats.json": "013e2f6b8aa8a0d7ce4713f55962671af0782239abe831077aa29644dc3f5c0b"
+  "word_stats.json": "87c706287aacd042c5474bd47cd5aef41420b0c4ec89b560984aac5283e81696"
  },
  "samples-zh": {
   "analyzed_files.json": "b9c916d2ad0c88b076ea88cf7b9ca50fcd022c32f9007ac99f8450e6c83ff405",
@@ -33,16 +33,16 @@
  },
  "rp2-ja": {
   "analyzed_files.json": "d6cbb19943c3aa96227df8f01803b257c02c09e54e8e7e9053df14857040cfdd",
-  "file_statistics.json": "a99845ad6c43d9724b0aed1288627840b1785024a331b5317c3733291930b0f7",
-  "file_statistics.txt": "7c21d485f1d1f9676c3c74202c241d9fa41fc56fa1d12b2cede9ef8f3279a432",
-  "file_words.json": "2ea75d75b6857cfe9e1cbd6a0be928997b52fb0c565e8ee0f61e55ccaafa549c",
-  "library_frequency.json": "23cd3c28fa58c47f58fba5d7bf84b4dead141da01b1d9e0e97f00cd614d15d2e",
-  "priority_learning_list.csv": "acb42bb38e703cf849cbe77d37490529815258f45b69aa37ddbcb355c4fb5b69",
-  "progressive_learning_list.csv": "b8a3a1e24a35a5fe6713ed21e6e17503f436fd425af2034f56003e62baf20953",
-  "reading_list_static.html": "d4a38141121a83b99f850e27477139a6094f0792ba5045e3f710ea3192ee397a",
+  "file_statistics.json": "2ca3301e04ce1a9fdfa7a7a4a6eb8701065d5992d3c76198ce782c8287ce593d",
+  "file_statistics.txt": "c3f430c6f0e543ae4191b73d1659fea4b897fbf8a1ae880a8ca3f17440e11ee4",
+  "file_words.json": "f37a5d8098ce6c6c2ef08e8d7da39eff8165735ab717099ee28772ce1b629e16",
+  "library_frequency.json": "97aed98c4877bbc1c8c1e7162098aa59d952fb4756c123c224c17eeafadf1350",
+  "priority_learning_list.csv": "1216f58888c778932847643af52c9749c77123de162d12939b099ca10d97d52a",
+  "progressive_learning_list.csv": "504d921d6037c2cbcd9a1ab4e3b297500e824d6524d768ca68958be889398bf7",
+  "reading_list_static.html": "4823c1fd2d6ccb738d2f8e25437ab6bb7a44e412d3bb18f441d89503ba2dc9b1",
   "reading_words.csv": "96b920e3845ed40247e0b6ceefe8c19f397ee49af3436f4bd397ebf5c53fbc92",
   "sources.json": "d96f06a703e0deb7e36a75ca24cee601340282315af216ebedda858ee08e50f9",
-  "word_stats.json": "c7de2b53090b1e2afbc5c3a17b6470344cd4c7c96c0a204f95ee6f8999f90479"
+  "word_stats.json": "b5ea66ca344eed030c171790e0c8a874cb28da23e896c677c14ae356e12f2bf5"
  },
  "rp2-zh": {
   "analyzed_files.json": "dab1e30dd631a958b23a38f85a0d1bb7cd437a1beefb31c8706452692e99e5c9",
@@ -57,5 +57,5 @@
   "sources.json": "1184449a27dc9861deac9c051912bf95bf8c5aacfccbe04ba3349cb7b12e479a",
   "word_stats.json": "b394f54a0cc5761a34ae9bacdf9e67a38098da7db16014e0acdcff1c4b8cd6ef"
  },
- "_base": "ddffc550dd95ebebb0abc0d761f5b5a64cda7ed9"
+ "_base": "61f0e61def4835ec360ffe2c0a15c8d21019ebb0"
 }

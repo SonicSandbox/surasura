@@ -741,3 +741,191 @@ def test_r1_the_sub_lines_new_count_asks_the_header_nothing_and_a_longer_line_ta
     finally:
         line.setText(before)
         settle(30)
+
+
+def test_r3_a_row_leaving_for_goal_repaints_only_what_changed_never_the_list(screen):
+    """⋯ › Goal on a row near the top: the row leaves Current and the rows under it close the gap. Up next 3 (S19): the
+    list's layout no longer repaints the whole viewport — the rows that only shifted are moved as painted (`QWidget.
+    scroll`), so the list paints at most the strip they uncover and the rows that changed, and draws no row afresh but
+    those (Goal at 20,000 files: the whole list, 6–8 ms of a 21 ms press)."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    win.toasts.close()
+    settle(30)
+    rs = list(win.moves.base().rows)
+    row = next(r for r in rs[2:] if r.tier == "now")
+    reader = win.services.library
+    saved, built, renders = len(writer.saved), reader.builds, lst.delegate.renders
+    lst.moved_rows = lst.drawn_rows = None
+    vp = lst.viewport()
+    with wc.measure(win, readers=[reader]) as w:
+        win.moves.menu_pick(row, "goal")
+        assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [] and reader.builds > built, 3)
+        settle(200)
+    assert row.key not in keys_of(win), w.report()
+    painted = w.union_in(wc.rect_in_window(vp))
+    whole = vp.width() * vp.height()
+    assert painted <= whole // 2, (painted, whole, w.report())    # the uncovered strip and what changed, never the list
+    assert getattr(lst, "moved_rows", None) and lst.moved_rows >= 3, w.report()       # (the rows under it shifted)
+    assert lst.delegate.renders - renders <= 3, w.report()       # no row drawn afresh but the ones that changed
+
+
+def _shown(lst):
+    """{entry key: (rect, place number)} of the rows on screen."""
+    model, h = lst.model(), lst.viewport().height()
+    first, last = lst.indexAt(QPoint(4, 1)), lst.indexAt(QPoint(4, h - 2))
+    lo = first.row() if first.isValid() else 0
+    hi = last.row() if last.isValid() else model.rowCount() - 1
+    return {model.keys[i]: (lst.visualRect(model.index(i, 0)), getattr(model.entries[i][1], "index", None))
+            for i in range(lo, hi + 1)}
+
+
+@pytest.mark.parametrize("how", ["goal", "up-next"])
+def test_r3_after_a_row_leaves_or_up_next_hands_on_every_change_on_screen_is_painted(screen, how):
+    """Up next 3: a splice moves the shifted rows as painted and draws only what changed. What the list must still
+    show right: either the whole list painted, or the rows that moved one block shifted by one distance (moved as
+    painted) — and every row whose place number changed has its number's column painted (drawn over its picture: #4
+    now #3); a row that came is painted whole. (Up Next handing on: rows came and went at once.)"""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    vp = lst.viewport()
+    win.toasts.close()
+    settle(30)
+    rs = list(win.moves.base().rows)
+    row = next(r for r in rs[2:] if r.tier == "now")
+    before = _shown(lst)
+    saved = len(writer.saved)
+    with wc.measure(win) as w:
+        win.moves.menu_pick(row, how)
+        assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3)
+        settle(300)
+    after = _shown(lst)
+    at = wc.rect_in_window(vp).topLeft()
+
+    def painted(rect):                                   # (in the viewport's coordinates, what of it shows)
+        rect = rect.intersected(vp.rect())
+        return w.union_in(rect.translated(at)) == rect.width() * rect.height()
+    whole = painted(vp.rect())
+    shifts = {r.top() - before[k][0].top() for k, (r, _n) in after.items() if k in before and before[k][0] != r}
+    if not whole:
+        assert len(shifts) <= 1, shifts
+        moved = [i for i, k in enumerate(after) if k in before and before[k][0] != after[k][0]]
+        assert moved == list(range(moved[0], moved[0] + len(moved))) if moved else True, moved    # one block
+        for k, (r, n) in after.items():
+            if k not in before:
+                assert painted(r), (k, r)                 # came: drawn whole
+            elif before[k][1] != n:
+                col = QRect(r.left(), r.top(), 30, r.height())
+                assert painted(col), (k, before[k][1], n)  # its place number moved on: its column drawn
+
+
+def _coverage(lst, w, before, after):
+    """The splice's paint rules, read from the rows' places: (whole list painted, problems) — rows that moved one
+    block by one distance, a row that came painted whole, a number moved on painted, and a row left where it was
+    below a moved block painted (the block's move shifted its pixels too)."""
+    vp = lst.viewport()
+    at = wc.rect_in_window(vp).topLeft()
+
+    def painted(rect):
+        rect = rect.intersected(vp.rect())
+        return w.union_in(rect.translated(at)) == rect.width() * rect.height()
+    if painted(vp.rect()):
+        return True, []
+    out = []
+    keys = list(after)
+    moved = [i for i, k in enumerate(keys) if k in before and before[k][0] != after[k][0]]
+    shifts = {after[keys[i]][0].top() - before[keys[i]][0].top() for i in moved}
+    if len(shifts) > 1 or (moved and moved != list(range(moved[0], moved[0] + len(moved)))):
+        out.append(("not one block", moved, shifts))
+    for i, k in enumerate(keys):
+        r, n = after[k]
+        if k not in before:
+            if not painted(r):
+                out.append(("came, not painted", k))
+        elif before[k][1] != n and not painted(QRect(r.left(), r.top(), 30, r.height())):
+            out.append(("number not painted", k))
+        elif moved and i > moved[-1] and before[k][0] == r and not painted(r):
+            out.append(("left under a moved block, not painted", k))
+    return False, out
+
+
+def test_r3_a_row_gone_above_and_one_come_below_leave_no_row_unpainted(screen):
+    """A build where a row goes near the top and another comes two places under it (a show leaving and one arriving
+    at once): the rows between shift up, those under the new one stay — moving the block as painted would move theirs
+    too, so the list is drawn whole (or every one of them painted)."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    win.toasts.close()
+    settle(30)
+    model = lst.model()
+    entries = list(model.entries)
+    rows_at = [i for i, e in enumerate(entries) if e[0] == rows.ROW]
+    gone = rows_at[1]
+    came_at = gone + 2                                            # (inside the screen, rows on screen under it)
+    kind, payload, lines = entries[gone]
+    newcomer = (kind, payload._replace(key=payload.key + "-arrived"), lines)
+    new = entries[:gone] + entries[gone + 1:]
+    new.insert(came_at, newcomer)
+    before = _shown(lst)
+    try:
+        with wc.measure(win) as w:
+            how = lst.set_entries(new)
+            settle(50)
+        assert how == "spliced"
+        whole, problems = _coverage(lst, w, before, _shown(lst))
+        assert whole or not problems, problems
+    finally:
+        lst.set_entries(entries)
+        settle(50)
+
+
+def test_r3_the_row_under_the_pointer_leaving_for_goal_draws_its_neighbours_again(screen):
+    """⋯ › Goal on the row the pointer rests on: it was lifted, its neighbours eased apart (the hover look, S7); once
+    it is gone they are drawn again where they stand, never left eased (moved as painted)."""
+    from PyQt6.QtTest import QTest
+    seed, win, writer = screen
+    lst = lst_of(win)
+    win.toasts.close()
+    settle(30)
+    rs = list(win.moves.base().rows)
+    row = next(r for r in rs[3:] if r.tier == "now")
+    i = next(n for n, e in enumerate(lst.model().entries) if getattr(e[1], "key", None) == row.key)
+    QTest.mouseMove(lst.viewport(), lst.visualRect(lst.model().index(i, 0)).center())
+    settle(300)
+    assert lst._touch, "the pointer's row isn't lifted"
+    before = _shown(lst)
+    saved = len(writer.saved)
+    try:
+        with wc.measure(win) as w:
+            win.moves.menu_pick(row, "goal")
+            assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3)
+            settle(300)
+        after = _shown(lst)
+        whole, problems = _coverage(lst, w, before, after)
+        assert whole or not problems, problems
+        if not whole:
+            vp, at = lst.viewport(), wc.rect_in_window(lst.viewport()).topLeft()
+            for n in (i - 1, i):                         # the rows now on either side of where it was
+                r = lst.visualRect(lst.model().index(n, 0)).intersected(vp.rect())
+                assert w.union_in(r.translated(at)) == r.width() * r.height(), n
+    finally:
+        wc.pointer_away(lst)
+
+
+def test_the_rows_places_read_from_the_heights_are_qts_own(screen):
+    """`RowsView._on_screen` stacks the delegate's heights from the scroll value instead of asking Qt (each
+    `visualRect` asks the delegate again): the same rects as Qt's own, at the top and scrolled part-way."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    bar = lst.verticalScrollBar()
+    try:
+        for value in (0, bar.maximum() // 3 + 17):
+            bar.setValue(value)
+            settle(30)
+            mine = lst._on_screen()
+            assert mine and all(r == lst.visualRect(lst.model().index(i, 0)) for i, r in mine), \
+                [(i, r, lst.visualRect(lst.model().index(i, 0))) for i, r in mine][:4]
+            assert lst.indexAt(QPoint(4, 1)).row() == mine[0][0]
+    finally:
+        bar.setValue(0)
+        settle(30)

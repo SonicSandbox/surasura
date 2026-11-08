@@ -833,6 +833,22 @@ def test_a_deferred_press_whose_go_never_comes_is_written_after_DEFER_MAX_S(stub
     assert time.monotonic() - t0 >= M.DEFER_MAX_S * 0.9 and len(store.calls) == 1
 
 
+def test_a_write_starts_only_while_the_window_rests(stub_writer):
+    """(Up next 2) The writer's step waits while the window's thread is busy (`window_idle`), so its work never takes
+    turns at Python's lock with the window's stretch; the window resting lets it go at once."""
+    from app.services import window_idle
+    w, heard, store, _opener = stub_writer()
+    window_idle.busy()
+    try:
+        w.move([1], "goal", label="press")
+        time.sleep(0.03)                                   # (under window_idle.CAP_S)
+        assert store.calls == []
+        window_idle.rest()
+        assert h.until(lambda: heard.saved)
+    finally:
+        window_idle.rest()
+
+
 def test_a_value_error_outside_a_move_is_a_raw_error(stub_writer):
     w, heard, store, _opener = stub_writer()
     store.fail["set_tier"] = ValueError("unknown tier 'x'")
@@ -3926,6 +3942,51 @@ def test_up_next_and_goal_by_the_rule_are_followed_by_the_numbers_before_their_w
     w.place([now[7]], "soon", label="soon")
     assert h.until(lambda: len(heard.saved) == 3)
     assert len(numbers.moves) == 2 and numbers.landings == 2 and numbers.resyncs == resyncs + 1
+
+
+class Expecting(Recorder):
+    """`Recorder` with `Numbers.expect`: the moves whose result only the store knows are followed after the write."""
+
+    def __init__(self):
+        super().__init__()
+        self.expects = 0
+
+    def expect(self, landing):
+        self.expects += 1
+        landing["numbers_ahead"] = True
+
+
+def test_a_nudge_and_a_soon_place_are_followed_once_from_where_the_store_put_them(lib, make_writer):
+    """(Up next 2: one rule for every command that moves the order.) A nudge (`Store.nudge`'s group jumps) and *Soon* by
+    its rule (the slot below the Soon line) are placed by the store alone: the numbers are told before the write that
+    the order is about to move (`expect`: on its way), then follow the block to where the store put it — after the item
+    just before it in its tier — and the write lands for them once; no compare after it (a nudge was a full re-plan of
+    the whole order at each Alt+↑ / ↓ at 20,000 files)."""
+    numbers = Expecting()
+    w, heard = make_writer(numbers=numbers)
+    now = lib.ids("now")
+    w.nudge([now[4]], "up", label="up")
+    assert h.until(lambda: heard.saved)
+    after = lib.ids("now")
+    at = after.index(now[4])
+    assert at < 4 and numbers.moves == [([now[4]], "now", None, after[at - 1] if at else None)], numbers.moves
+    assert numbers.expects == 1 and numbers.landings == 1 and numbers.resyncs == 0
+    w.place([now[6]], "soon", label="soon")
+    assert h.until(lambda: len(heard.saved) == 2)
+    soon = lib.ids("soon")
+    i = soon.index(now[6])
+    assert numbers.moves[-1] == ([now[6]], "soon", None, soon[i - 1] if i else None), numbers.moves
+    assert numbers.expects == 2 and numbers.landings == 2 and numbers.resyncs == 0
+
+
+def test_a_nudge_at_the_tiers_top_moves_nothing_and_lands_once(lib, make_writer):
+    """A nudge up of the tier's first row writes nothing: the numbers were told, follow nothing, and the command lands
+    for them once (never left on its way, which would hold every resync off)."""
+    numbers = Expecting()
+    w, heard = make_writer(numbers=numbers)
+    w.nudge([lib.ids("now")[0]], "up", label="top")
+    assert h.until(lambda: w.pending() == 0 and (heard.saved or heard.rereads))
+    assert numbers.moves == [] and numbers.expects == numbers.landings == 1
 
 
 def test_a_join_ahead_is_one_journalled_command_and_a_no_op_hands_its_label_back(lib, make_writer):

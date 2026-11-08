@@ -16,7 +16,7 @@ pytest.importorskip("PyQt6")
 from PyQt6.QtCore import QObject, QPoint, QPointF, QRect, Qt
 from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from app.qt import rows, strings
 from app.qt.item_menu import ep_name
@@ -697,3 +697,47 @@ def test_r3_up_next_picked_in_the_menu_repaints_the_rows_it_moves_never_the_wind
     assert actions.n == 0, w.report()                                  # (13 before: every action of the menu)
     assert w.layouts_of(central) == 0 and w.layouts_of(win) == 0, w.report()
     assert w.paints_outside_rect(wc.rect_in_window(lst), *_allowed_outside_the_list(win)) == [], w.report()
+
+
+def test_r1_goal_from_the_menu_lays_the_window_out_never_whatever_its_toast_and_counts_do(screen):
+    """⋯ › Goal on a row: the count in the header's sub-line changes and a toast shows afresh (none was up) — neither
+    lays the window or its content out (Up next 2): the sub-line sits in a holder that asks the header only when its
+    size changes (`shell.SubLine`), and the overlays sit on the central widget, which keeps no layout of its own — the
+    content is laid out in its `body` (`shell.Central`). (Each Goal was a 6 ms pass of the window at 20,000 files.)"""
+    seed, win, writer = screen
+    win.toasts.close()
+    settle(30)
+    rs = list(win.moves.base().rows)
+    row = next(r for r in rs[3:] if r.tier == "now")
+    reader = win.services.library
+    saved, built = len(writer.saved), reader.builds
+    sub = win.subline.text()
+    with wc.measure(win, readers=[reader]) as w:
+        win.moves.menu_pick(row, "goal")
+        assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [] and reader.builds > built, 3)
+        settle(200)
+    assert win.toasts.card.isVisible() and win.subline.text() != sub, w.report()    # (both did change)
+    assert w.layouts_of(win) == 0 and w.layouts_of(win.centralWidget().body) == 0, w.report()
+    assert w.layouts_of(win.findChild(QWidget, "header")) == 0, w.report()
+
+
+def test_r1_the_sub_lines_new_count_asks_the_header_nothing_and_a_longer_line_takes_its_room(screen):
+    """The header's sub-line: new digits at the same size lay nothing out; a line that grows is laid out once and its
+    holder takes the new size (the search cut after it moves along, as it did when the label sat in the layout)."""
+    seed, win, writer = screen
+    line, header = win.subline, win.findChild(QWidget, "header")
+    before = line.text()
+    try:
+        line.setText("日本語 · 12 in Current · 58 files")
+        settle(30)
+        with wc.measure(win) as w:
+            line.setText("日本語 · 13 in Current · 58 files")
+        assert w.layouts_of(header) == 0 and w.layouts_of(win) == 0, w.report()
+        width = line.holder.width()
+        with wc.measure(win) as w:
+            line.setText("日本語 · 13 in Current · 58 files · 進撃の巨人 · 鬼灭之刃 第三季")
+        assert w.layouts_of(header) == 1, w.report()
+        assert line.holder.width() > width and line.geometry() == line.holder.rect()
+    finally:
+        line.setText(before)
+        settle(30)

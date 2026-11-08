@@ -51,6 +51,7 @@ from app.qt import star_ask                               # Surasura's star ask 
 from app.qt import tool_icons                             # try a9 #5: the open windows beside Anki
 from app.services import phase as phase_service
 from app.services import standing as standing_service
+from app.services import window_idle
 from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
 
 TABS = ("current", "finished", "needs", "settings")
@@ -1078,6 +1079,51 @@ class ElidingLabel(QLabel):
     shown_fit = _fit                # (Report a problem's picture mode: `report.PictureMode`)
 
 
+class SubLine(QLabel):
+    """The header's sub-line (the language · N in Current · M files), inside a holder of its own (`holder`, the item
+    in the header's layout, with no layout of its own): Qt asks a label's parent to lay out again at each new text, so
+    Goal's count at each move laid the header, the central widget and the window out again (6 ms at 20,000 files) and
+    repainted it whole. The holder takes the label's size; new words at the same size ask the header nothing — a new
+    size (a digit more, the text size, the look) asks it once."""
+
+    def __init__(self, parent):
+        self.holder = _LineHolder(parent)
+        super().__init__(self.holder)
+        self.holder.line = self
+
+    def setText(self, text):
+        if text == self.text():
+            return
+        before = self.sizeHint()
+        super().setText(text)
+        if self.sizeHint() != before:
+            self.holder.updateGeometry()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self.holder.updateGeometry()
+
+
+class _LineHolder(QWidget):
+    """`SubLine`'s place in the header: its line's size, the line laid over it whole."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.line = None
+
+    def sizeHint(self):
+        return self.line.sizeHint() if self.line is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        return self.line.minimumSizeHint() if self.line is not None else super().minimumSizeHint()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.line is not None:
+            self.line.setGeometry(self.rect())
+
+
 class TabButton(QToolButton):
     """A tab: its name, then its count drawn as a count — Finished's small and faint, Needs you's on a heads-up badge
     (G2.3 R4, R5; mock `.tab .n`, `.badge.warn`) — so the number never reads as part of the word. The stylesheet draws
@@ -1260,10 +1306,45 @@ _FILTERED = tooltip.Tooltips.TYPES | EscapeRouter.TYPES
 
 
 class Central(QWidget):
-    """The window's content (the central widget) and where the focus rests (no ring: `ClickFocus`). It paints nothing
-    that follows the focus, so the focus coming or going repaints nothing: QWidget's own focus events repaint the whole
-    widget — here the whole window, each time ⋯ closed and the focus came back to it (Up next at 20,000 files: 15–20 ms
-    of the press's stretch; S19)."""
+    """The window's content (the central widget) and where the focus rests (no ring: `ClickFocus`); the overlays' stage.
+
+    - It paints nothing that follows the focus, so the focus coming or going repaints nothing: QWidget's own focus events
+      repaint the whole widget — here the whole window, each time ⋯ closed and the focus came back to it (Up next at
+      20,000 files: 15–20 ms of the press's stretch; S19).
+    - **It has no layout of its own** (Up next 2): the content — header, tabs, pages, the bar — is laid out in `body`,
+      which fills it, and the hand-placed overlays (the toast and its shadow, the Goal sheet, the tray, a confirmation…)
+      are its children above that. Qt lays a widget's parent out again whenever a child shows, hides or changes its
+      hints, and with the content's layout here every toast shown laid out the whole window (6 ms at 20,000 files) and
+      repainted it. A request from a child now asks the window only when the body's own hints changed. `layout()` (from
+      Python) answers the body's: the content's parts, as `first_run._hold` reads them."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.body = QWidget(self)
+        self.body.setObjectName("centralbody")
+        self._hints = None
+
+    def layout(self):
+        return self.body.layout()
+
+    def sizeHint(self):
+        return self.body.sizeHint()
+
+    def minimumSizeHint(self):
+        return self.body.minimumSizeHint()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.body.setGeometry(self.rect())
+
+    def event(self, event):
+        if event.type() == QEvent.Type.LayoutRequest:
+            hints = (self.body.sizeHint(), self.body.minimumSizeHint())
+            if hints != self._hints:                 # (the content's own size moved: the window learns it)
+                self._hints = hints
+                self.updateGeometry()
+            return True
+        return super().event(event)
 
     def focusInEvent(self, event):
         event.accept()
@@ -1330,7 +1411,7 @@ class ShellWindow(QMainWindow):
         central.setObjectName("central")
         central.setFocusPolicy(Qt.FocusPolicy.ClickFocus)     # where focus rests at start: no ring until Tab is used
         self._rest = central
-        root = QVBoxLayout(central)
+        root = QVBoxLayout(central.body)                      # (the content's layout: `Central`)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._build_header())                  # header and tabs: one frame band, no line between
@@ -1572,9 +1653,10 @@ class ShellWindow(QMainWindow):
         names.setContentsMargins(0, 0, 0, 0)
         self.wordmark = Wordmark(header)
         names.addWidget(self.wordmark)
-        self.subline = QLabel(strings.LANGUAGE_NAMES.get(self.language, ""), header)
+        self.subline = SubLine(header)
         self.subline.setObjectName("wordsub")
-        names.addWidget(self.subline)
+        self.subline.setText(strings.LANGUAGE_NAMES.get(self.language, ""))
+        names.addWidget(self.subline.holder)
         row.addLayout(names)
         # --- W3.2 Q3: the search cut after the name (shown with a library); + Add at the right, before ? (the level ▾
         # goes before it: `_attach_duties`)
@@ -3924,6 +4006,35 @@ def prepare_process():
     otherwise); Python's lock changes hands every millisecond."""
     sys.excepthook = _log_unhandled
     sys.setswitchinterval(SWITCH_INTERVAL_S)
+    wire_idle()
+
+
+_IDLE_WIRED = []
+
+
+def wire_idle():
+    """The window's idle for its process's background threads (`services.window_idle`): woken → busy, back to wait →
+    idle — the event dispatcher's own signals, wired once a process (the writer, the reader and the numbers start a
+    step only while the window rests, so a press's stretch never takes turns at Python's lock with them)."""
+    from PyQt6.QtCore import QAbstractEventDispatcher
+    d = QAbstractEventDispatcher.instance()
+    if d is None or any(x is d for x in _IDLE_WIRED):
+        return
+    d.awake.connect(window_idle.busy)
+    d.aboutToBlock.connect(window_idle.rest)
+    _IDLE_WIRED.append(d)
+
+
+def unwire_idle():
+    """(Tests.) The window's idle no longer told: the background never waits again."""
+    while _IDLE_WIRED:
+        d = _IDLE_WIRED.pop()
+        for signal, slot in ((d.awake, window_idle.busy), (d.aboutToBlock, window_idle.rest)):
+            try:
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
+    window_idle.rest()
 
 
 def connect_instance(window, instance):

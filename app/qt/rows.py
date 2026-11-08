@@ -3648,7 +3648,17 @@ class RowsView(QListView):
         before = model.entries
         held = self._held_keys(before)
         keys = model.keys
-        how = model.set_entries(entries)
+        shown = self._shown_rects() if self.isVisible() else None
+        vp = self.viewport()
+        vp.setAttribute(Qt.WidgetAttribute.WA_UpdatesDisabled, True)     # (the attribute alone: setUpdatesEnabled
+        try:                                                               # would repaint it all when turned back)
+            how = model.set_entries(entries)
+            if how == "spliced":
+                self.executeDelayedItemsLayout()         # laid out now, its repaint of the whole list dropped (below)
+            elif how == "reset":
+                vp.update()                              # (as Qt's: the whole screen, from kept pictures)
+        finally:
+            vp.setAttribute(Qt.WidgetAttribute.WA_UpdatesDisabled, False)
         self._trim_picks()                           # --- LM11b G4
         if how == "moved" or how == "relayout" and model.keys is not keys:     # AD-5 (C3: lines moved too): the
             self._follow_rows(*held)                 # keyboard's row and the hand's stay on their rows
@@ -3668,18 +3678,24 @@ class RowsView(QListView):
                     self.update(model.index(i, 0))
         elif how == "spliced":
             # a4 (A2): rows came or went, the rest in place: no reset — the current row, the open row and the picks are
-            # Qt's persistent places (moved with the insert); the hand's row is followed by its key. Qt lays the rows
-            # out again and repaints the screen from kept pixmaps (S19's written skip, as a relayout); the place the
-            # learner reads stays put only when something came or went above it (the top row's offset put back)
+            # Qt's persistent places (moved with the insert); the hand's row is followed by its key. The place the
+            # learner reads stays put only when something came or went above it (the top row's offset put back).
+            # Up next 3 (S19): Qt's layout repainted the whole list (Goal at 20,000 files: 6–8 ms of a 21 ms press) —
+            # now the rows that only shifted are moved as they were painted and only what changed is drawn
+            # (`_repaint_spliced`); anything else repaints the screen, as before
             self.looks_changed = True
             self._rest()
             self._follow_rows(*held)
+            restored = False
             if anchor is not None and self.isVisible() and anchor[0] in keys and anchor[0] in model.keys:
                 old_at, new_at = keys.index(anchor[0]), model.keys.index(anchor[0])
                 if any(i < new_at for i in model.came) or any(i < old_at for i in model.gone):
                     self._restore = anchor
                     self._apply_restore()
                     self._restore = None
+                    restored = True
+            if restored or shown is None or not self._repaint_spliced(shown):
+                vp.update()
         elif how == "relayout":
             # S19's written skip: a relayout (a row opened, or C3's lines moving inside a drop's span) repaints the whole
             # viewport — Qt's QListView repaints it on its delayed layout (`doItemsLayout`) whatever is asked here, so a
@@ -3707,6 +3723,64 @@ class RowsView(QListView):
         self._prune_pressed()                            # --- round 8 row 45
         self._prune_stopping()                           # --- R47
         return how
+
+    def _shown_rects(self):
+        """{entry key: its rect in the viewport} of the rows on screen, with the scroll value — what a splice compares
+        with to repaint only what changed (`_repaint_spliced`)."""
+        model, h = self.model(), self.viewport().height()
+        first = self.indexAt(QPoint(4, 1))
+        last = self.indexAt(QPoint(4, h - 2))
+        lo = first.row() if first.isValid() else 0
+        hi = last.row() if last.isValid() else model.rowCount() - 1
+        return self.verticalScrollBar().value(), {model.keys[i]: self.visualRect(model.index(i, 0))
+                                                  for i in range(lo, min(hi, len(model.keys) - 1) + 1)}
+
+    def _repaint_spliced(self, shown):
+        """(Up next 3, S19.) After rows came or went, laid out with the screen's repaint dropped: the rows still on screen
+        that only shifted, all by one distance, are moved as painted (`QWidget.scroll`: Qt paints the strip it uncovers),
+        and only the rows that are new or look different are drawn — a row leaving Current repaints what changed, never
+        the list. -> False when this can't be told (scrolled, an open row, rows shifted by different distances, a row
+        that changed height): the caller repaints the screen."""
+        model, vp = self.model(), self.viewport()
+        value, before = shown
+        if value != self.verticalScrollBar().value() or model.open_key is not None or not before:
+            return False
+        h = vp.height()
+        first = self.indexAt(QPoint(4, 1))
+        last = self.indexAt(QPoint(4, h - 2))
+        lo = first.row() if first.isValid() else 0
+        hi = last.row() if last.isValid() else model.rowCount() - 1
+        changed = set(model.changed)
+        dirty, moved, shift = [], [], None
+        for i in range(lo, hi + 1):
+            rect = self.visualRect(model.index(i, 0))
+            old = before.get(model.keys[i])
+            if old is None or (i in changed and model.looks_different(i)):
+                dirty.append(rect)                       # new here, or drawn differently: drawn afresh
+                continue
+            if old == rect:
+                continue                                 # where it was, as it was: nothing
+            if old.size() != rect.size():
+                return False
+            dy = rect.top() - old.top()
+            if shift is not None and dy != shift:
+                return False
+            shift = dy
+            moved.append(rect)
+        reach = h
+        if moved:
+            top = min(r.top() for r in moved)
+            reach = min(top, top - shift)
+            vp.scroll(0, shift, QRect(0, reach, vp.width(), h - reach))   # the shifted rows' pixels moved; Qt paints
+        now = set(model.keys)                                              # the strip it uncovers
+        for key, old in before.items():                  # a row gone from where nothing moved over it: its place
+            if key not in now and old.top() < reach:
+                dirty.append(old)
+        for rect in dirty:
+            vp.update(rect)
+        self.moved_rows = len(moved)                     # (tests: what a splice moved and drew)
+        self.drawn_rows = len(dirty)
+        return True
 
     def _held_keys(self, entries):
         """(the current row's key, the hovered row's key) in `entries`: what a reorder must keep on its row."""

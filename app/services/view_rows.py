@@ -44,6 +44,7 @@ from app.path_utils import infer_source_type
 from app import tracks                            # Michi-ST: a waiting video's tracks (standard library only)
 from app import no_subs                           # Michi-NS: a waiting video's subtitle, found or made (std library)
 from app.services import stone_plan
+from app.services import window_idle
 
 CACHE_ROWS = 40                         # the first screen's rows kept in window_cache_<lang>.json
 LANGUAGE_NAMES = {"ja": "日本語", "zh": "中文"}
@@ -2087,7 +2088,9 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
     -> (tiles, entries)."""
     groups, order, group_meta = {}, [], {}
     groups_metas = {p["id"] for p in metas.values() if p.get("kind") == "group"} if metas else ()
+    pause = window_idle.pause                       # Up next 3: a young window stretch waited out between pieces
     for p in pieces(goal_items):
+        pause()
         first = p[0]
         # its runs read together below (`_is_group`, H-B3 / H-B4); a4: the feed's group pieces looked up once
         meta = _group_meta(metas, p) if first.get("piece_id") in groups_metas else None
@@ -2106,6 +2109,7 @@ def goal_tiles(goal_items, works, guessed=None, before=None, metas=None):
     entries, tiles = {}, []
     is_ = operator.is_
     for key in order:
+        pause()
         ps = groups[key]
         items = tuple(chain.from_iterable(ps)) if len(ps) > 1 else tuple(ps[0])
         meta = group_meta.get(key)
@@ -2200,8 +2204,10 @@ def build(items, works, options, numbers=None, cards=None, mining=(), language="
         # P-LF-16: the Soon line falls inside this show — one row above the line, the line after it (tiers unchanged)
         soon_from, soon_piece = len(now_pieces[-1]), soon_pieces[0][0].get("piece_id")
         now_pieces[-1] = now_pieces[-1] + soon_pieces.pop(0)
+    pause = window_idle.pause                       # Up next 3: a young window stretch waited out between rows
     for tier, tier_pieces in (("now", now_pieces), ("soon", soon_pieces)):
         for n, piece in enumerate(tier_pieces):
+            pause()
             cut = soon_from if tier == "now" and n == len(tier_pieces) - 1 else None
             rows.append(_cached_row(cache, len(rows) + 1, tier, piece, works, numbers, cards, mining, in_top,
                                     None if off else line_n, False, guessed, hero=not rows, connect=feed_items,

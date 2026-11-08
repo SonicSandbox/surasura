@@ -40,3 +40,36 @@ def test_a_window_that_never_rests_holds_a_step_back_cap_s_at_most(monkeypatch):
         assert 0.04 <= time.perf_counter() - t0 < 1.0
     finally:
         window_idle.rest()
+
+
+def test_a_pause_inside_a_step_waits_out_a_young_window_stretch_and_never_an_old_one():
+    """(Up next 3) Between two pieces of a long step: the window just woke → the piece waits (till it rests, `SPAN_S`
+    after it woke at most); a window awake longer than that → no wait at all, so a window that never rests never makes
+    a 300-piece build wait 300 times; at rest → no wait."""
+    t0 = time.perf_counter()
+    window_idle.pause()
+    assert time.perf_counter() - t0 < 0.005
+    window_idle.busy()
+    try:
+        t0 = time.perf_counter()
+        window_idle.pause()                                    # (young: waits out the rest of SPAN_S)
+        waited = time.perf_counter() - t0
+        assert 0.01 <= waited <= window_idle.SPAN_S + 0.05, waited
+        t0 = time.perf_counter()
+        for _ in range(100):
+            window_idle.pause()                                # (old now: never again)
+        assert time.perf_counter() - t0 < 0.01
+        window_idle.busy()                                     # (still awake: the stretch's start is kept)
+        t0 = time.perf_counter()
+        window_idle.pause()
+        assert time.perf_counter() - t0 < 0.01
+    finally:
+        window_idle.rest()
+    window_idle.busy()                                         # woke anew after a rest: young again, and resting ends it
+    try:
+        threading.Timer(0.005, window_idle.rest).start()
+        t0 = time.perf_counter()
+        window_idle.pause()
+        assert time.perf_counter() - t0 < window_idle.SPAN_S
+    finally:
+        window_idle.rest()

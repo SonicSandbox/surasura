@@ -741,3 +741,30 @@ def test_r1_the_sub_lines_new_count_asks_the_header_nothing_and_a_longer_line_ta
     finally:
         line.setText(before)
         settle(30)
+
+
+def test_r3_a_row_leaving_for_goal_repaints_only_what_changed_never_the_list(screen):
+    """⋯ › Goal on a row near the top: the row leaves Current and the rows under it close the gap. Up next 3 (S19): the
+    list's layout no longer repaints the whole viewport — the rows that only shifted are moved as painted (`QWidget.
+    scroll`), so the list paints at most the strip they uncover and the rows that changed, and draws no row afresh but
+    those (Goal at 20,000 files: the whole list, 6–8 ms of a 21 ms press)."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    win.toasts.close()
+    settle(30)
+    rs = list(win.moves.base().rows)
+    row = next(r for r in rs[2:] if r.tier == "now")
+    reader = win.services.library
+    saved, built, renders = len(writer.saved), reader.builds, lst.delegate.renders
+    lst.moved_rows = lst.drawn_rows = None
+    vp = lst.viewport()
+    with wc.measure(win, readers=[reader]) as w:
+        win.moves.menu_pick(row, "goal")
+        assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [] and reader.builds > built, 3)
+        settle(200)
+    assert row.key not in keys_of(win), w.report()
+    painted = w.union_in(wc.rect_in_window(vp))
+    whole = vp.width() * vp.height()
+    assert painted <= whole // 2, (painted, whole, w.report())    # the uncovered strip and what changed, never the list
+    assert getattr(lst, "moved_rows", None) and lst.moved_rows >= 3, w.report()       # (the rows under it shifted)
+    assert lst.delegate.renders - renders <= 3, w.report()       # no row drawn afresh but the ones that changed

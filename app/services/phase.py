@@ -78,6 +78,10 @@ NEEDS_GO = {
     "mine-wait": Go("needs", ("no-video", CONNECT_CARDS)),
     "mine-anki": Go("needs", ("anki-wait",)),
 }
+# A failed job of these kinds that ended waiting on you (`needs`: 順's own Reorder refused until the unfinished
+# reorder's Undo) -> where that is: while it is its circle's last run, red or already hovered, a press opens there
+# (lead 2026-11-07, Mattias's alpha-3 notes: the red 順 circle's press opened only its settings)
+FAILED_GO = {"junban": Go("junban", "restore")}
 
 Circle = namedtuple("Circle", "running waiting needs failed done lines last go stepped why",
                     defaults=(None, False, ()))
@@ -247,7 +251,10 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
         end = last.get(circle)
         tail = ended(end) if end is not None else None
         failed, done, needs, go = g["failed"], None, list(g["needs"]), g["go"]
+        undo_go = None
         if tail is not None and not live[circle]:
+            if tail.state == "failed" and end.needs:
+                undo_go = FAILED_GO.get(end.kind)
             if tail.state == "failed" and end.id not in seen:
                 failed = failed or tail.words or "failed"
             elif tail.state == "needs" and end.id not in seen and NEEDS_GO.get(end.kind):
@@ -258,5 +265,5 @@ def read(views, presses=(), entries=(), extra=None, last=None, seen=frozenset(),
         if live[circle]:
             failed = None                       # the next run under way: the failure before it is over (Q3)
         out[circle] = Circle(g["running"], g["waiting"] and not g["running"], "; ".join(needs) or None, failed,
-                             done, tuple(g["lines"]), tail, go if needs else None, g["stepped"], tuple(g["why"]))
+                             done, tuple(g["lines"]), tail, go if needs else undo_go, g["stepped"], tuple(g["why"]))
     return out

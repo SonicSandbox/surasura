@@ -3979,6 +3979,16 @@ def test_a_nudge_and_a_soon_place_are_followed_once_from_where_the_store_put_the
     assert numbers.expects == 2 and numbers.landings == 2 and numbers.resyncs == 0
 
 
+def test_where_the_store_put_a_block_is_read_in_its_own_tier_never_by_ords_across_tiers(lib):
+    """(The adversary's hardening.) Each tier's `ord` is its own: a block read back after its write is the tier most of
+    it is in, in that tier's order, with the item just before it there — never the lowest `ord` across tiers."""
+    now, soon = lib.ids("now"), lib.ids("soon")
+    tier, block, prev = M._placed(lib.store, [soon[3], now[2], soon[2]])
+    assert tier == "soon" and block == [soon[2], soon[3]] and prev == soon[1]
+    tier, block, prev = M._placed(lib.store, [now[0]])
+    assert (tier, block, prev) == ("now", [now[0]], None)
+
+
 def test_a_nudge_at_the_tiers_top_moves_nothing_and_lands_once(lib, make_writer):
     """A nudge up of the tier's first row writes nothing: the numbers were told, follow nothing, and the command lands
     for them once (never left on its way, which would hold every resync off)."""

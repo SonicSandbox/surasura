@@ -4096,6 +4096,7 @@ def main(argv=None, after_gate=None):
     try:
         code = app.exec()
     finally:
+        unwire_idle()                                     # (the loop has ended: the quit's saves never wait for it)
         try:
             services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
         finally:

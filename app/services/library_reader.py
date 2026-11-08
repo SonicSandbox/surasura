@@ -548,7 +548,9 @@ class LibraryReader:
             pass                                    # a cache that can't be read is no cache
         while not self._stop.is_set():
             window_idle.wait()                      # Up next 2: a look starts while the window rests (its stretch
-            paused = self._pause_gc()               # never takes turns at Python's lock with a view's build) — A4 P-gil
+            if self._stop.is_set():                 # never takes turns at Python's lock with a view's build)
+                break                               # (stopped meanwhile: no look)
+            paused = self._pause_gc()               # A4 P-gil
             try:
                 self._look()
             except Exception as e:                  # never dies of a read: the last view, marked busy

@@ -1975,9 +1975,10 @@ def _placed(store, ids):
     rows = store.conn.execute(f"SELECT id, tier, ord FROM items WHERE id IN ({q})", ids).fetchall()
     if not rows:
         return None
-    first = min(rows, key=lambda r: (r[2], r[0]))
-    tier = first[1]
+    tiers = [r[1] for r in rows]                    # the block's tier: where most of it is (each tier's `ord` is its
+    tier = max(dict.fromkeys(tiers), key=tiers.count)  # own: never compared across tiers)
     block = [r[0] for r in sorted((r for r in rows if r[1] == tier), key=lambda r: (r[2], r[0]))]
+    first = next(r for r in rows if r[0] == block[0])
     prev = store.conn.execute("SELECT id FROM items WHERE tier = ? AND (ord < ? OR (ord = ? AND id < ?)) "
                               "ORDER BY ord DESC, id DESC LIMIT 1", (tier, first[2], first[2], first[0])).fetchone()
     return tier, block, prev[0] if prev is not None else None

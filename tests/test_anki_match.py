@@ -60,10 +60,11 @@ def test_the_real_golden_list_indexes_by_orth_and_by_word():
     since a story's own kanji words the library keeps using are one word — the sample's 三玖, a name, joined the list
     near its head; 24 since set phrases are rows of their own — 席を譲る and このまま joined the list above it; 25 since
     one-kanji dictionary words are list words where they stand on their own — 門 joined the list above it; 28 since the
-    words the tagger cuts at their grammar are words of their own — それで, なんで and どこにも joined the list above it.)"""
+    words the tagger cuts at their grammar are words of their own — それで, なんで and どこにも joined the list above it;
+    29 since grammar expressions are rows of their own — とする joined the list above it.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 28
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 29
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -272,7 +273,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
     assert {"門", "旬", "肝"} <= {key for key in rank_of if len(key) == 1}
-    assert rank_of["中野"] == rank_of["ナカノ"] == 28
+    assert rank_of["中野"] == rank_of["ナカノ"] == 29
 
 
 def test_lookup_answers_nothing_rather_than_guessing():

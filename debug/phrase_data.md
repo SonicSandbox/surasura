@@ -1,98 +1,99 @@
-# The phrase data — built 2026-10-01 (revision 2026-10-01-d4cd7713)
+# The phrase data — built 2026-11-07 (revision 2026-11-07-b2d2dc02)
 
-JMdict created 2026-09-28; 13,166 phrases kept of 16,717 built like one; app/phrase_data.py 408 KB; 82 s.
+JMdict created 2026-09-28; 13,217 phrases kept of 16,775 built like one; app/phrase_data.py 412 KB; 73 s.
 
 ## Log
 
-    JMdict: 218,840 entries, created 2026-09-28 (6 s)
+    JMdict: 218,840 entries, created 2026-09-28 (7 s)
       R1: 276,543 spellings to read
-      R2-R6: 16,717 phrases built like one, from 21,650 spellings (13 s)
-    R7: the shared set's text, 8 workers...
-        1/62 aozora\aozora_0002.txt (8 s)
-        2/62 aozora\aozora_0015.txt (8 s)
-        3/62 aozora\aozora_0014.txt (8 s)
-        4/62 aozora\aozora_0001.txt (8 s)
-        5/62 aozora\aozora_0007.txt (8 s)
-        6/62 aozora\aozora_0016.txt (8 s)
-        7/62 aozora\aozora_0017.txt (8 s)
-        8/62 aozora\aozora_0005.txt (8 s)
-        9/62 aozora\aozora_0004.txt (14 s)
-        10/62 aozora\aozora_0010.txt (14 s)
-        11/62 wikipedia\wikipedia_0004.txt (15 s)
-        12/62 aozora\aozora_0006.txt (15 s)
-        13/62 wikipedia\wikipedia_0003.txt (15 s)
-        14/62 aozora\aozora_0011.txt (15 s)
-        15/62 aozora\aozora_0003.txt (15 s)
-        16/62 wikipedia\wikipedia_0014.txt (15 s)
-        17/62 aozora\aozora_0008.txt (20 s)
-        18/62 wikipedia\wikipedia_0005.txt (21 s)
-        19/62 aozora\aozora_0009.txt (21 s)
-        20/62 wikipedia\wikipedia_0016.txt (21 s)
-        21/62 wikipedia\wikipedia_0008.txt (21 s)
-        22/62 wikipedia\wikipedia_0011.txt (22 s)
-        23/62 wikipedia\wikipedia_0018.txt (22 s)
-        24/62 wikipedia\wikipedia_0007.txt (22 s)
-        25/62 wikipedia\wikipedia_0009.txt (27 s)
+      R2-R6: 16,775 phrases built like one, from 21,742 spellings, 60 of them grammar expressions (13 s)
+    R7: the shared set's text, 12 workers...
+        1/62 aozora\aozora_0002.txt (10 s)
+        2/62 aozora\aozora_0015.txt (10 s)
+        3/62 aozora\aozora_0014.txt (10 s)
+        4/62 aozora\aozora_0001.txt (10 s)
+        5/62 aozora\aozora_0007.txt (10 s)
+        6/62 aozora\aozora_0016.txt (10 s)
+        7/62 aozora\aozora_0017.txt (10 s)
+        8/62 aozora\aozora_0005.txt (10 s)
+        9/62 aozora\aozora_0004.txt (10 s)
+        10/62 aozora\aozora_0010.txt (10 s)
+        11/62 wikipedia\wikipedia_0004.txt (11 s)
+        12/62 aozora\aozora_0006.txt (11 s)
+        13/62 wikipedia\wikipedia_0003.txt (18 s)
+        14/62 aozora\aozora_0011.txt (18 s)
+        15/62 aozora\aozora_0003.txt (18 s)
+        16/62 wikipedia\wikipedia_0014.txt (19 s)
+        17/62 aozora\aozora_0008.txt (19 s)
+        18/62 wikipedia\wikipedia_0005.txt (19 s)
+        19/62 aozora\aozora_0009.txt (19 s)
+        20/62 wikipedia\wikipedia_0016.txt (19 s)
+        21/62 wikipedia\wikipedia_0008.txt (19 s)
+        22/62 wikipedia\wikipedia_0011.txt (19 s)
+        23/62 wikipedia\wikipedia_0018.txt (19 s)
+        24/62 wikipedia\wikipedia_0007.txt (20 s)
+        25/62 wikipedia\wikipedia_0009.txt (26 s)
         26/62 wikipedia\wikipedia_0013.txt (27 s)
-        27/62 wikipedia\wikipedia_0002.txt (28 s)
-        28/62 realpersonachat\realpersonachat_0007.txt (28 s)
-        29/62 wikipedia\wikipedia_0001.txt (28 s)
-        30/62 aozora\aozora_0013.txt (28 s)
-        31/62 aozora\aozora_0012.txt (28 s)
-        32/62 wikipedia\wikipedia_0012.txt (29 s)
-        33/62 wikipedia\wikipedia_0015.txt (34 s)
-        34/62 wikipedia\wikipedia_0006.txt (34 s)
-        35/62 realpersonachat\realpersonachat_0004.txt (35 s)
-        36/62 realpersonachat\realpersonachat_0002.txt (35 s)
+        27/62 wikipedia\wikipedia_0002.txt (27 s)
+        28/62 realpersonachat\realpersonachat_0007.txt (27 s)
+        29/62 wikipedia\wikipedia_0001.txt (27 s)
+        30/62 aozora\aozora_0013.txt (27 s)
+        31/62 aozora\aozora_0012.txt (27 s)
+        32/62 wikipedia\wikipedia_0012.txt (28 s)
+        33/62 wikipedia\wikipedia_0015.txt (28 s)
+        34/62 wikipedia\wikipedia_0006.txt (28 s)
+        35/62 realpersonachat\realpersonachat_0004.txt (28 s)
+        36/62 realpersonachat\realpersonachat_0002.txt (28 s)
         37/62 realpersonachat\realpersonachat_0005.txt (35 s)
         38/62 realpersonachat\realpersonachat_0001.txt (35 s)
         39/62 wikipedia\wikipedia_0017.txt (35 s)
-        40/62 wikipedia\wikipedia_0010.txt (36 s)
-        41/62 realpersonachat\realpersonachat_0003.txt (41 s)
-        42/62 realpersonachat\realpersonachat_0006.txt (41 s)
-        43/62 leipzig_news\leipzig_news_0008.txt (42 s)
-        44/62 leipzig_news\leipzig_news_0002.txt (42 s)
-        45/62 leipzig_news\leipzig_news_0006.txt (42 s)
-        46/62 leipzig_news\leipzig_news_0001.txt (42 s)
-        47/62 leipzig_news\leipzig_news_0015.txt (43 s)
-        48/62 leipzig_news\leipzig_news_0018.txt (43 s)
-        49/62 leipzig_news\leipzig_news_0010.txt (48 s)
-        50/62 leipzig_news\leipzig_news_0011.txt (49 s)
-        51/62 leipzig_news\leipzig_news_0004.txt (49 s)
-        52/62 leipzig_news\leipzig_news_0013.txt (50 s)
-        53/62 leipzig_news\leipzig_news_0007.txt (50 s)
-        54/62 leipzig_news\leipzig_news_0003.txt (50 s)
-        55/62 leipzig_news\leipzig_news_0005.txt (50 s)
-        56/62 leipzig_news\leipzig_news_0016.txt (51 s)
-        57/62 leipzig_news\leipzig_news_0014.txt (56 s)
-        58/62 leipzig_news\leipzig_news_0012.txt (56 s)
-        59/62 leipzig_news\leipzig_news_0009.txt (57 s)
-        60/62 leipzig_news\leipzig_news_0017.txt (57 s)
-        61/62 realpersonachat\realpersonachat_0008.txt (57 s)
-        62/62 leipzig_news\leipzig_news_0019.txt (57 s)
-      62 files, 2,348,654 sentences, 41,095,960 words counted, 535,761 phrase matches (57 s)
-    Wrote C:\Users\Michael\WorldDomination\Surasura - Readability Analyzer\surasura\app\phrase_data.py: 13,166 phrases, 408 KB, revision 2026-10-01-d4cd7713 (82 s in all)
+        40/62 wikipedia\wikipedia_0010.txt (35 s)
+        41/62 realpersonachat\realpersonachat_0003.txt (36 s)
+        42/62 realpersonachat\realpersonachat_0006.txt (36 s)
+        43/62 leipzig_news\leipzig_news_0008.txt (36 s)
+        44/62 leipzig_news\leipzig_news_0002.txt (36 s)
+        45/62 leipzig_news\leipzig_news_0006.txt (37 s)
+        46/62 leipzig_news\leipzig_news_0001.txt (37 s)
+        47/62 leipzig_news\leipzig_news_0015.txt (37 s)
+        48/62 leipzig_news\leipzig_news_0018.txt (37 s)
+        49/62 leipzig_news\leipzig_news_0010.txt (44 s)
+        50/62 leipzig_news\leipzig_news_0011.txt (44 s)
+        51/62 leipzig_news\leipzig_news_0004.txt (44 s)
+        52/62 leipzig_news\leipzig_news_0013.txt (44 s)
+        53/62 leipzig_news\leipzig_news_0007.txt (45 s)
+        54/62 leipzig_news\leipzig_news_0003.txt (45 s)
+        55/62 leipzig_news\leipzig_news_0005.txt (45 s)
+        56/62 leipzig_news\leipzig_news_0016.txt (45 s)
+        57/62 leipzig_news\leipzig_news_0014.txt (45 s)
+        58/62 leipzig_news\leipzig_news_0012.txt (46 s)
+        59/62 leipzig_news\leipzig_news_0009.txt (46 s)
+        60/62 leipzig_news\leipzig_news_0017.txt (46 s)
+        61/62 realpersonachat\realpersonachat_0008.txt (46 s)
+        62/62 leipzig_news\leipzig_news_0019.txt (46 s)
+      62 files, 2,348,654 sentences, 41,095,914 words counted, 1,002,078 phrase matches (47 s)
+    Wrote H:\Surasura-usage\copies\kotoba-g\app\phrase_data.py: 13,217 phrases, 412 KB, revision 2026-11-07-b2d2dc02 (73 s in all)
 
 ## R1-R6, spellings by step (20 examples each)
 
-- **R2 one word**: 159,702 — ヽ, ヾ, ゝ, ゞ, 仝, 々, 〇, あおば, 明白, あからさま, アカン, 悪どい, あくどい, 論う, あげつらう, あしらう, 馬酔木, あせび, あしび, あせぼ
+- **R2 one word**: 159,713 — ヽ, ヾ, ゝ, ゞ, 仝, 々, 〇, あおば, 明白, あからさま, あかん, アカン, 悪どい, あくどい, 論う, あげつらう, あしらう, 馬酔木, あせび, あしび
 - **R3 a compound's shape (nouns / な-words / affixes)**: 56,530 — 雨子, 海鷂魚, おけさ節, おちんちん, おなべ, おまんこ, お陰様, お陰さま, お気の毒, お宮参り, 御伴, お産, お遣い, お手洗い, お召し物, お食い初め, 御食い初め, おあいにくさま, おぜん, お宅
-- **phrase-shaped**: 21,650 — 阿吽の呼吸, あうんの呼吸, あっという間に, あっと言う間に, いい加減にしなさい, いい年をして, いい歳をして, いかなる場合でも, 如何なる場合でも, いとも簡単に, お出でになる, おいでになる, お座なりになる, おめでとう御座います, おめでとうございます, お願いいたします, お願い致します, お帰りなさい, お休みなさい, おやすみなさい
-- **R3 a number or a symbol inside**: 21,014 — あせぶ, 幾つも, いくつも, えつ, お三時, きーきー, きぃきぃ, きかん気, 涔々, だぼはぜ, ちぎりぎ, ちゅー, ちょっと一杯, ちんぼ, はっくしょん, はちきん, はんぺい, ばついち, 散荷, べちゃんこ
-- **R3 a proper noun inside**: 6,665 — 斉魚, おこしやす, しろぐち, 高が, 所が, 直向, 先ず隗より始めよ, まず隗より始めよ, アキレス腱, アフリカの角, アメリカ豹, アルツハイマー病, インディア紙, 烏竜茶, エルピー盤, オギノ式, 荻野式, キリスト教, 基督教, キリスト教徒
-- **R5 one word + grammar**: 5,355 — あほんだら, あほだら, 何時もより, いつもより, 嫌に, いやに, いらっしゃいませ, うぞうぞ, おいでやす, お伴, おしたし, お先に, お大事に, お知らせ, お婆ん, 畏まりました, かしこまりました, 敵わない, 適わない, がっちり屋
-- **R3 starts with grammar or a conjunction**: 1,593 — かな, かなあ, かなー, かなぁ, かも知れない, かもしれない, かも知れません, かもしれません, からと言って, からといって, けども, さて置く, 扨置く, 扨措く, さておく, また明日, しかして, たらん, だから, だからって
+- **phrase-shaped**: 21,742 — 阿吽の呼吸, あうんの呼吸, あっという間に, あっと言う間に, いい加減にしなさい, いい年をして, いい歳をして, いかなる場合でも, 如何なる場合でも, いとも簡単に, お出でになる, おいでになる, お座なりになる, おめでとう御座います, おめでとうございます, お願いいたします, お願い致します, お帰りなさい, お休みなさい, おやすみなさい
+- **R3 a number or a symbol inside**: 21,011 — あせぶ, 幾つも, いくつも, えつ, お三時, きーきー, きぃきぃ, きかん気, 涔々, だぼはぜ, ちぎりぎ, ちゅー, ちょっと一杯, ちんぼ, はっくしょん, はちきん, はんぺい, ばついち, 散荷, べちゃんこ
+- **R3 a proper noun inside**: 6,664 — 斉魚, おこしやす, しろぐち, 高が, 所が, 直向, 先ず隗より始めよ, まず隗より始めよ, アキレス腱, アフリカの角, アメリカ豹, アルツハイマー病, インディア紙, 烏竜茶, エルピー盤, オギノ式, 荻野式, キリスト教, 基督教, キリスト教徒
+- **R5 one word + grammar**: 5,359 — あほんだら, あほだら, 何時もより, いつもより, 嫌に, いやに, いらっしゃいませ, うぞうぞ, おいでやす, お伴, おしたし, お先に, お大事に, お知らせ, お婆ん, 畏まりました, かしこまりました, 敵わない, 適わない, がっちり屋
+- **R3 starts with grammar or a conjunction**: 1,495 — かな, かなあ, かなー, かなぁ, からと言って, からといって, けども, さて置く, 扨置く, 扨措く, さておく, また明日, しかして, たらん, だから, だからって, だからと言って, だからといって, だけあって, だけど
 - **R3 more than 5 words**: 1,303 — お誕生日おめでとうございます, どうという事もない, どうということもない, 何でもかんでも, なんでもかんでも, 何とかかんとか, 何とか彼とか, なんとかかんとか, いずれの場合においても, 何れの場合においても, 蚊の囁くような声, 蚊のささやくような声, 郷に入っては郷に従え, 金玉が上がったり下がったり, 前に述べたように, 爪で拾って箕で零す, 兎にも角にも, 頭隠して尻隠さず, にっちもさっちも行かない, 二進も三進もいかない
 - **R6 read as other words**: 960 — 彼の人, 彼の方, 此間, あまに油, 悪球, 為ん術, 為果せる, 為過ぎる, 為尽くす, 為尽す, 為続ける, 為落ち, 為落とす, 為落す, 畏懼, 引合う, 飲逃げ, 永小作, 永日, 黄枯茶
-- **R3 a compound's shape (a verb + a verb)**: 785 — 食っ付く, やり切る, やりきる, 揺ら揺ら, 圧し合う, 圧しあう, 為し終える, 為しおえる, 為し終わる, 為しおわる, しおおせる, し過ぎる, しすぎる, し尽くす, し尽す, し続ける, 引きさる, 引摺り込む, 飲み回る, 隠し食い
-- **R3 starts with a filler**: 336 — あかん, あのう, あの人, あの方, まやかす, あうん, あんざんし, いさぎ, うかつ, ういろ, まるた, いがき, まん円い, ま四角, あまた, あおかけす, あおじそ, あおジソ, あかえい, あて
+- **R3 a compound's shape (a verb + a verb)**: 786 — 食っ付く, やり切る, やりきる, 揺ら揺ら, 圧し合う, 圧しあう, 為し終える, 為しおえる, 為し終わる, 為しおわる, しおおせる, し過ぎる, しすぎる, し尽くす, し尽す, し続ける, 引きさる, 引摺り込む, 飲み回る, 隠し食い
+- **R3 starts with a filler**: 330 — あのう, あの人, あの方, まやかす, あうん, あんざんし, いさぎ, うかつ, ういろ, まるた, いがき, まん円い, ま四角, あまた, あおかけす, あおじそ, あおジソ, あかえい, あて, あま
 - **R5 a card the app reads as one word + an ending**: 303 — お願いします, お邪魔します, こうすれば, ものである, 一貫して, 可能であれば, 換言すれば, 兼す, 勾引し, 黒くする, 冴え冴えした, 指示す, 失礼しました, 弱くする, 首尾一貫した, 書記す, 真似し, まねし, 善し, どうして
 - **R5 one word said twice**: 222 — いえいえ, がちんがちん, ケツの穴, ころんころん, ゴロンゴロン, ごろんごろん, 屡屡, チラッチラッ, てこてこ, ぶーぶー, やれやれ, ざーざー, 何が何だか, 何が何でも, どれどれ, いつ何時, 我も我も, 後から後から, 今か今か, 今が今
 - **R3 a spelling the compound table holds**: 125 — はた迷惑, ヘ音記号, ヘ長調, にわか仕立て, 古井戸, 私生活, 取り扱い方, 取扱い方, 熟字訓, 書出す, 切り手, 速口, 相当数, 朝早く, 直接会談, 直接回答, 直接関係, 直接行動, 直接購入, 直接支援
+- **RG a phrase inside**: 3 — でなければいけない, ような気がする, 様な気がする
 
 ## R7, the unit test (ratio = list rank / the rank its matches have in the text; kept at <= 8)
 
-Dropped: 3,551 — in no list 3,519, folded into their phrase 23, too common as words side by side 30.
+Dropped: 3,558 — in no list 3,523, folded into their phrase 24, too common as words side by side 32.
 
 ### The 50 kept nearest the line
 
@@ -107,7 +108,9 @@ Dropped: 3,551 — in no list 3,519, folded into their phrase 23, too common as 
 | 政治とカネ | 33 | Jiten 301,714 | 7.3 | exp |
 | 腑に落ちない | 72 | JPDB 177,991 | 7.0 | exp |
 | 車を留める | 57 | JPDB 206,941 | 7.0 | exp |
+| なきゃいけない | 288 | JPDB 63,041 | 6.8 | common, exp |
 | それとなく | 228 | JPDB 75,462 | 6.8 |  |
+| における | 7,923 | JPDB 2,481 | 6.8 | common, exp |
 | 記録を更新する | 141 | Jiten 105,227 | 6.6 | exp |
 | そのような中 | 77 | Jiten 161,392 | 6.6 | exp |
 | 役に立たない | 146 | JPDB 98,506 | 6.3 | common, exp |
@@ -120,7 +123,6 @@ Dropped: 3,551 — in no list 3,519, folded into their phrase 23, too common as 
 | 例年になく | 43 | JPDB 207,167 | 5.8 |  |
 | 手が付く | 30 | Jiten 254,020 | 5.8 | exp |
 | 慣習に従う | 125 | JPDB 100,874 | 5.8 | exp |
-| しろひとり | 15 | Jiten 360,923 | 5.7 |  |
 | 元にして | 61 | JPDB 160,984 | 5.7 | exp |
 | 是非共 | 108 | JPDB 108,817 | 5.6 | common |
 | それ行け | 41 | JPDB 199,339 | 5.5 |  |
@@ -138,16 +140,15 @@ Dropped: 3,551 — in no list 3,519, folded into their phrase 23, too common as 
 | 区別がつかない | 29 | JPDB 230,217 | 5.2 | exp |
 | どーもくん | 22 | JPDB 264,742 | 5.1 |  |
 | 懸け物 | 15 | Jiten 313,870 | 5.0 |  |
+| しろひとり | 11 | Jiten 360,923 | 4.9 |  |
 | サヨナラ負け | 68 | JPDB 130,374 | 4.9 |  |
 | ゴールを決める | 234 | JPDB 52,454 | 4.8 | exp |
-| 言うことを聞かない | 24 | JPDB 236,465 | 4.8 | exp |
-| せざるを得ない | 421 | JPDB 32,613 | 4.8 | exp |
-| よるところが大きい | 31 | JPDB 204,489 | 4.8 | exp |
 | 外ならない | 240 | JPDB 50,779 | 4.7 | exp |
 | 見通しが立つ | 50 | Jiten 152,994 | 4.7 | exp |
 | 忘れ勝ち | 35 | JPDB 189,143 | 4.7 |  |
 | 憎まれ口 | 19 | JPDB 263,305 | 4.7 |  |
 | よろしくお願いいたします | 1,436 | JPDB 10,931 | 4.7 | common, exp |
+| せざるを得ない | 412 | JPDB 32,613 | 4.7 | exp |
 
 ### The 50 dropped nearest the line
 
@@ -160,13 +161,15 @@ Dropped: 3,551 — in no list 3,519, folded into their phrase 23, too common as 
 | 珍しもの | 93 | JPDB 192,556 | 9.0 |  |
 | 差支え無い | 60 | JPDB 263,174 | 9.1 |  |
 | このほど | 425 | JPDB 62,346 | 9.2 |  |
+| でなければ | 850 | Jiten 34,453 | 9.2 | common, exp |
 | 幸福の科学 | 61 | JPDB 264,241 | 9.3 |  |
 | 道の駅 | 380 | JPDB 71,998 | 9.6 |  |
 | 有る限り | 195 | JPDB 127,864 | 10.2 | exp |
 | このほか | 1,176 | JPDB 28,432 | 10.3 | common |
 | 行く方 | 124 | JPDB 191,213 | 10.9 |  |
 | 私ん家 | 443 | Jiten 74,506 | 11.4 | exp |
-| 亡き人 | 361 | JPDB 91,455 | 11.8 |  |
+| に伴い | 2,186 | JPDB 17,432 | 11.4 | common, exp |
+| 亡き人 | 358 | JPDB 91,455 | 11.7 |  |
 | おもんない | 372 | JPDB 95,040 | 12.5 |  |
 | 相違ない | 955 | JPDB 43,915 | 13.1 |  |
 | つつある | 1,839 | JPDB 24,641 | 13.5 |  |
@@ -179,75 +182,75 @@ Dropped: 3,551 — in no list 3,519, folded into their phrase 23, too common as 
 | これにより | 1,552 | JPDB 41,947 | 19.4 | exp |
 | 良きもの | 753 | Jiten 88,735 | 21.2 |  |
 | その結果 | 888 | Jiten 85,790 | 23.7 | exp |
-| せよと言う | 4,134 | JPDB 20,051 | 26.0 | exp |
-| なり物 | 658 | Jiten 143,021 | 30.5 |  |
+| なり物 | 512 | Jiten 143,021 | 24.6 |  |
+| せよと言う | 4,078 | JPDB 20,051 | 25.6 | exp |
 | その方 | 927 | JPDB 141,599 | 41.0 |  |
 | 事無く | 4,322 | JPDB 42,525 | 57.8 |  |
 
 ### Dropped with the most matches
 
-事無く (4,322), せよと言う (4,134), つつある (1,839), これにより (1,552), 良かれと思う (1,331), このほか (1,176), 以下の通り (1,024), 相違ない (955), その方 (927), その結果 (888), 位置付ける (764), 良きもの (753), なり物 (658), このころ (485), 私ん家 (443), このほど (425), 道の駅 (380), おもんない (372), 亡き人 (361), 有る限り (195), うまいこと (159), 出時 (150), いよかん (141), 行く方 (124), 私も又 (107), 珍しもの (93), 幸福の科学 (61), 差支え無い (60), 挿し物 (36), 細塵 (32)
+事無く (4,322), せよと言う (4,078), に伴い (2,186), つつある (1,839), これにより (1,552), 良かれと思う (1,331), このほか (1,176), 以下の通り (1,024), 相違ない (955), その方 (927), その結果 (888), でなければ (850), 位置付ける (764), 良きもの (753), なり物 (512), このころ (485), 私ん家 (443), このほど (425), 道の駅 (380), おもんない (372), 亡き人 (358), 有る限り (195), うまいこと (159), 出時 (150), いよかん (141), 行く方 (124), 私も又 (107), 珍しもの (93), 幸福の科学 (61), 差支え無い (60), 挿し物 (36), 細塵 (32)
 
 ### Folded into their phrase (the 40 with the most matches)
 
-ことになっている → 事に成る (1,112), 気を付けて → 気を付ける (782), そう言われる → そう言う (333), 面と向かって → 面と向かう (51), 降って湧いた → 降るて沸く (24), 並び称される → 並び称する (20), 要領を得ない → 要領を得る (19), お出でなすった → おいで為さる (19), 意地になって → 意地に成る (15), 虚を突かれる → 虚を突く (4), 息を切らせる → 息を切る (3), 力づくで → 力付く (3), お帰りなさいませ → おかえり為さる (2), いたちの道切り → 鼬の道 (1), 傍の者達 → 側の者 (0), 目処がたたず → 目処が経つ (0), 遺伝子組換えでない → 遺伝子組み替える (0), そ求権 → そう求 (0), 手つなぎ鬼 → 手繋ぐ (0), 湯取り飯 → 湯取る (0), 瀬取り船 → 瀬取る (0), 立ち席のみ → 立つ席 (0), 言寄せて → 言寄せる (0)
+によって → に因る (18,212), ことになっている → 事に成る (1,112), 気を付けて → 気を付ける (782), そう言われる → そう言う (333), 面と向かって → 面と向かう (51), 降って湧いた → 降るて沸く (24), 並び称される → 並び称する (20), 要領を得ない → 要領を得る (19), お出でなすった → おいで為さる (19), 意地になって → 意地に成る (15), 虚を突かれる → 虚を突く (4), 息を切らせる → 息を切る (3), 力づくで → 力付く (3), お帰りなさいませ → おかえり為さる (2), いたちの道切り → 鼬の道 (1), 傍の者達 → 側の者 (0), 目処がたたず → 目処が経つ (0), 遺伝子組換えでない → 遺伝子組み替える (0), そ求権 → そう求 (0), 手つなぎ鬼 → 手繋ぐ (0), 湯取り飯 → 湯取る (0), 瀬取り船 → 瀬取る (0), 立ち席のみ → 立つ席 (0), 言寄せて → 言寄せる (0)
 
-## Near-duplicates kept as two rows (182: a phrase and the phrase + grammar)
+## Near-duplicates kept as two rows (192: a phrase and the phrase + grammar)
 
-あっという間 / あっという間に, お鉢が回る / お鉢が回ってくる, どうにかなる / どうにかなりそう, どうにかなる / どうにかならない, ことになる / ことになりかねない, 今すぐ / 今すぐにでも, ツケが回る / ツケが回ってくる, なにかにつけ / 何かにつけて, なんという / なんといっても, 何にせよ / 何にしても, いずれにせよ / どれにしようかな, いずれにせよ / いずれにしても, どちらにせよ / どちらにしても, いつの間に / いつの間にか, いつの間に / いつの間にやら, 刀折れ矢尽きる / 刀折れ矢尽きて, いやが上に / いやが上にも, せきを切る / せきを切ったよう, 堰を切る / 堰を切ったよう, 夢にも思う / 夢にも思わない, 我が意を得る / わが意を得たり, 手に取る / 手に取るように, 束になる / 束になって掛かる, 気にしない / 気にしないで, 気にする / 気にしないで, 火がつく / 火がついたよう, 痛い目に遭う / 痛い目に遭わせる, 目に入る / 目に入ってくる, 耳が肥える / 耳が肥えている, 言うことを聞く / 言うことを聞かない, 酷い目に遭う / ひどい目に遭わせる, 電話がかかる / 電話がかかってくる, たかが知れる / たかが知れている, そうになる / そうになった, 主とする / 主として, 事による / ことによって, 事による / ことによると, ことにする / ことにすると, 人を食う / 人を食った, 人目につく / 人目につかない, 似た者 / 似た者同士, なんだこりゃ / なんだこれは, なんという / なんというか, なんという / なんといったって, 先を越す / 先を越される, 区別がつく / 区別がつかない, またの名 / またの名を, 反りが合う / 反りが合わない, 困ったこと / 困ったことに, 埒が明く / 埒があかない, 場合による / 場合によって, 小気味よい / 小気味よげに, 常軌を逸する / 常軌を逸した, 度を越す / 度を超した, 引けを取る / 引けを取らない, 当てになる / あてにならない, 当然のこと / 当然のことながら, 役に立つ / 役に立たない, 役にたつ / 役にたたない, 待ちに待つ / 待ちに待った, 後になる / 後になって, 後ろ指を指す / 後ろ指を指される, 心を動かす / 心を動かされる, 心を奪う / 心を奪われる, 心を込める / 心をこめて, 息を呑む / 息を呑むほど, 息を呑む / 息を呑むよう, 意を得る / 意を得ない, 意味が通る / 意味が通らない, 意味をなす / 意味をなさない, ある意味 / ある意味では, 手が出る / 手が出ない, 手におえる / 手におえない, 手に負える / 手に負えない, 手を焼く / 手を焼かせる, 方がよろしい / 方がよろしければ, うまくやる / うまくやっていく, 時を得る / 時を得た, 時間を取る / 時間を取られる, ありがとうございます / ありがとうございました
+あっという間 / あっという間に, お鉢が回る / お鉢が回ってくる, どうにかなる / どうにかなりそう, どうにかなる / どうにかならない, ことになる / ことになりかねない, 今すぐ / 今すぐにでも, ツケが回る / ツケが回ってくる, なにかにつけ / 何かにつけて, なんという / なんといっても, 何にせよ / 何にしても, いずれにせよ / どれにしようかな, いずれにせよ / いずれにしても, どちらにせよ / どちらにしても, いつの間に / いつの間にか, いつの間に / いつの間にやら, 刀折れ矢尽きる / 刀折れ矢尽きて, いやが上に / いやが上にも, せきを切る / せきを切ったよう, 堰を切る / 堰を切ったよう, 夢にも思う / 夢にも思わない, 我が意を得る / わが意を得たり, 手に取る / 手に取るように, 束になる / 束になって掛かる, 気にしない / 気にしないで, 気にする / 気にしないで, 火がつく / 火がついたよう, 痛い目に遭う / 痛い目に遭わせる, 目に入る / 目に入ってくる, 耳が肥える / 耳が肥えている, 言うことを聞く / 言うことを聞かない, 酷い目に遭う / ひどい目に遭わせる, 電話がかかる / 電話がかかってくる, たかが知れる / たかが知れている, そうになる / そうになった, として / としても, とする / としても, 主とする / 主として, 事による / ことによって, 事による / ことによると, ことにする / ことにすると, 人を食う / 人を食った, 人目につく / 人目につかない, 似た者 / 似た者同士, なんだこりゃ / なんだこれは, なんという / なんというか, なんという / なんといったって, 先を越す / 先を越される, 区別がつく / 区別がつかない, またの名 / またの名を, 反りが合う / 反りが合わない, 困ったこと / 困ったことに, 埒が明く / 埒があかない, 場合による / 場合によって, 小気味よい / 小気味よげに, 常軌を逸する / 常軌を逸した, 度を越す / 度を超した, 引けを取る / 引けを取らない, 当てになる / あてにならない, 当然のこと / 当然のことながら, 役に立つ / 役に立たない, 役にたつ / 役にたたない, 待ちに待つ / 待ちに待った, 後になる / 後になって, 後ろ指を指す / 後ろ指を指される, 心を動かす / 心を動かされる, 心を奪う / 心を奪われる, 心を込める / 心をこめて, 息を呑む / 息を呑むほど, 息を呑む / 息を呑むよう, 意を得る / 意を得ない, 意味が通る / 意味が通らない, 意味をなす / 意味をなさない, ある意味 / ある意味では, 手が出る / 手が出ない, 手におえる / 手におえない, 手に負える / 手に負えない, 手を焼く / 手を焼かせる, 方がよろしい / 方がよろしければ, うまくやる / うまくやっていく, 時を得る / 時を得た
 
-## R8, words that live only inside their phrase: 1,021 in 986 phrases (50 at random)
+## R8, words that live only inside their phrase: 1,083 in 1,040 phrases (50 at random)
 
-- 引ける in 気がひける (the phrase JPDB #46,178)
-- 講ずる in 手段を講じる (the phrase JPDB #39,893)
-- 晦ます in 行方をくらます (the phrase JPDB #27,886)
-- 風前 in 風前の灯火 (the phrase JPDB #49,556)
-- 今生 in 今生の別れ (the phrase JPDB #31,639)
-- 辞世 in 辞世の句 (the phrase JPDB #62,891)
-- 大目 in 大目に見る (the phrase JPDB #14,440)
-- 語弊 in 語弊がある (the phrase JPDB #26,544)
-- 玉の輿 in 玉の輿に乗る (the phrase JPDB #83,910)
-- 霰 in あられもない (the phrase JPDB #21,501)
-- 字引き in 生き字引 (the phrase JPDB #75,424)
-- 頬杖 in 頬杖をつく (the phrase JPDB #18,696)
-- 諸悪 in 諸悪の根源 (the phrase JPDB #31,018)
-- 掴み所 in 掴み所のない (the phrase JPDB #88,568)
-- びっ in びにる (the phrase JPDB #208,749)
-- 枚挙 in 枚挙に暇がない (the phrase JPDB #62,816)
-- どさくさ in どさくさに紛れて (the phrase JPDB #22,935)
-- 白袴 in 紺屋の白袴 (the phrase JPDB #176,809)
-- 隔世 in 隔世の感 (the phrase JPDB #91,123)
-- いちゃ in いちゃこら (the phrase JPDB #103,633)
-- 口角泡 in 口角泡を飛ばす (the phrase JPDB #72,942)
-- 応ずる in 求めに応じる (the phrase JPDB #34,961)
-- 然々 in かくかくしかじか (the phrase JPDB #46,971)
-- 別け隔て in 分け隔てなく (the phrase JPDB #29,873)
-- がしゃ in がしゃどくろ (the phrase JPDB #124,963)
-- 聞き耳 in 聞き耳を立てる (the phrase JPDB #14,852)
-- 晩節 in 晩節を汚す (the phrase JPDB #103,359)
-- 生まれる in 生まれたままの姿 (the phrase JPDB #40,481)
-- ぱっ in ぱこる (the phrase JPDB #76,506)
-- 噛み分ける in 酸いも甘いも噛み分ける (the phrase JPDB #101,797)
+- 都度 in その都度 (the phrase JPDB #16,020)
+- お茶の子 in お茶の子さいさい (the phrase JPDB #54,926)
+- 悪態 in 悪態をつく (the phrase JPDB #13,082)
+- 立て板 in 立て板に水 (the phrase JPDB #53,115)
+- 産気 in 産気づく (the phrase JPDB #64,088)
+- 嚢 in そ嚢 (the phrase JPDB #209,434)
+- 踏み場 in 足の踏み場もない (the phrase JPDB #42,369)
+- 収め in 年貢の納め時 (the phrase JPDB #49,146)
 - 特筆 in 特筆すべき (the phrase JPDB #26,872)
-- 冷え in 冷え切る (the phrase JPDB #14,387)
-- 応ずる in 必要に応じて (the phrase JPDB #27,296)
-- 掛け違える in ボタンの掛け違え (the phrase JPDB #146,169)
-- 苦言 in 苦言を呈する (the phrase JPDB #26,863)
-- 覚ます in 目を覚ます (the phrase JPDB #2,348)
-- 逸する in 常軌を逸する (the phrase JPDB #16,045)
-- 年端 in 年端もいかない (the phrase JPDB #37,568)
-- やい in よせやい (the phrase JPDB #63,942)
-- 心待ち in 心待ちにする (the phrase JPDB #18,575)
-- 轍鮒 in 轍鮒の急 (the phrase JPDB #230,310)
-- 宴 in 宴もたけなわ (the phrase JPDB #57,700)
-- ムズ in ちょいムズ (the phrase JPDB #170,845)
-- ぴし in ちょっぴし (the phrase JPDB #113,771)
-- 彼処 in どこもかしこも (the phrase JPDB #16,997)
-- そうけ in 総毛立つ (the phrase JPDB #25,784)
-- 大死 in 大死一番 (the phrase JPDB #170,697)
-- 満遍 in まんべんなく (the phrase JPDB #30,370)
-- 拱く in 手をこまねく (the phrase JPDB #26,073)
-- 悲喜 in 悲喜こもごも (the phrase JPDB #67,565)
+- 今来 in 古往今来 (the phrase JPDB #131,733)
+- にや in にやっと笑う (the phrase JPDB #29,101)
+- 間 in あっという間 (the phrase JPDB #10,132)
+- 万難 in 万難を排して (the phrase JPDB #63,588)
+- 合わせ飲む in 清濁併せ呑む (the phrase JPDB #80,098)
+- たわい in たわいもない (the phrase JPDB #36,314)
+- 売り言葉 in 売り言葉に買い言葉 (the phrase JPDB #32,817)
+- 諸刃 in 諸刃の剣 (the phrase JPDB #34,389)
+- お灸 in お灸を据える (the phrase JPDB #54,502)
+- 長蛇 in 長蛇の列 (the phrase JPDB #35,172)
+- 肩肘 in 肩肘を張る (the phrase JPDB #68,334)
+- 端倪 in 端倪すべからざる (the phrase JPDB #100,829)
+- いちゃ in いちゃこら (the phrase JPDB #103,633)
+- 冴え冴え in 冴え冴えとした (the phrase JPDB #58,321)
+- 暗礁 in 暗礁に乗り上げる (the phrase JPDB #56,264)
+- まんじり in まんじりともせず (the phrase JPDB #58,128)
+- 私 in 私自身 (the phrase JPDB #5,495)
+- 玉の輿 in 玉の輿に乗る (the phrase JPDB #83,910)
+- ぺちゃ in ぺちゃぱい (the phrase JPDB #110,000)
+- じわ in ちりめんじわ (the phrase JPDB #187,492)
+- 於く in における (the phrase JPDB #2,481)
+- 度肝 in 度肝を抜く (the phrase JPDB #20,496)
+- 口火 in 口火を切る (the phrase JPDB #23,602)
+- 濡れ手 in 濡れ手で粟 (the phrase JPDB #113,750)
+- ずうずう in ズーズー弁 (the phrase JPDB #212,824)
+- 鬼気 in 鬼気迫る (the phrase JPDB #16,921)
+- 犬猿 in 犬猿の仲 (the phrase JPDB #33,414)
+- 先手 in 先手を打つ (the phrase JPDB #16,752)
+- 大成り in 大なり小なり (the phrase JPDB #31,281)
+- 関わる in にもかかわらず (the phrase JPDB #2,722)
+- 傾げる in 首を傾げる (the phrase JPDB #3,103)
+- 二進 in にっちもさっちも (the phrase JPDB #84,452)
+- 種 in この種 (the phrase JPDB #22,947)
+- 溜め息 in ため息をつく (the phrase JPDB #3,166)
+- 素っ気 in 味も素っ気もない (the phrase JPDB #78,893)
+- 脚光 in 脚光を浴びる (the phrase JPDB #48,789)
+- 講ずる in 対策を講じる (the phrase JPDB #35,939)
+- 晦ます in 行方をくらます (the phrase JPDB #27,886)
+- 深手 in 深手を負う (the phrase JPDB #31,982)
+- 蚊帳 in 蚊帳の外 (the phrase JPDB #24,274)
+- 完膚 in 完膚なきまで (the phrase JPDB #20,070)
 
 ## Pre-noun adjectivals (JMdict: adj-pn in every sense, nothing beside it but exp — or an expression it sends to one): 38 — found only uninflected, straight before a word of its own
 
@@ -255,7 +258,7 @@ Dropped: 3,551 — in no list 3,519, folded into their phrase 23, too common as 
 
 Usually written in kana (JMdict's uk on every sense), found only so: 14 — ああいう, ああいった, ありとあらゆる, あり得べき, こういう, こういった, これという, これといった, さあらぬ, そういう, そう言った, どういう, ひどすぎる, 紛うことなき
 
-## Readings: 5,072 phrases shown in a spelling whose dictionary reading is not their words' own readings run together (a conjugated end, a voiced sound — or a word the tagger misreads alone)
+## Readings: 5,106 phrases shown in a spelling whose dictionary reading is not their words' own readings run together (a conjugated end, a voiced sound — or a word the tagger misreads alone)
 
 | shown | its reading (the row's) | the words' readings | lemmas |
 | :-- | :-- | :-- | :-- |
@@ -313,7 +316,6 @@ Usually written in kana (JMdict's uk on every sense), found only so: 14 — あ�
 | ある意味で | アルイミデ | アルイミダ | 或る|意味|だ |
 | あろうことか | アロウコトカ | アルコトカ | 有る|事|か |
 | あんたがた | アンタガタ | アナタガタ | 貴方|がた |
-| あんなあ | アンナア | アンナアー | あんな|あー |
 | あんな風に | アンナフウニ | アンナフウダ | あんな|風|だ |
 | あんぽ柿 | アンポガキ | ナニポイカキ | 何|ぽい|柿 |
 | いいご身分 | イイゴミブン | ヨイゴミブン | 良い|御|身分 |
@@ -409,7 +411,14 @@ Usually written in kana (JMdict's uk on every sense), found only so: 14 — あ�
 | いらざるお世話 | イラザルオセワ | イルズオセワ | 要る|ず|お世話 |
 | いり玉子 | イリタマゴ | イルタマゴ | 要る|卵 |
 | いわくありげ | イワクアリゲ | イワクアルゲ | 曰く|有る|気 |
+| いわつばめ | イワツバメ | イウツバメ | 言う|燕 |
+
+## RG, grammar expressions kept as rows of their own: 54
+
+かといって, かもしれない, かもしれません, かもしれん, か否か, さえあれば, じゃないか, だけでなく, ってことは, であります, でなければならない, でなければならぬ, ではないか, ではまた, という, ということは, ということはない, というもの, というより, といえば, として, としても, とする, となったら, となる, となると, となれば, とはいうものの, とは限らない, なきゃいけない, にあたっては, において, における, にかけて, にしても, について, にとって, になると, にもかかわらず, によって異なる, による, によると, にわたって, に加えて, に向けて, に対して, に対する, に従って, に関して, に限って, に際して, のたびに, ようにする, ようになる
+
+Left out by R7: だったりして, でなければ, という訳, につきまして, によって, に伴い
 
 ## 50 kept phrases at random
 
-うんぴょう, 国境を侵す, どこからともなく, よくもまあ, 嵐の大洋, 目を見る, 荷を下ろす, 隠れ場所, 趣向を凝らす, しようかしまいか, 兵を挙げる, 甘い話, 藪漕ぎ, ゴン攻め, 訳ありげ, 生き人形, 上前をはねる, 家を建てる, 空き日, 日記をつける, 荒節, 辛酸を舐める, 然に非ず, 言ってのける, 屍を晒す, ふとましい, 生き顔, 人間のクズ, 腹八分目に医者要らず, 気分を高める, 身の証を立てる, 胸襟を開く, 入れタイマー, 一言多い, 長蛇を逸す, 詭弁を弄する, 季節の移り変わり, 学びの園, 憂い事, 味噌も糞も一緒, 言葉を吐く, 我を立てる, 深掘, 何事に付け, 故あって, つけま, 子供に甘い, 控えを取る, 会社を辞める, 収まりがつかない
+区別せずに, ええかっこしい, 最後を飾る, がらがら蛇, 声を励ます, 留守の間, 税を納める, 寝覚めが悪い, 悪事を働く, 線が細い, びっしゃり, いざとなれば, 足音を立てる, 径の大きい, 天狗になる, 尻ぺんぺん, これ幸い, 見識張る, 日を追って, 足元にも及ばない, 平静を装う, 上から目線, 富の分配, 肩肘張る, 気が狂う, 濡れ手に粟, 強い心, 自分の手柄にする, 飛ぶ鳥も落とす勢い, 対の先, 奇貨居くべし, 高砂の松, 成功を望む, 月夜の蟹, 喉から手が出る, 馬鹿な子ほど可愛い, 由緒正しい, 前もって, 苦渋の決断, 身を粉にする, 内揚げ, 思いもよらない, 死んだふり, 武家の商法, 槍玉に挙げる, 開経偈, 温泉の素, 風船ガムを膨らませる, 役割を演ずる, 手を出す

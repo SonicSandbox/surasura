@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app import analyzer, library_store as ls, sentence_corpus as sc, token_index as ti
+from app import analyzer, library_store as ls, phrases, sentence_corpus as sc, token_index as ti
 from tests.test_generate_missing_item import _generate
 from tests.test_library_store_support import LANGUAGES, entry, roots, write_manifest
 from tests.test_token_store_aside import NAME, _cues, _names_bytes, _show, _srt, _surfaces
@@ -498,7 +498,18 @@ def test_finishing_a_show_counts_right_and_keeps_its_names_and_sentences():
     after = {(r["Word"], r["Reading"]): r for r in _rows(root, "priority_learning_list.csv")}
 
     tokenize = ti.make_tokenizer("ja")
-    raw = {p: tokenize(p)["counts"] for k in shows for p in shows[k]}
+    found = phrases.load() if ti.phrase_rows_on("ja") else None
+
+    def counted(path):
+        """A file's words as the list counts them: its tokens, less the uses a set phrase or a grammar expression's
+        row takes there (する in として — ENGINE 38)."""
+        got = tokenize(path)
+        counts = dict(got["counts"])
+        if found is not None:
+            for key, n in phrases.tally(got["sentences"], found)[1].items():
+                counts[key] = counts.get(key, 0) - n
+        return counts
+    raw = {p: counted(p) for k in shows for p in shows[k]}
 
     def uses(key, paths):
         return sum(raw[p].get(f"{key[0]}|{key[1]}", 0) for p in paths)

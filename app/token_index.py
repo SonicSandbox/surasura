@@ -117,9 +117,11 @@ from operator import itemgetter
 #    once with v8–v18.
 # v20 an .ass file is read through the caption cleaner (app/caption_clean.py, ENGINE_REVISION 31): a v19 blob holds a
 #    TV caption's small-type reading rows as words — the release after 2.5, so users rebuild once (P1.3-1 a).
-# v21 (kept for the grammar expressions on the branch kotoba/grammar-kansai.)
+# v21 Kansai forms are read as Kansai (analyzer § Kansai, ENGINE_REVISION 38): the negative after a verb (やってへん,
+#    来えへん, 見いひん) is the verb + its ending, Kansai's ちゃう is 違う, and JMdict's Kansai words the tagger can't read
+#    are one word (あかん, おかん): a v20 blob holds 辺, 干る, 彼 and fillers there — 3.0, so users rebuild once.
 # v22 a pronoun is a compound's part and a verb's stem carries a suffix that makes a noun (私生活, 言い方 — ENGINE_REVISION
-#    39): a v20 blob holds them in pieces — 3.0, so users rebuild once with v20.
+#    39): a v21 blob holds them in pieces — 3.0, so users rebuild once with v20–v21.
 SCHEMA_VERSION = 22
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,

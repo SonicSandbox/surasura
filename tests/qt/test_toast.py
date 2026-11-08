@@ -191,3 +191,65 @@ def test_its_fill_and_border_are_the_tokens(clock, stage):
             <= (3, 3, 3), name
     side = img.pixelColor(0, img.height() // 2)
     assert abs(side.red() - want[0]) <= 3 and abs(side.blue() - want[2]) <= 3     # the face runs to the side: no edge
+
+
+def test_a_new_toast_lays_out_nothing_outside_the_toast(qapp):
+    """A move's toast replaced by the next one (new words, other buttons, another width): the toast's own row is laid
+    out again, never its parent's — in the window the parent is the central widget, and its pass laid out the whole
+    window at every move (Up next at 20,000 files). Counted on a stage with a layout of its own, as the central
+    widget has: no LayoutRequest reaches it, by construction (the card has no layout to pass the request on)."""
+    from PyQt6.QtCore import QEvent, QObject
+    from PyQt6.QtWidgets import QLabel, QVBoxLayout
+    freeze.set_frozen(True)
+    stage = QWidget()
+    try:
+        QVBoxLayout(stage).addWidget(QLabel("進撃の巨人", stage))
+        stage.resize(1000, 640)
+        stage.show()
+        host = toast.ToastHost(stage)
+        host.show(JA, undo=lambda: None)
+        QApplication.processEvents()
+        assert host.card.isVisible()
+
+        class Count(QObject):
+            n = 0
+
+            def eventFilter(self, obj, ev):
+                if obj is stage and ev.type() == QEvent.Type.LayoutRequest:
+                    Count.n += 1
+                return False
+        count = Count()
+        stage.installEventFilter(count)
+        width = host.card.width()
+        host.show(ZH * 2, undo=lambda: None, buttons=[("Mine it too", "Make its cards now", lambda: None)])
+        QApplication.processEvents()
+        host.set_saving(True)
+        QApplication.processEvents()
+        host.show("鬼灭之刃", buttons=())
+        QApplication.processEvents()
+        stage.removeEventFilter(count)
+        assert host.card.width() != width and host.card.text.text() == "鬼灭之刃"   # (it did change, and was laid out)
+        assert Count.n == 0
+    finally:
+        stage.close()
+        freeze.set_frozen(None)
+
+
+def test_a_first_toast_shown_at_once_fits_its_words_to_the_width_it_shows_at(qapp):
+    """Shown with no motion (frozen, or reduced to a fade's end): the row is laid out at the card's placed size before
+    the words are fitted — never at the hidden body's size from before, which elided a short message to its first
+    letter (the toast's row lives in `body`, whose own resize comes only once it shows)."""
+    freeze.set_frozen(True)
+    stage = QWidget()
+    try:
+        stage.resize(1000, 640)
+        stage.show()
+        host = toast.ToastHost(stage)
+        host.show(JA)
+        QApplication.processEvents()
+        card = host.card
+        assert card.isVisible() and card.text.text() == JA and card.text.width() >= card.width() // 2
+        assert card.body.geometry() == card.rect()
+    finally:
+        stage.close()
+        freeze.set_frozen(None)

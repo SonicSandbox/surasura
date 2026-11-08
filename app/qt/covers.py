@@ -714,7 +714,6 @@ def change_cover_entries(row):
 def add_cover_menu(menu, row, writable=True, reason=None):
     """*Change cover…* as a submenu of `menu` (a tray's, a Goal tile's, Finished's ⋯), its entries' tips shown; greyed
     with the store's reason while it can't be written. -> the submenu, or None (nothing to offer)."""
-    from PyQt6.QtGui import QAction
     from app.qt import strings
     entries = change_cover_entries(row)
     if not entries:
@@ -726,10 +725,9 @@ def add_cover_menu(menu, row, writable=True, reason=None):
     sub.menuAction().setToolTip(strings.ITEM_MENU["cover"][1] if writable else (reason or ""))
     sub.menuAction().setEnabled(writable)
     for _name, label, tip, call in entries:
-        act = QAction(label, sub)
+        act = drag.menu_action(sub, label, lambda c=call: c())
         act.setToolTip(tip if writable else (reason or tip))
         act.setEnabled(writable)
-        act.triggered.connect(lambda _c=False, c=call: c())
         sub.addAction(act)
     return sub
 

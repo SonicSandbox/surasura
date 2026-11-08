@@ -703,6 +703,28 @@ def test_junban_held_back_writes_nothing_and_the_service_runs(live, monkeypatch,
     _settle(auto, registry)
     assert calls == []
     assert len(anki.syncs) == (0 if why == "update-staged" else 1)
+    # No `junban` job at all: one that ended would tell an open 順 window "Anki's cards were moved meanwhile" and
+    # throw its preview away for a re-order that never ran (Mattias's alpha-3 notes: every Reorder refused).
+    assert not [v for v in registry.snapshot() if v.kind == "junban"]
+    auto.close()
+
+
+def test_junban_with_its_window_open_starts_no_job_and_runs_once_it_closes(live, monkeypatch):
+    """順's window open: the automatic step starts no `junban` job (nothing to tell that window), and the 5-minute wait
+    isn't spent on it — the first focus after the window closes runs the step."""
+    calls = _junban(monkeypatch, window=True)
+    fake = sys.modules["modules.junban.auto"]
+    clock = _Clock(0.0)
+    auto, registry, _c, _l = _make(_settings(anki_sync_auto=False), clock=clock, journey=lambda s, l: True)
+    auto.activated()
+    _settle(auto, registry)
+    assert calls == [] and not [v for v in registry.snapshot() if v.kind == "junban"]
+    fake.window_open = lambda: False
+    clock.now = 1.0                         # well inside the 5 minutes: the open window's look spent none of it
+    auto.activated()
+    _settle(auto, registry)
+    assert calls == [("ja", True)]
+    assert [v.kind for v in registry.snapshot()].count("junban") == 1
     auto.close()
 
 

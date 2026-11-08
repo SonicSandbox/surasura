@@ -3,7 +3,7 @@ maintenance lock and the write lock.
 
 Why these matter: the store replaces master_manifest.json as the truth for the user's library order, so
 it must never open the real library from a test (I7), never let two writers race into SQLite 3.39.4's
-WAL-reset bug (K32: every write under one cross-process lock, enforced by `query_only`), and never lose
+WAL-reset bug (K32: every write under one cross-process lock, enforced by the guarded connection), and never lose
 data when something is damaged (I2: set aside, salvaged, never deleted). Every test runs for Japanese and
 Chinese alike (I11), under the per-test SURASURA_TEST_ROOT that tests/conftest.py sets.
 """
@@ -94,7 +94,7 @@ def test_only_the_helper_auto_checkpoints(language):
             assert s.conn.execute("PRAGMA synchronous").fetchone()[0] == 2          # FULL (R-3)
             assert s.conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
             assert s.conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-            assert s.conn.execute("PRAGMA query_only").fetchone()[0] == 1
+            assert isinstance(s.conn, ls._Guarded) and not s.conn.gate.open          # K32: guarded, shut
         finally:
             s.close()
 
@@ -249,6 +249,270 @@ def test_a_bare_write_outside_the_helper_fails(language):
             store.conn.execute("UPDATE items SET ord = ord")
         with pytest.raises(sqlite3.OperationalError, match="readonly"):
             store.conn.execute("UPDATE items SET ord = ord")
+    finally:
+        store.close()
+
+
+def _as_another_reads_it(db):
+    """The whole store as a second, plain connection reads it: every row and the schema (sqlite_sequence included)
+    and the header values a PRAGMA writes."""
+    import pathlib
+    conn = sqlite3.connect(pathlib.Path(db).as_uri() + "?mode=ro", uri=True)
+    try:
+        head = [conn.execute(f"PRAGMA {p}").fetchone()[0] for p in ("user_version", "application_id", "journal_mode")]
+        return head, list(conn.iterdump())
+    finally:
+        conn.close()
+
+
+# Every kind of write the old guard (`query_only`) refused, and a few it never saw, with how each runs inside the
+# helper: True in its transaction, False outside one (begin=False: VACUUM and journal_mode can't run in one), None
+# not run there (a schema_version write damages a store on purpose).
+_WRITE_KINDS = [
+    ("INSERT INTO meta(key, value) VALUES ('k32', 'x')", True),                                  # DML
+    ("UPDATE items SET ord = ord + 0", True),                                                     # (fires a trigger)
+    ("DELETE FROM meta WHERE key = 'k32-nothing'", True),                                        # writes no row: still
+    ("REPLACE INTO meta(key, value) VALUES ('k32', 'y')", True),
+    ("INSERT INTO meta(key, value) VALUES ('k32-r', 'x') RETURNING key", True),
+    ("WITH k(n) AS (SELECT 'k32') UPDATE meta SET value = value WHERE key IN (SELECT n FROM k)", True),
+    ("UPDATE sqlite_sequence SET seq = seq + 1000", True),                                        # sqlite_sequence
+    ("INSERT INTO sqlite_sequence(name, seq) VALUES ('k32', 1)", True),
+    ("DELETE FROM sqlite_sequence WHERE name = 'k32'", True),
+    ("CREATE TABLE k32_made (a)", True),                                                         # DDL
+    ("CREATE INDEX k32_index ON meta (value)", True),
+    ("CREATE TRIGGER k32_trigger AFTER INSERT ON meta BEGIN SELECT 1; END", True),
+    ("CREATE VIEW k32_view AS SELECT 1", True),
+    ("ALTER TABLE meta ADD COLUMN k32_column", True),
+    ("CREATE TEMP TABLE k32_temp (a)", True),
+    ("ANALYZE", True),                                                                           # the whole file
+    ("REINDEX", True),
+    ("REINDEX items_key", True),
+    ("DROP INDEX items_key", True),
+    ("DROP TABLE origin_changes", True),
+    ("PRAGMA user_version = 99", True),                                                          # PRAGMA writes
+    ("PRAGMA main.user_version = 98", True),
+    ("PRAGMA application_id = 7", True),
+    ("PRAGMA incremental_vacuum", True),
+    ("PRAGMA optimize", True),
+    ("PRAGMA foreign_keys = OFF", True),                         # outside the helper a PRAGMA only looks
+    ("PRAGMA schema_version = 1", None),
+    ("PRAGMA wal_checkpoint(PASSIVE)", False),
+    ("PRAGMA WAL_CHECKPOINT", False),                            # names in any case
+    ("VACUUM", False),
+    ("PRAGMA journal_mode = DELETE", False),                     # last: the store leaves WAL
+]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_every_kind_of_write_outside_the_helper_fails_and_nothing_reaches_the_store(language):
+    """K32: no write reaches the store but through `_writing` — rows, the schema, sqlite_sequence, the header's
+    PRAGMAs, the whole-file rewrites, a temp table — each refused as "readonly", the store unchanged as another
+    connection reads it; and each one runs inside the helper (the guard refused it, not SQLite)."""
+    store = migrated(language)
+    try:
+        before = _as_another_reads_it(store.db_path)
+        for sql, _inside in _WRITE_KINDS:
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store.conn.execute(sql).fetchall()
+        assert _as_another_reads_it(store.db_path) == before
+        assert not store.conn.execute("SELECT name FROM temp.sqlite_master").fetchall()
+        for sql, inside in _WRITE_KINDS:
+            if inside is not None:
+                with store._writing(begin=inside):
+                    store.conn.execute(sql).fetchall()
+        assert _as_another_reads_it(store.db_path) != before
+        # With sqlite_stat1 made (above, inside), ANALYZE writes only it: SQLite reports ANALYZE and reads, no INSERT
+        # (statements never compiled inside the helper, so the authorizer decides, not the remembered writes)
+        after = _as_another_reads_it(store.db_path)
+        for sql in ("ANALYZE items", "ANALYZE main"):
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store.conn.execute(sql).fetchall()
+        assert _as_another_reads_it(store.db_path) == after
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_table_made_after_the_open_is_guarded_like_the_rest(language):
+    """A table the helper makes after this connection opened (and its sqlite_sequence row) is guarded on this
+    connection and on one opened later: nothing is listed at the open, the authorizer asks about every table."""
+    store = migrated(language)
+    data_dir, user_files_dir = roots(language)
+    later = None
+    try:
+        with store._writing():
+            store.conn.execute("CREATE TABLE k32_late (id INTEGER PRIMARY KEY AUTOINCREMENT, b)")
+            store.conn.execute("INSERT INTO k32_late (b) VALUES ('made')")
+        later = ls.Store(store.db_path, language, data_dir, user_files_dir)
+        for conn in (store.conn, later.conn):
+            for sql in ("INSERT INTO k32_late (b) VALUES ('bare')", "UPDATE k32_late SET b = 'bare'",
+                        "DELETE FROM k32_late", "UPDATE sqlite_sequence SET seq = 99 WHERE name = 'k32_late'",
+                        "DROP TABLE k32_late"):
+                with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                    conn.execute(sql)
+            assert conn.execute("SELECT b FROM k32_late").fetchall() == [("made",)]
+        with later._writing():
+            later.conn.execute("INSERT INTO k32_late (b) VALUES ('helper')")
+        assert store.conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'k32_late'").fetchone() == (2,)
+    finally:
+        if later is not None:
+            later.close()
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_cached_write_is_refused_through_every_way_in(language):
+    """A write SQLite compiled inside the helper is run again later without the authorizer being asked (Python's
+    statement cache): outside the helper it is refused through `executemany`, a cursor of the connection, the
+    cursor a read handed back, and `executescript` — and a read compiled inside the helper after a write still
+    reads outside it."""
+    store = migrated(language)
+    write = "UPDATE items SET ord = ord WHERE id = ?"
+    read = "SELECT COUNT(*) FROM items WHERE id >= ?"
+    try:
+        with store._writing():
+            store.conn.executemany(write, [(1,), (2,)])
+            store.conn.execute(read, (0,)).fetchone()                  # compiled inside, right after a write
+        assert store.conn.execute(read, (0,)).fetchone()[0] > 0
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.executemany(write, [(1,)])
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.cursor().execute(write, (1,))
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.execute("SELECT 1").execute(write, (1,))
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.cursor().executemany(write, [(1,)])
+        with pytest.raises(TypeError):
+            store.conn.cursor(sqlite3.Cursor)                          # never a plain cursor
+        before = _as_another_reads_it(store.db_path)
+        for script in ("SELECT 1; UPDATE items SET ord = ord", "CREATE TABLE k32_s (a); INSERT INTO k32_s VALUES (1)"):
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store.conn.executescript(script)
+        assert _as_another_reads_it(store.db_path) == before
+        with store._writing(begin=False):                              # a script commits what it begins
+            store.conn.executescript("BEGIN; CREATE TABLE k32_s (a); INSERT INTO k32_s VALUES (1); COMMIT")
+        assert store.conn.execute("SELECT a FROM k32_s").fetchall() == [(1,)]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_write_with_reads_run_inside_it_is_still_remembered(language):
+    """A statement run while a write is running (here an executemany's parameters read through the same connection)
+    never hides the write: it is remembered, and refused outside the helper though SQLite holds it compiled."""
+    store = migrated(language)
+    write = "UPDATE items SET ord = ord WHERE id = ?"
+
+    def ids():
+        for (item,) in store.conn.execute("SELECT id FROM items ORDER BY id LIMIT 3").fetchall():
+            store.conn.execute("SELECT COUNT(*) FROM items WHERE id = ?", (item,)).fetchone()
+            yield (item,)
+
+    try:
+        with store._writing():
+            store.conn.executemany(write, ids())
+        assert write in store.conn.gate.writes
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.executemany(write, [(1,)])
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.execute(write, (1,))
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_the_guard_forgets_its_writes_and_still_refuses_them(language, monkeypatch):
+    """Past GUARD_REMEMBERS write statements the guard forgets them all and has SQLite recompile (and ask) again: the
+    first one, still in Python's statement cache, is refused outside the helper all the same."""
+    monkeypatch.setattr(ls, "GUARD_REMEMBERS", 3)
+    store = migrated(language)
+    writes = [f"UPDATE items SET ord = ord WHERE id = {n}" for n in range(1, 6)]
+    try:
+        with store._writing():
+            for sql in writes:
+                store.conn.execute(sql)
+        assert len(store.conn.gate.writes) < len(writes)
+        for sql in writes:
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store.conn.execute(sql)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_what_only_reads_runs_outside_the_helper(language, tmp_path):
+    """The reads the store makes outside the helper still run: a query, a read transaction, a savepoint, the PRAGMAs
+    that look (with or without a name), and Put back's ATTACH / DETACH of its scratch copy."""
+    store = migrated(language)
+    try:
+        c = store.conn
+        c.execute("BEGIN")
+        c.execute("SELECT COUNT(*) FROM items").fetchone()
+        c.execute("COMMIT")
+        c.execute("SAVEPOINT k32")
+        c.execute("RELEASE k32")
+        for sql in ("PRAGMA user_version", "PRAGMA data_version", "PRAGMA journal_mode", "PRAGMA table_info(items)",
+                    'PRAGMA "main".table_info("items")', "PRAGMA index_list(items)", "PRAGMA quick_check",
+                    "PRAGMA integrity_check(1)", "PRAGMA foreign_key_check", "PRAGMA database_list",
+                    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 3) SELECT * FROM n"):
+            c.execute(sql).fetchall()
+        c.execute("ATTACH DATABASE ? AS old", (str(tmp_path / "scratch.db"),))
+        c.execute("DETACH DATABASE old")
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_blob_is_written_only_inside_the_helper(language):
+    store = migrated(language)
+    if not hasattr(sqlite3.Connection, "blobopen"):                    # Python 3.11+
+        store.close()
+        pytest.skip("no blobopen before Python 3.11")
+    try:
+        item = store.ids("now")[0]
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.blobopen("items", "rel_path", item)
+        with store.conn.blobopen("items", "rel_path", item, readonly=True) as blob:
+            assert blob.read()
+        with store._writing():
+            store.conn.blobopen("items", "rel_path", item).close()
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_command_leaves_every_statement_compiled(language):
+    """Why the guard is an authorizer and not `PRAGMA query_only`: SQLite recompiles every statement a connection
+    holds after a flag PRAGMA (or a new authorizer), ~0.5 ms a command. Through a command and the read after it, the
+    authorizer is never asked again: nothing was recompiled."""
+    store = migrated(language)
+
+    class Counting(ls._Gate):
+        __slots__ = ("asked",)
+
+        def authorize(self, *args):
+            self.asked += 1
+            return super().authorize(*args)
+
+    gate = Counting()
+    gate.asked = 0
+    store.conn.gate = gate
+    store.conn.set_authorizer(gate.authorize)
+    read = "SELECT COUNT(*) FROM items WHERE tier = ?"
+    write = "UPDATE items SET ord = ord WHERE id = ?"
+    try:
+        with store._writing():
+            store.conn.execute(write, (1,))
+        store.conn.execute(read, ("now",)).fetchone()
+        asked = gate.asked
+        assert asked > 0
+        for _ in range(3):
+            with store._writing():
+                store.conn.execute(write, (1,))
+            store.conn.execute(read, ("now",)).fetchone()
+        assert gate.asked == asked
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            store.conn.execute(write, (1,))
     finally:
         store.close()
 

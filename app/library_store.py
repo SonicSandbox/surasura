@@ -21,8 +21,9 @@ Rules that bite (spec §6.2, §8)
 -------------------------------
 - **Every write goes through `Store._writing()`**, under the cross-process write lock (`<db>.wlock`):
   SQLite 3.39.4, which 2.5 ships, carries the WAL-reset bug (two connections writing or checkpointing at
-  the same instant can corrupt the database silently). `query_only` is on outside the helper, so a bare
-  write anywhere else fails. No `wal_checkpoint` outside `Store.checkpoint` (a test scans for it).
+  the same instant can corrupt the database silently). Every store connection is guarded (`_Guarded`, K32): outside
+  the helper it refuses any statement that writes, so a bare write anywhere else fails. No `wal_checkpoint` outside
+  `Store.checkpoint` (a test scans for it).
 - **One connection per thread** (never `check_same_thread=False`); a worker opens its own `Store`.
 - **A command that changes nothing commits nothing**: no version bump, no write, no mtime change.
 - **The store never moves a file** (I3). File work stays with the caller, outside transactions.
@@ -197,6 +198,7 @@ SEARCH_FOLD_VERSION = 1          # meta.search_fold: the version of `search_fold
 SHOWS_JOINED = "shows_joined"    # meta: 1 once a8's one-time join of a show folder's titles ran (`join_same_shows`)
 JOIN_BATCH = 10                  # pairs a `join_same_shows` command joins: ~5 ms of write lock here (20k, a8 timed)
 SPECIALS_JOINED = "specials_joined"   # meta: the newest title feed version `join_specials` read
+LISTED_STATS = 4                 # an Add's files in one folder from which it lists the folder once (`_listed_stats`)
 FEED_KEEP = 24 * 3600            # s: the feed's tombstones (`gone`) are kept a day (L2.2 04 §4.1)
 LOG_KEEP_DAYS = 30               # the placement log keeps at most the trash clock's length
 
@@ -669,7 +671,9 @@ SCHEMA_SQL = (
       in_learning_order INTEGER NOT NULL DEFAULT 1,
       UNIQUE (root_id, rel_key))""",
     "CREATE INDEX items_order ON items (tier, ord, id)",
-    "CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)",   # placement by folder (§12)
+    # placement by folder (§12, `_folder_last`: once a folder a command): without `ord`, so a moved row never rewrites
+    # it (R6: one index of four a move wrote for every row it placed)
+    "CREATE INDEX items_tier_folder ON items (tier, parent_folder)",
     "CREATE INDEX items_key ON items (rel_key)",                            # "is this file an item?" (§12)
     "CREATE INDEX items_missing ON items (size) WHERE availability = 'missing'",   # D2: a scoped sync's missing items
     "CREATE INDEX items_watched ON items (tier) WHERE watched != 0",        # the journey's stones (`STONES_EXIST_SQL`)
@@ -746,9 +750,15 @@ ADDED_INDEXES_SQL = (
     # R6: the items waiting for their subtitle (K5), which every take-in with a video reads (`_waiting_videos`) — without
     # it, a scan of every item (~10 ms at 20k) under the write lock each batch
     "CREATE INDEX IF NOT EXISTS items_waiting ON items (id) WHERE availability = 'waiting'",
+    # R6: the folder index without `ord` (SCHEMA_SQL's `items_tier_folder`): the old one, rewritten by every move
+    "CREATE INDEX IF NOT EXISTS items_tier_folder ON items (tier, parent_folder)",
+    "DROP INDEX IF EXISTS items_folder",
 )
 ADDED_INDEXES = ("pairings_item", "items_missing", "items_watched", "items_available_size", "pairings_extracted",
-                 "items_waiting")
+                 "items_waiting", "items_tier_folder")
+# What those passes replace (R6): an older Surasura that opens the store makes them again (its own pass misses the new
+# names), so a writer's open that finds one runs the passes once more and drops it — never both kept for good
+REPLACED = ("items_folder", "origin_log_item_in")
 # A4K-7 (alpha 4, Sonic 2026-10-28): each copy's content hash, kept for a look's check (b), which read and hashed every
 # copy of a new part's size (~56,000 files when 100 books came onto 60k parts). Made with the added indexes: an added
 # column (no row rewritten: NULL until a look fills it) and a trigger that forgets a hash whenever its row's file
@@ -794,7 +804,12 @@ ORIGIN_LOG_SQL = (
     """CREATE TRIGGER IF NOT EXISTS origin_log_copy AFTER UPDATE OF rel_path, availability ON items
       WHEN NEW.rel_path IS NOT OLD.rel_path OR NEW.availability IS NOT OLD.availability
       BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END""",
-    """CREATE TRIGGER IF NOT EXISTS origin_log_item_in AFTER INSERT ON items
+    # an item that comes back under its old id (a Remove undone) brings its kept records back into `origins()`'s join;
+    # a new one (an id never issued, K30) has none, its records logged as they're written: no row for it (R6: one log
+    # row per new file was a season's Add's last ~0.4 ms). The first form, which logged every insert, goes
+    "DROP TRIGGER IF EXISTS origin_log_item_in",
+    """CREATE TRIGGER IF NOT EXISTS origin_log_item_back AFTER INSERT ON items
+      WHEN EXISTS (SELECT 1 FROM pairings WHERE item_id = NEW.id)
       BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END""",
     """CREATE TRIGGER IF NOT EXISTS origin_log_item_out AFTER DELETE ON items
       BEGIN INSERT INTO origin_changes (item_id) VALUES (OLD.id); END""",
@@ -804,7 +819,7 @@ ORIGIN_LOG_SQL = (
     f"INSERT OR REPLACE INTO meta (key, value) VALUES ('{ORIGIN_LOG_ID}', lower(hex(randomblob(8))))",
 )
 ORIGIN_LOG = ("origin_changes", "origin_log_replaced", "origin_log_in", "origin_log_set", "origin_log_out",
-              "origin_log_copy", "origin_log_item_in", "origin_log_item_out", "origin_log_prune")
+              "origin_log_copy", "origin_log_item_back", "origin_log_item_out", "origin_log_prune")
 
 # Schema 2 (L3.1, the L2.2 pack 02 §2.3–2.4): works (a title: a season, a film, a book, a channel), the feed's
 # tombstones, and the items' work, search key, feed version and *Mine it too*. A fresh store runs SCHEMA_SQL and then
@@ -893,16 +908,121 @@ ITEM_FIELDS = ("id", "root_id", "rel_path", "tier", "availability", "size", "mti
 _UPGRADES = {}
 
 
+# --- K32's guard: the guarded connection (§6.2) ------------------------------------------------------------------ #
+# Outside `Store._writing`, a store connection refuses every statement that writes. SQLite's authorizer, set once at
+# the open, is asked about each action of a statement while SQLite compiles it: a write outside the helper is denied
+# there. A write statement compiled inside the helper is remembered, because SQLite runs it compiled again later
+# without asking the authorizer (Python's statement cache): outside the helper it is refused before it runs. Never
+# `PRAGMA query_only` toggled per command, nor the authorizer set again per command: SQLite recompiles every statement
+# the connection holds after either, ~0.5 ms a command (Kura-B, 2026-11-07).
+_READ_ACTIONS = frozenset((sqlite3.SQLITE_READ, sqlite3.SQLITE_SELECT, sqlite3.SQLITE_FUNCTION,
+                           sqlite3.SQLITE_RECURSIVE, sqlite3.SQLITE_TRANSACTION, sqlite3.SQLITE_SAVEPOINT,
+                           sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH))   # every other action code is a write
+_PRAGMA_WRITES = frozenset(("wal_checkpoint", "incremental_vacuum", "optimize"))   # with no value, still a write
+_PRAGMA_LOOKS = frozenset(("table_info", "table_xinfo", "table_list", "index_info", "index_xinfo", "index_list",
+                           "foreign_key_list", "foreign_key_check", "integrity_check", "quick_check"))  # value = a name
+GUARD_REMEMBERS = 1024        # write statements a connection remembers; past it, all forgotten and recompiled once
+GUARD_REFUSED = "attempt to write a readonly database: outside the library store's write helper (K32)"
+
+
+class _Gate:
+    """A guarded connection's state, apart from the connection (no reference cycle: the connection closes when its
+    last reference goes, never at a collection, §6.12). `open` only inside `Store._writing`."""
+    __slots__ = ("open", "wrote", "denied", "writes")
+
+    def __init__(self):
+        self.open = self.wrote = self.denied = False
+        self.writes = set()
+
+    def authorize(self, action, name, value, _db, _trigger):
+        if action in _READ_ACTIONS:
+            return sqlite3.SQLITE_OK
+        if action == sqlite3.SQLITE_PRAGMA:
+            name = name.lower()
+            if name in _PRAGMA_LOOKS if value is not None else name not in _PRAGMA_WRITES:
+                return sqlite3.SQLITE_OK
+        if self.open:
+            self.wrote = True
+            return sqlite3.SQLITE_OK
+        self.denied = True
+        return sqlite3.SQLITE_DENY
+
+
+class _GuardedCursor(sqlite3.Cursor):
+    """Every statement on a store connection runs through here (the connection's `execute`, `executemany`,
+    `executescript` and `cursor()` alike)."""
+
+    def _run(self, run, sql, *args):
+        gate = self.connection.gate
+        if gate.open:
+            outer, gate.wrote = gate.wrote, False    # a run nested in this one (a generator or a function reading
+            try:                                      # through this connection) never hides this one's write
+                return run(self, sql, *args)
+            finally:
+                wrote, gate.wrote = gate.wrote, outer or gate.wrote
+                if wrote:
+                    if len(gate.writes) >= GUARD_REMEMBERS:      # forgotten: SQLite recompiles (and asks) again
+                        gate.writes.clear()
+                        self.connection.set_authorizer(gate.authorize)
+                    gate.writes.add(sql)
+        if sql in gate.writes:
+            raise sqlite3.OperationalError(GUARD_REFUSED)
+        try:
+            return run(self, sql, *args)
+        except sqlite3.DatabaseError as exc:
+            if not gate.denied:
+                raise
+            gate.denied = False
+            raise sqlite3.OperationalError(GUARD_REFUSED) from exc
+
+    def execute(self, sql, parameters=()):
+        return self._run(sqlite3.Cursor.execute, sql, parameters)
+
+    def executemany(self, sql, seq_of_parameters):
+        return self._run(sqlite3.Cursor.executemany, sql, seq_of_parameters)
+
+    def executescript(self, sql_script):
+        return self._run(sqlite3.Cursor.executescript, sql_script)
+
+
+class _Guarded(sqlite3.Connection):
+    """A store connection (K32): every statement through `_GuardedCursor`; `_connect` sets the authorizer last."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gate = _Gate()
+
+    def cursor(self, factory=_GuardedCursor):
+        if not (isinstance(factory, type) and issubclass(factory, _GuardedCursor)):
+            raise TypeError("a library store connection's cursors are guarded (K32)")
+        return super().cursor(factory)
+
+    def execute(self, sql, parameters=()):
+        return _GuardedCursor(self).execute(sql, parameters)
+
+    def executemany(self, sql, seq_of_parameters):
+        return _GuardedCursor(self).executemany(sql, seq_of_parameters)
+
+    def executescript(self, sql_script):
+        return _GuardedCursor(self).executescript(sql_script)
+
+    if hasattr(sqlite3.Connection, "blobopen"):          # Python 3.11+
+        def blobopen(self, *args, readonly=False, **kwargs):
+            if not readonly and not self.gate.open:
+                raise sqlite3.OperationalError(GUARD_REFUSED)
+            return super().blobopen(*args, readonly=readonly, **kwargs)
+
+
 def _connect(path, role, busy_ms=5000):
     """A connection by the spec's rules (§6.2): Python opens no transaction of its own (every BEGIN is
-    ours), WAL + synchronous=FULL, foreign keys on, `query_only` until the write helper lifts it, and no
-    auto-checkpoint except in the helper, which checkpoints under the write lock."""
+    ours), WAL + synchronous=FULL, foreign keys on, guarded (`_Guarded`: no write outside the write helper, K32), and
+    no auto-checkpoint except in the helper, which checkpoints under the write lock."""
     if role not in ROLES:
         raise ValueError(f"unknown role {role!r}")
     if sys.version_info >= (3, 12):
-        conn = sqlite3.connect(path, timeout=LOCK_TIMEOUT, autocommit=True)
+        conn = sqlite3.connect(path, timeout=LOCK_TIMEOUT, autocommit=True, factory=_Guarded)
     else:
-        conn = sqlite3.connect(path, timeout=LOCK_TIMEOUT, isolation_level=None)
+        conn = sqlite3.connect(path, timeout=LOCK_TIMEOUT, isolation_level=None, factory=_Guarded)
     try:
         conn.execute(f"PRAGMA busy_timeout={int(busy_ms)}")
         conn.execute("PRAGMA synchronous=FULL")
@@ -914,7 +1034,7 @@ def _connect(path, role, busy_ms=5000):
         # command; on disk that was a file written and truncated for every statement — an Add of a 50-file season
         # 7 → 12 ms, its row writes 7× slower. Nothing here makes a temp table; the biggest sort is an upgrade's, once.
         conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA query_only=1")
+        conn.set_authorizer(conn.gate.authorize)   # K32: from here on, no write outside `Store._writing`
     except BaseException:
         conn.close()
         raise
@@ -1867,8 +1987,10 @@ class Store:
         names = ("pairings",) + ADDED_INDEXES + (ADDED_HASH,) + ORIGIN_LOG
         try:
             have = {r[0] for r in self.conn.execute(f"SELECT name FROM sqlite_master WHERE name IN "
-                                                    f"({','.join('?' * len(names))})", names)}
-            if "pairings" not in have or have.issuperset(names) or self._wlock.depth:
+                                                    f"({','.join('?' * (len(names) + len(REPLACED)))})",
+                                                    names + REPLACED)}
+            stale = have & set(REPLACED)        # an older Surasura opened it meanwhile and made one back
+            if "pairings" not in have or (have.issuperset(names) and not stale) or self._wlock.depth:
                 return
             if self.conn.execute("PRAGMA user_version").fetchone()[0] > STORE_SCHEMA:
                 return
@@ -1879,7 +2001,7 @@ class Store:
                     if sql.startswith("ALTER") and self._hash_column():   # another open made it meanwhile
                         continue
                     self.conn.execute(sql)
-                if not have.issuperset(ORIGIN_LOG):              # (its reset mark only with a trigger made)
+                if not have.issuperset(ORIGIN_LOG) or stale:     # (its reset mark only with a trigger made)
                     for sql in ORIGIN_LOG_SQL:
                         self.conn.execute(sql)
         except (StoreError, sqlite3.Error):
@@ -1910,7 +2032,7 @@ class Store:
     def _writing(self, begin=True, wait=LOCK_TIMEOUT):
         """Every write and every explicit checkpoint, under the write lock (waited for `wait` s, then StoreBusy).
         Re-entrant: a command called inside another joins the outer transaction; only the outermost call takes the
-        OS lock, begins and commits. `query_only` is lifted here and nowhere else."""
+        OS lock, begins and commits. The connection's gate (K32) opens here and nowhere else."""
         if self._depth:
             self._depth += 1
             try:
@@ -1924,7 +2046,7 @@ class Store:
         committed = wrote = False
         try:
             changes = self.conn.total_changes
-            self.conn.execute("PRAGMA query_only=0")
+            self.conn.gate.open = True
             if begin:
                 try:
                     self.conn.execute("BEGIN IMMEDIATE")
@@ -1957,7 +2079,7 @@ class Store:
         finally:
             self._depth = 0
             try:
-                self.conn.execute("PRAGMA query_only=1")
+                self.conn.gate.open = False
             finally:
                 self._wlock.release()
                 if committed:
@@ -2499,6 +2621,18 @@ class Store:
         row = self.conn.execute("SELECT id FROM items WHERE rel_key = ?", (path_key(rel_path),)).fetchone()
         return row[0] if row else None
 
+    def item_ids(self, rel_paths):
+        """`[item_id(p) for p in rel_paths]` in one read a 500 (the re-plan's every file of its plan: one query a file
+        was the job's longest stretch under the interpreter lock, R6). The lowest id where two rows share a key, as
+        `item_id`'s index read gives it."""
+        keys = [path_key(p) for p in rel_paths]
+        found = {}
+        for chunk in _chunks(list(dict.fromkeys(keys)), 500):
+            for key, item_id in self.conn.execute(f"SELECT rel_key, id FROM items WHERE rel_key IN "
+                                                  f"({','.join('?' * len(chunk))}) ORDER BY rel_key, id", chunk):
+                found.setdefault(key, item_id)
+        return [found.get(k) for k in keys]
+
     # --- change tokens (§6.6) -------------------------------------------------------------------- #
 
     def token(self):
@@ -2597,15 +2731,20 @@ class Store:
     def _key(self, item_id):
         return self.conn.execute("SELECT id, ord FROM items WHERE id = ?", (item_id,)).fetchone()
 
-    def _put(self, tier, ids, where, changed_in, anchor=None):
+    def _put(self, tier, ids, where, changed_in, anchor=None, in_tier=False):
         """Place `ids` (in order) contiguously in `tier` at `where` — ('after', id), ('before', id),
         ('top',) or ('end',) — touching only the rows that change: the placed items (tier, ord,
         `changed_in`) and, when the gap is spent, a local window re-spaced (ord only, §6.5). `anchor`: the anchor's
-        (id, ord) when the caller read it in the same transaction."""
+        (id, ord) when the caller read it in the same transaction. `in_tier`: every row is in `tier` already — its
+        tier isn't written (SQLite rewrites an index's entry for every column a SET names, the same value or not)."""
         keys, others = self._place_keys(tier, ids, where, anchor)
         cmd = self._cmd
-        self.conn.executemany("UPDATE items SET tier = ?, ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
-                              [(tier, k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
+        if in_tier:
+            self.conn.executemany("UPDATE items SET ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
+                                  [(k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
+        else:
+            self.conn.executemany("UPDATE items SET tier = ?, ord = ?, changed_in = ?, feed_in = ? WHERE id = ?",
+                                  [(tier, k, changed_in, cmd.version, i) for i, k in zip(ids, keys)])
         self._placed(tier, ids, others)
 
     def _placed(self, tier, ids, others):
@@ -2743,7 +2882,8 @@ class Store:
             change = self._change(cmd, "move")
             self._before(change, ordered, near=near)
             self._put(tier, block, where, cmd.version,
-                      (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None)
+                      (a[0], a[2]) if a is not None and where[0] in ("before", "after") and where[1] == a[0] else None,
+                      in_tier=all(r[1] == tier for r in ordered))
             # --- P4.1 L2 (TF fix 8, G1.6-10): out of Finished by any path, its cards come back into the order ---
             self._back_in_order(cmd, change, [r[0] for r in ordered if r[1] == "graduated" and tier != "graduated"])
             # --- end P4.1 L2 ---
@@ -2946,8 +3086,10 @@ class Store:
 
     def _folder_last(self, tier, folder, excl):
         """The last row of `folder` (the placement key) in `tier`, skipping `excl`: (id, ord) or None."""
+        # by the folder's index (`items_tier_folder`), its rows sorted here: `ord + 0` keeps the planner off walking
+        # the whole tier's order backwards for a folder with no row in it (R6: 42 ms at 100k)
         for row in self.conn.execute("SELECT id, ord FROM items WHERE tier = ? AND parent_folder = ? "
-                                     "ORDER BY ord DESC, id DESC LIMIT ?", (tier, folder, len(excl) + 1)):
+                                     "ORDER BY ord + 0 DESC, id DESC LIMIT ?", (tier, folder, len(excl) + 1)):
             if row[0] not in excl:
                 return row
         return None
@@ -3007,12 +3149,21 @@ class Store:
         """Outside any transaction (§6.6): each file's rel path, key, entry and fingerprint."""
         marker_cache = {}
         out = []
+        rels = [self._rel(path) for path in files]
+        fulls = [os.path.join(self.data_dir, rel) for rel in rels]
+        places = [os.path.split(full) for full in fulls]
+        by_folder = {}
+        for folder, name in places:
+            by_folder.setdefault(folder, []).append(name)
+        listed = {}                     # a season's files: their fingerprints from one listing of their folder
+        for folder, names in by_folder.items():
+            if len(names) >= LISTED_STATS:
+                listed.update(((folder, k), st) for k, st in _listed_stats(folder, names).items())
         for n, path in enumerate(files):
-            rel = self._rel(path)
-            full = os.path.join(self.data_dir, rel)
+            rel, full = rels[n], fulls[n]
             entry = entries[n] if entries else make_entry(rel, origin, _detect_source_type(full, marker_cache))
             try:
-                st = os.stat(full)
+                st = listed.get(places[n]) or os.stat(full)
                 fp = (st.st_size, st.st_mtime_ns, "available")
             except OSError:
                 fp = (None, None, "missing")
@@ -6558,6 +6709,30 @@ def walk_tree(base, rel_prefix):
                 continue
         stack[0:0] = subdirs
     return files, bad
+
+
+def _listed_stats(folder, names):
+    """{name: stat} for the files `names` of `folder`, from one `os.scandir` listing of it: the fingerprints the disk
+    sync reads (`walk_tree`), with no handle opened per file (R6, Kura-B 2026-11-07: a 50-file season's 50 `os.stat`
+    ~1.0 ms on C:, its folder's listing ~0.2). Stops once every name is found, or after 2 × len(names) + 16 entries
+    (a big folder: the rest are stat'ed one by one). A name the listing spells otherwise (case, normalization), or
+    that isn't there, is left out: the caller stats it."""
+    want, out = set(names), {}
+    try:
+        with os.scandir(folder) as found:
+            for n, e in enumerate(found):
+                if e.name in want:
+                    try:
+                        out[e.name] = e.stat()
+                    except OSError:
+                        want.discard(e.name)
+                    if len(out) == len(want):
+                        break
+                if n + 1 >= 2 * len(names) + 16:
+                    break
+    except OSError:
+        pass
+    return out
 
 
 def _junban_current(user_files_dir):

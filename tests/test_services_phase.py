@@ -356,3 +356,27 @@ def test_a_recorded_wait_is_no_job_under_way_and_says_no_line():
     assert status.snapshot().lines == ()
     registry.submit("generate", "Generating", lambda j: None)
     assert status.snapshot().lines == ("Generating",)
+
+
+def test_a_refused_junban_job_waiting_on_its_undo_sends_the_press_to_that_undo_red_or_seen():
+    """Lead 2026-11-07 (Mattias's alpha-3 notes: the red 順 circle, hovered, then pressed, opened only its settings): a
+    failed `junban` job that ended waiting on you (`needs`: 順's Reorder refused until the unfinished reorder's Undo)
+    keeps the circle's press on that Undo (`FAILED_GO`) while it is the circle's last run — red, and after the hover
+    too; a failure with no `needs`, or one of another kind, goes nowhere; the next run takes it away."""
+    registry = JobRegistry()
+    refused = registry.submit("junban", "順: reordering Anki", lambda j: None)
+    refused.finish(ok=False, message="Press Undo the last reorder first", needs="Press Undo the last reorder first")
+    last = P.fold({}, _views(registry))
+    got = P.read(_views(registry), last=last)[P.JUNBAN]
+    assert got.failed == "Press Undo the last reorder first" and got.needs is None, "red, never amber"
+    assert got.go == P.Go("junban", "restore")
+    seen = P.read(_views(registry), last=last, seen={refused.id})[P.JUNBAN]
+    assert not seen.failed and seen.go == P.Go("junban", "restore"), "hovered: no longer red, the press still there"
+    plain = JobRegistry()
+    other = plain.submit("junban", "順: reordering Anki", lambda j: None)
+    other.finish(ok=False, message="Anki isn't open")
+    assert P.read(_views(plain), last=P.fold({}, _views(plain)))[P.JUNBAN].go is None
+    nxt = registry.submit("junban", "順: undoing the last reorder", lambda j: None)
+    assert P.read(_views(registry), last=last)[P.JUNBAN].go is None, "the next run under way: no press to the Undo"
+    nxt.finish()
+    assert P.read(_views(registry), last=P.fold(last, _views(registry)))[P.JUNBAN].go is None

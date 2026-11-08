@@ -885,3 +885,19 @@ def test_a3_a_press_on_arrivals_brings_the_library_folders_row_into_view(world):
     assert wait_until(lambda: "library_folders" in page.rows and page.rows["library_folders"].isVisible()
                       and page.scroll.viewport().rect().contains(
                           page.rows["library_folders"].mapTo(page.scroll.viewport(), QPoint(0, 0))), timeout=8)
+
+
+def test_a_red_junban_circle_whose_reorder_waits_on_its_undo_opens_that_undo_hovered_or_not(strip):
+    """Lead 2026-11-07 (Mattias, alpha 3: "clicking now I only go to the settings"): 順's own Reorder refused until the
+    unfinished reorder's Undo ends waiting on you; its red circle's press — and, once hovered, its plain one's — opens 順
+    at that Undo, the hover's last line saying so."""
+    strip.set_opens({P.JUNBAN})
+    registry = JobRegistry()
+    job = registry.submit("junban", "順: reordering Anki", lambda j: None)
+    job.finish(ok=False, message="Press Undo the last reorder first", needs="Press Undo the last reorder first")
+    strip.set_jobs(registry.snapshot())
+    assert strip.states[P.JUNBAN].failed and strip.go(P.JUNBAN) == P.Go("junban", "restore")
+    assert html.escape(strings.PHASE_PRESS_RESTORE) in strip.hover_text(P.JUNBAN)
+    strip._seen.update(strip._marks(P.JUNBAN, strip.states[P.JUNBAN]))     # hovered and left
+    strip.refresh()
+    assert not strip.states[P.JUNBAN].failed and strip.go(P.JUNBAN) == P.Go("junban", "restore")

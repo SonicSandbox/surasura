@@ -910,3 +910,22 @@ def test_r3_the_row_under_the_pointer_leaving_for_goal_draws_its_neighbours_agai
                 assert w.union_in(r.translated(at)) == r.width() * r.height(), n
     finally:
         wc.pointer_away(lst)
+
+
+def test_the_rows_places_read_from_the_heights_are_qts_own(screen):
+    """`RowsView._on_screen` stacks the delegate's heights from the scroll value instead of asking Qt (each
+    `visualRect` asks the delegate again): the same rects as Qt's own, at the top and scrolled part-way."""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    bar = lst.verticalScrollBar()
+    try:
+        for value in (0, bar.maximum() // 3 + 17):
+            bar.setValue(value)
+            settle(30)
+            mine = lst._on_screen()
+            assert mine and all(r == lst.visualRect(lst.model().index(i, 0)) for i, r in mine), \
+                [(i, r, lst.visualRect(lst.model().index(i, 0))) for i, r in mine][:4]
+            assert lst.indexAt(QPoint(4, 1)).row() == mine[0][0]
+    finally:
+        bar.setValue(0)
+        settle(30)

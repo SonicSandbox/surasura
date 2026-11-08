@@ -1130,6 +1130,14 @@ class RowDelegate(QStyledItemDelegate):
         heights = self._heights
         return heights[row] if 0 <= row < len(heights) else QSize(0, 0)
 
+    def heights(self):
+        """Every entry's height as `sizeHint` answers Qt (the same list, made again when stale): a row's place read from
+        them asks Qt nothing (a `visualRect` asks the delegate again, one Python call a row)."""
+        model = self._model
+        if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look                 or self.view.unfolded is not self._h_unfolded:
+            self._heights_now(model)
+        return self._heights
+
     def same_heights(self, old_entries, new_entries):
         """A "same" refresh: every shape is as it was, so the height list made for `old_entries` holds for the new ones
         (review D-2: making it again walked every entry on the window's thread, ~6 ms at 20,000)."""
@@ -3725,13 +3733,26 @@ class RowsView(QListView):
     def _shown_rects(self):
         """{entry key: its rect in the viewport} of the rows on screen, with the scroll value — what a splice compares
         with to repaint only what changed (`_repaint_spliced`)."""
-        model, h = self.model(), self.viewport().height()
-        first = self.indexAt(QPoint(4, 1))
-        last = self.indexAt(QPoint(4, h - 2))
-        lo = first.row() if first.isValid() else 0
-        hi = last.row() if last.isValid() else model.rowCount() - 1
-        return self.verticalScrollBar().value(), {model.keys[i]: self.visualRect(model.index(i, 0))
-                                                  for i in range(lo, min(hi, len(model.keys) - 1) + 1)}
+        model = self.model()
+        return self.verticalScrollBar().value(), {model.keys[i]: r for i, r in self._on_screen()}
+
+    def _on_screen(self):
+        """[(row, its rect in the viewport)] of the rows on screen, read from the delegate's heights stacked from the
+        top (what Qt lays them out by: no spacing) and the scroll value — asking Qt nothing (a `visualRect` or an
+        `indexAt` asks the delegate's size hint again, one Python call a row)."""
+        heights = self.delegate.heights()
+        n = min(len(heights), self.model().rowCount())
+        top = -self.verticalScrollBar().value()
+        h, w = self.viewport().height(), self.viewport().width()
+        out = []
+        for i in range(n):
+            rh = heights[i].height()
+            if top + rh > 0:
+                if top >= h:
+                    break
+                out.append((i, QRect(0, top, w, rh)))
+            top += rh
+        return out
 
     def _repaint_spliced(self, shown):
         """(Up next 3, S19.) After rows came or went, laid out with the screen's repaint dropped: the rows still on screen
@@ -3747,16 +3768,15 @@ class RowsView(QListView):
                 self.parting is not None or self.landing is not None or self._turn_rects:
             return False
         h = vp.height()
-        first = self.indexAt(QPoint(4, 1))
-        last = self.indexAt(QPoint(4, h - 2))
-        lo = first.row() if first.isValid() else 0
-        hi = last.row() if last.isValid() else model.rowCount() - 1
+        screen = self._on_screen()
+        if not screen:
+            return False
+        lo, hi = screen[0][0], screen[-1][0]
         changed = set(model.changed)
         near = self._near_hover(before, lo, hi)
         dirty, moved, numbers, shift, ended = [], [], [], None, False
-        for i in range(lo, hi + 1):
+        for i, rect in screen:
             key = model.keys[i]
-            rect = self.visualRect(model.index(i, 0))
             old = before.get(key)
             if old is None or (i in changed and model.looks_different(i)) or key[1] in near:
                 dirty.append(rect)                       # new, drawn differently, or beside a hover in motion: drawn

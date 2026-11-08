@@ -3655,8 +3655,6 @@ class RowsView(QListView):
             how = model.set_entries(entries)
             if how == "spliced":
                 self.executeDelayedItemsLayout()         # laid out now, its repaint of the whole list dropped (below)
-            elif how == "reset":
-                vp.update()                              # (as Qt's: the whole screen, from kept pictures)
         finally:
             vp.setAttribute(Qt.WidgetAttribute.WA_UpdatesDisabled, False)
         self._trim_picks()                           # --- LM11b G4
@@ -3737,13 +3735,16 @@ class RowsView(QListView):
 
     def _repaint_spliced(self, shown):
         """(Up next 3, S19.) After rows came or went, laid out with the screen's repaint dropped: the rows still on screen
-        that only shifted, all by one distance, are moved as painted (`QWidget.scroll`: Qt paints the strip it uncovers),
-        and only the rows that are new or look different are drawn — a row leaving Current repaints what changed, never
-        the list. -> False when this can't be told (scrolled, an open row, rows shifted by different distances, a row
-        that changed height): the caller repaints the screen."""
+        that only shifted — one block, all by one distance — are moved as painted (`QWidget.scroll`: Qt paints the strip it
+        uncovers; at a fractional pixel ratio it paints the block instead, as before) with their place numbers drawn
+        again (`_paint_number`: over the picture), and only the rows that are new or look different, and those beside a
+        hover in motion or the gap, are drawn. -> False when this can't be told (scrolled, an open row, a drag, a mark
+        turning, rows shifted apart or by different distances, a row that changed height): the caller repaints the
+        screen."""
         model, vp = self.model(), self.viewport()
         value, before = shown
-        if value != self.verticalScrollBar().value() or model.open_key is not None or not before:
+        if value != self.verticalScrollBar().value() or model.open_key is not None or not before or \
+                self.parting is not None or self.landing is not None or self._turn_rects:
             return False
         h = vp.height()
         first = self.indexAt(QPoint(4, 1))
@@ -3751,22 +3752,30 @@ class RowsView(QListView):
         lo = first.row() if first.isValid() else 0
         hi = last.row() if last.isValid() else model.rowCount() - 1
         changed = set(model.changed)
-        dirty, moved, shift = [], [], None
+        near = self._near_hover(before, lo, hi)
+        dirty, moved, numbers, shift, ended = [], [], [], None, False
         for i in range(lo, hi + 1):
+            key = model.keys[i]
             rect = self.visualRect(model.index(i, 0))
-            old = before.get(model.keys[i])
-            if old is None or (i in changed and model.looks_different(i)):
-                dirty.append(rect)                       # new here, or drawn differently: drawn afresh
-                continue
-            if old == rect:
-                continue                                 # where it was, as it was: nothing
-            if old.size() != rect.size():
+            old = before.get(key)
+            if old is None or (i in changed and model.looks_different(i)) or key[1] in near:
+                dirty.append(rect)                       # new, drawn differently, or beside a hover in motion: drawn
+            if old is None or old == rect:               # afresh where it stands
+                if moved and old is not None:
+                    ended = True                         # (a row back in its place after the block: none may move
+                continue                                 # below it)
+            if ended or old.size() != rect.size():
                 return False
             dy = rect.top() - old.top()
             if shift is not None and dy != shift:
                 return False
             shift = dy
             moved.append(rect)
+            was = model.before[i][1] if i < len(model.before) else None
+            if getattr(was, "index", None) != getattr(model.entries[i][1], "index", None):
+                numbers.append(rect)                     # its place number, drawn over its picture, moved on
+        if ended and moved:
+            return False
         reach = h
         if moved:
             top = min(r.top() for r in moved)
@@ -3776,11 +3785,29 @@ class RowsView(QListView):
         for key, old in before.items():                  # a row gone from where nothing moved over it: its place
             if key not in now and old.top() < reach:
                 dirty.append(old)
+        if numbers:
+            slab = self.delegate.slab_of(numbers[0])
+            w = round(2 * rl("pos") * fz())              # (a wide number runs past its column: room for it)
+            dirty.append(QRect(slab.left(), min(r.top() for r in numbers), w,
+                               max(r.bottom() for r in numbers) - min(r.top() for r in numbers) + 1))
         for rect in dirty:
             vp.update(rect)
         self.moved_rows = len(moved)                     # (tests: what a splice moved and drew)
         self.drawn_rows = len(dirty)
         return True
+
+    def _near_hover(self, before, lo, hi):
+        """The keys of the rows under a hover in motion (`_touch`) and of their neighbours, before and after the
+        splice: a lifted row eases its neighbours apart, and a gone one leaves them eased where they were painted."""
+        touched = set(self._touch)
+        if not touched:
+            return set()
+        out = set()
+        for order in (sorted(before, key=lambda k: before[k].top()), self.model().keys[lo:hi + 1]):
+            for n, k in enumerate(order):
+                if k[1] in touched:
+                    out.update(x[1] for x in order[max(0, n - 1):n + 2])
+        return out
 
     def _held_keys(self, entries):
         """(the current row's key, the hovered row's key) in `entries`: what a reorder must keep on its row."""

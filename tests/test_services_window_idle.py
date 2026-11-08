@@ -42,6 +42,30 @@ def test_a_window_that_never_rests_holds_a_step_back_cap_s_at_most(monkeypatch):
         window_idle.rest()
 
 
+def _timed(fn):
+    t0 = time.perf_counter()
+    fn()
+    return time.perf_counter() - t0
+
+
+def _in_a_worker(fn):
+    out = []
+    t = threading.Thread(target=lambda: out.append(fn()))
+    t.start()
+    t.join(5)
+    return out[0]
+
+
+def test_a_pause_on_the_windows_own_thread_never_waits():
+    window_idle.busy()
+    try:
+        t0 = time.perf_counter()
+        window_idle.pause()
+        assert time.perf_counter() - t0 < 0.005
+    finally:
+        window_idle.rest()
+
+
 def test_a_pause_inside_a_step_waits_out_a_young_window_stretch_and_never_an_old_one():
     """(Up next 3) Between two pieces of a long step: the window just woke → the piece waits (till it rests, `SPAN_S`
     after it woke at most); a window awake longer than that → no wait at all, so a window that never rests never makes
@@ -51,25 +75,16 @@ def test_a_pause_inside_a_step_waits_out_a_young_window_stretch_and_never_an_old
     assert time.perf_counter() - t0 < 0.005
     window_idle.busy()
     try:
-        t0 = time.perf_counter()
-        window_idle.pause()                                    # (young: waits out the rest of SPAN_S)
-        waited = time.perf_counter() - t0
+        waited = _in_a_worker(lambda: _timed(window_idle.pause))    # (young: waits out the rest of SPAN_S)
         assert 0.01 <= waited <= window_idle.SPAN_S + 0.05, waited
-        t0 = time.perf_counter()
-        for _ in range(100):
-            window_idle.pause()                                # (old now: never again)
-        assert time.perf_counter() - t0 < 0.01
+        assert _in_a_worker(lambda: _timed(lambda: [window_idle.pause() for _ in range(100)])) < 0.01   # (old now)
         window_idle.busy()                                     # (still awake: the stretch's start is kept)
-        t0 = time.perf_counter()
-        window_idle.pause()
-        assert time.perf_counter() - t0 < 0.01
+        assert _in_a_worker(lambda: _timed(window_idle.pause)) < 0.01
     finally:
         window_idle.rest()
     window_idle.busy()                                         # woke anew after a rest: young again, and resting ends it
     try:
         threading.Timer(0.005, window_idle.rest).start()
-        t0 = time.perf_counter()
-        window_idle.pause()
-        assert time.perf_counter() - t0 < window_idle.SPAN_S
+        assert _in_a_worker(lambda: _timed(window_idle.pause)) < window_idle.SPAN_S
     finally:
         window_idle.rest()

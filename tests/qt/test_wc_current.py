@@ -768,3 +768,52 @@ def test_r3_a_row_leaving_for_goal_repaints_only_what_changed_never_the_list(scr
     assert painted <= whole // 2, (painted, whole, w.report())    # the uncovered strip and what changed, never the list
     assert getattr(lst, "moved_rows", None) and lst.moved_rows >= 3, w.report()       # (the rows under it shifted)
     assert lst.delegate.renders - renders <= 3, w.report()       # no row drawn afresh but the ones that changed
+
+
+def _shown(lst):
+    """{entry key: (rect, place number)} of the rows on screen."""
+    model, h = lst.model(), lst.viewport().height()
+    first, last = lst.indexAt(QPoint(4, 1)), lst.indexAt(QPoint(4, h - 2))
+    lo = first.row() if first.isValid() else 0
+    hi = last.row() if last.isValid() else model.rowCount() - 1
+    return {model.keys[i]: (lst.visualRect(model.index(i, 0)), getattr(model.entries[i][1], "index", None))
+            for i in range(lo, hi + 1)}
+
+
+@pytest.mark.parametrize("how", ["goal", "up-next"])
+def test_r3_after_a_row_leaves_or_up_next_hands_on_every_change_on_screen_is_painted(screen, how):
+    """Up next 3: a splice moves the shifted rows as painted and draws only what changed. What the list must still
+    show right: either the whole list painted, or the rows that moved one block shifted by one distance (moved as
+    painted) — and every row whose place number changed has its number's column painted (drawn over its picture: #4
+    now #3); a row that came is painted whole. (Up Next handing on: rows came and went at once.)"""
+    seed, win, writer = screen
+    lst = lst_of(win)
+    vp = lst.viewport()
+    win.toasts.close()
+    settle(30)
+    rs = list(win.moves.base().rows)
+    row = next(r for r in rs[2:] if r.tier == "now")
+    before = _shown(lst)
+    saved = len(writer.saved)
+    with wc.measure(win) as w:
+        win.moves.menu_pick(row, how)
+        assert wait_until(lambda: len(writer.saved) > saved and win.moves.tickets == [], 3)
+        settle(300)
+    after = _shown(lst)
+    at = wc.rect_in_window(vp).topLeft()
+
+    def painted(rect):                                   # (in the viewport's coordinates, what of it shows)
+        rect = rect.intersected(vp.rect())
+        return w.union_in(rect.translated(at)) == rect.width() * rect.height()
+    whole = painted(vp.rect())
+    shifts = {r.top() - before[k][0].top() for k, (r, _n) in after.items() if k in before and before[k][0] != r}
+    if not whole:
+        assert len(shifts) <= 1, shifts
+        moved = [i for i, k in enumerate(after) if k in before and before[k][0] != after[k][0]]
+        assert moved == list(range(moved[0], moved[0] + len(moved))) if moved else True, moved    # one block
+        for k, (r, n) in after.items():
+            if k not in before:
+                assert painted(r), (k, r)                 # came: drawn whole
+            elif before[k][1] != n:
+                col = QRect(r.left(), r.top(), 30, r.height())
+                assert painted(col), (k, before[k][1], n)  # its place number moved on: its column drawn

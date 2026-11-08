@@ -43,8 +43,8 @@ def pause():
     young, wait for it to rest — `SPAN_S` after it woke at most, so a window that stays awake never holds the step back
     longer than one stretch; a window at rest costs one look (Up next 3: the reader's 20,000-file build took turns at
     Python's lock with the clock frames and the save's view)."""
-    if _idle.is_set():
-        return
+    if _idle.is_set() or threading.current_thread() is threading.main_thread():
+        return                                      # (the window's own thread never waits for itself)
     left = _woke[0] + SPAN_S - time.perf_counter()
     if left > 0:
         _idle.wait(left)

@@ -810,7 +810,8 @@ def test_an_adjective_made_a_noun_is_its_adjective():
 
 def test_what_is_no_polite_or_plural_grammar_stays_as_it_is():
     """やさしさ in kana could be 優しさ or 易しさ — the tagger's guess — so it keeps its さ. Two words before さ
-    (男らしさ) stay a phrase; 見方 and 先生方 are not taken apart (UniDic's 方 tells no plural from a way); a dictionary
+    (男らしさ) stay a phrase; 先生方 is not taken apart (UniDic's 方 tells no plural from a way) and 見方 is one word of its
+    own (a stem + a suffix that makes a noun), never 見る; a dictionary
     お / ご word (お守り, ご苦労) is one token and its own word; 御 read ミ is kept (御心 is not 心); two endings stay a
     phrase; a card that is only お or only たち is left alone."""
     tokenize = _tokenizer().tokenize
@@ -820,7 +821,7 @@ def test_what_is_no_polite_or_plural_grammar_stays_as_it_is():
                  "お", "たち", ""):
         assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
     assert anki_match.card_key("お茶する", listed, "ja", None, tokenize) == ("お茶", "L7")
-    assert anki_match.one_word(tokenize("見方")) is None
+    assert anki_match.one_word(tokenize("見方"))[:2] == ("見方", "ミカタ")
     assert anki_match.affixes_off([("御", "オ", "お", "お")]) == [("御", "オ", "お", "お")]
     assert anki_match.card_key("お部屋", {"部屋": 0}, "zh", None, tokenize) == ("", "")
     assert anki_match.card_key("お部屋", {"部屋": 0}, "ja", None, None) == ("", "")

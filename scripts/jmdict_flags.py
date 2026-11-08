@@ -100,7 +100,7 @@ def created(path=JMDICT):
 def load(path=JMDICT):
     """Every JMdict entry as a plain dict, streamed:
     {"seq": int, "kanji": [(keb, pri, inf)], "kana": [(reb, pri, restr, nokanji, inf)],
-     "senses": [{"pos", "misc", "field", "gloss", "xref", "stagk", "stagr", "lsource"}]} — tuples of strings, each tag
+     "senses": [{"pos", "misc", "field", "gloss", "xref", "stagk", "stagr", "lsource", "dial"}]} — tuples of strings, each tag
     kept as its entity name ("n", "exp", "abbr", "work"). A sense with no part of speech takes the one before it, as
     JMdict's DTD says. A missing file raises FileNotFoundError."""
     names, _ = _header(path)
@@ -130,6 +130,7 @@ def load(path=JMDICT):
                     "stagk": tuple(x.text for x in s.findall("stagk")),
                     "stagr": tuple(x.text for x in s.findall("stagr")),
                     "lsource": tuple(x.get(_LANG, "eng") for x in s.findall("lsource")),
+                    "dial": tuple(tag(x.text) for x in s.findall("dial")),
                 })
             entries.append({"seq": int(el.findtext("ent_seq")), "kanji": kanji, "kana": kana, "senses": senses})
             el.clear()

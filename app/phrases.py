@@ -24,6 +24,13 @@ light verb or adjective (する, なる, ある, いる, できる, ない, い�
 inside the phrase (腑 in 腑に落ちる: JPDB 2024 ranks it alone rarer than the phrase) is learned with the phrase. A phrase
 is ready to learn once every other real word in it is known (`waiting`).
 
+A grammar expression JMdict lists (かもしれない, として, について, なければならない — `Phrase.grammar`) is a row of its
+own the same way, learned as one unit: every word in it that isn't grammar is the expression's there (知れる in
+かもしれない gives its use to the row; 気心が知れる is 知れる's), and Connect sends it as it sends grammar words. One ending
+in a verb JMdict doesn't conjugate is the expression only uninflected before a word of its own (`AS_WRITTEN`: という人, never
+と言った); one ending in て is none before an auxiliary verb (`TE_AUXILIARIES`: ついている is 付く); one opening with
+the stem よう (ようにする, ようになる: after a verb) is none right after の (口のようにして is the simile 'like').
+
 The phrases themselves are app/phrase_data.py, built from JMdict by scripts/build_phrase_data.py. Pure: no tkinter,
 no settings, no tagger — the Rarity slider's process counts phrases with it too, and nothing imports it while the
 switch is off.
@@ -39,20 +46,31 @@ from app.unicode_ranges import HAN
 # it), a light verb or adjective ("l") or grammar ("g").
 CONTENT, BOUND, LIGHT, GRAMMAR = "c", "b", "l", "g"
 
-Phrase = namedtuple("Phrase", "key readings roles display word reading prenoun", defaults=(0,))
+Phrase = namedtuple("Phrase", "key readings roles display word reading prenoun grammar", defaults=(0, 0))
 Phrase.__doc__ = """One set phrase: `key` its words' lemmas, `readings` theirs (UniDic lForm), `roles` one letter per
 word (above), `display` the dictionary's commonest spelling; `word` and `reading` are the list row's Word and Reading —
 the lemmas joined (気が付く, 若しか為るた) and the dictionary's reading of the spelling shown (キガツク, モシカシタラ);
 `prenoun`: 1 when JMdict classes it only as a pre-noun adjectival, 2 when it also says it is usually written in kana
-(`before_a_noun`), else 0."""
+(`before_a_noun`), else 0; `grammar`: 1 for a grammar expression (かもしれない, として: every word in it is the
+expression's there, and Connect sends it as it sends grammar words — `connect_send_grammar`), 2 for one ending in a word
+JMdict gives no conjugation class (という, に対する: found only as a pre-noun phrase is, `before_a_noun`), else 0."""
+
+# The aspect verbs after a verb's て (UniDic lemmas): a grammar expression ending in て followed by one is no expression
+# there — 本体についている is 付く 'be attached' + ている, never について 'about'. Only these: a verb that is also a word of
+# its own after one (教師として来た, この件について見ていきましょう) leaves the expression standing.
+TE_AUXILIARIES = frozenset(("居る", "有る", "仕舞う", "置く"))
 
 # What `find` finds: bump it whenever a change here finds other phrases in the same words — the token store then counts
 # every file's phrases again (token_index.Store._update_phrases), as it does for new phrase data, and reads the known
 # words again (a known sentence's phrases are known: analyzer.load_known_words, Store._known_key).
-MATCHER_VERSION = 4
+MATCHER_VERSION = 5
 
 # Phrase.prenoun: a pre-noun adjectival JMdict says is usually written in kana (its "uk" on every sense).
 KANA_ONLY = 2
+# Phrase.grammar: a grammar expression ending in a verb JMdict gives no conjugation class — という, に対する — is the
+# expression only uninflected, before a word of its own (という人, に対する考え), as a pre-noun phrase is: と言った is 言う 'said', and so is
+# a sentence's hearsay 〜という。 (`before_a_noun`).
+AS_WRITTEN = 2
 
 _END = None          # the trie's mark for "a phrase ends here" (a lemma is never None)
 _HIRAGANA = {code: code - 0x60 for code in range(0x30A1, 0x30F7)}      # katakana -> hiragana, for str.translate
@@ -94,9 +112,9 @@ class PhraseSet:
     """Every phrase, and the trie that finds them in a sentence's words (`find`)."""
 
     def __init__(self, entries):
-        """`entries`: [key, readings, roles, display, reading, prenoun] per phrase — key and readings `|`-joined, as
-        app/phrase_data.py stores them; `reading` (the row's, the display's own) defaults to the words' readings run
-        together, `prenoun` (0, 1 or 2) to 0 — or Phrase tuples."""
+        """`entries`: [key, readings, roles, display, reading, prenoun, grammar] per phrase — key and readings
+        `|`-joined, as app/phrase_data.py stores them; `reading` (the row's, the display's own) defaults to the words'
+        readings run together, `prenoun` (0, 1 or 2) and `grammar` (0 or 1) to 0 — or Phrase tuples."""
         self.entries = []
         self._by_word = {}
         self._trie = self.firsts = self._fixed = None   # made on the first search (Generate mostly reads the store's)
@@ -108,7 +126,7 @@ class PhraseSet:
                 readings = tuple([same.setdefault(s, s) for s in readings.split("|")])
                 reading = entry[4] if len(entry) > 4 and entry[4] else "".join(readings)
                 entry = Phrase(key, readings, same.setdefault(roles, roles), display, "".join(key), reading,
-                               int(entry[5] or 0) if len(entry) > 5 else 0)
+                               int(entry[5] or 0) if len(entry) > 5 else 0, int(entry[6] or 0) if len(entry) > 6 else 0)
             self._by_word.setdefault(entry.word, len(self.entries))
             self.entries.append(entry)
 
@@ -168,8 +186,13 @@ class PhraseSet:
                 own = fixed[index]
                 if own is not None and not own.endswith(tokens[end - 1][2]):
                     continue                # そういうことだ is not そういうことなら
-                if entries[index].prenoun and not before_a_noun(entries[index], tokens, i, end, text):
-                    continue                # ああ言って is not ああいう
+                entry = entries[index]
+                if (entry.prenoun or entry.grammar == AS_WRITTEN) and not before_a_noun(entry, tokens, i, end, text):
+                    continue                # ああ言って is not ああいう, と言った not という
+                if entry.grammar and end < n and lemmas[end] in TE_AUXILIARIES and entry.key[-1] == "て":
+                    continue                # 本体についている is not について
+                if entry.grammar and i and entry.key[0] == "様" and lemmas[i - 1] == "の":
+                    continue                # 口のようにして is the simile のように, not ようにする
                 if "".join(token[2] for token in tokens[i:end]) in text:
                     found.append((i, end, index))
                     after = end

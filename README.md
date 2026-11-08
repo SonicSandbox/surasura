@@ -183,14 +183,15 @@ JMdict's kanji spellings, entry by entry, and the readings of the entries a card
 own terms" from ever joining a word the dictionary lists, and tell which word an Anki card
 is (心する 'take heed' is a word of its own, not 心); that table (`app/jmdict_data.py`) is shared under the same licence
 too. So are the set phrases Surasura can add to your list (Settings → Language & Parsing → "Idioms as
-rows"): JMdict's phrases as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
+rows"): JMdict's phrases and grammar expressions (かもしれない, として) as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
 which of their words live only inside them (by JPDB 2024's ranks) and which are units in general text (counted, as
 statistics only, on the shared パターン set's Japanese text above); that table (`app/phrase_data.py`) is shared under
 the same licence. So is the list of one-kanji words Surasura can offer (Settings → Language & Parsing → "List one-kanji
 words only when they're dictionary words": 手, 顔, こと): the one-character words that JMdict lists with their reading
 and calls common — or that JPDB 2024 and Jiten both rank among their top 20,000 — and that general text (the same
 shared set's Japanese text, as statistics only) uses as words of their own; that table (`app/one_kanji_data.py`) keeps
-only spellings and readings.
+only spellings and readings. So does the short list of Kansai words the tokenizer can't read on its own (あかん, おかん):
+JMdict's Kansai-ben words that JPDB 2024 and Jiten both rank (`app/kansai_data.py`), shared under the same licence.
 Whether two words that meet are one compound or only a coincidence is also counted, as statistics only, on the
 [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/)'s Japanese web text (Universität Leipzig, CC BY 4.0).
 

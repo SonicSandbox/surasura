@@ -33,6 +33,9 @@ OUTPUTS = ("priority_learning_list.csv", "progressive_learning_list.csv", "word_
 # The phrases the fixture meets twice or more, by their rows' Word — and the words that live only inside them.
 PHRASE_ROWS = {"気が付く", "気を付ける", "手っ取り早い", "若しか為るた", "本題に入る", "眉根を寄せる", "首を傾げる"}
 BOUND = {"手っ取り", "眉根", "傾げる"}
+# A word whose uses a grammar expression's row takes (Phrase.grammar, ENGINE 38): 成る's only other use, 冷たくなった,
+# leaves it under the cut-off once 夕方になると's is the grammar row になると's (met once: not listed itself).
+GRAMMAR_TAKEN = {"成る"}
 
 
 @pytest.fixture
@@ -108,15 +111,16 @@ def test_off_every_output_is_a_run_without_the_phrases(library, monkeypatch):
 def test_on_adds_the_phrase_rows_and_every_word_row_stays_but_the_bound_ones(library):
     """On: the phrase rows are added and every word row is what it was off — its spellings, counts, score, tiers and
     sources — except a word that lives only inside its phrase: here all its uses were inside it, so it leaves the list
-    (手っ取り from 手っ取り早い, 眉根, 傾げる)."""
+    (手っ取り from 手っ取り早い, 眉根, 傾げる) — and a word a grammar expression's row takes a use from (成る in
+    夕方になると: GRAMMAR_TAKEN)."""
     _switch(library, False)
     off = _run(library)
     _switch(library, True)
     on = _run(library)
     assert set(on) - set(off) == PHRASE_ROWS
-    assert set(off) - set(on) == BOUND
+    assert set(off) - set(on) == BOUND | GRAMMAR_TAKEN
     for word, row in off.items():
-        if word not in BOUND:
+        if word not in BOUND | GRAMMAR_TAKEN:
             assert {c: on[word][c] for c in WORD_COLUMNS} == {c: row[c] for c in WORD_COLUMNS}, word
 
 

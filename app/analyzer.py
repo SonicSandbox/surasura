@@ -167,7 +167,14 @@ ENSURE_AUDIO_EXAMPLE = False
 #     plan_rules.ContextPicker) weighs every candidate and, among equals, takes the watched lines first, then
 #     recency, then the nearest file. Every learner's sentences change once. No tokenizing changed: SCHEMA_VERSION
 #     stays 20. 3.0, with 31–36.
-ENGINE_REVISION = 37
+# 38: grammar and Kansai (Sonic 2026-11-07): a grammar expression JMdict lists (かもしれない, として, について, という,
+#     でなければならない — scripts/build_phrase_data.py's RG) is a row of its own, learned as one unit, the way a set
+#     phrase is, and marked as grammar (Connect sends it only while "Send grammar words" is on); the word inside it gives
+#     its use there to the row (知れる in かもしれない; 気心が知れる is still 知れる's). Kansai forms read as Kansai
+#     (§ Kansai): やってへん counts やる and the ending — never 辺 —, 来えへん 来る, ちゃう 違う, and JMdict's Kansai
+#     words the tagger can't read are words (あかん, おかん — app/kansai_data.py). SCHEMA_VERSION 21: every file is
+#     tokenized again. 3.0, with 31–37.
+ENGINE_REVISION = 38
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -895,6 +902,7 @@ def join_affixes(words, joins=None, library=True, compounds=None, cut_words=None
         cut_words = cut_word_tables()
     if cut_words[0] or cut_words[1]:
         words = _join_cut_words(words, cut_words[0], cut_words[1])
+    words = _kansai(words)
     if LOGIC.get("names_katakana", True):
         words = names.join_katakana(words)
     if library:
@@ -1435,6 +1443,190 @@ def _join_cut_words(words, aux, particles):
         return words
     out.extend(words[last:])
     return out
+
+
+# --- Kansai: the negative へん / ひん, ちゃう, and the Kansai words the tagger can't read --------------------------- #
+# UniDic reads standard Japanese. It knows the Kansai negative after a verb's own form (わからへん, 行かへん, せえへん:
+# the verb + へん, an ending) and the honorific はる (来はる), but not:
+#   て / で + へん (やってへん 'haven't done', 読んでへん): the noun 辺 'area' — the verb + "not", へん the ending;
+#   a verb's one-mora stem drawn out before it — 寝えへん, 出えへん (the interjection えへん, or え read as 得る), 見いひん,
+#     似いひん (言う + ん): the verb, its vowel drawn out, + the ending (never a longer stem: ありえへん is あり得る's); しいひん (椎 + 干る) is する's; and 来る's — 来えへん, 来へん (the
+#     prefix 来 ライ), 来おへん, けえへん: 来る + the ending;
+#   ひん read as 干る 'dry' right after a verb (来いひん): the ending;
+#   できへん 'can't' (で + 木偏 'the tree radical'): 出来る + the ending;
+#   ちゃう 'it's not' (違う): UniDic's ちゃう is てしまう's (食べちゃう, 怖がっちゃう) and stands right after a word that
+#     conjugates;
+#     anywhere else (ちゃうちゃう, それちゃうで, 行くんちゃう, ちゃいます) it is 違う — never baby talk's ちゃい
+#     (ごめんちゃい, くだちゃい);
+#   the Kansai words JMdict lists that it reads as pieces it made up — あかん (あ + 彼 'he'), おかん, せやな's セヤ
+#     (app/kansai_data.py, built by scripts/build_kansai_data.py from JMdict and the frequency lists): that word.
+# Nothing becomes 辺, 干る or 彼 there; standard Japanese is untouched (この辺, 変な, 食べちゃう). The ending's lemma is
+# UniDic's へん, ひん written as written. A line holding none of the surfaces these start from passes in C.
+_KANSAI = []            # (the Kansai words, the surfaces they start with, every surface a rule starts from) once read
+_KANSAI_ENDS = frozenset(("へん", "へんかっ", "えへん", "ひん", "いひ", "きへん"))
+_CHAU = frozenset(("ちゃう", "ちゃい"))
+# A verb the rules read: (cType, lForm, orthBase) — the dictionary's own for 来る, する and 出来る.
+_KANSAI_VERBS = {"来る": ("カ行変格", "クル", "来る"), "為る": ("サ行変格", "スル", "する"),
+                 "出来る": ("上一段-カ行", "デキル", "出来る")}
+
+
+def _made_up(word):
+    """Is `word` a piece the tagger made of what it can't read — a filler, a symbol, a proper noun, or an interjection of
+    one kana (あ in あかん, ん in アホんだら)? A real interjection (いや 'no') is none: もう帰るわいや is わ + いや."""
+    f = word.feature
+    return (f.pos1 == "記号" or f.pos2 in ("フィラー", "固有名詞")
+            or (f.pos1 == "感動詞" and len(word.surface) == 1))
+
+
+def _kansai_tables():
+    """(app/kansai_data.py's words, their first pieces, every surface the Kansai rules start from) — read once; no
+    words when the table can't be read (the rules for the negative and ちゃう still hold)."""
+    if not _KANSAI:
+        try:
+            from app import kansai_data
+            table = kansai_data.words()
+        except Exception:
+            table = {}
+        heads = frozenset(entry[3] for entry in table.values())
+        _KANSAI.append((table, heads, heads | _KANSAI_ENDS | _CHAU))
+    return _KANSAI[0]
+
+
+def _kansai_as(word, surface, **fields):
+    """`word` read again as `surface` with `fields` of its feature replaced — one node, as the tagger gives one."""
+    return ReadNode(surface, word.feature._replace(orth=surface, **fields), False, getattr(word, "white_space", ""))
+
+
+def _kansai_ending(word, surface):
+    """The negative ending, written `surface` (へん, ひん), from the node the tagger read there."""
+    return _kansai_as(word, surface, pos1="助動詞", pos2="*", pos3="*", pos4="*", cType="助動詞-ヘン",
+                      cForm="終止形-一般", lForm="ヘン", lemma="へん", orthBase=surface, pron="ヘン", pronBase="ヘン",
+                      kana="ヘン", kanaBase="ヘン", form="ヘン", formBase="ヘン")
+
+
+def _kansai_verb(word, surface, lemma):
+    """来る, する or 出来る (`lemma`), written `surface` (来え, けえ, しい, でき), before the negative ending."""
+    ctype, reading, base = _KANSAI_VERBS[lemma]
+    return _kansai_as(word, surface, pos1="動詞", pos2="非自立可能", pos3="*", pos4="*", cType=ctype,
+                      cForm="未然形-一般", lForm=reading, lemma=lemma, orthBase=base, pron=reading, pronBase=reading,
+                      kana=reading, kanaBase=reading, form=reading, formBase=reading)
+
+
+def _kansai_drawn(word, vowel):
+    """A verb's stem with its vowel drawn out before the ending (寝 + え, 見 + い): the verb, written so."""
+    return _kansai_as(word, word.surface + vowel)
+
+
+def _short_stem(word):
+    """A verb's one-mora stem (寝, 出, 見, 似, 来 — one character, the 連用形): the stem Kansai draws its vowel out after
+    (寝えへん). A longer one never: そんなんありえへん is あり + 得る."""
+    f = word.feature
+    return f.pos1 == "動詞" and len(word.surface) == 1 and str(f.cForm).startswith("連用形")
+
+
+def _kansai(words):
+    """join_affixes' Kansai forms (§ above): `words` read again — the same list when there is none."""
+    table, heads, starts = _kansai_tables()
+    surfaces = list(map(_SURFACE, words))
+    if starts.isdisjoint(surfaces):
+        return words
+    out, n, i, changed = [], len(words), 0, False
+    while i < n:
+        w = words[i]
+        s, f = surfaces[i], w.feature
+        prev = out[-1] if out else None
+        pf = prev.feature if prev is not None else None
+        nxt = words[i + 1] if i + 1 < n else None
+        glued = not getattr(w, "white_space", "")
+        if s == "へん" and f.pos1 == "名詞" and glued and prev is not None:
+            if pf.pos1 == "助詞" and pf.lemma == "て" and len(out) > 1 and out[-2].feature.pos1 in ("動詞", "助動詞"):
+                out.append(_kansai_ending(w, s))                        # やってへん
+            elif (pf.pos1 == "接頭辞" and prev.surface == "来") or prev.surface == "けえ":
+                out[-1] = _kansai_verb(prev, prev.surface, "来る")      # 来へん; けえへん (けえ read as 濃い)
+                out.append(_kansai_ending(w, s))
+            elif (prev.surface in ("え", "お", "い") and pf.pos1 in ("感動詞", "接頭辞") and len(out) > 1
+                  and not getattr(prev, "white_space", "") and (_short_stem(out[-2]) or (
+                      out[-2].feature.pos1 == "接頭辞" and out[-2].surface == "来"))):
+                verb = out[-2]          # the verb, its vowel drawn out and read as a filler or a prefix: 来えへん, 来おへん
+                drawn = (_kansai_verb(verb, "来" + prev.surface, "来る") if verb.feature.pos1 == "接頭辞"
+                         else _kansai_drawn(verb, prev.surface))
+                out[-2:] = [drawn, _kansai_ending(w, s)]
+            else:
+                out.append(w)
+                i += 1
+                continue
+            changed, i = True, i + 1
+            continue
+        if (f.pos1 == "助動詞" and f.lemma == "へん" and glued and prev is not None and prev.surface in ("え", "い")
+                and pf.pos1 == "動詞" and not getattr(prev, "white_space", "") and len(out) > 1
+                and _short_stem(out[-2])):
+            out[-2:] = [_kansai_drawn(out[-2], prev.surface)]           # 寝えへんかった: え read as 得る
+            out.append(w)
+            changed, i = True, i + 1
+            continue
+        if (s == "きへん" and f.pos1 == "名詞" and glued and prev is not None and prev.surface == "で"
+                and not getattr(prev, "white_space", "")):
+            out[-1] = _kansai_verb(prev, "でき", "出来る")                # できへん: never で + 木偏
+            out.append(_kansai_ending(w, "へん"))
+            changed, i = True, i + 1
+            continue
+        if s == "えへん" and f.pos1 == "感動詞" and glued and prev is not None:
+            if _short_stem(prev):
+                out[-1] = _kansai_drawn(prev, "え")                      # 寝えへん, 出えへん
+            elif pf.pos1 == "接頭辞" and prev.surface == "来":
+                out[-1] = _kansai_verb(prev, "来え", "来る")             # 来えへん
+            elif pf.pos1 == "感動詞" and prev.surface == "け":
+                out[-1] = _kansai_verb(prev, "けえ", "来る")             # けえへん
+            else:
+                out.append(w)
+                i += 1
+                continue
+            out.append(_kansai_ending(w, "へん"))
+            changed, i = True, i + 1
+            continue
+        if (s == "いひ" and f.lemma == "言う" and glued and nxt is not None and nxt.surface == "ん"
+                and not getattr(nxt, "white_space", "") and prev is not None and _short_stem(prev)):
+            out[-1] = _kansai_drawn(prev, "い")                          # 見いひん, 似いひん
+            out.append(_kansai_ending(w, "ひん"))
+            changed, i = True, i + 2
+            continue
+        if s == "ひん" and f.lemma == "干る" and glued and prev is not None:
+            if pf.pos1 == "動詞":
+                out.append(_kansai_ending(w, s))                        # 来いひん
+            elif prev.surface == "しい" and pf.lemma == "椎":
+                out[-1] = _kansai_verb(prev, "しい", "為る")             # しいひん
+                out.append(_kansai_ending(w, s))
+            else:
+                out.append(w)
+                i += 1
+                continue
+            changed, i = True, i + 1
+            continue
+        if (s in _CHAU and f.pos1 == "助動詞" and f.lemma == "ちゃう" and (s == "ちゃう" or (
+                nxt is not None and nxt.feature.lemma == "ます"))
+                and (prev is None or prev.surface == "ちゃう" or not (
+                    pf.pos1 in ("動詞", "助動詞", "形容詞") or str(pf.cForm).startswith("連用形")))):
+            out.append(_kansai_as(w, s, pos1="動詞", pos2="一般", cType="五段-ワア行", lForm="チガウ", lemma="違う",
+                                  orthBase="ちゃう", pronBase="チガウ", kanaBase="チガウ", formBase="チガウ"))
+            changed, i = True, i + 1                                    # ちゃうちゃう, それちゃうで
+            continue
+        if s in heads:
+            spelled, end = s, i + 1
+            while end < n and end - i < 5 and not getattr(words[end], "white_space", ""):
+                spelled += surfaces[end]
+                end += 1
+                entry = table.get(spelled)
+                if entry is not None and any(map(_made_up, words[i:end])):
+                    out.append(_joined(words[i:end], spelled, entry[2], (entry[0], entry[1])))   # あかん, おかん
+                    changed, i = True, end
+                    break
+            else:
+                out.append(w)
+                i += 1
+            continue
+        out.append(w)
+        i += 1
+    return out if changed else words
 
 
 def see_through_base(lemma, reading, tagger, joins=None):

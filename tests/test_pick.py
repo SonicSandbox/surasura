@@ -340,3 +340,21 @@ def test_with_anki_up_a_card_deleted_since_the_last_sync_no_longer_blocks_its_wo
     # Anki closed: the backlog as the last sync saved it
     monkeypatch.setattr(anki_connect, "probe", lambda url, timeout=5, required=(): {"ok": False})
     assert pick.carded("ja", settings) == ({"用紙", "延長"}, "backlog")
+
+
+def test_a_grammar_expressions_row_follows_send_grammar_a_set_phrase_always_goes():
+    """かもしれない is a grammar expression's row (phrases.Phrase.grammar, ENGINE 38): with "Send grammar words" off it
+    is held back as grammar, as a grammar word is; 腑に落ちる, a set phrase, goes either way."""
+    loaded = phrases.load()
+    if loaded is None:
+        pytest.skip("no phrase data in this build")
+    read, tokens = _read(PHRASES)
+    may, gut = (loaded.entry(loaded.of_word(word)) for word in ("かも知れるない", "腑に落ちる"))
+    assert may.grammar and not gut.grammar
+    listed = {(may.word, may.reading): 0, (gut.word, gut.reading): 1}
+    on = pick.pick(read, tokens, "ja", _known(), mode="list", listed=listed, phrase_set=loaded)
+    assert [w["word"] for w in on["words"]] == [may.word, gut.word]
+    assert on["words"][0]["kind"] == "phrase" and on["words"][0]["sent"][0].startswith("かもしれな")
+    off = pick.pick(read, tokens, "ja", _known(), mode="list", listed=listed, phrase_set=loaded, send_grammar=False)
+    assert [w["word"] for w in off["words"]] == [gut.word]
+    assert [(n["word"], n["reason"]) for n in off["not_offered"]] == [(may.word, "grammar")]

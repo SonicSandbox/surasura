@@ -11,8 +11,8 @@ Which words (`connect_mine_words`, Mado's *Words to make cards from*):
 - `i1`      — only words with a line whose other words you all know
 Names follow Surasura's own setting (G1.3, Sonic: "based on their setting in surasura"): sent unless Ignore names
 (`logic.ignore_names`) is on — a name being whatever `names.name_lemma` says — and each name sent is marked (`name`)
-so its card is tagged `surasura::name` once made (`anki_miner.tag_names`). Grammar words are sent unless `connect_send_grammar` is off (✅ G0.3-2,
-G1.3). A word that already has a card — in
+so its card is tagged `surasura::name` once made (`anki_miner.tag_names`). Grammar words — and a grammar expression's row (かもしれない, として:
+`phrases.Phrase.grammar`) — are sent unless `connect_send_grammar` is off (✅ G0.3-2, G1.3). A word that already has a card — in
 Anki now, or in the backlog of the last sync when Anki is closed — is never sent: Anki Miner cuts media before it
 checks for a duplicate.
 
@@ -214,7 +214,7 @@ def occurrences(cues, tokens, language, is_known, skip_single=True, phrase_set=N
                 phrase = phrase_set.entry(index)
                 front, written = phrases.spellings(sentence, start, end, phrase)
                 key, first = (phrase.word, phrase.reading), tokens[at[start]]
-                found.append(_Occurrence(key, first.cue, front, written, phrase.display, first, True, ()))
+                found.append(_Occurrence(key, first.cue, front, written, phrase.display, first, phrase, ()))
     return found, new_in
 
 
@@ -274,9 +274,9 @@ def pick(cues, tokens, language, is_known, mode="list", listed=None, carded=None
         name = language == "ja" and not first.phrase and first.token.node is not None and _is_name(first.token.node)
         if name and ignore_names:
             reason = "name"
-        elif (not send_grammar and not first.phrase and first.token.node is not None
-              and first.token.node.feature.pos1 in GRAMMAR):
-            reason = "grammar"
+        elif not send_grammar and (first.phrase.grammar if first.phrase else (
+                first.token.node is not None and first.token.node.feature.pos1 in GRAMMAR)):
+            reason = "grammar"      # a grammar word, or a grammar expression's row (かもしれない: phrases.Phrase.grammar)
         if reason is None:
             spellings = {first.front, key[0], first.orth, first.surface}
             spellings |= {anki_match.fold_kana(s) for s in spellings if s} if language == "ja" else set()

@@ -669,6 +669,61 @@ def _heard_video(episode, folder, out, plan):
             "failure_is_transient": False, "status": "no_speech" if srt is None else "generated"}
 
 
+def _fetch(argv, plan):
+    """Z-8 (Michi-YT): `fetch` of one YouTube video as the plan's `fetch` says — {"video": the video file's text,
+    "subtitle": the caption file's (an .srt; "vtt": true writes it as WebVTT), "error": a run's code ("message",
+    "transient"), "call": the whole call's code ("message"), "hold": seconds it downloads (progress at stage 2, its
+    cancel seen: CANCELLED, its folder gone — API.md), "outside": the json names a file outside its folder}. The yt-dlp
+    PATH would give it is logged (`fetch_ytdlp`)."""
+    try:
+        data = _jobs_file(argv[1])
+    except (OSError, ValueError, IndexError):
+        return _failed("fetch", "BAD_RUN_FILE", "The fetch file can't be read.")
+    spec = plan.get("fetch") or {}
+    _log({"fetch_ytdlp": shutil.which("yt-dlp"), "episodes": data["episodes"], "profile": data.get("profile")})
+    if spec.get("call"):
+        return _failed("fetch", spec["call"], spec.get("message") or "refused")
+    runs = []
+    for n, episode in enumerate(data["episodes"], 1):
+        run_id = episode["run_id"]
+        folder = os.path.join(data["run_dir"], run_id)
+        out = os.path.join(folder, "fetch-1")
+        os.makedirs(out, exist_ok=True)
+        hold = float(spec.get("hold") or 0)
+        if hold:
+            with open(os.path.join(folder, "progress.json"), "w", encoding="utf-8") as f:
+                json.dump({"schema": 1, "stage": 2, "stages": 3, "done": 40, "total": 100}, f)
+            if _cancel_seen(folder, hold):
+                shutil.rmtree(out, ignore_errors=True)
+                runs.append({"run_id": run_id, "ok": False, "error": "CANCELLED", "message": "The run was cancelled.",
+                             "file": None, "failure_is_transient": False})
+                continue
+        if spec.get("error"):
+            shutil.rmtree(out, ignore_errors=True)
+            runs.append({"run_id": run_id, "ok": False, "error": spec["error"], "message": spec.get("message"),
+                         "file": None, "failure_is_transient": bool(spec.get("transient"))})
+            continue
+        vid = "dQw4w9WgXcQ"
+        video = os.path.join(out, f"{vid}.mp4")
+        with open(video, "w", encoding="utf-8") as f:
+            f.write(spec.get("video", "a fetched video"))
+        sub = os.path.join(out, f"{vid}.ja.{'vtt' if spec.get('vtt') else 'srt'}")
+        with open(sub, "w", encoding="utf-8") as f:
+            f.write(spec.get("subtitle", "1\n00:00:01,000 --> 00:00:03,500\n今日はいい天気ですね\n"))
+        if spec.get("outside"):
+            video = os.path.join(data["run_dir"], "..", "elsewhere.mp4")    # a real file, outside its folder
+            with open(video, "w", encoding="utf-8") as f:
+                f.write("a video somewhere else")
+        with open(os.path.join(folder, "fetch-1.json"), "w", encoding="utf-8") as f:
+            json.dump({"schema": 1, "run_id": run_id, "video_file": video, "subtitle_file": sub, "sub_source": "manual",
+                       "video_id": vid, "title": "a fetched video", "duration": 180,
+                       "episode_name_override": f"YT:{vid}", "series_name_override": "YouTube",
+                       "source_label_override": "a fetched video"}, f, ensure_ascii=False)
+        runs.append({"run_id": run_id, "ok": True, "error": None, "message": None, "file": "fetch-1.json",
+                     "failure_is_transient": False})
+    return {**_ok("fetch"), "runs": runs}
+
+
 def _cancel_seen(folder, wait=5.0):
     """API.md: Anki Miner polls `<run_dir>/<run_id>/cancel` every 0.2 s."""
     deadline = time.monotonic() + wait
@@ -731,6 +786,8 @@ def main(argv):
         verdict = _media(argv, plan)
     elif command == "transcribe":
         verdict = _transcribe(argv, plan)
+    elif command == "fetch":
+        verdict = _fetch(argv, plan)
     else:
         verdict = _failed(command, "BAD_ARGUMENTS", "unknown command")
     if plan.get("schema", 1) != 1:

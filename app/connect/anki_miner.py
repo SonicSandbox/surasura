@@ -323,20 +323,21 @@ def _communicate(proc, timeout, on_poll=None, look_up=False):
     return stopping.wait(proc, timeout, on_poll, _stop, look_up=look_up, every=POLL_S)[0]
 
 
-def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None):
+def api(path, args, timeout=QUICK_TIMEOUT, on_poll=None, bind=True, look_up=None, env=None):
     """Run `<path> --api <args…>` and return its verdict (a dict). Raises AnkiMinerError for a call with no verdict
     (absent, quarantined, crashed, timeout, unknown-version); a verdict with `ok: false` is returned as it is.
     `on_poll`: called every POLL_S while the call runs. A look-up (LOOK_UPS) still under way at the job's *Stop* is
     ended and raises `stopping.Stopped` (row 56: never an AnkiMinerError — nothing of it is kept). `bind` False: the
     call is never ended with this process (`_bind`) — Anki Miner's own `setup`, under its own run lock, finishes
     whenever Surasura quits (review A2-4). `look_up` True: ended at the job's *Stop* as a look-up is (Stage B's
-    spot-check: `media` and `transcribe` write only their own run folder)."""
+    spot-check: `media` and `transcribe` write only their own run folder). `env`: the program's environment (Michi-YT:
+    `fetch` with the YouTube downloader's yt-dlp on its PATH), else this process's."""
     flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
     if look_up is None:
         look_up = bool(args) and args[0] in LOOK_UPS    # row 56: read before the program starts, never after
     try:
         proc = subprocess.Popen(_command(path) + ["--api", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, creationflags=flags)
+                                stderr=subprocess.DEVNULL, creationflags=flags, env=env)
         if bind:
             _bind(proc)
     except FileNotFoundError:
@@ -879,7 +880,7 @@ def tag_names(url, words, outcomes):
 
 def mine_batch(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, url, attempt=1,
                subtitle_offset=0.0, timeout=MINE_TIMEOUT, wait=0.0, expect_profile=None, on_progress=None,
-               known=None, should_stop=None, show=None, reading=None, from_audio=False):
+               known=None, should_stop=None, show=None, reading=None, from_audio=False, names=None):
     """One batch of one episode, end to end (§ above), holding `anki-writer` (waiting up to `wait` s for another
     writer; still held -> AnkiMinerError `busy`). `words`: pick's; `mapping`: fields.Mapping (from this profile's
     export); `profile_name`: `connect_anki_miner_profile`; `url`: AnkiConnect's address, for the names' tag. Returns
@@ -899,7 +900,8 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
     named by its sentence. `video` an audio file (`is_audio`, Z-16: an audiobook's, a podcast's): mined as Anki Miner's
     audio episode, the clips cut from it (an Anki Miner naming `audio-episodes` only). `from_audio` (Michi-NS, Q5): the
     episode's subtitle was made from its audio (`no_subs`): every card also carries `runfile.FROM_AUDIO_TAG`, so the
-    learner can find and check them."""
+    learner can find and check them. `names` (Michi-YT): [folder, name] the cards' Source carries instead of the video's
+    (an online title's fetched video: its transcript's, `online.of`)."""
     from app import anki_connect, locks
     try:
         # #BS0A1K: a Stop pressed while another writer holds Anki (Junban's reorder) ends the wait for it at once
@@ -915,7 +917,7 @@ def mine_batch(path, language, job, video, subtitle, words, mapping, profile_nam
         try:
             done = _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                               subtitle_offset, timeout, expect_profile, on_progress, known, should_stop, show,
-                              reading, from_audio)
+                              reading, from_audio, names)
         except runfile.RunFileError as e:
             raise AnkiMinerError("refused", f"The run file for Anki Miner couldn't be written: {e}") from None
         done["tagged"], done["tag_pending"] = [], []
@@ -956,7 +958,7 @@ def before_anki(run_dir, run_id, progress):
 
 def _mine_held(path, language, job, video, subtitle, words, mapping, profile_name, run_dir, attempt,
                subtitle_offset, timeout, expect_profile=None, on_progress=None, known=None, should_stop=None,
-               show=None, reading=None, from_audio=False):
+               show=None, reading=None, from_audio=False, names=None):
     info, profile = preflight(path, language, profile_name, known)
     if expect_profile is not None and profile != expect_profile:
         raise AnkiMinerError("profile-changed", "Anki Miner's profile changed since the words were picked.")
@@ -978,7 +980,7 @@ def _mine_held(path, language, job, video, subtitle, words, mapping, profile_nam
         episode = runfile.reading_episode(run_id, reading, runfile.word_requests(words, named, book=True), tags)
     else:
         episode = runfile.episode(run_id, video, subtitle, runfile.word_requests(words, named), tags=tags,
-                                  subtitle_offset=subtitle_offset, audio=audio)
+                                  subtitle_offset=subtitle_offset, audio=audio, names=names)
     data = runfile.build(run_dir, language, [episode], profile=profile,
                          run_config=runfile.config(mapping, info.get("app"), named))
     run_path = runfile.write(os.path.join(run_dir, f"run-{attempt}.json"), data)

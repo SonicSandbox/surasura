@@ -293,6 +293,7 @@ STEP_AT = {"picking": (0, "Choosing words"), "fit-check": (4, "Checking the timi
            "filling": (94, "Filling fields"), "ordering": (97, "Ordering your cards")}
 MINE_FROM, MINE_TO = 8, 60                  # Anki Miner's own run (its percent, `anki_miner.percent`), mapped here
 NAMING = (62, "Naming the clips")
+DOWNLOADING = ("downloading", "Downloading its video ({pct}%)")    # Michi-YT: `runner.DOWNLOADING`'s step, its words
 STAGE_WORDS = {1: "Reading the subtitles", 2: "Finding the words", 3: "Cutting clips", 4: "Looking up definitions",
                5: "Adding cards"}           # Anki Miner's stages (its progress file)
 
@@ -310,6 +311,10 @@ def _progress(job):
     from app.connect import anki_miner
     if job["state"] != "mining":
         percent, doing = STEP_AT.get(job["state"], (0, "Choosing words"))
+        if job["state"] == "picking":       # Michi-YT: an online title's video coming down first (`runner._download`)
+            got = _saved(job)
+            if isinstance(got, dict) and got.get("step") == DOWNLOADING[0] and isinstance(got.get("percent"), int):
+                doing = DOWNLOADING[1].format(pct=max(0, min(99, got["percent"])))
         return {"percent": percent, "doing": doing}
     try:
         got = json.loads(job.get("progress") or "null")
@@ -326,6 +331,14 @@ def _progress(job):
     doing = STAGE_WORDS.get(out["stage"], "Starting Anki Miner")
     out["doing"] = f"{doing} ({out['done']} of {out['total']})" if out["total"] else doing
     return out
+
+
+def _saved(job):
+    """A job's saved progress (JSON text) read, or None."""
+    try:
+        return json.loads(job.get("progress") or "null")
+    except (TypeError, ValueError):
+        return None
 
 
 def _not_made(conn, job_id):

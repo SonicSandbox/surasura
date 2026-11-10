@@ -160,3 +160,18 @@ def test_the_main_threads_own_collection_frees_what_a_worker_found(qapp):
     del reader                                          # the test lets go of it: only the worker's find holds it
     gc.collect()
     assert gone() is None and harness_guards._WORKER_GARBAGE == []
+
+
+# --- a stones build whose answer the teardown dropped is forgotten (tests/qt/conftest.py) ------------------------- #
+_KEY = ("flake-p", 1.0, "M")
+
+
+def test_a_stones_build_under_way_as_a_test_ends(qapp):
+    from app.qt import stones
+    stones._BUILDING[_KEY] = []                         # started, its answer on its way (dropped at the teardown)
+
+
+def test_is_forgotten_by_the_next_test_so_its_ask_starts_one_of_its_own():
+    # why: the answer never lands, and an ask that joins it starts none (test_shell's S1 test, a loaded pool; FLAKES.md)
+    from app.qt import stones
+    assert _KEY not in stones._BUILDING

@@ -115,6 +115,13 @@ def _per_test_window_state(request, monkeypatch):
     qt_bridge = sys.modules.get("app.qt.bridge")
     if qt_bridge is not None:
         qt_bridge.wait_for_workers(10000)
+    # A stones sheet whose build was under way when the answers were dropped never lands: forgotten, or every later
+    # test's ask for it joined that build and started none (a loaded pool past the wait above: test_shell's S1 test;
+    # tests/FLAKES.md). The app drops its answers only at its main window's close, as the process ends.
+    stones = sys.modules.get("app.qt.stones")
+    if stones is not None:
+        for key in [k for k in stones._BUILDING if k not in stones._DEFERRED]:
+            stones._BUILDING.pop(key, None)
     # A test's own filters and helpers parented to the app: only objects of classes written in Python (a test's or the
     # window's). Qt parents its own objects to the app as it goes (an input device on the first click, …); deleting
     # one of those corrupts Qt and crashes a later test (seen: a window made 80 tests on died in its constructor).

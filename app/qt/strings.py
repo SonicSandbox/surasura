@@ -1217,7 +1217,8 @@ DOOR_SPEECH_TIP = "Speech (声): the Gemini key, the voice and the daily limit f
 # --- W3.2 Q3: search your library (app/qt/search.py) and + Add (app/qt/add_menu.py) ----------------------------------- #
 SEARCH_PLACEHOLDER = "Search your library"
 SEARCH_NAME = "Search your library"
-SEARCH_TIP = "Search your library: a title by its kana, kanji or romaji name\n• / or Ctrl+K · Esc clears, then closes"
+SEARCH_TIP = ("Search your library: a title by its name (kana, kanji or romaji; Chinese in either script)\n"
+              "• / or Ctrl+K · Esc clears, then closes")
 SEARCH_KEY = "/"
 SEARCH_RESULTS_NAME = "What your library holds for “{query}”"
 SEARCH_NONE = "Nothing in your library matches “{query}”"

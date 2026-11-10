@@ -712,6 +712,15 @@ def test_find_matches_labels_help_search_words_and_choice_labels():
     assert "theme" not in catalog.find("sapphire", {}, "ja", EVERYTHING)                    # no theme picker
 
 
+def test_zh_s_the_nadeshiko_lookup_rows_show_for_japanese_only():
+    """Zh-S (2026-11-09): the ⌕ lookup is Nadeshiko's, Japanese sentences only: a Chinese report has none (the
+    template's `wordSearchEnabled`), so Chinese Settings offer neither its switch nor its category."""
+    assert "word_search_enabled" in catalog.find("Nadeshiko", {}, "ja", EVERYTHING)
+    assert "word_search_category" in catalog.find("lookup examples", {}, "ja", EVERYTHING)
+    assert "word_search_enabled" not in catalog.find("Nadeshiko", {}, "zh", EVERYTHING)
+    assert "word_search_category" not in catalog.find("lookup examples", {}, "zh", EVERYTHING)
+
+
 @WITH_MODULES
 def test_find_reads_japanese_and_full_width_letters():
     assert "backfill_patterns" in catalog.find("パターン", {}, "ja", EVERYTHING)

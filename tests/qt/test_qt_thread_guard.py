@@ -65,3 +65,25 @@ def test_helper_stops_a_timer_from_a_worker(qapp):
     timer.start(60000)
     _stopped_from_a_worker(timer)
     timer.deleteLater()
+
+
+# --- the `qt_timer` fixture (tests/qt/conftest.py): a test's timers deleted on the main thread at its end ----------- #
+_MADE = []
+
+
+def test_the_fixtures_timer_is_a_live_parentless_timer_while_its_test_runs(qt_timer):
+    timer = qt_timer()
+    timer.start(60000)
+    assert isinstance(timer, QTimer) and timer.parent() is None and timer.isActive()
+    _MADE.append((timer, threading.get_ident()))
+
+
+def test_the_fixtures_timer_was_deleted_at_its_tests_end_on_the_main_thread():
+    # why: a timer the fixture left to Python is the access violation's cause (FLAKES.md); this runs right after the
+    # test above, in the file's order
+    from PyQt6 import sip
+    if not _MADE:
+        pytest.skip("runs after the test above")
+    timer, made_on = _MADE.pop()
+    assert made_on == threading.main_thread().ident
+    assert sip.isdeleted(timer), "the fixture left its timer alive: a worker's collection could delete it"

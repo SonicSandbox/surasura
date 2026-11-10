@@ -1626,6 +1626,13 @@ def test_zh_s_the_cards_page_says_chinese_cards_come_later_and_japanese_gets_its
     assert wiz.pages[4].line.text() == S.CARDS_LINE                 # switched back: the Japanese line again
 
 
+def test_zh_s_a_wizard_that_opens_in_chinese_says_it_on_the_cards_page_at_once(make):
+    """Zh-S review R1: *Set up again* in Chinese builds the page in Chinese — no switch to tell it."""
+    wiz, *_ = make(data={"target_language": "zh"})
+    assert wiz.language == "zh"
+    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH
+
+
 def test_a_second_pass_through_what_you_know_syncs_again_only_for_other_decks(make):
     wiz, _shell, api, *_ = make()
     wiz.next()

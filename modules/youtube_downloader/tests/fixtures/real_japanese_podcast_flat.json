@@ -1,0 +1,403 @@
+{
+"_type": "playlist",
+"id": "PLsamplepodcast0000000000000000001",
+"title": "Everyday Japanese Podcast",
+"channel": "hanashi radio",
+"uploader": "hanashi radio",
+"webpage_url": "https://www.youtube.com/playlist?list=PLsamplepodcast0000000000000000001",
+"entries": [
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0001",
+"url": "https://www.youtube.com/watch?v=podcast0001",
+"title": "【Japanese Podcast #43】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1792281600
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0002",
+"url": "https://www.youtube.com/watch?v=podcast0002"
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0003",
+"url": "https://www.youtube.com/watch?v=podcast0003",
+"title": "【Japanese Podcast #42】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1788220800
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0004",
+"url": "https://www.youtube.com/watch?v=podcast0004",
+"title": "【Japanese Podcast #41】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1788220800
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0005",
+"url": "https://www.youtube.com/watch?v=podcast0005",
+"title": "【Japanese Podcast #40】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1788220800
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0006",
+"url": "https://www.youtube.com/watch?v=podcast0006",
+"title": "【Japanese Podcast #39】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1788220800
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0007",
+"url": "https://www.youtube.com/watch?v=podcast0007",
+"title": "【Japanese Podcast #38】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1785542400
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0008",
+"url": "https://www.youtube.com/watch?v=podcast0008",
+"title": "【Japanese Podcast #37】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1785542400
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0009",
+"url": "https://www.youtube.com/watch?v=podcast0009",
+"title": "【Japanese Podcast #36】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1777593600
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0010",
+"url": "https://www.youtube.com/watch?v=podcast0010",
+"title": "Bonus talk 1",
+"channel": "hanashi radio ",
+"timestamp": 1777593600
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0011",
+"url": "https://www.youtube.com/watch?v=podcast0011",
+"title": "【Japanese Podcast #34】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1775001600
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0012",
+"url": "https://www.youtube.com/watch?v=podcast0012",
+"title": "【Japanese Podcast #33】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1772323200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0013",
+"url": "https://www.youtube.com/watch?v=podcast0013",
+"title": "【Japanese Podcast #32】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1772323200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0014",
+"url": "https://www.youtube.com/watch?v=podcast0014",
+"title": "Bonus talk 2",
+"channel": "hanashi radio ",
+"timestamp": 1769904000
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0015",
+"url": "https://www.youtube.com/watch?v=podcast0015",
+"title": "Bonus talk 3",
+"channel": "hanashi radio ",
+"timestamp": 1769904000
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0016",
+"url": "https://www.youtube.com/watch?v=podcast0016",
+"title": "Bonus talk 4",
+"channel": "hanashi radio ",
+"timestamp": 1769904000
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0017",
+"url": "https://www.youtube.com/watch?v=podcast0017",
+"title": "Bonus talk 5",
+"channel": "hanashi radio ",
+"timestamp": 1767225600
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0018",
+"url": "https://www.youtube.com/watch?v=podcast0018",
+"title": "Bonus talk 6",
+"channel": "hanashi radio ",
+"timestamp": 1767225600
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0019",
+"url": "https://www.youtube.com/watch?v=podcast0019",
+"title": "Bonus talk 7",
+"channel": "hanashi radio ",
+"timestamp": 1767225600
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0020",
+"url": "https://www.youtube.com/watch?v=podcast0020",
+"title": "Bonus talk 8",
+"channel": "hanashi radio ",
+"timestamp": 1764547200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0021",
+"url": "https://www.youtube.com/watch?v=podcast0021",
+"title": "Bonus talk 9",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0022",
+"url": "https://www.youtube.com/watch?v=podcast0022",
+"title": "Bonus talk 10",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0023",
+"url": "https://www.youtube.com/watch?v=podcast0023",
+"title": "Bonus talk 11",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0024",
+"url": "https://www.youtube.com/watch?v=podcast0024",
+"title": "【Japanese Podcast #21】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0025",
+"url": "https://www.youtube.com/watch?v=podcast0025",
+"title": "【Japanese Podcast #20】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0026",
+"url": "https://www.youtube.com/watch?v=podcast0026",
+"title": "【Japanese Podcast #19】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0027",
+"url": "https://www.youtube.com/watch?v=podcast0027",
+"title": "【Japanese Podcast #18】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0028",
+"url": "https://www.youtube.com/watch?v=podcast0028",
+"title": "【Japanese Podcast #17】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0029",
+"url": "https://www.youtube.com/watch?v=podcast0029",
+"title": "【Japanese Podcast #16】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0030",
+"url": "https://www.youtube.com/watch?v=podcast0030",
+"title": "【Japanese Podcast #15】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0031",
+"url": "https://www.youtube.com/watch?v=podcast0031",
+"title": "【Japanese Podcast #14】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0032",
+"url": "https://www.youtube.com/watch?v=podcast0032",
+"title": "【Japanese Podcast #13】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0033",
+"url": "https://www.youtube.com/watch?v=podcast0033",
+"title": "【Japanese Podcast #12】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0034",
+"url": "https://www.youtube.com/watch?v=podcast0034",
+"title": "【Japanese Podcast #11】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0035",
+"url": "https://www.youtube.com/watch?v=podcast0035",
+"title": "【Japanese Podcast #10】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0036",
+"url": "https://www.youtube.com/watch?v=podcast0036",
+"title": "【Japanese Podcast #9 】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0037",
+"url": "https://www.youtube.com/watch?v=podcast0037",
+"title": "【Japanese Podcast #8】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0038",
+"url": "https://www.youtube.com/watch?v=podcast0038",
+"title": "【Japanese Podcast #7】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0039",
+"url": "https://www.youtube.com/watch?v=podcast0039",
+"title": "【Japanese Podcast #6】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0040",
+"url": "https://www.youtube.com/watch?v=podcast0040",
+"title": "【Japanese Podcast #5】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0041",
+"url": "https://www.youtube.com/watch?v=podcast0041",
+"title": "【Japanese Podcast #4】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0042",
+"url": "https://www.youtube.com/watch?v=podcast0042",
+"title": "【Japanese Podcast #3】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0043",
+"url": "https://www.youtube.com/watch?v=podcast0043",
+"title": "【Japanese Podcast #2】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+},
+{
+"_type": "url",
+"ie_key": "Youtube",
+"id": "podcast0044",
+"url": "https://www.youtube.com/watch?v=podcast0044",
+"title": "【Japanese Podcast #1】日常の話",
+"channel": "hanashi radio ",
+"timestamp": 1761955200
+}
+]
+}

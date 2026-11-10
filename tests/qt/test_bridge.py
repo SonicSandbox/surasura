@@ -367,10 +367,11 @@ def test_the_pool_warms_its_qt_classes_once_before_its_first_job(qapp, monkeypat
     got = []
     bridge.run_in_worker(lambda: 1, then=got.append)
     bridge.run_in_worker(lambda: 2, then=got.append)
-    wait_until(lambda: sorted(got) == [1, 2])
+    assert wait_until(lambda: sorted(got) == [1, 2])
     assert calls == [1]                             # the first job's call only; the second finds them warmed
     assert bridge.warm_worker_types() == ()         # and once made, nothing more is looked at
     monkeypatch.setattr(bridge, "_warmed", [])
     warmed = real()
     from PyQt6.QtGui import QImage, QPainter
     assert QImage in warmed and QPainter in warmed
+    assert "Format" in vars(QImage) and "CompositionMode" in vars(QPainter)     # their enums made

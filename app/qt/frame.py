@@ -1098,7 +1098,7 @@ class GoalDock(QWidget):
     """The bottom band's dock over the footer (Current only): Goal's bar — the box mark, *Goal*, the loose hand of up to
     nine covers (26 × 37, overlapping by 12, each turned (i − 4) · 2°, greyed once into the picture), *N titles · N
     files* — on the `goal-bar` stone with its lit edge and a short shadow, all one picture cached per goal × width ×
-    ratio. While a drag runs (package F), the bar gives way to the wells:
+    ratio (the bar without its line kept apart: a new count draws the line alone, `_bar_base`). While a drag runs (package F), the bar gives way to the wells:
 
     - `begin_drag(source)`: Soon · Goal · Finished rise (Goal's left out when the drag comes from Goal);
     - `well_at(global_pos)` -> the well's name under that point, or None;
@@ -1375,7 +1375,8 @@ class GoalDock(QWidget):
 
     def _bar_base(self, dpr):
         """The bar without its line -> (picture, where the line begins), drawn again only when the size, the ratio, the
-        look or the hand changed (the hand: `_hand_picture`'s own picture, kept per covers × their pictures)."""
+        look, the hand (`_hand_picture`'s own picture, kept per covers × their pictures) or whether there is a goal
+        changed."""
         hand = self._hand_picture(dpr) if self.goal is not None and self.goal.covers else None
         key = (self.goal is None, hand[0] if hand is not None else None, self.width(), self.height(), dpr,
                style.current())

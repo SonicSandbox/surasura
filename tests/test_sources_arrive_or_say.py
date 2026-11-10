@@ -33,7 +33,7 @@ def _text(language, n):
 
 def _book(language):
     path = os.path.join(os.path.dirname(RESOURCES), os.pardir, "samples", language, "HighPriority",
-                        "H_priority_sample_1.txt")
+                        {"ja": "蜘蛛の糸（芥川龍之介）.txt", "zh": "孔乙己（鲁迅）.txt"}[language])
     with open(path, encoding="utf-8-sig") as f:
         return f.read()
 

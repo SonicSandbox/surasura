@@ -60,7 +60,7 @@ def _program(root):
         "_internal/build_stamp.json": b'{"build_id": "x", "data_name": "Surasura", "version": "3.0.1"}\n',
         "_internal/templates/web_app.html": "<h1>語彙の旅</h1>\n".encode("utf-8"),
         "_internal/PyQt6/QtCore.pyd": b"MZ qt",
-        "_internal/licenses/PyQt6/LICENSE": b"GNU GENERAL PUBLIC LICENSE\n",
+        "_internal/licenses/PyQt6-6.11.0/licenses/LICENSE": b"GNU GENERAL PUBLIC LICENSE\n",
         "_internal/unidic_lite/dicdir/sys.dic": b"dic" * 100,
         "_internal/jieba/dict.txt": "吃 3 v\n".encode("utf-8"),
         "_internal/python311.dll": b"MZ python",

@@ -73,14 +73,65 @@ CONTENT_NOTE = """Your content
 • Surasura provides no content: you are responsible for the content you use with it. Use only content you own or have the right to use (README's Your content)."""
 
 
+# Surasura's own licence and the libraries the program bundles (the licence switch, 3.0): the GPL asks that the
+# source be offered wherever the program goes, and the bundled libraries keep their notices (the build, package_app.py
+# step 3b, copies every bundled part's texts into _internal\licenses and lists them in its INDEX.txt: `bundled()`).
+SOFTWARE_NOTE = """Surasura and the software it bundles
+
+• Surasura — SonicSandbox, GNU General Public License version 3 or later, with an additional permission (LICENSE and LICENSE-EXCEPTION.md beside the program). It comes with no warranty. Its source code is free to get, read and change: https://github.com/SonicSandbox/surasura. Versions up to 2.5.x were released under the MIT License (licenses\\Surasura-MIT-before-3.0.txt).
+• The window: PyQt6 — Riverbank Computing, GPL-3.0; Qt 6 — The Qt Company, LGPL-3.0.
+• Every library and part it bundles keeps its own licence — among them tsubasa (GPL-3.0-or-later), pysrt (GPL-3.0), EbookLib (AGPL-3.0-or-later), pandas and numpy (BSD), fugashi, jieba and Beautiful Soup (MIT), requests (Apache License 2.0). Each one's licence text is in the program's _internal\\licenses folder, listed in its INDEX.txt with its version; Qt's own third-party components are listed at https://doc.qt.io/qt-6/licenses-used-in-qt.html.
+• The source code of each bundled library is its own project's, at the version INDEX.txt names: the Python packages' on PyPI (https://pypi.org), Qt's at https://download.qt.io/archive/qt/."""
+
+# The build's list of the bundled software (package_app.py step 3b): <the program's _internal>\licenses\INDEX.txt, one
+# "name · version · licence · its texts" line each.
+BUNDLED_INDEX = ("licenses", "INDEX.txt")
+
+
+def bundled():
+    """The software the program bundles, as its _internal\\licenses\\INDEX.txt lists it -> [(name, version, licence)];
+    [] from source or when the index can't be read."""
+    if not path_utils.is_frozen():
+        return []
+    try:
+        with open(os.path.join(getattr(sys, "_MEIPASS", ""), *BUNDLED_INDEX), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    rows = []
+    for line in lines:
+        cells = line.split(" · ")
+        if line.strip() and not line.startswith("#") and len(cells) >= 4:
+            rows.append((cells[0].strip(), cells[1].strip(), cells[2].strip()))
+    return rows
+
+
+def software_note():
+    """`SOFTWARE_NOTE`, then each part the program bundles with its version and licence (`bundled()`), when listed."""
+    rows = bundled()
+    if not rows:
+        return SOFTWARE_NOTE
+    listed = "\n".join(f"  {name} {version} — {licence}" if version != "-" else f"  {name} — {licence}"
+                       for name, version, licence in rows)
+    return SOFTWARE_NOTE + "\n\nBundled with this program (_internal\\licenses\\INDEX.txt)\n" + listed
+
+
 def all_credits():
-    """`data_credits()` followed by the logos' and the covers' credits, then the user's own content (`CONTENT_NOTE`):
-    what the 3.0 window's Data credits shows."""
-    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + CONTENT_NOTE
+    """`data_credits()` followed by the logos' and the covers' credits, Surasura's own licence and the software it
+    bundles (`software_note()`), then the user's own content (`CONTENT_NOTE`): what the 3.0 window's Data credits
+    shows."""
+    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + software_note() + "\n\n" + \
+        CONTENT_NOTE
 
 
 # --- Surasura's own licence (the `LICENSE` file: its first line and its copyright line) --------------------------- #
 LICENCE_FILE = "LICENSE"
+# Since 3.0 `LICENSE` is the GPL's own text: it names no program, says no "or later", and its copyright line is the
+# Free Software Foundation's (on the licence's words, never on Surasura). So a GPL version 3 `LICENSE` is named as
+# Surasura applies it, with the copyright line of Surasura's own notice beside it (the written exception).
+EXCEPTION_FILE = "LICENSE-EXCEPTION.md"
+GPL_TITLE, GPL_VERSION = "GNU GENERAL PUBLIC LICENSE", "Version 3,"
+GPL_NAME = "GNU General Public License, version 3 or later (GPL-3.0-or-later)"
 _LICENCE = []               # read once, the first time it is asked for
 
 
@@ -92,20 +143,29 @@ def _licence_folders():
     return [os.path.dirname(os.path.dirname(os.path.abspath(__file__)))]
 
 
+def _text_lines(path):
+    """The file's lines that hold text, stripped; None when it can't be read."""
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            return [text.strip() for text in f.read().splitlines() if text.strip()]
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def licence_line():
-    """`LICENSE`'s first line and its copyright line ("MIT License · Copyright (c) 2026 SonicSandbox"), read once; ""
-    when no `LICENSE` can be read (the caller shows the line only when there is one)."""
+    """`LICENSE`'s first line and its copyright line ("MIT License · Copyright (c) 2026 SonicSandbox"), read once; for
+    the GPL version 3 text, `GPL_NAME` and the copyright line of `LICENSE-EXCEPTION.md` beside it ("GNU General Public
+    License, version 3 or later (GPL-3.0-or-later) · Copyright (C) 2026 SonicSandbox"; the name alone without that
+    file); "" when no `LICENSE` can be read (the caller shows the line only when there is one)."""
     if not _LICENCE:
         line = ""
         for folder in filter(None, _licence_folders()):
-            try:
-                with open(os.path.join(folder, LICENCE_FILE), "r", encoding="utf-8-sig") as f:
-                    lines = [text.strip() for text in f.read().splitlines() if text.strip()]
-            except (OSError, UnicodeDecodeError):
-                continue
+            lines = _text_lines(os.path.join(folder, LICENCE_FILE))
             if lines:
-                copyright_line = next((text for text in lines[1:] if text.lower().startswith("copyright")), "")
-                line = " · ".join(text for text in (lines[0], copyright_line) if text)
+                gpl = lines[0] == GPL_TITLE and len(lines) > 1 and lines[1].startswith(GPL_VERSION)
+                notice = (_text_lines(os.path.join(folder, EXCEPTION_FILE)) or []) if gpl else lines[1:]
+                copyright_line = next((text for text in notice if text.lower().startswith("copyright")), "")
+                line = " · ".join(text for text in (GPL_NAME if gpl else lines[0], copyright_line) if text)
                 break
         _LICENCE.append(line)
     return _LICENCE[0]
@@ -120,24 +180,28 @@ def __getattr__(name):
 
 # --- README's Data Credits, checked against DATA_CREDITS (S11) ----------------------------------------------------- #
 # README's own names for a source DATA_CREDITS names in other words.
-README_ALIASES = {"Japanese Wikipedia": "Wikipedia", "Chinese Wikipedia": "Wikipedia"}
+README_ALIASES = {"Japanese Wikipedia": "Wikipedia", "Chinese Wikipedia": "Wikipedia", "Anki Miner": "anki_miner"}
 _LINK = re.compile(r"\[([^\]]+)\]\(")
 
 
 def readme_sources(readme_text):
-    """The sources README's *Data Credits* section links to (each link's words), in its order."""
+    """The sources a credits text links to (each link's words), in its order: README's *Data Credits* section, or the
+    whole credits page (`docs/CREDITS.md`, titled `# Credits`), where README's credits moved on 2026-11-09."""
     match = re.search(r"^##[^\n]*Data Credits[^\n]*\n(.*?)(?=^## |\Z)", readme_text or "", re.M | re.S)
-    if not match:
+    if match:
+        body = match.group(1)
+    elif re.match(r"\s*# Credits\b", readme_text or ""):
+        body = readme_text
+    else:
         return []
     seen = []
-    for name in _LINK.findall(match.group(1)):
+    for name in _LINK.findall(body):
         if name not in seen:
             seen.append(name)
     return seen
 
 
 def missing_from_credits(readme_text):
-    """README's Data Credits sources DATA_CREDITS (or the covers' credits) doesn't name: [] when the in-app credits
-    cover README's."""
-    named = DATA_CREDITS + "\n" + COVER_CREDITS
+    """The credits text's sources the in-app credits (data, covers, logos) don't name: [] when the app covers them."""
+    named = DATA_CREDITS + "\n" + COVER_CREDITS + "\n" + LOGO_CREDITS
     return [name for name in readme_sources(readme_text) if README_ALIASES.get(name, name) not in named]

@@ -272,7 +272,7 @@ def test_a_store_written_at_the_old_compression_reads_the_same_tokens(tmp_path):
     a store written before holds level-6 blobs and must read exactly as it did — no rebuild, the same tokens."""
     import zlib
     sample = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                          "samples", "ja", "LowPriority", "L_priority_sample_1.txt")
+                          "samples", "ja", "LowPriority", "注文の多い料理店（宮沢賢治）.txt")
     result = ti.make_tokenizer("ja")(sample)
     counts = {k: n for k, n in result["counts"].items() if n > 0}
     old_tokens = zlib.compress(json.dumps(result["sentences"], ensure_ascii=False).encode("utf-8"), 6)
@@ -299,8 +299,8 @@ def test_a_files_counts_are_its_tokens_with_japanese_in_the_lemma_or_the_surface
     from app import analyzer
     samples = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "samples", "ja")
     tokenize_file = ti.make_tokenizer("ja")
-    for path in (os.path.join(samples, "LowPriority", "L_priority_sample_2.txt"),
-                 os.path.join(samples, "HighPriority", "H_priority_sample_2.srt")):
+    for path in (os.path.join(samples, "LowPriority", "ごん狐（新美南吉）.txt"),
+                 os.path.join(samples, "HighPriority", "喫茶店の朝.srt")):
         result = tokenize_file(path)
         expected = Counter(ti.make_key(lemma, reading) for _s, tokens in result["sentences"]
                            for lemma, reading, surface, _o in tokens

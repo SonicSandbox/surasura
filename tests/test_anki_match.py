@@ -50,7 +50,8 @@ def test_importing_the_matcher_is_cheap():
 
 def test_the_real_golden_list_indexes_by_orth_and_by_word():
     """The analyser's own 200-row output (BOM, real columns): a katakana lemma the user would never
-    type (ナカノ) and the spelling their content uses (中野) reach the same rank. (Rank 20 once words
+    type (ハヤカワ) and the spelling their content uses (早川) reach the same rank — rank 5 on the public-domain
+    samples (Hon-SM, 2026-11-10; the café episode's 早川). (The history on the old samples' 中野 / ナカノ: rank 20 once words
     kept their prefixes and suffixes: 高校生, 裁判長, おばあさん … joined the list above it —
     Patterns_Quality_Spec A; 19 since the parsing fixes read the sample's full-width １人 as 1 + 人, so
     一人 fell below it; 20 again since names stay whole — フータロー, cut in pieces before, counts all 6 of its
@@ -64,8 +65,10 @@ def test_the_real_golden_list_indexes_by_orth_and_by_word():
     29 since grammar expressions are rows of their own — とする joined the list above it.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 29
-    assert index.rank_of["うう"] == 0
+    assert index.rank_of["早川"] == index.rank_of["ハヤカワ"] == 5
+    with open(GOLDEN_LIST, encoding="utf-8-sig", newline="") as handle:
+        first = anki_match.normalize_word(next(csv.DictReader(handle))["Word"])
+    assert index.rank_of[first] == 0
     assert index.marks_of, "markers are built for every row"
 
 
@@ -266,14 +269,14 @@ def test_the_kana_fold_is_japanese_only_and_leaves_kanji_words_alone(tmp_path):
 
 def test_the_real_golden_list_has_no_borrowed_one_character_key():
     """On the analyser's own output, with the Japanese rules on: every one-character key left is
-    some row's own word — the one-kanji rows (門, 旬, 肝) included, each its own word."""
+    some row's own word — the one-kanji rows (栗, 門, 林) included, each its own word."""
     with open(GOLDEN_LIST, encoding="utf-8-sig", newline="") as handle:
         lemmas = {anki_match.normalize_word(row.get("Word")) for row in csv.DictReader(handle)}
     rank_of = anki_match.build_index(GOLDEN_LIST, language="ja").rank_of
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
-    assert {"門", "旬", "肝"} <= {key for key in rank_of if len(key) == 1}
-    assert rank_of["中野"] == rank_of["ナカノ"] == 29
+    assert {"栗", "門", "林"} <= {key for key in rank_of if len(key) == 1}
+    assert rank_of["早川"] == rank_of["ハヤカワ"] == 5
 
 
 def test_lookup_answers_nothing_rather_than_guessing():

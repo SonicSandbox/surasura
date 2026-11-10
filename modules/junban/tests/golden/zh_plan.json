@@ -1,0 +1,242 @@
+{
+ "asked": [
+  {
+   "language": "zh",
+   "phrases": {},
+   "prefer": {
+    "喜欢|": [
+     [
+      "喜欢",
+      "音乐"
+     ],
+     [
+      "很",
+      "喜欢"
+     ]
+    ],
+    "学习|": [
+     [
+      "认真",
+      "地",
+      "学习"
+     ]
+    ],
+    "朋友|": [
+     [
+      "好",
+      "朋友"
+     ]
+    ],
+    "桌子|": [
+     [
+      "放在",
+      "桌子"
+     ]
+    ],
+    "问题|": [
+     [
+      "问题",
+      "重要"
+     ]
+    ]
+   },
+   "wanted": [
+    [
+     "喜欢",
+     ""
+    ],
+    [
+     "学习",
+     ""
+    ],
+    [
+     "朋友",
+     ""
+    ],
+    [
+     "桌子",
+     ""
+    ],
+    [
+     "电话",
+     ""
+    ],
+    [
+     "问题",
+     ""
+    ]
+   ]
+  }
+ ],
+ "by_fill": {
+  "patterns": {
+   "fill": 6
+  },
+  "sentence": {
+   "fill": 6
+  }
+ },
+ "counts": {
+  "fill": 12
+ },
+ "edits": {
+  "1789712000700": {
+   "ExampleSentences": {
+    "after": "他笑着说：“没<b>问题</b>！”<br>这个<b>问题</b>很重要。",
+    "before": ""
+   },
+   "Patterns": {
+    "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">问题重要 · 没问题 · 重要的问题</div><div class=\"pat-frame pat-src-balanced pat-thin\">这个〜 · 〜上</div>",
+    "before": ""
+   }
+  },
+  "1789712000701": {
+   "ExampleSentences": {
+    "after": "他花了很多时间<b>学习</b>。<br>他认真地<b>学习</b>。",
+    "before": ""
+   },
+   "Patterns": {
+    "after": "<div class=\"pat-colloc pat-src-conversational pat-thin\">認真地學習 · 學習做菜</div>",
+    "before": ""
+   }
+  },
+  "1789712000702": {
+   "ExampleSentences": {
+    "after": "我给他打了三次<b>电话</b>。<br>请给我打<b>电话</b>。",
+    "before": ""
+   },
+   "Patterns": {
+    "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">打电话 · 通电话</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+    "before": ""
+   }
+  },
+  "1789712000703": {
+   "ExampleSentences": {
+    "after": "我有很多<b>朋友</b>，其中一位朋友是医生。<br>她跟男<b>朋友</b>结婚了。",
+    "before": ""
+   },
+   "Patterns": {
+    "after": "<div class=\"pat-colloc pat-src-conversational pat-thin\">好朋友</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜们</div>",
+    "before": ""
+   }
+  },
+  "1789712000704": {
+   "ExampleSentences": {
+    "after": "他跟你一样<b>喜欢</b>音乐。<br>压力大的时候，我<b>喜欢</b>听音乐。",
+    "before": ""
+   },
+   "Patterns": {
+    "after": "<div class=\"pat-form pat-src-conversational pat-thin\">很喜欢 25%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">喜欢音乐</div>",
+    "before": ""
+   }
+  },
+  "1789712000705": {
+   "ExampleSentences": {
+    "after": "<b>桌子</b>上有两本书和一个杯子。<br>我把书放在<b>桌子</b>上了。",
+    "before": ""
+   },
+   "Patterns": {
+    "after": "<div class=\"pat-colloc pat-src-conversational pat-thin\">放在桌子</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜上 · 在〜上</div>",
+    "before": ""
+   }
+  }
+ },
+ "rows": [
+  [
+   1789712000700,
+   "问题",
+   "Patterns",
+   "fill",
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">问题重要 · 没问题 · 重要的问题</div><div class=\"pat-frame pat-src-balanced pat-thin\">这个〜 · 〜上</div>",
+   "patterns"
+  ],
+  [
+   1789712000700,
+   "问题",
+   "ExampleSentences",
+   "fill",
+   "他笑着说：“没<b>问题</b>！”<br>这个<b>问题</b>很重要。",
+   "sentence"
+  ],
+  [
+   1789712000701,
+   "學習",
+   "Patterns",
+   "fill",
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">認真地學習 · 學習做菜</div>",
+   "patterns"
+  ],
+  [
+   1789712000701,
+   "學習",
+   "ExampleSentences",
+   "fill",
+   "他花了很多时间<b>学习</b>。<br>他认真地<b>学习</b>。",
+   "sentence"
+  ],
+  [
+   1789712000702,
+   "电话",
+   "Patterns",
+   "fill",
+   "<div class=\"pat-colloc pat-src-balanced pat-thin\">打电话 · 通电话</div><div class=\"pat-frame pat-src-balanced pat-thin\">在〜中</div>",
+   "patterns"
+  ],
+  [
+   1789712000702,
+   "电话",
+   "ExampleSentences",
+   "fill",
+   "我给他打了三次<b>电话</b>。<br>请给我打<b>电话</b>。",
+   "sentence"
+  ],
+  [
+   1789712000703,
+   "朋友",
+   "Patterns",
+   "fill",
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">好朋友</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜们</div>",
+   "patterns"
+  ],
+  [
+   1789712000703,
+   "朋友",
+   "ExampleSentences",
+   "fill",
+   "我有很多<b>朋友</b>，其中一位朋友是医生。<br>她跟男<b>朋友</b>结婚了。",
+   "sentence"
+  ],
+  [
+   1789712000704,
+   "喜欢",
+   "Patterns",
+   "fill",
+   "<div class=\"pat-form pat-src-conversational pat-thin\">很喜欢 25%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">喜欢音乐</div>",
+   "patterns"
+  ],
+  [
+   1789712000704,
+   "喜欢",
+   "ExampleSentences",
+   "fill",
+   "他跟你一样<b>喜欢</b>音乐。<br>压力大的时候，我<b>喜欢</b>听音乐。",
+   "sentence"
+  ],
+  [
+   1789712000705,
+   "桌子",
+   "Patterns",
+   "fill",
+   "<div class=\"pat-colloc pat-src-conversational pat-thin\">放在桌子</div><div class=\"pat-frame pat-src-conversational pat-thin\">〜上 · 在〜上</div>",
+   "patterns"
+  ],
+  [
+   1789712000705,
+   "桌子",
+   "ExampleSentences",
+   "fill",
+   "<b>桌子</b>上有两本书和一个杯子。<br>我把书放在<b>桌子</b>上了。",
+   "sentence"
+  ]
+ ]
+}

@@ -9,9 +9,9 @@ phrases on your list" on (logic.phrase_rows), the analyzer looks for JMdict's se
 and gives each phrase the library meets as often as the list's cut-off asks a row of its own.
 
 A phrase is found by its words' lemmas, so any form of it counts: 気がついた, 気が付いて and 気がつく are all 気が付く,
-and 目を輝かせて is 目を輝かせる. But a phrase that ends in grammar in a form of its own — もしかしたら's たら,
-そういうことなら's なら, never the dictionary form た or だ — is that form only: そういうことだ is another expression
-(`fixed_form`). A phrase JMdict classes only as a pre-noun adjectival (ああいう, こういう, ひどすぎる — adj-pn) stands
+and 目を輝かせて is 目を輝かせる. But a phrase that ends in a form of its own — もしかしたら's たら, そういうことなら's
+なら, never the dictionary form た or だ; ごめんなさい's なさい, ざまあみろ's みろ, 何にせよ's せよ, だけでなく's なく — is
+that form only: そういうことだ, 何にする and だけじゃない are other expressions (`fixed_form`). A phrase JMdict classes only as a pre-noun adjectival (ああいう, こういう, ひどすぎる — adj-pn) stands
 only before a word of its own (ああいう人, ああいうの), never inflected: ああ言って is the words 'say so'
 (`before_a_noun`) — and one JMdict says is usually written in kana (そういった, どういう) only as written in kana:
 with the verb's kanji, そう言ったのは is 'that he said so'. At each place in a sentence the longest phrase wins and the
@@ -38,6 +38,7 @@ switch is off.
 
 import functools
 import re
+import unicodedata
 from collections import namedtuple
 from itertools import compress
 
@@ -63,8 +64,10 @@ TE_AUXILIARIES = frozenset(("居る", "有る", "仕舞う", "置く"))
 
 # What `find` finds: bump it whenever a change here finds other phrases in the same words — the token store then counts
 # every file's phrases again (token_index.Store._update_phrases), as it does for new phrase data, and reads the known
-# words again (a known sentence's phrases are known: analyzer.load_known_words, Store._known_key).
-MATCHER_VERSION = 5
+# words again (a known sentence's phrases are known: analyzer.load_known_words, Store._known_key). 6: a phrase ending
+# in a form of its own is that form whatever its last word (`fixed_form`: ごめんなさい, 何にせよ, だけでなく), and
+# `spellings` writes such a match as it is and keeps the voicing the text gives its last word (いつもどおり).
+MATCHER_VERSION = 6
 
 # Phrase.prenoun: a pre-noun adjectival JMdict says is usually written in kana (its "uk" on every sense).
 KANA_ONLY = 2
@@ -76,6 +79,8 @@ AS_WRITTEN = 2
 _END = None          # the trie's mark for "a phrase ends here" (a lemma is never None)
 _HIRAGANA = {code: code - 0x60 for code in range(0x30A1, 0x30F7)}      # katakana -> hiragana, for str.translate
 _KANJI = re.compile(f"[{HAN}]")             # Unicode's Han (app/unicode_ranges.py)
+_KANA = re.compile("[ぁ-ゖァ-ヶ]")             # a kana letter: what an ending is spelled in
+_O_ROW = frozenset("おこごそぞとどのほぼぽもよろをょオコゴソゾトドノホボポモヨロヲョ")   # before う: a long vowel (そう)
 
 
 def before_a_noun(phrase, tokens, start, end, text):
@@ -103,10 +108,49 @@ def before_a_noun(phrase, tokens, start, end, text):
 
 
 def fixed_form(phrase):
-    """Does `phrase` end in grammar in a form of its own — its spelling doesn't end in the last word's dictionary form
-    (もしかしたら: た as たら; そういうことなら: だ as なら)? Then only that form is the phrase. One ending in the
-    dictionary form (目を輝かせる, 気に食わない, あっという間に) is the phrase in any form, as a real word's are."""
-    return phrase.roles[-1] == GRAMMAR and not phrase.display.endswith(phrase.readings[-1].translate(_HIRAGANA))
+    """Can `phrase` end in a form of its own — its spelling not ending in its last word's dictionary form? Grammar
+    (spelled in kana): its spelling doesn't end in that form (もしかしたら: た as たら; そういうことなら: だ as なら) —
+    then only that form is the phrase. Any other word, which the spelling may write in kanji: its spelling ends in
+    another kana than the lemma's reading does — an imperative or a stem of its own (ごめんなさい: なさる as なさい,
+    ざまあみろ, 何にせよ: する as せよ, 何でもあり), a continuative (だけでなく: ない as なく) — and each match then says
+    whether that is a form of the word it ends in (`own_form`: 手間が省ける is the potential 省ける's dictionary form,
+    not 省く's). One ending in the dictionary form (目を輝かせる, 気に食わない, あっという間に, いい感じ — a noun) is the
+    phrase in any form, as a real word's are."""
+    last = phrase.readings[-1].translate(_HIRAGANA)
+    if phrase.roles[-1] == GRAMMAR:
+        return not phrase.display.endswith(last)
+    end = phrase.display[-1:]
+    return bool(_KANA.match(end)) and end.translate(_HIRAGANA) != last[-1:]
+
+
+def own_form(phrase, base):
+    """Does `phrase` (`fixed_form`) end in a form of its own of the word a match ends in — `base`, that word in its
+    dictionary form as the text writes it? Grammar: always. Any other word: its spelling ends in another kana than
+    `base` does (ごめんなさい's い, never なさる's る; だけでなく's く, never ない's い) — not where either ends in a
+    kanji (すぐそば is 直ぐ傍: no ending to tell them apart), not the dictionary form (手間が省ける, 手間が省けた: the
+    potential 省ける), and not a spelling that only writes the word shorter: a long vowel short (あっそ is あっそう) or
+    a word's last kana left off (万全を期す is 万全を期する)."""
+    if phrase.roles[-1] == GRAMMAR:
+        return True
+    display = phrase.display
+    end, last = display[-1:], base[-1:]
+    if not (_KANA.match(end) and _KANA.match(last)) or end.translate(_HIRAGANA) == last.translate(_HIRAGANA):
+        return False
+    head = base[:-1]
+    if display.endswith(head) and (len(head) > 1 or (last in "うウ" and head in _O_ROW)):
+        return False
+    return True
+
+
+def ends_as(phrase, surface):
+    """Does a match whose last word the text spells `surface` end as `phrase`'s own form does (`own_form`)? Grammar:
+    its spelling ends in `surface` (そういうことなら, never そういうことだ). Any other word: `surface` ends in the kana
+    the spelling ends in, katakana read as hiragana — the form is the ending, the kanji or kana before it the writer's
+    (あっち行け and あっちいけ; ちょい待ち, never ちょい待って)."""
+    display = phrase.display
+    if display.endswith(surface):
+        return True
+    return phrase.roles[-1] != GRAMMAR and surface[-1:].translate(_HIRAGANA) == display[-1:].translate(_HIRAGANA)
 
 
 class PhraseSet:
@@ -132,8 +176,8 @@ class PhraseSet:
             self.entries.append(entry)
 
     def _search(self):
-        """The trie `find` walks — each phrase's lemmas, one level a word — the lemmas a phrase starts with, and the
-        spelling of each phrase that has a form of its own (`fixed_form`; None for the rest)."""
+        """The trie `find` walks — each phrase's lemmas, one level a word — the lemmas a phrase starts with, and
+        whether each phrase has a form of its own (`fixed_form`)."""
         if self._trie is None:
             trie = {}
             for index, entry in enumerate(self.entries):
@@ -141,7 +185,7 @@ class PhraseSet:
                 for lemma in entry.key:
                     node = node.setdefault(lemma, {})
                 node[_END] = index
-            self._fixed = [entry.display if fixed_form(entry) else None for entry in self.entries]
+            self._fixed = [fixed_form(entry) for entry in self.entries]
             self._trie, self.firsts = trie, frozenset(trie)
         return self._trie
 
@@ -184,10 +228,10 @@ class PhraseSet:
                     break
                 j += 1
             for end, index in reversed(ends):
-                own = fixed[index]
-                if own is not None and not own.endswith(tokens[end - 1][2]):
-                    continue                # そういうことだ is not そういうことなら
                 entry = entries[index]
+                last = tokens[end - 1]
+                if fixed[index] and own_form(entry, last[3]) and not ends_as(entry, last[2]):
+                    continue                # そういうことだ is not そういうことなら, だけじゃない not だけでなく
                 if (entry.prenoun or entry.grammar == AS_WRITTEN) and not before_a_noun(entry, tokens, i, end, text):
                     continue                # ああ言って is not ああいう, と言った not という
                 if entry.grammar and end < n and lemmas[end] in TE_AUXILIARIES and entry.key[-1] == "て":
@@ -227,15 +271,25 @@ def bound_at(phrase):
 def spellings(tokens, start, end, phrase):
     """(the phrase in its dictionary form, the phrase as written) for one match `tokens[start:end]`: 気がついた is
     (気がつく, 気がつい), 目を輝かせて (目を輝かせる, 目を輝かせ) — its last word in the dictionary form the text spells
-    it in — and a phrase that ends in grammar as its own spelling does is written as it is (もしかしたら, 我関せず: the
-    dictionary form of ず is spelled ぬ). The first names the row (its Orth, the commonest); the second is searchable
-    (Forms)."""
+    it in, with the voiced first sound the text gives it (いつもどおり, 怖気づく: UniDic's dictionary form is とおり,
+    つく) — and a phrase that ends in a form of its own (`own_form`) or as its own spelling does is written as it is
+    (ごめんなさい, ざまあみろ, もしかしたら, 我関せず: the dictionary form of ず is spelled ぬ). The first names the row
+    (its Orth, the commonest); the second is searchable (Forms)."""
     last = tokens[end - 1]
     head = "".join([token[2] for token in tokens[start:end - 1]])
     written = head + last[2]
-    if phrase.roles[-1] == GRAMMAR and phrase.display.endswith(last[2]):
+    if phrase.display.endswith(last[2]) or (fixed_form(phrase) and own_form(phrase, last[3])):
         return written, written
-    return head + last[3], written
+    return head + _voiced_as(last[3], last[2]), written
+
+
+def _voiced_as(base, surface):
+    """`base` (a word's dictionary form) with the voiced first sound `surface` (how the text spells it) gives it — the
+    sound a word takes inside a compound (通り in いつもどおり, 付く in 怖気づく), which UniDic's dictionary form leaves
+    out; else `base` as it is."""
+    if surface[:1] != base[:1] and unicodedata.normalize("NFD", surface[:1])[:1] == base[:1]:
+        return surface[:1] + base[1:]
+    return base
 
 
 def tally(sentences, phrase_set, matches=None):

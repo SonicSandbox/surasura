@@ -79,6 +79,11 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\Surasura.exe"; WorkingDir: "
 [Run]
 Filename: "{app}\Surasura.exe"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: postinstall skipifsilent nowait
 
+[InstallDelete]
+; An install over an older one: its bundled samples go first (Inno never removes a file the new Setup lacks),
+; so *Try it with samples first* copies only this version's (Hon-SM, 2026-11-10: 3.0 ships new samples).
+Type: filesandordirs; Name: "{app}\_internal\samples"
+
 [UninstallDelete]
 ; What a one-click update may have added that Setup never logged: exactly these, never a wildcard on {app} (E2).
 Type: filesandordirs; Name: "{app}\_internal"
@@ -88,6 +93,8 @@ Type: files; Name: "{app}\tsubasa.exe"
 Type: files; Name: "{app}\updater.exe"
 Type: files; Name: "{app}\RELEASE_NOTES.md"
 Type: files; Name: "{app}\LICENSE"
+Type: files; Name: "{app}\LICENSE-EXCEPTION.md"
+Type: filesandordirs; Name: "{app}\licenses"
 
 [Code]
 const

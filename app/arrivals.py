@@ -88,7 +88,7 @@ class View:
         # that only one phrase of the set can hold is that phrase's; any other is left out and named in `unsure`.
         unsure = set()
         if "phrase_entries" in plan.header:
-            entry_of = {index_: k for k, index_ in plan.header["phrase_entries"]}
+            entry_of = {entry[1]: entry[0] for entry in plan.header["phrase_entries"]}
         else:
             entry_of = {}
             if phrase_set is not None and phrase_rows:

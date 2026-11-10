@@ -1,0 +1,195 @@
+[
+ {
+  "action": "requestPermission",
+  "version": 6,
+  "params": {}
+ },
+ {
+  "action": "apiReflect",
+  "version": 6,
+  "params": {
+   "scopes": [
+    "actions"
+   ],
+   "actions": [
+    "setSpecificValueOfCard",
+    "multi"
+   ]
+  }
+ },
+ {
+  "action": "guiReviewActive",
+  "version": 6,
+  "params": {}
+ },
+ {
+  "action": "requestPermission",
+  "version": 6,
+  "params": {}
+ },
+ {
+  "action": "apiReflect",
+  "version": 6,
+  "params": {
+   "scopes": [
+    "actions"
+   ],
+   "actions": [
+    "setSpecificValueOfCard",
+    "multi",
+    "suspend",
+    "unsuspend"
+   ]
+  }
+ },
+ {
+  "action": "getDeckConfig",
+  "version": 6,
+  "params": {
+   "deck": "TheBank"
+  }
+ },
+ {
+  "action": "findCards",
+  "version": 6,
+  "params": {
+   "query": "deck:\"TheBank\" is:new -is:suspended -deck:filtered"
+  }
+ },
+ {
+  "action": "cardsInfo",
+  "version": 6,
+  "params": {
+   "cards": [
+    1789712080000,
+    1789712080001,
+    1789712080002,
+    1789712080003
+   ]
+  }
+ },
+ {
+  "action": "notesInfo",
+  "version": 6,
+  "params": {
+   "notes": [
+    1789712000000,
+    1789712000001,
+    1789712000002,
+    1789712000003
+   ]
+  }
+ },
+ {
+  "action": "multi",
+  "version": 6,
+  "params": {
+   "actions": [
+    {
+     "action": "setSpecificValueOfCard",
+     "params": {
+      "card": 1789712080003,
+      "keys": [
+       "due"
+      ],
+      "newValues": [
+       2800
+      ]
+     },
+     "version": 6
+    },
+    {
+     "action": "setSpecificValueOfCard",
+     "params": {
+      "card": 1789712080000,
+      "keys": [
+       "due"
+      ],
+      "newValues": [
+       2802
+      ]
+     },
+     "version": 6
+    },
+    {
+     "action": "setSpecificValueOfCard",
+     "params": {
+      "card": 1789712080002,
+      "keys": [
+       "due"
+      ],
+      "newValues": [
+       2803
+      ]
+     },
+     "version": 6
+    }
+   ]
+  }
+ },
+ {
+  "action": "addTags",
+  "version": 6,
+  "params": {
+   "notes": [
+    1789712000003
+   ],
+   "tags": "Surasura"
+  }
+ },
+ {
+  "action": "addTags",
+  "version": 6,
+  "params": {
+   "notes": [
+    1789712000000,
+    1789712000002
+   ],
+   "tags": "Surasura::later"
+  }
+ },
+ {
+  "action": "multi",
+  "version": 6,
+  "params": {
+   "actions": [
+    {
+     "action": "setSpecificValueOfCard",
+     "params": {
+      "card": 1789712080000,
+      "keys": [
+       "flags"
+      ],
+      "newValues": [
+       7
+      ]
+     },
+     "version": 6
+    },
+    {
+     "action": "setSpecificValueOfCard",
+     "params": {
+      "card": 1789712080002,
+      "keys": [
+       "flags"
+      ],
+      "newValues": [
+       7
+      ]
+     },
+     "version": 6
+    }
+   ]
+  }
+ },
+ {
+  "action": "suspend",
+  "version": 6,
+  "params": {
+   "cards": [
+    1789712080000,
+    1789712080002
+   ]
+  }
+ }
+]

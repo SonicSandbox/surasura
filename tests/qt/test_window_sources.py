@@ -1240,3 +1240,45 @@ def test_a_new_watch_is_stored_only_once_the_watches_lock_is_free(looks_world):
     assert wait_until(lambda: FakeWatch.made[-1].state == "closed", 5)   # closed, not stored: the flag was read under the lock
     assert looks._watches == {}
     assert looks.idle(30)
+
+
+# --- Fresh-U row 4 (2026-11-10): short texts left out are said once, in the bar -------------------------------------- #
+@pytest.mark.parametrize("result, tail", [
+    ({"reachable": True, "added": 9, "short": 2}, " · 2 short texts left out — under 1,000 characters of Japanese"),
+    ({"reachable": True, "added": 3, "short": 1}, " · 1 short text left out — under 1,000 characters of Japanese"),
+    ({"reachable": True, "added": 0, "short": 1}, " · 1 short text left out — under 1,000 characters of Japanese"),
+    ({"reachable": True, "added": 4, "short": 0}, ""),
+    ({"reachable": True, "added": 4}, ""),
+], ids=["two", "one", "nothing-else-new", "none", "not-counted"])
+def test_fresh_u_add_a_folder_says_how_many_short_texts_it_left_out(window, result, tail):
+    # Two real Japanese .txt files (403 and 947 bytes) never arrived and nothing said so: the look's own line now ends
+    # with how many loose texts were too short to be a book, once, with the length that decides it
+    class Answered(RecordingLooks):
+        def add(self, path, then, first=False):
+            then({"path": path, "refused": None, "result": dict(result), "arrivals": 0})
+            return True
+    seed, win = window(Answered())
+    folder = os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", "Anime")
+    win.adder.read_folder(folder)
+    head = strings.SOURCES_READ.format(name="Anime", added=result["added"]) if result["added"] else \
+        strings.SOURCES_READ_NOTHING.format(name="Anime")
+    assert wait_until(lambda: win.bar_line.full() == head + tail, 5), win.bar_line.full()
+    assert f"{sources.BOOK_MIN_CHARS:,}" in strings.sources_short(2)
+    # the rule counts the language's own characters (kana and kanji, or hanzi): the words name it
+    assert strings.sources_short(2, "zh").endswith("of Chinese") and strings.sources_short(0, "zh") == ""
+
+
+@pytest.mark.parametrize("answer", [
+    {"refused": "busy", "result": {"short": 2}},
+    {"refused": None, "result": {"reachable": False, "short": 2}},
+    {"refused": None, "later": True, "result": {"short": 2}},
+], ids=["busy", "unreachable", "later"])
+def test_fresh_u_a_look_that_didnt_read_the_folder_never_counts_short_texts(window, answer):
+    class Answered(RecordingLooks):
+        def add(self, path, then, first=False):
+            then(dict(answer, path=path))
+            return True
+    seed, win = window(Answered())
+    win.adder.read_folder(os.path.join(os.environ["SURASURA_TEST_ROOT"], "elsewhere", "Anime"))
+    assert wait_until(lambda: "Anime" in win.bar_line.full(), 5)
+    assert "short text" not in win.bar_line.full()

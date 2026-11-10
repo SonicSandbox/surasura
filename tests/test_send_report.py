@@ -363,7 +363,7 @@ def test_the_built_in_receiver_is_the_builds_and_is_used_when_none_is_kept(monke
 
 def test_a_test_report_goes_to_the_test_worker_never_the_live_one(saved, receiver, monkeypatch):
     """From source, a dev build or an alpha (env test): the test Worker, whatever address update.json kept."""
-    monkeypatch.setattr(telemetry, "_cached_url", lambda: "https://surasura-telemetry.sonicswain.workers.dev")
+    monkeypatch.setattr(telemetry, "_cached_url", lambda: "https://api.surasura.dev")
     assert REAL_RECEIVER("test") == telemetry.BUILT_IN_TEST_URL != telemetry.BUILT_IN_URL
     asked = []
     monkeypatch.setattr(telemetry, "report_receiver", lambda env="production": asked.append(env) or receiver.url)

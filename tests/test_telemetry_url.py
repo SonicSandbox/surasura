@@ -19,7 +19,7 @@ from app import path_utils, telemetry
 from app import update_checker as uc
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RECEIVER = "https://surasura-telemetry.sonicswain.workers.dev"
+RECEIVER = "https://api.surasura.dev"
 MOVED = "https://telemetry.example.org/hb"
 FALLBACK = "https://fallback.example.org/webhook"
 
@@ -98,7 +98,7 @@ def test_a_new_address_replaces_the_kept_one(monkeypatch, production):
 
 
 @pytest.mark.parametrize("bad", [
-    "http://surasura-telemetry.sonicswain.workers.dev",          # not https
+    "http://api.surasura.dev",                                    # not https
     "https://",                                                   # no host
     "https://user:secret@surasura-telemetry.example.org",         # credentials
     "https://surasura telemetry.example.org",                     # a space
@@ -293,7 +293,18 @@ def test_the_shipped_build_config_names_the_live_receiver():
     assert package_app.load_build_config()["release"]["telemetry_url"] == RECEIVER
 
 
-@pytest.mark.parametrize("value", [None, "http://surasura-telemetry.sonicswain.workers.dev", "not a url"])
+def test_the_built_in_receivers_are_on_surasura_dev_and_name_no_account():
+    """3.0's addresses (Sonic, 2026-11-09): the receiver and its test twin on Surasura's own domain, so no request a
+    3.0 build makes carries the Cloudflare account's workers.dev name; the shipped config names the same receiver."""
+    assert telemetry.BUILT_IN_URL == RECEIVER
+    assert telemetry.BUILT_IN_TEST_URL == "https://api-test.surasura.dev"
+    for url in (telemetry.BUILT_IN_URL, telemetry.BUILT_IN_TEST_URL,
+                package_app.load_build_config()["release"]["telemetry_url"]):
+        assert uc.valid_telemetry_url(url) == url
+        assert "workers.dev" not in url and "sonicswain" not in url, url
+
+
+@pytest.mark.parametrize("value", [None, "http://api.surasura.dev", "not a url"])
 def test_a_build_config_without_a_valid_telemetry_url_stops_the_build(tmp_path, value):
     with open(os.path.join(PROJECT, "packaging", "build_config.json"), encoding="utf-8") as f:
         config = json.load(f)

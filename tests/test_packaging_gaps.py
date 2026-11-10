@@ -5,7 +5,7 @@ import hashlib
 import pytest
 
 import package_app
-from tests.test_packaging_config import _program, _stand_in_archives  # noqa: F401 (autouse: the stand-in programs freeze no module)
+from tests.test_packaging_config import _program, _stand_in_archives, fake_site  # noqa: F401 (autouse: stand-ins)
 
 SEED = hashlib.sha256("スラスラ test signing key (tests only)".encode("utf-8")).digest()
 
@@ -31,16 +31,17 @@ def test_a_sqlite_exactly_at_the_floor_passes(tmp_path):
     assert facts["sqlite"] == vendored and failures == []
 
 
-def test_a_licence_folder_left_empty_holds_no_licence_notice(tmp_path):
-    # PyQt6 is bundled only with its and Qt's licence notices: a licences folder that is there but empty (a copy step
-    # that made the folder and copied nothing) carries none, and the build stops on it.
-    folder, config = _program(tmp_path, licences=False)
-    (folder / "_internal" / "licenses" / "PyQt6").mkdir(parents=True)
-    (folder / "_internal" / "licenses" / "PyQt6-Qt6").mkdir(parents=True)
-    (folder / "_internal" / "licenses" / "PyQt6-Qt6" / "LICENSE").write_text("GNU LESSER GENERAL PUBLIC LICENSE\n",
-                                                                            encoding="utf-8")
+def test_a_licence_text_left_empty_or_gone_holds_no_licence_notice(tmp_path):
+    # PyQt6 is bundled only with its and Qt's licence texts: a text INDEX.txt names that is there but empty (a copy
+    # that made the file and wrote nothing), or gone, carries none, and the build stops on it, naming it.
+    folder, config = _program(tmp_path)
+    text = folder / "_internal" / "licenses" / "PyQt6-6.11.0" / "licenses" / "LICENSE"
+    text.write_bytes(b"")
     failures, _facts = package_app.check_program(str(folder), config)
-    assert failures == ["_internal/licenses/PyQt6 holds no licence notice"]
+    assert failures == ["_internal/licenses/PyQt6-6.11.0/licenses/LICENSE, which _internal/licenses/INDEX.txt names, "
+                        "is missing or empty"]
+    text.unlink()
+    assert package_app.check_program(str(folder), config)[0] == failures
 
 
 def test_an_unsigned_rebuild_into_a_signed_releases_folder_leaves_no_signature_behind(tmp_path, monkeypatch):

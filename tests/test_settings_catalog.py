@@ -712,6 +712,15 @@ def test_find_matches_labels_help_search_words_and_choice_labels():
     assert "theme" not in catalog.find("sapphire", {}, "ja", EVERYTHING)                    # no theme picker
 
 
+def test_zh_s_the_nadeshiko_lookup_rows_show_for_japanese_only():
+    """Zh-S (2026-11-09): the ⌕ lookup is Nadeshiko's, Japanese sentences only: a Chinese report has none (the
+    template's `wordSearchEnabled`), so Chinese Settings offer neither its switch nor its category."""
+    assert "word_search_enabled" in catalog.find("Nadeshiko", {}, "ja", EVERYTHING)
+    assert "word_search_category" in catalog.find("lookup examples", {}, "ja", EVERYTHING)
+    assert "word_search_enabled" not in catalog.find("Nadeshiko", {}, "zh", EVERYTHING)
+    assert "word_search_category" not in catalog.find("lookup examples", {}, "zh", EVERYTHING)
+
+
 @WITH_MODULES
 def test_find_reads_japanese_and_full_width_letters():
     assert "backfill_patterns" in catalog.find("パターン", {}, "ja", EVERYTHING)
@@ -818,13 +827,16 @@ def test_the_credits_are_2_4s_text_byte_for_byte_and_the_tk_window_still_reads_t
 
 
 def test_readmes_data_credits_are_all_named_in_the_app():
-    """S11: an in-place update ships no README, so the in-app credits must name every source README credits."""
+    """S11: an in-place update ships no README, so the in-app credits must name every source the project credits —
+    since 2026-11-09 on its own page, docs/CREDITS.md, which README links."""
     from app import credits
     with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
-        readme = f.read()
-    sources = credits.readme_sources(readme)
+        assert "(docs/CREDITS.md)" in f.read()
+    with open(os.path.join(ROOT, "docs", "CREDITS.md"), encoding="utf-8") as f:
+        page = f.read()
+    sources = credits.readme_sources(page)
     assert {"JMdict", "JMnedict", "CC-CEDICT", "Tatoeba"} <= set(sources)
-    assert credits.missing_from_credits(readme) == []
+    assert credits.missing_from_credits(page) == []
     made_up = "## 🙏 Data Credits\n\n- [Kanjidic2](https://www.edrdg.org/) — CC BY-SA 4.0\n\n## 📜License\n"
     assert credits.missing_from_credits(made_up) == ["Kanjidic2"]
     assert credits.missing_from_credits("no credits here") == []
@@ -844,15 +856,23 @@ def test_the_credits_card_ends_with_the_users_own_content_and_readme_has_its_sec
 
 def test_the_licence_line_is_the_licence_files_first_and_copyright_lines(monkeypatch, tmp_path):
     from app import credits, path_utils
-    with open(os.path.join(ROOT, "LICENSE"), encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
+    # The repo's LICENSE is the GPL's own text since 3.0: Settings names the licence as Surasura applies it (version 3
+    # or later) with Surasura's copyright line — never the Free Software Foundation's copyright on the licence's words.
     monkeypatch.setattr(credits, "_LICENCE", [])
-    assert credits.LICENCE_LINE == f"{lines[0]} · {next(l for l in lines if l.startswith('Copyright'))}"
+    assert credits.LICENCE_LINE == ("GNU General Public License, version 3 or later (GPL-3.0-or-later) · "
+                                    "Copyright (C) 2026 SonicSandbox")
+    assert "Free Software Foundation" not in credits.LICENCE_LINE
     # frozen: the program's folder, where README sits; none there -> no line at all, never a guess
     monkeypatch.setattr(credits, "_LICENCE", [])
     monkeypatch.setattr(path_utils, "is_frozen", lambda: True)
     monkeypatch.setattr(sys, "executable", str(tmp_path / "Surasura.exe"))
     assert credits.licence_line() == ""
+    # the GPL without the exception beside it: the name alone (its own copyright line is the FSF's, never shown)
+    with open(os.path.join(ROOT, "LICENSE"), encoding="utf-8") as f:
+        (tmp_path / "LICENSE").write_text(f.read(), encoding="utf-8")
+    monkeypatch.setattr(credits, "_LICENCE", [])
+    assert credits.licence_line() == "GNU General Public License, version 3 or later (GPL-3.0-or-later)"
+    # an older licence (2.5.x and before: MIT) reads as it always did: its first line and its copyright line
     (tmp_path / "LICENSE").write_text("MIT License\n\nCopyright (c) 2026 SonicSandbox\n\nPermission is hereby…\n",
                                       encoding="utf-8")
     monkeypatch.setattr(credits, "_LICENCE", [])

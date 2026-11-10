@@ -1450,6 +1450,14 @@ class KnownPage(_Page):
             self.deck_well.updateGeometry()
         _show(self.no_decks, not decks)
 
+    def keep_deck(self, deck):
+        """Choice 86: `deck`, the new deck page 5's setup made and joined to the known-words decks, kept among this
+        page's decks (beside the ticked ones; ticked once Anki is looked at again) — only while the page reads decks
+        from Anki, as the setup joins it only to a list that isn't empty."""
+        decks = self.chosen_decks()
+        if self._effective() == "anki" and decks and deck not in decks:
+            self._wanted = decks + [deck]
+
     def chosen_decks(self):
         """The ticked decks, and each saved deck the open Anki doesn't hold (another profile open, a deck renamed: R2-3)
         kept as it was — never dropped by a *Next*."""
@@ -1776,7 +1784,7 @@ class ShowsPage(_Page):
 
     def show_rows(self, rows):
         rows = list(rows or [])
-        key = tuple((r.get("name"), r.get("count"), r.get("folder"), r.get("kind")) for r in rows)
+        key = tuple((r.get("name"), r.get("count"), r.get("folder"), r.get("ours"), r.get("kind")) for r in rows)
         if key == self._rows_key:
             return
         self._rows_key = key
@@ -1804,9 +1812,11 @@ class ShowsPage(_Page):
         line.addWidget(title)
         count = row_count(r)
         folder = str(r.get("folder") or "")
-        # wraps, a long folder after a backslash too (it widened the page past the window: the review's B1)
-        sub = _label("wizrowline", _breakable(S.ROW_LINE.format(count=count, folder=folder)) if folder else count, w,
-                     wrap=True)
+        # wraps, a long folder after a backslash too (it widened the page past the window: the review's B1); a copy in
+        # Surasura's own folder says so, never its tier folder's 2.x name (Hon-SM)
+        said = S.ROW_LINE_OURS.format(count=count) if r.get("ours") else \
+            _breakable(S.ROW_LINE.format(count=count, folder=folder)) if folder else count
+        sub = _label("wizrowline", said, w, wrap=True)
         f = sub.font()
         f.setFamilies(list(theme.path_font_families(self.wiz.language)))      # a path's ¥ is a backslash again
         sub.setFont(f)
@@ -1938,7 +1948,16 @@ class OrderPage(_Page):
         rows.setContentsMargins(0, 0, 0, 0)
         rows.setSpacing(_px(8))
         self.keep = SwitchRow(S.KEEP_ORDER, S.KEEP_ORDER_LINE, S.KEEP_ORDER_TIP, self.controls, recommended=True)
+        self.keep.switch.toggled.connect(self._keep_toggled)
         rows.addWidget(self.keep)
+        # Fresh-U row 2: on, the deck it moves and how many of its new cards (read on a worker, `new_cards`)
+        self.moves_line = _label("wizsub", "", self.controls, wrap=True)
+        self.moves_line.setVisible(False)
+        rows.addWidget(self.moves_line)
+        self._keep_shown = True           # the switch as the page's answers start it (`load`)
+        self._keep_touched = False        # … until the learner turns it: then page 2's way never moves it
+        self._moves_key = None            # (language, deck) whose new cards were counted
+        self._moves_n = None              # … and how many (None: not known)
         # D29's switch off: the consent is kept, and the page says it waits for it (IK-20)
         self.automation_line = _label("wizsub", S.ORDER_AUTOMATION_OFF, self.controls, wrap=True)
         self.automation_line.setVisible(False)
@@ -1986,7 +2005,9 @@ class OrderPage(_Page):
 
     def load(self, answers):
         a = answers or {}
-        self.keep.switch.set_quiet(bool(a.get("keep_in_order", True)))
+        self._keep_shown = bool(a.get("keep_in_order", True))
+        self._keep_touched = False
+        self.keep.switch.set_quiet(self._keep_shown)
         self.later.choose(a.get("later") if a.get("later") in S.LATER_CHOICES else "leave")
         self._deck = a.get("deck") or None
         self._deck_key = None
@@ -1995,6 +2016,54 @@ class OrderPage(_Page):
     def _deck_picked(self):
         self._deck = self.deck_box.currentText() or None
         self._look_behind()
+        self._look_moves()
+
+    # --- Fresh-U row 2: the switch after *Start fresh*, and what it moves ----------------------------------------- #
+    def _keep_toggled(self, _on):
+        self._keep_touched = True
+        self._paint_moves()
+
+    def _follow_known(self):
+        """Untouched, the switch follows page 2's way (`setup_wizard.keeps_order`): off after *Start fresh* on a new
+        profile — a fresh start never moves the cards of a deck already there — and *Recommended* only beside an on."""
+        if self._keep_touched:
+            return
+        on = self.wiz.keeps_order(self._keep_shown)
+        if self.keep.switch.isChecked() != on:
+            self.keep.switch.set_quiet(on)
+        _show(self.keep.rec, on or not self._keep_shown)
+
+    def _look_moves(self):
+        """The deck's new cards counted once per (language, deck) on a worker (`setup_wizard.new_cards`: Anki read
+        only)."""
+        deck = self.deck_box.currentText() or None
+        key = (self.wiz.language, deck)
+        if not deck or key == self._moves_key:
+            self._paint_moves()
+            return
+        self._moves_key, self._moves_n = key, None
+        self._paint_moves()
+        count = getattr(self.wiz.api, "new_cards", None)
+        if count is None:
+            return
+        settings = self.wiz._settings()
+
+        def done(n):
+            if self._moves_key == key:
+                self._moves_n = n
+                if n is None:
+                    self._moves_key = None         # (Anki closed meanwhile: counted again when it answers)
+                self._paint_moves()
+        bridge.run_in_worker(count, thaw(settings), deck, then=self.wiz.alive(done),
+                             failed=self.wiz.alive(lambda _info: done(None)))
+
+    def _paint_moves(self):
+        n, deck = self._moves_n, (self._moves_key or (None, None))[1]
+        on = self.keep.switch.isChecked() and bool(n) and deck == (self.deck_box.currentText() or None)
+        if on:
+            _set_text(self.moves_line, S.KEEP_ORDER_MOVES[0].format(deck=deck) if n == 1 else
+                      S.KEEP_ORDER_MOVES[1].format(n=n, deck=deck))
+        _show(self.moves_line, on)
 
     # --- Michi-C (A7B-1…A7B-3): the shows behind the deck's new cards ------------------------------------------------- #
     def _look_behind(self):
@@ -2085,6 +2154,7 @@ class OrderPage(_Page):
                 self.deck_box.setCurrentIndex(index)
                 self.deck_box.blockSignals(False)
             self._look_behind()
+            self._look_moves()
         self.wiz.paint_footer()
 
     def answers(self):
@@ -2099,6 +2169,8 @@ class OrderPage(_Page):
         if not self.wiz.junban_off() and (self.wiz.anki is None or not self.wiz.anki.get("open")):
             self.wiz.look_anki()
         self._behind_key = None            # looked at again: page 3's reading may have taken shows in since
+        self._moves_key = None             # … and its new cards counted again (cards made or studied meanwhile)
+        self._follow_known()
         self._show()
 
     def anki_changed(self):
@@ -2114,6 +2186,7 @@ class CardsPage(_Page):
 
     def __init__(self, wiz):
         super().__init__(wiz, S.CARDS_TITLE, S.CARDS_LINE)
+        self._say_language(wiz.language)
         self.picture = MinePicture(wiz.language, self)
         self.box.addWidget(self.picture)
         self.box.addSpacing(_px(12))
@@ -2312,7 +2385,8 @@ class CardsPage(_Page):
         sub, path = _split_path(sub)
         by_hand = bool(path)                              # the steps go under the buttons, the path on its own line
         if update and path:                               # before 3.7: the update first (option A), its profile by hand
-            name = S.MINER_UPDATE_FIRST
+            version = str((look or {}).get("version") or "").strip()     # Fresh-U row 8: the one found, named
+            name = S.MINER_UPDATE_FIRST_HAVE.format(version=version) if version else S.MINER_UPDATE_FIRST
             sub = f"{S.MINER_BY_HAND}\n{sub}" if sub else ""
         _set_text(self.name, _breakable(name))            # (neither is selected: a path in them may break)
         _set_text(self.sub, "" if by_hand else _breakable(sub))
@@ -2354,15 +2428,18 @@ class CardsPage(_Page):
         """A4M1-2b: the deck or the note type *Finish its setup* asked for (`miner_settings.plan`'s choices, Surasura's
         own first and chosen), else None: hidden."""
         asked = asked or {}
-        decks, notes = asked.get("deck"), asked.get("note_type")
+        decks, notes, new = asked.get("deck"), asked.get("note_type"), asked.get("new")
         for row, box, items in ((self.deck_row, self.ask_deck, decks), (self.note_row, self.ask_note, notes)):
             if items:
                 box.clear()
-                box.addItems([str(i) for i in items])
+                for i in items:                           # choice 86: a deck Anki lacks yet is named as new
+                    box.addItem(S.MINER_NEW_DECK.format(deck=i) if box is self.ask_deck and new and i == new
+                                else str(i), str(i))
                 box.setCurrentIndex(0)
             _show(row, bool(items))
         line = (S.MINER_ASK_FIELDS.format(note=asked.get("note") or "") if asked.get("why") == "fields"
-                else S.MINER_ASK_DECK if decks else S.MINER_ASK_NOTE if notes else "")
+                else S.MINER_ASK_NEW_DECK if decks and new else S.MINER_ASK_DECK if decks
+                else S.MINER_ASK_NOTE if notes else "")
         _set_text(self.ask_line, line)
         _show(self.ask_part, bool(decks or notes))
 
@@ -2370,14 +2447,19 @@ class CardsPage(_Page):
         """What the learner picked in the asked rows -> {"deck", "note_type"} (None where not asked), or None."""
         if self.ask_part.isHidden():
             return None
-        return {"deck": self.ask_deck.currentText() or None if not self.deck_row.isHidden() else None,
-                "note_type": self.ask_note.currentText() or None if not self.note_row.isHidden() else None}
+        return {"deck": self.ask_deck.currentData() or None if not self.deck_row.isHidden() else None,
+                "note_type": self.ask_note.currentData() or None if not self.note_row.isHidden() else None}
 
     def _copy_path(self):
         QApplication.clipboard().setText(self.path_text)
         self.wiz.say(S.PATH_COPIED)
 
+    def _say_language(self, language):
+        """3.0 makes cards in Japanese only (Connect parks a Chinese entry, `runner.CHINESE`): Chinese says so."""
+        _set_text(self.line, S.CARDS_LINE_ZH if language == "zh" else S.CARDS_LINE)
+
     def language_changed(self, language):
+        self._say_language(language)
         self.picture.set_language(language)
         f = self.path.font()
         f.setFamilies(list(theme.path_font_families(language)))
@@ -2569,6 +2651,7 @@ class SetupWizard(QWidget):
         self._count_wait = COUNT_AGAIN_MS   # page 6's next ask while it counts (twice as long each time)
         self._junban_found = None           # modules/junban looked for on a worker (None: not known yet)
         self.saves = []                     # (page, answers) as each *Next* saved them (what the wizard asked)
+        self._shows_saved = None            # Mado-SB: page 3's answers last written (`_save_shows`)
         self._finished = False              # `finish` written (Generate, or *Skip* on the last page)
         self.reading = None                 # SRC W1a: page 3's first look running (its Stop: a threading.Event)
         self._read_seq = 0
@@ -2842,7 +2925,8 @@ class SetupWizard(QWidget):
             if links and self.fetching is not None:
                 page.refuse(S.YOUTUBE_BUSY)                # (the last links still coming: these stay in the box)
                 return
-            page.refuse(None)
+            self._save_shows(page)                         # Mado-SB: Next goes on — written before the read and the
+            page.refuse(None)                              # fetch, so the sort pad asks its titles' covers
             if links:
                 page.links.setPlainText("")
                 self._fetch_youtube(links)
@@ -2857,7 +2941,8 @@ class SetupWizard(QWidget):
         if page.id == "level":
             self._generate(answers)
             return
-        self._save(page.id, answers)
+        if page.id != "shows":                            # (page 3's answers were written above: `_save_shows`)
+            self._save(page.id, answers)
         if page.id == "language" and answers.get("language") != self.language:
             self._language_changed(answers["language"])
         if page.id == "known" and answers.get("how") == "anki" and answers.get("decks"):
@@ -2946,6 +3031,17 @@ class SetupWizard(QWidget):
             applog.log("wizard", f"saving {page_id}: {e}")
             windows.say_in_bar(self.shell, str(e))
             self.say(str(e))                              # the bar is under the wizard (AD-11)
+            return False
+        return True
+
+    def _save_shows(self, page):
+        """Page 3's *Show covers*, written when *Next* leaves the page for the read (Mado-SB): the load and the sort pad
+        come before the page's own save, and their titles' covers are asked online only while `covers_download` is
+        on (the fetcher reads it at every request) — so the pad shows the covers as they come. Written again only
+        when the choice changed since: a second write would ask every title on screen again (`shell._settings_written`)."""
+        answers = page.answers()
+        if answers != self._shows_saved and self._save("shows", answers):
+            self._shows_saved = dict(answers)            # (a write that failed is tried again at the next *Next*)
 
     def _finish(self):
         self._finished = True
@@ -3073,6 +3169,17 @@ class SetupWizard(QWidget):
     def known_decks(self):
         """The decks page 2 reads (page 4's deck is preselected from them)."""
         return self.pages[1].chosen_decks()
+
+    def keeps_order(self, shown):
+        """Page 4's switch, untouched, for page 2's way (`setup_wizard.keeps_order`); `shown` when it can't be told."""
+        rule = getattr(self.api, "keeps_order", None)
+        if rule is None:
+            return bool(shown)
+        try:
+            return bool(rule(thaw(self._settings()), self.pages[1].answers().get("how"), shown))
+        except Exception as e:
+            applog.log("wizard", f"keeps_order: {e}")
+            return bool(shown)
 
     def _first_sync(self, decks):
         """The first known-words sync, the user's own (the wizard's *Next* is that act): an `anki-sync` job; its result
@@ -3691,7 +3798,7 @@ class SetupWizard(QWidget):
                                  failed=lambda info: applog.log("wizard", f"cards line after sorting: {info[0]}"))
         page = self.page
         if page.id == "shows" and not page.folders and page.refused_line.isHidden():
-            self._save("shows", page.answers())
+            self._save_shows(page)
             self._advance()                               # else page 3 stays: what it says, the folders not read yet
     # --- end Mado-O
 
@@ -3784,6 +3891,13 @@ class SetupWizard(QWidget):
             # language switched while the setup ran never gets the other's decks)
             if answer[0] != "busy":         # busy: the choice stays for the next press (intent keeper)
                 page.show_ask(answer[1] if answer[0] == "ask" and language == self.language else None)
+            # choice 86: the new deck taken joined this language's known-words decks — page 2 keeps it, so a Back and
+            # Next there never writes its list without it (review MUST)
+            from app.connect import miner_settings
+            taken = (chosen or {}).get("deck")
+            if answer[0] in ("set-up", "ask") and language == self.language and taken == \
+                    miner_settings.new_deck(language):
+                self.pages[1].keep_deck(chosen["deck"])
             detail = answer[1] if isinstance(answer[1], str) else (answer[1] or {}).get("said") or ""
             if answer[0] in ("set-up", "ask", "busy") and detail:      # busy: what it set before (review)
                 detail = " " + detail

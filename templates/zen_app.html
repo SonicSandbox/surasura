@@ -934,7 +934,7 @@
 
             const word = displayWord(data);
             const safeWord = escapeHtml(word);
-            const reading = data.Reading || "";
+            const reading = data.Kana || data.Reading || "";      // a set phrase's Kana: its shown spelling's own
             // Parsing Block: Reverse reading and escape quotes for HTML attribute
             const reversedReading = reading.split('').reverse().join('').replace(/"/g, '&quot;');
             const freq = data["Occurrences (Global)"] || data.Occurrences || 0;

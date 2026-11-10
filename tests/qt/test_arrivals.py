@@ -1554,3 +1554,20 @@ def test_open_its_folder_opens_where_the_arrival_came_from(world, monkeypatch, t
     tray_of(win).act(row.arrival, "folder")
     assert wait_until(lambda: opened == [there], 5)
     assert asked == [(tuple(row.arrival.item_ids), tuple(row.arrival.rel_paths), ())] and calls(writer) == []
+    assert wait_until(lambda: not win.presses.any_live(), 3)            # (the press ended: its `then` ran)
+    assert win.bar_line.full() not in strings.FOLDER_GONE.values()     # its own folder: nothing more said
+
+
+def test_open_its_folder_says_when_its_own_folder_is_gone(world, monkeypatch, tmp_path):
+    """Choice 24 (Sonic, 2026-11-09): the show's folder renamed, the one above it opens — and one line says so, so the
+    learner never thinks the library still points there."""
+    from app.qt import screens
+    opened = []
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
+    seed, win, writer = world()
+    open_tray(win)
+    row = tray_rows(win)[1]
+    there, _asked = _own_folder_answers(monkeypatch, tmp_path, "星降る喫茶店", how="up")
+    tray_of(win).act(row.arrival, "folder")
+    assert wait_until(lambda: opened == [there], 5)
+    assert wait_until(lambda: win.bar_line.full() == strings.FOLDER_GONE["up"], 3) and calls(writer) == []

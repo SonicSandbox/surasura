@@ -168,7 +168,9 @@ def test_before_37_the_update_leads_with_its_button_and_the_steps_by_hand_follow
     go_to(wiz, "cards")
     page = wiz.page
     assert wait_until(lambda: page.look is not None)
-    assert page.name.text() == S.MINER_UPDATE_FIRST and page.dot.state == "warn"
+    # Fresh-U row 8: the version found is named ("3.7 or newer…" alone left a learner guessing what they had)
+    assert page.name.text() == S.MINER_UPDATE_FIRST_HAVE.format(version="3.6.0") and page.dot.state == "warn"
+    assert page.name.text().startswith("You have Anki Miner 3.6.0: 3.7 or newer")
     assert not page.btn_install.isHidden() and page.btn_install.text() == S.UPDATE_MINER
     assert page.btn_install.toolTip() == S.UPDATE_MINER_TIP and not page.btn_check.isHidden()
     # the buttons come straight under the update line, before the steps by hand
@@ -177,6 +179,13 @@ def test_before_37_the_update_leads_with_its_button_and_the_steps_by_hand_follow
     assert page.steps.text().startswith(S.MINER_BY_HAND + chr(10)) and page.steps.text().endswith("choose file:")
     assert not page.path.isHidden() and page.path.text().replace("\u200b", "") == PATH
     assert page.path_text == PATH and not page.btn_copy.isHidden()
+
+
+def test_fresh_u_before_37_with_no_version_read_says_the_update_line_without_one(make):
+    wiz, *_ = make(miner=FakeMiner(miner_look("needs-setup", None, BEFORE_37)))
+    go_to(wiz, "cards")
+    assert wait_until(lambda: wiz.page.look is not None)
+    assert wiz.page.name.text() == S.MINER_UPDATE_FIRST                   # never "You have Anki Miner :"
 
 
 def test_what_only_an_update_brings_shows_its_own_words_and_the_update_never_steps_by_hand(make):

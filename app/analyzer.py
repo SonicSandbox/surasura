@@ -178,7 +178,19 @@ ENSURE_AUDIO_EXAMPLE = False
 #     私 + 生活), and a verb's stem carries a suffix that makes a noun of it (言い方 = 言い + 方, 書き手); one that makes an
 #     adjective or a verb of it stays the verb with its grammar (読み + やすい). The reference data is rebuilt (+279
 #     affix joins, +149 compounds): SCHEMA_VERSION 22. 3.0, with 31–38.
-ENGINE_REVISION = 39
+# 40: a subtitle line shown again is one line (shown_again; SPEC card-lines rule 5, Sonic 2026-11-09 "Yes build it"):
+#     the same text as cues back to back, each starting as the one before ends (streaming subtitles showing a line
+#     through another speaker's), or drawn twice at one time (an .ass layer) was read two or three times — its words
+#     counted again, its sentence again. It is read once; the cue reader keeps the copy, not counted (cues.Cue.repeats),
+#     so the file's cues and their order stay Anki Miner's. SCHEMA_VERSION 23: every subtitle is tokenized again. 3.0,
+#     with 31–39.
+# 41: A set phrase shows the spelling and the reading the library uses. A phrase ending in a form of its own is that
+#     form whatever its last word (ごめんなさい, never ごめんなさる; ざまあみろ; だけじゃない is no だけでなく, 何にする no
+#     何にせよ), and its Orth keeps the voicing the text gives its last word (いつもどおり, not いつもとおり) —
+#     phrases.MATCHER_VERSION 6. Phrase rows gain `Kana`, the reading of the spelling shown (いい感じ イイカンジ beside
+#     the row's ヨイカンジ; plan_rules.display_reading), shown by the journey; the row stays (Word, Reading). The plan
+#     carries each phrase row's dictionary spelling: PLAN_FORMAT 4. 3.0, with 31–40.
+ENGINE_REVISION = 41
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -3085,8 +3097,8 @@ def _captions(events, language='ja'):
     are two people speaking (え…養父様を？ in yellow, うむ。 in white; in the library every pair of events with
     one timing and two colours is two speakers), each speaker's lines in the file's order. An .srt
     is not read this way: its cue IS the caption, and two cues with one timing are two captions shown
-    at once — Netflix writes two speakers talking together so (the 五等分の花嫁 sample: （風太郎）あれは
-    てめえが薬を… / （二乃）フフフフ…)."""
+    at once — Netflix writes two speakers talking together so (two cues with one timing, each with its own
+    speaker label)."""
     screen, shown = {}, None                        # colour -> the texts in it, of the events on screen together
     for timing, colour, text in events:
         if screen and timing != shown:
@@ -3095,6 +3107,52 @@ def _captions(events, language='ja'):
         screen.setdefault(colour, []).append(text)
         shown = timing
     yield from (close_cue(_join_lines(texts, language)) for texts in screen.values())
+
+
+# A line shown again is one line (ENGINE_REVISION 40, SPEC card-lines rule 5): streaming subtitles show a line through
+# another speaker's by writing it again — the same text as two or three cues back to back, each starting as the one
+# before ends, the other speaker's line on screen beside them — and an .ass file draws a line twice (a glow layer, a
+# song's two layers: one timing, often lines apart in the file). A Generate read its words two or three times. Measured
+# on 2,735 subtitle files of a library: 3,283 copies, every one touching or overlapping the one before; the same text
+# 11–100 ms apart is a line said twice (83 ms is a streaming subtitle's gap between two lines), so copies touch within
+# _REPEAT_TOUCH_MS — one centisecond, an .ass file's step.
+_REPEAT_TOUCH_MS = 10
+
+_ASS_TIME_RE = re.compile(r"(\d+):(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$")
+
+
+def ass_ms(value):
+    """An ASS / SSA time ("0:00:02.42": hundredths) in milliseconds, or None."""
+    match = _ASS_TIME_RE.match((value or "").strip())
+    if not match:
+        return None
+    hours, minutes, seconds, fraction = match.groups()
+    return ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000 + int((fraction or "0").ljust(3, "0")[:3])
+
+
+def shown_again(lines):
+    """For each of `lines` — (start ms, end ms, text) in the file's order, or None for a line a Generate never reads
+    or whose times can't be read — the index of the line it shows again, or None (§ above): the same text, spaces
+    aside, as an earlier copy, its times touching or overlapping that copy's within _REPEAT_TOUCH_MS. A third copy
+    shows the first again (the copies' times taken together). The one rule for a Generate (extract_text, parse_ass)
+    and the cue reader (cues.read: the copy kept, not counted). Every earlier time of a text is looked at, not only
+    its last: an .ass file may list a layer's lines first (うん at 0:10 and 5:00), then the line itself (the same)."""
+    out, said = [], {}                  # text, spaces out -> [[start, end, the first's index]] of each line of it
+    for n, line in enumerate(lines):
+        if line is None:
+            out.append(None)
+            continue
+        start, end, text = line
+        spans = said.setdefault("".join(text.split()), [])
+        for span in spans:
+            if start <= span[1] + _REPEAT_TOUCH_MS and end >= span[0] - _REPEAT_TOUCH_MS:
+                out.append(span[2])
+                span[0], span[1] = min(span[0], start), max(span[1], end)
+                break
+        else:
+            out.append(None)
+            spans.append([start, end, n])
+    return out
 
 
 _OPEN_BRACKETS = '(（'
@@ -3314,6 +3372,11 @@ def parse_ass(file_path, language='ja'):
             if len(fields) > colour_index:
                 colours[fields[0].strip()] = _ass_colour_value(fields[colour_index])
 
+    # A line shown again — drawn twice, or written again through another line — is read once (shown_again)
+    again = shown_again([(start, end, text) if start is not None and end is not None else None
+                         for start, end, text in ((ass_ms(timing[0]), ass_ms(timing[1]), text)
+                                                  for timing, _colour, text in events)])
+    events = [event for event, first in zip(events, again) if first is None]
     return " ".join(caption for caption in _captions(events, language) if caption)
 
 
@@ -3484,7 +3547,7 @@ def extract_text(file_path, language='ja', facts=None):
         try:
             import pysrt   # lazy: only reading a .srt subtitle file pays this import
             subs = pysrt.from_string(read_text(file_path, language))
-            parts = []
+            said = []
             for sub in subs:
                 # Filter out lines without Target characters
                 lines = sub.text.splitlines()
@@ -3492,16 +3555,16 @@ def extract_text(file_path, language='ja', facts=None):
                 for l in lines:
                     if not has_target_language(l, language):
                         continue
-                    
+
                     cleaned = clean_subtitle_text(l, language)
                     if cleaned:
                         filtered_lines.append(cleaned)
 
                 if filtered_lines:
-                    block_text = close_cue(_join_lines(filtered_lines, language))
-                    if block_text:
-                        parts.append(block_text)
-            text = "".join(parts)
+                    said.append((sub.start.ordinal, sub.end.ordinal, _join_lines(filtered_lines, language)))
+            # A line shown again (the same text, touching times) is read once (shown_again)
+            parts = [close_cue(line[2]) for line, first in zip(said, shown_again(said)) if first is None]
+            text = "".join(part for part in parts if part)
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
     elif ext in ['.ass', '.ssa']:
@@ -3720,8 +3783,9 @@ def _backfill_sidecars(results_dir):
 # (E1.3, E3.1). Written last, just before the run's stamp, atomically: a run that dies between the two leaves a plan
 # whose run_signature no stamp matches. Never fails a Generate.
 PLAN_FILE = "plan.json.gz"
-PLAN_FORMAT = 3                 # 2 (E2.2, D8): every list word's spelling counts (`spell`), its phrase rows' entries;
-                                # 3 (F7): the rows' example-sentence pools, so the order's re-pick is the Generate's
+PLAN_FORMAT = 4                 # 2 (E2.2, D8): every list word's spelling counts (`spell`), its phrase rows' entries;
+                                # 3 (F7): the rows' example-sentence pools, so the order's re-pick is the Generate's;
+                                # 4: each phrase row's entry with its dictionary spelling (`Kana` where spellings tie)
 _PLAN_CHUNK = 2000              # table rows per line: no one line's decode holds a reader's interpreter long
 _PLAN_TIERS = {"HighPriority": "now", "LowPriority": "soon", "GoalContent": "goal"}
 
@@ -3839,9 +3903,12 @@ def plan_lines(run):
         "recency_files": run["pick"]["recency_files"], "ensure_audio": run["pick"]["ensure_audio"],
         "max_chars": run["pick"]["max_chars"], "near_files": plan_rules.NEAR_FILES,
         "shared_phrases": sorted(index[key] for key in run["shared_phrases"] if key in index),
-        # [k, the phrase whose entry holds the row] for each phrase row (format 2): an arrival's phrase counts for the
-        # row only when it is that phrase (`_phrase_rows`), which the row's Word and Reading alone can't say.
-        "phrase_entries": [[k, phrase_keys[key]] for k, key in enumerate(keys) if key in phrase_keys],
+        # [k, the phrase whose entry holds the row, its dictionary spelling] for each phrase row (format 2; the
+        # spelling 4): an arrival's phrase counts for the row only when it is that phrase (`_phrase_rows`), which the
+        # row's Word and Reading alone can't say; the re-plan shows the row's `Kana` from its spelling, where `Orth`
+        # ties (plan_rules.display_reading).
+        "phrase_entries": [[k, phrase_keys[key], phrase_set.entry(phrase_keys[key]).display]
+                           for k, key in enumerate(keys) if key in phrase_keys],
         # Each part of the order-free signature on its own, so a re-plan can name what moved since (E1.3: the known
         # words, the word lists, files only removed — or anything else, a Generate first).
         "order_free_parts": plan_rules.part_digests(run["signature_parts"]),
@@ -6548,6 +6615,16 @@ def main():
             phrase_keys[key] = index
             word_stats[(phrase.word, phrase.reading)] = entry
 
+    def _shown_kana(key, orth):
+        """`Kana`: the reading shown beside a phrase row's spelling — its spelling's own (plan_rules.display_reading:
+        いい感じ イイカンジ, not the dictionary's ヨイカンジ); "" for a word's row and wherever it is the row's Reading.
+        Display only: the row stays (Word, Reading) everywhere."""
+        index = phrase_keys.get(key)
+        if index is None:
+            return ""
+        kana = plan_rules.display_reading(orth, _phrase_set.entry(index).display, key[1])
+        return "" if kana == key[1] else kana
+
     # --- The word-selection floor, when it could not be fixed before the aggregation ---
     # No store and no compound table (Chinese; Japanese before the table): nothing is given back, so the
     # aggregation's own totals and counts decide it, as they always did.
@@ -6740,12 +6817,14 @@ def main():
         # Format tiers as "Source1:Tier1;Source2:Tier2" or "Outside" if not in any list
         tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
         source_display = group_sources(data["sources"])
+        orth = _display_orth(lemma, data["orths"])
 
         row = {
             "Word": lemma,
-            "Orth": _display_orth(lemma, data["orths"]),
+            "Orth": orth,
             "Forms": _display_forms(lemma, data["orths"], data["surfaces"]),
             "Reading": reading,
+            "Kana": _shown_kana((lemma, reading), orth),
             "Tier": tier_str,
             "Score": data["score"],
             "Occurrences": data["total_count"],
@@ -7347,6 +7426,7 @@ def main():
                 "Orth": _display_orth(lemma, stats.get("orths")),
                 "Forms": _display_forms(lemma, stats.get("orths"), stats.get("surfaces")),
                 "Reading": reading,
+                "Kana": _shown_kana((lemma, reading), _display_orth(lemma, stats.get("orths"))),
                 "Tier": tier_str,
                 "Score": stats["score"],
                 "Occurrences (Global)": stats["total_count"],

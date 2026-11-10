@@ -186,8 +186,13 @@ def test_a_new_or_changed_aside_file_is_read_once_and_never_summed(language, tmp
     alone.reconcile([a, b], ti.make_tokenizer(language))
     assert _counts_only(store, language) == _counts_only(alone, language)
     assert _kept_text(store).held() == {ti._norm(c): False}, "its text kept, read from its file"
-    with open(c, "a", encoding="utf-8") as f:
-        f.write({"ja": "\n今日は雨が降っている。\n", "zh": "\n今天下雨了。\n"}[language])
+    with open(c, encoding="utf-8-sig") as f:
+        text = f.read()
+    line = {"ja": "\n今日は雨が降っている。\n", "zh": "\n今天下雨了。\n"}[language]
+    # inside the text: an Aozora book's colophon (from 底本：) is never its text (Hon-SM: the samples are Aozora's now)
+    edited = text.replace("\n底本：", line + "底本：", 1) if "\n底本：" in text else text + line
+    with open(c, "w", encoding="utf-8") as f:
+        f.write(edited)
     assert store.needs_reconcile([a, b], aside=[c]) is True
     store.reconcile([a, b], tok, aside=[c])
     assert tok.calls.count(("file", ti._norm(c))) == 2 and _counts_only(store, language) == _counts_only(alone, language)

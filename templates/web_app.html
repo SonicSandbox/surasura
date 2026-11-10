@@ -2831,6 +2831,14 @@
             return (typeof orth === 'string' && orth.trim()) ? orth : data.Word;
         }
 
+        // The reading shown beside the spelling: a set phrase's Kana is its shown spelling's own (いい感じ イイカンジ,
+        // where the row's Reading is the dictionary's ヨイカンジ); blank for every other row. Shown only: the row is
+        // still Word|Reading everywhere (the In-Anki mark, the search index, the ignore list).
+        function shownReading(data) {
+            if (typeof data.Kana === 'string' && data.Kana) return data.Kana;
+            return (typeof data.Reading === 'string') ? data.Reading : '';
+        }
+
         // --- Anki backlog label (Junban_Backlog_Spec WP-B8) ---
         // The words of the new cards already waiting in Anki ("Label backlogged Anki words"), as the
         // keys the Anki sync wrote: each card's word and its hiragana fold. Empty when the setting is
@@ -2998,7 +3006,7 @@
                 <div class="card-header">
                     <div style="display:flex; align-items:center; gap: 10px;">
                         <span class="word-main">${safeWord}</span>
-                        <span class="reading" data-reading="${data.Reading || ''}" migaku_ignore data-yomichan-ignore></span>
+                        <span class="reading" data-reading="${shownReading(data)}" migaku_ignore data-yomichan-ignore></span>
                         <button class="btn-audio" style="${hideAudio ? 'display:none' : ''}" data-audio="${audioSource}" onclick="playAudio(this.dataset.audio, this)" title="Listen to Sentence (Hotkey: v)">
                             <svg viewBox="0 0 24 24">
                                 <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
@@ -3399,7 +3407,9 @@
         }
 
         function wordSearchEnabled() {
-            return wordSearchConfig().enabled !== false;
+            // Nadeshiko holds Japanese sentences only: a Chinese report has no ⌕ (nor its \ key)
+            return wordSearchConfig().enabled !== false
+                && ((typeof globalLanguage === 'undefined') || globalLanguage !== 'zh');
         }
 
         function searchWord(word) {
@@ -3610,7 +3620,7 @@
                 if (seen.has(id)) return;
                 seen.add(id);
                 const forms = (typeof row.Forms === 'string' && row.Forms) ? row.Forms.split('|') : [];
-                const keys = new Set([row.Word, row.Orth, row.Reading, ...forms]
+                const keys = new Set([row.Word, row.Orth, row.Reading, row.Kana, ...forms]
                     .filter(k => typeof k === 'string' && k).map(rsNorm));
                 const sents = Object.keys(row)
                     .filter(k => /^Context \d+$/.test(k) && typeof row[k] === 'string' && row[k])
@@ -3639,7 +3649,7 @@
             const el = document.createElement('div');
             el.className = 'card rs-hit';
             const word = displayWord(row);
-            const reading = (typeof row.Reading === 'string') ? row.Reading : '';
+            const reading = shownReading(row);
             const cap = contextCap();
             const sents = hit.sents.map(s => {
                 const t = trimContext(s.text, s.needle, cap);

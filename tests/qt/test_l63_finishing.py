@@ -514,3 +514,79 @@ def test_audio_a_book_in_a_group_finishes_its_show_though_its_audiobook_waits():
     done = _row("g1", 1, 1, tuple(book + [ep(4, 2, "銀河鉄道の夜", 1, True), ep(5, 2, "銀河鉄道の夜", None, False,
                                                                            audio=True)]), group=True)
     assert drag.show_finished(done, book[1]) is None, "the other show's audiobook is no show still waiting"
+
+
+# --- Fresh-U row 5 (2026-11-10): Done on the last episode --------------------------------------------------------- #
+def test_fresh_u_one_file_is_watched_it_never_all_1_watched_and_every_offer_ends_with_the_question():
+    one = _row("p1", 1, 1, _eps(1, 1))
+    assert drag.offer_text(("offer",), one) == strings.DONE_ALL_ONE == "✓ Watched it — finished with it?"
+    assert drag.offer_text(("offer", strings.DONE_WHY_AIRING), one) == \
+        "✓ Watched it · Still airing (AniList) — finished with it?"
+    four = _row("p1", 1, 1, _eps(1, 4))
+    assert drag.offer_text(("offer",), four) == strings.DONE_ALL.format(n=4)
+    # W-1's first mark that moved the list: the question keeps its place, after why the counts move
+    assert drag.offer_text(("offer",), one, left=True) == "✓ Watched it — its words left your list. Finished with it?"
+    assert drag.offer_text(("offer", strings.DONE_WHY_AIRING), four, left=True).endswith(strings.DONE_ASK_LEFT)
+    for text in (strings.DONE_ALL, strings.DONE_ALL_WHY, strings.DONE_ALL_ONE, strings.DONE_ALL_ONE_WHY):
+        assert text.endswith(strings.DONE_ASK)
+
+
+def test_fresh_u_the_first_marks_offer_says_its_words_left_the_list_once_per_library(world):
+    # The next rows' counts rose after Done with no word why: a watched file's words leave the list (keep studying
+    # off), so they now count where they come next — right, and said once per library on the offer itself
+    seed, win, writer = world(hint_seen=False)
+    stamp = time.time()
+
+    def offering(i):                                   # its newest file came in two days ago: still arriving, asked
+        row = _all_but_one(seed, win, i)
+        seed.library.commit(items=[{"id": e.id, "added_at": _stamp(stamp - 30 * DAY)} for e in row.episodes[:-1]] +
+                            [{"id": row.episodes[-1].id, "added_at": _stamp(stamp - 2 * DAY)}])
+        assert wait_until(lambda: view_rows.still_arriving(rows_of(win)[i].episodes), 3)
+        return rows_of(win)[i]
+    row = offering(4)
+    win.moves.done(row, row.episodes[-1])
+    assert win.toasts.card.base == strings.DONE_ALL.format(n=len(row.episodes)).replace(strings.DONE_ASK,
+                                                                                       strings.DONE_ASK_LEFT)
+    # the hint's own way to keep them rides along (it is marked seen here: never offered again in this library)
+    labels = [b.text() for b in win.toasts.card.buttons]
+    assert strings.DONE_MOVE_FINISHED in labels and strings.DONE_KEEP in labels
+    asked = []
+    win.open_setting = asked.append
+    next(b for b in win.toasts.card.buttons if b.text() == strings.DONE_KEEP).click()
+    assert asked == ["keep_watched"]
+    assert wait_until(lambda: any(h.startswith("keep_watched:") for h in
+                                  win.services.settings.get().get("hints_seen") or ()), 3)
+    other = offering(3)
+    win.moves.done(other, other.episodes[-1])
+    assert win.toasts.card.base == strings.DONE_ALL.format(n=len(other.episodes))      # once: plain the next time
+
+
+def test_fresh_u_up_next_with_every_file_watched_says_watched_it_never_not_analysed_yet(world, monkeypatch):
+    # After Done on the last file the card stayed (finished with it? unanswered) and read *not analysed yet*: its
+    # words left the list, so it has no numbers — it says it was watched and how to finish it (hato's mix: watched only)
+    from PyQt6.QtCore import QRect
+    from PyQt6.QtGui import QImage, QPainter
+    from app.qt import rows
+    seed, win, writer = world()
+    row = _all_but_one(seed, win, 4)
+    seed.library.commit(items=[{"id": row.episodes[-1].id, "watched": 1}])
+    assert wait_until(lambda: all(e.watched for e in rows_of(win)[4].episodes), 3)
+    row = rows_of(win)[4]
+    lst = win.page_widgets["current"].list
+    drawn = []
+    real_draw = rows.TEXT.draw
+    monkeypatch.setattr(rows.TEXT, "draw", lambda p, x, y, text, *a, **k: (drawn.append(text),
+                                                                           real_draw(p, x, y, text, *a, **k))[1])
+    for payload in (row, row._replace(source="hato") if hasattr(row, "_replace") else row):
+        image = QImage(1100, 200, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(0)
+        p = QPainter(image)
+        lst.delegate._paint_hero(p, payload, QRect(0, 0, 1100, 200), (), False, 1.0, None)
+        p.end()
+    assert strings.ROWS_HERO_WATCHED in drawn and strings.ROWS_HERO_WATCHED_MIX in drawn
+    assert strings.ROWS_HERO_STATS_NONE not in drawn
+    # no journey link hidden under the words (numbers still known, keep studying on): nothing to click there
+    numbered = row._replace(episodes=tuple(e._replace(pct=62.0, n_new=14) for e in row.episodes))
+    assert lst.delegate._hero_geometry(numbered, QRect(0, 0, 1100, 200), ())["journey"] is None
+    assert not any(name == "journey" for name, *_ in lst.delegate.parts((rows.HERO, numbered, ()),
+                                                                        QRect(0, 0, 1100, 200)))

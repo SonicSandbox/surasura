@@ -9,6 +9,7 @@ What a wrong answer would cost: a learner's file overwritten beside their video 
 when the next look sees the copy beside it; a made subtitle mined as if a person had timed it, untagged; a cancelled or
 refused run leaving a half file or a row stuck at *Making…*; titles sent to hato before the learner's yes, or to a hato
 that can't take a list. Real subtitles from tests/Test Resources; never Anki, never a real Anki Miner or hato."""
+import datetime
 import json
 import os
 import subprocess
@@ -396,16 +397,16 @@ def test_todays_hato_is_never_sent_a_thing(tmp_path):
 def test_hato_found_one_not_the_other_its_retry_date_kept_outside_the_library(tmp_path):
     """Why: NS-2 — the waiting videos alone, by list file; a found one's folder is looked at again (K5 fills it); a
     NOT_FOUND waits for hato's own date (P5), its row saying it, and is asked again on that date."""
-    # hato's retry date a day from now (a fixed date went due by itself on 2026-11-10)
-    now = time.time()
-    RETRY_AFTER = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now + 86400))
     store, data_dir, src, root, videos = _library("ja", names=("01", "02"))
     cli = str(tmp_path / "hato-cli.exe")
     open(cli, "wb").close()
     _hato(["pairings", "find"], cli)
     calls = []
+    # hato's retry date is a day ahead of the run, whatever day the suite runs on (a fixed date stopped being "ahead")
+    now = time.time()
+    retry_after = datetime.datetime.fromtimestamp(now + 86400, datetime.timezone.utc).isoformat()
     lines = [{"type": "progress", "done": 1}, {"type": "video", "video": videos[0], "outcome": "CONFIDENT"},
-             {"type": "video", "video": videos[1], "outcome": "NOT_FOUND", "retry_after": RETRY_AFTER},
+             {"type": "video", "video": videos[1], "outcome": "NOT_FOUND", "retry_after": retry_after},
              {"type": "run", "videos": 2}]
     try:
         out = no_subs.find(store, "ja", {no_subs.SETTING: True}, now=now,
@@ -415,7 +416,7 @@ def test_hato_found_one_not_the_other_its_retry_date_kept_outside_the_library(tm
         assert command[:2] == [cli, src] and "--only-list" in command and "--json" in command
         rel = [r for _i, r, _a in _items(store)][1]
         assert no_subs.note(rel, "ja")[0] == no_subs.NOT_FOUND
-        later = now + 2 * 86400                         # past hato's date (a day from now)
+        later = now + 2 * 86400
         assert {v.video for v in no_subs.due(store, "ja", now=now)} == set()
         assert {v.video for v in no_subs.due(store, "ja", now=later)} == {os.path.abspath(v) for v in videos}
         assert not any("hato" in json.dumps(r) for r in [library.pairing_of(store, i) for i, _r, _a in _items(store)])

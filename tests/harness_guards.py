@@ -17,6 +17,8 @@
   open is refused and fails the test (or the run) naming it (`_guard_anki_port` claims them too);
 * a test's own `monkeypatch.undo()` never takes its test root away: the root is put back, and the test fails naming
   it (claimed by `_guard_anki_port` too);
+* a Qt object Python owns is deleted on the main thread, never by a worker's collection (held, then deleted at each
+  test's teardown), as the Tk interpreters are;
 * no Qt object is used from a thread other than its own: Qt's own cross-thread warning fails the test during which it
   came (claimed by `_guard_anki_port` too; tests/FLAKES.md). The lints that read the source for the same causes — a
   parentless Qt helper, a date written in the future, a bare sleep in a Qt test — are tests/flake_lints.py's.
@@ -28,6 +30,7 @@ whose own hooks do more, calls `session_finish_guards()` and `configure_guards()
 tests/test_harness_guards.py.
 """
 import atexit
+import gc
 import json
 import os
 import re
@@ -232,6 +235,7 @@ def pytest_runtest_teardown(item, nextitem):
     yield
     _between_tests()
     _free_tk_interpreters()
+    _free_qt_held()
     _forget_ended_children(_CHILDREN)
 
 
@@ -628,6 +632,79 @@ def _guard_qt_threads():
 _guard_qt_threads()
 
 
+# A Qt object Python owns (no parent) freed by the cycle collector is deleted on whichever thread's collection ran — a
+# worker's too, and Qt says nothing (Qt 6.11: no warning, active timer or not); the process crashes later, natively,
+# in whatever test runs then. The app parents its objects or keeps them until the GUI thread deletes them (bridge's
+# `_pending`); a test's helpers needn't. So, as the Tk interpreters above: a collection on any thread but the main one
+# keeps what it would free (gc.DEBUG_SAVEALL for that collection alone), the live parentless Qt objects of the main
+# thread among it are held, the rest let go again; each test's teardown deletes the held ones on the main thread.
+_QT_HELD = []             # live parentless Qt objects a worker's collection would have deleted, for the main thread
+_GC_ON_WORKER = {}        # thread id -> (the debug flags before, gc.garbage's length) while its collection runs
+
+
+def _qt_gc(phase, info):
+    try:
+        me = threading.get_ident()
+        if threading.current_thread() is threading.main_thread():
+            return
+        if phase == "start":
+            _GC_ON_WORKER[me] = (gc.get_debug(), len(gc.garbage))
+            gc.set_debug(_GC_ON_WORKER[me][0] | gc.DEBUG_SAVEALL)
+            return
+        if me not in _GC_ON_WORKER:
+            return
+        flags, start = _GC_ON_WORKER.pop(me)
+        gc.set_debug(flags)
+        found = gc.garbage[start:]
+        del gc.garbage[start:]
+        if found:
+            _QT_HELD.extend(_main_threads_qt_objects(found))
+    except BaseException:       # a callback's raise would surface in the collecting thread: never
+        pass
+
+
+def _main_threads_qt_objects(objects):
+    sip, QObject, app = _QT_PARTS
+    home = app.instance().thread() if app is not None and app.instance() is not None else None
+    out = []
+    for o in objects:
+        if isinstance(o, QObject) and not sip.isdeleted(o) and sip.ispyowned(o) and o.parent() is None and \
+                (home is None or o.thread() is home):
+            out.append(o)
+    return out
+
+
+def _free_qt_held():
+    """On the main thread: delete every Qt object a worker's collection left for it (then their wrappers go anywhere:
+    nothing of Qt's is left in them)."""
+    if not _QT_HELD or threading.current_thread() is not threading.main_thread():
+        return
+    sip = _QT_PARTS[0]
+    held = _QT_HELD[:]
+    del _QT_HELD[:]
+    for o in held:
+        try:
+            if not sip.isdeleted(o):
+                sip.delete(o)
+        except RuntimeError:
+            pass
+
+
+def _hold_qt_for_the_main_thread():
+    try:
+        from PyQt6 import sip
+        from PyQt6.QtCore import QCoreApplication, QObject
+    except ImportError:
+        return
+    _QT_PARTS[:] = [sip, QObject, QCoreApplication]
+    if _qt_gc not in gc.callbacks:
+        gc.callbacks.append(_qt_gc)
+
+
+_QT_PARTS = [None, None, None]
+_hold_qt_for_the_main_thread()
+
+
 def _claim_qt_warnings():
     lines = []
     for warning in _QT_WARNINGS:
@@ -783,6 +860,7 @@ def _report_late_qt_warnings(reporter):
 
 def session_finish_guards(session=None):
     _free_tk_interpreters()     # what a still-running thread holds stays held, deleted at exit on this thread
+    _free_qt_held()
     _end_leaked_children(_CHILDREN, grace_ms=0)     # an interrupted run's children: ended, nothing waited for
     reporter = session.config.pluginmanager.get_plugin("terminalreporter") if session is not None else None
     late = _report_late_anki_tries(reporter) + _report_late_opens(reporter) + _report_late_qt_warnings(reporter)

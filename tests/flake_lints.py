@@ -106,12 +106,24 @@ PARENTLESS_ALLOWED = {
         "the fixture's own timer: stopped and deleted on the main thread at the test's end (sip.delete)",
     ("app/qt/bridge.py", "run_in_worker"):
         "kept in `_pending` until its answer lands, then deleteLater on the GUI thread (never the pool's last ref)",
+    ("app/qt/covers.py", "notifier"): "the process's one notifier: kept in a module list for the app's life, made on "
+                                      "the GUI thread at its first use",
+    ("app/qt/stones.py", "notifier"): "the process's one notifier: kept in a module list for the app's life, made on "
+                                      "the GUI thread at its first use",
+    ("app/qt/drag.py", "after_paint"): "the process's one after-paint poster: kept in a module list, made again on "
+                                       "the GUI thread only once Qt deleted the last",
+    ("app/qt/shell.py", "main"): "the window's single-instance claim: held by `main` for the process's life",
     ("app/qt/single.py", "SingleInstance._hand_over"):
         "a local socket, in no cycle: freed by its refcount on the thread that made it, as the function returns",
     ("tests/qt/test_ankiconnect_install_part.py", "test_a_sheet_dropped_unanswered_puts_the_part_back"):
         "the sheet's stand-in card: deleteLater'd by the test itself on the main thread (the card's own end)",
     ("tests/qt/test_bridge.py", "test_a_relays_answer_on_its_way_when_its_window_goes_never_reaches_the_slot"):
         "the relay's holder: deleteLater'd by the test on the main thread (what the test is about)",
+    ("tests/qt/test_qt_thread_guard.py", "test_a_parentless_qt_object_a_workers_collection_frees_is_deleted_on_the_"
+                                         "main_thread_instead"):
+        "the orphan the harness's hold is proven on: a parentless object in a cycle is the case itself",
+    ("tests/qt/test_qt_thread_guard.py", "test_a_main_thread_collection_frees_as_ever"):
+        "the orphan the harness's hold is proven to leave alone: freed by the main thread's own collection",
     ("tests/qt/test_hud.py", "_run_loop"): "a local event loop run here, freed by its refcount as the function returns",
     ("tests/qt/test_hud.py", "test_the_probe_start_runs_main_and_writes_every_phase"):
         "a local event loop run here, freed by its refcount as the test returns",
@@ -135,18 +147,45 @@ def _parent_given(call):
     return bool(call.args) or any(k.arg == "parent" for k in call.keywords)
 
 
+def app_qt_classes(root=ROOT):
+    """The app's own classes that are (through any base) one of NON_WIDGET_QT: a parentless one is as much a hazard.
+    In the app's code only: a test's helpers a worker's collection would free are held for the main thread by the
+    harness (tests/harness_guards.py `_qt_gc`)."""
+    bases = {}
+    for path in app_files(root):
+        if "class " in _text(root, path):
+            for node in ast.walk(_parse(root, path)):
+                if isinstance(node, ast.ClassDef):
+                    bases[node.name] = [ast.unparse(b).split(".")[-1] for b in node.bases]
+    out, grown = set(NON_WIDGET_QT), True
+    while grown:
+        grown = False
+        for name, of in bases.items():
+            if name not in out and any(b in out for b in of):
+                out.add(name)
+                grown = True
+    return frozenset(out - NON_WIDGET_QT)
+
+
 def parentless_qt_objects(root=ROOT, files=None):
-    """[(file, owner, line, call)] for every non-widget Qt object made with no parent, outside the allowlist."""
+    """[(file, owner, line, call)] for every non-widget Qt object made with no parent — and, in the app's code, every
+    one of the app's own such classes — outside the allowlist."""
     found = []
+    apps = set(app_files(root)) if files is None else {f for f in files if not f.startswith("tests/")
+                                                       and "/tests/" not in f}
+    own = app_qt_classes(root) if apps else frozenset()
+    own_call = re.compile(r"\b(?:" + "|".join(sorted(own)) + r")\(\s*\)") if own else None
     for path in files if files is not None else test_files(root) + app_files(root):
-        if not _BARE_CALL.search(_text(root, path)):          # (read as text first: parsed only where one may be)
-            continue
+        text = _text(root, path)
+        mine = own if path in apps else frozenset()
+        if not (_BARE_CALL.search(text) or (mine and own_call.search(text))):
+            continue                                          # (read as text first: parsed only where one may be)
         tree = _parse(root, path)
         owners = _owners(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and not _parent_given(node):
                 name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", None)
-                if name in NON_WIDGET_QT:
+                if name in NON_WIDGET_QT or name in mine:
                     found.append((path, owners.get(node, "<module>"), node.lineno, ast.unparse(node)))
     return found
 
@@ -244,7 +283,7 @@ SLEEPS_ALLOWED = {
     ("tests/qt/test_arrivals_a4_fix.py",
      "test_after_a_switch_a_chinese_arrival_whose_id_a_japanese_file_had_is_still_asked"): NEGATIVE,
     ("tests/qt/test_arrivals_routing.py", "test_with_the_bell_live_an_idle_window_never_looks_every_tenth_of_a_second"):
-        "an idle second counted (looks in it at most 2: nothing may happen), and the old poll's own rate beside it",
+        "the open's own sync and quiet look let pass before an idle second is counted (at most 2 looks in it)",
     ("tests/qt/test_arrivals_routing.py",
      "test_a_drop_the_watch_reports_while_the_store_is_busy_is_synced_once_the_store_frees"): NEGATIVE,
     ("tests/qt/test_bridge.py", "test_a_pool_job_starts_only_while_the_window_rests"): NEGATIVE,
@@ -267,18 +306,18 @@ SLEEPS_ALLOWED = {
     ("tests/qt/test_shell_library.py", "test_a_quit_during_a_switch_leaves_nothing_open_and_keeps_the_journal"):
         "the switch left waiting on the busy move while the quit comes (the quit is the event; nothing to wait for)",
     ("tests/qt/test_shell_library.py", "test_a_stale_switch_running_last_follows_the_language_asked_last"):
-        "the stale switch given time to run last, then a wait on the condition",
+        "the stale switch given time to run last, then a wait on the condition: under load the case may not arise "
+        "and the test only proves less, never a false red",
     ("tests/qt/test_single_instance.py", "test_a_start_during_the_firsts_close_becomes_the_first"): NEGATIVE,
     ("tests/qt/test_single_instance.py", "test_a_start_that_connects_just_as_the_first_closes_becomes_the_first"):
         "the first window's close held open while the second start waits (the release is the event)",
     ("tests/qt/test_window_sources.py", "test_a_watch_turn_that_fails_never_ends_the_watches_for_the_run"):
-        "the failed turn's end given time, then the next report and a wait on its scan",
+        "the failed turn's end given time, then the next report and a wait on its scan: under load it proves less, "
+        "never a false red",
     ("tests/qt/test_window_sources.py", "test_a_watch_report_while_the_window_is_behind_waits_for_its_focus"): NEGATIVE,
     ("tests/qt/test_window_sources.py", "test_B1_S7_a_long_download_is_one_look_at_its_end_never_one_per_burst"):
         "bursts spread inside the quiet spell (the pace is the point), then none may come after the one look",
     ("tests/qt/test_window_sources.py", "test_a_new_watch_is_stored_only_once_the_watches_lock_is_free"): NEGATIVE,
-    ("tests/test_library_store_switch.py", "test_journey_checks_asked_together_share_their_syncs"):
-        "the first check given a head start so the rest arrive while it runs (no event marks 'running')",
     ("tests/test_library_store_switch.py", "test_a_returning_2_4_0s_big_change_waits_for_the_user"): TICK,
     ("tests/test_services_updates.py", "test_check_for_updates_off_sends_no_request_at_start_or_on_offer_again"):
         NEGATIVE,
@@ -325,6 +364,58 @@ def sleeps_in_qt_tests(root=ROOT, files=None):
     return found
 
 
+# --- 4. a fixed-time Qt wait (`QTest.qWait`) in a test file ---------------------------------------------------------- #
+# The same race as a bare sleep when an assert that something happened follows it. 128 were in the test files when
+# this lint came (Flake-P, 2026-11-10): each file's count is recorded below, not yet reviewed one by one (tests/
+# FLAKES.md, open). A file may only lower its count — a new fixed-time wait fails at once; one converted to a wait on
+# its condition lowers the number here.
+QWAITS_TO_REVIEW = {           # file -> its fixed-time Qt waits today (Flake-P, 2026-11-10): open, FLAKES.md
+    "modules/junban/tests/test_qt_backfill.py": 15,
+    "modules/junban/tests/test_qt_junban.py": 13,
+    "tests/qt/test_anki_window.py": 5,
+    "tests/qt/test_arrivals.py": 1,
+    "tests/qt/test_bench_drag.py": 1,
+    "tests/qt/test_current.py": 10,
+    "tests/qt/test_drag.py": 8,
+    "tests/qt/test_drop_moves_once.py": 7,
+    "tests/qt/test_frequency_lists_window.py": 5,
+    "tests/qt/test_goal_sheet.py": 1,
+    "tests/qt/test_importers_window.py": 1,
+    "tests/qt/test_item_menu.py": 5,
+    "tests/qt/test_jobs_bar.py": 19,
+    "tests/qt/test_motion.py": 7,
+    "tests/qt/test_reduced_motion.py": 2,
+    "tests/qt/test_report_window.py": 2,
+    "tests/qt/test_rows_string.py": 1,
+    "tests/qt/test_s19_pages.py": 4,
+    "tests/qt/test_shell.py": 2,
+    "tests/qt/test_tool_icons.py": 3,
+    "tests/qt/test_windows.py": 2,
+    "tests/qt/test_wizard_load.py": 7,
+    "tests/qt/test_word_lists_window.py": 7,
+}
+
+
+def qwaits(root=ROOT, files=None):
+    """{file: how many `qWait(...)` calls it makes} for every test file with any."""
+    out = {}
+    for path in files if files is not None else test_files(root):
+        if "qWait(" not in _text(root, path):
+            continue
+        n = sum(1 for c in ast.walk(_parse(root, path)) if isinstance(c, ast.Call) and
+                (getattr(c.func, "attr", None) == "qWait" or getattr(c.func, "id", None) == "qWait"))
+        if n:
+            out[path] = n
+    return out
+
+
+def qwaits_off_record(counts, record=None, root=ROOT):
+    """[(file, now, recorded)] wherever a file's count isn't its recorded one (a file this checkout hasn't: none)."""
+    record = QWAITS_TO_REVIEW if record is None else record
+    names = set(counts) | {f for f in record if os.path.isfile(os.path.join(root, f))}
+    return sorted((f, counts.get(f, 0), record.get(f, 0)) for f in names if counts.get(f, 0) != record.get(f, 0))
+
+
 # --- the allowlists applied ----------------------------------------------------------------------------------------- #
 def _allowed(allow, path, owner):
     return (path, owner) in allow or (path, "*") in allow or (path, owner.split(".")[0]) in allow
@@ -335,7 +426,8 @@ def unexplained(found, allow):
     return [f for f in found if not _allowed(allow, f[0], f[1])]
 
 
-def stale(found, allow):
-    """The allowlist's places with nothing left to explain (fixed or moved): the list stays true."""
+def stale(found, allow, root=ROOT):
+    """The allowlist's places with nothing left to explain (fixed or moved): the list stays true. A place in a file
+    this checkout hasn't (a private module, on GitHub's public checkout) is no stale entry."""
     seen = {(f[0], f[1]) for f in found} | {(f[0], "*") for f in found} | {(f[0], f[1].split(".")[0]) for f in found}
-    return sorted(k for k in allow if k not in seen)
+    return sorted(k for k in allow if k not in seen and os.path.isfile(os.path.join(root, k[0])))

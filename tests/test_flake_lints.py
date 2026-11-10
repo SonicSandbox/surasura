@@ -69,6 +69,19 @@ def test_the_apps_relays_count_too(tmp_path):
     assert [f[3] for f in L.parentless_qt_objects(str(tmp_path), [rel])] == ["bridge.Relay()"]
 
 
+def test_the_apps_own_qt_classes_count_too_through_any_base(tmp_path):
+    rel = _plant(str(tmp_path), "app/qt/planted.py", """
+        from PyQt6.QtCore import QObject
+        class Bell(QObject):
+            pass
+        class LoudBell(Bell):
+            pass
+        def ring(host):
+            return LoudBell(), Bell(host)
+    """)
+    assert [f[3] for f in L.parentless_qt_objects(str(tmp_path), [rel])] == ["LoudBell()"]
+
+
 # --- 2. future dates ---------------------------------------------------------------------------------------------- #
 def test_a_date_later_than_today_is_found_in_a_string_and_in_each_date_call(tmp_path):
     # the planted dates are made from the run's own day (a planted fixed date would itself pass one day)
@@ -133,12 +146,34 @@ def test_a_file_without_qt_is_not_read_for_sleeps(tmp_path):
     assert L.sleeps_in_qt_tests(str(tmp_path), [rel]) == []
 
 
+# --- 4. fixed-time Qt waits ----------------------------------------------------------------------------------------- #
+def test_no_test_file_adds_a_fixed_time_qt_wait_and_a_converted_one_lowers_its_count():
+    assert L.qwaits_off_record(L.qwaits()) == [], ("(file, now, recorded): a new QTest.qWait — wait on its condition "
+                                                   "(wait_until); one converted — lower its count in QWAITS_TO_REVIEW")
+
+
+def test_a_qwait_is_counted_wherever_it_is_in_the_file(tmp_path):
+    rel = _plant(str(tmp_path), "tests/qt/test_planted.py", """
+        from PyQt6.QtTest import QTest
+        def _rest():
+            QTest.qWait(300)
+        def test_joins(win):
+            _rest()
+            QTest.qWait(50)
+    """)
+    counts = L.qwaits(str(tmp_path), [rel])
+    assert counts == {rel: 2}
+    assert L.qwaits_off_record(counts, {}, root=str(tmp_path)) == [(rel, 2, 0)]
+    assert L.qwaits_off_record(counts, {rel: 2}, root=str(tmp_path)) == []
+
+
 # --- the allowlists ------------------------------------------------------------------------------------------------ #
 def test_an_allowlist_entry_explains_its_place_and_one_with_nothing_left_is_stale():
     found = [("tests/a.py", "test_x", 3, "QTimer()"), ("tests/b.py", "test_y.inner", 9, "QObject()")]
     allow = {("tests/a.py", "test_x"): "why", ("tests/b.py", "test_y"): "why", ("tests/c.py", "test_z"): "why"}
     assert L.unexplained(found, allow) == []
-    assert L.stale(found, allow) == [("tests/c.py", "test_z")]
+    assert L.stale(found, allow, root=os.path.dirname(os.path.abspath(__file__))) == [], "no such files here"
+    assert L.stale(found, {("tests/flake_lints.py", "gone"): "why"}) == [("tests/flake_lints.py", "gone")]
     assert L.unexplained(found, {("tests/a.py", "*"): "why"}) == [found[1]]
 
 

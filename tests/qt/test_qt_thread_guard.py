@@ -87,3 +87,35 @@ def test_the_fixtures_timer_was_deleted_at_its_tests_end_on_the_main_thread():
     timer, made_on = _MADE.pop()
     assert made_on == threading.main_thread().ident
     assert sip.isdeleted(timer), "the fixture left its timer alive: a worker's collection could delete it"
+
+
+# --- a worker's collection never deletes a Qt object of the main thread (tests/harness_guards.py) ----------------- #
+def test_a_parentless_qt_object_a_workers_collection_frees_is_deleted_on_the_main_thread_instead(qapp):
+    # why: Qt 6.11 says nothing when one is deleted off its thread, and the process crashed later (the cut's shard 1/8)
+    import gc
+    from PyQt6 import sip
+    from PyQt6.QtCore import QObject
+    gc.collect()
+    orphan = QObject()                                  # Python owns it: no parent
+    child = QObject(orphan)                             # deleted with it: tells whether its C++ object is gone
+    orphan.me = orphan                                  # a reference cycle: only the collector frees it
+    del orphan
+    collected = threading.Thread(target=gc.collect, name="worker-gc")
+    collected.start()
+    collected.join()
+    assert not sip.isdeleted(child), "the worker's collection deleted a Qt object of the main thread"
+    assert any(o is not None and not sip.isdeleted(o) for o in harness_guards._QT_HELD)
+    harness_guards._free_qt_held()                      # (as each test's teardown does)
+    assert sip.isdeleted(child) and harness_guards._QT_HELD == []
+
+
+def test_a_main_thread_collection_frees_as_ever(qapp):
+    import gc
+    from PyQt6 import sip
+    from PyQt6.QtCore import QObject
+    orphan = QObject()
+    child = QObject(orphan)
+    orphan.me = orphan
+    del orphan
+    gc.collect()
+    assert sip.isdeleted(child) and harness_guards._QT_HELD == []

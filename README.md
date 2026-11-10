@@ -99,16 +99,14 @@ then PyInstaller, into `dist/Surasura/`; `--zip` also makes `dist/Surasura_v<ver
 ## 🗺️ Roadmap
 
 **Next**
-- Start over or sort again, with Put back
-- One-press private bug reports
-- Airing shows stay open until the season ends
 - Faster with huge libraries
+- Smoother YouTube downloads when YouTube asks "are you a bot?"
 
 **Soon**
-- Anki cards made only when you need them
+- Anki cards made only when you need them, even with Anki closed
 - The journey: replay a line where it was said, swap sentences, mark words from the page
 - Manga support
-- A guided setup for the automation
+- Everything you've finished, on one wall
 
 **Later**
 - 34+ languages to learn

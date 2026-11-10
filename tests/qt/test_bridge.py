@@ -334,3 +334,43 @@ def test_a_pool_job_starts_only_while_the_window_rests(qapp, monkeypatch):
         assert wait_until(lambda: answered == ["ok"], 5)
     finally:
         window_idle.rest()
+
+
+# --- Mado-SP: the Qt enums a worker uses, made on the GUI thread before the pool's first job ------------------------- #
+# PyQt6 makes a class's enums at their first look-up, and two threads looking at once can each make their own (the
+# loser's `QImage.Format` is then "unexpected type 'Format'"): a two-thread probe in fresh processes failed 7 of 150
+# cold, 0 of 150 warmed. These are the functions the window hands the pool that draw or decode with Qt
+WORKER_FUNCTIONS = (("app/qt/covers.py", "decode"), ("app/qt/logos.py", "_decode"),
+                    ("app/qt/help_card.py", "_load_image"), ("app/qt/help_card.py", "_decode"),
+                    ("app/qt/report.py", "_thumbnails"))
+
+
+def test_every_qt_enum_a_worker_draws_or_decodes_with_belongs_to_a_class_warmed_on_the_gui_thread():
+    import ast
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    warmed = {name for _module, names in bridge.WORKER_QT for name in names}
+    used = set()
+    for path, fn in WORKER_FUNCTIONS:
+        src = open(os.path.join(root, path), encoding="utf-8").read()
+        node = next((n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == fn), None)
+        assert node is not None, f"{path}: {fn} is gone — this list names the pool's Qt workers"
+        used |= {m.group(1) for m in re.finditer(r"\b(Q[A-Za-z]*|Qt)\.[A-Z][A-Za-z]*\b",
+                                                 ast.get_source_segment(src, node))}
+    assert used and used <= warmed, f"a worker looks up an enum of {sorted(used - warmed)}: add it to WORKER_QT"
+
+
+def test_the_pool_warms_its_qt_classes_once_before_its_first_job(qapp, monkeypatch):
+    monkeypatch.setattr(bridge, "_warmed", [])
+    calls = []
+    real = bridge.warm_worker_types
+    monkeypatch.setattr(bridge, "warm_worker_types", lambda: calls.append(1) or real())
+    got = []
+    bridge.run_in_worker(lambda: 1, then=got.append)
+    bridge.run_in_worker(lambda: 2, then=got.append)
+    wait_until(lambda: sorted(got) == [1, 2])
+    assert calls == [1]                             # the first job's call only; the second finds them warmed
+    assert bridge.warm_worker_types() == ()         # and once made, nothing more is looked at
+    monkeypatch.setattr(bridge, "_warmed", [])
+    warmed = real()
+    from PyQt6.QtGui import QImage, QPainter
+    assert QImage in warmed and QPainter in warmed

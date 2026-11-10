@@ -328,12 +328,12 @@ def test_closing_says_so_before_the_window_hides(qapp):
     services.shutdown(0.5)
 
 
-def test_the_window_process_hands_pythons_lock_on_every_millisecond(monkeypatch):
+def test_the_window_process_hands_pythons_lock_on_every_quarter_millisecond(monkeypatch):
     import sys
     before_hook, before_interval = sys.excepthook, sys.getswitchinterval()
     try:
         shell.prepare_process()
-        assert sys.getswitchinterval() == pytest.approx(0.001)
+        assert sys.getswitchinterval() == pytest.approx(0.00025) == shell.SWITCH_INTERVAL_S    # (Mado-SP: was 1 ms)
         assert sys.excepthook is shell._log_unhandled
     finally:
         sys.excepthook, _ = before_hook, sys.setswitchinterval(before_interval)

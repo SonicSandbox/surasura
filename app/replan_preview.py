@@ -1103,8 +1103,8 @@ def helper_processes():
 # A Host in the window's own process (the suites' IN_PROCESS_ENV; a helper that couldn't start): its job's Python
 # shares the window's interpreter lock, which Python hands between threads every 5 ms by default — the window's thread
 # waited up to that long behind a job step (R6's timer probe: 5–6 ms against 5). While one runs there, the lock changes
-# hands every 1 ms, as in the 3.0 window's own process (`app.qt.shell.SWITCH_INTERVAL_S`); the last one's stop puts
-# back what was set before.
+# hands every 1 ms at most (the 3.0 window's own process sets a finer one, `app.qt.shell.SWITCH_INTERVAL_S`); the last
+# one's stop puts back what was set before.
 WINDOW_SWITCH_S = 0.001
 _SHARING = {"hosts": 0, "was": None}
 _SHARING_LOCK = threading.Lock()

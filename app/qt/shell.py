@@ -3997,13 +3997,16 @@ def _log_unhandled(kind, value, tb):
 
 
 # Python's lock is handed between threads every 5 ms by default: a busy worker (a service's thread, a pool task) could
-# hold the GUI thread off for that long — over the 4 ms step. 1 ms keeps a step's wait under the budget (W2.1 review A3).
-SWITCH_INTERVAL_S = 0.001
+# hold the GUI thread off for that long — over the 4 ms step. 1 ms kept one wait under the budget (W2.1 review A3), but
+# a stretch takes the lock again at every event (the app filter, each slot, each delegate paint): with the writer's
+# numbers following a move (4–9 ms of Python) beside it, ⋯ → Goal's stretches after the press waited 1 ms at many of
+# those and ran 17–23 ms. A quarter of a millisecond: 11–14 ms at 100–250 % (Mado-SP, paired runs, 2026-11-10)
+SWITCH_INTERVAL_S = 0.00025
 
 
 def prepare_process():
     """The window process's own settings: an exception escaping a slot is logged, never fatal (PyQt6 aborts
-    otherwise); Python's lock changes hands every millisecond."""
+    otherwise); Python's lock changes hands every quarter millisecond (`SWITCH_INTERVAL_S`)."""
     sys.excepthook = _log_unhandled
     sys.setswitchinterval(SWITCH_INTERVAL_S)
     wire_idle()

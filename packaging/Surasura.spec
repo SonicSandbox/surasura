@@ -52,6 +52,11 @@ except Exception as e:
     print(f"Warning: Could not read packaging/build_config.json: {e}")
 if not isinstance(modules, dict):
     modules = {}
+# Never in any build (Minato-BE, 2026-11-10): the test tools and Pygments. No Surasura code imports them, but
+# numpy.testing, pandas._testing, anyio and httpx2's command line name them inside functions, and PyInstaller follows
+# those imports: pytest froze into Surasura.exe and the CLI. package_app.py --check refuses a program carrying one.
+never_bundle = build_config.get("never_bundle") if isinstance(build_config, dict) else None
+excluded_modules += [m for m in never_bundle if isinstance(m, str)] if isinstance(never_bundle, list) else []
 enable_youtube = modules.get("youtube_downloader") is True
 enable_koe = modules.get("koe") is True
 enable_reels = modules.get("reels") is True
@@ -135,8 +140,8 @@ hiddenimports += ['app.anki_db_import', 'app.extract']
 # --- The window's PyQt6 (S3.1 D17): app.qt and five Qt modules, every other PyQt6 module excluded -------------------
 # The window (app/qt/) is reached only through a function-level import in app_entry.py; naming it and its modules keeps
 # it in the build. Every other PyQt6 extension module the installed wheel carries (WebEngine, Qml, Multimedia, 3D, …)
-# is excluded, so neither it nor the Qt DLLs it alone needs ship. PyQt6's and Qt's licence notices ride in
-# _internal\licenses\<distribution>\ (PyQt6 GPL v3, Qt LGPL v3, PyQt6-sip).
+# is excluded, so neither it nor the Qt DLLs it alone needs ship. PyQt6's and Qt's licence texts, like every bundled
+# library's, are copied after the freeze by package_app.py (step 3b: _internal\licenses\<name>-<version>\, INDEX.txt).
 import importlib.util
 qt_modules = build_config.get("qt_modules") if isinstance(build_config, dict) else None
 if not isinstance(qt_modules, list) or not qt_modules:
@@ -156,15 +161,6 @@ if qt_spec is not None and qt_spec.submodule_search_locations:
                 rel = os.path.relpath(os.path.join(qt_root, qt_file[:-3]), project_root)
                 hiddenimports.append(rel.replace(os.sep, '.').replace('.__init__', ''))
     hiddenimports += ['PyQt6.sip'] + ['PyQt6.' + m for m in qt_modules]
-    from importlib import metadata as qt_metadata
-    for qt_dist in ('PyQt6', 'PyQt6-Qt6', 'PyQt6-sip'):
-        try:
-            dist = qt_metadata.distribution(qt_dist)
-        except qt_metadata.PackageNotFoundError:
-            continue
-        for dist_file in dist.files or []:
-            if os.path.basename(str(dist_file)).upper().startswith(('LICENSE', 'LICENCE', 'COPYING', 'NOTICE')):
-                datas.append((str(dist.locate_file(dist_file)), 'licenses/' + qt_dist))
 else:
     print("BUILD CONFIG: PyQt6 is not installed - the window falls back to the Tk dashboard")
 
@@ -279,20 +275,12 @@ cli_exe = EXE(
 tsubasa_spec = importlib.util.find_spec('tsubasa')
 tsubasa_icon = os.path.join(list(tsubasa_spec.submodule_search_locations)[0], 'data', 'tsubasa.ico') \
     if tsubasa_spec is not None and tsubasa_spec.submodule_search_locations else None
-tsubasa_datas = []
-try:                                        # its licence notice (GPL-3.0-or-later), beside PyQt6's: from its metadata
-    from importlib import metadata as tsubasa_metadata
-    for dist_file in tsubasa_metadata.distribution('tsubasa-sync').files or []:
-        if os.path.basename(str(dist_file)).upper().startswith(('LICENSE', 'LICENCE', 'COPYING', 'NOTICE')):
-            tsubasa_datas.append((str(tsubasa_metadata.distribution('tsubasa-sync').locate_file(dist_file)),
-                                  'licenses/tsubasa-sync'))
-except Exception as e:
-    print(f"BUILD CONFIG: tsubasa-sync's licence notice not found ({e})")
+# Its licence text (GPL-3.0-or-later) is copied after the freeze with every other one (package_app.py step 3b).
 tsubasa_a = Analysis(
     [os.path.join(project_root, 'packaging', 'tsubasa_entry.py')],
     pathex=[],
     binaries=[],
-    datas=tsubasa_datas,
+    datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

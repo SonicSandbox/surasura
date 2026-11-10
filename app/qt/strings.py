@@ -225,6 +225,8 @@ ROWS_UP_NEXT = "UP NEXT"
 ROWS_SOURCE = {"hato": "Hato", "youtube": "YouTube", "anilist": "AniList"}
 ROWS_HERO_STATS = "{pct}% known · {n} new words"
 ROWS_HERO_STATS_NONE = "not analysed yet"
+ROWS_HERO_WATCHED = "✓ Watched it · finished with it? Press Done"   # Fresh-U row 5: every file watched, still here
+ROWS_HERO_WATCHED_MIX = "✓ Watched it"                               # … hato's mix never finishes (G3.2)
 ROWS_VERB = {"video": "Watch", "audio": "Listen", "EPUB": "Read", "file": "Open"}
 ROWS_NO_MEDIA_BUTTON = "No {word}"
 ROWS_ONLINE_BUTTON = "Online"
@@ -689,6 +691,10 @@ STAR_ASK_STAR_TIP = "Opens Surasura's GitHub page in your browser"
 STAR_ASK_NOT_NOW = "Not now"
 STAR_ASK_NOT_NOW_TIP = "Closes this; it isn't asked again"
 DONE_ALL = "✓ All {n} watched — finished with it?"
+DONE_ALL_ONE = "✓ Watched it — finished with it?"                 # Fresh-U row 5: one file, never "All 1 watched"
+DONE_ALL_ONE_WHY = "✓ Watched it · {why} — finished with it?"
+DONE_ASK = " — finished with it?"                                 # … every offer ends so; W-1's first mark says why
+DONE_ASK_LEFT = " — its words left your list. Finished with it?"  # … the next rows' counts rise
 # 3.0.1 item 5 (AA-3, PROVISIONAL): why AniList held a show back from finishing by itself
 DONE_ALL_WHY = "✓ All {n} watched · {why} — finished with it?"
 DONE_WHY_AIRING = "Still airing (AniList)"
@@ -1286,6 +1292,26 @@ SOURCES_READ_LATER = "Reading {name} where it is: its first look comes with the 
 SOURCES_READ_NOTHING = "Reading {name} where it is: nothing new in it yet"
 SOURCES_UNREACHABLE = "Reading {name} where it is: it can't be reached now · Surasura looks again later"
 SOURCES_REFUSED = "{name} can't be read where it is: {reason}"
+# Fresh-U row 4: a folder's loose .txt / .md under the length of a book (`sources.BOOK_MIN_CHARS`) left out — said once,
+# after the look's own words
+SOURCES_SHORT = (" · 1 short text left out — under {chars:,} characters of {language}",
+                 " · {n:,} short texts left out — under {chars:,} characters of {language}")
+
+
+def sources_short(n, language="ja"):
+    """The look's tail for `n` short texts left out ("" for none); the rule counts `language`'s own characters (kana and
+    kanji, or hanzi: `sources._BOOK_SCRIPT`)."""
+    from app import sources
+    n = int(n or 0)
+    if n <= 0:
+        return ""
+    return (SOURCES_SHORT[0] if n == 1 else SOURCES_SHORT[1]).format(
+        n=n, chars=sources.BOOK_MIN_CHARS, language=SHORT_LANGUAGES.get(language, SHORT_LANGUAGES["ja"]))
+
+
+SHORT_LANGUAGES = {"ja": "Japanese", "zh": "Chinese"}
+
+
 SOURCES_NO_LIBRARY = "your library isn't open"
 SOURCES_BUSY = "{name} wasn't added yet: " + STORE_BUSY_NOW          # P-1: nothing written, nothing copied in
 SOURCES_FROM = "from {name}"
@@ -1583,7 +1609,7 @@ REPORT_LIST_NAME = "Your saved reports"
 REPORT_ROW = "{when}   {what}{notes}"
 REPORT_ROW_NOTES = "   · {n} note(s)"
 REPORT_ROW_BUTTON_NAME = "{action}: {what}"                      # a row's Open / Remove, named with its report
-REPORT_EMPTY = "Nothing saved yet"
+REPORT_EMPTY = "Nothing saved yet: write what happened above to make a report"   # Fresh-U row 3: why they're grey
 REPORT_READ_FAILED = "Your saved reports couldn't be read: {why}"
 REPORT_OPEN = "Open"
 REPORT_OPEN_TIP = "See this report, its picture and its notes, and add a note"
@@ -1619,13 +1645,16 @@ REPORT_RESULTS_TIP = ("Your last Generate's lists and journey (the results folde
                       "subtitles and books")
 REPORT_SHOW = "Show me what's in it"
 REPORT_SHOW_TIP = "List every file the zip will hold, and what's left out"
+REPORT_SHOW_SAVES_TIP = REPORT_SHOW_TIP + "\n• What you've typed is saved to your list first"
+REPORT_SHOW_NONE_TIP = "Show me what's in it: write what happened first"
 REPORT_CONTENTS_HEADING = "What the zip will hold"
 REPORT_CONTENTS_TIP = "Every file the zip will hold, its size, and what's left out and why"
 REPORT_ZIP = "Make a zip instead"
 REPORT_ZIP_TIP = ("Put every saved report, with what Sonic needs to look into it, in one zip on this PC, and show it "
                   "in its folder: to post it on Discord or GitHub Issues yourself.\n• Your Windows name is taken out "
                   "of it too; look it over before you post it")
-REPORT_ZIP_NONE_TIP = "Make a zip instead: save a report to your list first"
+REPORT_ZIP_NONE_TIP = "Make a zip instead: write what happened first"
+REPORT_ZIP_SAVES_TIP = REPORT_ZIP_TIP + "\n• What you've typed is saved to your list first"
 REPORT_ZIPPED = "Made {name} in {folder}. Post it on Discord or GitHub Issues"
 REPORT_ZIPPED_CHECK = ("Made {name} in {folder}. {n} file(s) may still hold your Windows name: look them over (its "
                        "MANIFEST.txt names them) before you post it")

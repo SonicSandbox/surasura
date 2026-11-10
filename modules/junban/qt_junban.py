@@ -182,7 +182,7 @@ class JunbanWindow(windows.SecondaryWindow):
     """順. `shell` is the main window (its services: settings, registry, the Generate controller)."""
 
     def __init__(self, shell, language=None):
-        super().__init__(shell, qs.JUNBAN_NAME, language)
+        super().__init__(shell, qs.JUNBAN_NAME, language, scroll=True)      # Fresh-U row 3: never past the screen
         self.services = shell.services
         self.session = view.Session()
         saved = self._saved()

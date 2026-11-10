@@ -653,6 +653,7 @@ SETUP_WORDS = "≈{words:,} words"
 SETUP_COVERAGE = "{coverage}% of your content"                                  # S4: never "% known"
 SETUP_ORDER = {"content": "ordered as you’ll meet them", "priority": "ordered by leverage"}
 SETUP_NOT_ORDERED = "not reordered"
+SETUP_ORDER_OFF = "kept in order by itself: off"                # Fresh-U row 2: 順 on, its automatic order off
 SETUP_FILLED = "{fills} filled {how}"
 SETUP_FILLED_AUTO = "automatically"
 SETUP_FILLED_HAND = "by hand"

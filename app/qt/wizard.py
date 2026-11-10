@@ -1938,7 +1938,16 @@ class OrderPage(_Page):
         rows.setContentsMargins(0, 0, 0, 0)
         rows.setSpacing(_px(8))
         self.keep = SwitchRow(S.KEEP_ORDER, S.KEEP_ORDER_LINE, S.KEEP_ORDER_TIP, self.controls, recommended=True)
+        self.keep.switch.toggled.connect(self._keep_toggled)
         rows.addWidget(self.keep)
+        # Fresh-U row 2: on, the deck it moves and how many of its new cards (read on a worker, `new_cards`)
+        self.moves_line = _label("wizsub", "", self.controls, wrap=True)
+        self.moves_line.setVisible(False)
+        rows.addWidget(self.moves_line)
+        self._keep_shown = True           # the switch as the page's answers start it (`load`)
+        self._keep_touched = False        # … until the learner turns it: then page 2's way never moves it
+        self._moves_key = None            # (language, deck) whose new cards were counted
+        self._moves_n = None              # … and how many (None: not known)
         # D29's switch off: the consent is kept, and the page says it waits for it (IK-20)
         self.automation_line = _label("wizsub", S.ORDER_AUTOMATION_OFF, self.controls, wrap=True)
         self.automation_line.setVisible(False)
@@ -1986,7 +1995,9 @@ class OrderPage(_Page):
 
     def load(self, answers):
         a = answers or {}
-        self.keep.switch.set_quiet(bool(a.get("keep_in_order", True)))
+        self._keep_shown = bool(a.get("keep_in_order", True))
+        self._keep_touched = False
+        self.keep.switch.set_quiet(self._keep_shown)
         self.later.choose(a.get("later") if a.get("later") in S.LATER_CHOICES else "leave")
         self._deck = a.get("deck") or None
         self._deck_key = None
@@ -1995,6 +2006,54 @@ class OrderPage(_Page):
     def _deck_picked(self):
         self._deck = self.deck_box.currentText() or None
         self._look_behind()
+        self._look_moves()
+
+    # --- Fresh-U row 2: the switch after *Start fresh*, and what it moves ----------------------------------------- #
+    def _keep_toggled(self, _on):
+        self._keep_touched = True
+        self._paint_moves()
+
+    def _follow_known(self):
+        """Untouched, the switch follows page 2's way (`setup_wizard.keeps_order`): off after *Start fresh* on a new
+        profile — a fresh start never moves the cards of a deck already there — and *Recommended* only beside an on."""
+        if self._keep_touched:
+            return
+        on = self.wiz.keeps_order(self._keep_shown)
+        if self.keep.switch.isChecked() != on:
+            self.keep.switch.set_quiet(on)
+        _show(self.keep.rec, on or not self._keep_shown)
+
+    def _look_moves(self):
+        """The deck's new cards counted once per (language, deck) on a worker (`setup_wizard.new_cards`: Anki read
+        only)."""
+        deck = self.deck_box.currentText() or None
+        key = (self.wiz.language, deck)
+        if not deck or key == self._moves_key:
+            self._paint_moves()
+            return
+        self._moves_key, self._moves_n = key, None
+        self._paint_moves()
+        count = getattr(self.wiz.api, "new_cards", None)
+        if count is None:
+            return
+        settings = self.wiz._settings()
+
+        def done(n):
+            if self._moves_key == key:
+                self._moves_n = n
+                if n is None:
+                    self._moves_key = None         # (Anki closed meanwhile: counted again when it answers)
+                self._paint_moves()
+        bridge.run_in_worker(count, thaw(settings), deck, then=self.wiz.alive(done),
+                             failed=self.wiz.alive(lambda _info: done(None)))
+
+    def _paint_moves(self):
+        n, deck = self._moves_n, (self._moves_key or (None, None))[1]
+        on = self.keep.switch.isChecked() and bool(n) and deck == (self.deck_box.currentText() or None)
+        if on:
+            _set_text(self.moves_line, S.KEEP_ORDER_MOVES[0].format(deck=deck) if n == 1 else
+                      S.KEEP_ORDER_MOVES[1].format(n=n, deck=deck))
+        _show(self.moves_line, on)
 
     # --- Michi-C (A7B-1…A7B-3): the shows behind the deck's new cards ------------------------------------------------- #
     def _look_behind(self):
@@ -2085,6 +2144,7 @@ class OrderPage(_Page):
                 self.deck_box.setCurrentIndex(index)
                 self.deck_box.blockSignals(False)
             self._look_behind()
+            self._look_moves()
         self.wiz.paint_footer()
 
     def answers(self):
@@ -2099,6 +2159,8 @@ class OrderPage(_Page):
         if not self.wiz.junban_off() and (self.wiz.anki is None or not self.wiz.anki.get("open")):
             self.wiz.look_anki()
         self._behind_key = None            # looked at again: page 3's reading may have taken shows in since
+        self._moves_key = None             # … and its new cards counted again (cards made or studied meanwhile)
+        self._follow_known()
         self._show()
 
     def anki_changed(self):
@@ -2312,7 +2374,8 @@ class CardsPage(_Page):
         sub, path = _split_path(sub)
         by_hand = bool(path)                              # the steps go under the buttons, the path on its own line
         if update and path:                               # before 3.7: the update first (option A), its profile by hand
-            name = S.MINER_UPDATE_FIRST
+            version = str((look or {}).get("version") or "").strip()     # Fresh-U row 8: the one found, named
+            name = S.MINER_UPDATE_FIRST_HAVE.format(version=version) if version else S.MINER_UPDATE_FIRST
             sub = f"{S.MINER_BY_HAND}\n{sub}" if sub else ""
         _set_text(self.name, _breakable(name))            # (neither is selected: a path in them may break)
         _set_text(self.sub, "" if by_hand else _breakable(sub))
@@ -3087,6 +3150,17 @@ class SetupWizard(QWidget):
     def known_decks(self):
         """The decks page 2 reads (page 4's deck is preselected from them)."""
         return self.pages[1].chosen_decks()
+
+    def keeps_order(self, shown):
+        """Page 4's switch, untouched, for page 2's way (`setup_wizard.keeps_order`); `shown` when it can't be told."""
+        rule = getattr(self.api, "keeps_order", None)
+        if rule is None:
+            return bool(shown)
+        try:
+            return bool(rule(thaw(self._settings()), self.pages[1].answers().get("how"), shown))
+        except Exception as e:
+            applog.log("wizard", f"keeps_order: {e}")
+            return bool(shown)
 
     def _first_sync(self, decks):
         """The first known-words sync, the user's own (the wizard's *Next* is that act): an `anki-sync` job; its result

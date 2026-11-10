@@ -2422,7 +2422,10 @@ class RowDelegate(QStyledItemDelegate):
         if kind == HERO:
             return QRect(rect.left(), rect.top(), rect.width(), rect.height() - rl("hero-below") - self._lines_h(lines))
         half = rl("gap") // 2
-        return QRect(rect.left(), rect.top() + half, rect.width(), rect.height() - self._lines_h(lines) - rl("gap"))
+        h = rect.height() - self._lines_h(lines) - rl("gap")
+        if abs(h - self._line_h()) < self.step:      # a closed row: its one line, never the px a whole step added or
+            h = self._line_h()                       # took (Mado-SP review R1: the lift's picture is the hover's)
+        return QRect(rect.left(), rect.top() + half, rect.width(), h)
 
     @staticmethod
     def paint_slot(p, r):
@@ -3236,8 +3239,7 @@ class RowsView(QListView):
         qcovers.notifier().ready.connect(self._cover_ready)              # --- W3.2 Q6
 
     def paintEvent(self, event):
-        if self._follow_ratio():
-            return                                   # laid out again at the new ratio's heights, then painted
+        self._follow_ratio()                         # (a ratio Qt didn't tell: this frame as laid out, the next snapped)
         p = QPainter(self.viewport())
         p.fillRect(event.rect(), c("bg"))
         p.end()
@@ -4015,6 +4017,7 @@ class RowsView(QListView):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._follow_ratio()                         # on its window's screen now: laid out before its first paint
         self._rest()
 
     def _range_changed(self, _lo, _hi):
@@ -4026,9 +4029,9 @@ class RowsView(QListView):
         self.scheduleDelayedItemsLayout()
 
     def _follow_ratio(self):
-        """The rows' heights follow the screen's ratio (`RowDelegate.step`: whole device px), read at each paint (Qt
-        tells no `changeEvent` of a new ratio: a window dragged to another monitor). -> True when it changed: the rows
-        laid out again, the screen repainted."""
+        """The rows' heights follow the screen's ratio (`RowDelegate.step`: whole device px): read when the list is
+        shown, at Qt's `DevicePixelRatioChange` (`viewportEvent`; a window dragged to another monitor) and at each
+        paint (Qt tells no `changeEvent`). -> True when it changed: the rows laid out again, the screen repainted."""
         step = whole_step(self.viewport().devicePixelRatioF() or 1.0)
         if step == self.delegate.step:
             return False
@@ -4397,6 +4400,8 @@ class RowsView(QListView):
 
     def viewportEvent(self, event):
         from PyQt6.QtCore import QEvent
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            self._follow_ratio()
         if event.type() in (QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate):
             # QAbstractItemView repaints its whole viewport here, yet no row paints the window's active state:
             # nothing visible changes (S19; review D-5). The focus ring follows focus in / out (`focusInEvent`).

@@ -143,72 +143,9 @@ content you own or have the right to use, and follow the law and the terms of th
 Surasura does not host or share your content: it stays on your computer, except what you choose to send: to a service
 you connect, or in a problem report you send. The installer asks you to accept this, with the licence below.
 
-## 🙏 Data Credits
+## 🙏 Credits
 
-Surasura's shared パターン data for Japanese is built from:
-
-- [RealPersonaChat](https://github.com/nu-dialogue/real-persona-chat) — Yamashita et al. (2023), CC BY-SA 4.0
-- [Aozora Bunko](https://www.aozora.gr.jp/) — public-domain works, via [aozorabunko-clean](https://huggingface.co/datasets/globis-university/aozorabunko-clean) (CC BY 4.0)
-- [Japanese Wikipedia](https://ja.wikipedia.org/) — Wikipedia contributors, CC BY-SA 4.0
-- [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/) — Japanese news 2015–2019, Universität Leipzig, CC BY 4.0 (counts only)
-
-…and for Chinese from:
-
-- [Tatoeba](https://tatoeba.org/) — Mandarin sentences, CC BY 2.0 FR
-- [KdConv](https://github.com/thu-coai/KdConv) — Zhou et al. (2020), film and music conversations, Apache License 2.0
-- [Chinese Wikipedia](https://zh.wikipedia.org/) — Wikipedia contributors, CC BY-SA 4.0
-- [Chinese Wikinews](https://zh.wikinews.org/) — 维基新闻 contributors, CC BY 4.0
-- [Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/) — Chinese news 2007–2009 and 2020, Traditional newscrawl 2011, Universität Leipzig, CC BY 4.0 (counts only)
-
-The data itself is shared under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
-
-The kanji names Surasura keeps whole as one word (Settings → Language & Parsing → "Kanji names (JMnedict)") come from
-[JMnedict](https://www.edrdg.org/enamdict/enamdict_doc.html), the Japanese proper-names dictionary of the JMdict/EDICT
-project, property of the [Electronic Dictionary Research and Development Group](https://www.edrdg.org/edrdg/licence.html),
-used under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) — by way of the name lists in
-[anki_miner](https://github.com/0xzerolight/anki_miner). Only the spellings of surnames and given names are kept; that
-table (`app/name_data.py`) is shared under the same licence.
-
-Which compounds are set phrases or titles (Settings → Language & Parsing → "Phrases and titles as one word"),
-which お / ご words have a meaning of their own (お守り, お帰り), and which words the tokenizer cuts at their grammar are
-words of their own (くだらない, 知らせる, いつも, ちなみに) comes from
-[JMdict](https://www.edrdg.org/jmdict/j_jmdict.html), the Japanese–multilingual dictionary of the same project, property
-of the [Electronic Dictionary Research and Development Group](https://www.edrdg.org/edrdg/licence.html), used under
-[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), and from JMnedict's names of works, products and
-organizations. Only marks on spellings, and those words' spellings and readings, are kept (no meanings); that table
-(`app/dictionary_data.py`) is shared under the same licence.
-JMdict's kanji spellings, entry by entry, and the readings of the entries a card can end in — no meanings — keep "A work’s
-own terms" from ever joining a word the dictionary lists, and tell which word an Anki card
-is (心する 'take heed' is a word of its own, not 心); that table (`app/jmdict_data.py`) is shared under the same licence
-too. So are the set phrases Surasura can add to your list (Settings → Language & Parsing → "Idioms as
-rows"): JMdict's phrases and grammar expressions (かもしれない, として) as the tokenizer reads them — lemmas, readings, a spelling to show, no meanings — with
-which of their words live only inside them (by JPDB 2024's ranks) and which are units in general text (counted, as
-statistics only, on the shared パターン set's Japanese text above); that table (`app/phrase_data.py`) is shared under
-the same licence. So is the list of one-kanji words Surasura can offer (Settings → Language & Parsing → "List one-kanji
-words only when they're dictionary words": 手, 顔, こと): the one-character words that JMdict lists with their reading
-and calls common — or that JPDB 2024 and Jiten both rank among their top 20,000 — and that general text (the same
-shared set's Japanese text, as statistics only) uses as words of their own; that table (`app/one_kanji_data.py`) keeps
-only spellings and readings. So does the short list of Kansai words the tokenizer can't read on its own (あかん, おかん):
-JMdict's Kansai-ben words that JPDB 2024 and Jiten both rank (`app/kansai_data.py`), shared under the same licence.
-Whether two words that meet are one compound or only a coincidence is also counted, as statistics only, on the
-[Leipzig Corpora Collection](https://wortschatz.uni-leipzig.de/)'s Japanese web text (Universität Leipzig, CC BY 4.0).
-
-The Chinese words Surasura reads as one — the numbers and doubled forms it counts as their word, the names it keeps
-by their surnames, and the Traditional spellings it reads as their Simplified pair (睡著 as 睡着) — come from
-[CC-CEDICT](https://cc-cedict.org/wiki/) (MDBG,
-[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)) and the
-[Universal Dependencies](https://universaldependencies.org/) Chinese treebanks (GSDSimp, HK and CFL, CC BY-SA 4.0);
-only spellings are kept, in `app/cedict_data.py` and among `app/zh_script_data.py`'s phrases, shared under the same
-licence.
-
-With *Download covers* on (off until you say yes), the 3.0 window shows each show's cover from
-[AniList](https://anilist.co) (asked by the show's AniList id, or its cleaned name), and a video's own thumbnail from
-[YouTube](https://www.youtube.com); nothing is shipped, and *Remove downloaded covers* deletes them. The same switch
-asks AniList, by the show's id (or, for a show with none, its cleaned name), whether a show near its last episode is
-still airing, so it isn't finished while new episodes are coming; *Remove downloaded covers* deletes those answers too.
-
-The same credits, with the frequency lists and the tokenizers' dictionaries (UniDic, jieba, OpenCC), are in the app:
-Settings → App → Data credits.
+The dictionaries, tokenizers and data Surasura is built on: [Credits](docs/CREDITS.md).
 
 ## 📜License
 

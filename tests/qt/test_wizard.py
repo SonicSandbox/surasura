@@ -1203,6 +1203,77 @@ def test_A4M1_2b_a_deck_surasura_cant_tell_is_asked_on_the_page_and_the_choice_g
     assert page.ask_part.isHidden(), "a ready Anki Miner shows no choice"
 
 
+def test_choice_86_a_new_surasura_deck_is_offered_first_and_named_as_new(make):
+    """Choice 86 (Sonic, 2026-11-09): the learner's one deck is Kaishi 1.5k, a course — the menu opens on a new deck of
+    Surasura's own, named as new (Anki lacks it yet), Kaishi next; the press hands the deck's own name, never its
+    label; Kaishi still taken when chosen."""
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner doesn't know where your Japanese cards go yet (deck: not found).",
+           "do": connect_setup.SETTINGS_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    asked = {"deck": ["Surasura", "日本語::Kaishi 1.5k", "Default"], "new": "Surasura", "note_type": None, "why": None}
+    pressed = []
+    answers = [("ask", asked), ("ask", asked), ("set-up", None)]
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
+        pressed.append(chosen)
+        return answers[len(pressed) - 1]
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, *_ = make(miner=miner)
+    go_to(wiz, "cards")
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: not page.ask_part.isHidden() and not wiz.setting_up)
+    assert [page.ask_deck.itemText(i) for i in range(page.ask_deck.count())] == [
+        S.MINER_NEW_DECK.format(deck="Surasura"), "日本語::Kaishi 1.5k", "Default"]
+    assert page.ask_deck.currentIndex() == 0 and page.ask_line.text() == S.MINER_ASK_NEW_DECK
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 2 and not wiz.setting_up)
+    assert pressed[1] == {"deck": "Surasura", "note_type": None}, "the deck's name, never its menu label"
+    page.ask_deck.setCurrentIndex(1)
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 3 and not wiz.setting_up)
+    assert pressed[2] == {"deck": "日本語::Kaishi 1.5k", "note_type": None}, "the course deck still offered"
+    page.show_ask(dict(asked, new=None))                  # Anki has a "Surasura" deck already: no "new" on it
+    assert page.ask_deck.itemText(0) == "Surasura" and page.ask_line.text() == S.MINER_ASK_DECK
+
+
+def test_choice_86_back_and_next_on_what_you_know_keeps_the_new_deck_among_its_decks(make):
+    """Review MUST (choice 86): the setup joined the new deck to the known-words decks — a Back to *What you know* and
+    Next there writes its decks with it, never the list loaded when the wizard opened (which would drop it and turn
+    the automatic sync on again)."""
+    from app.connect import setup as connect_setup
+    fix = {"say": "Anki Miner doesn't know where your Japanese cards go yet (deck: not found).",
+           "do": connect_setup.SETTINGS_DO, "update": False, "setup": True}
+    miner = FakeMiner(miner_look("needs-setup", "3.10.1", fix))
+    pressed = []
+
+    def finish_setup_as_job(registry, settings, language, on_progress=None, chosen=None, save=None):
+        pressed.append(chosen)
+        return ("set-up", " Surasura made the deck “Surasura” in Anki. Its cards count as words you know.")
+    miner.finish_setup_as_job = finish_setup_as_job
+    wiz, shell, api, settings, _m = make(miner=miner)
+    go_to(wiz, "cards")
+    known = wiz.pages[1].chosen_decks()
+    assert known, "the known page reads decks from Anki"
+    page = wiz.page
+    assert wait_until(lambda: page.look is not None and not page.btn_setup.isHidden())
+    page.show_ask({"deck": ["Surasura"] + known, "new": "Surasura", "note_type": None, "why": None})
+    QTest.mouseClick(page.btn_setup, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(pressed) == 1 and not wiz.setting_up)
+    assert wiz.pages[1].chosen_decks() == known + ["Surasura"]
+    while W.PAGES[wiz.index] != "known":
+        wiz.back()
+    settings.calls.clear()
+    wiz.next()
+    assert [c["anki_sync_decks"]["ja"] for c in settings.calls if "anki_sync_decks" in c] == [known + ["Surasura"]]
+    assert not any("anki_sync_auto" in c for c in settings.calls), "the same decks: the sync's switch left as it is"
+    assert wiz.pages[1].answers()["decks"] == known + ["Surasura"]
+    wiz.pages[1].keep_deck("Surasura")                              # once is enough: never twice
+    assert wiz.pages[1].chosen_decks() == known + ["Surasura"]
+
+
 def test_A4M1_2b_a_choice_asked_for_one_language_never_shows_after_a_switch_to_the_other(make):
     """A4M1-2b review (alpha 5): the setup runs on its own thread; a language switched while it ran never gets the
     other language's decks to choose from (the answer was asked for Japanese). The setup is handed the window's own

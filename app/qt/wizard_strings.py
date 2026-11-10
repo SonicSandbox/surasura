@@ -297,6 +297,10 @@ MINER_NOTE_TYPE = "Note type"
 MINER_NOTE_TYPE_TIP = ("The kind of card Anki Miner makes (Lapis, Kiku…). Surasura sets it in Anki Miner for you, "
                        "with its fields.")
 MINER_ASK_DECK = "Which deck should Anki Miner put your new cards in? Choose it, then press Finish its setup again."
+# Choice 86 (Sonic, 2026-11-09): a deck of Surasura's own offered first (`miner_settings.NEW_DECKS`), made on the press
+MINER_NEW_DECK = "{deck} (a new deck)"
+MINER_ASK_NEW_DECK = ("Which deck should Anki Miner put your new cards in? A new deck keeps them apart from a course "
+                      "deck. Choose it, then press Finish its setup again.")
 MINER_ASK_NOTE = ("Which note type should Anki Miner make your cards with? Choose it, then press Finish its setup "
                   "again.")
 MINER_ASK_FIELDS = ("“{note}” has no Sentence field, so Anki Miner can't make your cards with it. Choose another "

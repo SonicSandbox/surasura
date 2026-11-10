@@ -2129,12 +2129,12 @@ class ArrivalsTray(motion.Overlay):
             default_no=True, danger=True, on_answer=answered)
 
     def folder_of(self, arrival):
-        """(A worker.) The folder *Open its folder* opens: the content's own (`own_folder`, a7)."""
+        """(A worker.) The folder *Open its folder* opens: the content's own (`own_folder`, a7) -> (folder, how)."""
         from app import path_utils
         from app.services import own_folder
         language = getattr(self.win, "language", "ja")
-        return own_folder.read(own_folder.opener_of(self.win), path_utils.get_data_path(language),
-                               tuple(arrival.item_ids or ()), tuple(arrival.rel_paths or ()))
+        return own_folder.read_how(own_folder.opener_of(self.win), path_utils.get_data_path(language),
+                                   tuple(arrival.item_ids or ()), tuple(arrival.rel_paths or ()))
 
     def open_folder(self, arrival):
         """*Open its folder*: a press (`press.open`, round 8 row 45) — the row's ⋯ turns (IK-2) from the frame of the
@@ -2144,18 +2144,25 @@ class ArrivalsTray(motion.Overlay):
         looked = []
 
         def there():
-            path = self.folder_of(arrival)
-            looked.append(path)
+            path, how = self.folder_of(arrival)
+            looked.append((path, how))
             return path if path and os.path.isdir(path) else None
 
         def nothing(_info=None):
             say = getattr(self.win, "say", None)
             if say is not None:
-                say(strings.TRAY_NO_FOLDER.format(path=looked[-1] if looked else arrival.title))
+                say(strings.TRAY_NO_FOLDER.format(path=looked[-1][0] if looked else arrival.title))
+
+        def opened(found):
+            say = getattr(self.win, "say", None)
+            if not found:
+                nothing()
+            elif say is not None and looked and looked[-1][1] in strings.FOLDER_GONE:    # choice 24: one line
+                say(strings.FOLDER_GONE[looked[-1][1]])
         shown = self.view.row_of(arrival.key) >= 0 and self.open_now()
         return qpress.open(self.win, there, key=("open-folder", arrival.key),
                            at=_MoreMark(self.view, arrival.key) if shown else None,
-                           then=lambda found: found or nothing(), failed=nothing)
+                           then=opened, failed=nothing)
 
     def _has_show(self, arrival):
         """Whether a part of the arrival's title is in Current (the view's rows), N1 — inside a group too (a row names

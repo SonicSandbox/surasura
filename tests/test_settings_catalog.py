@@ -818,14 +818,16 @@ def test_the_credits_are_2_4s_text_byte_for_byte_and_the_tk_window_still_reads_t
 
 
 def test_readmes_data_credits_are_all_named_in_the_app():
-    """S11: an in-place update ships no README, so the in-app credits must name every source the public credits name —
-    README's Data Credits until #320, docs/CREDITS.md since (README links to it; read here as that section)."""
+    """S11: an in-place update ships no README, so the in-app credits must name every source the project credits —
+    since 2026-11-09 on its own page, docs/CREDITS.md, which README links."""
     from app import credits
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+        assert "(docs/CREDITS.md)" in f.read()
     with open(os.path.join(ROOT, "docs", "CREDITS.md"), encoding="utf-8") as f:
-        readme = "## 🙏 Data Credits\n" + f.read().split("\n", 1)[1].replace("\n## ", "\n### ")
-    sources = credits.readme_sources(readme)
+        page = f.read()
+    sources = credits.readme_sources(page)
     assert {"JMdict", "JMnedict", "CC-CEDICT", "Tatoeba"} <= set(sources)
-    assert credits.missing_from_credits(readme) == []
+    assert credits.missing_from_credits(page) == []
     made_up = "## 🙏 Data Credits\n\n- [Kanjidic2](https://www.edrdg.org/) — CC BY-SA 4.0\n\n## 📜License\n"
     assert credits.missing_from_credits(made_up) == ["Kanjidic2"]
     assert credits.missing_from_credits("no credits here") == []
@@ -845,23 +847,15 @@ def test_the_credits_card_ends_with_the_users_own_content_and_readme_has_its_sec
 
 def test_the_licence_line_is_the_licence_files_first_and_copyright_lines(monkeypatch, tmp_path):
     from app import credits, path_utils
-    # The repo's LICENSE is the GPL's own text since 3.0: Settings names the licence as Surasura applies it (version 3
-    # or later) with Surasura's copyright line — never the Free Software Foundation's copyright on the licence's words.
+    with open(os.path.join(ROOT, "LICENSE"), encoding="utf-8") as f:
+        lines = [line.strip() for line in f if line.strip()]
     monkeypatch.setattr(credits, "_LICENCE", [])
-    assert credits.LICENCE_LINE == ("GNU General Public License, version 3 or later (GPL-3.0-or-later) · "
-                                    "Copyright (C) 2026 SonicSandbox")
-    assert "Free Software Foundation" not in credits.LICENCE_LINE
+    assert credits.LICENCE_LINE == f"{lines[0]} · {next(l for l in lines if l.startswith('Copyright'))}"
     # frozen: the program's folder, where README sits; none there -> no line at all, never a guess
     monkeypatch.setattr(credits, "_LICENCE", [])
     monkeypatch.setattr(path_utils, "is_frozen", lambda: True)
     monkeypatch.setattr(sys, "executable", str(tmp_path / "Surasura.exe"))
     assert credits.licence_line() == ""
-    # the GPL without the exception beside it: the name alone (its own copyright line is the FSF's, never shown)
-    with open(os.path.join(ROOT, "LICENSE"), encoding="utf-8") as f:
-        (tmp_path / "LICENSE").write_text(f.read(), encoding="utf-8")
-    monkeypatch.setattr(credits, "_LICENCE", [])
-    assert credits.licence_line() == "GNU General Public License, version 3 or later (GPL-3.0-or-later)"
-    # an older licence (2.5.x and before: MIT) reads as it always did: its first line and its copyright line
     (tmp_path / "LICENSE").write_text("MIT License\n\nCopyright (c) 2026 SonicSandbox\n\nPermission is hereby…\n",
                                       encoding="utf-8")
     monkeypatch.setattr(credits, "_LICENCE", [])

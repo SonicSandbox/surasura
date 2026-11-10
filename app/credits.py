@@ -184,19 +184,23 @@ _LINK = re.compile(r"\[([^\]]+)\]\(")
 
 
 def readme_sources(readme_text):
-    """The sources README's *Data Credits* section links to (each link's words), in its order."""
+    """The sources a credits text links to (each link's words), in its order: README's *Data Credits* section, or the
+    whole credits page (`docs/CREDITS.md`, titled `# Credits`), where README's credits moved on 2026-11-09."""
     match = re.search(r"^##[^\n]*Data Credits[^\n]*\n(.*?)(?=^## |\Z)", readme_text or "", re.M | re.S)
-    if not match:
+    if match:
+        body = match.group(1)
+    elif re.match(r"\s*# Credits\b", readme_text or ""):
+        body = readme_text
+    else:
         return []
     seen = []
-    for name in _LINK.findall(match.group(1)):
+    for name in _LINK.findall(body):
         if name not in seen:
             seen.append(name)
     return seen
 
 
 def missing_from_credits(readme_text):
-    """README's Data Credits sources DATA_CREDITS (or the covers' credits) doesn't name: [] when the in-app credits
-    cover README's."""
-    named = DATA_CREDITS + "\n" + COVER_CREDITS
+    """The credits text's sources the in-app credits (data, covers, logos) don't name: [] when the app covers them."""
+    named = DATA_CREDITS + "\n" + COVER_CREDITS + "\n" + LOGO_CREDITS
     return [name for name in readme_sources(readme_text) if README_ALIASES.get(name, name) not in named]

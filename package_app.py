@@ -35,6 +35,9 @@ def load_build_config(path=BUILD_CONFIG):
     qt = config.get("qt_modules")
     if not isinstance(qt, list) or not qt or not all(isinstance(m, str) and m.startswith("Qt") for m in qt):
         problems.append("qt_modules must list the window's Qt modules")
+    never = config.get("never_bundle")
+    if not isinstance(never, list) or not never or not all(isinstance(m, str) and m.isidentifier() for m in never):
+        problems.append("never_bundle must list the top-level modules no build carries")
     release = config.get("release")
     if not isinstance(release, dict) or not all(_version_tuple(release.get(k)) for k in ("min_from",
                                                                                          "installer_min_from")):
@@ -168,7 +171,7 @@ def _build_updater_exe(final_dist):
         "--distpath", "dist", "--workpath", "build",
         os.path.join("packaging", "updater.spec"),
     ]
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, env=freeze_env())
     src = os.path.join("dist", "updater.exe")
     if result.returncode != 0 or not os.path.exists(src):
         print("ERROR: updater.exe was not produced — auto-update will be disabled in this build.")
@@ -807,6 +810,18 @@ def check_program(final_dist, config):
     # The bundled software's licence texts: INDEX.txt names every part the program carries, each with its texts.
     failures += check_licences(final_dist)
     facts["licences"] = [f"{row[0]} {row[1]}" for row in read_licence_index(final_dist) or ()]
+    # Every DLL and extension module a copy of the build Python's own, its packages' or the repo's (not the PATH's);
+    # from another Python than the build's (check_licences says so) its files can't vouch for them.
+    built_with = _build_python(final_dist)
+    other_python = bool(built_with) and built_with != _python_fingerprint(installed_distributions())
+    failures += [] if other_python else [f"{rel} is no copy of a file of this Python ({sys.base_prefix}), its packages or the repo's "
+                 "packaging/: PyInstaller took it from somewhere else (the build machine's PATH?)"
+                 for rel in foreign_binaries(final_dist)]
+    # The test tools (and Pygments): nothing of Surasura's runs them.
+    carried = never_bundled(final_dist, config["never_bundle"])
+    facts["never_bundled"] = carried
+    if carried:
+        failures.append(f"the program carries {carried}, which build_config's never_bundle keeps out of every build")
     return failures, facts
 
 
@@ -1010,34 +1025,11 @@ def licence_components(final_dist, dists=None):
     if "sqlite3.dll" in listing:
         parts.append({"name": "SQLite", "version": sqlite_version_of(os.path.join(internal, "sqlite3.dll")) or "",
                       "licence": "Public domain", "files": []})
-    openssl = sorted(n for n in listing if n.lower() in OPENSSL_FOR_QT)
-    if openssl:
-        parts.append({"name": "OpenSSL", "files": _supplied("OpenSSL"),
-                      "version": openssl_version_of(os.path.join(internal, openssl[0])) or "",
-                      "licence": "Apache-2.0 (Qt's TLS: " + " and ".join(openssl) + ")"})
     if any(n.lower().startswith("vcruntime140") for n in listing):
         parts.append({"name": "Microsoft Visual C++ runtime", "version": "", "files": [],
                       "licence": "Microsoft Distributable Code, redistributed with Python (its LICENSE.txt's "
                                  "Additional Conditions for this Windows binary build)"})
     return sorted(parts, key=lambda p: p["name"].lower())
-
-
-def openssl_version_of(dll):
-    """The version an OpenSSL libcrypto / libssl DLL reports ('3.5.8'), read in a fresh Python; None when it can't be
-    loaded."""
-    code = ("import ctypes, sys; d = ctypes.CDLL(sys.argv[1]); f = d.OpenSSL_version; f.restype = ctypes.c_char_p; "
-            "print(f(0).decode('ascii').split()[1])")
-    try:
-        out = subprocess.run([sys.executable, "-I", "-c", code, os.path.abspath(dll)], capture_output=True,
-                             text=True, timeout=60)
-    except Exception:
-        return None
-    return out.stdout.strip() or None if out.returncode == 0 else None
-
-
-# OpenSSL for Qt's TLS: PyInstaller's QtNetwork hook takes these from the build machine's PATH when it finds them there
-# (Git for Windows' ucrt64\bin, for one), so a build may carry them or not. Python's own are libssl-3.dll / libcrypto-3.dll.
-OPENSSL_FOR_QT = {"libssl-3-x64.dll", "libcrypto-3-x64.dll"}
 
 
 # What PyInstaller itself adds beside the frozen code: Python's Tcl/Tk folders and its own runtime hooks' helper.
@@ -1054,7 +1046,7 @@ def unclaimed(final_dist, dists=None):
     known = {r.lower() for d in dists for r in d["roots"]} | {n.lower() for n in sys.stdlib_module_names}
     for folder in (sys.base_prefix, os.path.join(sys.base_prefix, "DLLs")):
         known.update(n.lower() for entry in _listing(folder) for n in (entry, entry.split(".")[0]))
-    known |= {n.lower() for name in OPENSSL_FOR_QT | PYINSTALLER_NAMES for n in (name, name.split(".")[0])}
+    known |= {n.lower() for name in PYINSTALLER_NAMES for n in (name, name.split(".")[0])}
     left = {n for n in roots if n.lower() not in known and not n.startswith(("pyimod", "pyi_rth_"))}
     return sorted(n for n in left if not any(m != n and m.split(".")[0] == n for m in left))   # an entry, not its stem
 
@@ -1182,6 +1174,81 @@ def _build_python(final_dist):
     except (OSError, UnicodeDecodeError):
         pass
     return None
+
+
+# --- Where the bundled binaries come from (Minato-BE, 2026-11-10) -------------------------------------------------------
+# PyInstaller takes a DLL it finds on PATH outside the Windows folder whenever its include list names it: a local build
+# from Git Bash carried Git for Windows' OpenSSL (ucrt64\bin, for Qt's TLS), GitHub's runner a UCRT and MFC copy. The
+# freeze runs with PATH cut to this Python's folders and Windows' (`freeze_env`), and --check refuses any DLL or
+# extension module that is no byte copy of a file of the build Python, its packages or the repo (`foreign_binaries`).
+BINARY_SUFFIXES = (".dll", ".pyd")
+# Where a bundled binary may come from (None: `binary_roots()`); the tests point it at a made-up site-packages.
+BINARY_ROOTS = None
+
+
+def freeze_env(environ=None):
+    """The environment PyInstaller runs in: `environ` (os.environ) with PATH cut to the build Python's own folders and
+    Windows' -> a new dict."""
+    env = {k: v for k, v in (os.environ if environ is None else environ).items() if k.upper() != "PATH"}
+    windows = env.get("SystemRoot") or env.get("SYSTEMROOT") or env.get("windir") or env.get("WINDIR") or r"C:\Windows"
+    folders = [os.path.dirname(sys.executable), sys.prefix, os.path.join(sys.prefix, "Scripts"), sys.base_prefix,
+               os.path.join(sys.base_prefix, "DLLs"), os.path.join(windows, "System32"), windows,
+               os.path.join(windows, "System32", "Wbem")]
+    env["PATH"] = os.pathsep.join(dict.fromkeys(folders))
+    return env
+
+
+def _inside(path, folder):
+    path, folder = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(folder))
+    return path == folder or path.startswith(folder.rstrip(os.sep) + os.sep)
+
+
+def binary_roots():
+    """The folders a built program's DLLs and extension modules may be copies of: this Python's install and
+    environment, the folders on its sys.path neither inside the repo nor holding it (a PYTHONPATH site, the user
+    site), and the repo's
+    packaging/ (the vendored SQLite) -> a list, none inside another."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    roots = [sys.base_prefix, sys.prefix] + [p for p in sys.path if p and os.path.isdir(p) and not _inside(p, here)
+                                        and not _inside(here, p)]
+    roots.append(os.path.join(here, "packaging"))
+    roots = list(dict.fromkeys(os.path.abspath(r) for r in roots))
+    return [r for r in roots if not any(o != r and _inside(r, o) for o in roots)]
+
+
+def foreign_binaries(final_dist, roots=None):
+    """The DLLs and extension modules under a built program's _internal that are no byte copy of a file of the same
+    name under `roots` (BINARY_ROOTS, else `binary_roots()`; the program folder itself never counts) -> their paths
+    relative to the program folder, sorted."""
+    roots = (BINARY_ROOTS if BINARY_ROOTS is not None else binary_roots()) if roots is None else roots
+    found = {}
+    for root in roots:
+        for dirpath, dirs, files in os.walk(root):
+            if _inside(dirpath, final_dist):
+                dirs[:] = []
+                continue
+            for name in files:
+                if name.lower().endswith(BINARY_SUFFIXES):
+                    found.setdefault(name.lower(), []).append(os.path.join(dirpath, name))
+    foreign = []
+    for dirpath, _dirs, files in os.walk(os.path.join(final_dist, "_internal")):
+        for name in files:
+            if not name.lower().endswith(BINARY_SUFFIXES):
+                continue
+            path = os.path.join(dirpath, name)
+            size = os.path.getsize(path)
+            same = [p for p in found.get(name.lower(), ()) if os.path.getsize(p) == size]
+            if not same or _sha256(path) not in {_sha256(p) for p in same}:
+                foreign.append(os.path.relpath(path, final_dist).replace(os.sep, "/"))
+    return sorted(foreign)
+
+
+def never_bundled(final_dist, names):
+    """Which of `names` (build_config's never_bundle) a built program carries: a module frozen into one of its three
+    programs, or an entry of its _internal (a package's folder, its .dist-info) -> the names, sorted."""
+    wanted = {n.lower() for n in names}
+    roots, _main = bundled_roots(final_dist)
+    return sorted({re.split(r"[-.]", r, 1)[0] for r in roots if re.split(r"[-.]", r, 1)[0].lower() in wanted})
 
 
 # --- tsubasa (T1 B, 2026-10-21) ----------------------------------------------------------------------------------------
@@ -1333,7 +1400,7 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
     import secrets
     build_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
     with open(os.path.join("debug", "build_log.txt"), "w") as log_file, _release_flag(release, build_id, source_commit()):
-        result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+        result = subprocess.run(cmd, stdout=log_file, stderr=subprocess.STDOUT, env=freeze_env())
 
     if result.returncode != 0:
         print("Build failed. Check debug/build_log.txt for details.")

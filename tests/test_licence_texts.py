@@ -215,16 +215,14 @@ def test_a_licence_that_would_break_the_index_stops_the_build(tmp_path, site):
         "kana-utils's licence or a text's name holds ' · ' or ', ', which INDEX.txt can't carry"]
 
 
-def test_qts_openssl_from_the_path_ships_with_its_text(tmp_path, site):
+def test_qts_openssl_from_the_path_is_claimed_by_nobody(tmp_path, site):
+    # A local build from Git Bash once carried Git for Windows' OpenSSL for Qt's TLS (PyInstaller found it on PATH,
+    # Minato-BE 2026-11-10): the freeze now runs on a clean PATH, and a copy that still gets in stops the build here.
     folder = _built(tmp_path)
     for name in ("libssl-3-x64.dll", "libcrypto-3-x64.dll"):
         (folder / "_internal" / name).write_bytes(b"MZ")
-    assert package_app.gather_licences(str(folder)) == []
-    row = _index(folder)["OpenSSL"]
-    # The stand-in DLLs report no version (a real one does: 'OpenSSL-3.5.8/'), so the folder is the name alone.
-    assert row[1:] == ("-", "Apache-2.0 (Qt's TLS: libcrypto-3-x64.dll and libssl-3-x64.dll)", ["OpenSSL/LICENSE.txt"])
-    assert (folder / "_internal" / "licenses" / "OpenSSL" / "LICENSE.txt").read_text(encoding="utf-8").lstrip() \
-        .startswith("Apache License")
+    assert package_app.unclaimed(str(folder)) == ["libcrypto-3-x64.dll", "libssl-3-x64.dll"]
+    assert len(package_app.gather_licences(str(folder))) == 2
 
 
 @pytest.mark.skipif(not os.path.isfile(os.path.join(sys.base_prefix, "LICENSE.txt")),
@@ -294,10 +292,10 @@ def test_the_supplied_texts_are_their_upstreams_and_the_readme_says_from_where()
             assert f"`{name}/`" in readme, name
             for file in os.listdir(os.path.join(folder, name)):
                 texts[f"{name}/{file}"] = open(os.path.join(folder, name, file), encoding="utf-8").read()
-    assert sorted(texts) == ["OpenCC/LICENSE", "OpenSSL/LICENSE.txt", "jieba/LICENSE", "pysrt/LICENCE.txt"]
+    assert sorted(texts) == ["OpenCC/LICENSE", "jieba/LICENSE", "pysrt/LICENCE.txt"]
     assert "Copyright (c) 2013 Sun Junyi" in texts["jieba/LICENSE"]
     assert "GNU GENERAL PUBLIC LICENSE" in texts["pysrt/LICENCE.txt"] and "Version 3, 29 June 2007" in texts["pysrt/LICENCE.txt"]
-    for name in ("OpenCC/LICENSE", "OpenSSL/LICENSE.txt"):
+    for name in ("OpenCC/LICENSE",):
         assert texts[name].lstrip().startswith("Apache License") and "Version 2.0, January 2004" in texts[name]
 
 

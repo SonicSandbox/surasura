@@ -33,7 +33,11 @@ them — 家に帰る and 帰らない on 帰る, 手を挙げる on 挙げる),
 かえる, 差す 差す) — 23 rows gone, 64 new; and once more that evening for the list's counter clause (the 目 of ２時間目:
 a one-kanji word right after a number + a word holding a kanji is a piece of the count, analyzer._bound_at), which the
 builder now asks with the token before the word's left neighbour too: the sample's 豆知識 after ５つ子 gives its part 豆
-no use — the clause's accepted imprecision, a free word after a count — 3 rows gone, every one 豆's.)
+no use — the clause's accepted imprecision, a free word after a count — 3 rows gone, every one 豆's; and
+2026-11-10 (Hon-SM) for new fixtures: the bundled samples are public-domain texts now (蜘蛛の糸, 注文の多い料理店,
+ごん狐 and a café dialogue written for Surasura), so all three goldens were written again from them, and the
+lookup and planner words the old samples held (老婆, 共和国, 席, 少女, 市民, 座る, 譲る, 人間, おだやか, 素直, 大切な) became words of the new
+ones (蜘蛛, 地獄, 糸, 紳士, 狐, 歩く, 助ける, 極楽, 元気, きれい, 立派な).)
 """
 import gzip
 import json
@@ -55,12 +59,12 @@ GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden")
 WRITE = os.environ.get("SURASURA_WRITE_GOLDEN") == "1"
 # The real fixtures, by the store they build: talk (a subtitle file, the 冒険 lines, a transcript) and
 # writing; balanced holds both, as the real balanced set holds the conversational one.
-TALK = ["samples/ja/HighPriority/H_priority_sample_2.srt", "tests/Test Resources/ja/context_test.txt",
+TALK = ["samples/ja/HighPriority/喫茶店の朝.srt", "tests/Test Resources/ja/context_test.txt",
         "tests/Test Resources/ja/runaway_transcript.txt"]
-WRITING = ["samples/ja/HighPriority/H_priority_sample_1.txt", "samples/ja/LowPriority/L_priority_sample_1.txt",
-           "samples/ja/LowPriority/L_priority_sample_2.txt"]
-WORDS = ["冒険", "冒険家", "老婆", "目", "人", "共和国", "席", "人間", "少女", "顔", "市民", "持つ", "待つ",
-         "見る", "座る", "譲る", "立つ", "長い", "悪い", "いい", "おだやか", "素直", "大切な", "話が弾む", "探検"]
+WRITING = ["samples/ja/HighPriority/蜘蛛の糸（芥川龍之介）.txt", "samples/ja/LowPriority/注文の多い料理店（宮沢賢治）.txt",
+           "samples/ja/LowPriority/ごん狐（新美南吉）.txt"]
+WORDS = ["冒険", "冒険家", "蜘蛛", "目", "人", "地獄", "糸", "極楽", "紳士", "顔", "狐", "持つ", "待つ",
+         "見る", "歩く", "助ける", "立つ", "長い", "悪い", "いい", "元気", "きれい", "立派な", "話が弾む", "探検"]
 
 
 @pytest.fixture
@@ -128,13 +132,13 @@ def test_the_builders_rows_are_unchanged(stores):
     # (a) Every rule, on real text: a Chinese change that reached one Japanese function body would
     # move rows here.
     rows = _rows(stores["balanced"])
-    assert len(rows) > 8000
+    assert len(rows) > 5000                  # (2026-11-10, Hon-SM: the public-domain samples are a smaller corpus: 5,535)
     _check("ja_builder_rows.txt.gz", rows)
 
 
 def test_the_lookups_fields_are_unchanged(stores):
     # (b) The card's field for 25 words — nouns, verbs, adjectives, a compound (冒険家), a word written
-    # with its な (大切な), a phrase, a word not in the texts — through the fill order the app uses.
+    # with its な (立派な), a phrase, a word not in the texts — through the fill order the app uses.
     sources = patterns.open_sources("ja")
     tokenize = patterns.tokenizer()
     try:
@@ -149,10 +153,10 @@ def test_the_lookups_fields_are_unchanged(stores):
 
 def _collection():
     """Lapis notes (with the 例文 field) of every kind the planner tells apart, and a Migaku note."""
-    pairs = [_ex(0, "冒険", "ぼうけん"), _ex(1, "目", "め", studied=True, interval=5), _ex(2, "老婆", "ろうば"),
-             _ex(3, "大切な", "たいせつな"), _ex(4, "話が弾む", "はなしがはずむ"), _ex(5, "探検", "たんけん"),
+    pairs = [_ex(0, "冒険", "ぼうけん"), _ex(1, "目", "め", studied=True, interval=5), _ex(2, "蜘蛛", "くも"),
+             _ex(3, "立派な", "りっぱな"), _ex(4, "話が弾む", "はなしがはずむ"), _ex(5, "探検", "たんけん"),
              _ex(6, "持つ", "もつ", studied=True, interval=40), _ex(7, "長い", "ながい"),
-             _ex(8, "おだやか", "おだやか"), _ex(9, "共和国", "きょうわこく"), _ex(10, "冒険家", "ぼうけんか"),
+             _ex(8, "元気", "げんき"), _ex(9, "地獄", "じごく"), _ex(10, "冒険家", "ぼうけんか"),
              _migaku(0, "冒険")]
     pairs[2][0]["fields"]["Patterns"]["value"] = "<div>もう書いてある</div>"
     return BackfillCollection([p[1] for p in pairs], [p[0] for p in pairs],

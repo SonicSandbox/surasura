@@ -425,6 +425,12 @@ def test_samples_go_into_an_empty_library_once_and_are_synced_into_the_store(lan
         pytest.skip("no bundled samples for this language in this checkout")
     rows = SW.library_rows({}, language)
     assert len(rows) >= 2, "the samples are in the store, beside the show that was there"
+    # Hon-SM: public-domain texts under their own titles (the author's name in the file's （） is no part of it), read
+    # as books by the store's guess (never "1 episode"), each a copy in Surasura's own folder (no tier path shown)
+    book = {"ja": "蜘蛛の糸", "zh": "孔乙己"}[language]
+    by_name = {r["name"]: r for r in rows}
+    assert book in by_name and by_name[book]["kind"] == "reading" and by_name[book]["ours"] is True
+    assert all(r["ours"] for r in rows), "every file here is in the data folder"
     assert SW.add_samples(language) == 0
     with pytest.raises(ValueError):
         SW.add_samples("fr")

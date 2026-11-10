@@ -1784,7 +1784,7 @@ class ShowsPage(_Page):
 
     def show_rows(self, rows):
         rows = list(rows or [])
-        key = tuple((r.get("name"), r.get("count"), r.get("folder"), r.get("kind")) for r in rows)
+        key = tuple((r.get("name"), r.get("count"), r.get("folder"), r.get("ours"), r.get("kind")) for r in rows)
         if key == self._rows_key:
             return
         self._rows_key = key
@@ -1812,9 +1812,11 @@ class ShowsPage(_Page):
         line.addWidget(title)
         count = row_count(r)
         folder = str(r.get("folder") or "")
-        # wraps, a long folder after a backslash too (it widened the page past the window: the review's B1)
-        sub = _label("wizrowline", _breakable(S.ROW_LINE.format(count=count, folder=folder)) if folder else count, w,
-                     wrap=True)
+        # wraps, a long folder after a backslash too (it widened the page past the window: the review's B1); a copy in
+        # Surasura's own folder says so, never its tier folder's 2.x name (Hon-SM)
+        said = S.ROW_LINE_OURS.format(count=count) if r.get("ours") else \
+            _breakable(S.ROW_LINE.format(count=count, folder=folder)) if folder else count
+        sub = _label("wizrowline", said, w, wrap=True)
         f = sub.font()
         f.setFamilies(list(theme.path_font_families(self.wiz.language)))      # a path's ¥ is a backslash again
         sub.setFont(f)
@@ -2184,6 +2186,7 @@ class CardsPage(_Page):
 
     def __init__(self, wiz):
         super().__init__(wiz, S.CARDS_TITLE, S.CARDS_LINE)
+        self._say_language(wiz.language)
         self.picture = MinePicture(wiz.language, self)
         self.box.addWidget(self.picture)
         self.box.addSpacing(_px(12))
@@ -2451,7 +2454,12 @@ class CardsPage(_Page):
         QApplication.clipboard().setText(self.path_text)
         self.wiz.say(S.PATH_COPIED)
 
+    def _say_language(self, language):
+        """3.0 makes cards in Japanese only (Connect parks a Chinese entry, `runner.CHINESE`): Chinese says so."""
+        _set_text(self.line, S.CARDS_LINE_ZH if language == "zh" else S.CARDS_LINE)
+
     def language_changed(self, language):
+        self._say_language(language)
         self.picture.set_language(language)
         f = self.path.font()
         f.setFamilies(list(theme.path_font_families(language)))

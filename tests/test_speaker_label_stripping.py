@@ -6,8 +6,8 @@ the INNER `)`. It removed `（風太郎(ふうたろう)` and left an orphan `�
 line — so the learner saw `）くっ…` in example sentences, and the same orphan went into every
 export. A regex cannot count bracket depth; `_strip_bracketed` does.
 
-The shapes below are taken from the repo's own sample subtitle
-(`samples/ja/HighPriority/H_priority_sample_2.srt`, 五等分の花嫁), which carries six of these labels
+The shapes below are taken from the subtitle the repo's sample was until 3.0 (the bundled café episode,
+`samples/ja/HighPriority/喫茶店の朝.srt`, carries three such labels now: 田中, 早川, 佐藤)
 — they are what the bug actually looked like in practice, not invented strings.
 
 The one thing this fix must NOT do is get greedier. An unmatched OPENER keeps the text after it:

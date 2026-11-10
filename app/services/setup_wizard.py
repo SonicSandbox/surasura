@@ -410,8 +410,9 @@ def _anki_running():
 
 def library_rows(settings, language):
     """(A worker.) What is in the library now, one row per title (a show, a book) -> [{"name", "count" (its files),
-    "folder" (where its first file is), "kind" (W3.2 Q3: "shows" · "reading" · "videos" by the title's media type, as
-    the rows' stones read it; None for files no title holds)}] in the library's order (NOW, Soon, 6+ Months, New arrivals); [] for an empty
+    "folder" (where its first file is), "ours" (that folder is in Surasura's own data folder), "kind" (W3.2 Q3:
+    "shows" · "reading" · "videos" by the title's media type or the store's guess, as the rows' stones read it; None
+    for files no title holds)}] in the library's order (NOW, Soon, 6+ Months, New arrivals); [] for an empty
     library or no store. A read-only look: the store is never built or migrated here."""
     from app import library_store
     from app.path_utils import get_data_path, get_user_files_path
@@ -431,6 +432,7 @@ def library_rows(settings, language):
             "LEFT JOIN works w ON w.id = i.work_id "
             f"WHERE i.tier IN ({', '.join('?' * len(LISTED_TIERS))}) ORDER BY CASE i.tier {rank} END, i.ord, i.id",
             LISTED_TIERS).fetchall()
+        guessed = {w: store.media_type(w)[0] for w in {r[0] for r in rows if r[0] is not None and r[4] is None}}
     except Exception as e:
         print(f"Setup: the library couldn't be read ({e})")
         return []
@@ -438,6 +440,7 @@ def library_rows(settings, language):
         store.close()
     from app.services.stone_plan import _KIND             # --- W3.2 Q3: a title's kind, as its row's stones read it
     titles = {}
+    own = os.path.normcase(os.path.normpath(data_dir))
     for work_id, title, rel, root_id, media_type in rows:
         folder_rel = rel.rsplit("/", 1)[0] if "/" in rel else ""
         key = ("work", work_id) if work_id is not None else ("folder", root_id, folder_rel)
@@ -445,9 +448,14 @@ def library_rows(settings, language):
         if row is None:
             base = roots.get(root_id) or data_dir
             name = title or (folder_rel.rsplit("/", 1)[-1] if "/" in folder_rel else "") or rel.rsplit("/", 1)[-1]
-            titles[key] = row = {"name": name, "count": 0,
-                                 "folder": os.path.normpath(os.path.join(base, *folder_rel.split("/"))),
-                                 "kind": _KIND.get(media_type, "shows") if work_id is not None else None}
+            folder = os.path.normpath(os.path.join(base, *folder_rel.split("/")))
+            # Hon-SM: a title's type as the store guesses it when nobody said (a .txt reads as a book, never
+            # "1 episode"); `ours`: its copy is in Surasura's own data folder, whose tier folders (2.x's names) the
+            # row never shows
+            media = media_type if media_type is not None else guessed.get(work_id)
+            titles[key] = row = {"name": name, "count": 0, "folder": folder,
+                                 "ours": (os.path.normcase(folder) + os.sep).startswith(own + os.sep),
+                                 "kind": _KIND.get(media, "shows") if work_id is not None else None}
         row["count"] += 1
     return list(titles.values())
 

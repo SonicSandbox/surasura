@@ -120,7 +120,9 @@ def test_the_four_flows_show_their_files_with_no_focus_change(window, language, 
     from app.path_utils import seed_samples
     with patch("app.path_utils.seed_samples", wraps=seed_samples):
         app._seed_samples_clicked()
-    samples = [r for r in _order(app, "now") + _order(app, "soon") if "sample" in r.lower()]
+    shipped = {name for tier in ("HighPriority", "LowPriority")              # the bundled samples, by their titles
+               for name in os.listdir(os.path.join(REPO, "samples", language, tier))}
+    samples = [r for r in _order(app, "now") + _order(app, "soon") if r.rsplit("/", 1)[-1] in shipped]
     assert samples, "the samples joined the library"
 
     app._save_pasted_text(names(language)[20], "\n".join(names(language)[:5]), "HighPriority")

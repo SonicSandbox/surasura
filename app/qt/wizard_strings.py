@@ -61,7 +61,8 @@ LANGUAGE_HINT = "← → to choose · Enter to go on"
 LANGUAGE_GLYPHS = {"ja": "日本語", "zh": "中文"}
 LANGUAGE_WORDS = {"ja": "Japanese", "zh": "Chinese"}
 LANGUAGE_TIPS = {"ja": "Japanese: your list, your example sentences and your cards in Japanese.",
-                 "zh": "Chinese: your list, your example sentences and your cards in Chinese."}
+                 "zh": "Chinese: your list and your example sentences in Chinese. Cards are made in Japanese only "
+                       "for now."}
 LANGUAGE_CHOICE_NAME = "Language"
 
 # --- 2 · what you know ------------------------------------------------------------------------------------------------ #
@@ -102,7 +103,7 @@ KEEP_CAME_OVER_TIP = "Keep the words you know from Surasura 2, as they are.\n•
 # --- 3 · your shows --------------------------------------------------------------------------------------------------- #
 SHOWS_TITLE = "Bring in what you'll watch and read"
 SAMPLES = "Try it with samples first"
-SAMPLES_TIP = "Not sure yet? Start with a few samples to see how it works.\n• Copies a few sample files into your library"
+SAMPLES_TIP = "Not sure yet? Start with a few samples to see how it works.\n• Copies a few short texts into your library, free to share: public-domain classics and a café dialogue"
 SAMPLES_ADDED_LINE = "Added {n:,} samples: they show here in a moment."     # (W3.2 Q3: page 3 takes + Add's actions)
 SAMPLES_NONE = "Samples go into an empty library only: yours has files already."
 ROWS_NAME = "What's in your library"
@@ -110,6 +111,7 @@ ROW_COUNT = {"shows": ("1 episode", "{n:,} episodes"), "reading": ("a book", "a 
              "videos": ("1 video", "{n:,} videos")}
 ROW_FILES = ("1 file", "{n:,} files")
 ROW_LINE = "{count} · {folder}"
+ROW_LINE_OURS = "{count} · copied into Surasura"          # a copy in its own data folder: never HighPriority (Hon-SM)
 ROWS_MORE = "and {n:,} more"
 COVERS = "Show covers"
 COVERS_LINE = ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. Near a show's last "
@@ -243,6 +245,7 @@ BEHIND_NOT_ADDED = "Nothing was added: your library can't be changed just now. T
 # --- 5 · cards made for you ------------------------------------------------------------------------------------------- #
 CARDS_TITLE = "Cards that make themselves"
 CARDS_LINE = "From the episode you're watching: the line, its audio and a picture."
+CARDS_LINE_ZH = "Surasura makes cards in Japanese only for now: Chinese cards come later. You can skip this step."
 CARDS_PICTURE_NAME = "A line from an episode becomes an Anki card with its audio and a picture"
 CARDS_LINE_SAMPLE = {"ja": ("この店のラーメンは本当に絶品だ", "ぜっぴん", "絶品"),
                      "zh": ("这家店的拉面真是绝品", "juépǐn", "绝品")}

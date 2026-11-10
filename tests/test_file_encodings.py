@@ -35,9 +35,9 @@ def _resource(*parts):
 JA = _resource(_RES, "ja", "context_test.txt")                   # 冒険だ。 … 冒険！ (11 lines)
 ZH = _resource(_RES, "zh", "context_test.txt")                   # 冒险。 … 冒险！ (Simplified)
 TW = _resource(_RES, "zh", "traditional_news.txt")               # 台灣經濟部今天公布… (Traditional)
-SAMPLE_SRT = os.path.join(_ROOT, "samples", "ja", "HighPriority", "H_priority_sample_2.srt")
-# Its first 300 cues (of 424), CRLF as the file has them: the three after close a quote with 〞, which
-# CP932 has no byte for (a CP932 release writes 〟) — so these are what a legacy copy can hold.
+SAMPLE_SRT = os.path.join(_ROOT, "samples", "ja", "HighPriority", "喫茶店の朝.srt")
+# Its cues (134; "[:300]" kept from the 424-cue sample before it, whose later cues held a 〞 CP932 has no byte for),
+# CRLF: what a legacy copy can hold.
 SAMPLE_CUES = "\r\n\r\n".join(_resource(SAMPLE_SRT).split("\n\n")[:300]).replace("\n", "\r\n") + "\r\n"
 
 
@@ -257,7 +257,7 @@ def test_the_real_sample_subtitle_reads_the_same_in_a_legacy_encoding(tmp_path, 
     its BOM, still reads."""
     original = analyzer.extract_text(_save(tmp_path, "utf8.srt", SAMPLE_CUES, "utf-8"), "ja")
     copy = _save(tmp_path, "legacy.srt", SAMPLE_CUES, encoding)
-    assert "お前も俺の邪魔をするのか！" in original and analyzer.extract_text(copy, "ja") == original
+    assert "やっぱり、好きなことの力は大きいですね。" in original and analyzer.extract_text(copy, "ja") == original
 
 
 @pytest.mark.parametrize("lang, line, encoding", [("ja", "本当にそう思うの。", "cp932"),
@@ -277,10 +277,10 @@ def test_a_damaged_subtitle_loses_only_its_bad_byte(tmp_path):
     damaged one carries the mark."""
     text = read_text(SAMPLE_SRT, "ja")
     raw = text.encode("utf-8")
-    cut = raw.index("何だ".encode("utf-8"))
+    cut = raw.index("家庭教師".encode("utf-8"))
     path = _write_bytes(tmp_path, "damaged.srt", raw[:cut] + b"\xff" + raw[cut:])
     got = analyzer.extract_text(path, "ja")
-    assert "\ufffd何だ" in got
+    assert "\ufffd家庭教師" in got
     assert got.replace("\ufffd", "") == analyzer.extract_text(SAMPLE_SRT, "ja")
 
 
@@ -309,7 +309,7 @@ def test_extract_reads_a_file_in_its_own_encoding(tmp_path):
     assert error is None and text == JA
     subs, error = importer.extract_text_from_subtitle(
         _save(tmp_path, "sample.srt", read_text(SAMPLE_SRT, "ja"), "utf-16"))
-    assert error is None and "センサー" in subs
+    assert error is None and "栗のケーキ" in subs
 
 
 def test_the_report_finds_a_cp932_subtitles_anchor_and_cue(tmp_path):
@@ -318,9 +318,9 @@ def test_the_report_finds_a_cp932_subtitles_anchor_and_cue(tmp_path):
     from app.static_html_generator import AnchorFinder
     path = _save(tmp_path, "sample.srt", SAMPLE_CUES, "cp932")
     finder = AnchorFinder(language="ja")
-    anchor, at, end = finder.resolve(path, "クソあの５人だけでなくお前も俺の邪魔をするのか！")
+    anchor, at, end = finder.resolve(path, "今度、５人で旅行に行くことになったの。")
     assert anchor
-    assert (at, end) == (7.465, 12.554), "the cue reader's line: 00:00:07,465 --> 00:00:12,554"
+    assert (at, end) == (425.74, 429.6), "the cue reader's line: 00:07:05,740 --> 00:07:09,600"
 
 
 def test_settings_saved_with_a_bom_are_the_users_not_the_defaults():
@@ -472,7 +472,8 @@ def test_read_text_is_byte_identical_to_what_it_read_before_decode_text(tmp_path
     assert h.hexdigest() == _READ_TEXT_PIN
 
 
-_READ_TEXT_PIN = "f01cf474eb4ac0cd7094c3e72b730b89cfe553b90d127fbe9b0cf7fe5e04ef67"   # recorded at 33b60d4
+_READ_TEXT_PIN = "fe1a08e161a3be0d1579516ed26948e844ccacd4108403e6778fd10a4015bd78"   # recorded at 33b60d4 (its code, on
+#   the public-domain samples, 2026-11-10, Hon-SM: the same script gives f01cf474…, the pin before, on the old ones)
 
 
 @pytest.mark.parametrize("language, text, encoding", [("ja", JA, "utf-8"), ("ja", JA, "cp932"), ("ja", JA, "utf-16"),

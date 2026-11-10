@@ -248,12 +248,13 @@ def test_the_real_golden_list_loads_with_its_orth_divergence():
     # sample's 三玖, a name, joins near the head); 24 since set phrases are rows of their own (席を譲る and このまま join
     # above it); 25 since one-kanji dictionary words are list words where they stand on their own (門 joins above it);
     # 28 since the words the tagger cuts at their grammar are words of their own (それで, なんで and どこにも join above it);
-    # 29 since grammar expressions are rows of their own (とする joins above it).
-    assert index["中野"] == index["ナカノ"] == 29
-    # うう heads the list since the analyzer keys a word by its lemma's reading: its five rows (ウッ,
-    # ウウ, ウ, ウウッ, ウウウ) are one, 18 occurrences, ahead of 老婆's 16.
-    assert index["うう"] == index["うっ"] == 0
-    assert index["老婆"] == 1
+    # 29 since grammar expressions are rows of their own (とする joins above it). (All on the old samples' 中野 /
+    # ナカノ; on the public-domain samples, 2026-11-10, Hon-SM: the café episode's 早川 / ハヤカワ, rank 5.)
+    assert index["早川"] == index["ハヤカワ"] == 5
+    with open(path, encoding="utf-8-sig", newline="") as handle:
+        first = next(csv.DictReader(handle))
+    assert index[first["Word"]] == index[first["Orth"]] == 0, "the list's head row is rank 0 by either key"
+    assert index["極楽"] == 1
 
 
 # --- resolving the word field --------------------------------------------------------------------- #

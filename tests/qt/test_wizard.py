@@ -807,6 +807,21 @@ def test_a_rows_kind_names_its_count_a_book_in_parts_and_files_without_a_title(m
     assert r"3 videos · E:\Videos\Clips" in texts and r"2 files · E:\Downloads" in texts
 
 
+def test_a_row_copied_into_surasuras_own_folder_says_so_never_its_tier_folder(make):
+    # Hon-SM (Fresh-U's top finding): the samples showed "…\data\ja\HighPriority" beside each, 2.x's folder name; a
+    # title whose copy is in Surasura's own data folder (`ours`) says it was copied in, a folder read in place its path
+    rows = [{"name": "蜘蛛の糸", "count": 1, "folder": r"C:\Surasura\data\ja\HighPriority", "ours": True,
+             "kind": "reading"},
+            {"name": "星空ダイナー", "count": 12, "folder": r"E:\Shows\Hoshizora Diner", "ours": False, "kind": "shows"}]
+    wiz, *_ = make(api=FakeApi(rows=rows))
+    go_to(wiz, "shows")
+    page = wiz.page
+    assert wait_until(lambda: page.row_paints == 1)
+    texts = [w.text().replace("\u200b", "") for w in page.rows_part.findChildren(W.QLabel)]
+    assert S.ROW_LINE_OURS.format(count="a book") in texts and r"12 episodes · E:\Shows\Hoshizora Diner" in texts
+    assert not any("HighPriority" in t for t in texts)
+
+
 def test_an_empty_library_shows_no_rows(make):
     wiz, *_ = make(api=FakeApi(rows=[]))
     go_to(wiz, "shows")
@@ -1678,6 +1693,30 @@ def test_a_language_switch_keeps_the_choices_that_dont_depend_on_it(make):
     assert wiz.pages[2].covers.switch.isChecked() is False
     assert wiz.pages[4].make.isChecked() is False
     assert wiz.passed == {0, 2}                                    # What you know and Card order: for zh, not yet
+
+
+def test_zh_s_the_cards_page_says_chinese_cards_come_later_and_japanese_gets_its_own_line_back(make):
+    """Zh-S (2026-11-09): 3.0 makes cards in Japanese only (Connect parks every Chinese entry). Before, a Chinese learner
+    met the Japanese page's promise over a Chinese card picture, and the page-1 tip said "your cards in Chinese"."""
+    wiz, *_ = make()
+    assert "Japanese only" not in wiz.pages[4].line.text()          # Japanese: the page as it was
+    wiz.pages[0].channel.choose("zh", user=True)
+    wiz.next()
+    assert wiz.language == "zh"
+    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH and "Japanese only" in S.CARDS_LINE_ZH
+    assert "your cards in Chinese" not in S.LANGUAGE_TIPS["zh"]
+    while wiz.index:
+        wiz.back()
+    wiz.pages[0].channel.choose("ja", user=True)
+    wiz.next()
+    assert wiz.pages[4].line.text() == S.CARDS_LINE                 # switched back: the Japanese line again
+
+
+def test_zh_s_a_wizard_that_opens_in_chinese_says_it_on_the_cards_page_at_once(make):
+    """Zh-S review R1: *Set up again* in Chinese builds the page in Chinese — no switch to tell it."""
+    wiz, *_ = make(data={"target_language": "zh"})
+    assert wiz.language == "zh"
+    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH
 
 
 def test_a_second_pass_through_what_you_know_syncs_again_only_for_other_decks(make):

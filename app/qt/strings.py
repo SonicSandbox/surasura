@@ -62,6 +62,9 @@ FIN_UNPINNED = "{title}: done with its cards"
 FIN_CARDS_OUT = "{title}: its new cards are out of your order"
 FIN_CARDS_IN = "{title}: its new cards are back in your order"
 FIN_NO_FOLDER = "{title}'s folder isn't there any more"
+# Choice 24 (Sonic, 2026-11-09: "yes"): *Open its folder* opened another folder, its own gone (`own_folder.read_how`)
+FOLDER_GONE = {"up": "That folder is gone: opened the one above it",
+               "copy": "That folder is gone: opened Surasura's copy of it"}
 WHATIF_NAME = "What if you added {title} back"
 WHATIF_HEADING = "WHAT IF I ADDED IT BACK?"
 WHATIF_LINE = "At the top of Current it would bring {n} new words · {pct} known"

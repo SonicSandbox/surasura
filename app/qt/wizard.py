@@ -1450,6 +1450,14 @@ class KnownPage(_Page):
             self.deck_well.updateGeometry()
         _show(self.no_decks, not decks)
 
+    def keep_deck(self, deck):
+        """Choice 86: `deck`, the new deck page 5's setup made and joined to the known-words decks, kept among this
+        page's decks (beside the ticked ones; ticked once Anki is looked at again) — only while the page reads decks
+        from Anki, as the setup joins it only to a list that isn't empty."""
+        decks = self.chosen_decks()
+        if self._effective() == "anki" and decks and deck not in decks:
+            self._wanted = decks + [deck]
+
     def chosen_decks(self):
         """The ticked decks, and each saved deck the open Anki doesn't hold (another profile open, a deck renamed: R2-3)
         kept as it was — never dropped by a *Next*."""
@@ -2354,15 +2362,18 @@ class CardsPage(_Page):
         """A4M1-2b: the deck or the note type *Finish its setup* asked for (`miner_settings.plan`'s choices, Surasura's
         own first and chosen), else None: hidden."""
         asked = asked or {}
-        decks, notes = asked.get("deck"), asked.get("note_type")
+        decks, notes, new = asked.get("deck"), asked.get("note_type"), asked.get("new")
         for row, box, items in ((self.deck_row, self.ask_deck, decks), (self.note_row, self.ask_note, notes)):
             if items:
                 box.clear()
-                box.addItems([str(i) for i in items])
+                for i in items:                           # choice 86: a deck Anki lacks yet is named as new
+                    box.addItem(S.MINER_NEW_DECK.format(deck=i) if box is self.ask_deck and new and i == new
+                                else str(i), str(i))
                 box.setCurrentIndex(0)
             _show(row, bool(items))
         line = (S.MINER_ASK_FIELDS.format(note=asked.get("note") or "") if asked.get("why") == "fields"
-                else S.MINER_ASK_DECK if decks else S.MINER_ASK_NOTE if notes else "")
+                else S.MINER_ASK_NEW_DECK if decks and new else S.MINER_ASK_DECK if decks
+                else S.MINER_ASK_NOTE if notes else "")
         _set_text(self.ask_line, line)
         _show(self.ask_part, bool(decks or notes))
 
@@ -2370,8 +2381,8 @@ class CardsPage(_Page):
         """What the learner picked in the asked rows -> {"deck", "note_type"} (None where not asked), or None."""
         if self.ask_part.isHidden():
             return None
-        return {"deck": self.ask_deck.currentText() or None if not self.deck_row.isHidden() else None,
-                "note_type": self.ask_note.currentText() or None if not self.note_row.isHidden() else None}
+        return {"deck": self.ask_deck.currentData() or None if not self.deck_row.isHidden() else None,
+                "note_type": self.ask_note.currentData() or None if not self.note_row.isHidden() else None}
 
     def _copy_path(self):
         QApplication.clipboard().setText(self.path_text)
@@ -3784,6 +3795,13 @@ class SetupWizard(QWidget):
             # language switched while the setup ran never gets the other's decks)
             if answer[0] != "busy":         # busy: the choice stays for the next press (intent keeper)
                 page.show_ask(answer[1] if answer[0] == "ask" and language == self.language else None)
+            # choice 86: the new deck taken joined this language's known-words decks — page 2 keeps it, so a Back and
+            # Next there never writes its list without it (review MUST)
+            from app.connect import miner_settings
+            taken = (chosen or {}).get("deck")
+            if answer[0] in ("set-up", "ask") and language == self.language and taken == \
+                    miner_settings.new_deck(language):
+                self.pages[1].keep_deck(chosen["deck"])
             detail = answer[1] if isinstance(answer[1], str) else (answer[1] or {}).get("said") or ""
             if answer[0] in ("set-up", "ask", "busy") and detail:      # busy: what it set before (review)
                 detail = " " + detail

@@ -91,11 +91,31 @@ def test_junbans_deck_counts_only_when_it_is_one_of_this_languages_known_decks()
 
 def test_the_one_known_words_deck_is_asked_never_taken_unasked():
     """Reviews (alpha 5): a beginner's one known-words deck is often a premade course (Kaishi 1.5k); mined cards never go
-    in it unasked. It is asked, chosen first."""
+    in it unasked. It is asked — choice 86 (Sonic, 2026-11-09): a new deck of Surasura's own chosen first, so one quick
+    press never fills the course; the course deck right after it."""
     settings = {"anki_sync_decks": {"ja": ["日本語::Kaishi 1.5k"]}}
     assert MS.deck_for(settings, "ja", ["Default", "日本語::Kaishi 1.5k"]) is None
     what, asked = MS.plan(settings, "ja", FRESH, {"deck"}, Anki(["Default", "日本語::Kaishi 1.5k"]))
-    assert what == "ask" and asked["deck"][0] == "日本語::Kaishi 1.5k"
+    assert what == "ask" and asked["deck"] == ["Surasura", "日本語::Kaishi 1.5k", "Default"]
+    assert asked["new"] == "Surasura", "Anki lacks it: the menu names it as new"
+
+
+@pytest.mark.parametrize("language, known, decks, want, new", [
+    ("zh", ["中文::HSK"], ["中文::HSK", "Surasura"], ["Surasura Chinese", "中文::HSK", "Surasura"], "Surasura Chinese"),
+    ("ja", [], ["Default", "日本語::Kaishi 1.5k"], ["Surasura", "Default", "日本語::Kaishi 1.5k"], "Surasura"),
+    ("ja", ["日本語::Kaishi 1.5k"], ["Surasura", "日本語::Kaishi 1.5k"], ["Surasura", "日本語::Kaishi 1.5k"], None),
+    # joined to the known decks, asked again (an Anki Miner reset): still first, never the course (review)
+    ("ja", ["日本語::Kaishi 1.5k", "Surasura"], ["日本語::Kaishi 1.5k", "Surasura"], ["Surasura", "日本語::Kaishi 1.5k"],
+     None),
+    ("ja", ["日本語::Kaishi 1.5k", "日本語::Mining"], ["日本語::Kaishi 1.5k", "日本語::Mining"],
+     ["日本語::Kaishi 1.5k", "日本語::Mining"], None),               # several decks of their own: as before
+])
+def test_choice_86_the_new_deck_is_one_per_language_and_never_offered_twice(language, known, decks, want, new):
+    """Choice 86: a Chinese learner's new deck is never the Japanese one (a deck's cards count for one language); with
+    no known-words deck the menu still opens on Surasura's own, never Anki's first deck (it may be a course); a
+    "Surasura" deck Anki has already is offered once, first, not as new."""
+    what, asked = MS.plan({"anki_sync_decks": {language: known}}, language, FRESH, {"deck"}, Anki(decks))
+    assert what == "ask" and (asked["deck"], asked["new"]) == (want, new)
 
 
 def test_several_known_decks_and_no_junban_deck_is_not_guessed():
@@ -536,6 +556,123 @@ def test_the_deck_chosen_is_written_while_the_note_type_is_asked_and_never_asked
     assert result == M.ASK and asked["note_type"] == ["Lapis"] and asked["deck"] is None
     assert world["imports"][0]["values"] == {"anki_deck_name": "中文::HSK"}
     assert world["runs"] == [("zh", "surasura-1")], "its dictionaries never wait for the answer"
+
+
+# --- choice 86: the new deck of Surasura's own, made on the press that takes it ----------------------------------- #
+KAISHI = {"anki_sync_decks": {"ja": ["日本語::Kaishi 1.5k"], "zh": ["中文::句子"]}}
+
+
+class Saves:
+    """The settings service's `set(changes, update=None)` over a settings.json as it is when written (`file`): each
+    call's changes, then its `update` run on the file."""
+
+    def __init__(self, file=None):
+        self.file, self.calls = json.loads(json.dumps(file or {})), []
+
+    def __call__(self, changes, update=None):
+        self.calls.append(dict(changes))
+        self.file.update(changes)
+        if update is not None:
+            update(self.file)
+
+
+@pytest.fixture
+def anki_writes(world, monkeypatch):
+    """AnkiConnect's deck names and its writes, stood in on `world["anki"]`: every write recorded with whether the
+    one Anki writer lock was held; `busy` makes the lock refuse (another writer)."""
+    from app import locks
+    state = {"writes": [], "held": False, "busy": None}
+
+    class Held:
+        def __enter__(self):
+            state["held"] = True
+
+        def __exit__(self, *exc):
+            state["held"] = False
+
+    def writer(verb, wait=0.0, cancel=None, on_wait=None):
+        if state["busy"] is not None:
+            raise locks.Busy(anki_connect.WRITER_LOCK, {"verb": state["busy"]})
+        return Held()
+
+    def invoke(action, url, timeout=30, **params):
+        state["writes"].append((action, params, state["held"]))
+        if action == "createDeck":
+            world["anki"]._decks.append(params["deck"])
+        return 1
+    def deck_names(url):
+        state["writes"].append(("deckNames", {}, state["held"]))      # (a read, recorded for where the lock stands)
+        return world["anki"].decks()
+    monkeypatch.setattr(anki_connect, "deck_names", deck_names)
+    monkeypatch.setattr(anki_connect, "writer", writer)
+    monkeypatch.setattr(anki_connect, "invoke", invoke)
+    return state
+
+
+def test_choice_86_the_new_deck_taken_is_made_in_anki_and_counts_for_known_words(world, anki_writes):
+    """A Kaishi learner takes the menu's first choice: the deck is made in Anki (holding the one writer lock), Anki
+    Miner puts the cards in it, and it joins the decks known words are read from — the course deck kept beside it,
+    the other language's untouched; all of it said."""
+    world["anki"] = Anki(["Default", "日本語::Kaishi 1.5k"], {"Lapis": LAPIS}, {"日本語::Kaishi 1.5k": "Lapis"})
+    world["items"] = ["deck"]
+    # the file as it is when the write lands: Chinese decks saved by another window while the setup ran (review)
+    saved = Saves({"anki_sync_decks": {"ja": ["日本語::Kaishi 1.5k"], "zh": ["中文::句子", "中文::HSK"]}})
+    result, said = M.finish_setup(KAISHI, "ja", chosen={"deck": "Surasura"}, save=saved)
+    assert result == M.SET_UP
+    assert anki_writes["writes"] == [("deckNames", {}, True), ("createDeck", {"deck": "Surasura"}, True)], \
+        "Anki's decks read and the deck made under one hold of the lock"
+    assert world["imports"][-1]["values"]["anki_deck_name"] == "Surasura"
+    assert saved.file["anki_sync_decks"] == {"ja": ["日本語::Kaishi 1.5k", "Surasura"], "zh": ["中文::句子", "中文::HSK"]}
+    assert saved.calls == [{}], "merged onto the file, never the whole key from the press's copy"
+    assert M.SAID_DECK_MADE.format(deck="Surasura") in said and M.SAID_DECK_KNOWN in said
+    assert "New Japanese cards go in “Surasura”." in said
+
+
+def test_choice_86_a_surasura_deck_anki_has_is_never_made_again_and_no_known_decks_stay_none(world, anki_writes):
+    """Anki has "Surasura" already (the press before made it): nothing is written to Anki. A learner who reads no
+    Anki deck for known words keeps that choice: the deck isn't added."""
+    world["anki"] = Anki(["Surasura", "Default"], {"Lapis": LAPIS}, {"Surasura": "Lapis"})
+    world["items"] = ["deck"]
+    saved = Saves()
+    result, said = M.finish_setup(dict(KAISHI, anki_sync_decks={"ja": ["日本語::Kaishi 1.5k", "Surasura"]}), "ja",
+                                  chosen={"deck": "Surasura"}, save=saved)
+    assert result == M.SET_UP and anki_writes["writes"] == [("deckNames", {}, True)] and saved.calls == []
+    assert M.SAID_DECK_MADE.format(deck="Surasura") not in said
+    world["anki"] = Anki(["Default"], {"Lapis": LAPIS})
+    world["imports"] = []
+    anki_writes["writes"] = []
+    result, said = M.finish_setup({}, "ja", chosen={"deck": "Surasura"}, save=saved)
+    assert anki_writes["writes"][-1] == ("createDeck", {"deck": "Surasura"}, True) and saved.calls == []
+    assert M.SAID_DECK_KNOWN not in said and world["imports"][-1]["values"]["anki_deck_name"] == "Surasura"
+
+
+def test_choice_86_another_writer_or_anki_closed_leaves_the_deck_for_the_next_press(world, anki_writes):
+    """順 reordering holds Anki: no deck made, nothing written over, the press says who is writing (never "finished");
+    Anki closed: its own line. The language and its dictionaries still go on."""
+    world["anki"] = Anki(["日本語::Kaishi 1.5k"], {"Lapis": LAPIS})
+    world["items"] = ["deck", "dictionary"]
+    anki_writes["busy"] = "順 reorder"
+    result, detail = M.finish_setup(KAISHI, "ja", chosen={"deck": "Surasura"}, save=Saves())
+    assert result == M.SET_UP_REST and detail.startswith("順 reorder is writing to Anki")
+    assert anki_writes["writes"] == [] and all("anki_deck_name" not in i["values"] for i in world["imports"])
+    assert world["runs"], "its dictionaries never wait for the deck"
+    anki_writes["busy"] = None
+    world["anki"].closed = True
+    world["imports"], world["runs"] = [], []                # the next press, its check still naming the deck
+    result, detail = M.finish_setup(KAISHI, "ja", chosen={"deck": "Surasura"}, save=Saves())
+    assert result == M.SET_UP_REST and detail.startswith(M.ANKI_CLOSED_REST)
+    assert [w[0] for w in anki_writes["writes"]] == ["deckNames"], "Anki closed at the read: nothing made"
+
+
+def test_choice_86_a_known_words_list_that_cant_be_saved_is_said_the_deck_still_taken(world, anki_writes):
+    world["anki"] = Anki(["日本語::Kaishi 1.5k"], {"Lapis": LAPIS})
+    world["items"] = ["deck"]
+
+    def refused(changes, update=None):
+        raise OSError("settings.json is read-only")
+    result, said = M.finish_setup(KAISHI, "ja", chosen={"deck": "Surasura"}, save=refused)
+    assert result == M.SET_UP and M.DECK_KNOWN_NOT_SAVED in said and M.SAID_DECK_KNOWN not in said
+    assert world["imports"][-1]["values"]["anki_deck_name"] == "Surasura"
 
 
 def test_no_note_type_anki_miner_can_fill_is_said_after_the_rest_never_asked_in_a_loop(world):

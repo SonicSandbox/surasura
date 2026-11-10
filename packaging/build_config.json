@@ -17,7 +17,7 @@
   "release": {
     "min_from": "3.0.0",
     "installer_min_from": "2.5",
-    "telemetry_url": "https://surasura-telemetry.sonicswain.workers.dev"
+    "telemetry_url": "https://api.surasura.dev"
   },
   "parts": [
     {"name": "app", "paths": ["Surasura.exe", "surasura-cli.exe", "updater.exe", "README.md", "RELEASE_NOTES.md",

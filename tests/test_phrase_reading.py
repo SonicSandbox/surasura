@@ -4,7 +4,7 @@ The row's identity stays (Word, Reading) — the lemmas joined and the dictionar
 ヨイカンジ) — but the journey shows the library's spelling (Orth: いい感じ), and so it shows that spelling's reading
 too: `Kana` (plan_rules.display_reading — kana as written, kanji as the dictionary reads them). And a phrase that ends
 in a form of its own is that form only: ごめんなさい is never named ごめんなさる, だけじゃない is no だけでなく
-(phrases.fixed_form, MATCHER_VERSION 6). Real lines: tests/Test Resources/ja/phrase_reading_sample.srt.
+(phrases.fixed_form, MATCHER_VERSION 6). Real lines: tests/Test Resources/ja/phrase_reading/phrase_reading_sample.srt (a folder of its own: the store tests' show names come from the top folder's files).
 """
 import json
 import os
@@ -80,7 +80,7 @@ def run(tmp_path, monkeypatch):
     root = Path(os.environ["SURASURA_TEST_ROOT"])
     high = root / "data" / "ja" / "HighPriority"
     high.mkdir(parents=True)
-    shutil.copy(os.path.join(RES, "phrase_reading_sample.srt"), high / "phrase_reading_sample.srt")
+    shutil.copy(os.path.join(RES, "phrase_reading", "phrase_reading_sample.srt"), high / "phrase_reading_sample.srt")
     uf = root / "User Files" / "ja"
     uf.mkdir(parents=True)
     (uf / "KnownWord.json").write_text(json.dumps({"words": []}), encoding="utf-8")

@@ -190,8 +190,9 @@ def test_the_window_gets_five_qt_modules_and_their_licences(tmp_path):
     for unused in ("PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtMultimedia", "PyQt6.QtPdf", "PyQt6.uic"):
         assert unused in main["excludes"]
     assert {"app.qt", "app.qt.shell"} <= set(main["hiddenimports"])
-    licence_dests = {dest for _src, dest in main["datas"] if dest.startswith("licenses/")}
-    assert {"licenses/PyQt6", "licenses/PyQt6-Qt6"} <= licence_dests
+    # The licence texts are no spec's: package_app.py copies every bundled part's after the freeze (step 3b), so the
+    # spec puts none into the program (two copies of PyQt6's would ride under two names).
+    assert not [dest for _src, dest in main["datas"] if dest.startswith("licenses")]
     assert "PyQt6" in cli["excludes"]
 
 
@@ -243,7 +244,8 @@ def test_each_program_file_falls_in_its_part():
     parts = package_app.load_build_config()["parts"]
     cases = {"Surasura.exe": "app", "updater.exe": "app", "_internal/base_library.zip": "app",
              "_internal/templates/web_app.html": "app", "_internal/build_stamp.json": "app",
-             "_internal/PyQt6/Qt6/bin/Qt6Core.dll": "qt", "_internal/licenses/PyQt6/LICENSE": "qt",
+             "_internal/PyQt6/Qt6/bin/Qt6Core.dll": "qt",
+             "_internal/licenses/PyQt6-6.11.0/licenses/LICENSE": "app", "_internal/licenses/INDEX.txt": "app",
              "_internal/unidic_lite/dicdir/sys.dic": "dict", "_internal/jieba/dict.txt": "dict",
              "_internal/defaults/ja/frequency_list_ja_global50k.csv": "dict",
              "tsubasa.exe": "tsubasa", "_internal/tsubasa/data/aliases.tsv.gz": "tsubasa",
@@ -272,23 +274,61 @@ def _program(tmp_path, qt=True, licences=True):
         for module in ("QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtSvg"):
             (internal / "PyQt6" / f"{module}.pyd").write_bytes(b"MZ")
         (internal / "PyQt6" / "sip.cp311-win_amd64.pyd").write_bytes(b"MZ")
-        if licences:
-            for dist in ("PyQt6", "PyQt6-Qt6"):
-                (internal / "licenses" / dist).mkdir(parents=True)
-                (internal / "licenses" / dist / "LICENSE").write_text("GNU GENERAL PUBLIC LICENSE\n", encoding="utf-8")
+    if licences:                                    # step 3b, from the made-up site-packages (FAKE_SITE)
+        assert package_app.gather_licences(str(folder)) == []
     return folder, config
 
 
+def fake_dist(site, name, version, files, licence="MIT", top=None):
+    """A distribution installed in `site` as pip leaves it: <name>-<version>.dist-info with METADATA and a RECORD that
+    lists `files` {relative path: text} (written too) and the dist-info's own two. -> the dist-info folder."""
+    info = f"{name.replace('-', '_')}-{version}.dist-info"
+    (site / info).mkdir(parents=True)
+    (site / info / "METADATA").write_text(f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n"
+                                          f"License-Expression: {licence}\n", encoding="utf-8")
+    rows = [f"{info}/METADATA,,", f"{info}/RECORD,,"]
+    for rel, text in files.items():
+        rel = rel.replace("{info}", info)
+        if not rel.startswith(".."):                # a script outside site-packages: in the RECORD only
+            (site / rel).parent.mkdir(parents=True, exist_ok=True)
+            (site / rel).write_text(text, encoding="utf-8")
+        rows.append(f"{rel},,")
+    (site / info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return site / info
+
+
+@pytest.fixture(scope="session")
+def fake_site(tmp_path_factory):
+    """The build Python's site-packages in miniature: PyQt6, Qt and sip as their wheels install them (their licence
+    texts in the dist-info), what `_program`'s stand-in programs carry."""
+    site = tmp_path_factory.mktemp("site-packages")
+    fake_dist(site, "PyQt6", "6.11.0", {"PyQt6/__init__.py": "", "{info}/licenses/LICENSE":
+                                        "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n"}, "GPL-3.0-only")
+    fake_dist(site, "PyQt6-Qt6", "6.11.2", {"PyQt6/Qt6/bin/Qt6Core.dll": "MZ", "{info}/LICENSE":
+                                            "GNU LESSER GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n"}, "LGPL v3")
+    fake_dist(site, "PyQt6_sip", "13.13.0", {"PyQt6/sip.cp311-win_amd64.pyd": "MZ",
+                                             "{info}/licenses/LICENSE": "BSD 2-Clause License\n"}, "BSD-2-Clause")
+    fake_dist(site, "pyinstaller", "6.18.0", {"PyInstaller/__init__.py": "", "{info}/licenses/COPYING.txt":
+                                              "GNU GENERAL PUBLIC LICENSE\nVersion 2, June 1991\n"}, "GPL-2.0-or-later")
+    return site
+
+
 @pytest.fixture(autouse=True)
-def _stand_in_archives(monkeypatch):
+def _stand_in_archives(monkeypatch, fake_site):
     """`_program`'s programs are two-byte stand-ins, not PyInstaller archives: they freeze no module unless a test
-    says otherwise (FROZEN[exe name] = {module names}); the real reader is tested on its own below."""
+    says otherwise (FROZEN[exe name] = {module names}); the real reader is tested on its own below. The licence texts
+    come from a made-up site-packages (`fake_site`), never this Python's: a test reads the same parts everywhere.
+    Surasura.exe reads as an archive of Surasura's own (so its PyInstaller bootloader's licence is gathered too)."""
     FROZEN.clear()
+    FROZEN["Surasura.exe"] = {"app", "app.analyzer"}
     monkeypatch.setattr(package_app, "frozen_modules", lambda exe: set(FROZEN.get(os.path.basename(exe), ())))
+    monkeypatch.setattr(package_app, "archive_modules", lambda exe: set(FROZEN.get(os.path.basename(exe), ())))
+    monkeypatch.setattr(package_app, "LICENCE_SITE", [str(fake_site)])
 
 
 FROZEN = {}
 _REAL_FROZEN_MODULES = package_app.frozen_modules      # taken at import, before the fixture
+_REAL_ARCHIVE_MODULES = package_app.archive_modules    # what the real frozen_modules reads with
 
 
 def _restamp(folder, change):
@@ -601,9 +641,10 @@ def test_files_of_a_left_out_module_under_internal_fail_the_check(tmp_path):
     assert len(failures) == 1 and "files of modules the build config leaves out" in failures[0] and "voices.json"         in failures[0]
 
 
-def test_the_archive_reader_says_none_for_a_file_that_is_no_archive(tmp_path):
+def test_the_archive_reader_says_none_for_a_file_that_is_no_archive(tmp_path, monkeypatch):
     """The real reader (PyInstaller's): a stand-in program, an empty file and a missing one are no archive."""
     pytest.importorskip("PyInstaller.archive.readers")
+    monkeypatch.setattr(package_app, "archive_modules", _REAL_ARCHIVE_MODULES)
     (tmp_path / "Surasura.exe").write_bytes(b"MZ")
     (tmp_path / "empty.exe").write_bytes(b"")
     for name in ("Surasura.exe", "empty.exe", "missing.exe"):
@@ -623,13 +664,15 @@ def test_an_archive_naming_none_of_surasuras_modules_is_no_reading(monkeypatch):
             return type("Pyz", (), {"toc": {"json": None, "encodings": None}})()       # the stdlib alone
 
     monkeypatch.setattr(readers, "CArchiveReader", Archive)
+    monkeypatch.setattr(package_app, "archive_modules", _REAL_ARCHIVE_MODULES)
     assert _REAL_FROZEN_MODULES("no archive.exe") is None
     assert _REAL_FROZEN_MODULES("pyz without app.exe") is None
 
 
-def test_the_real_reader_reads_the_built_program_when_there_is_one():
+def test_the_real_reader_reads_the_built_program_when_there_is_one(monkeypatch):
     """Against this copy's own build, when one is there: the reader finds Surasura's own modules in it."""
     pytest.importorskip("PyInstaller.archive.readers")
+    monkeypatch.setattr(package_app, "archive_modules", _REAL_ARCHIVE_MODULES)
     exes = [os.path.join(PROJECT, "dist", "Surasura", n) for n in ("Surasura.exe", "surasura-cli.exe")]
     exes = [e for e in exes if os.path.isfile(e)]
     if not exes:
@@ -648,17 +691,37 @@ def test_an_empty_folder_of_a_left_out_module_under_internal_fails_the_check(tmp
 
 
 def test_missing_qt_licences_fail_the_folder_and_the_zip(tmp_path):
+    # No step 3b: no INDEX.txt, so neither the folder nor its zip passes; gathered, both do.
     import shutil
     folder, config = _program(tmp_path, licences=False)
     failures, _ = package_app.check_program(str(folder), config)
-    assert sum("licenses/" in f for f in failures) == 2
+    assert len(failures) == 1 and "_internal/licenses/INDEX.txt can't be read" in failures[0]
     shutil.make_archive(str(tmp_path / "Surasura_v3.0.0"), "zip", root_dir=str(tmp_path), base_dir="Surasura")
-    assert len(package_app.check_zip_licences(str(tmp_path / "Surasura_v3.0.0.zip"))) == 2
-    for dist in ("PyQt6", "PyQt6-Qt6"):
-        (folder / "_internal" / "licenses" / dist).mkdir(parents=True)
-        (folder / "_internal" / "licenses" / dist / "LICENSE").write_text("LGPL\n", encoding="utf-8")
+    assert package_app.check_zip_licences(str(tmp_path / "Surasura_v3.0.0.zip")) == [
+        "Surasura_v3.0.0.zip holds no _internal/licenses/INDEX.txt"]
+    assert package_app.gather_licences(str(folder)) == []
+    assert package_app.check_program(str(folder), config)[0] == []
     shutil.make_archive(str(tmp_path / "Surasura_v3.0.0"), "zip", root_dir=str(tmp_path), base_dir="Surasura")
     assert package_app.check_zip_licences(str(tmp_path / "Surasura_v3.0.0.zip")) == []
+
+
+def test_a_program_with_pyqt6_whose_index_lacks_qts_texts_fails_the_folder_and_the_zip(tmp_path):
+    # PyQt6 (GPL-3.0) and Qt (LGPL-3.0) never ship without their texts, whatever else the index says: here an INDEX.txt
+    # that names the two with no files (as if the build Python's wheels had come without theirs).
+    import shutil
+    folder, config = _program(tmp_path)
+    index = folder / "_internal" / "licenses" / "INDEX.txt"
+    rows = [" · ".join(line.split(" · ")[:3] + ["(none)"]) if line.startswith(("PyQt6 · ", "PyQt6-Qt6 · ")) else line
+            for line in index.read_text(encoding="utf-8").splitlines()]
+    index.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    failures, _ = package_app.check_program(str(folder), config)
+    assert sorted(f for f in failures if "names no licence text of" in f) == [
+        "_internal/licenses/INDEX.txt names no licence text of PyQt6",
+        "_internal/licenses/INDEX.txt names no licence text of PyQt6-Qt6"]
+    shutil.make_archive(str(tmp_path / "Surasura_v3.0.0"), "zip", root_dir=str(tmp_path), base_dir="Surasura")
+    assert package_app.check_zip_licences(str(tmp_path / "Surasura_v3.0.0.zip")) == [
+        "Surasura_v3.0.0.zip's _internal/licenses/INDEX.txt names no licence text of PyQt6",
+        "Surasura_v3.0.0.zip's _internal/licenses/INDEX.txt names no licence text of PyQt6-Qt6"]
 
 
 def test_a_download_zip_without_surasuras_own_licence_files_fails_its_check(tmp_path):

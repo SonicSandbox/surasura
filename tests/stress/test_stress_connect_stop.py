@@ -33,7 +33,7 @@ def _slowed(steps, rnd):
 @pytest.mark.parametrize("round_", range(ROUNDS))
 def test_a_stop_pressed_anywhere_then_mine_now_makes_every_word_exactly_once(tmp_path, round_):
     seed = random.randrange(1 << 30)
-    rnd = random.Random(seed)
+    rnd, pace = random.Random(seed), random.Random(seed + 1)    # one per thread: the seed replays the same draws
     path = str(tmp_path / "ledger.sqlite")
     plan = {"line": {"ja": [1]}}
     with Ledger(path) as ledger:
@@ -42,7 +42,7 @@ def test_a_stop_pressed_anywhere_then_mine_now_makes_every_word_exactly_once(tmp
         pressed = threading.Event()
 
         def press():
-            time.sleep(rnd.uniform(0, 0.03))            # (when it lands is the point: anywhere in the run)
+            time.sleep(pace.uniform(0, 0.03))           # (when it lands is the point: anywhere in the run)
             with Ledger(path) as window:
                 window.ask_stop(job_id)
             pressed.set()

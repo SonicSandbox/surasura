@@ -56,7 +56,10 @@ def test_parts_written_by_many_threads_end_with_the_call_whole_or_not_at_all(tmp
                 ok = False
             ran = list(started)                         # every write the call started, frozen as it returned
             on_disk = sorted(str(folder / name) for name in os.listdir(folder))
-            pool.submit(lambda: None).result()          # the pool idle: anything still writing would show now
+            idle = threading.Barrier(threads + 1)       # every worker at the barrier: none can still be writing
+            for _ in range(threads):
+                pool.submit(idle.wait, 30)
+            idle.wait(30)
             assert sorted(str(folder / name) for name in os.listdir(folder)) == on_disk, \
                 f"seed {seed} round {r}: a part written after the call ended"
             assert started == ran, f"seed {seed} round {r}: a write started after the call ended"

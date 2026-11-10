@@ -40,6 +40,9 @@ def site(tmp_path, monkeypatch):
               "BSD-3-Clause")
     # A single-module distribution: its root is the module's name.
     fake_dist(root, "six", "1.17.0", {"six.py": "", "{info}/LICENSE": "Copyright (c) 2010-2024 Benjamin Peterson\n"})
+    fake_dist(root, "tsubasa-sync", "0.1.11", {"tsubasa/__init__.py": "", "{info}/licenses/LICENSE":
+                                               "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n"},
+              "GPL-3.0-or-later")
     # Installed, never carried: never listed.
     fake_dist(root, "pytest-cov", "6.0.0", {"pytest_cov/__init__.py": "", "{info}/LICENSE": "MIT\n"})
     fake_dist(root, "pyinstaller", "6.18.0", {"PyInstaller/__init__.py": "", "{info}/licenses/COPYING.txt":
@@ -77,7 +80,7 @@ def test_every_carried_part_gets_its_texts_and_a_row_and_nothing_else_is_listed(
     assert package_app.gather_licences(str(folder)) == []
     rows = _index(folder)
     assert sorted(rows, key=str.lower) == ["fugashi", "jieba", "numpy", "OpenCC", "PyInstaller", "pysrt", "six",
-                                           "SQLite", "unidic-lite"]
+                                           "SQLite", "tsubasa-sync", "unidic-lite"]
     assert rows["fugashi"] == ("fugashi", "1.5.2", "MIT AND BSD-3-Clause",
                                ["fugashi-1.5.2/licenses/LICENSE", "fugashi-1.5.2/licenses/LICENSE.mecab"])
     assert rows["unidic-lite"][3] == ["unidic-lite-1.0.8/licenses/LICENSE", "unidic-lite-1.0.8/unidic_lite/dicdir/COPYING"]
@@ -122,14 +125,21 @@ def test_a_licence_text_gone_empty_or_a_part_left_out_of_the_index_fails_the_che
 
 
 def test_an_index_of_an_older_build_python_fails_the_check(tmp_path, site):
-    """A text of fugashi 1.5.2 in a program frozen from fugashi 1.5.3 is the wrong text: the index names the version."""
+    """A text of fugashi 1.5.2 in a program frozen from fugashi 1.5.3 is the wrong text: the index names the version,
+    and a row at another version than the build Python's reads as a part it doesn't name."""
     folder = _built(tmp_path)
     assert package_app.gather_licences(str(folder)) == []
+    index = folder / "_internal" / "licenses" / "INDEX.txt"
+    index.write_text(index.read_text(encoding="utf-8").replace("fugashi · 1.5.2 · ", "fugashi · 1.5.1 · "),
+                     encoding="utf-8")
+    assert package_app.check_licences(str(folder)) == [
+        "_internal/licenses/INDEX.txt doesn't name fugashi 1.5.2, which the program carries"]
+    # The build Python's fugashi moved on since: --check says the Python differs, never that texts are missing.
     shutil.rmtree(site / "fugashi-1.5.2.dist-info")
     fake_dist(site, "fugashi", "1.5.3", {"fugashi/__init__.py": "", "{info}/licenses/LICENSE": "MIT License\n"},
               "MIT AND BSD-3-Clause")
-    assert package_app.check_licences(str(folder)) == [
-        "_internal/licenses/INDEX.txt doesn't name fugashi 1.5.3, which the program carries"]
+    failures = package_app.check_licences(str(folder))
+    assert len(failures) == 1 and "was written by another Python" in failures[0]
 
 
 def test_a_row_without_texts_passes_only_as_a_reviewed_exception(tmp_path, site, monkeypatch):
@@ -143,24 +153,66 @@ def test_a_row_without_texts_passes_only_as_a_reviewed_exception(tmp_path, site,
     assert package_app.gather_licences(str(folder))[0].startswith("SQLite ")
 
 
-def test_a_dll_from_nowhere_stops_the_build_and_fails_the_check(tmp_path, site):
+def test_a_dll_or_module_from_nowhere_stops_the_build_and_fails_the_check(tmp_path, site):
     """A DLL that came from neither this Python, nor a carried package, nor a part with its text (PyInstaller found it
-    on the build machine's PATH) ships under a licence nobody looked at."""
+    on the build machine's PATH), or a module frozen in from an editable install with no RECORD, ships under a licence
+    nobody looked at."""
     folder = _built(tmp_path)
     (folder / "_internal" / "libiconv-2.dll").write_bytes(b"MZ")
     (folder / "_internal" / "_cffi_like.cp311-win_amd64.pyd").write_bytes(b"MZ")
+    FROZEN[package_app.CLI_EXE_NAME] = {"kotoba_tool", "kotoba_tool.split"}
     failures = package_app.gather_licences(str(folder))
-    assert len(failures) == 2 and all("found on the build machine's PATH?" in f for f in failures)
-    assert package_app.stray_binaries(str(folder)) == ["_cffi_like.cp311-win_amd64.pyd", "libiconv-2.dll"]
-    # A package's own extension module and Python's own DLLs are no strays.
+    assert len(failures) == 3 and all("found on the build machine's PATH?" in f for f in failures)
+    assert package_app.unclaimed(str(folder)) == ["_cffi_like.cp311-win_amd64.pyd", "kotoba_tool", "libiconv-2.dll"]
+    # A package's own extension module, Python's own DLLs, its standard library and PyInstaller's folders are claimed.
     fake_dist(site, "cffi-like", "1.0", {"_cffi_like.cp311-win_amd64.pyd": "MZ", "{info}/LICENSE": "MIT\n"})
     (folder / "_internal" / "libiconv-2.dll").unlink()
-    (folder / "_internal" / "_socket.pyd").write_bytes(b"MZ")                 # Python's own (its DLLs folder)
-    (folder / "_internal" / "VCRUNTIME140.dll").write_bytes(b"MZ")
-    assert package_app.stray_binaries(str(folder)) == []
+    FROZEN[package_app.CLI_EXE_NAME] = {"json", "email.parser", "encodings"}
+    for name in ("_socket.pyd", "VCRUNTIME140.dll", "_tcl_data"):            # Python's own (its DLLs folder), Tk's
+        (folder / "_internal" / name).write_bytes(b"MZ")
+    assert package_app.unclaimed(str(folder)) == []
     assert package_app.gather_licences(str(folder)) == [] and package_app.check_licences(str(folder)) == []
+    assert _index(folder)["Microsoft Visual C++ runtime"][3] == []              # a reviewed exception: Python's terms
     (folder / "_internal" / "libiconv-2.dll").write_bytes(b"MZ")
     assert len(package_app.check_licences(str(folder))) == 1
+
+
+def test_a_module_frozen_into_the_command_line_alone_is_carried_and_a_pth_folders_modules_are_its_packages(tmp_path,
+                                                                                                          site):
+    # surasura-cli.exe has its own Analysis: a library frozen only there ships too. pywin32 puts win32/lib on the path
+    # with a .pth: win32con (frozen as a top-level module) is pywin32's.
+    fake_dist(site, "pywin32", "312", {"pywin32.pth": "# .pth file for the PyWin32 extensions\nwin32\nwin32\\lib\n"
+                                                      "import pywin32_bootstrap\n", "win32/lib/win32con.py": "",
+                                       "win32/License.txt": "PSF\n"}, "PSF")
+    folder = _built(tmp_path, entries=())
+    FROZEN[package_app.CLI_EXE_NAME] = {"six", "win32con"}
+    assert package_app.unclaimed(str(folder)) == []
+    assert package_app.gather_licences(str(folder)) == []
+    assert {"six", "pywin32"} <= set(_index(folder))
+    assert _index(folder)["pywin32"][3] == ["pywin32-312/win32/License.txt"]
+
+
+def test_check_from_another_python_says_so_instead_of_reading_its_versions_as_missing_texts(tmp_path, site,
+                                                                                            monkeypatch):
+    # INDEX.txt names its Python by version and its packages' fingerprint — never a path (a path names the build
+    # machine's user). --check from a Python with other packages says which, and checks the texts alone.
+    folder = _built(tmp_path)
+    assert package_app.gather_licences(str(folder)) == []
+    text = (folder / "_internal" / "licenses" / "INDEX.txt").read_text(encoding="utf-8")
+    assert package_app.BUILD_PYTHON_MARK + package_app._python_fingerprint(package_app.installed_distributions()) in text
+    assert sys.executable not in text and os.path.expanduser("~") not in text
+    fake_dist(site, "six-extra", "0.1", {"six_extra/__init__.py": "", "{info}/LICENSE": "MIT\n"})
+    failures = package_app.check_licences(str(folder))
+    assert len(failures) == 1 and "was written by another Python" in failures[0]
+    (folder / "_internal" / "licenses" / "jieba-0.42.1" / "LICENSE").unlink()
+    assert len(package_app.check_licences(str(folder))) == 2                  # the texts are still checked
+
+
+def test_a_licence_that_would_break_the_index_stops_the_build(tmp_path, site):
+    fake_dist(site, "kana-utils", "0.3.0", {"kana_utils/__init__.py": "", "{info}/LICENSE": "MIT\n"}, "MIT · BSD")
+    folder = _built(tmp_path, entries=("kana_utils",))
+    assert package_app.gather_licences(str(folder)) == [
+        "kana-utils's licence or a text's name holds ' · ' or ', ', which INDEX.txt can't carry"]
 
 
 def test_qts_openssl_from_the_path_ships_with_its_text(tmp_path, site):
@@ -169,7 +221,8 @@ def test_qts_openssl_from_the_path_ships_with_its_text(tmp_path, site):
         (folder / "_internal" / name).write_bytes(b"MZ")
     assert package_app.gather_licences(str(folder)) == []
     row = _index(folder)["OpenSSL"]
-    assert row[2] == "Apache-2.0 (Qt's TLS: libcrypto-3-x64.dll, libssl-3-x64.dll)" and row[3] == ["OpenSSL/LICENSE.txt"]
+    # The stand-in DLLs report no version (a real one does: 'OpenSSL-3.5.8/'), so the folder is the name alone.
+    assert row[1:] == ("-", "Apache-2.0 (Qt's TLS: libcrypto-3-x64.dll and libssl-3-x64.dll)", ["OpenSSL/LICENSE.txt"])
     assert (folder / "_internal" / "licenses" / "OpenSSL" / "LICENSE.txt").read_text(encoding="utf-8").lstrip() \
         .startswith("Apache License")
 

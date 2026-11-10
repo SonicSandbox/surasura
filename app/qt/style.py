@@ -280,6 +280,7 @@ QLabel#confirmhead {{ color: {c['ink']}; {font('body')} font-weight: 600; }}
 QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; border: 0; }}
 QPushButton[kind="danger"]:focus {{ border: 2px solid {c['ink']}; }}
 QScrollArea#foldersscroll, QWidget#foldersbody {{ background: transparent; border: 0; }}
+QScrollArea#secondaryscroll, QWidget#secondarybody {{ background: transparent; border: 0; }}
 QListWidget#windowlist {{ background: {c['bg']}; border-radius: {theme.RADII['button']}px; padding: {px(4)}; }}
 QLabel#ankistate {{ color: {c['ink-dim']}; {font('body')} font-weight: 600; }}
 QLabel#ankistate[state="connected"] {{ color: {c['ok']}; }}

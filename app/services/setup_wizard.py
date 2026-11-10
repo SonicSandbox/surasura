@@ -128,6 +128,29 @@ def preselect(settings, language):
     return out
 
 
+def keeps_order(settings, how, shown):
+    """*Card order*'s *keep them in order* switch while the learner hasn't touched it, for page 2's way `how` -> on /
+    off: off after *Start fresh* on a profile that never finished setup (Fresh-U row 2: a fresh start never moves the
+    cards of a deck already there — the learner turns it on); else `shown`, the page's own preselect."""
+    if how == "fresh" and _new(settings):
+        return False
+    return bool(shown)
+
+
+def new_cards(settings, deck):
+    """(A worker; *Card order*.) How many new cards `deck` holds — the cards *keep them in order* moves (順's own
+    query: unsuspended, never one in a filtered deck) — or None (no deck, 順 not in this Surasura, Anki not answering).
+    Reads Anki only. Never raises."""
+    if not deck:
+        return None
+    try:
+        from app import anki_connect
+        from modules.junban.ankiconnect import new_card_query
+        return len(anki_connect.find_cards(anki_connect.address(settings or {}), new_card_query(deck)))
+    except Exception:
+        return None
+
+
 def junban_deck(settings, language):
     """順's deck for `language`, or None — None while it is the deck recorded for the other language (AD-1)."""
     from app import replan_preview
@@ -155,11 +178,17 @@ def _reads(settings, language):
     return decks, junban_deck(settings, language), ((settings.get("logic") or {}).get("selection") or {}).get("band")
 
 
+def kept_in_order(settings, language):
+    """Does 順 keep `language`'s cards in order by itself: the consent given (`junban_auto_actions`) and recorded for
+    this language — though 順's deck moved since (AD-2: the host stands aside until the pair is recorded again; a *Next*
+    never revokes the yes). The one rule *Card order* reads back and Settings' Your setup says (Fresh-U row 2)."""
+    settings = settings or {}
+    return settings.get("junban_auto_actions") is True and _pair(settings) == language
+
+
 def _current(settings, language, decks, deck, band):
     """What the settings say now, as every page's answers (*Set up again*; what *Card order*'s *Next* compares with)."""
-    # The consent reads back on while it is given for this language — though 順's deck moved since (AD-2: the host
-    # stands aside until the pair is recorded again; a *Next* never revokes the yes).
-    kept = settings.get("junban_auto_actions") is True and _pair(settings) == language
+    kept = kept_in_order(settings, language)
     auto =((settings.get("logic") or {}).get("selection") or {}).get("auto") is True
     return {"language": {"language": language},
             "known": {"how": "anki" if decks else "fresh", "decks": decks},

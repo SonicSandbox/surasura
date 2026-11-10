@@ -211,6 +211,8 @@ KEEP_ORDER = "Let Surasura keep them in order by itself"
 KEEP_ORDER_LINE = "After each new list and each move; never while you review"
 KEEP_ORDER_TIP = ("Puts your new cards in the order you'll meet the words, and tags the cards it moves Surasura.\n"
                   "• Undo: 順 → Restore")
+# Fresh-U row 2: with the switch on, what it moves (the chosen deck's new cards, counted on a worker)
+KEEP_ORDER_MOVES = ("It moves the 1 new card in {deck}.", "It moves the {n:,} new cards in {deck}.")
 DECK = "New cards are in"
 DECK_PICK_TIP = "The deck your new cards are in: the one Surasura keeps in order."
 LATER = "Cards for words not on your list"
@@ -257,6 +259,8 @@ STAR_ASK = "Like Anki Miner?"
 STAR_LINK = "Star it on GitHub"
 STAR_TIP = "Anki Miner is free and made by one person: a star on GitHub helps.\n• Opens its page in your browser"
 MINER_UPDATE_FIRST = "Anki Miner 3.7 or newer needs no setup here. Update it and press Check again."
+MINER_UPDATE_FIRST_HAVE = ("You have Anki Miner {version}: 3.7 or newer needs no setup here. Update it and press Check "
+                           "again.")                      # Fresh-U row 8: the version found, named
 MINER_BY_HAND = "Or keep this Anki Miner and make its profile by hand:"
 COPY_PATH = "Copy path"
 COPY_PATH_TIP = "Copy the file's path, to paste into Anki Miner's file chooser."

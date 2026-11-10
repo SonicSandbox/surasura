@@ -6,6 +6,7 @@ already covers what went wrong; a tester's notes lost or the list emptied by a z
 tip or no name; the window's thread waiting on the disk; the zip's folder not opened.
 """
 import os
+import threading
 import zipfile
 
 import pytest
@@ -1441,3 +1442,96 @@ def test_kept_with_nothing_saved_a_report_saved_since_takes_the_empty_line_away(
     assert wait_until(lambda: w.reports is not None and len(w.reports) == 1)
     assert w.status.text() == "" and w.status.isHidden()
     _close(w)
+
+
+# --- Fresh-U row 3 (2026-11-10): no grey button without its reason; never past the screen ------------------------------ #
+def test_fresh_u_show_me_works_straight_after_typing_saving_the_draft_first(main):
+    # A new user typed what happened and pressed *Show me what's in it*: it waited, grey, for *Save to my list* (only a
+    # hover said so). Now it lights up with the words, says in its tip that they are saved first, and shows the plan
+    # with the typed report in it
+    w = _press(main)
+    assert not w.show_button.isEnabled() and w.show_button.toolTip() == strings.REPORT_SHOW_NONE_TIP
+    w.what.setPlainText(JA_WHAT)
+    assert w.show_button.isEnabled() and w.zip_button.isEnabled() and w.send_button.isEnabled()
+    assert w.show_button.toolTip() == strings.REPORT_SHOW_SAVES_TIP
+    assert w.zip_button.toolTip() == strings.REPORT_ZIP_SAVES_TIP
+    w.show_button.click()
+    assert wait_until(lambda: w.pages.currentIndex() == w.CONTENTS)
+    assert wait_until(lambda: w.reports and len(w.reports) == 1)
+    assert core.listed()[0].what == JA_WHAT and w.what.toPlainText() == ""
+    assert f"reports/{core.listed()[0].id}/report.txt" in w.contents.toPlainText()
+    assert w.show_button.toolTip() == strings.REPORT_SHOW_TIP          # saved: the plain tip again
+
+
+def test_fresh_u_make_a_zip_straight_after_typing_saves_it_and_zips_it_with_the_ones_saved_before(main, sent, tmp_path):
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    w.what.setPlainText(JA_WHAT)
+    w.expected.setPlainText("Finishedに残ると思った")
+    w.dest = str(tmp_path / "zips")
+    w.zip_button.click()
+    assert wait_until(lambda: w.reports == [] and sent)
+    made = [n for n in os.listdir(tmp_path / "zips") if n.endswith(".zip")]
+    with zipfile.ZipFile(tmp_path / "zips" / made[0]) as z:
+        texts = [z.read(n).decode("utf-8") for n in z.namelist() if n.endswith("/report.txt")]
+    assert len(texts) == 2 and any(JA_WHAT in t for t in texts) and any(ZH_WHAT in t for t in texts)
+
+
+def test_fresh_u_words_typed_during_shows_save_stay_on_the_form_and_are_never_saved_twice(main, monkeypatch):
+    # The adversary's S7: typed while *Show me*'s save ran, the form kept the new words (as Send's save does) — the
+    # plan must follow without saving again (it saved them as a second report holding the first one's words too)
+    w = _press(main)
+    real_save = core.save
+    gate = threading.Event()
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return real_save(*a, **k)
+    monkeypatch.setattr(core, "save", slow)
+    w.what.setPlainText(JA_WHAT)
+    w.show_button.click()
+    w.what.setPlainText(JA_WHAT + "\nもう一つ：Soonに戻った")              # typed meanwhile
+    w.make_zip()                                                       # a second press meanwhile: says why, does nothing
+    assert w.status.text() == strings.REPORT_ZIP_BUSY
+    gate.set()
+    assert wait_until(lambda: w.pages.currentIndex() == w.CONTENTS)
+    assert wait_until(lambda: w.reports is not None and len(w.reports) == 1)
+    assert [r.what for r in core.listed()] == [JA_WHAT]
+    assert w.what.toPlainText().endswith("Soonに戻った")                 # kept for the learner, not saved
+
+
+def test_fresh_u_with_nothing_typed_or_saved_the_grey_buttons_reason_is_in_plain_sight(main):
+    # Every button of the row grey, and the window's own line (never only a hover) says what lights them
+    w = _press(main)
+    assert wait_until(lambda: w.status.text() == strings.REPORT_EMPTY) and w.status.isVisibleTo(w)
+    assert "write what happened" in strings.REPORT_EMPTY
+    assert not any(b.isEnabled() for b in (w.save_button, w.show_button, w.zip_button, w.send_button))
+    w.what.setPlainText("   ")                                         # blanks are not words
+    assert not w.show_button.isEnabled() and not w.zip_button.isEnabled()
+
+
+def test_fresh_u_a_short_screen_gets_a_window_that_fits_and_scrolls_to_the_privacy_line(main, monkeypatch):
+    # 1,224 px on a 1080p screen put the privacy line and *New code* below the screen's edge: the window now asks for
+    # no more than the screen's available height (less its frame) and its body scrolls; the line is reachable
+    from PyQt6.QtCore import QRect
+    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1280, 420))
+    w = _press(main)
+    assert w.body_scroll is not None and w.promise.parent() is not w
+    assert w.sizeHint().height() <= 420 and w.height() <= 420
+    assert w.body_scroll.verticalScrollBar().maximum() > 0             # taller than the room: it scrolls inside
+    w.body_scroll.ensureWidgetVisible(w.promise)
+    QApplication.processEvents()
+    top = w.promise.mapTo(w.body_scroll.viewport(), QPoint(0, 0)).y()
+    assert 0 <= top and top + w.promise.height() <= w.body_scroll.viewport().height()
+
+
+def test_fresh_u_a_window_crossing_the_screens_bottom_is_moved_up_onto_it(main, monkeypatch):
+    from PyQt6.QtCore import QRect
+    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1280, 700))
+    w = _press(main)
+    w.move(40, 600)
+    windows.onto_screen(w)
+    assert w.frameGeometry().bottom() <= 699 and w.x() == 40
+    w.move(40, 10)
+    windows.onto_screen(w)                                             # on the screen already: never moved
+    assert w.pos() == QPoint(40, 10)

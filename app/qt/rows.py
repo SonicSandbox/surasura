@@ -1866,8 +1866,8 @@ class RowDelegate(QStyledItemDelegate):
         if g["sub"] is not None:
             y += sub_h + 5
         g["stats"] = QRect(main.left(), y, main.width(), stats_h)
-        g["journey"] = None
-        if nxt.pct is not None and nxt.n_new is not None:     # *N new words ↗*: the link into the journey (A3; S6);
+        g["journey"] = None                                   # (every file watched: *Watched it*, no link: Fresh-U 5)
+        if nxt.pct is not None and nxt.n_new is not None and not nxt.watched:   # *N new words ↗*: the journey (A3; S6);
             known = strings.ROWS_HERO_KNOWN.format(pct=round(nxt.pct))   # no number, no link (row 36)
             link = strings.ROWS_HERO_NEW_LINK.format(n=nxt.n_new)
             hs = TEXT.metrics("hero-sub")
@@ -2796,6 +2796,9 @@ class RowDelegate(QStyledItemDelegate):
         st = g["stats"]
         if view_rows.audio_only(row):                  # a5-2: an audiobook alone says so, never *not analysed yet*
             TEXT.draw(p, st.left(), st.center().y(), row.line, "hero-sub", st.width(), c("ink-dim"), dpr=dpr)
+        elif nxt.watched:                              # Fresh-U row 5: every file watched — its words left the list,
+            words = strings.ROWS_HERO_WATCHED_MIX if row.source == "hato" else strings.ROWS_HERO_WATCHED   # never
+            TEXT.draw(p, st.left(), st.center().y(), words, "hero-sub", st.width(), c("ink-dim"), dpr=dpr)  # *not…*
         elif nxt.pct is None:
             TEXT.draw(p, st.left(), st.center().y(), strings.ROWS_HERO_STATS_NONE, "hero-sub", st.width(),
                       c("ink-dim"), dpr=dpr)

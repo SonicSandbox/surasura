@@ -1435,6 +1435,8 @@ def test_restore_paints_its_arc_before_its_question_is_read_and_is_never_greyed(
                                                                      "cards": {"1701": 2830}, "scope": ["TheBank"]})
     win = opened(main)
     assert QTest.qWaitForWindowExposed(win)
+    win.body_scroll.ensureWidgetVisible(win.btn_restore)  # (scrolled to, as a hand does on a short screen: Fresh-U 3)
+    QTest.qWait(20)
     paints, seen, real = Paints(win.btn_restore), [], qt_junban.spawn
 
     def watched(window, fn, *args, **kw):
@@ -1456,6 +1458,8 @@ def test_show_earlier_paints_its_arc_before_the_planner_has_it_until_the_plan_la
     win.checks_box.show()
     win.btn_earlier.show()
     assert QTest.qWaitForWindowExposed(win) and wait_until(lambda: win.btn_earlier.isVisible())
+    win.body_scroll.ensureWidgetVisible(win.btn_earlier)  # (scrolled to, as a hand does on a short screen: Fresh-U 3)
+    QTest.qWait(20)
     monkeypatch.setattr(win.session, "toggle_earlier", lambda: True)
     paints, seen, real = Paints(win.btn_earlier), [], win._replanner.ask
 
@@ -1466,3 +1470,30 @@ def test_show_earlier_paints_its_arc_before_the_planner_has_it_until_the_plan_la
     win.btn_earlier.click()
     assert seen and seen[0][0] and seen[0][1] >= 1 and win.btn_earlier.isEnabled()
     assert wait_until(lambda: win._replan_press is None and not arc_turning(win.btn_earlier))
+
+
+def test_fresh_u_on_a_short_screen_the_window_fits_and_its_body_scrolls(main, engine, monkeypatch):
+    # Fresh-U row 3: 順 opened 1,330 px tall on a 1080p screen; it now asks for no more than the screen's available
+    # height (less its frame) and scrolls inside, every control still in the window (the wiring walk sees them)
+    from PyQt6.QtCore import QRect
+    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1280, 380))
+    win = opened(main)
+    assert win.body_scroll is not None and win.height() <= 380
+    assert win.body_scroll.verticalScrollBar().maximum() > 0
+    assert win.isAncestorOf(win.btn_reorder) and win.body_scroll.widget().isAncestorOf(win.btn_reorder)
+    found, walked = problems(win)
+    assert found == [] and walked >= 8
+    # the adversary's B1: a wheel over the unfocused deck menu scrolls the body; it never picks (and saves) a deck
+    from PyQt6.QtCore import QPoint, QPointF
+    from PyQt6.QtGui import QWheelEvent
+    from PyQt6.QtWidgets import QApplication
+    win.deck_box.addItems(["TheBank", "Kaishi 1.5k"])
+    win.deck_box.clearFocus()
+    picked = []
+    win.deck_box.activated.connect(picked.append)
+    at = win.deck_box.currentIndex()
+    e = QWheelEvent(QPointF(5, 5), QPointF(win.deck_box.mapToGlobal(QPoint(5, 5))), QPoint(0, 0), QPoint(0, -120),
+                    Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(win.deck_box, e)
+    assert win.deck_box.currentIndex() == at and picked == []
+    assert win.body_scroll.verticalScrollBar().value() > 0

@@ -518,7 +518,7 @@ class ReportWindow(SecondaryWindow):
     FORM, OPENED, CONTENTS, GOES, SENT = 0, 1, 2, 3, 4
 
     def __init__(self, shell, pictures=(), scrubbed=False):
-        super().__init__(shell, strings.REPORT_WINDOW_NAME)
+        super().__init__(shell, strings.REPORT_WINDOW_NAME, scroll=True)     # Fresh-U row 3: never past the screen
         self.opening = 0                                          # each showing's number (`reopen`, `alive`)
         self.made_in = style.current()                            # the look it was built in (kept only in that one)
         self._whole_asked = False                                 # the other pages asked for after the first frame
@@ -870,7 +870,7 @@ class ReportWindow(SecondaryWindow):
         self.include_results.toggled.connect(lambda _on: self._contents_stale())
         row.addWidget(self.include_results)
         row.addStretch(1)
-        self.show_button = self._button(strings.REPORT_SHOW, strings.REPORT_SHOW_TIP, self.show_contents, row,
+        self.show_button = self._button(strings.REPORT_SHOW, strings.REPORT_SHOW_NONE_TIP, self.show_contents, row,
                                         presses=True)
         self.zip_button = self._button(strings.REPORT_ZIP, strings.REPORT_ZIP_NONE_TIP, self.make_zip, row,
                                        presses=True)
@@ -1056,10 +1056,6 @@ class ReportWindow(SecondaryWindow):
             self.reports = reports
         n = len(reports)
         self.list_heading.setText(strings.REPORT_LIST_HEADING.format(n=n))
-        held = self.pages.currentIndex() == self.GOES                # (What goes up, or gathering: `_goes_hold`'s)
-        self.zip_button.setEnabled(n > 0 and not held)
-        self.show_button.setEnabled(n > 0 and not held)
-        self.zip_button.setToolTip(strings.REPORT_ZIP_TIP if n else strings.REPORT_ZIP_NONE_TIP)
         self._send_ready()
         button = getattr(self.shell, "report_button", None)
         if button is not None:
@@ -1099,12 +1095,26 @@ class ReportWindow(SecondaryWindow):
         self._send_ready()
 
     def _send_ready(self):
-        """*Send report*: ready with a saved report, or with words typed (saved first)."""
+        """*Send report*, *Show me what's in it* and *Make a zip instead*: ready with a saved report, or with words
+        typed (saved first — Fresh-U row 3: never grey after typing, waiting on *Save to my list*); each one's tip says
+        what it needs while it is grey, and the status line says it in plain sight (`REPORT_EMPTY`)."""
         if not hasattr(self, "send_button"):                      # (the form is built before the send row)
             return
         ready = bool(self.reports) or self.save_button.isEnabled() or self.sending
         self.send_button.setEnabled(ready and not self.gathering)    # (What goes is up, gathering: pressed already)
         self.send_button.setToolTip(strings.REPORT_SEND_TIP if ready else strings.REPORT_SEND_NONE_TIP)
+        held = self.pages.currentIndex() == self.GOES                # (What goes up, or gathering: `_goes_hold`'s)
+        typed = self.save_button.isEnabled()
+        for button, tip, none, saves in ((self.zip_button, strings.REPORT_ZIP_TIP, strings.REPORT_ZIP_NONE_TIP,
+                                          strings.REPORT_ZIP_SAVES_TIP),
+                                         (self.show_button, strings.REPORT_SHOW_TIP, strings.REPORT_SHOW_NONE_TIP,
+                                          strings.REPORT_SHOW_SAVES_TIP)):
+            on = (bool(self.reports) or self.save_button.isEnabled()) and not held
+            if button.isEnabled() != on:
+                button.setEnabled(on)
+            words = saves if typed else tip if self.reports else none
+            if button.toolTip() != words:
+                button.setToolTip(words)
 
     def _name_changed(self, text):
         self.name_goes.setVisible(bool(text.strip()))
@@ -1274,7 +1284,15 @@ class ReportWindow(SecondaryWindow):
         if self.pages.currentIndex() == self.CONTENTS:
             self.back()
 
-    def show_contents(self):
+    def show_contents(self, saved=False):
+        """*Show me what's in it*: what's typed saved first (Fresh-U row 3: it works straight after typing), then the
+        zip's plan shown (`saved`: just saved — words typed meanwhile stay on the form, never saved a second time)."""
+        if any(qpress.live(self, k) for k in ("report:save", "report:zip", "report:send")):    # under way: said why
+            self.say(strings.REPORT_ZIP_BUSY)
+            return
+        if self.save_button.isEnabled() and not saved:
+            self.save(then=lambda: self.show_contents(saved=True), control=self.show_button)
+            return
         language = self.language
         include = self.include_results.isChecked()
 
@@ -1465,9 +1483,6 @@ class ReportWindow(SecondaryWindow):
         if not on:
             self.new_code_button.setEnabled(bool(self.sender_line.text()))
             self._send_ready()
-            n = len(self.reports or [])
-            self.zip_button.setEnabled(n > 0)
-            self.show_button.setEnabled(n > 0)
 
     def send(self):
         """The What goes page's *Send*: the zip it showed, once (another one waiting instead is never sent)."""
@@ -1668,12 +1683,17 @@ class ReportWindow(SecondaryWindow):
         qpress.open(self, SS.ISSUES_URL, control=self.issues_button)
 
     # --- Make a zip instead (the GitHub / Discord path by hand) ---------------------------------------------------- #
-    def make_zip(self):
+    def make_zip(self, saved=False):
         """The zip into Downloads or the folder picked, scrubbed (a file the check flags is named, never a reason to
-        stop), shown selected in its folder; the done line offers the invite."""
-        if not self.reports or qpress.live(self, "report:zip") or qpress.live(self, "report:send"):
-            if self.reports:
-                self.say(strings.REPORT_ZIP_BUSY)
+        stop), shown selected in its folder; the done line offers the invite. What's typed is saved first (Fresh-U row
+        3), then the zip made (`saved`: a report was just saved, the list not read again yet)."""
+        if qpress.live(self, "report:zip") or qpress.live(self, "report:send") or qpress.live(self, "report:save"):
+            self.say(strings.REPORT_ZIP_BUSY)
+            return
+        if self.save_button.isEnabled() and not saved:      # (words typed during that save stay on the form)
+            self.save(then=lambda: self.make_zip(saved=True), control=self.zip_button)
+            return
+        if not self.reports and not saved:
             return
         language, include, dest = self.language, self.include_results.isChecked(), self.dest
         library = library_summary(self.shell)

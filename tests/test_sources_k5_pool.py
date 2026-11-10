@@ -255,8 +255,10 @@ def test_a_write_that_fails_cancels_the_parts_not_started_and_a_shut_pool_writes
     from concurrent.futures import ThreadPoolExecutor
     jobs = [(str(tmp_path / f"{n}.part"), "第{}章".format(n).encode("utf-8")) for n in range(6)]
     real = sources._write_part
+    started = []
 
     def write(part, data):
+        started.append(os.path.basename(part))
         if part.endswith("0.part"):
             raise OSError("the disk said no")
         return real(part, data)
@@ -264,7 +266,11 @@ def test_a_write_that_fails_cancels_the_parts_not_started_and_a_shut_pool_writes
     with ThreadPoolExecutor(1) as pool:
         with pytest.raises(OSError, match="the disk said no"):
             sources._write_parts_at_once(pool, jobs)
-    assert sorted(os.listdir(tmp_path)) == []                        # one thread: 0 failed, 1-5 never started
+    # One thread: 0 fails and the parts not started yet are cancelled. Under load the worker can start the next part in
+    # the moment before the cancel (the 3.0.0 cut's --all: 1.part): it is written whole before the call returns, and
+    # nothing else is. Never every part (the cancel did nothing), never a part left on disk that wasn't started.
+    assert started[0] == "0.part" and len(started) < len(jobs)
+    assert sorted(os.listdir(tmp_path)) == sorted(started[1:])
     monkeypatch.setattr(sources, "_write_part", real)
     pool = ThreadPoolExecutor(2)
     pool.shutdown()

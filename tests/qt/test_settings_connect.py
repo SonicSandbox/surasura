@@ -550,6 +550,33 @@ def test_ready_offers_the_star_until_not_now_which_is_kept_in_local_data_never_s
     assert wait_until(lambda: world.opened and world.opened[-1] == MINER, 5)   # (empty until the worker opens it)
 
 
+def test_open_anki_miners_hover_names_the_profile_connect_mines_with(world):
+    """Choice 87 (Sonic, 2026-11-09: "say so in hover"): a learner who changes the audio in Anki Miner's window, in
+    another profile, sees nothing change — the hover names the profile Connect makes cards with, as the card's check
+    found it (Surasura's own; from 3.7, with the setting left as it is and no Surasura profile, your usual one — the
+    review's MUST: never "Surasura" then), drawn again by each check; no profile found yet: none named."""
+    world.miner = miner_result("ready")
+    world.miner["anki_miner"].update(profile="surasura-1", profile_name="Surasura")
+    page, store, rows, _fake = make(world)
+    tip = rows.miner.open_miner.toolTip()
+    assert tip == S.OPEN_MINER_TIP.format(profile="Surasura") and "another profile's don't apply" in tip
+    world.miner = miner_result("ready")
+    world.miner["anki_miner"].update(profile="p-1", profile_name="練習用 (Japanese)")     # your usual one, 3.7+
+    QTest.mouseClick(rows.miner.check_again, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(world.checked) == 2 and not rows.miner.checking, 5)
+    assert "“練習用 (Japanese)” profile" in rows.miner.open_miner.toolTip()
+    world.miner = miner_result("ready")
+    world.miner["anki_miner"].update(profile=None, profile_name=None)       # none marked: the window's own settings
+    QTest.mouseClick(rows.miner.check_again, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(world.checked) == 3 and not rows.miner.checking, 5)
+    assert rows.miner.open_miner.toolTip() == S.OPEN_MINER_TIP_CURRENT
+    world.miner = miner_result("setup")                                    # a profile still to make: none named
+    QTest.mouseClick(rows.miner.check_again, Qt.MouseButton.LeftButton)
+    assert wait_until(lambda: len(world.checked) == 4 and not rows.miner.checking, 5)
+    assert rows.miner.open_miner.toolTip() == S.OPEN_MINER_TIP_PLAIN
+    assert scn._open_tip(None) == S.OPEN_MINER_TIP_PLAIN and store.calls == []      # a hover, never a write
+
+
 def test_browse_writes_only_the_programs_path_through_the_service_and_checks_again(world):
     page, store, rows, _fake = make(world)
     world.file = "C:/Program Files/Anki Miner/AnkiMiner.exe"

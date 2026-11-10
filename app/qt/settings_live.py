@@ -258,7 +258,11 @@ def setup_lines(settings, language, facts):
         fills = [S.FILLS.get(f, f) for f in (value("junban_backfill_fills") or [])]
         filled = (S.SETUP_FILLED.format(fills=" + ".join(fills), how=S.SETUP_FILLED_AUTO if value(
             "junban_auto_backfill") else S.SETUP_FILLED_HAND) if fills else S.SETUP_NOTHING_FILLED)
-        lines["setup_cards"] = S.SEP.join((S.SETUP_ORDER.get(value("junban_order"), ""), filled)).strip(" ·")
+        # Fresh-U row 2: the order's words only while 順 keeps the cards in order by itself — else it says off
+        from app.services import setup_wizard
+        order = (S.SETUP_ORDER.get(value("junban_order"), "") if setup_wizard.kept_in_order(settings, language)
+                 else S.SETUP_ORDER_OFF)
+        lines["setup_cards"] = S.SEP.join((order, filled)).strip(" ·")
     return lines
 
 

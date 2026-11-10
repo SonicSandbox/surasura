@@ -174,6 +174,19 @@ def _button(text, tip, on_click, parent, kind=None):
     return b
 
 
+def _open_tip(result):
+    """*Open Anki Miner*'s hover from the card's check (`setup.checks`' answer, None before one): the Anki Miner profile
+    Connect mines with named (choice 87: a change made in another profile doesn't apply) — the one `choose_profile`
+    found (the setting's, else your usual one from 3.7), its window's own settings when none is marked; not found yet
+    (unchecked, missing, a profile still to make): nothing named."""
+    found = (result or {}).get("anki_miner") or {}
+    if "profile" not in found:
+        return S.OPEN_MINER_TIP_PLAIN
+    if found.get("profile") is None:
+        return S.OPEN_MINER_TIP_CURRENT
+    return S.OPEN_MINER_TIP.format(profile=found.get("profile_name") or found["profile"])
+
+
 def _label(text, name, parent):
     w = QLabel(text, parent)
     w.setObjectName(name)
@@ -453,7 +466,7 @@ class MinerCard(QWidget):
         self.star_line = qpress.room(_button(S.STAR_LINE, S.STAR_LINE_TIP, lambda: self._starred(self.star_line),
                                              self, kind="settingsmore"), end=True)                 # AM★
         self.browse = _button(S.BROWSE_MINER, S.BROWSE_MINER_TIP, self._browse, self)
-        self.open_miner = qpress.room(_button(S.OPEN_MINER, S.OPEN_MINER_TIP, self._open, self))
+        self.open_miner = qpress.room(_button(S.OPEN_MINER, _open_tip(None), self._open, self))
         # A4M1-2: what Anki Miner's own setup installs, Surasura runs it (the wizard's Anki Miner page, as Install)
         self.finish_setup = _button(S.FINISH_MINER_SETUP, S.FINISH_MINER_SETUP_TIP, self._finish_setup, self)
         self.check_again = _button(S.CHECK_AGAIN, S.CHECK_AGAIN_TIP, self.check, self)
@@ -523,6 +536,9 @@ class MinerCard(QWidget):
         result, answered, path, update = answer
         state = settings_values.card_state(result)
         self.state, self.path = state, path or ""
+        tip = _open_tip(result)                         # choice 87: the profile this check found Connect mines with
+        if self.open_miner.toolTip() != tip:
+            self.open_miner.setToolTip(tip)
         with self.rows.holding():
             self.words.setText(state["say"])
             self._missing(state["missing"])
@@ -546,6 +562,8 @@ class MinerCard(QWidget):
         if self.again:
             return self.check()
         self.state = None
+        if self.open_miner.toolTip() != S.OPEN_MINER_TIP_PLAIN:      # choice 87: no check, no profile named
+            self.open_miner.setToolTip(S.OPEN_MINER_TIP_PLAIN)
         with self.rows.holding():
             self.words.setText(S.MINER_NOT_CHECKED.format(info[0]))
             self._missing([])

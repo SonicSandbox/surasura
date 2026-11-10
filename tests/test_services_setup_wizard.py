@@ -750,3 +750,37 @@ def test_finish_later_then_back_shows_what_was_saved_not_the_recommended_choice(
     SW.save(service, "shows", {"covers": True}, language)          # Set up again: no more marks
     assert service.flush(10)
     assert h.read_settings()["setup_passed"] == ["language", "shows"]
+
+
+# --- Fresh-U row 2 (2026-11-10): *Start fresh* and Card order's switch ------------------------------------------------ #
+@pytest.mark.parametrize("settings, how, shown, want", [
+    ({}, "fresh", True, False),                                     # a new profile that started fresh: off
+    ({"setup_passed": ["language", "known"]}, "fresh", True, False),   # … after *Finish later* too (still new)
+    ({}, "anki", True, True), ({}, "import", True, True),           # every other way keeps the preselect
+    ({}, "anki", False, False),
+    ({"onboarding_completed": True}, "fresh", True, True),          # *Set up again*: what the settings say
+    ({"onboarding_completed": True, "setup_seen": ""}, "fresh", True, True),   # an upgrade's *Keep what came over*
+], ids=["new-fresh", "new-fresh-passed", "new-anki", "new-import", "new-anki-off", "set-up-again", "upgrade"])
+def test_fresh_u_start_fresh_turns_card_orders_switch_off_only_on_a_new_profile(settings, how, shown, want):
+    # A fresh start never moves the cards of a deck already there; an upgrader's third way is *Keep what came over*
+    # (their words came over: the recommended on stays), and *Set up again* shows the consent as it is
+    assert SW.keeps_order(settings, how, shown) is want
+
+
+def test_fresh_u_new_cards_counts_the_decks_cards_with_junbans_own_query_and_never_raises(monkeypatch):
+    # The page names how many cards the switch moves: 順's one query (unsuspended new cards, never a filtered deck's),
+    # on the loopback address; no deck, 順 absent or Anki not answering -> None (the page then says nothing)
+    from app import anki_connect
+    junban = pytest.importorskip("modules.junban.ankiconnect")
+    asked = []
+    monkeypatch.setattr(anki_connect, "find_cards", lambda url, query: asked.append((url, query)) or [11, 12, 13])
+    assert SW.new_cards({}, "日本語::Mining") == 3
+    assert asked == [(anki_connect.address({}), junban.new_card_query("日本語::Mining"))]
+    assert SW.new_cards({}, None) is None and SW.new_cards({}, "") is None and len(asked) == 1
+
+    def refuse(url, query):
+        raise anki_connect.AnkiError("Anki isn't open")
+    monkeypatch.setattr(anki_connect, "find_cards", refuse)
+    assert SW.new_cards({}, "日本語::Mining") is None
+    monkeypatch.setitem(sys.modules, "modules.junban.ankiconnect", None)      # 順 not in this Surasura
+    assert SW.new_cards({}, "日本語::Mining") is None

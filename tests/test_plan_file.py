@@ -237,7 +237,7 @@ def test_the_plan_adds_up_to_the_runs_own_lists(runs, case):
     _root, run = runs[case]
     plan = run["plan"]
     h = plan["header"]
-    assert h["format"] == analyzer.PLAN_FORMAT == 3 and h["language"] == cases.ALL_CASES[case][0]
+    assert h["format"] == analyzer.PLAN_FORMAT == 4 and h["language"] == cases.ALL_CASES[case][0]
     assert h["run_signature"] == run["stamp"]
     assert h["files"] == len(plan["files"]) == len(plan["per_file"])
     assert h["keys"] == len(plan["keys"]) == len(plan["rows"]) > 0
@@ -311,7 +311,7 @@ def test_format_2_holds_every_listed_words_spellings(runs, case):
         assert analyzer._display_forms(word, analyzer.Counter(orths), analyzer.Counter(surfaces)) == row[5], word
         assert sum(orths.values()) == sum(surfaces.values()) == occurrences - (0 if is_phrase else credits[k]), word
     phrases = [k for k, key in enumerate(plan["keys"]) if key[2]]
-    assert [k for k, _index in plan["header"]["phrase_entries"]] == phrases
+    assert [k for k, _index, _display in plan["header"]["phrase_entries"]] == phrases
     if case == "rp2-ja":
         assert phrases, "a phrase row"
 

@@ -32,6 +32,7 @@ WRITES = [
     ("addTags", {"notes": [1789712000000], "tags": "Surasura::later"}),
     ("deleteNotes", {"notes": [1789712000000]}),
     ("deleteDecks", {"decks": ["TheBank"], "cardsToo": True}),
+    ("createDeck", {"deck": "Surasura"}),          # choice 86: *Finish its setup*'s new deck (anki_miner_setup)
 ]
 
 

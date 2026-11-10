@@ -122,7 +122,10 @@ from operator import itemgetter
 #    are one word (あかん, おかん): a v20 blob holds 辺, 干る, 彼 and fillers there — 3.0, so users rebuild once.
 # v22 a pronoun is a compound's part and a verb's stem carries a suffix that makes a noun (私生活, 言い方 — ENGINE_REVISION
 #    39): a v21 blob holds them in pieces — 3.0, so users rebuild once with v20–v21.
-SCHEMA_VERSION = 22
+# v23 a subtitle line shown again (the same text, its times touching the copy before: analyzer.shown_again,
+#    ENGINE_REVISION 40) is read once: a v22 blob holds its words two or three times — 3.0, so users rebuild once with
+#    v20–v22.
+SCHEMA_VERSION = 23
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.

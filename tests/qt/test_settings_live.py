@@ -46,7 +46,7 @@ class Fakes:
         self.known = (2468, None)
         self.level = ("common", False, PREVIEWS)
         self.hato = "1.0.9"
-        self.licence = "MIT License · Copyright (c) 2026 SonicSandbox"
+        self.licence = "GNU General Public License, version 3 or later (GPL-3.0-or-later) · Copyright (C) 2026 SonicSandbox"
         self.credits = ("Data credits — what Surasura ships or is built from\nJMdict (EDRDG) · CC BY-SA 4.0", [],
                         self.licence)
         self.probe = {"ok": True, "version": 6, "missing": [], "error": ""}
@@ -211,7 +211,8 @@ def test_every_read_runs_on_a_worker_never_the_window_thread(qapp, fakes, monkey
 
 # --- Your setup -------------------------------------------------------------------------------------------------- #
 SEEDED = dict(ALL_ON, connect_mine_words="i1", junban_order="content", junban_backfill_fills=["patterns", "sentence"],
-              junban_auto_backfill=True, anki_sync_decks={"ja": ["日本語::コア2k", "アニメ"], "zh": ["中文::HSK"]},
+              junban_auto_backfill=True, junban_auto_actions=True, junban_replan_deck="日本語::コア2k",
+              junban_replan_language="ja", anki_sync_decks={"ja": ["日本語::コア2k", "アニメ"], "zh": ["中文::HSK"]},
               logic={"selection": {"band": "common"}})
 
 
@@ -254,6 +255,25 @@ def test_setup_lines_count_only_this_languages_words_and_leave_out_unread_parts(
     lines = live.setup_lines(settings, "ja", {"known": 30})
     assert lines["setup_known"] == "30 known · from an imported list"
     assert live.setup_lines(settings, "zh", {"known": 0})["setup_known"] == "0 known · from Anki (中文::HSK)"
+
+
+def test_cards_in_anki_says_off_while_junban_doesnt_keep_them_in_order_by_itself():
+    # Fresh-U row 2: setup's switch turned off (junban_auto_actions False) still read "ordered as you'll meet them" —
+    # the order's mode is only what a by-hand Reorder uses; the line says off, and the fills still follow
+    base = {"enable_junban": True, "junban_order": "content", "junban_backfill_fills": ["patterns"],
+            "junban_auto_backfill": True}
+    for off in ({}, {"junban_auto_actions": False}, {"junban_auto_actions": "yes"}):
+        assert live.setup_lines(dict(base, **off), "ja", {})["setup_cards"] ==             S.SETUP_ORDER_OFF + " · パターン filled automatically"
+    given = dict(base, junban_auto_actions=True, junban_replan_deck="日本語::コア2k", junban_replan_language="ja")
+    assert live.setup_lines(given, "ja", {})["setup_cards"] == "ordered as you’ll meet them · パターン filled automatically"
+    assert live.setup_lines(dict(given, junban_order="priority", junban_backfill_fills=[]),
+                            "ja", {})["setup_cards"] == "ordered by leverage · " + S.SETUP_NOTHING_FILLED
+    # the wizard's one rule (`setup_wizard.kept_in_order`): a consent given for Japanese is off for Chinese, and one
+    # whose pair isn't recorded (順's deck moved since: it stands aside) is off too
+    assert live.setup_lines(given, "zh", {})["setup_cards"].startswith(S.SETUP_ORDER_OFF)
+    assert live.setup_lines(dict(base, junban_auto_actions=True), "ja", {})["setup_cards"].startswith(S.SETUP_ORDER_OFF)
+    # 順 switched off says so, whatever the consent holds
+    assert live.setup_lines(dict(base, enable_junban=False, junban_auto_actions=True), "ja", {})["setup_cards"] ==         S.SETUP_NOT_ORDERED
 
 
 def test_a_count_for_another_language_never_shows(qapp, fakes):

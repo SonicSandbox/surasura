@@ -350,3 +350,119 @@ def test_putting_back_one_removed_video_keeps_another_removed_video_out(language
         assert store.take_in(root, [dict(vb)]).skipped["excluded"]
         sub = _subtitle(language, data_dir, src, vb, "ep1.srt", 3)
         assert store.take_in(root, [sub]).skipped["excluded"]
+
+
+# --- the Soon line never counts a waiting row (H-6; Kura-AB, 2026-11-09) ------------------------------------------- #
+# why: `_keep_line` leaves every waiting row out of the line's count; `_tier_top` (where "the top of Soon" is) counted
+# them, so with one waiting row in NOW a title sent to Soon was put at Soon's very top, above the row the line then
+# takes up, and `_keep_line` lifted the title straight back to the end of Current: the press seemed to do nothing.
+
+def _ids(store, tier):
+    return [r[0] for r in store.conn.execute("SELECT id FROM items WHERE tier = ? ORDER BY ord, id", (tier,))]
+
+
+def _texts(store, tier):
+    return [r[0] for r in store.conn.execute("SELECT id FROM items WHERE tier = ? AND availability != 'waiting' "
+                                             "ORDER BY ord, id", (tier,))]
+
+
+def _line_scene(language, where="now"):
+    """Current = 4 NOW rows with text, the Soon line after them, 4 Soon rows; one video waiting for its subtitle placed
+    in Current: after NOW's last row (`where="now"`), before it (`"before_last"`) or at Soon's very top (`"soon"`)."""
+    store = migrated(language, shows=0, loose=4, tiers=("now", "soon"))
+    src = _source_root()
+    root = store.add_source(src)
+    video = store.take_in(root, [_video(src, names(language)[80], "ep1.mkv", "v1-line")]).added[0]
+    if where == "now":
+        store.move([video], "now", after_id=_ids(store, "now")[-1])
+    elif where == "before_last":
+        store.move([video], "now", before_id=_ids(store, "now")[-1])
+    else:
+        store.move([video], "soon", before_id=_ids(store, "soon")[0])
+    assert store._soon_line() == 4 and len(_texts(store, "now")) == 4 and store.item(video)["availability"] == "waiting"
+    assert store.item(video)["tier"] == ("now" if where == "before_last" else where)
+    return store, video
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("how", ("set_tier", "move"))
+def test_a_title_sent_to_soon_beside_a_waiting_video_in_now_stays_in_soon(language, how):
+    """⋯ Soon / Demote / the sort screen's Soon (`set_tier`) and the Soon well (`move` with no anchor): the title lands
+    at Soon's top, and Soon's first row goes up into its place — never the title bounced back to Current's end."""
+    store, video = _line_scene(language)
+    with store:
+        now, soon = _ids(store, "now"), _ids(store, "soon")
+        sent = now[0]
+        getattr(store, how)([sent], "soon")
+        assert _ids(store, "soon")[0] == sent
+        assert _ids(store, "now") == now[1:] + [soon[0]]                    # the waiting video keeps its place
+        assert len(_texts(store, "now")) == 4 and store.item(video)["tier"] == "now"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_titles_sent_to_soon_beside_a_waiting_video_both_stay_in_soon(language):
+    """Two at once: both land at Soon's top in their order, Soon's first two rows go up (before: one bounced back)."""
+    store, _video_id = _line_scene(language)
+    with store:
+        now, soon = _texts(store, "now"), _ids(store, "soon")
+        store.set_tier(now[:2], "soon")
+        assert _ids(store, "soon")[:2] == now[:2]
+        assert _texts(store, "now") == now[2:] + soon[:2]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("how", ("set_tier", "move"))
+def test_a_title_sent_to_soon_past_a_waiting_video_at_soons_top_stays_in_soon(language, how):
+    """A waiting row at Soon's very top goes up with Soon's first row with text, so the slot is after THAT row — after
+    the waiting one alone, the title would be the row the line takes up."""
+    store, video = _line_scene(language, where="soon")
+    with store:
+        now, soon = _ids(store, "now"), _texts(store, "soon")
+        sent = now[0]
+        getattr(store, how)([sent], "soon")
+        assert store.item(sent)["tier"] == "soon"
+        assert _texts(store, "now") == now[1:] + [soon[0]]
+        assert _texts(store, "soon")[0] == sent and store.item(video)["tier"] == "now"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_drag_to_a_soon_row_and_a_promote_beside_a_waiting_video_land_where_asked(language):
+    """The neighbours, which never read Soon's top: a drop before a Soon row lands there and stays; Soon → Current
+    (Promote) lands at Current's top and the line pushes NOW's last row with text down."""
+    store, video = _line_scene(language)
+    with store:
+        now, soon = _ids(store, "now"), _ids(store, "soon")
+        store.move([now[0]], "soon", before_id=soon[2])
+        assert store.item(now[0])["tier"] == "soon" and _ids(store, "soon").index(now[0]) == 1   # soon[0] went up
+        up = _ids(store, "soon")[-1]
+        store.set_tier([up], "now")
+        assert _ids(store, "now")[0] == up and len(_texts(store, "now")) == 4
+        assert store.item(video)["tier"] == "now"
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_row_sent_to_soon_with_its_waiting_video_lands_at_soons_top_together(language):
+    """The waiting row going along (a book's row with its audiobook, a show's row with its video waiting): only the
+    row with text leaves the line's count, so Soon's first row goes up and the two land at Soon's very top."""
+    store, video = _line_scene(language)
+    with store:
+        now, soon = _texts(store, "now"), _ids(store, "soon")
+        store.move([now[-1], video], "soon")
+        assert _ids(store, "soon")[:2] == [now[-1], video]
+        assert _texts(store, "now") == now[:-1] + [soon[0]]
+
+
+# why: the slot is right after the row the line takes up, and the line took the waiting rows after that row up with it
+# — so a block sent to Soon that starts with a waiting row (a show whose first episode waits for its subtitle) lost
+# that row back to Current's end, the show split across the line (the adversary's M-1)
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("how", ("set_tier", "move"))
+def test_a_block_sent_to_soon_that_starts_with_a_waiting_video_stays_whole_in_soon(language, how):
+    """[the waiting video, NOW's last row] sent to Soon: both land at Soon's top in their order; only Soon's first row
+    with text goes up."""
+    store, video = _line_scene(language, where="before_last")
+    with store:
+        now, soon = _texts(store, "now"), _ids(store, "soon")
+        getattr(store, how)([video, now[-1]], "soon")
+        assert _ids(store, "soon")[:2] == [video, now[-1]]
+        assert _ids(store, "now") == now[:-1] + [soon[0]]

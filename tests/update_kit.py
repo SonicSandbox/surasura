@@ -52,7 +52,7 @@ def program(version):
                                                   "version": version}).encode("ascii"),
         "_internal/templates/web_app.html": f"<h1>語彙の旅 {version}</h1>\n".encode("utf-8"),
         "_internal/PyQt6/QtCore.pyd": b"MZ\x90\x00qt 6.11 " * 50,
-        "_internal/licenses/PyQt6/LICENSE": b"GNU GENERAL PUBLIC LICENSE\n",
+        "_internal/licenses/PyQt6-6.11.0/licenses/LICENSE": b"GNU GENERAL PUBLIC LICENSE\n",
         "_internal/unidic_lite/dicdir/sys.dic": "上層部\t名詞\n一生懸命\t副詞\n走り出す\t動詞\n".encode("utf-8") * 40,
         "_internal/jieba/dict.txt": "开心 3 a\n学习 5 v\n我们 9 r\n".encode("utf-8"),
         "_internal/python311.dll": b"MZ\x90\x00python 3.11",

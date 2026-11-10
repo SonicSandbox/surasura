@@ -93,6 +93,8 @@ Type: files; Name: "{app}\tsubasa.exe"
 Type: files; Name: "{app}\updater.exe"
 Type: files; Name: "{app}\RELEASE_NOTES.md"
 Type: files; Name: "{app}\LICENSE"
+Type: files; Name: "{app}\LICENSE-EXCEPTION.md"
+Type: filesandordirs; Name: "{app}\licenses"
 
 [Code]
 const

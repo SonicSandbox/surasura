@@ -7,7 +7,10 @@ and when — to tell Anki Miner the line to cut a card from. This reads them, by
   each with its start and end (milliseconds, as the file writes them) and its text as speech — cleaned exactly as a
   Generate cleans it (`clean_subtitle_text`, `ass_dialogue_text`). A cue holding none of the language's script (an
   English line, a ♪～) is kept but not `counted`, as a Generate never reads it: Anki Miner counts it as a line, so a
-  card's lines around one are counted as Anki Miner counts them. Two units are kept (R05-C12): each Cue is the event Anki Miner cuts a card
+  card's lines around one are counted as Anki Miner counts them. A line shown again (the same text, its times
+  touching the copy before: `analyzer.shown_again`, ENGINE_REVISION 40) is kept the same way, not counted, `repeats`
+  naming its first copy — a Generate reads the line once, and the cues and their order stay the file's (Anki Miner
+  indexes its own). Two units are kept (R05-C12): each Cue is the event Anki Miner cuts a card
   from, and `caption` numbers the caption window a Generate reads it in (an .srt's cue is its own; an .ass file's
   events on screen together in one colour are one, `analyzer._captions`). A sung line — karaoke timing, a style the
   subtitler named OP / ED / song, a ♪ — is kept and marked `sung`: a card is never cut from one.
@@ -39,8 +42,9 @@ from app.path_utils import SIDECAR_SUFFIX, read_text
 # One subtitle line: `index` its place among the cues kept (file order), `start` / `end` milliseconds as the file
 # writes them (no offset), `text` the line as speech, `caption` the caption window it belongs to, `sung` a line no
 # card is cut from, `counted` whether a Generate reads it (an event in karaoke timing, a line with none of the
-# language's script: it reads neither).
-Cue = namedtuple("Cue", "index start end text caption sung counted")
+# language's script, a line shown again: it reads none), `repeats` the index of the cue a line shown again copies
+# (None for every other cue).
+Cue = namedtuple("Cue", "index start end text caption sung counted repeats", defaults=(None,))
 
 
 class Cues(list):
@@ -111,7 +115,7 @@ def _ass_time(value):
     match = _ASS_TIME_RE.match(value.strip())
     if not match:
         return None
-    return _ms(*match.groups())             # hundredths: "42" is 420 ms
+    return _ms(*match.groups())             # hundredths: "42" is 420 ms (analyzer.ass_ms reads them as a Generate does)
 
 
 def _ass(content, language):
@@ -186,7 +190,12 @@ def read(path, language="ja"):
         content = caption_clean.clean(content, arrows=False)     # arrows kept: "runs on", as a Generate reads
     cues.joiner = "" if srt else " "
     captions, screen, shown = 0, {}, None
-    for start, end, text, sung, colour, counted in (_srt if srt else _ass)(content, language):
+    lines = (_srt if srt else _ass)(content, language)
+    # A line shown again: kept, as a Generate never reads it (shown_again — the rule extract_text and parse_ass read by)
+    again = analyzer.shown_again([(start, end, text) if counted else None
+                                  for start, end, text, _sung, _colour, counted in lines])
+    for (start, end, text, sung, colour, counted), first in zip(lines, again):
+        counted = counted and first is None
         # .srt: every cue is its own caption. .ass: the events a Generate reads that are on screen together (one
         # timing) are one caption per colour, in the order each colour first shows (analyzer._captions); an event it
         # never reads (karaoke) is a caption of its own.
@@ -198,7 +207,7 @@ def read(path, language="ja"):
             if colour not in screen:
                 screen[colour], captions = captions, captions + 1
             caption = screen[colour]
-        cues.append(Cue(len(cues), start, end, text, caption, sung, counted))
+        cues.append(Cue(len(cues), start, end, text, caption, sung, counted, first))
     return cues
 
 
@@ -305,7 +314,8 @@ def tokens(cues, language="ja", script="asis", tokenizer=None):
             written = text[at:cursor] if found >= 0 else surface     # conversion keeps length: the file's own spelling
             out.append(Token(lemma, reading, surface, orth, cue, sentence, node, written))
     for cue in cues:
-        if not cue.counted and cue.sung:        # a song a Generate never reads: its words, to say they're only sung
+        if not cue.counted and cue.sung and cue.repeats is None:   # a song a Generate never reads (karaoke): its
+                                                                     # words, to say they're only sung
             for sentence, (lemma, reading, surface, orth), node in _read(tokenizer, analyzer.close_cue(cue.text),
                                                                          language):
                 out.append(Token(lemma, reading, surface, orth, cue.index, sentence, node, surface))
@@ -333,6 +343,13 @@ class Timeline:
             text = zh_script.convert(text, script)
         if removed is not None and starts:
             text = removed.sub(lambda m: " " * len(m.group()), text)       # blanked: every offset stays
+        # A line shown again is said from its first copy's start to its last copy's end (SPEC card-lines rule 5: the
+        # clip runs to the speech's end; a copy written later in the file may start before the line it copies)
+        until = {}
+        for cue in cues:
+            if cue.repeats is not None:
+                first = until.get(cue.repeats, (cues[cue.repeats].start, cues[cue.repeats].end))
+                until[cue.repeats] = (min(first[0], cue.start), max(first[1], cue.end))
         # The squeezed text a piece at a time, between two lines' starts, noting where each line starts in it
         pieces, kept, self._lines, self._times, at = [], 0, [], [], 0
         for offset, cue in starts:
@@ -340,7 +357,7 @@ class Timeline:
             pieces.append(piece)
             kept, at = kept + len(piece), max(at, offset)
             self._lines.append(kept)
-            self._times.append((cues[cue].start, cues[cue].end))
+            self._times.append(until.get(cue, (cues[cue].start, cues[cue].end)))
         pieces.append(_squeezed(text[at:]) if starts else "")
         self._squeezed = "".join(pieces)
         self._line_starts = set(self._lines)

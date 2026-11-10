@@ -852,6 +852,26 @@ def _arrival(i, n=3):
     return view_rows.Arrival(**fields)
 
 
+def test_the_top_titles_count_is_worded_as_new_arrivals_words_it_by_its_media():
+    """Mado-SB (the release shots, F1): the pad's line said "12 video" / "31 EPUB" — the play verb's word, never
+    pluralised. Its count is New arrivals' and Goal's (`arr_units` by the media): a show's episodes, a book's parts, a
+    channel's videos; one file singular; thousands grouped; a title with no media read as a show (`MEDIA_WORD`'s None)."""
+    def line(media, n):
+        a = _arrival(1, n)._replace(media=media, media_word=view_rows.MEDIA_WORD.get(media, "video"), line=None,
+                                    folder=None)
+        return sort_screen._sub_line(a)
+    assert line("anime", 12) == "12 episodes"
+    assert line("book", 31) == "31 parts"
+    assert line("lightnovel", 1) == "1 part"
+    assert line("youtube", 3) == "3 videos"
+    assert line("podcast", 2) == "2 episodes"
+    assert line("audiobook", 48) == "48 parts"
+    assert line(None, 1) == "1 episode"
+    assert line("drama", 1234) == "1,234 episodes"
+    a = _arrival(2, 12)._replace(media="anime", media_word="video")
+    assert sort_screen._sub_line(a) == "12 episodes · Ep 1–12 · Anime\夜空の灯 2"   # the range and K7's folder kept
+
+
 class _Moves:
     """The drag controller as the screen calls it, recording: every command taken at once."""
 

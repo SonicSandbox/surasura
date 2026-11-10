@@ -1,57 +1,42 @@
-# How to Update Surasura - Readability Analyzer
+# How to Update Surasura
 
-Surasura can update itself for most releases, and you can always update manually if you
-prefer. Either way, **your personal data is never touched by an update.**
+An update changes only the program. **Your library, known words, word lists and settings are never touched.**
 
-## What an automatic update changes (and what it doesn't)
-An in-app update refreshes **only the program itself and the report templates** — a download
-of roughly 15–20 MB, versus the ~400 MB full package. It **never** reads or changes:
+## In the app (recommended)
 
-- your known words (`KnownWord.json`), ignore/blacklist/graduated lists,
-- your content in `data/`, your generated `results/`,
-- your `settings.json`, or your library order (`master_manifest.json`).
+1. A new version shows as **Update ready** in the bottom bar. It never interrupts you: click it when you're ready.
+2. **Update now**: only the parts that changed are downloaded, each one checked. Surasura closes and opens again by
+   itself on the new version; if the new one doesn't start, the old one comes back.
+3. Not now? **Later** keeps it in the bar. **Skip this version** doesn't offer it again (the next one comes as usual);
+   **Settings › App › Offer vX again** brings it back. **What's new ↗** opens its notes.
 
-New settings that ship with a version appear automatically from the updated code; your own
-settings are left exactly as you had them.
+- **Settings › App › Check for updates**: off, Surasura asks GitHub nothing at start.
+- **Settings › App › Update automatically**: one-click updates for small releases. A big release always downloads by
+  hand: **Download** opens its page.
+- An update that can't finish (no internet) leaves your version running, and one cut off (a power cut) finishes or
+  undoes itself at your next sign-in. What went wrong is noted in
+  `%LOCALAPPDATA%\Houseki\Surasura\update\update_report.txt`: if it keeps happening, send **Report a problem** or
+  attach it to an issue on [GitHub](https://github.com/SonicSandbox/surasura/issues).
 
-## Automatic updates (recommended)
-1. When an update is available you'll see a small **"⬆ Update available"** link in the
-   bottom-left of the dashboard. It never interrupts you — click it when you're ready.
-2. Choose **Update now**. Surasura downloads the small update, verifies it, then briefly
-   closes and reopens itself on the new version. That's it.
-3. If you'd rather not, choose **Later** — the ⬆ link stays for when you're ready — or **Skip
-   this version**: Surasura then doesn't offer that version again, and the next one comes as
-   usual. Skipped it by mistake? **Settings → Data & System → "vX skipped — Offer again"** brings
-   it back, in one click.
+## By hand
 
-You can turn automatic updates off anytime in **Settings → Data & System → Automatic
-Updates**. Bigger "major" updates (the rare ones that change the app's internals) always use
-the manual path below, even with automatic updates on.
+Download the latest **`Surasura-X.Y.Z-setup.exe`** from the
+[Releases page](https://github.com/SonicSandbox/surasura/releases) and run it (no admin needed). Your library and
+settings stay where they are.
 
-If an automatic update ever can't finish (e.g. no internet), Surasura simply keeps running
-the version you have, and the ⬆ link offers that version as a manual download instead — it will
-never get stuck retrying. The next version is offered in one click again. It also notes what went wrong in `debug/update_report.txt`, inside your Surasura
-folder; if it keeps happening, attach that file to an issue on the
-[GitHub repository](https://github.com/SonicSandbox/surasura/issues).
+## Where your things are
 
-## Manual update (always available)
-1. **(Optional) Back up your data.** Auto-updates don't need this, but for a manual full
-   replacement it's good practice: copy your `User Files` folder somewhere safe.
-2. Download the latest **`Surasura_vX.Y.zip`** from the
-   [Releases page](https://github.com/SonicSandbox/surasura/releases).
-3. Extract it to a new folder and run `Surasura.exe`.
-4. If you're moving from an old version, copy your whole `User Files` folder, your `data`
-   folder **and your `settings.json`** from the old folder into the new one, replacing the new
-   ones. `User Files/<language>/` holds your known words (`KnownWord.json`), your lists
-   (`IgnoreList.txt`, `Blacklist.txt`, `GraduatedList.txt`), any frequency lists, and
-   `master_manifest.json` — **your library order**. Leave that one behind and your content is
-   shown in plain folder order again. `settings.json` holds every setting you changed (your
-   language, rarity, Anki decks, …): the new folder comes with a fresh one, so without yours
-   every setting goes back to its default.
+| What | Where |
+| :-- | :-- |
+| The program | `%LOCALAPPDATA%\Programs\Surasura` |
+| Your library: known words and word lists (`User Files\<language>\`) | the folder you chose at install (default `Documents\Surasura`) |
+| Your settings (`settings.json`) and the word index | `%APPDATA%\Houseki\Surasura\` |
+| Surasura's own files (your library's order, covers, logs) | `%LOCALAPPDATA%\Houseki\Surasura\` |
+
+- Your shows and books stay in their own folders: Surasura reads them where they are.
+- Coming from 2.x: at its first start Surasura 3.0 copies your known words, word lists and settings over, and leaves
+  your 2.x folder exactly as it was. Add your shows' folders again in setup.
 
 ## Release Notes
-See the `RELEASE_*.md` files or the GitHub Releases page for what's new in each version.
 
-## Issues & Contributions
-Found a bug or have a suggestion? Please open an issue on the
-[GitHub repository](https://github.com/SonicSandbox/surasura).
+See the [Releases page](https://github.com/SonicSandbox/surasura/releases) for what's new in each version.

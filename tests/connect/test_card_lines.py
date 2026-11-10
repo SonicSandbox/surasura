@@ -335,6 +335,13 @@ def test_a_copy_never_starts_before_the_line_it_repeats(tmp_path):
     assert _expansion(tmp_path, lines, 0) == [0, 0]
 
 
+def test_the_same_text_83_ms_later_is_said_twice_not_shown_again(tmp_path):
+    # Kotoba-R measured the library: a line said twice comes back after the streaming gap (~83 ms); a copy touches
+    # (≤ 10 ms, Generate's own window) — so cards and Generate count the same lines once
+    lines = [(0.0, 1.2, "もういい"), (1.283, 2.4, "もういい"), (2.483, 5.0, "もう こんなことする必要は…")]
+    assert _expansion(tmp_path, lines, 0) == [0, 0]
+
+
 def test_the_same_text_said_again_later_is_not_a_copy(tmp_path):
     lines = [(0.0, 2.5, "大丈夫だよ"), (2.583, 5.0, "本当に？"), (6.0, 8.0, "大丈夫だよ")]
     assert _expansion(tmp_path, lines, 0) == [0, 0]

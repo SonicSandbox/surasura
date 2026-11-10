@@ -53,7 +53,8 @@ SIDE = 2                # line_expansion: at most this many lines each side
 GAP_MS = 2000           # ...across gaps up to this long
 CAP_MS = 8000           # ...and never past this, first start to last end (Sonic: "8 second cap is wonderful")
 PASS_MS = 4500          # a card the punctuation rule makes this short stays as it is ("a pass between 2 characters")
-REPEAT_MS = 100         # a line shown again: the same text, starting at most this long after the copy before ends
+REPEAT_MS = 10          # a line shown again: the same text, starting at most this long after the copy before ends
+                        # (Generate's own window, Kotoba-R: 83 ms is the streaming gap between a line said twice)
 
 # UniDic's parts of speech
 GRAMMAR = frozenset(("助詞", "助動詞", "感動詞", "連体詞", "接続詞"))     # IS-P9 (fillers are 感動詞,フィラー)

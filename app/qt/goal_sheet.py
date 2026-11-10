@@ -742,14 +742,24 @@ class GoalSheet(motion.Overlay):
         base = path_utils.get_data_path(getattr(self.win, "language", None) or "ja")
         opener = own_folder.opener_of(self.win)
 
+        how = []
+
         def failed(_info):
             say = getattr(self.win, "say", None)
             if say is not None:
                 say(strings.GOAL_FOLDER_FAILED.format(title=work.title))
-        # a7: the content's own folder (`own_folder`), worked out on the press's worker
-        return qpress.open(self.win, lambda: own_folder.read(opener, base, tuple(work.item_ids or ()),
-                                                             folders=(work.folder or "",)),
-                           key=("open-folder", work.key), failed=failed,
+
+        def there():
+            # a7: the content's own folder (`own_folder`), worked out on the press's worker
+            path, way = own_folder.read_how(opener, base, tuple(work.item_ids or ()), folders=(work.folder or "",))
+            how.append(way)
+            return path
+
+        def opened(_found):
+            say = getattr(self.win, "say", None)
+            if say is not None and how and how[-1] in strings.FOLDER_GONE:    # choice 24: its own folder gone
+                say(strings.FOLDER_GONE[how[-1]])
+        return qpress.open(self.win, there, key=("open-folder", work.key), then=opened, failed=failed,
                            at=qpress.widget_mark(tile.more) if tile is not None else None)
 
     # --- a drag ----------------------------------------------------------------------------------------------- #

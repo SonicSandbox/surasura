@@ -48,20 +48,26 @@ def open_folder_of(win, language, row, lst, say):
     """*Open its folder* (Current's ⋯ and Finished's), one press (`press.open`, round 8 row 45): the row's ⋯ turns in
     `lst` (IK-2) from the frame of the press; the folder — the content's own (`own_folder`, a7: its originals', else the
     nearest one above, else its stored copy's) — is looked for (a drive may be slow or gone, N4) and opened on a worker;
-    none there — or it couldn't open — `say` says so. A second press meanwhile does nothing."""
+    none there — or it couldn't open — `say` says so, as it says when the folder that opened isn't its own (choice 24).
+    A second press meanwhile does nothing."""
     from app.services import own_folder
     every = [e.id for e in row.episodes]
     rels = [e.rel_path for e in row.episodes if e.rel_path]
     ids = every[:1]
     data, opener = path_utils.get_data_path(language), own_folder.opener_of(win)
 
+    how = []
+
     def there():
-        path = own_folder.read(opener, data, every, rels)
+        path, way = own_folder.read_how(opener, data, every, rels)
+        how.append(way)
         return path if path and os.path.isdir(path) else None
 
     def opened(found):
         if not found:
             say(strings.FIN_NO_FOLDER.format(title=row.title))
+        elif how and how[-1] in strings.FOLDER_GONE:            # choice 24: its own folder gone, one line says so
+            say(strings.FOLDER_GONE[how[-1]])
     return qpress.open(win, there, key=("open-folder", row.key), at=qpress.row_mark(lst, ids) if ids else None,
                        then=opened, failed=lambda _info: say(strings.FIN_NO_FOLDER.format(title=row.title)))
 

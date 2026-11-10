@@ -1310,6 +1310,76 @@ class Engine:
             out[k] = kept
         return out
 
+    def candidates(self, k):
+        """⇄ Swap (Michi-SW, 3.1 prototype): every sentence of row `k`'s pools for this order, with its unknown co-words
+        where the word is first met — the pick's own walk (`contexts`) down the list to `k`, each row before it learned
+        -> [(shown, where, unknown, audio)] easiest first (the pick's key; `audio` 0 YouTube, 1 other audio, 2 text);
+        None for a plan before format 3, one read without its pools, or a row that isn't on the list. A sentence kept
+        without its text (a first sentence in a file the list shows none of) isn't offered. (The walk repeats
+        `contexts`' setup: one shared walk is a follow-up, SWAP-PROTO.md.)"""
+        plan = self.plan
+        h = plan.header
+        if h.get("format") != 3 or not plan.picks:
+            return None
+        files, finished = plan.files, plan.finished
+        n_files = len(files)
+        pos = self._pos
+        seq_of = {f: i for i, f in enumerate(self._order, 1)}
+        sentences = plan_rules.SentenceView(plan.sentences, plan.firsts)
+
+        def place(src):
+            if src >= n_files:
+                return (finished[src - n_files][2], 0)
+            return (plan_rules.NOT_FINISHED, seq_of.get(src, 0))
+
+        def audio(src):
+            kind = files[src][3] if src < n_files else finished[src - n_files][1]
+            return 0 if kind == "youtube" else (1 if kind in ("subtitle", "bilibili") else 2)
+
+        def where(src):
+            return files[src][0] if src < n_files else finished[src - n_files][0]
+
+        def live(ids):
+            return [s for s in ids if sentences[s][4] >= n_files or pos[sentences[s][4]] is not None]
+
+        only = bool(h.get("only_i_plus_one"))
+        firsts = {}
+        if only:                                    # (under Only i+1 a row without an i+1 sentence is never learned)
+            near_files = h.get("near_files", 0)
+            for f in self._order:
+                fs = self._fs[f]
+                for j in range(0, len(fs), 2):
+                    found = firsts.setdefault(fs[j], [])
+                    if len(found) <= near_files:
+                        found.append(fs[j + 1])
+        picker = plan_rules.ContextPicker(sentences, plan.cowords, h.get("max_contexts") or 0, place, audio,
+                                          only_i_plus_one=only, ensure_audio=h.get("ensure_audio"),
+                                          recency_files=h.get("recency_files", 1))
+        max_chars = h.get("max_chars", 0)
+        for r in self._ranked:
+            row = r[-1]
+            seq = seq_of[self._first[row]]
+            _first, pool, audio_pool = plan.pools.get(row, (-1, (), ()))
+            if row == k:
+                out, seen = [], set()
+                for i, s in enumerate(live(list(pool) + list(audio_pool))):
+                    st = sentences[s]
+                    if not st[plan_rules.TEXT] or st[plan_rules.HASH] in seen:
+                        continue
+                    seen.add(st[plan_rules.HASH])
+                    weighed = picker._weigh(k, seq, s)
+                    out.append((picker._key(s, *weighed, i), (picker.shown(s), where(st[plan_rules.SRC]), weighed[0],
+                                                              audio(st[plan_rules.SRC]))))
+                out.sort(key=lambda pair: pair[0])
+                return [found for _key, found in out]
+            if only:
+                mine = firsts.get(row) or [None]
+                near = [s for s in mine[1:] if sentences[s][plan_rules.CHARS] <= max_chars]
+                if picker.pick(row, seq, mine[0], live(pool) + near, live(audio_pool)) is None:
+                    continue
+            picker.learn(row, bool(self._phrase[row]), seq)
+        return None
+
     @staticmethod
     def _prog_file(line):
         """A file's line of the progressive pass (`plan_rules.progressive_pass`) from its plan record (01 §7): the

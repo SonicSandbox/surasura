@@ -420,6 +420,83 @@
             color: #eee;
         }
 
+        /* ⇄ Swap (3.1 prototype; app/connect/swap.py): change a card's sentence to another line of your library.
+           Tokens only (--primary, --surface, --card-border, --text-secondary), with the light theme's overrides below. */
+        .swap-btn {
+            margin-left: 0.5em;
+            padding: 0 0.45em;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            background: transparent;
+            color: var(--text-secondary);
+            opacity: 0.45;
+            cursor: pointer;
+            vertical-align: baseline;
+        }
+        .context-box:hover .swap-btn, .swap-btn.active, .swap-btn:focus-visible { opacity: 1; }
+        .swap-btn:hover, .swap-btn.active { color: var(--on-surface); border-color: var(--card-border);
+            background: rgba(255, 255, 255, 0.06); }
+        .swap-panel {
+            margin: -4px 0 12px;
+            padding: 12px 14px 10px;
+            border: 1px solid var(--card-border);
+            border-radius: 6px;
+            background: rgba(0, 0, 0, 0.18);
+            font-size: 0.95rem;
+        }
+        .swap-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+        .swap-title { font-weight: 600; color: var(--on-surface); }
+        .swap-conn { font-size: 0.78rem; color: var(--text-secondary); margin-left: auto; white-space: nowrap; }
+        .swap-conn.on::before, .swap-conn.off::before { content: "●"; margin-right: 5px; font-size: 0.7rem; }
+        .swap-conn.on::before { color: var(--koe-ready); }
+        .swap-conn.off::before { color: var(--text-secondary); opacity: 0.6; }
+        .swap-close { border: none; background: none; color: var(--text-secondary); font-size: 1.1rem;
+            cursor: pointer; padding: 0 2px; line-height: 1; }
+        .swap-close:hover { color: var(--on-surface); }
+        .swap-note { font-size: 0.85rem; color: var(--text-secondary); margin: 0 0 8px; }
+        .swap-label { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase;
+            color: var(--text-secondary); margin: 10px 0 4px; }
+        .swap-label .swap-sub { text-transform: none; letter-spacing: 0; opacity: 0.8; margin-left: 6px; }
+        .swap-now { padding: 6px 10px; border-left: 2px solid var(--text-secondary); color: var(--on-surface);
+            opacity: 0.85; }
+        .swap-list { list-style: none; margin: 0; padding: 0; max-height: 340px; overflow-y: auto; }
+        .swap-line { display: flex; align-items: flex-start; gap: 10px; padding: 7px 8px; border-radius: 5px;
+            border: 1px solid transparent; cursor: pointer; }
+        .swap-line:hover { background: rgba(255, 255, 255, 0.04); }
+        .swap-line.chosen { border-color: var(--primary); background: rgba(98, 0, 238, 0.12); }
+        .swap-line.current { opacity: 0.55; cursor: default; }
+        .swap-play { flex: 0 0 auto; width: 28px; height: 28px; margin-top: 2px; border-radius: 50%;
+            border: 1px solid var(--card-border); background: var(--surface); color: var(--on-surface);
+            font-size: 0.7rem; cursor: pointer; padding: 0; }
+        .swap-play:hover:not(:disabled) { border-color: var(--primary); }
+        .swap-play:disabled { opacity: 0.35; cursor: default; }
+        .swap-play.busy { animation: swap-pulse 1s ease-in-out infinite; }
+        @keyframes swap-pulse { 50% { opacity: 0.4; } }
+        .swap-body { flex: 1 1 auto; min-width: 0; }
+        .swap-text { color: var(--on-surface); line-height: 1.55; }
+        .swap-text em, .swap-now em { font-style: normal; color: var(--secondary); }
+        .swap-meta { font-size: 0.78rem; color: var(--text-secondary); margin-top: 2px; }
+        .swap-unk { display: inline-block; padding: 0 6px; border-radius: 8px; border: 1px solid var(--card-border); }
+        .swap-unk.u0 { border-color: var(--koe-ready); color: var(--koe-ready); }
+        .swap-pic { flex: 0 0 auto; width: 96px; height: 54px; object-fit: cover; border-radius: 4px;
+            border: 1px solid var(--card-border); }
+        .swap-foot { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+        .swap-go, .swap-undo { padding: 6px 16px; border-radius: 4px; border: 1px solid var(--primary);
+            background: var(--primary); color: var(--on-primary); font-size: 0.9rem; cursor: pointer; }
+        .swap-undo { background: transparent; color: var(--on-surface); border-color: var(--card-border); }
+        .swap-go:disabled { opacity: 0.4; cursor: default; }
+        .swap-msg { font-size: 0.85rem; color: var(--text-secondary); }
+        .swap-msg.err { color: var(--error); }
+        .swap-msg.done { color: var(--koe-ready); }
+        .swap-fine { font-size: 0.75rem; color: var(--text-secondary); opacity: 0.8; margin-top: 6px; }
+        body.theme-modern-light .swap-panel { background: #f8f9fb; }
+        body.theme-modern-light .swap-btn:hover, body.theme-modern-light .swap-btn.active { background: #eef0f4; }
+        body.theme-modern-light .swap-line:hover { background: #f1f2f6; }
+        body.theme-modern-light .swap-line.chosen { background: rgba(98, 0, 238, 0.07); }
+        body.theme-modern-light .swap-text em, body.theme-modern-light .swap-now em { color: var(--primary); }
+
         /* Per-sentence source badge — "which file did this example come from?".
            Sits inline right after the sentence (not right-justified), muted so it never competes
            with the sentence itself, and marked migaku_ignore / data-yomichan-ignore so dictionary
@@ -3016,8 +3093,12 @@
                         </div>
                     </div>
                 </div>
-                <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], c1, data["Aud 1"], data["End 1"])}</div>
+                <div class="context-box"${c1Title}>${displayC1}${sourceBadge(data["Src 1"], data["Frag 1"], data["At 1"], c1, data["Aud 1"], data["End 1"])}<button class="swap-btn" migaku_ignore data-yomichan-ignore title="Swap this card's sentence for another line from your library">⇄</button></div>
             `;
+
+            // ⇄ Swap: the panel under this sentence (openSwap); the page's own sentences until the app answers.
+            const swapBtn = el.querySelector('.swap-btn');
+            if (swapBtn) swapBtn.onclick = (e) => { e.stopPropagation(); openSwap(el, data, swapBtn, formatContext); };
 
             // Extra Contexts (DOM Pruning)
             // Dynamically load any context strings beyond Context 1
@@ -3294,6 +3375,223 @@
         }
 
         // Seconds -> '12:03' (or '1:02:03'). Used for the subtitle cue a sentence sits in.
+        // --- ⇄ Swap (3.1 prototype; app/door.py + app/connect/swap.py) ---
+        // The page asks the window's door only on a press: `door-secret.js` beside this file (written while Surasura is
+        // open) names its port and this session's token. No file, or no answer: the panel says so, lists this
+        // page's own sentences, and ▶ / Swap stay off — the page never waits on the app to open.
+        const SWAP = { door: null };
+
+        function swapLang() {
+            return (typeof globalLanguage !== 'undefined' && globalLanguage) ? globalLanguage : 'ja';
+        }
+
+        function doorScript(fresh) {
+            return new Promise(resolve => {
+                if (SWAP.door && !fresh) return resolve(SWAP.door);
+                const old = document.getElementById('surasura-door');
+                if (old) old.remove();
+                window.SURASURA_DOOR = undefined;
+                const s = document.createElement('script');
+                s.id = 'surasura-door';
+                s.src = 'door-secret.js?' + Date.now();
+                s.onload = () => { SWAP.door = window.SURASURA_DOOR || null; resolve(SWAP.door); };
+                s.onerror = () => { SWAP.door = null; resolve(null); };
+                document.head.appendChild(s);
+            });
+        }
+
+        // One call through the door -> its JSON answer, or {ok: false, offline: true}. A refused or unanswered call
+        // reads the door's file again once (the window restarted: a new port and token).
+        async function doorCall(route, body, ms) {
+            for (const fresh of [false, true]) {
+                const door = await doorScript(fresh);
+                if (!door) return { ok: false, offline: true };
+                const ctl = new AbortController();
+                const timer = setTimeout(() => ctl.abort(), ms || 8000);
+                try {
+                    const r = await fetch(`http://127.0.0.1:${door.port}/v1/${route}`, {
+                        method: 'POST', headers: { 'Content-Type': 'text/plain' }, signal: ctl.signal,
+                        body: JSON.stringify(Object.assign({ token: door.token, lang: swapLang() }, body || {})) });
+                    if (r.status === 403 && !fresh) continue;
+                    return await r.json();
+                } catch (e) {
+                    if (!fresh && e.name !== 'AbortError') continue;
+                    return { ok: false, offline: e.name !== 'AbortError',
+                             error: e.name === 'AbortError' ? 'Surasura took too long to answer.' : undefined };
+                } finally {
+                    clearTimeout(timer);
+                }
+            }
+        }
+
+        function doorClip(name) {
+            const d = SWAP.door;
+            return d && name ? `http://127.0.0.1:${d.port}/v1/clip/${encodeURIComponent(name)}?t=${encodeURIComponent(d.token)}` : '';
+        }
+
+        // This page's other sentences for the word (Context 2..N), shown at once while the door is asked for the rest.
+        function swapPageLines(data) {
+            const table = (typeof globalSources !== 'undefined' && globalSources) ? globalSources : null;
+            return Object.keys(data).filter(k => /^Context \d+$/.test(k) && k !== 'Context 1' && data[k])
+                .sort((a, b) => parseInt(a.slice(8)) - parseInt(b.slice(8)))
+                .map(k => {
+                    const n = k.slice(8), row = table ? table[data['Src ' + n]] : null;
+                    const where = row ? String(row[3] || row[0] || '') : '';
+                    const parts = where.split('/');
+                    return { id: null, text: data[k], unknown: null, timed: data['At ' + n] !== undefined,
+                             show: parts.length > 1 ? parts[parts.length - 2] : '',
+                             episode: (parts[parts.length - 1] || '').replace(/\.[^.]+$/, '') };
+                });
+        }
+
+        function openSwap(card, data, btn, format) {
+            const open = card.querySelector('.swap-panel');
+            if (open) { open.remove(); btn.classList.remove('active'); return; }
+            btn.classList.add('active');
+            const panel = document.createElement('div');
+            panel.className = 'swap-panel';
+            card.querySelector('.context-box').after(panel);
+            const st = { data, format, btn, lines: swapPageLines(data), connected: null, looking: true, note: null,
+                         now: data['Context 1'] || '', chosen: null, msg: '', msgKind: '', undo: null, busy: false,
+                         hint: false, anki: null };
+            renderSwap(panel, st);
+            doorCall('swap/candidates', { word: data.Word, reading: data.Reading || '' }, 90000).then(ans => {
+                st.looking = false;
+                st.connected = !ans.offline;
+                if (ans.ok) {
+                    st.lines = ans.candidates;
+                    st.note = ans.note;
+                    st.hint = ans.hint;
+                    st.anki = ans.anki;
+                    if (ans.now) st.now = ans.now;
+                } else if (!ans.offline) {
+                    st.msg = ans.error || "Surasura couldn't list the sentences.";
+                    st.msgKind = 'err';
+                }
+                renderSwap(panel, st);
+            });
+        }
+
+        function renderSwap(panel, st) {
+            const on = st.connected === true, ready = on && st.note;
+            const conn = st.connected === null ? '<span class="swap-conn">Asking Surasura…</span>'
+                : (on ? '<span class="swap-conn on">Connected to Surasura</span>'
+                      : '<span class="swap-conn off">Surasura isn&#39;t open</span>');
+            let note = '';
+            if (st.connected === false) note = "Open Surasura to hear a line or swap it in. These are this page's own sentences.";
+            else if (on && !st.note && st.anki) note = escapeHtml(st.anki);
+            else if (st.looking) note = "Looking through your library for this word's other sentences…";
+            const meta = l => {
+                const bits = [l.show, l.episode].filter(Boolean).map(escapeHtml);
+                if (l.unknown === 0) bits.push('<span class="swap-unk u0" title="Every other word in it is known by then">i+1</span>');
+                else if (l.unknown) bits.push(`<span class="swap-unk">${l.unknown} unknown</span>`);
+                if (!l.timed) bits.push('text only');
+                return bits.join(' · ');
+            };
+            const rows = st.lines.map((l, i) => {
+                const can = on && l.id && l.timed;
+                const cls = ['swap-line', st.chosen === i ? 'chosen' : '', l.now ? 'current' : ''].join(' ');
+                const tip = can ? 'Hear this line' : (on ? 'No clip for this line' : 'Open Surasura to hear it');
+                return `<li class="${cls}" data-i="${i}">
+                    <button class="swap-play" data-i="${i}" ${can ? '' : 'disabled'} migaku_ignore data-yomichan-ignore
+                        title="${tip}">▶</button>
+                    <div class="swap-body"><div class="swap-text">${st.format(l.text)}</div>
+                        <div class="swap-meta" migaku_ignore data-yomichan-ignore>${meta(l)}${l.now ? ' · on its card now' : ''}</div></div>
+                    ${l.picture ? `<img class="swap-pic" src="${doorClip(l.picture)}" alt="">` : ''}
+                </li>`;
+            }).join('');
+            const foot = st.undo
+                ? `<span class="swap-msg done">✓ Swapped: its card now shows this line.</span>
+                   <button class="swap-undo" migaku_ignore data-yomichan-ignore>Undo</button>`
+                : `<button class="swap-go" ${ready && st.chosen !== null && !st.busy ? '' : 'disabled'} migaku_ignore data-yomichan-ignore>Swap</button>
+                   <span class="swap-msg ${st.msgKind}">${escapeHtml(st.msg)}</span>`;
+            const fine = 'The card keeps its reviews and its place in Anki' +
+                (st.hint ? ', and its translation (written for the old line)' : '') + '.';
+            panel.innerHTML = `
+                <div class="swap-head" migaku_ignore data-yomichan-ignore><span class="swap-title">⇄ Swap this card's sentence</span>${conn}
+                    <button class="swap-close" title="Close">×</button></div>
+                ${note ? `<div class="swap-note">${note}</div>` : ''}
+                <div class="swap-label" migaku_ignore data-yomichan-ignore>${st.note ? 'On its card now' : 'Its sentence on this page'}</div>
+                <div class="swap-now">${st.format(st.now)}</div>
+                <div class="swap-label" migaku_ignore data-yomichan-ignore>Other sentences from your library<span class="swap-sub">easiest first</span></div>
+                <ol class="swap-list">${rows}</ol>
+                <div class="swap-foot">${foot}</div>
+                <div class="swap-fine" migaku_ignore data-yomichan-ignore>${fine}</div>`;
+            panel.querySelector('.swap-close').onclick = () => { panel.remove(); st.btn.classList.remove('active'); };
+            panel.querySelectorAll('.swap-line').forEach(li => li.onclick = e => {
+                const i = +li.dataset.i, l = st.lines[i];
+                if (e.target.closest('.swap-play') || l.now || st.undo || !(on && l.id && l.timed)) return;
+                st.chosen = st.chosen === i ? null : i;
+                st.msg = ''; st.msgKind = '';
+                renderSwap(panel, st);
+            });
+            panel.querySelectorAll('.swap-play').forEach(b => b.onclick = () => swapPlay(panel, st, +b.dataset.i, b));
+            const go = panel.querySelector('.swap-go');
+            if (go) go.onclick = () => swapDo(panel, st);
+            const undo = panel.querySelector('.swap-undo');
+            if (undo) undo.onclick = () => swapUndo(panel, st);
+        }
+
+        let swapAudio = null;
+        async function swapPlay(panel, st, i, b) {
+            const l = st.lines[i];
+            if (swapAudio && swapAudio._i === i && !swapAudio.paused) { swapAudio.pause(); return; }
+            if (swapAudio) swapAudio.pause();
+            b.classList.add('busy');
+            b.title = 'Cutting this line from its episode…';
+            const ans = l.clip ? { ok: true, clip: l.clip, picture: l.picture }
+                               : await doorCall('swap/preview', { id: l.id }, 150000);
+            b.classList.remove('busy');
+            if (!ans.ok) {
+                st.msg = ans.offline ? 'Surasura closed: open it to hear a line.' : (ans.error || "That line couldn't be cut.");
+                st.msgKind = 'err';
+                if (ans.offline) st.connected = false;
+                return renderSwap(panel, st);
+            }
+            const fresh = !l.clip;
+            l.clip = ans.clip; l.picture = ans.picture;
+            if (fresh) renderSwap(panel, st);
+            const button = panel.querySelector(`.swap-play[data-i="${i}"]`) || b;
+            swapAudio = new Audio(doorClip(l.clip));
+            swapAudio._i = i;
+            swapAudio.onended = swapAudio.onpause = () => { button.textContent = '▶'; };
+            button.textContent = '■';
+            swapAudio.play().catch(() => { button.textContent = '▶'; });
+        }
+
+        async function swapDo(panel, st) {
+            const l = st.lines[st.chosen];
+            st.busy = true; st.msg = "Making the line's card fields with Anki Miner…"; st.msgKind = '';
+            renderSwap(panel, st);
+            const ans = await doorCall('swap/do', { note: st.note, id: l.id }, 330000);
+            st.busy = false;
+            if (!ans.ok) {
+                st.msg = ans.offline ? 'Surasura closed before the swap: nothing changed.' : ans.error;
+                st.msgKind = 'err';
+                return renderSwap(panel, st);
+            }
+            st.lines.forEach(x => { x.now = false; });
+            l.now = true;
+            st.undo = { id: ans.undo, was: st.now };
+            st.now = ans.now || l.text;
+            st.chosen = null; st.msg = '';
+            renderSwap(panel, st);
+        }
+
+        async function swapUndo(panel, st) {
+            const ans = await doorCall('swap/undo', { undo: st.undo.id }, 30000);
+            if (!ans.ok) {
+                const msg = ans.offline ? 'Surasura closed: open it to undo.' : ans.error;
+                panel.querySelector('.swap-foot').insertAdjacentHTML('beforeend', `<span class="swap-msg err">${escapeHtml(msg)}</span>`);
+                return;
+            }
+            st.now = ans.now || st.undo.was;
+            st.lines.forEach(x => { x.now = false; });
+            st.undo = null;
+            st.msg = 'Undone: the card has its old line again.'; st.msgKind = 'done';
+            renderSwap(panel, st);
+        }
+
         function fmtCueTime(sec) {
             const t = Math.max(0, Math.floor(Number(sec) || 0));
             const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;

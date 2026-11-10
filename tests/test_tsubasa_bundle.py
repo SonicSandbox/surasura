@@ -17,7 +17,7 @@ import pytest
 
 import package_app
 from app import updater
-from tests.test_packaging_config import _program, _stubbed_build
+from tests.test_packaging_config import _program, _stubbed_build, _stand_in_archives, fake_site  # noqa: F401
 
 PROJECT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPEC = os.path.join(PROJECT, "packaging", "Surasura.spec")

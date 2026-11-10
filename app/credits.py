@@ -74,20 +74,53 @@ CONTENT_NOTE = """Your content
 
 
 # Surasura's own licence and the libraries the program bundles (the licence switch, 3.0): the GPL asks that the
-# source be offered wherever the program goes, and the bundled libraries keep their notices (packaging/Surasura.spec
-# copies their texts into _internal\licenses).
+# source be offered wherever the program goes, and the bundled libraries keep their notices (the build, package_app.py
+# step 3b, copies every bundled part's texts into _internal\licenses and lists them in its INDEX.txt: `bundled()`).
 SOFTWARE_NOTE = """Surasura and the software it bundles
 
 • Surasura — SonicSandbox, GNU General Public License version 3 or later, with an additional permission (LICENSE and LICENSE-EXCEPTION.md beside the program). It comes with no warranty. Its source code is free to get, read and change: https://github.com/SonicSandbox/surasura. Versions up to 2.5.x were released under the MIT License (licenses\\Surasura-MIT-before-3.0.txt).
-• The window: PyQt6 — Riverbank Computing, GPL-3.0; Qt 6 — The Qt Company, LGPL-3.0. Their licence texts are in the program's _internal\\licenses folder, with tsubasa's (GPL-3.0-or-later).
-• The other libraries it bundles keep their own licences: among them pysrt (GPL-3.0), EbookLib (AGPL-3.0-or-later), pandas and numpy (BSD), fugashi, jieba and Beautiful Soup (MIT), requests (Apache License 2.0)."""
+• The window: PyQt6 — Riverbank Computing, GPL-3.0; Qt 6 — The Qt Company, LGPL-3.0.
+• Every library and part it bundles keeps its own licence — among them tsubasa (GPL-3.0-or-later), pysrt (GPL-3.0), EbookLib (AGPL-3.0-or-later), pandas and numpy (BSD), fugashi, jieba and Beautiful Soup (MIT), requests (Apache License 2.0). Each one's licence text is in the program's _internal\\licenses folder, listed in its INDEX.txt with its version; Qt's own third-party components are listed at https://doc.qt.io/qt-6/licenses-used-in-qt.html.
+• The source code of each bundled library is its own project's, at the version INDEX.txt names: the Python packages' on PyPI (https://pypi.org), Qt's at https://download.qt.io/archive/qt/."""
+
+# The build's list of the bundled software (package_app.py step 3b): <the program's _internal>\licenses\INDEX.txt, one
+# "name · version · licence · its texts" line each.
+BUNDLED_INDEX = ("licenses", "INDEX.txt")
+
+
+def bundled():
+    """The software the program bundles, as its _internal\\licenses\\INDEX.txt lists it -> [(name, version, licence)];
+    [] from source or when the index can't be read."""
+    if not path_utils.is_frozen():
+        return []
+    try:
+        with open(os.path.join(getattr(sys, "_MEIPASS", ""), *BUNDLED_INDEX), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    rows = []
+    for line in lines:
+        cells = line.split(" · ")
+        if line.strip() and not line.startswith("#") and len(cells) >= 4:
+            rows.append((cells[0].strip(), cells[1].strip(), cells[2].strip()))
+    return rows
+
+
+def software_note():
+    """`SOFTWARE_NOTE`, then each part the program bundles with its version and licence (`bundled()`), when listed."""
+    rows = bundled()
+    if not rows:
+        return SOFTWARE_NOTE
+    listed = "\n".join(f"  {name} {version} — {licence}" if version != "-" else f"  {name} — {licence}"
+                       for name, version, licence in rows)
+    return SOFTWARE_NOTE + "\n\nBundled with this program (_internal\\licenses\\INDEX.txt)\n" + listed
 
 
 def all_credits():
-    """`data_credits()` followed by the logos' and the covers' credits, Surasura's own licence and the libraries it
-    bundles (`SOFTWARE_NOTE`), then the user's own content (`CONTENT_NOTE`): what the 3.0 window's Data credits
+    """`data_credits()` followed by the logos' and the covers' credits, Surasura's own licence and the software it
+    bundles (`software_note()`), then the user's own content (`CONTENT_NOTE`): what the 3.0 window's Data credits
     shows."""
-    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + SOFTWARE_NOTE + "\n\n" + \
+    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + software_note() + "\n\n" + \
         CONTENT_NOTE
 
 

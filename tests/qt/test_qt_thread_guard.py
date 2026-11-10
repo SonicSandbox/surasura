@@ -104,9 +104,9 @@ def test_a_parentless_qt_object_a_workers_collection_frees_is_deleted_on_the_mai
     collected.start()
     collected.join()
     assert not sip.isdeleted(child), "the worker's collection deleted a Qt object of the main thread"
-    assert any(o is not None and not sip.isdeleted(o) for o in harness_guards._QT_HELD)
-    harness_guards._free_qt_held()                      # (as each test's teardown does)
-    assert sip.isdeleted(child) and harness_guards._QT_HELD == []
+    assert harness_guards._WORKER_GARBAGE, "kept for the main thread"
+    assert harness_guards._free_worker_garbage() > 0     # (as each test's teardown does)
+    assert sip.isdeleted(child) and harness_guards._WORKER_GARBAGE == []
 
 
 def test_a_main_thread_collection_frees_as_ever(qapp):
@@ -118,4 +118,24 @@ def test_a_main_thread_collection_frees_as_ever(qapp):
     orphan.me = orphan
     del orphan
     gc.collect()
-    assert sip.isdeleted(child) and harness_guards._QT_HELD == []
+    assert sip.isdeleted(child) and harness_guards._WORKER_GARBAGE == []
+
+
+def test_a_workers_collection_frees_nothing_until_the_main_thread_does(qapp):
+    # why: the same hold for a plain cycle (a Tk root's, a test's helpers): freed on the main thread, never lost
+    import gc
+    import weakref
+
+    class Cycle:
+        pass
+    a = Cycle()
+    a.me = a
+    gone = []
+    weakref.finalize(a, gone.append, "freed")
+    del a
+    t = threading.Thread(target=gc.collect, name="worker-gc")
+    t.start()
+    t.join()
+    assert harness_guards._WORKER_GARBAGE                   # kept: not freed on the worker
+    harness_guards._free_worker_garbage()
+    assert gone == ["freed"] and harness_guards._WORKER_GARBAGE == []

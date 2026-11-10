@@ -2184,6 +2184,7 @@ class CardsPage(_Page):
 
     def __init__(self, wiz):
         super().__init__(wiz, S.CARDS_TITLE, S.CARDS_LINE)
+        self._say_language(wiz.language)
         self.picture = MinePicture(wiz.language, self)
         self.box.addWidget(self.picture)
         self.box.addSpacing(_px(12))
@@ -2451,7 +2452,12 @@ class CardsPage(_Page):
         QApplication.clipboard().setText(self.path_text)
         self.wiz.say(S.PATH_COPIED)
 
+    def _say_language(self, language):
+        """3.0 makes cards in Japanese only (Connect parks a Chinese entry, `runner.CHINESE`): Chinese says so."""
+        _set_text(self.line, S.CARDS_LINE_ZH if language == "zh" else S.CARDS_LINE)
+
     def language_changed(self, language):
+        self._say_language(language)
         self.picture.set_language(language)
         f = self.path.font()
         f.setFamilies(list(theme.path_font_families(language)))

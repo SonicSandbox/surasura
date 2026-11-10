@@ -61,7 +61,8 @@ LANGUAGE_HINT = "← → to choose · Enter to go on"
 LANGUAGE_GLYPHS = {"ja": "日本語", "zh": "中文"}
 LANGUAGE_WORDS = {"ja": "Japanese", "zh": "Chinese"}
 LANGUAGE_TIPS = {"ja": "Japanese: your list, your example sentences and your cards in Japanese.",
-                 "zh": "Chinese: your list, your example sentences and your cards in Chinese."}
+                 "zh": "Chinese: your list and your example sentences in Chinese. Cards are made in Japanese only "
+                       "for now."}
 LANGUAGE_CHOICE_NAME = "Language"
 
 # --- 2 · what you know ------------------------------------------------------------------------------------------------ #
@@ -243,6 +244,7 @@ BEHIND_NOT_ADDED = "Nothing was added: your library can't be changed just now. T
 # --- 5 · cards made for you ------------------------------------------------------------------------------------------- #
 CARDS_TITLE = "Cards that make themselves"
 CARDS_LINE = "From the episode you're watching: the line, its audio and a picture."
+CARDS_LINE_ZH = "Surasura makes cards in Japanese only for now: Chinese cards come later. You can skip this step."
 CARDS_PICTURE_NAME = "A line from an episode becomes an Anki card with its audio and a picture"
 CARDS_LINE_SAMPLE = {"ja": ("この店のラーメンは本当に絶品だ", "ぜっぴん", "絶品"),
                      "zh": ("这家店的拉面真是绝品", "juépǐn", "绝品")}

@@ -3407,7 +3407,9 @@
         }
 
         function wordSearchEnabled() {
-            return wordSearchConfig().enabled !== false;
+            // Nadeshiko holds Japanese sentences only: a Chinese report has no ⌕ (nor its \ key)
+            return wordSearchConfig().enabled !== false
+                && ((typeof globalLanguage === 'undefined') || globalLanguage !== 'zh');
         }
 
         function searchWord(word) {

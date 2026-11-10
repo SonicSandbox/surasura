@@ -1680,6 +1680,30 @@ def test_a_language_switch_keeps_the_choices_that_dont_depend_on_it(make):
     assert wiz.passed == {0, 2}                                    # What you know and Card order: for zh, not yet
 
 
+def test_zh_s_the_cards_page_says_chinese_cards_come_later_and_japanese_gets_its_own_line_back(make):
+    """Zh-S (2026-11-09): 3.0 makes cards in Japanese only (Connect parks every Chinese entry). Before, a Chinese learner
+    met the Japanese page's promise over a Chinese card picture, and the page-1 tip said "your cards in Chinese"."""
+    wiz, *_ = make()
+    assert "Japanese only" not in wiz.pages[4].line.text()          # Japanese: the page as it was
+    wiz.pages[0].channel.choose("zh", user=True)
+    wiz.next()
+    assert wiz.language == "zh"
+    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH and "Japanese only" in S.CARDS_LINE_ZH
+    assert "your cards in Chinese" not in S.LANGUAGE_TIPS["zh"]
+    while wiz.index:
+        wiz.back()
+    wiz.pages[0].channel.choose("ja", user=True)
+    wiz.next()
+    assert wiz.pages[4].line.text() == S.CARDS_LINE                 # switched back: the Japanese line again
+
+
+def test_zh_s_a_wizard_that_opens_in_chinese_says_it_on_the_cards_page_at_once(make):
+    """Zh-S review R1: *Set up again* in Chinese builds the page in Chinese — no switch to tell it."""
+    wiz, *_ = make(data={"target_language": "zh"})
+    assert wiz.language == "zh"
+    assert wiz.pages[4].line.text() == S.CARDS_LINE_ZH
+
+
 def test_a_second_pass_through_what_you_know_syncs_again_only_for_other_decks(make):
     wiz, _shell, api, *_ = make()
     wiz.next()

@@ -257,6 +257,8 @@ def test_a_run_of_copies_is_capped_too(tmp_path):
     tokens = cues.tokens(read, "ja")
     before, after, cut, ms = pick.window(read, 0, pick.Lines(read, tokens, "ja"))
     assert ms <= pick.CAP_MS and cut and after < 5
+    before, after, cut, ms = pick.window(read, 5, pick.Lines(read, tokens, "ja"))
+    assert ms <= pick.CAP_MS and cut and before < 5                    # from the last showing, back: capped too
     chosen = _by_word(pick.pick(read, tokens, "ja", lambda key: key[0] != "頑張る", mode="unknown"))
     assert chosen["頑張る"]["line_start"] == 20.0                       # the whole sentence that fits wins
 
@@ -287,11 +289,12 @@ def test_two_lines_shown_together_are_neighbours_whichever_starts_first(tmp_path
 
 def test_a_neighbours_copies_come_with_it(tmp_path):
     # the line after (and the line before) shown twice counts as one of the two lines a side
-    ahead = _stream(["昨日 駅前の本屋で", "前から探していた小説を"], each=1.5)
-    ahead += [(3.166, 4.5, "ついに見つけた"), (4.5, 4.7, "ついに見つけた")]
+    # (each line 2 s: past the 4.5 s pass, so the grammar walk adds them)
+    ahead = _stream(["昨日 駅前の本屋で", "前から探していた小説を"], each=2.0)
+    ahead += [(4.166, 6.0, "ついに見つけた"), (6.0, 6.2, "ついに見つけた")]
     assert _expansion(tmp_path, ahead, 0) == [0, 3]
-    behind = [(0.0, 1.5, "昨日 駅前の本屋で"), (1.5, 1.7, "昨日 駅前の本屋で")]
-    behind += _stream(["前から探していた小説を", "ついに見つけた"], each=1.5, start=1.783)
+    behind = [(0.0, 2.0, "昨日 駅前の本屋で"), (2.0, 2.2, "昨日 駅前の本屋で")]
+    behind += _stream(["前から探していた小説を", "ついに見つけた"], each=2.0, start=2.283)
     assert _expansion(tmp_path, behind, 3) == [3, 0]
 
 
@@ -309,6 +312,7 @@ def test_two_lines_with_no_japanese_between_still_count_as_anki_miners_neighbour
     lines = [(0.0, 2.0, "昨日 駅前の本屋で"), (2.083, 4.0, "友達に会って"), (4.083, 4.5, "EXIT"),
              (4.583, 6.5, "映画を見た")]
     assert _expansion(tmp_path, lines, 0) == [0, 2]
+    assert _expansion(tmp_path, lines, 3) == [2, 0]          # back past the sign: the sign isn't a line that ends
 
 
 def test_a_copy_counts_as_its_line_for_joining(tmp_path):

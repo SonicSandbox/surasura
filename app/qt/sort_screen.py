@@ -564,10 +564,13 @@ def _rows_of(groups):
 
 
 def _sub_line(a):
-    """The top title's line: its files and where they are (K7's folder, when the looks named it)."""
+    """The top title's line: its files and where they are (K7's folder, when the looks named it). The count is worded
+    as New arrivals' and Goal's are (`view_rows.STRINGS["arr_units"]` by the title's media): *12 episodes*, *3 videos*,
+    *48 parts* — never the play verb's word (*12 video*, Mado-SB)."""
+    from app.services import view_rows
     n = len(getattr(a, "item_ids", ()) or ())
-    word = getattr(a, "media_word", None) or "files"
-    parts = [f"{n:,} {word}" if n != 1 else f"1 {str(word).rstrip('s')}"]
+    one, many = view_rows.STRINGS["arr_units"][view_rows._arrival_unit(getattr(a, "media", None))]
+    parts = [f"{n:,} {one if n == 1 else many}"]
     if getattr(a, "line", None):
         parts.append(str(a.line))
     if getattr(a, "folder", None):

@@ -216,11 +216,12 @@ def test_next_reads_the_folders_on_a_worker_under_the_load_screen_and_they_wait_
     assert set(SHOWS) | set(LOOSE) <= names
     assert service.read_offers("ja") == frozenset()               # nothing in the line yet: no cards line
     assert _log() == []                                            # the first look logs nothing (S1)
-    assert wiz.index == 2 and settings.calls == []                 # under the cover; nothing saved yet
+    assert wiz.index == 2 and settings.calls == [{"covers_download": True}]   # under the cover: only *Show covers*,
+    # written before the read so the sort pad's covers are asked (Mado-SB); the page's other answers wait
     wiz.next()
     assert wiz.index == 2, "Next does nothing while the wizard is covered"
     _sorted(wiz)
-    assert wiz.index == 3 and settings.calls == [{"covers_download": True}]
+    assert wiz.index == 3 and settings.calls == [{"covers_download": True}]      # *Done*: never written twice
     assert wait_until(lambda: any(c[0] == "sorted_offer" for c in api.calls), 10)
     assert sorted(next(c for c in api.calls if c[0] == "sorted_offer")[2]) == [i for i, *_r in items]
     assert service.read_offers("ja") == frozenset()               # nothing sorted into Current: still no line

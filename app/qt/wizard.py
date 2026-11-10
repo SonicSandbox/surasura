@@ -2569,6 +2569,7 @@ class SetupWizard(QWidget):
         self._count_wait = COUNT_AGAIN_MS   # page 6's next ask while it counts (twice as long each time)
         self._junban_found = None           # modules/junban looked for on a worker (None: not known yet)
         self.saves = []                     # (page, answers) as each *Next* saved them (what the wizard asked)
+        self._shows_saved = None            # Mado-SB: page 3's answers last written (`_save_shows`)
         self._finished = False              # `finish` written (Generate, or *Skip* on the last page)
         self.reading = None                 # SRC W1a: page 3's first look running (its Stop: a threading.Event)
         self._read_seq = 0
@@ -2842,7 +2843,8 @@ class SetupWizard(QWidget):
             if links and self.fetching is not None:
                 page.refuse(S.YOUTUBE_BUSY)                # (the last links still coming: these stay in the box)
                 return
-            page.refuse(None)
+            self._save_shows(page)                         # Mado-SB: Next goes on — written before the read and the
+            page.refuse(None)                              # fetch, so the sort pad asks its titles' covers
             if links:
                 page.links.setPlainText("")
                 self._fetch_youtube(links)
@@ -2857,7 +2859,8 @@ class SetupWizard(QWidget):
         if page.id == "level":
             self._generate(answers)
             return
-        self._save(page.id, answers)
+        if page.id != "shows":                            # (page 3's answers were written above: `_save_shows`)
+            self._save(page.id, answers)
         if page.id == "language" and answers.get("language") != self.language:
             self._language_changed(answers["language"])
         if page.id == "known" and answers.get("how") == "anki" and answers.get("decks"):
@@ -2946,6 +2949,17 @@ class SetupWizard(QWidget):
             applog.log("wizard", f"saving {page_id}: {e}")
             windows.say_in_bar(self.shell, str(e))
             self.say(str(e))                              # the bar is under the wizard (AD-11)
+            return False
+        return True
+
+    def _save_shows(self, page):
+        """Page 3's *Show covers*, written when *Next* leaves the page for the read (Mado-SB): the load and the sort pad
+        come before the page's own save, and their titles' covers are asked online only while `covers_download` is
+        on (the fetcher reads it at every request) — so the pad shows the covers as they come. Written again only
+        when the choice changed since: a second write would ask every title on screen again (`shell._settings_written`)."""
+        answers = page.answers()
+        if answers != self._shows_saved and self._save("shows", answers):
+            self._shows_saved = dict(answers)            # (a write that failed is tried again at the next *Next*)
 
     def _finish(self):
         self._finished = True
@@ -3691,7 +3705,7 @@ class SetupWizard(QWidget):
                                  failed=lambda info: applog.log("wizard", f"cards line after sorting: {info[0]}"))
         page = self.page
         if page.id == "shows" and not page.folders and page.refused_line.isHidden():
-            self._save("shows", page.answers())
+            self._save_shows(page)
             self._advance()                               # else page 3 stays: what it says, the folders not read yet
     # --- end Mado-O
 

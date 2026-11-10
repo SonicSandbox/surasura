@@ -309,8 +309,8 @@ def test_a_later_copy_with_no_words_of_its_own_runs_on_by_its_first(tmp_path):
 
 def test_two_lines_with_no_japanese_between_still_count_as_anki_miners_neighbours(tmp_path):
     # with the sign counted, the second line's て would stop at the sign and the third line be lost
-    lines = [(0.0, 2.0, "昨日 駅前の本屋で"), (2.083, 4.0, "友達に会って"), (4.083, 4.5, "EXIT"),
-             (4.583, 6.5, "映画を見た")]
+    lines = [(0.0, 2.5, "昨日 駅前の本屋で"), (2.583, 5.0, "友達に会って"), (5.083, 5.5, "EXIT"),
+             (5.583, 8.0, "映画を見た")]
     assert _expansion(tmp_path, lines, 0) == [0, 2]
     assert _expansion(tmp_path, lines, 3) == [2, 0]          # back past the sign: the sign isn't a line that ends
 

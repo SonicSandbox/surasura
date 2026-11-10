@@ -104,7 +104,7 @@ def _context_columns(run):
 def _check_parity(result, run, contexts=False):
     """The engine's result against a Generate's own files: both lists, column by column; first places. `contexts`
     (F7): the example sentences too — the engine's re-pick (`result(pick=True)`) is that Generate's pick."""
-    extra = _context_columns(run) if contexts else []
+    extra = ["Kana"] + (_context_columns(run) if contexts else [])     # Kana: a phrase row's shown reading (format 4)
     _same(run["priority"], result.priority, PRIORITY_COLUMNS + extra)
     _same(run["progressive"], result.progressive, PROGRESSIVE_COLUMNS + extra)
     plan = run["plan"]
@@ -531,7 +531,7 @@ def test_a_damaged_or_foreign_plan_is_refused_whole(runs, tmp_path):
 
     lines = _lines(good)
     header, rest = lines[0], lines[1:]
-    for broken, match in ((dict(header, format=4), "format"), (dict(header, format=1), "unknown table"),
+    for broken, match in ((dict(header, format=5), "format"), (dict(header, format=1), "unknown table"),
                           ({k: v for k, v in header.items() if k != "recency_files"}, "pick settings"),
                           ({k: v for k, v in header.items() if k != "phrase_entries"}, "phrase_entries"),
                           (dict(header, files=header["files"] + 1), "files"),
@@ -597,9 +597,11 @@ F7_TABLES = ("finished", "sentences", "cowords", "pools", "firsts")
 
 
 def _older(lines, format):
-    """A format-3 plan's lines as an older Generate wrote them: format 2 without the example-sentence tables (F7), the
-    files' kind or the per-file first sentences; format 1 without `spell` and `phrase_entries` too."""
+    """A format-4 plan's lines as an older Generate wrote them: format 2 without the example-sentence tables (F7), the
+    files' kind, the per-file first sentences or the phrase rows' spellings (format 4); format 1 without `spell` and
+    `phrase_entries` too."""
     header = {k: v for k, v in lines[0].items() if k not in ("recency_files", "ensure_audio")}
+    header["phrase_entries"] = [entry[:2] for entry in header["phrase_entries"]]
     if format == 1:
         header.pop("phrase_entries", None)
     out = [dict(header, format=format)]
@@ -616,7 +618,8 @@ def _older(lines, format):
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh"])
 def test_a_format_1_plan_still_loads_and_replans_the_same(runs, tmp_path, case):
     """A plan a 2.x Generate wrote (format 1: no `spell`, no `phrase_entries`) loads with an empty `spell` and gives
-    the very result its format-2 twin gives — the tables format 2 adds change no column."""
+    the very result its format-4 twin gives — the tables format 2 adds change no column; format 4's phrase spellings
+    give `Kana` alone, empty without them."""
     root, run = runs[case]
     lines = _lines(os.path.join(_results_dir(root), analyzer.PLAN_FILE))
     old = str(tmp_path / "plan.json.gz")
@@ -627,8 +630,13 @@ def test_a_format_1_plan_still_loads_and_replans_the_same(runs, tmp_path, case):
     order = [(entry[0], entry[1]) for entry in plan2.files]
     r1 = plan_engine.Engine(plan1).replan(order)
     r2 = plan_engine.Engine(plan2).replan(order)
-    assert (r1.priority, r1.progressive, r1.first, r1.n_new) == (r2.priority, r2.progressive, r2.first, r2.n_new)
-    _check_parity(r1, run)
+    assert not any(row["Kana"] for row in r1.priority + r1.progressive)
+
+    def bare(rows):
+        return [{c: v for c, v in row.items() if c != "Kana"} for row in rows]
+    assert (bare(r1.priority), bare(r1.progressive), r1.first, r1.n_new) == \
+        (bare(r2.priority), bare(r2.progressive), r2.first, r2.n_new)
+    _check_parity(r2, run)
 
 
 @pytest.mark.parametrize("case", ["rp2-ja", "every-ja"])

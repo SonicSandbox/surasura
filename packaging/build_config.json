@@ -21,7 +21,8 @@
   },
   "parts": [
     {"name": "app", "paths": ["Surasura.exe", "surasura-cli.exe", "updater.exe", "README.md", "RELEASE_NOTES.md",
-                              "UPDATE_INSTRUCTIONS.md", "LICENSE", "_internal/base_library.zip",
+                              "UPDATE_INSTRUCTIONS.md", "LICENSE", "LICENSE-EXCEPTION.md", "licenses/",
+                              "_internal/base_library.zip",
                               "_internal/build_stamp.json", "_internal/.env", "_internal/templates/", "_internal/app/",
                               "_internal/scripts/", "_internal/samples/"]},
     {"name": "qt", "paths": ["_internal/PyQt6/", "_internal/licenses/"]},

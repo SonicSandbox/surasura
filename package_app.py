@@ -506,6 +506,13 @@ def installer_defines(version, data_name, program_dir, real_name):
     }
 
 
+# Surasura's own licence files (the licence switch, 3.0), copied by step 3 to the top of the program folder as the repo
+# holds them: the GPL's text (Settings › App reads its licence line from it, app/credits.py; the agreement page shows
+# it), the written exception (Surasura's copyright line, beside it) and the MIT notice kept for the code released under
+# it up to 2.5.x. The checks refuse a program folder or a download zip without one.
+OWN_LICENCE_FILES = ("LICENSE", "LICENSE-EXCEPTION.md", "licenses/Surasura-MIT-before-3.0.txt")
+
+
 # The installer's agreement page (Inno's LicenseFile: "I accept" before Next): packaging/agreement.txt (your content, no
 # warranty, liability), then the LICENSE the program folder ships (the repo's, copied by this build), so a licence change
 # needs no edit here.
@@ -745,6 +752,10 @@ def check_program(final_dist, config):
     if unowned:
         failures.append(f"the program folder's top holds {unowned}, which app.updater.OWNED_ENTRIES doesn't name: "
                         "an update would leave it behind (add it there first)")
+    # Surasura's own licence files (GPL-3.0-or-later, its written exception, the MIT notice before 3.0), every build.
+    unlicensed = [n for n in OWN_LICENCE_FILES if not os.path.isfile(os.path.join(final_dist, *n.split("/")))]
+    if unlicensed:
+        failures.append(f"the program folder lacks Surasura's own licence files {unlicensed}")
     # SQLite at or above the floor, read from the frozen program's own DLL.
     version = sqlite_version_of(os.path.join(internal, "sqlite3.dll"))
     facts["sqlite"] = version
@@ -817,14 +828,17 @@ def frozen_modules(exe):
 
 
 def check_zip_licences(zip_path):
-    """The download zip carries PyQt6's and Qt's licence notices whenever it carries PyQt6. -> the failures."""
+    """The download zip carries Surasura's own licence files at its program folder's top, and PyQt6's and Qt's licence
+    notices whenever it carries PyQt6. -> the failures."""
     import zipfile
     with zipfile.ZipFile(zip_path) as z:
         names = z.namelist()
+    tops = {n.split("/", 1)[1] for n in names if "/" in n}          # each name inside the zip's one program folder
+    failures = [f"{os.path.basename(zip_path)} holds no {n}" for n in OWN_LICENCE_FILES if n not in tops]
     if not any("/_internal/PyQt6/" in n for n in names):
-        return []
-    return [f"{os.path.basename(zip_path)} holds no _internal/licenses/{dist}/ notice" for dist in ("PyQt6", "PyQt6-Qt6")
-            if not any(f"/_internal/licenses/{dist}/" in n for n in names)]
+        return failures
+    return failures + [f"{os.path.basename(zip_path)} holds no _internal/licenses/{dist}/ notice"
+                       for dist in ("PyQt6", "PyQt6-Qt6") if not any(f"/_internal/licenses/{dist}/" in n for n in names)]
 
 
 # --- tsubasa (T1 B, 2026-10-21) ----------------------------------------------------------------------------------------
@@ -1015,12 +1029,12 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
         # Packaged under a STABLE name so it isn't version-stamped (and so an update refreshes it in place).
         # Content keeps its version header.
         (os.path.join("docs", "releases", f"RELEASE_v{version}.md"), "RELEASE_NOTES.md"),
-        # Settings › App reads its licence line from it (app/credits.py).
-        ("LICENSE", "LICENSE")
-    ]
+    ] + [(os.path.join(*name.split("/")), name) for name in OWN_LICENCE_FILES]     # Surasura's own licence files
     for src, dst_name in docs_to_copy:
         if os.path.exists(src):
-            shutil.copy2(src, os.path.join(final_dist, dst_name))
+            dst = os.path.join(final_dist, *dst_name.split("/"))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
         else:
             print(f"Warning: Documentation file not found: {src}")
 

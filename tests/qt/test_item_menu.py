@@ -1494,12 +1494,14 @@ def test_open_its_folder_opens_it_or_says_its_gone(world, monkeypatch):
     monkeypatch.setattr(win.moves, "say", lambda text: said.append(text))
     row = rows_of(win)[4]
     from app import path_utils
-    os.makedirs(path_utils.get_data_path(seed.language), exist_ok=True)     # the library's folder (always there)
+    data = path_utils.get_data_path(seed.language)
+    os.makedirs(data, exist_ok=True)                                      # the library's folder (always there)
+    from app.services import own_folder                         # a7: no original (a stand-in's): the copy's side
+    own = os.path.dirname(os.path.join(data, *row.episodes[0].rel_path.split("/")))
+    os.makedirs(own, exist_ok=True)     # its copy's folder there: opened, nothing said (gone: test_own_folder)
     win.items.menu_pick(row, "folder")
     assert wait_until(lambda: opened or said, 5)
-    from app.services import own_folder                         # a7: no original (a stand-in's): the copy's side
-    folder = own_folder.library_side(path_utils.get_data_path(seed.language), [e.rel_path for e in row.episodes])
-    assert opened == [folder] and said == []
+    assert opened == [own] == [own_folder.library_side(data, [e.rel_path for e in row.episodes])] and said == []
 
 
 # --- Alt+↑ / Alt+↓ ------------------------------------------------------------------------------------------------- #

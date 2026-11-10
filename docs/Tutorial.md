@@ -14,8 +14,8 @@
 | **Cards that make themselves** | Anki Miner makes a card from the episode you're watching: the line, its audio and a picture |
 | **Your list** | Your **Level**: fewer, common words, or more, rarer ones. *Automatic* picks it for you |
 
-- Anki needs the free **AnkiConnect** add-on: **Copy code**, then in Anki *Tools › Add-ons › Get Add-ons…*, paste,
-  restart Anki.
+- Anki needs the free **AnkiConnect** add-on: **Install AnkiConnect for me**, or **Copy code**, then in Anki
+  *Tools › Add-ons › Get Add-ons…*, paste, restart Anki.
 - Nothing of your own yet? **Try it with samples first**.
 
 ## 2. The window
@@ -27,7 +27,7 @@
 | **Current** | Your order: **Up Next** on top, then the Soon line, and **Goal** (someday, in no order) at its foot |
 | **Finished** | What you've finished: a record, and still a source of sentences. **Put back** returns it |
 | **Needs you** | One card for each thing that waits on your decision, each with *Not now* · *Stop asking* in its ⋯ |
-| **Settings** | Every setting on one page; each row says what it does |
+| **Settings** | Every setting on one page; each row's **?** says what it does |
 
 - **Move a show:** drag it, or use ↑ ↓. Drop it on **Soon**, **Goal** or **Finished**. One Undo.
 - **Pick several:** Ctrl / Shift+click, then drag or ⋯. One Undo moves them all back.

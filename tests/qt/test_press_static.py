@@ -307,8 +307,8 @@ def test_every_allowed_entry_still_names_a_function_and_says_why():
     stale = []
     for entry, why in ALLOWED.items():
         file, _, qual = entry.partition(":")
-        if file.startswith("modules/") and not os.path.isdir(os.path.join(ROOT, "modules")):
-            continue                                     # the private modules absent: their entries rest
+        if file.startswith("modules/") and not os.path.isdir(os.path.join(ROOT, *file.split("/")[:2])):
+            continue                                     # a module absent (Koe in the public tree): its entries rest
         quals = {q for q, _, _ in _Source(ast.parse(sources.get(file, ""))).where.values()}
         if qual not in quals or not why.strip():
             stale.append(entry)

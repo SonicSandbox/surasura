@@ -254,8 +254,9 @@ def test_open_its_folder_opens_the_folder_its_files_are_in(fin, monkeypatch):
 
 
 def test_open_its_folder_opens_the_nearest_folder_there_when_its_own_is_gone(fin, monkeypatch):
-    """a7 (DIAGNOSIS 7): a gone folder opens the nearest one above it inside the library — never nothing; only a
-    library with no folder at all says so."""
+    """a7 (DIAGNOSIS 7): a gone folder opens the nearest one above it inside the library — never nothing — and one
+    line says it isn't its own (choice 24: the learner never thinks the library still points there); only a library
+    with no folder at all says it's gone."""
     _seed, win, _w, _e = fin()
     row = finished_rows(win)[1][1]
     opened = []
@@ -270,8 +271,9 @@ def test_open_its_folder_opens_the_nearest_folder_there_when_its_own_is_gone(fin
     win.finished.menu_pick(row, "folder")
     assert wait_until(lambda: opened == [own_folder.library_side(data, rels)], 3)
     assert opened[0].startswith(data)
+    assert wait_until(lambda: win.bar_line.full() == strings.FOLDER_GONE["up"], 3)
     opened.clear()
-    monkeypatch.setattr(own_folder, "read", lambda *_a, **_k: os.path.join(data, "ない"))   # none at all: said
+    monkeypatch.setattr(own_folder, "read_how", lambda *_a, **_k: (os.path.join(data, "ない"), "up"))   # none: said
     assert wait_until(lambda: not win.presses.any_live(), 3)
     win.finished.menu_pick(row, "folder")
     assert wait_until(lambda: win.bar_line.full() == strings.FIN_NO_FOLDER.format(title=row.title), 3)

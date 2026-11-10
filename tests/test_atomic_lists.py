@@ -150,7 +150,7 @@ def test_new_arrivals_reads_the_last_whole_list_unless_a_generate_is_writing_one
     listed = arrivals_worker.Worker._listed
     analyzer._set_run_stamp(str(tmp_path), "run-7")
     got = listed(worker, "run-7")
-    assert len(got) == whole and got[("うう", "ウウ")] == 0
+    assert len(got) == whole and got[(_rows()[0]["Word"], _rows()[0]["Reading"])] == 0
     analyzer._set_run_stamp(str(tmp_path), None)
     assert len(listed(worker, "run-7")) == whole, "a stopped run left the last good list: read"
     warm = {"listed": None, "signature": "run-7"}

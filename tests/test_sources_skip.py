@@ -38,7 +38,9 @@ SAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 
 def _sample(language):
     """A real novel-length text (the app's own samples): over BOOK_MIN_CHARS characters of the language's script."""
-    with open(os.path.join(SAMPLES, language, "HighPriority", "H_priority_sample_1.txt"), encoding="utf-8-sig") as f:
+    # ごん狐: every character CP932 holds (蜘蛛の糸's 犍 it has no byte for: Aozora writes it as a 外字 note)
+    tier, name = {"ja": ("LowPriority", "ごん狐（新美南吉）.txt"), "zh": ("HighPriority", "孔乙己（鲁迅）.txt")}[language]
+    with open(os.path.join(SAMPLES, language, tier, name), encoding="utf-8-sig") as f:
         return f.read()
 
 

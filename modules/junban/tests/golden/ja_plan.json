@@ -1,0 +1,719 @@
+{
+ "all": {
+  "by_fill": {
+   "patterns": {
+    "fill": 8,
+    "filled": 1,
+    "not found": 1,
+    "phrase": 1
+   },
+   "sentence": {
+    "fill": 2,
+    "no sentence": 9
+   }
+  },
+  "counts": {
+   "fill": 10,
+   "filled": 1,
+   "no sentence": 9,
+   "not found": 1,
+   "phrase": 1
+  },
+  "edits": {
+   "1789712000000": {
+    "ExampleSentences": {
+     "after": "<b>冒険</b>だ。<br><b>冒険</b>する？",
+     "before": ""
+    },
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険に出かける · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">素晴らしい〜 · 〜家 · 新しい〜</div>",
+     "before": ""
+    }
+   },
+   "1789712000001": {
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">目にあわされる · 目をつぶる · 目の下 · 目につく</div><div class=\"pat-frame pat-src-balanced pat-thin\">ひどい〜</div>",
+     "before": ""
+    }
+   },
+   "1789712000003": {
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">立派な 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">立派な金庫 · 立派なもん</div>",
+     "before": ""
+    }
+   },
+   "1789712000006": {
+    "Patterns": {
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 43%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
+     "before": ""
+    }
+   },
+   "1789712000007": {
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
+     "before": ""
+    }
+   },
+   "1789712000008": {
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">元気がつく · 元気をつける</div><div class=\"pat-frame pat-src-balanced pat-thin\">みたいな〜</div>",
+     "before": ""
+    }
+   },
+   "1789712000009": {
+    "Patterns": {
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜から 31%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">地獄の底 · 地獄からぬけ出す · 地獄へ落ちる · 地獄から救い出す</div><div class=\"pat-frame pat-src-balanced pat-thin\">さまざまな〜</div>",
+     "before": ""
+    }
+   },
+   "1789712000010": {
+    "ExampleSentences": {
+     "after": "彼は<b>冒険家</b>として非常に有名です。",
+     "before": ""
+    },
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-conversational pat-thin\">冒険家として</div>",
+     "before": ""
+    }
+   }
+  },
+  "rows": [
+   [
+    1789712000000,
+    "冒険",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険に出かける · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">素晴らしい〜 · 〜家 · 新しい〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000000,
+    "冒険",
+    "ExampleSentences",
+    "fill",
+    "<b>冒険</b>だ。<br><b>冒険</b>する？",
+    "sentence"
+   ],
+   [
+    1789712000001,
+    "目",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">目にあわされる · 目をつぶる · 目の下 · 目につく</div><div class=\"pat-frame pat-src-balanced pat-thin\">ひどい〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000001,
+    "目",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000002,
+    "蜘蛛",
+    "Patterns",
+    "filled",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000002,
+    "蜘蛛",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000003,
+    "立派な",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">立派な 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">立派な金庫 · 立派なもん</div>",
+    "patterns"
+   ],
+   [
+    1789712000003,
+    "立派な",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000004,
+    "話が弾む",
+    "Patterns",
+    "phrase",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000004,
+    "話が弾む",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000005,
+    "探検",
+    "Patterns",
+    "not found",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000005,
+    "探検",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000006,
+    "持つ",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 43%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">茶椀を持つ · 家へ持つ · ナイフを持つ · 松たけを持つ</div>",
+    "patterns"
+   ],
+   [
+    1789712000006,
+    "持つ",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000007,
+    "長い",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
+    "patterns"
+   ],
+   [
+    1789712000007,
+    "長い",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000008,
+    "元気",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">元気がつく · 元気をつける</div><div class=\"pat-frame pat-src-balanced pat-thin\">みたいな〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000008,
+    "元気",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000009,
+    "地獄",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜から 31%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">地獄の底 · 地獄からぬけ出す · 地獄へ落ちる · 地獄から救い出す</div><div class=\"pat-frame pat-src-balanced pat-thin\">さまざまな〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000009,
+    "地獄",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000010,
+    "冒険家",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-conversational pat-thin\">冒険家として</div>",
+    "patterns"
+   ],
+   [
+    1789712000010,
+    "冒険家",
+    "ExampleSentences",
+    "fill",
+    "彼は<b>冒険家</b>として非常に有名です。",
+    "sentence"
+   ]
+  ]
+ },
+ "asked": [
+  {
+   "phrases": {
+    "話が弾む": [
+     "話",
+     "が",
+     "弾む"
+    ]
+   },
+   "prefer": {
+    "元気|ゲンキ": [
+     [
+      "元気",
+      "が",
+      "付く"
+     ]
+    ],
+    "冒険|ボウケン": [
+     [
+      "冒険",
+      "に",
+      "出掛ける"
+     ],
+     [
+      "冒険",
+      "為る"
+     ]
+    ],
+    "冒険家|ボウケンカ": [
+     [
+      "冒険家",
+      "と",
+      "為る",
+      "て"
+     ]
+    ],
+    "地獄|ジゴク": [
+     [
+      "地獄",
+      "の",
+      "底"
+     ]
+    ],
+    "持つ|モツ": [
+     [
+      "茶碗",
+      "を",
+      "持つ"
+     ]
+    ],
+    "目|メ": [
+     [
+      "目",
+      "に",
+      "遭わす",
+      "れる"
+     ]
+    ],
+    "立派|リッパ": [
+     [
+      "立派",
+      "だ",
+      "金庫"
+     ],
+     [
+      "立派",
+      "だ"
+     ]
+    ],
+    "蜘蛛|クモ": [
+     [
+      "蜘蛛",
+      "の",
+      "糸"
+     ]
+    ],
+    "長い|ナガイ": [
+     [
+      "長い",
+      "柄"
+     ]
+    ]
+   },
+   "wanted": [
+    [
+     "元気",
+     "ゲンキ"
+    ],
+    [
+     "冒険",
+     "ボウケン"
+    ],
+    [
+     "冒険家",
+     "ボウケンカ"
+    ],
+    [
+     "地獄",
+     "ジゴク"
+    ],
+    [
+     "持つ",
+     "モツ"
+    ],
+    [
+     "探検",
+     "タンケン"
+    ],
+    [
+     "目",
+     "メ"
+    ],
+    [
+     "立派",
+     "リッパ"
+    ],
+    [
+     "蜘蛛",
+     "クモ"
+    ],
+    [
+     "長い",
+     "ナガイ"
+    ]
+   ],
+   "young": [
+    [
+     "目",
+     "メ"
+    ]
+   ]
+  },
+  {
+   "phrases": {
+    "話が弾む": [
+     "話",
+     "が",
+     "弾む"
+    ]
+   },
+   "prefer": {
+    "元気|ゲンキ": [
+     [
+      "元気",
+      "が",
+      "付く"
+     ]
+    ],
+    "冒険|ボウケン": [
+     [
+      "冒険",
+      "に",
+      "出掛ける"
+     ],
+     [
+      "冒険",
+      "為る"
+     ]
+    ],
+    "冒険家|ボウケンカ": [
+     [
+      "冒険家",
+      "と",
+      "為る",
+      "て"
+     ]
+    ],
+    "地獄|ジゴク": [
+     [
+      "地獄",
+      "の",
+      "底"
+     ]
+    ],
+    "立派|リッパ": [
+     [
+      "立派",
+      "だ",
+      "金庫"
+     ],
+     [
+      "立派",
+      "だ"
+     ]
+    ],
+    "蜘蛛|クモ": [
+     [
+      "蜘蛛",
+      "の",
+      "糸"
+     ]
+    ],
+    "長い|ナガイ": [
+     [
+      "長い",
+      "柄"
+     ]
+    ]
+   },
+   "wanted": [
+    [
+     "元気",
+     "ゲンキ"
+    ],
+    [
+     "冒険",
+     "ボウケン"
+    ],
+    [
+     "冒険家",
+     "ボウケンカ"
+    ],
+    [
+     "地獄",
+     "ジゴク"
+    ],
+    [
+     "探検",
+     "タンケン"
+    ],
+    [
+     "立派",
+     "リッパ"
+    ],
+    [
+     "蜘蛛",
+     "クモ"
+    ],
+    [
+     "長い",
+     "ナガイ"
+    ]
+   ],
+   "young": [
+    [
+     "目",
+     "メ"
+    ]
+   ]
+  }
+ ],
+ "new_replace": {
+  "by_fill": {
+   "patterns": {
+    "fill": 6,
+    "not found": 1,
+    "phrase": 1,
+    "replace": 1
+   },
+   "sentence": {
+    "fill": 2,
+    "no sentence": 7
+   }
+  },
+  "counts": {
+   "fill": 8,
+   "no sentence": 7,
+   "not found": 1,
+   "phrase": 1,
+   "replace": 1
+  },
+  "edits": {
+   "1789712000000": {
+    "ExampleSentences": {
+     "after": "<b>冒険</b>だ。<br><b>冒険</b>する？",
+     "before": ""
+    },
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険に出かける · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">素晴らしい〜 · 〜家 · 新しい〜</div>",
+     "before": ""
+    }
+   },
+   "1789712000002": {
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">蜘蛛の糸 · 蜘蛛を殺す · 蜘蛛を助ける</div><div class=\"pat-frame pat-src-balanced pat-thin\">小さな〜 · 細い〜 · その〜</div>",
+     "before": "<div>もう書いてある</div>"
+    }
+   },
+   "1789712000003": {
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">立派な 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">立派な金庫 · 立派なもん</div>",
+     "before": ""
+    }
+   },
+   "1789712000007": {
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
+     "before": ""
+    }
+   },
+   "1789712000008": {
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">元気がつく · 元気をつける</div><div class=\"pat-frame pat-src-balanced pat-thin\">みたいな〜</div>",
+     "before": ""
+    }
+   },
+   "1789712000009": {
+    "Patterns": {
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜から 31%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">地獄の底 · 地獄からぬけ出す · 地獄へ落ちる · 地獄から救い出す</div><div class=\"pat-frame pat-src-balanced pat-thin\">さまざまな〜</div>",
+     "before": ""
+    }
+   },
+   "1789712000010": {
+    "ExampleSentences": {
+     "after": "彼は<b>冒険家</b>として非常に有名です。",
+     "before": ""
+    },
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-conversational pat-thin\">冒険家として</div>",
+     "before": ""
+    }
+   }
+  },
+  "rows": [
+   [
+    1789712000000,
+    "冒険",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険に出かける · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">素晴らしい〜 · 〜家 · 新しい〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000000,
+    "冒険",
+    "ExampleSentences",
+    "fill",
+    "<b>冒険</b>だ。<br><b>冒険</b>する？",
+    "sentence"
+   ],
+   [
+    1789712000002,
+    "蜘蛛",
+    "Patterns",
+    "replace",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">蜘蛛の糸 · 蜘蛛を殺す · 蜘蛛を助ける</div><div class=\"pat-frame pat-src-balanced pat-thin\">小さな〜 · 細い〜 · その〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000002,
+    "蜘蛛",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000003,
+    "立派な",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">立派な 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">立派な金庫 · 立派なもん</div>",
+    "patterns"
+   ],
+   [
+    1789712000003,
+    "立派な",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000004,
+    "話が弾む",
+    "Patterns",
+    "phrase",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000004,
+    "話が弾む",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000005,
+    "探検",
+    "Patterns",
+    "not found",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000005,
+    "探検",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000007,
+    "長い",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い柄</div>",
+    "patterns"
+   ],
+   [
+    1789712000007,
+    "長い",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000008,
+    "元気",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">元気がつく · 元気をつける</div><div class=\"pat-frame pat-src-balanced pat-thin\">みたいな〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000008,
+    "元気",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000009,
+    "地獄",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜から 31%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">地獄の底 · 地獄からぬけ出す · 地獄へ落ちる · 地獄から救い出す</div><div class=\"pat-frame pat-src-balanced pat-thin\">さまざまな〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000009,
+    "地獄",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000010,
+    "冒険家",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-conversational pat-thin\">冒険家として</div>",
+    "patterns"
+   ],
+   [
+    1789712000010,
+    "冒険家",
+    "ExampleSentences",
+    "fill",
+    "彼は<b>冒険家</b>として非常に有名です。",
+    "sentence"
+   ]
+  ]
+ }
+}

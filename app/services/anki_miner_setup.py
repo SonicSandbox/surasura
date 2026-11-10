@@ -497,6 +497,46 @@ SAID_DICTS_SHORT = " Anki Miner's {language} dictionaries are in."     # the pro
 # The note types Anki Miner fills completely (3.11.0 `services/note_presets.py`): their fields need no saying
 PRESETS = frozenset(("lapis", "kiku", "senren", "anki miner note"))
 SETUP_DO_FAILED = "Its setup didn't finish here: Surasura offers it again the next time you open Surasura"
+# Choice 86 (Sonic, 2026-11-09): the new deck of Surasura's own, made in Anki when it is taken (`_make_deck`)
+MAKE_DECK_VERB = "Finish its setup (a new deck)"
+SAID_DECK_MADE = " Surasura made the deck “{deck}” in Anki."
+SAID_DECK_KNOWN = " Its cards count as words you know."
+DECK_KNOWN_NOT_SAVED = (" Surasura couldn't add it to the decks it reads your known words from: add it in Settings → "
+                        "Anki & mining.")
+
+
+def _make_deck(settings, language, deck, save):
+    """Choice 86: the new deck the learner took (`miner_settings.new_deck`) made in Anki when Anki lacks it
+    (AnkiConnect's `createDeck`; the one Anki writer lock held from the read of Anki's decks), and joined to the
+    language's known-words decks when it has one (its mined cards count as words you know, as the course deck's do;
+    none chosen: the learner's choice not to read Anki for known words is kept) — merged onto the file as it is when
+    written (`update=`, the known page's rule, AD-4: another language's decks saved meanwhile kept) -> {"settings",
+    "said"}. Raises `anki_connect.AnkiError` (Anki closed) or `locks.Busy` (another writer); a known-words list that
+    couldn't be saved (the `save_keys` fallback; the window's service only queues) is said, the deck still taken."""
+    from app import anki_connect
+    url = anki_connect.address(settings)
+    said = ""
+    with anki_connect.writer(MAKE_DECK_VERB, wait=10.0):
+        if deck not in anki_connect.deck_names(url):
+            anki_connect.invoke("createDeck", url, deck=deck)
+            said = SAID_DECK_MADE.format(deck=deck)
+    known = [str(d) for d in ((settings or {}).get("anki_sync_decks") or {}).get(language) or () if str(d).strip()]
+    if known and deck not in known:
+
+        def join(file):
+            per_language = dict(file.get("anki_sync_decks") or {})
+            had = [str(d) for d in per_language.get(language) or ()]
+            if had and deck not in had:
+                per_language[language] = had + [deck]
+                file["anki_sync_decks"] = per_language
+        try:
+            save({}, update=join)
+            per_language = dict((settings or {}).get("anki_sync_decks") or {}, **{language: known + [deck]})
+            settings = dict(settings or {}, anki_sync_decks=per_language)
+            said += SAID_DECK_KNOWN
+        except Exception:                       # its cards still go there; the next press tries the list again
+            said += DECK_KNOWN_NOT_SAVED
+    return {"settings": settings, "said": said}
 
 
 def _write_settings(found, settings, language, items, folder, chosen, save):
@@ -509,7 +549,7 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
     the dictionaries go on. -> {"profile": the one its `setup` runs under, "settings": `settings` with the name saved,
     "answer": None | ("ask", asked) | ("rest", why) — said once the rest is done — | ("failed", why) — said at once —,
     "said": what the done line adds}."""
-    from app import anki_connect
+    from app import anki_connect, locks
     from app.connect import anki_miner, miner_settings
     path, profile = found["path"], found.get("profile")
     out = {"profile": profile, "profile_name": found.get("profile_name"), "settings": settings, "answer": None,
@@ -523,16 +563,25 @@ def _write_settings(found, settings, language, items, folder, chosen, save):
     values = {"ankiconnect_url": anki_connect.address(settings)} if address else {}
     if wrong:
         try:
+            if "deck" in wrong and (chosen or {}).get("deck") == miner_settings.new_deck(language):
+                made = _make_deck(settings, language, chosen["deck"], save)     # choice 86: made on the pick's press
+                out["settings"] = settings = made["settings"]
+                out["said"] += made["said"]
             what, planned = miner_settings.plan(settings, language, export.get("settings") or {}, wrong,
                                                 miner_settings.AnkiReads(anki_connect.address(settings)), chosen)
-        except anki_connect.AnkiError:          # Anki closed meanwhile: the language and dictionaries go on, the deck
-            what, planned = SET_UP_REST, {}     # is said to be still to set (intent review #4: never "finished")
+        # Anki closed meanwhile: the language and dictionaries go on, the deck is said to be still to set (intent
+        # review #4: never "finished")
+        except anki_connect.AnkiError:
+            what, planned = SET_UP_REST, ANKI_CLOSED_REST
+        except locks.Busy as busy:              # choice 86: another writer holds Anki — the deck waits for the next press
+            what, planned = SET_UP_REST, anki_connect.busy_message(busy)    # (asked again: the new deck first, the
+                                                                            # only pick that takes the lock)
         if what == ASK:
             asked = dict(planned)
             values.update(asked.pop("values", None) or {})  # the deck already chosen: written, never asked again
             out["answer"] = (ASK, asked)
         elif what == SET_UP_REST:
-            out["answer"] = (SET_UP_REST, ANKI_CLOSED_REST)
+            out["answer"] = (SET_UP_REST, planned)
         else:
             values.update(planned)
     if not values and not unused:
@@ -691,7 +740,8 @@ def _finish(settings, language, result, on_progress, chosen, save, said_before="
         on_progress(state.get("stage") or 0, state.get("stages") or 0, state.get("item"))
     if save is None:
         from app import settings_manager
-        save = lambda changes: settings_manager.save_keys(changes, strict=True)   # noqa: E731
+        save = lambda changes, update=None: settings_manager.save_keys(changes, update=update,  # noqa: E731
+                                                                       strict=True)
     wrote = {"said": said_before}       # what this press set so far: said on every way out (review)
     try:
         wrote = _write_settings(found, settings, language, items, folder, chosen, save)

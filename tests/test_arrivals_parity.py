@@ -44,18 +44,20 @@ def _lines(case, sources):
     return out
 
 
-_GOTOUBUN = ("gotoubun_ep01.srt", "gotoubun_ep02.srt")
-_NOVELS = ("novel_school_part1.txt", "eighty_six_part2.txt", "runaway_transcript.txt")
+# (Hon-SM, 2026-11-10: the samples are public-domain texts and a café episode written for Surasura now; each line
+# below was found by trying every line of the library, and ten-line windows for the recap, against these gates.)
+_EPISODE = ("gotoubun_ep01.srt",)               # the café episode's first part
 # The recap each library receives: lines it holds already, whose every word is listed, known, or new and met once.
-RECAP = {"rp2-ja": (_GOTOUBUN, 218, 232), "rp2-zh": (("zh_high_1.txt",), 12, 17)}
+# (zh: every window of 孔乙己 moves the floor, a short story's rare words; the パターン sample's lines move none.)
+RECAP = {"rp2-ja": (_EPISODE, 3, 13), "rp2-zh": (("patterns_zh_sample.txt",), 60, 70)}
 # One line each that moves a gate (row 2.2.6): (its library's files, its place among their lines, the gates it moves).
 GATE_LINES = {
-    "rp2-ja": {"floor": (_GOTOUBUN, 340, {"floor"}),                    # a word met once: now twice, the cut-off
-               "names": (_GOTOUBUN, 319, {"names"}),                    # a katakana name the library joins anew
-               "phrases": (_GOTOUBUN, 310, {"phrases"}),                # an idiom met once: now a row
-               "compounds": (_GOTOUBUN, 332, {"floor", "compounds"}),   # a rare compound reaches the cut-off
-               "spellings": (_NOVELS, 78, {"floor", "spellings"})},     # a list word's spellings now tie
-    "rp2-zh": {"floor": (("zh_high_1.txt",), 0, {"floor"})},
+    "rp2-ja": {"floor": (_EPISODE, 15, {"floor"}),                          # a word met once: now twice, the cut-off
+               "names": (("eighty_six_part1.txt",), 11, {"names"}),         # a katakana name the library joins anew
+               "phrases": (_EPISODE, 37, {"phrases"}),                      # an idiom met once: now a row
+               "compounds": (_EPISODE, 33, {"floor", "compounds"}),         # a rare compound reaches the cut-off
+               "spellings": (("eighty_six_ch2.txt",), 20, {"floor", "spellings"})},   # a list word's spellings tie
+    "rp2-zh": {"floor": (("zh_high_1.txt",), 2, {"floor"})},
 }
 
 

@@ -18,5 +18,5 @@ To the fullest extent the law allows, the authors and copyright holders of Suras
 
 4. THE LICENCE
 
-Surasura is shared under the licence below. Nothing in these terms takes away any right that licence gives you to run, copy, change or share Surasura.
+Surasura is free software, shared under the GNU General Public License, version 3 or (at your option) any later version, with the additional permission in LICENSE-EXCEPTION.md in the program's folder; the licence's text is below. Its source code: https://github.com/SonicSandbox/surasura. Nothing in these terms takes away any right that licence gives you to run, copy, change or share Surasura.
 

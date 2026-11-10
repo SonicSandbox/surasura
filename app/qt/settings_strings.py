@@ -653,6 +653,7 @@ SETUP_WORDS = "≈{words:,} words"
 SETUP_COVERAGE = "{coverage}% of your content"                                  # S4: never "% known"
 SETUP_ORDER = {"content": "ordered as you’ll meet them", "priority": "ordered by leverage"}
 SETUP_NOT_ORDERED = "not reordered"
+SETUP_ORDER_OFF = "kept in order by itself: off"                # Fresh-U row 2: 順 on, its automatic order off
 SETUP_FILLED = "{fills} filled {how}"
 SETUP_FILLED_AUTO = "automatically"
 SETUP_FILLED_HAND = "by hand"
@@ -778,9 +779,18 @@ BROWSE_MINER_TIP = "Anki Miner is installed somewhere else: show Surasura where.
 BROWSE_MINER_TITLE = "Where is Anki Miner?"
 BROWSE_MINER_FILTER = "Anki Miner (AnkiMiner.exe);;Programs (*.exe);;All files (*)"
 OPEN_MINER = "Open Anki Miner"
-# A4M1-2 (lean taken, PROVISIONAL): its own window, for its own settings — Surasura never needs it opened
+# A4M1-2 (lean taken, PROVISIONAL): its own window, for its own settings — Surasura never needs it opened. Choice 87
+# (Sonic, 2026-11-09: "say so in hover"): the profile Connect mines with, as the card's check found it
+# (`setup.checks`' `anki_miner.profile_name`; `choose_profile`: the setting's, else your usual one), named once checked
+OPEN_MINER_TIP_PLAIN = ("Start Anki Miner's own window, for its own settings.\n"
+                        "• Surasura never needs it open: Connect runs Anki Miner by itself")
 OPEN_MINER_TIP = ("Start Anki Miner's own window, for its own settings.\n"
+                  "• Connect makes cards with its “{profile}” profile: change that profile's settings — another "
+                  "profile's don't apply\n"
                   "• Surasura never needs it open: Connect runs Anki Miner by itself")
+OPEN_MINER_TIP_CURRENT = ("Start Anki Miner's own window, for its own settings.\n"
+                          "• Connect makes cards with the settings its window shows\n"
+                          "• Surasura never needs it open: Connect runs Anki Miner by itself")
 FINISH_MINER_SETUP = "Finish its setup…"
 FINISH_MINER_SETUP_NO_WIZARD = "The setup couldn't open here: close Settings and press Finish its setup again."
 FINISH_MINER_SETUP_TIP = ("Anki Miner still needs its dictionaries, or its deck and note type: Surasura sets them "

@@ -3045,26 +3045,36 @@ class Store:
         end of Soon, which the line then takes up). Any other tier: its top. A show the line runs through (the line
         counts files, so it can fall inside a book's parts) is never cut by what lands there: the slot is after its
         Soon files (`_past_cut`: the window's `drag.soon_slot` rule, B2-1, for every path — the sort screen's Soon, New
-        arrivals' ⋯ *Soon*, `place --where soon`; alpha 9 #JNFJ8Q: one book shown as two rows around another)."""
+        arrivals' ⋯ *Soon*, `place --where soon`; alpha 9 #JNFJ8Q: one book shown as two rows around another).
+        The line counts only rows with text, as `_keep_line` does (H-6): a row waiting for its text (an audiobook, a
+        video waiting for its subtitle) is never counted here either, or the slot would sit above what the line then
+        takes up, and a row sent to Soon would jump straight back to Current (Kura-AB, 2026-11-09)."""
         n = self._soon_line() if tier == "soon" else None
         if not n:
             return ("top",)
-        now = self.conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'now'").fetchone()[0]
+        now = self.conn.execute("SELECT COUNT(*) FROM items WHERE tier = 'now' AND availability != 'waiting'"
+                                ).fetchone()[0]
         leaving = 0
         for chunk in _chunks(list(excl), 500):
-            leaving += self.conn.execute(f"SELECT COUNT(*) FROM items WHERE tier = 'now' AND id IN "
-                                         f"({','.join('?' * len(chunk))})", chunk).fetchone()[0]
+            leaving += self.conn.execute(f"SELECT COUNT(*) FROM items WHERE tier = 'now' AND availability != 'waiting' "
+                                         f"AND id IN ({','.join('?' * len(chunk))})", chunk).fetchone()[0]
         need = n - (now - leaving)
         if need <= 0:
             last = next((r for r in self.conn.execute("SELECT id FROM items WHERE tier = 'now' ORDER BY ord DESC, id "
                                                       "DESC LIMIT ?", (len(excl) + 1,)) if r[0] not in excl), None)
             past = self._past_cut(last[0], excl) if last is not None else None
             return ("after", past) if past is not None else ("top",)
-        rows = [r[0] for r in self.conn.execute("SELECT id FROM items WHERE tier = 'soon' ORDER BY ord, id LIMIT ?",
-                                                (need + len(excl),)) if r[0] not in excl]
-        if len(rows) < need:
+        at, seen = None, 0                       # Soon's `need`-th row with text: the last one the line takes up
+        for item_id, availability in self.conn.execute("SELECT id, availability FROM items WHERE tier = 'soon' "
+                                                       "ORDER BY ord, id"):
+            if item_id not in excl and availability != "waiting":
+                seen += 1
+                if seen == need:
+                    at = item_id
+                    break
+        if at is None:
             return ("end",)
-        return ("after", self._past_cut(rows[need - 1], excl) or rows[need - 1])
+        return ("after", self._past_cut(at, excl) or at)
 
     def _past_cut(self, at_id, excl):
         """The last row (none of `excl`) of the Soon piece that runs on from row `at_id` across the Soon line, or None
@@ -4277,7 +4287,10 @@ class Store:
             up, need = [], n - now
             for item_id, availability in self.conn.execute("SELECT id, availability FROM items WHERE tier = 'soon' "
                                                            "ORDER BY ord, id"):
-                if need == 0 and availability != "waiting":
+                # a waiting row this command placed in Soon right after a row it didn't place (a show sent there whose
+                # first episode waits for its subtitle) is no row of the one before it: it stays where it was sent; one
+                # placed with the row before it (a book's audiobook) still goes up with it (Kura-AB, 2026-11-09)
+                if need == 0 and (availability != "waiting" or (item_id in cmd.moved and up[-1] not in cmd.moved)):
                     break
                 up.append(item_id)
                 need -= availability != "waiting"

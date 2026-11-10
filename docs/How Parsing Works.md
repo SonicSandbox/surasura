@@ -1,6 +1,7 @@
 # How Surasura Reads Your Content
 
 - What counts as one word — so your list and your cards make sense
+- Every **Setting** below is in Settings › Language & Parsing
 - **Right** = hand-checked on a 2,000-file library
 - ⚖️ = left as it is, on purpose
 - Sentences with a serious mistake: **1 in 9 → 1 in 27**
@@ -57,7 +58,7 @@
 - ⚖️ Laughs and stutters stay apart: アッハハ, バッバカ
 - ⚖️ A surname that is also an everyday word stays that word
 - **Right:** 35 of 47
-- **Setting:** Katakana names as one word — on
+- **Setting:** Keep katakana names whole — on
 - **Setting:** Ignore names — off
 
 ### One-kanji words are on your list
@@ -86,7 +87,7 @@
 - ⚖️ The words inside keep their own rows
 - ⚖️ A rare idiom Surasura reads as other words is left out: 同病相憐れむ
 - **Right:** top 100 rows checked — all 100 kept
-- **Setting:** Idioms and set phrases on your list — on
+- **Setting:** Idioms as rows — on
 
 ### Numbers and symbols are not words
 
@@ -132,7 +133,7 @@
 
 - ⚖️ A thought in （ ） in a subtitle never counts
 - **Right:** 15 of 16 readings in ( )
-- **Setting:** Readings in ( ) in books — Hiragana only
+- **Setting:** Readings in parentheses — Hiragana
 
 ### A quote is one sentence
 
@@ -176,7 +177,7 @@
 - ⚖️ A name with no surname in front is cut into characters
 - ⚖️ 很快 'soon' stays 很 + 快
 - **Right** (everyday text): 89 in 100 phrases · 93 in 100 doubled words
-- **Setting:** Script — As-is / Simplified / Traditional
+- **Setting:** Script — As written / Simplified / Traditional
 
 ---
 
@@ -203,7 +204,7 @@
 
 - Used 3+ times, and together at least 7 times in 10
 - **Right:** 43 of 57
-- **Setting:** Names your library repeats as one word — on
+- **Setting:** Names the library keeps using — on
 
 ### Kanji names
 
@@ -214,7 +215,7 @@
 
 - A name in the names dictionary, used 3+ times
 - **Right:** 45 of 50
-- **Setting:** Kanji names as one word — on
+- **Setting:** Kanji names (JMnedict) — on
 
 ### A story's own words
 
@@ -226,7 +227,7 @@
 - Used 3+ times, and together at least 7 times in 10
 - ⚖️ Auto-made captions don't count
 - **Right:** 65 of 78
-- **Setting:** Kanji terms your library repeats as one word — on
+- **Setting:** A work’s own terms — on
 
 ### Idioms you actually meet
 
@@ -247,4 +248,4 @@
 
 ---
 
-- Spotted a word cut wrong? Ignore it, and tell us on [GitHub](https://github.com/SonicSandbox/surasura/issues)
+- Spotted a word cut wrong? Ignore it, and tell us: **Report a problem** in the app, or [GitHub](https://github.com/SonicSandbox/surasura/issues)

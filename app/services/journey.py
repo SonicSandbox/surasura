@@ -594,9 +594,9 @@ class JourneyKeeper:
 
 
 # --- shadow mode (E1.1 05 §3; the comparison as 2.x's replan_preview makes it) --------------------------------------- #
-PRIORITY_COLUMNS = ("Word", "Reading", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
+PRIORITY_COLUMNS = ("Word", "Reading", "Kana", "Score", "Occurrences", "Count (High)", "Count (Low)", "Count (Goal)", "Orth",
                     "Forms", "Tier")
-PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Score", "Occurrences (Global)",
+PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Kana", "Score", "Occurrences (Global)",
                        "Occurrences (File)", "Count (High)", "Count (Low)", "Count (Goal)", "Known Count",
                        "Total Count", "Baseline %", "Current %", "New %", "Orth", "Forms", "Tier")
 

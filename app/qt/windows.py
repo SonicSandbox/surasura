@@ -24,6 +24,12 @@ again, brings it back (`bring_back`). The main window minimised takes its window
 · *Stop* (while it runs work it can stop: `stoppable` / `stop_work`, a subclass's) · *Close* (`close_for_good`: closed
 even while it works, as the app's quit closes it). A window whose work goes on past X (the YouTube downloader) goes
 into its icon instead of closing (`tuck_away`) — `for_good` tells the two closes apart.
+
+**Never taller than the screen** (Fresh-U row 3: Report a problem opened 1,224 px tall on a 1080p screen, its privacy
+line and *New code* under the screen's edge; 順 1,330 px): a window made with `scroll=True` keeps its body in a frameless
+scroll area that asks for its content's height up to the screen's available height (less the window's own frame and
+foot), and scrolls inside past it — up and down only. Every window `show` opens is put back on its screen's available
+area when its frame would cross the bottom (`onto_screen`).
 """
 import contextlib
 import importlib.util
@@ -34,9 +40,10 @@ import sys
 import weakref
 from collections import namedtuple
 
-from PyQt6.QtCore import QEvent, QTimer, QUrl, Qt, pyqtSignal
-from PyQt6.QtGui import QDesktopServices
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtCore import QEvent, QObject, QSize, QTimer, QUrl, Qt, pyqtSignal
+from PyQt6.QtGui import QDesktopServices, QGuiApplication
+from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QComboBox, QHBoxLayout, QLabel, QPushButton,
+                             QScrollArea, QSizePolicy, QStyle, QVBoxLayout, QWidget)
 
 from app import path_utils, theme
 from app.qt import applog, bridge, strings, style
@@ -86,12 +93,108 @@ def open_url(url):
         return QDesktopServices.openUrl(QUrl(url) if "://" in url else QUrl.fromLocalFile(url))
 
 
+def screen_area(win):
+    """The available area (logical px, the taskbar left out) of the screen `win` opens on: its own once shown, else its
+    main window's, else the primary screen's; None with no screen."""
+    for w in (win, main_of(win) if isinstance(win, SecondaryWindow) else None):
+        try:
+            screen = w.screen() if w is not None and (w.isVisible() or w is not win) else None
+        except RuntimeError:
+            screen = None
+        if screen is not None:
+            return screen.availableGeometry()
+    screen = QGuiApplication.primaryScreen()
+    return screen.availableGeometry() if screen is not None else None
+
+
+def onto_screen(win):
+    """A window just shown, its frame crossing the bottom (or the top) of its screen's available area: moved up into it
+    (as far as its top allows); nothing else moves it."""
+    area = screen_area(win)
+    if area is None:
+        return
+    frame = win.frameGeometry()
+    dy = 0
+    if frame.bottom() > area.bottom():
+        dy = area.bottom() - frame.bottom()
+    if frame.top() + dy < area.top():
+        dy = area.top() - frame.top()
+    if dy:
+        win.move(win.x(), win.y() + dy)
+
+
+class _FitScroll(QScrollArea):
+    """A secondary window's body that scrolls (`SecondaryWindow(scroll=True)`): it asks for its content's height, up to
+    what the screen leaves the body (`SecondaryWindow.body_room`), and for its content's least width (never cut at the
+    right); up and down only. **Its least height is its content's, up to that room** — the window opens and grows as
+    its content lands exactly as an unscrolled one (never Qt's two-thirds-of-the-screen cap with a bar beside free
+    room), and only a body taller than the screen scrolls. **A menu or a spin box under the wheel never takes it while
+    unfocused** (`WheelGuard`): the body scrolls, never a deck changed and saved under the hand."""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.setObjectName("secondaryscroll")
+        self.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.viewport().setAutoFillBackground(False)
+
+    def sizeHint(self):
+        inner = self.widget()
+        if inner is None:
+            return super().sizeHint()
+        want = inner.sizeHint()
+        room = self.win.body_room()
+        bar = self.verticalScrollBar().sizeHint().width()
+        if room is not None and want.height() > room:
+            return QSize(want.width() + bar, max(1, room))
+        return want
+
+    def minimumSizeHint(self):
+        inner = self.widget()
+        least = super().minimumSizeHint()
+        if inner is None:
+            return least
+        height = inner.minimumSizeHint().height()
+        room = self.win.body_room()
+        if room is not None:
+            height = min(height, max(1, room))
+        return QSize(inner.minimumSizeHint().width() + self.verticalScrollBar().sizeHint().width(),
+                     max(least.height(), height))
+
+    def eventFilter(self, obj, event):
+        # (QScrollArea watches its content) the content's layout changed: its size asked again; a child came in: a
+        # menu or a spin box among it guarded from the wheel
+        if obj is self.widget() and event.type() == QEvent.Type.LayoutRequest:
+            self.win.guard_wheel()
+            self.updateGeometry()
+        return super().eventFilter(obj, event)
+
+
+class WheelGuard(QObject):
+    """One filter per scrolled window: a wheel over an unfocused menu or spin box scrolls the body instead (as the
+    wizard's `_Combo` and Settings' controls do); focused, the control takes it."""
+
+    def __init__(self, scroll):
+        super().__init__(scroll)
+        self.scroll = scroll
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel and not obj.hasFocus():
+            QApplication.sendEvent(self.scroll.verticalScrollBar(), event)
+            return True
+        return False
+
+
 class SecondaryWindow(QWidget):
     """A ported window. A subclass builds its controls into `self.body`, says what it is doing with `say`, wraps each
-    write in `begin_write` / `end_write`, and re-reads in `language_changed`."""
+    write in `begin_write` / `end_write`, and re-reads in `language_changed`. `scroll`: its body scrolls inside once
+    the screen is shorter than it (the module's doc)."""
     closed = pyqtSignal()
 
-    def __init__(self, shell, name, language=None):
+    def __init__(self, shell, name, language=None, scroll=False):
         super().__init__(shell, Qt.WindowType.Window)
         self.shell = shell
         self.tool_name = name                             # its name in the bottom bar's icon (try a9 #5)
@@ -110,9 +213,26 @@ class SecondaryWindow(QWidget):
         pad = round(16 * f)
         root.setContentsMargins(pad, pad, pad, pad)
         root.setSpacing(round(10 * f))
-        self.body = QVBoxLayout()
-        self.body.setSpacing(round(10 * f))
-        root.addLayout(self.body, 1)
+        self.body_scroll = None
+        self._wheel = None
+        if scroll:
+            self.body_scroll = _FitScroll(self)
+            self._wheel = WheelGuard(self.body_scroll)
+            inner = QWidget()
+            inner.setObjectName("secondarybody")
+            inner.setAutoFillBackground(False)
+            # (always the viewport's width: never held wider than the window and cut at the right — a window with an
+            # explicit least width squeezes its rows into it, as an unscrolled body did)
+            inner.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            self.body = QVBoxLayout(inner)
+            self.body.setContentsMargins(0, 0, 0, 0)
+            self.body.setSpacing(round(10 * f))
+            self.body_scroll.setWidget(inner)
+            root.addWidget(self.body_scroll, 1)
+        else:
+            self.body = QVBoxLayout()
+            self.body.setSpacing(round(10 * f))
+            root.addLayout(self.body, 1)
         self.status = QLabel(self)
         self.status.setObjectName("windowstatus")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
@@ -129,6 +249,35 @@ class SecondaryWindow(QWidget):
         heard = getattr(shell, "bridge", None)
         if heard is not None:
             heard.settings_written.connect(self._settings_written)
+
+    def guard_wheel(self):
+        """(A scrolled window.) Every menu and spin box in the body guarded from the wheel once (`WheelGuard`)."""
+        if self._wheel is None:
+            return
+        for kind in (QComboBox, QAbstractSpinBox):
+            for w in self.body_scroll.widget().findChildren(kind):
+                if not w.property("wheelguard"):
+                    w.setProperty("wheelguard", True)
+                    w.installEventFilter(self._wheel)
+
+    def showEvent(self, event):
+        self.guard_wheel()
+        super().showEvent(event)
+
+    def body_room(self):
+        """The height the scrolled body may take (logical px): the screen's available height less the window's frame
+        (its title bar and edges), its margins and its status line; None with no screen."""
+        area = screen_area(self)
+        if area is None:
+            return None
+        root = self.layout()
+        m = root.contentsMargins()
+        frame = self.frameGeometry().height() - self.geometry().height() if self.isVisible() else 0
+        if frame <= 0:                                    # (not shown yet: the title bar's height and the edges)
+            frame = self.style().pixelMetric(QStyle.PixelMetric.PM_TitleBarHeight) + 2 * round(
+                8 * theme.text_factor(style.current()[1]))
+        foot = self.status.sizeHint().height() + root.spacing() if not self.status.isHidden() else 0
+        return area.height() - frame - m.top() - m.bottom() - foot
 
     @property
     def gone(self):
@@ -332,6 +481,8 @@ def show(shell, name, make):
         win._shown_as = name                              # ... and shown at the size it was kept at — sized to its
         win.closed.connect(lambda w=win: opened.get(name) is w and opened.pop(name, None))
         win.adjustSize()                                  # ... hint again, it grew back as its lines landed: Mado-SO)
+        win.show()
+        onto_screen(win)                                  # (Fresh-U row 3: never past the screen's bottom)
     win.show()
     win.raise_()
     win.activateWindow()

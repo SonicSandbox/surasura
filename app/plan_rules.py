@@ -11,12 +11,13 @@ import hashlib
 import json
 import re
 import sys
+import unicodedata
 import zlib
 from array import array
 from itertools import accumulate, chain
 from operator import itemgetter
 
-from app.unicode_ranges import KANA_LETTERS
+from app.unicode_ranges import HAN, KANA_LETTERS
 
 # --------------------------------------------------------------------------------------------------------------- #
 # Orth and Forms
@@ -82,6 +83,73 @@ def display_orth(lemma, orths):
         if orth and (n > best_n):
             best, best_n = orth, n
     return best or lemma
+
+# A spelling's pieces for `display_reading`: kanji runs and kana runs (the long-vowel mark with them).
+_SPELLING_PIECE = re.compile(f"([{HAN}]+)|([{KANA_LETTERS}ー]+)")
+
+
+def _pieces(spelling):
+    """[(True, a kanji run) or (False, its kana in katakana)] for `spelling`, or None when it holds anything else (a
+    letter, a digit, a mark)."""
+    pieces, at = [], 0
+    for m in _SPELLING_PIECE.finditer(spelling):
+        if m.start() != at:
+            return None
+        pieces.append((True, m.group(1)) if m.group(1) else (False, _katakana(m.group(2))))
+        at = m.end()
+    return pieces if at == len(spelling) and pieces else None
+
+
+def _katakana(text):
+    return "".join(chr(ord(ch) + 0x60) if "ぁ" <= ch <= "ゖ" else ch for ch in text)
+
+
+def _pattern(pieces, lazy):
+    """A regex for a reading of `pieces`: each kana run as it is, each kanji run any reading (one group each)."""
+    return re.compile("".join(("(.+?)" if lazy else "(.+)") if kanji else re.escape(text) for kanji, text in pieces))
+
+
+def _unvoiced(kana):
+    return unicodedata.normalize("NFD", kana).replace("゙", "").replace("゚", "")
+
+
+def display_reading(orth, display, reading):
+    """The reading to SHOW beside a set phrase's spelling (`Orth`, the library's commonest): the reading of that
+    spelling — its kana as it writes them, its kanji as the dictionary's spelling (`display`, the phrase's own) reads
+    them in `reading` (the row's: the dictionary's reading of `display`). いい感じ beside よい感じ's ヨイカンジ shows
+    イイカンジ; ほうがいい beside ホウガヨイ shows ホウガイイ. The row's reading as it is wherever the spelling already
+    reads so (気に入る キニイル, 何もない, いつの間に), where its kanji aren't the dictionary spelling's (no reading to
+    take from it — 仲よい ナカイイ), where the two spellings can't be lined up with the reading one way only, and where
+    the two readings differ only in voicing (ト / ド: a spelling that dropped a voiced sound keeps the dictionary's).
+    Display only, never the row's identity (Word, Reading). Strings only, no tagger: Connect's card reading calls it
+    too, with the line's own spelling."""
+    if not orth or not reading or orth == display:
+        return reading
+    pieces = _pieces(orth)
+    if pieces is None or _pattern(pieces, False).fullmatch(reading):
+        return reading
+    read_as = {}
+    if any(is_kanji for is_kanji, _text in pieces):
+        own = _pieces(display or "")
+        if own is None:
+            return reading
+        lazy, greedy = _pattern(own, True).fullmatch(reading), _pattern(own, False).fullmatch(reading)
+        if lazy is None or lazy.groups() != greedy.groups():
+            return reading
+        for text, kana in zip((text for is_kanji, text in own if is_kanji), lazy.groups()):
+            if read_as.setdefault(text, kana) != kana:
+                return reading
+    shown = []
+    for is_kanji, text in pieces:
+        if is_kanji:
+            if text not in read_as:
+                return reading
+            shown.append(read_as[text])
+        else:
+            shown.append(text)
+    shown = "".join(shown)
+    return reading if _unvoiced(shown) == _unvoiced(reading) else shown
+
 
 # How many inflected forms the `Forms` column keeps per row. The report's Search tab matches them
 # as plain substrings, so a handful of the commonest is all it needs — the long tail is noise.

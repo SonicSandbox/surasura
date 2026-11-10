@@ -178,7 +178,13 @@ ENSURE_AUDIO_EXAMPLE = False
 #     私 + 生活), and a verb's stem carries a suffix that makes a noun of it (言い方 = 言い + 方, 書き手); one that makes an
 #     adjective or a verb of it stays the verb with its grammar (読み + やすい). The reference data is rebuilt (+279
 #     affix joins, +149 compounds): SCHEMA_VERSION 22. 3.0, with 31–38.
-ENGINE_REVISION = 39
+# 40: A set phrase shows the spelling and the reading the library uses. A phrase ending in a form of its own is that
+#     form whatever its last word (ごめんなさい, never ごめんなさる; ざまあみろ; だけじゃない is no だけでなく, 何にする no
+#     何にせよ), and its Orth keeps the voicing the text gives its last word (いつもどおり, not いつもとおり) —
+#     phrases.MATCHER_VERSION 6. Phrase rows gain `Kana`, the reading of the spelling shown (いい感じ イイカンジ beside
+#     the row's ヨイカンジ; plan_rules.display_reading), shown by the journey; the row stays (Word, Reading). The plan
+#     carries each phrase row's dictionary spelling: PLAN_FORMAT 4. 3.0, with 31–39.
+ENGINE_REVISION = 40
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -3720,8 +3726,9 @@ def _backfill_sidecars(results_dir):
 # (E1.3, E3.1). Written last, just before the run's stamp, atomically: a run that dies between the two leaves a plan
 # whose run_signature no stamp matches. Never fails a Generate.
 PLAN_FILE = "plan.json.gz"
-PLAN_FORMAT = 3                 # 2 (E2.2, D8): every list word's spelling counts (`spell`), its phrase rows' entries;
-                                # 3 (F7): the rows' example-sentence pools, so the order's re-pick is the Generate's
+PLAN_FORMAT = 4                 # 2 (E2.2, D8): every list word's spelling counts (`spell`), its phrase rows' entries;
+                                # 3 (F7): the rows' example-sentence pools, so the order's re-pick is the Generate's;
+                                # 4: each phrase row's entry with its dictionary spelling (`Kana` where spellings tie)
 _PLAN_CHUNK = 2000              # table rows per line: no one line's decode holds a reader's interpreter long
 _PLAN_TIERS = {"HighPriority": "now", "LowPriority": "soon", "GoalContent": "goal"}
 
@@ -3839,9 +3846,12 @@ def plan_lines(run):
         "recency_files": run["pick"]["recency_files"], "ensure_audio": run["pick"]["ensure_audio"],
         "max_chars": run["pick"]["max_chars"], "near_files": plan_rules.NEAR_FILES,
         "shared_phrases": sorted(index[key] for key in run["shared_phrases"] if key in index),
-        # [k, the phrase whose entry holds the row] for each phrase row (format 2): an arrival's phrase counts for the
-        # row only when it is that phrase (`_phrase_rows`), which the row's Word and Reading alone can't say.
-        "phrase_entries": [[k, phrase_keys[key]] for k, key in enumerate(keys) if key in phrase_keys],
+        # [k, the phrase whose entry holds the row, its dictionary spelling] for each phrase row (format 2; the
+        # spelling 4): an arrival's phrase counts for the row only when it is that phrase (`_phrase_rows`), which the
+        # row's Word and Reading alone can't say; the re-plan shows the row's `Kana` from its spelling, where `Orth`
+        # ties (plan_rules.display_reading).
+        "phrase_entries": [[k, phrase_keys[key], phrase_set.entry(phrase_keys[key]).display]
+                           for k, key in enumerate(keys) if key in phrase_keys],
         # Each part of the order-free signature on its own, so a re-plan can name what moved since (E1.3: the known
         # words, the word lists, files only removed — or anything else, a Generate first).
         "order_free_parts": plan_rules.part_digests(run["signature_parts"]),
@@ -6548,6 +6558,16 @@ def main():
             phrase_keys[key] = index
             word_stats[(phrase.word, phrase.reading)] = entry
 
+    def _shown_kana(key, orth):
+        """`Kana`: the reading shown beside a phrase row's spelling — its spelling's own (plan_rules.display_reading:
+        いい感じ イイカンジ, not the dictionary's ヨイカンジ); "" for a word's row and wherever it is the row's Reading.
+        Display only: the row stays (Word, Reading) everywhere."""
+        index = phrase_keys.get(key)
+        if index is None:
+            return ""
+        kana = plan_rules.display_reading(orth, _phrase_set.entry(index).display, key[1])
+        return "" if kana == key[1] else kana
+
     # --- The word-selection floor, when it could not be fixed before the aggregation ---
     # No store and no compound table (Chinese; Japanese before the table): nothing is given back, so the
     # aggregation's own totals and counts decide it, as they always did.
@@ -6740,12 +6760,14 @@ def main():
         # Format tiers as "Source1:Tier1;Source2:Tier2" or "Outside" if not in any list
         tier_str = ";".join([f"{source}:{tier}" for source, tier in tier_labels]) if tier_labels else "Outside"
         source_display = group_sources(data["sources"])
+        orth = _display_orth(lemma, data["orths"])
 
         row = {
             "Word": lemma,
-            "Orth": _display_orth(lemma, data["orths"]),
+            "Orth": orth,
             "Forms": _display_forms(lemma, data["orths"], data["surfaces"]),
             "Reading": reading,
+            "Kana": _shown_kana((lemma, reading), orth),
             "Tier": tier_str,
             "Score": data["score"],
             "Occurrences": data["total_count"],
@@ -7347,6 +7369,7 @@ def main():
                 "Orth": _display_orth(lemma, stats.get("orths")),
                 "Forms": _display_forms(lemma, stats.get("orths"), stats.get("surfaces")),
                 "Reading": reading,
+                "Kana": _shown_kana((lemma, reading), _display_orth(lemma, stats.get("orths"))),
                 "Tier": tier_str,
                 "Score": stats["score"],
                 "Occurrences (Global)": stats["total_count"],

@@ -34,9 +34,10 @@ from array import array
 
 from app import plan_rules
 
-FORMAT = 3                                 # the newest plan file this engine reads; FORMATS: every one it reads
-FORMATS = (1, 2, 3)                        # 1 (2.x), 2 (3.0: `spell` and `phrase_entries`, E2.2 D8), 3 (F7: the rows'
-                                           # example-sentence pools, `finished`, `sentences`, `cowords`, `pools`, `fs`)
+FORMAT = 4                                 # the newest plan file this engine reads; FORMATS: every one it reads
+FORMATS = (1, 2, 3, 4)                     # 1 (2.x), 2 (3.0: `spell` and `phrase_entries`, E2.2 D8), 3 (F7: the rows'
+                                           # example-sentence pools, `finished`, `sentences`, `cowords`, `pools`, `fs`),
+                                           # 4 (each phrase row's dictionary spelling in `phrase_entries`: its `Kana`)
 TIERS = ("now", "soon", "goal")            # the analysed tiers, in the order a Generate reads them
 _SLOT = {"now": 0, "soon": 1, "goal": 2}
 _GAP = 1 << 40                             # room between two items' places: a move takes a place between its
@@ -253,18 +254,20 @@ def _validate(plan, deep=True):
     ties = {tie[0]: tie for tie in plan.ties}
     # Format 2 and on: every listed word not in `ties` has its spelling counts (`spell`), and each phrase row names the phrase
     # whose entry holds it. A format-1 plan holds neither.
-    if h.get("format") in (2, 3):
+    if h.get("format") in (2, 3, 4):
         listed_untied = {k for k, row in enumerate(plan.rows) if row is not None and k not in ties}
         if set(plan.spell) != listed_untied or not all(_counts(o) and _counts(s) for o, s in plan.spell.values()):
             raise PlanError("the plan file's spell table is damaged")
         entries = h.get("phrase_entries")
+        size = 3 if h["format"] >= 4 else 2         # format 4: and the phrase's dictionary spelling
         if not (isinstance(entries, list) and all(
-                isinstance(e, list) and len(e) == 2 and _index(e[0], n_keys) and type(e[1]) is int and e[1] >= 0
-                for e in entries) and [e[0] for e in entries] == [k for k, key in enumerate(plan.keys) if key[2]]):
+                isinstance(e, list) and len(e) == size and _index(e[0], n_keys) and type(e[1]) is int and e[1] >= 0
+                and (size == 2 or isinstance(e[2], str)) for e in entries)
+                and [e[0] for e in entries] == [k for k, key in enumerate(plan.keys) if key[2]]):
             raise PlanError("the plan file's header 'phrase_entries' is damaged")
     elif plan.spell:
         raise PlanError("a format-1 plan file holds a spell table")
-    if h.get("format") == 3:
+    if h.get("format") in (3, 4):
         if plan.picks and deep:
             _validate_pools(plan)
     elif plan.sentences or plan.pools or plan.cowords or plan.finished or any("fs" in line for line in plan.per_file):
@@ -696,6 +699,9 @@ class Engine:
         # files holding it are candidates too (`contexts`).
         self._fs = [array("i", line.get("fs", ()) if plan.picks else ()) for line in plan.per_file]
         self._ties = {tie[0]: tie for tie in plan.ties}
+        # Each phrase row's dictionary spelling (format 4): its `Kana` is that of the spelling it shows
+        # (`plan_rules.display_reading`, the Generate's rule). An older plan has none: `Kana` stays empty.
+        self._display = {e[0]: e[2] for e in plan.header.get("phrase_entries") or () if len(e) > 2}
         self._sp = {}
         for f, line in enumerate(plan.per_file):
             if line.get("sp"):
@@ -1175,7 +1181,8 @@ class Engine:
             k = r[-1]
             orth, forms, tier = spelling(k, spelled)
             row = rows[k]
-            out = {"Word": keys[k][0], "Reading": keys[k][1], "Orth": orth, "Forms": forms, "Tier": tier,
+            out = {"Word": keys[k][0], "Reading": keys[k][1], "Kana": self._kana(k, orth), "Orth": orth,
+                   "Forms": forms, "Tier": tier,
                    "Score": score[k], "Occurrences": self._occ[k], "Count (High)": counts[k][0],
                    "Count (Low)": counts[k][1], "Count (Goal)": counts[k][2], "Sources": row[3], "Modality": row[2]}
             _contexts(out, picked.get(k, row[6]), n_contexts)
@@ -1192,7 +1199,7 @@ class Engine:
                 orth, forms, _tier = spelling(k, spelled)
                 row = rows[k]
                 out = {"Sequence": seq, "Source File": source, "Word": keys[k][0], "Orth": orth, "Forms": forms,
-                       "Reading": keys[k][1], "Tier": row[1] or row[0], "Score": score[k],
+                       "Reading": keys[k][1], "Kana": self._kana(k, orth), "Tier": row[1] or row[0], "Score": score[k],
                        "Occurrences (Global)": self._occ[k], "Occurrences (File)": count,
                        "Count (High)": counts[k][0],
                        "Count (Low)": counts[k][1], "Count (Goal)": counts[k][2], "Modality": row[2]}
@@ -1225,7 +1232,7 @@ class Engine:
         store); one unanswered shows empty. A sentence of a file that left the order is no candidate."""
         plan = self.plan
         h = plan.header
-        if h.get("format") != 3 or not plan.picks:
+        if h.get("format") not in (3, 4) or not plan.picks:
             return None
         files, finished = plan.files, plan.finished
         n_files = len(files)
@@ -1335,6 +1342,16 @@ class Engine:
                 o.extend(x for x in orths if x not in o)
                 s.extend(x for x in surfaces if x not in s)
         return spelled
+
+    def _kana(self, k, orth):
+        """`Kana` for row k showing `orth`: a phrase row's spelling's own reading where it isn't the row's Reading
+        (`plan_rules.display_reading`, as the Generate writes it), else ""."""
+        display = self._display.get(k)
+        if display is None:
+            return ""
+        reading = self.plan.keys[k][1]
+        kana = plan_rules.display_reading(orth, display, reading)
+        return "" if kana == reading else kana
 
     def _spelling(self, k, spelled):
         """(Orth, Forms, Tier) for row k: as the plan keeps them, or — where spellings tie — worked out again by the

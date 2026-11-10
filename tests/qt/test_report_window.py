@@ -1527,11 +1527,14 @@ def test_fresh_u_a_short_screen_gets_a_window_that_fits_and_scrolls_to_the_priva
 
 def test_fresh_u_a_window_crossing_the_screens_bottom_is_moved_up_onto_it(main, monkeypatch):
     from PyQt6.QtCore import QRect
-    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1280, 700))
+    # A stand-in screen taller than the window can be (its height, title bar included, is the real screen's room at
+    # most): 700 rows let a window that tall cross the bottom from y=10 once Windows reported its frame — a race the
+    # 3.0.0 cut's --all met. Only the move to y=1500 crosses it here.
+    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1280, 1600))
     w = _press(main)
-    w.move(40, 600)
+    w.move(40, 1500)
     windows.onto_screen(w)
-    assert w.frameGeometry().bottom() <= 699 and w.x() == 40
+    assert w.frameGeometry().bottom() <= 1599 and w.x() == 40 and w.y() < 1500
     w.move(40, 10)
     windows.onto_screen(w)                                             # on the screen already: never moved
     assert w.pos() == QPoint(40, 10)

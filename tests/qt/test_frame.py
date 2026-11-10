@@ -555,6 +555,11 @@ def test_a_new_count_for_goal_draws_its_line_over_the_kept_bar_the_same_picture_
     dock._key = None
     dock.repaint()
     assert dock.bases == bases + 1 and dock._pix.toImage() == kept
+    shorter = later._replace(files=9, line="12 titles · 9 files")      # a shorter line: nothing of the last one left
+    assert dock.set_goal(shorter)
+    dock.repaint()
+    assert dock.bases == bases + 1                                      # (the base itself never drawn on)
+    assert dock._pix.toImage() == _bar_as_one_picture(dock, dock.devicePixelRatioF()).toImage()
     fewer = later._replace(covers=later.covers[:3], line="3 titles · 40 files")
     assert dock.set_goal(fewer)                                                       # another hand: the base anew
     dock.repaint()

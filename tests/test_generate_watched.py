@@ -39,12 +39,12 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIST = "priority_learning_list.csv"
 
 # Show A and Show B: each a bundled sample cut in three (A's a subtitle, cut at its cues)
-SHOWS = {"ja": ("samples/ja/HighPriority/H_priority_sample_2.srt", "samples/ja/HighPriority/H_priority_sample_1.txt"),
-         "zh": ("samples/zh/HighPriority/H_priority_sample_1.txt", "samples/zh/HighPriority/H_priority_sample_2.txt")}
+SHOWS = {"ja": ("samples/ja/HighPriority/喫茶店の朝.srt", "samples/ja/HighPriority/蜘蛛の糸（芥川龍之介）.txt"),
+         "zh": ("samples/zh/HighPriority/孔乙己（鲁迅）.txt", "samples/zh/HighPriority/从百草园到三味书屋（鲁迅）.txt")}
 # A real line added to the watched episode, to edit it alone
 EDIT = {"ja": "冒険は危険だが、価値がある。", "zh": "冒险总是伴随着巨大的挑战。"}
 REUSED = "Nothing affecting the analysis changed"
-FOLDERS = {"ja": ("五等分", "学校"), "zh": ("魔王", "龙神")}
+FOLDERS = {"ja": ("喫茶店", "蜘蛛の糸"), "zh": ("孔乙己", "百草园")}
 # (W_only, its line in A-Ep01), (W_later, its line in A-Ep01, its line in B-Ep03) — real lines from Test Resources
 SEEDS = {"ja": (("冒険", "彼は毎日冒険に出かけます。"),
                 ("文化祭", "文化祭まで、あと三日しかないよ。", "文化祭の準備、手伝ってくれない？")),
@@ -58,9 +58,12 @@ def _read(rel):
 
 
 def _with_line(text, line, subtitle):
-    """`text` with one more real line at its end: a cue of its own in a subtitle."""
+    """`text` with one more real line at its end: a cue of its own in a subtitle; in an Aozora book, before its
+    colophon (from 底本：, never its text — Hon-SM: the samples are Aozora's now)."""
     if subtitle:
         return text.rstrip("\n") + f"\n\n900\n00:59:00,000 --> 00:59:02,000\n{line}\n"
+    if "\n底本：" in text:
+        return text.replace("\n底本：", "\n" + line + "\n底本：", 1)
     return text.rstrip("\n") + "\n" + line + "\n"
 
 

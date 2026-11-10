@@ -11,7 +11,7 @@ from tests import cli_helpers as h
 from tests.cli_helpers import same_token_store_as_the_children  # noqa: F401  (autouse)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OTHER_SHOW = os.path.join(PROJECT_ROOT, "samples", "ja", "HighPriority", "H_priority_sample_2.srt")
+OTHER_SHOW = os.path.join(PROJECT_ROOT, "samples", "ja", "HighPriority", "喫茶店の朝.srt")
 
 
 @pytest.fixture

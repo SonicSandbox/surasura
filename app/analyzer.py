@@ -3085,8 +3085,8 @@ def _captions(events, language='ja'):
     are two people speaking (え…養父様を？ in yellow, うむ。 in white; in the library every pair of events with
     one timing and two colours is two speakers), each speaker's lines in the file's order. An .srt
     is not read this way: its cue IS the caption, and two cues with one timing are two captions shown
-    at once — Netflix writes two speakers talking together so (the 五等分の花嫁 sample: （風太郎）あれは
-    てめえが薬を… / （二乃）フフフフ…)."""
+    at once — Netflix writes two speakers talking together so (two cues with one timing, each with its own
+    speaker label)."""
     screen, shown = {}, None                        # colour -> the texts in it, of the events on screen together
     for timing, colour, text in events:
         if screen and timing != shown:

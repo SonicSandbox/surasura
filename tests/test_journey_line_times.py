@@ -16,7 +16,7 @@ times are the cue reader's (`app/cues.py`), to the millisecond, start and end. O
 - a file read in its own encoding and line ends (a BOM, CRLF, CP932) gives the same lines.
 
 Real data: `tests/Test Resources/ja/library_episode.ass`, `tv_captions.ass`, `placed_episode.srt`,
-`phrases_sample.srt`, `zh/night_market.srt` and the 五等分の花嫁 sample `samples/ja/HighPriority/H_priority_sample_2.srt`.
+`phrases_sample.srt`, `zh/night_market.srt` and the bundled café episode `samples/ja/HighPriority/喫茶店の朝.srt`.
 """
 import os
 
@@ -29,7 +29,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESOURCES = os.path.join(PROJECT_ROOT, "tests", "Test Resources")
 EPISODE = os.path.join(RESOURCES, "ja", "library_episode.ass")
 CAPTIONS = os.path.join(RESOURCES, "ja", "tv_captions.ass")
-SAMPLE_SRT = os.path.join(PROJECT_ROOT, "samples", "ja", "HighPriority", "H_priority_sample_2.srt")
+SAMPLE_SRT = os.path.join(PROJECT_ROOT, "samples", "ja", "HighPriority", "喫茶店の朝.srt")
 SUBTITLES = [(EPISODE, "ja"), (CAPTIONS, "ja"), (os.path.join(RESOURCES, "ja", "placed_episode.srt"), "ja"),
              (os.path.join(RESOURCES, "ja", "phrases_sample.srt"), "ja"), (SAMPLE_SRT, "ja"),
              (os.path.join(RESOURCES, "zh", "night_market.srt"), "zh")]
@@ -148,7 +148,7 @@ def _srt(tmp_path, cues_, name="ep.srt", encoding="utf-8", newline="\n"):
     return str(path)
 
 
-# Lines from the 五等分の花嫁 sample, the short ones said again later
+# Short lines said again later, as an anime episode says them (kept from the 2.x sample subtitle the tests used)
 REPEATED = [("00:02:40,243", "00:02:41,286", "よう…"),
             ("00:02:45,123", "00:02:46,124", "うっ… うわああっ！"),
             ("00:02:47,208", "00:02:50,795", "えっと その辺にないかな？"),

@@ -67,9 +67,9 @@ def _rp2(language):
     s = os.path.join(SAMPLES, language)
     r = os.path.join(RES, language)
     if language == "ja":
-        ep = _split_srt(_read(os.path.join(s, "HighPriority", "H_priority_sample_2.srt")), 3)
-        h1 = _split_lines(_read(os.path.join(s, "HighPriority", "H_priority_sample_1.txt")), 2)
-        l1 = _split_lines(_read(os.path.join(s, "LowPriority", "L_priority_sample_1.txt")), 3)
+        ep = _split_srt(_read(os.path.join(s, "HighPriority", "喫茶店の朝.srt")), 3)
+        h1 = _split_lines(_read(os.path.join(s, "HighPriority", "蜘蛛の糸（芥川龍之介）.txt")), 2)
+        l1 = _split_lines(_read(os.path.join(s, "LowPriority", "注文の多い料理店（宮沢賢治）.txt")), 3)
         return [
             ("now", "gotoubun_ep01.srt", ep[0]), ("now", "gotoubun_ep02.srt", ep[1]),
             ("now", "gotoubun_ep03.srt", ep[2]),
@@ -77,17 +77,17 @@ def _rp2(language):
             ("soon", "eighty_six_part1.txt", l1[0]), ("soon", "eighty_six_part2.txt", l1[1]),
             ("soon", "eighty_six_part3.txt", l1[2]),
             ("soon", "phrases_sample.srt", _read(os.path.join(r, "phrases_sample.srt"))),
-            ("goal", "eighty_six_ch2.txt", _read(os.path.join(s, "LowPriority", "L_priority_sample_2.txt"))),
+            ("goal", "eighty_six_ch2.txt", _read(os.path.join(s, "LowPriority", "ごん狐（新美南吉）.txt"))),
             ("goal", "context_test.txt", _read(os.path.join(r, "context_test.txt"))),
             ("goal", "runaway_transcript.txt", _read(os.path.join(r, "runaway_transcript.txt"))),
         ]
     c1 = _split_lines(_read(os.path.join(r, "chinese_text_1.txt")), 2)
     return [
-        ("now", "zh_high_1.txt", _read(os.path.join(s, "HighPriority", "H_priority_sample_1.txt"))),
-        ("now", "zh_high_2.txt", _read(os.path.join(s, "HighPriority", "H_priority_sample_2.txt"))),
+        ("now", "zh_high_1.txt", _read(os.path.join(s, "HighPriority", "孔乙己（鲁迅）.txt"))),
+        ("now", "zh_high_2.txt", _read(os.path.join(s, "HighPriority", "从百草园到三味书屋（鲁迅）.txt"))),
         ("now", "bbc_part1.txt", c1[0]),
-        ("soon", "zh_low_1.txt", _read(os.path.join(s, "LowPriority", "L_priority_sample_1.txt"))),
-        ("soon", "zh_low_2.txt", _read(os.path.join(s, "LowPriority", "L_priority_sample_2.txt"))),
+        ("soon", "zh_low_1.txt", _read(os.path.join(s, "LowPriority", "故乡（鲁迅）.txt"))),
+        ("soon", "zh_low_2.txt", _read(os.path.join(s, "LowPriority", "风筝（鲁迅）.txt"))),
         ("soon", "bbc_part2.txt", c1[1]),
         ("soon", "traditional_news.txt", _read(os.path.join(r, "traditional_news.txt"))),
         ("goal", "mixed_script_transcript.txt", _read(os.path.join(r, "mixed_script_transcript.txt"))),

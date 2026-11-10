@@ -807,6 +807,21 @@ def test_a_rows_kind_names_its_count_a_book_in_parts_and_files_without_a_title(m
     assert r"3 videos · E:\Videos\Clips" in texts and r"2 files · E:\Downloads" in texts
 
 
+def test_a_row_copied_into_surasuras_own_folder_says_so_never_its_tier_folder(make):
+    # Hon-SM (Fresh-U's top finding): the samples showed "…\data\ja\HighPriority" beside each, 2.x's folder name; a
+    # title whose copy is in Surasura's own data folder (`ours`) says it was copied in, a folder read in place its path
+    rows = [{"name": "蜘蛛の糸", "count": 1, "folder": r"C:\Surasura\data\ja\HighPriority", "ours": True,
+             "kind": "reading"},
+            {"name": "星空ダイナー", "count": 12, "folder": r"E:\Shows\Hoshizora Diner", "ours": False, "kind": "shows"}]
+    wiz, *_ = make(api=FakeApi(rows=rows))
+    go_to(wiz, "shows")
+    page = wiz.page
+    assert wait_until(lambda: page.row_paints == 1)
+    texts = [w.text().replace("\u200b", "") for w in page.rows_part.findChildren(W.QLabel)]
+    assert S.ROW_LINE_OURS.format(count="a book") in texts and r"12 episodes · E:\Shows\Hoshizora Diner" in texts
+    assert not any("HighPriority" in t for t in texts)
+
+
 def test_an_empty_library_shows_no_rows(make):
     wiz, *_ = make(api=FakeApi(rows=[]))
     go_to(wiz, "shows")

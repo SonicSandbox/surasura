@@ -102,7 +102,7 @@ KEEP_CAME_OVER_TIP = "Keep the words you know from Surasura 2, as they are.\n•
 # --- 3 · your shows --------------------------------------------------------------------------------------------------- #
 SHOWS_TITLE = "Bring in what you'll watch and read"
 SAMPLES = "Try it with samples first"
-SAMPLES_TIP = "Not sure yet? Start with a few samples to see how it works.\n• Copies a few sample files into your library"
+SAMPLES_TIP = "Not sure yet? Start with a few samples to see how it works.\n• Copies a few short texts into your library, free to share: public-domain classics and a café dialogue"
 SAMPLES_ADDED_LINE = "Added {n:,} samples: they show here in a moment."     # (W3.2 Q3: page 3 takes + Add's actions)
 SAMPLES_NONE = "Samples go into an empty library only: yours has files already."
 ROWS_NAME = "What's in your library"
@@ -110,6 +110,7 @@ ROW_COUNT = {"shows": ("1 episode", "{n:,} episodes"), "reading": ("a book", "a 
              "videos": ("1 video", "{n:,} videos")}
 ROW_FILES = ("1 file", "{n:,} files")
 ROW_LINE = "{count} · {folder}"
+ROW_LINE_OURS = "{count} · copied into Surasura"          # a copy in its own data folder: never HighPriority (Hon-SM)
 ROWS_MORE = "and {n:,} more"
 COVERS = "Show covers"
 COVERS_LINE = ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. Near a show's last "

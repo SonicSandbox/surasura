@@ -1776,7 +1776,7 @@ class ShowsPage(_Page):
 
     def show_rows(self, rows):
         rows = list(rows or [])
-        key = tuple((r.get("name"), r.get("count"), r.get("folder"), r.get("kind")) for r in rows)
+        key = tuple((r.get("name"), r.get("count"), r.get("folder"), r.get("ours"), r.get("kind")) for r in rows)
         if key == self._rows_key:
             return
         self._rows_key = key
@@ -1804,9 +1804,11 @@ class ShowsPage(_Page):
         line.addWidget(title)
         count = row_count(r)
         folder = str(r.get("folder") or "")
-        # wraps, a long folder after a backslash too (it widened the page past the window: the review's B1)
-        sub = _label("wizrowline", _breakable(S.ROW_LINE.format(count=count, folder=folder)) if folder else count, w,
-                     wrap=True)
+        # wraps, a long folder after a backslash too (it widened the page past the window: the review's B1); a copy in
+        # Surasura's own folder says so, never its tier folder's 2.x name (Hon-SM)
+        said = S.ROW_LINE_OURS.format(count=count) if r.get("ours") else \
+            _breakable(S.ROW_LINE.format(count=count, folder=folder)) if folder else count
+        sub = _label("wizrowline", said, w, wrap=True)
         f = sub.font()
         f.setFamilies(list(theme.path_font_families(self.wiz.language)))      # a path's ¥ is a backslash again
         sub.setFont(f)

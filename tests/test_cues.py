@@ -1,7 +1,7 @@
 """The cue reader (app/cues.py, P1.3 row 1.3.1): a subtitle's lines with their start and end, each line's words keyed
 as a Generate keys them.
 
-Real subtitles from the repo: the 五等分の花嫁 sample (.srt, a BOM, CRLF, furigana in parentheses, speaker labels),
+Real subtitles from the repo: the bundled café episode (.srt, a BOM, furigana in parentheses, speaker labels),
 `ja/library_episode.ass` (a broadcast-style .ass: two speakers by colour, a karaoke OP, a sign, a drawing, a comment,
 a forced line break, a BOM and CRLF) and `zh/night_market.srt` (Chinese, Traditional and Simplified mixed, SubRip
 tags, an English-only line).
@@ -13,7 +13,7 @@ import pytest
 from app import analyzer, cues
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SAMPLE_SRT = os.path.join(PROJECT_ROOT, "samples", "ja", "HighPriority", "H_priority_sample_2.srt")
+SAMPLE_SRT = os.path.join(PROJECT_ROOT, "samples", "ja", "HighPriority", "喫茶店の朝.srt")
 
 
 @pytest.fixture(autouse=True)
@@ -34,14 +34,14 @@ def _write(tmp_path, name, text, encoding="utf-8", newline="\n"):
 # --------------------------------------------------------------------------- #
 def test_srt_cues_keep_start_and_end_in_ms_and_text_as_a_generate_cleans_it():
     read = cues.read(SAMPLE_SRT, "ja")
-    first, second = read[0], read[1]
-    # 00:00:02,419 --> 00:00:03,628 / （風太郎(ふうたろう)）くっ…  — the speaker label and its reading go
-    assert (first.start, first.end, first.text) == (2419, 3628, "くっ…")
+    first, second = read[1], read[2]
+    # 00:00:04,080 --> 00:00:07,800 / （田中(たなか)）いらっしゃいませ。  — the speaker label and its reading go
+    assert (first.start, first.end, first.text) == (4080, 7800, "いらっしゃいませ。")
     # two lines of one cue are one line, joined as extract_text joins them
-    assert (second.start, second.end, second.text) == (3962, 6923, "何だ これ センサー 反応しろ！")
+    assert (second.start, second.end, second.text) == (8400, 12680, "あ、おはようございます。 外、すごい雨ですよ。")
     assert [c.index for c in read] == list(range(len(read)))
     assert all(c.caption == c.index for c in read)           # an .srt's cue is its own caption
-    # the OP's ♪～ lines hold no Japanese: kept as lines (Anki Miner counts them) but never counted, and sung
+    # the music cues' ♪～ lines hold no Japanese: kept as lines (Anki Miner counts them) but never counted, and sung
     songs = [c for c in read if not c.counted]
     assert songs and all(c.sung and "♪" in c.text for c in songs)
 
@@ -147,14 +147,14 @@ def _store_words(tmp_path, path, language):
         store.close()
 
 
-@pytest.mark.parametrize("name", ["samples/ja/HighPriority/H_priority_sample_2.srt",
+@pytest.mark.parametrize("name", ["samples/ja/HighPriority/喫茶店の朝.srt",
                                   "tests/Test Resources/ja/library_episode.ass",
                                   "tests/Test Resources/ja/phrases_sample.srt"])
 def test_the_cue_readers_words_are_the_token_stores_for_the_same_file(tmp_path, name):
     # Intent review #12: the pick reads exactly the words the list counted — every word, in order, keyed the same.
     # (A karaoke event is the one thing a Generate never reads; the pick still sees it, marked sung.)
     path = os.path.join(PROJECT_ROOT, name)
-    stored = _store_words(tmp_path, path, "ja")         # 三玖, said again and again, is one word: the store's table
+    stored = _store_words(tmp_path, path, "ja")         # a name said again and again is one word: the store's table
     read = cues.read(path, "ja")
     found = cues.tokens(read, "ja")
     assert [(t.lemma, t.reading) for t in found if read[t.cue].counted] == stored
@@ -167,7 +167,7 @@ def test_each_word_is_placed_in_the_cue_it_was_said_in():
     assert all(t.surface in read[t.cue].text for t in found)
     assert all(t.node is not None and t.node.surface == t.surface for t in found)
     reaction = next(t for t in found if t.lemma == "反応")
-    assert reaction.cue == 1 and reaction.node.feature.pos1 == "名詞"
+    assert reaction.cue == 50 and reaction.node.feature.pos1 == "名詞"
     assert [t.cue for t in found] == sorted(t.cue for t in found)
 
 

@@ -82,7 +82,7 @@ def test_a_verb_that_writes_nothing_is_never_checked(monkeypatch, documents, ver
 @pytest.mark.parametrize("why", ["cfa off", "outside", "allowed", "portable"])
 def test_nothing_at_risk_or_allowed_runs_the_verb(monkeypatch, tmp_path, documents, why):
     if why == "outside":
-        monkeypatch.setattr(path_utils, "installed_library", lambda: str(tmp_path / "profile"))
+        monkeypatch.setattr(path_utils, "installed_library", lambda: str(tmp_path / "profile" / "Surasura"))
     if why == "portable":
         monkeypatch.setattr(path_utils, "installed_library", lambda: None)
     fake_registry(monkeypatch, switch=0 if why == "cfa off" else 1, documents=documents)

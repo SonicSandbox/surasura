@@ -139,3 +139,24 @@ def test_a_workers_collection_frees_nothing_until_the_main_thread_does(qapp):
     assert harness_guards._WORKER_GARBAGE                   # kept: not freed on the worker
     harness_guards._free_worker_garbage()
     assert gone == ["freed"] and harness_guards._WORKER_GARBAGE == []
+
+
+def test_the_main_threads_own_collection_frees_what_a_worker_found(qapp):
+    # why: a test's gc.collect() expects what is unreachable freed (test_shell_library's freed reader went red on
+    # GitHub while the hold kept a worker's find until the teardown)
+    import gc
+    import weakref
+
+    class Cycle:
+        pass
+    reader = Cycle()                                    # alive, as the old library was at the worker's collection
+    a = Cycle()
+    a.me, a.reader = a, reader                          # a cycle the worker finds, holding the reader
+    del a
+    t = threading.Thread(target=gc.collect, name="worker-gc")
+    t.start()
+    t.join()
+    gone = weakref.ref(reader)
+    del reader                                          # the test lets go of it: only the worker's find holds it
+    gc.collect()
+    assert gone() is None and harness_guards._WORKER_GARBAGE == []

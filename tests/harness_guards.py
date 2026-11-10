@@ -636,8 +636,9 @@ _guard_qt_threads()
 # worker's too, and Qt says nothing (Qt 6.11: no warning, active timer or not); the process crashes later, natively,
 # in whatever test runs then. The app parents its objects or keeps them until the GUI thread deletes them (bridge's
 # `_pending`); a test's helpers needn't. So, as the Tk interpreters above: a collection on any thread but the main one
-# frees nothing — what it found is kept (gc.DEBUG_SAVEALL for that collection alone) and, at each test's teardown, on
-# the main thread, its live parentless Qt objects are deleted and one collection frees the rest there.
+# frees nothing — what it found is kept (gc.DEBUG_SAVEALL for that collection alone) until the main thread's next
+# collection, which frees it there (a test's own gc.collect() included), or each test's teardown: its live parentless
+# Qt objects deleted, then one collection.
 _WORKER_GARBAGE = []      # what workers' collections found, kept for the main thread
 _GC_ON_WORKER = {}        # thread id -> (the debug flags before, gc.garbage's length) while its collection runs
 
@@ -646,7 +647,9 @@ def _worker_gc(phase, info):
     try:
         me = threading.get_ident()
         if threading.current_thread() is threading.main_thread():
-            return
+            if phase == "start" and _WORKER_GARBAGE:
+                del _WORKER_GARBAGE[:]          # the main thread's own collection frees them, here (a test's
+            return                              # gc.collect() frees what a worker found before it)
         if phase == "start":
             _GC_ON_WORKER[me] = (gc.get_debug(), len(gc.garbage))
             gc.set_debug(_GC_ON_WORKER[me][0] | gc.DEBUG_SAVEALL)

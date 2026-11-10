@@ -221,6 +221,6 @@ It comes with no warranty.
 
 - **Versions up to and including 2.5.x were released under the MIT License.** Anyone holding them keeps those
   rights; the MIT notice is kept in `licenses/Surasura-MIT-before-3.0.txt` for the code released under it.
-- The Windows program bundles third-party libraries under their own licences (PyQt6 and Qt among them); their
-  texts ship in the program's `_internal\licenses\` folder and are listed in *Settings › App › Data credits*.
+- The Windows program bundles third-party libraries under their own licences, listed in *Settings › App › Data
+  credits*; PyQt6's, Qt's and tsubasa's texts ship in the program's `_internal\licenses\` folder.
 - Sending a change? See `CONTRIBUTING.md`.

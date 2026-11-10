@@ -78,8 +78,9 @@ CONTENT_NOTE = """Your content
 # copies their texts into _internal\licenses).
 SOFTWARE_NOTE = """Surasura and the software it bundles
 
-• Surasura — SonicSandbox, GNU General Public License version 3 or later, with an additional permission (LICENSE and LICENSE-EXCEPTION.md beside the program). Its source code is free to get, read and change: https://github.com/SonicSandbox/surasura. Versions up to 2.5.x were released under the MIT License (licenses\\Surasura-MIT-before-3.0.txt).
-• The window: PyQt6 — Riverbank Computing, GPL-3.0; Qt 6 — The Qt Company, LGPL-3.0. Their licence texts are in the program's _internal\\licenses folder, with tsubasa's (GPL-3.0-or-later)."""
+• Surasura — SonicSandbox, GNU General Public License version 3 or later, with an additional permission (LICENSE and LICENSE-EXCEPTION.md beside the program). It comes with no warranty. Its source code is free to get, read and change: https://github.com/SonicSandbox/surasura. Versions up to 2.5.x were released under the MIT License (licenses\\Surasura-MIT-before-3.0.txt).
+• The window: PyQt6 — Riverbank Computing, GPL-3.0; Qt 6 — The Qt Company, LGPL-3.0. Their licence texts are in the program's _internal\\licenses folder, with tsubasa's (GPL-3.0-or-later).
+• The other libraries it bundles keep their own licences: among them pysrt (GPL-3.0), EbookLib (AGPL-3.0-or-later), pandas and numpy (BSD), fugashi, jieba and Beautiful Soup (MIT), requests (Apache License 2.0)."""
 
 
 def all_credits():

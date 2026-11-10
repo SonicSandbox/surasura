@@ -6,7 +6,7 @@ Surasura is free software: you can redistribute it and/or modify it under the te
 License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later
 version.
 
-**Additional permission (section 7).** As a special exception, the copyright holder gives permission to combine
+**Additional permission (section 7).** As a special exception, the copyright holders give permission to combine
 Surasura with Surasura's own optional modules and companion programs published by SonicSandbox (for example the read-aloud
 program, Koe) under other terms, and to distribute the result, provided the GNU GPL is followed in every respect for
 all of the code other than those modules and programs. If you modify Surasura, you may extend this exception to your

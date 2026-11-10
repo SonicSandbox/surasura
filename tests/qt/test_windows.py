@@ -295,3 +295,116 @@ def test_a_link_or_a_folder_opens_in_the_users_own_program(monkeypatch, tmp_path
     assert opened[0].toString() == "https://jiten.moe/other"
     assert opened[1].isLocalFile() and opened[1].toLocalFile().rstrip("/\\").lower() == \
         str(tmp_path).replace("\\", "/").rstrip("/").lower()
+
+
+# --- Fresh-U row 3 (2026-11-10): a scrolled body, never past the screen -------------------------------------------- #
+class Tall(windows.SecondaryWindow):
+    """A scrolled window of `n` real lines of text (a report's paragraphs), and a menu among them (順's deck)."""
+
+    def __init__(self, shell_window, n=8):
+        super().__init__(shell_window, "Tall", scroll=True)
+        from PyQt6.QtWidgets import QComboBox, QLabel
+        self.lines = []
+        for k in range(n):
+            self.add_line(k)
+        self.deck = QComboBox(self)
+        self.deck.addItems(["日本語::Mining", "Core 2k", "Kanji Practice"])
+        self.deck.setToolTip("The deck")
+        self.body.insertWidget(2, self.deck)
+        self.QLabel = QLabel
+
+    def add_line(self, k):
+        from PyQt6.QtWidgets import QLabel
+        line = QLabel(f"第{k + 1}話：Finishedに入れた「葬送のフリーレン」がCurrentに戻ってしまった", self)
+        line.setMinimumHeight(40)
+        self.body.addWidget(line)
+        self.lines.append(line)
+
+
+def _room(monkeypatch, height):
+    from PyQt6.QtCore import QRect
+    monkeypatch.setattr(windows, "screen_area", lambda win: QRect(0, 0, 1600, height))
+
+
+def test_fresh_u_a_scrolled_window_with_room_opens_at_its_contents_height_with_no_bar(main, monkeypatch):
+    # The adversary's S2: Qt caps a window at two-thirds of the screen when its least height is small — a body that
+    # fits opened shorter with a bar beside free room. Its least height is its content's: it opens as a plain one does
+    _room(monkeypatch, 2000)
+    w = windows.show(main, "tall", Tall)
+    QApplication.processEvents()
+    assert w.body_scroll.verticalScrollBar().maximum() == 0
+    assert w.body_scroll.height() >= w.body_scroll.widget().minimumSizeHint().height()
+
+
+def test_fresh_u_a_scrolled_window_grows_as_its_content_lands_up_to_the_room_then_scrolls(main, monkeypatch):
+    # S3: content that lands after the window shows (順's checks, Report's pages) grew a plain window; the scrolled one
+    # grows the same, and only past the screen's room does its body scroll
+    _room(monkeypatch, 1000)
+    w = windows.show(main, "tall", lambda s: Tall(s, n=3))
+    QApplication.processEvents()
+    before = w.height()
+    for k in range(3, 8):
+        w.add_line(k)
+    assert wait_until(lambda: w.height() > before, 2)
+    assert w.body_scroll.verticalScrollBar().maximum() == 0
+    for k in range(8, 40):
+        w.add_line(k)
+    assert wait_until(lambda: w.body_scroll.verticalScrollBar().maximum() > 0, 2)
+    assert w.height() <= 1000
+
+
+def test_fresh_u_the_wheel_over_an_unfocused_menu_scrolls_the_body_and_never_changes_the_deck(main, monkeypatch):
+    # B1: once 順's body scrolled, a wheel over its deck menu changed the deck (and saved it); the menu takes the wheel
+    # only once focused, and the body scrolls instead
+    from PyQt6.QtCore import QPoint, QPointF
+    from PyQt6.QtGui import QWheelEvent
+    _room(monkeypatch, 300)
+    w = windows.show(main, "tall", lambda s: Tall(s, n=30))
+    QApplication.processEvents()
+    bar = w.body_scroll.verticalScrollBar()
+    assert bar.maximum() > 0 and w.deck.property("wheelguard")
+    picked = []
+    w.deck.activated.connect(picked.append)
+    w.deck.clearFocus()                                            # (a window's first focus may land on it)
+    QApplication.processEvents()
+    assert not w.deck.hasFocus()
+
+    def wheel(target):
+        e = QWheelEvent(QPointF(5, 5), QPointF(target.mapToGlobal(QPoint(5, 5))), QPoint(0, 0), QPoint(0, -120),
+                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(target, e)
+    wheel(w.deck)
+    assert w.deck.currentIndex() == 0 and picked == [] and bar.value() > 0
+    w.deck.setFocus()
+    QApplication.processEvents()
+    if w.deck.hasFocus():                                          # (offscreen gives focus only to an active window)
+        wheel(w.deck)
+        assert w.deck.currentIndex() == 1
+
+
+def test_fresh_u_a_plain_window_has_no_scrolled_body(main):
+    w = windows.show(main, "probe", Probe)
+    assert w.body_scroll is None and w.body.parentWidget() is w
+
+
+def test_fresh_u_a_scrolled_body_is_never_wider_than_its_window_and_cut_at_the_right(main, monkeypatch):
+    # Found by the work-count test: a window with an explicit least width (Report's) narrower than a row of its
+    # buttons held the scrolled content at the row's width — the right of it (Save) off the window. The content takes
+    # the viewport's width, its rows squeezed into it as an unscrolled body's were
+    from PyQt6.QtWidgets import QHBoxLayout, QPushButton
+    _room(monkeypatch, 900)
+
+    def make(s):
+        w = Tall(s, n=4)
+        row = QHBoxLayout()
+        for label in ("Leave the picture out", "Show me what's in it", "Make a zip instead", "Send report"):
+            b = QPushButton(label, w)
+            b.setToolTip(label)
+            b.setMinimumWidth(260)
+            row.addWidget(b)
+        w.body.addLayout(row)
+        w.setMinimumWidth(500)
+        return w
+    w = windows.show(main, "tall", make)
+    QApplication.processEvents()
+    assert w.body_scroll.widget().width() <= w.body_scroll.viewport().width()

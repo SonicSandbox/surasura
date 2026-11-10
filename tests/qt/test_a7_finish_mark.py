@@ -227,7 +227,8 @@ def test_mark_all_watched_on_a_weekly_show_from_the_first_look_marks_them_and_on
     assert wait_until(lambda: _watched(store, ids) == ids, 10)
     settle(300)
     assert {store.item(i)["tier"] for i in ids} <= set(ls.CURRENT), "never finished while it may still be airing"
-    assert win.toasts.card.base == strings.DONE_ALL.format(n=4)
+    # (this library's first mark that moves the list: W-1's words ride the offer — Fresh-U row 5)
+    assert win.toasts.card.base == strings.DONE_ALL.format(n=4).replace(strings.DONE_ASK, strings.DONE_ASK_LEFT)
     assert win.toasts.card.buttons[1].text() == strings.DONE_MOVE_FINISHED
 
 

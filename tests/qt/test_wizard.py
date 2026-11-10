@@ -2286,3 +2286,99 @@ def test_a_video_and_a_subtitle_picked_together_each_say_their_own(make, tmp_pat
     assert wait_until(lambda: S.VIDEO_NO_SUBTITLE_PLAIN.format(name="Episode 08.mkv") in page.refused_line.text())
     assert page.files == [os.path.normpath(str(folder / "Episode 01.ja.srt"))]
     assert S.FILE_NOT_READ.format(name="表紙.png") in page.refused_line.text()
+
+
+# --- Fresh-U row 2 (2026-11-10): *Start fresh*, then Card order ---------------------------------------------------------- #
+class FreshApi(FakeApi):
+    """The service's own rule for page 4's switch (`setup_wizard.keeps_order`), and the deck's new cards counted."""
+
+    def __init__(self, counts=None, **kw):
+        super().__init__(**kw)
+        self.counts, self.counted = dict(counts or {}), []
+
+    def keeps_order(self, settings, how, shown):
+        from app.services import setup_wizard
+        return setup_wizard.keeps_order(settings, how, shown)
+
+    def new_cards(self, settings, deck):
+        self.counted.append(deck)
+        return self.counts.get(deck)
+
+
+def _known_way(wiz, way):
+    go_to(wiz, "known")
+    wait_until(lambda: not wiz._anki_looking, 2.0)
+    QTest.mouseClick(wiz.page.channel.choice(way), Qt.MouseButton.LeftButton)
+
+
+def test_fresh_u_start_fresh_leaves_card_orders_switch_off_unrecommended_and_saves_it_off(make):
+    # A learner who said "start fresh" never has the cards already in Anki moved after the first Generate: the switch
+    # comes up off (no *Recommended* beside it, no line of what it would move) and *Next* saves the consent off
+    api = FreshApi(counts={"日本語::Mining": 334})
+    wiz, _shell, api, settings, _m = make(api=api)
+    _known_way(wiz, "fresh")
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: not page.controls.isHidden())
+    assert not page.keep.switch.isChecked() and page.keep.rec.isHidden()
+    assert wait_until(lambda: page._moves_n == 334, 2.0) and page.moves_line.isHidden()
+    settings.calls.clear()
+    wiz.next()
+    assert settings.calls[0]["junban_auto_actions"] is False
+
+
+def test_fresh_u_turned_on_after_start_fresh_it_names_the_deck_and_how_many_new_cards_it_moves(make):
+    # On, the page says what it does to the cards already there: the chosen deck by name and its new cards' count, read
+    # again for another deck; turned by hand, page 2's way never turns it back
+    api = FreshApi(counts={"日本語::Mining": 334, "Core 2k": 1})
+    wiz, _shell, api, settings, _m = make(api=api)
+    _known_way(wiz, "fresh")
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: page._moves_n == 334, 2.0) and page.moves_line.isHidden()   # (counted, off: unsaid)
+    QTest.mouseClick(page.keep.switch, Qt.MouseButton.LeftButton)
+    assert page.keep.switch.isChecked() and page.moves_line.isVisible()
+    assert page.moves_line.text() == "It moves the 334 new cards in 日本語::Mining."
+    page.deck_box.setCurrentIndex(page.deck_box.findText("Core 2k"))
+    page.deck_box.activated.emit(page.deck_box.currentIndex())
+    assert wait_until(lambda: page.moves_line.text() == "It moves the 1 new card in Core 2k.", 2.0)
+    page.entered()                                                # shown again: the learner's own choice stays
+    assert page.keep.switch.isChecked()
+    QTest.mouseClick(page.keep.switch, Qt.MouseButton.LeftButton)
+    assert page.moves_line.isHidden()                             # off: nothing moves, nothing said
+
+
+def test_fresh_u_from_anki_keeps_the_recommended_on_and_back_to_from_anki_turns_it_on_again(make):
+    # The rule is Start fresh's only: From Anki keeps the draft's on (with the count), and a learner who went back
+    # from Start fresh to From Anki gets the recommended on again (the switch was never touched)
+    api = FreshApi(counts={"日本語::Mining": 2140})
+    wiz, _shell, api, settings, _m = make(api=api)
+    go_to(wiz, "order")
+    page = wiz.page
+    assert wait_until(lambda: page.moves_line.isVisible(), 2.0)
+    assert page.keep.switch.isChecked() and not page.keep.rec.isHidden()
+    assert page.moves_line.text() == "It moves the 2,140 new cards in 日本語::Mining."
+    while wiz.page.id != "known":
+        wiz.back()
+    QTest.mouseClick(wiz.page.channel.choice("fresh"), Qt.MouseButton.LeftButton)
+    go_to(wiz, "order")
+    assert not wiz.page.keep.switch.isChecked() and wiz.page.moves_line.isHidden()
+    while wiz.page.id != "known":
+        wiz.back()
+    QTest.mouseClick(wiz.page.channel.choice("anki"), Qt.MouseButton.LeftButton)
+    go_to(wiz, "order")
+    assert wiz.page.keep.switch.isChecked() and not wiz.page.keep.rec.isHidden()
+
+
+def test_fresh_u_an_unknown_count_says_nothing_and_an_api_without_the_rule_keeps_the_preselect(make):
+    # Anki not answering the count (None): no line, never a wrong number; a stand-in without the rule (an older
+    # contract) shows the preselect as before
+    api = FreshApi(counts={})
+    wiz, _shell, api, settings, _m = make(api=api)
+    go_to(wiz, "order")
+    assert wait_until(lambda: api.counted and wiz.page._moves_key is None, 2.0)   # (None: asked again later)
+    assert wiz.page.keep.switch.isChecked() and wiz.page.moves_line.isHidden()
+    wiz2, _s2, _a2, _set2, _m2 = make()
+    _known_way(wiz2, "fresh")
+    go_to(wiz2, "order")
+    assert wiz2.page.keep.switch.isChecked()

@@ -274,11 +274,20 @@ def _why(hold, entry, eps):
     return strings.DONE_WHY_MORE.format(n=int(entry["episodes"]), m=max(e.number for e in eps if e.number is not None))
 
 
-def offer_text(verdict, row):
-    """The finish toast's words for `when_done`'s ("offer",), or ("offer", why) with AniList's why."""
+def offer_text(verdict, row, left=False):
+    """The finish toast's words for `when_done`'s ("offer",), or ("offer", why) with AniList's why. One file: *Watched
+    it*, never *All 1 watched* (Fresh-U row 5). `left`: W-1's first mark that moved the list (once per library) — the
+    words say its words left the list, so the next rows' counts rising is explained (the watched file's words now count
+    where they come next)."""
+    n = all_n(row)
     if len(verdict) > 1:
-        return strings.DONE_ALL_WHY.format(n=all_n(row), why=verdict[1])
-    return strings.DONE_ALL.format(n=all_n(row))
+        text = (strings.DONE_ALL_ONE_WHY.format(why=verdict[1]) if n == 1 else
+                strings.DONE_ALL_WHY.format(n=n, why=verdict[1]))
+    else:
+        text = strings.DONE_ALL_ONE if n == 1 else strings.DONE_ALL.format(n=n)
+    if left and text.endswith(strings.DONE_ASK):
+        text = text[:-len(strings.DONE_ASK)] + strings.DONE_ASK_LEFT
+    return text
 
 
 def all_n(row):
@@ -2858,12 +2867,18 @@ class DragController(QObject):
             self._by_itself(row, verdict)
             return
         if verdict is not None:                      # ("offer", ...): today's *finished with it?*
-            ticket = Ticket(offer_text(verdict, row), (row.key,), tuple(ids))
+            keep = getattr(view, "keep_watched", False)     # Fresh-U row 5: W-1's first mark says it here too
+            hint = self._unseen(HINT_LEFT) if any(view_rows.mark_moves_list(row.tier, e, keep) for e in eps) else None
+            ticket = Ticket(offer_text(verdict, row, left=hint is not None), (row.key,), tuple(ids))
             if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
+            buttons = [(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))]
+            if hint is not None:                     # (W-1's own way to keep them: the hint's button rides along)
+                self._seen(hint)
+                buttons.append((strings.DONE_KEEP, strings.DONE_KEEP_TIP,
+                                lambda: self.win.open_setting("keep_watched")))
             self._ask_again(view, row, verdict)
-            self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
-                                          lambda: self.to_finished(row))])
+            self._toast(ticket, buttons=buttons)
             return
         shown = None
         if getattr(row, "group", False):             # LM11b G5: one show of a group all watched, the rest not yet —

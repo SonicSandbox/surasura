@@ -31,7 +31,8 @@ shown in a field: `Writer.rename_piece`, empty = named after its shows again, th
 with…*, *Same show as…*, *Change cover…*, *Never read this folder* or *Open its folder* (each is one show's). Its writes
 toast at the press, with Undo (*· saving…* until the store saved them; IK-2: no mark on the rows).
 **An episode's own ⋯ (row 28):** an opened row's episode line under the hand or the keyboard shows its own ⋯
-(`rows.RowsView.episode_menu_requested`): *Mark watched* / *Mark not watched* (the page's one Done path), *Play* (▶'s
+(`rows.RowsView.episode_menu_requested`): *Mark watched* / *Mark not watched* (the page's one Done path), right under a
+*Mark watched* its extension *…and everything before it* when 2+ files would be marked (a7: `drag.done_many`), *Play* (▶'s
 path, when it can play), *Split here…* after it (when that split is allowed), then each `episode_hooks` entry —
 callables `(row, ep) -> [Entry]`, asked as the menu opens; an entry's `payload`, a callable, runs when it is picked.
 **Group… (LM11b G4):** Ctrl+click picks Current's rows and an opened row's episodes (its stones), Shift+click the rows
@@ -48,13 +49,16 @@ at a time). ⋯ or a right-click on a picked row while 2+ rows are picked offers
 split's first part is among them; *Group…* first where it applies): each ONE store command through
 `drag.DragController.send_picks` — one toast naming the count, one Undo; *Remove…* asks first (`ask_remove_picks`). A
 drag from a picked row carries them all (`DragController.begin`).
-**Drop-to-join (G3):** a part dragged over the middle of another part of the same title (its top and bottom 30 % stay
-a move beside it, so a part can still be placed next to its other part): the rows hold still (no gap opens), that part
-shows a green dashed outline and *Drop to join*; the drop joins them in episode order, opens the result and toasts
+**Where a drop lands (Sonic 2026-11-01: "It's always been too easy to combine"; PROVISIONAL):** over a row's upper half
+above it, its lower half below (the gap shows it); a join or a group only after the hand holds `JOIN_REST_MS` on the
+row's middle where the row stays under it (`holds_on`: never on the half the gap opens under, never its top and bottom
+`JOIN_EDGE`), and only a release then; moving off lets the hold go. A quick release there places it by halves.
+**Drop-to-join (G3):** a part held on another part of the same title: the rows hold still (the gap closes), that part
+shows a green dashed outline and *Join as one show*; the drop joins them in episode order, opens the result and toasts
 *Joined Ep x–y* with Undo.
-**Drop to group (LM11b G2; Sonic's answers: a drop on another show makes a group, no question):** over the middle of
-another show's part, or of a group (either side a group), the hand rests `JOIN_REST_MS` before that row is outlined with
-*Drop to group* (a passing drag still reorders); the drop is one `Writer.join(..., how="group")`, the row dropped on
+**Drop to group (LM11b G2; Sonic's answers: a drop on another show makes a group, no question):** held on another
+show's part, or a group (either side a group), that row is outlined with *Drop to group* (a passing drag still
+reorders); the drop is one `Writer.join(..., how="group")`, the row dropped on
 first (it keeps its place, a group its name), never `ahead` — toasted *Grouped … with …* with Undo once the store
 saved it (a refusal toasts nothing: no promise the store didn't keep), the result opened. A row in Finished or New
 arrivals is never a group's target (the store's `NO_GROUP_TIERS`).
@@ -78,15 +82,16 @@ from collections import namedtuple
 
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, QPoint, QTimer
-from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QMenu
 
 from app import library_store
 from app.qt import bridge, confirm, drag, finished, rows, strings
 from app.services import view_rows
 
-JOIN_EDGE = 0.3                                     # a part's top and bottom 30 %: a move beside it, not a join
-JOIN_REST_MS = 500                                  # LM11b G2: another show groups only once the hand rests this long
+# Where a drop over a row lands (Sonic 2026-11-01: "It's always been too easy to combine"; PROVISIONAL, checked in his
+# try): its upper half places above it, its lower half below; a join or a group only after the hand holds on its middle
+# this long, where the row stays under the hand (`holds_on`)
+JOIN_EDGE = 0.25                                    # a part's top and bottom 25 %: never a hold, a move beside it
+JOIN_REST_MS = 500                                  # the hold before *Join as one show* / *Drop to group* shows
 
 Entry = namedtuple("Entry", "name label tip ok children checked payload writes", defaults=(None, None, None, False))
 #   writes: a hook's entry that asks the store for a write — greyed by the menu, with the store's reason, while the
@@ -126,8 +131,18 @@ def comes_first(part, target):
 pieces_of = drag.pieces_of          # the pieces a row stands for (B2-2): one rule, L6.3's join forward reads it too
 
 
+def holds_on(y, top, bottom, still, held):
+    """Whether a hand at `y` over a row's slab (`top`…`bottom`) is where a hold joins or groups: inside its middle (its
+    top and bottom `JOIN_EDGE` place beside it), and until the hold is done (`held`) only where the row stays painted
+    under the hand (`still`: its half whose gap opens on its far side). The other half shows the gap under the hand —
+    and a gap's centre is the row's resting middle, so aiming at it must never join. Held, the rows close up and the
+    whole middle keeps it."""
+    edge = round((bottom - top + 1) * JOIN_EDGE)
+    return top + edge <= y <= bottom - edge and (still or held)
+
+
 def same_show(a, b):
-    """Two runs of one show (a drop joins them at once): never a group on either side (LM11b G2)."""
+    """Two runs of one show (a held drop joins them as one): never a group on either side (LM11b G2)."""
     return not getattr(a, "group", False) and not getattr(b, "group", False) and a.work_id == b.work_id
 
 
@@ -178,10 +193,12 @@ def offer_skip(owner, ids, m, add):
     if looks is None or not ids or not hasattr(looks, "skippable"):
         return False
     ask, relay = owner._skip_ask, bridge.Relay(owner)
+    fill = getattr(m, "fills", None)                 # a kept menu (`drag.list_menu`) is the same menu at its next open
 
     def found(folders):
         relay.deleteLater()
-        if folders and ask == owner._skip_ask and owner.last_menu is m and not sip.isdeleted(m) and m.isVisible():
+        if (folders and ask == owner._skip_ask and owner.last_menu is m and not sip.isdeleted(m) and m.isVisible()
+                and getattr(m, "fills", None) == fill):
             add(folders)
     relay.said.connect(found)
     if not looks.skippable(list(ids), relay.call):
@@ -196,35 +213,31 @@ def skip_menu(m, folders, reason, pick):
     (E4); `pick(path)` when one is picked. -> the submenu."""
     writable = reason is None
     before = next((a for a in m.actions() if a.text() == strings.ITEM_MENU["folder"][0]), None)
-    sub = QMenu(strings.ITEM_SKIP[0], m)
+    sub = drag.sub_menu(m, strings.ITEM_SKIP[0], before)
     sub.setObjectName("rowmenu")
     sub.setToolTipsVisible(True)
-    if before is not None:
-        m.insertMenu(before, sub)
-    else:
-        m.addMenu(sub)
     sub.menuAction().setToolTip(strings.ITEM_SKIP[1] if writable else reason)
     sub.menuAction().setEnabled(writable)
     for path in folders:
-        act = QAction(os.path.basename(path) or path, sub)
+        act = drag.menu_action(sub, os.path.basename(path) or path, lambda p=path: pick(p))
         act.setToolTip(strings.ITEM_SKIP_TIP.format(path=path) if writable else reason)
         act.setEnabled(writable)
-        act.triggered.connect(lambda _c=False, p=path: pick(p))
         sub.addAction(act)
     return sub
 
 
-def give_skip(moves, path, ids=(), keys=(), told=None):
+def give_skip(moves, path, ids=(), keys=(), told=None, toast=True, ticket=None):
     """`Writer.skip_folder(path)` given through the window's drag controller `moves` (`_give`: on the writer's thread,
     one change — the folder's items to the trash, the folder never read again — its toast with Undo, which reads it
     again; a refusal comes back as the writer's note). `ids` / `keys`: the files and rows it was asked from (none from
     Settings). `told(ticket, event)`: the ticket's "saved" / "refused" / "undone" (Settings' *Skip a folder…*: its
-    arc until saved, its own line's Undo). -> the writer's number, or None (refused)."""
-    text = strings.ITEM_SKIPPED.format(name=os.path.basename(path) or path)
-    ticket = drag.Ticket(text, tuple(keys), list(ids))
+    arc until saved, its own line's Undo). `toast` False / `ticket`: the sort screen's *Ignore* (its own words, its own
+    Undo). -> the writer's number, or None (refused)."""
+    if ticket is None:
+        ticket = drag.Ticket(strings.ITEM_SKIPPED.format(name=os.path.basename(path) or path), tuple(keys), list(ids))
     if told is not None:
         ticket.told = lambda event: told(ticket, event)
-    return moves._give(ticket, lambda t: moves.writer.skip_folder(path, label=t))
+    return moves._give(ticket, lambda t: moves.writer.skip_folder(path, label=t), toast=toast)
 
 
 # --- A4: the picks' ⋯, one rule for Current, Soon, Finished and Goal's sheet ------------------------------------------- #
@@ -260,10 +273,9 @@ def fill_picks_menu(m, n, own, writer, act, grey=None, goal=False):
     for name, label, tip, ok in picks_entries(n, own, writer, grey, goal):
         if name == "remove":
             m.addSeparator()
-        a = QAction(label, m)
+        a = drag.menu_action(m, label, lambda nm=name: act(nm))
         a.setToolTip(tip)
         a.setEnabled(ok)
-        a.triggered.connect(lambda _c=False, nm=name: act(nm))
         m.addAction(a)
     return m
 
@@ -394,7 +406,13 @@ class ItemActions(QObject):
             ok = writable or not writes
             return Entry(name, label or words, (tip or own_tip) if ok else reason, ok, **kw)
         group = getattr(row, "group", False)
-        out = [entry("unpin") if row.studying else entry("pin")]
+        out = []
+        files = view_rows.to_finish(row.episodes)    # a7 (DIAGNOSIS 11): every file not watched yet, at once — first,
+        left = [e for e in files if not e.watched]   # beside the moves (Finished is one)
+        if len(files) >= 2 and left:
+            out.append(entry("watched-all", tip=strings.ITEM_MENU["watched-all"][1].format(n=len(left)),
+                             payload=left))
+        out.append(entry("unpin") if row.studying else entry("pin"))
         if row.work_id is not None and not group:
             kinds = [entry("type-to", label=strings.ITEM_TYPES[m], tip=strings.ITEM_TYPE_TIP.format(
                 kind=strings.ITEM_TYPES[m]), checked=row.media == m, payload=m) for m in library_store.MEDIA_TYPES]
@@ -562,10 +580,9 @@ class ItemActions(QObject):
             self._action(m, row, group)
             m.addSeparator()
         for name, label, tip, ok in self.moves.menu_entries(row):
-            act = QAction(label, m)
+            act = drag.menu_action(m, label, lambda n=name: self.moves.menu_pick(row, n))
             act.setToolTip(tip)
             act.setEnabled(ok)
-            act.triggered.connect(lambda _c=False, n=name: self.moves.menu_pick(row, n))
             m.addAction(act)
         for e in self.entries(row):
             if e.name == "remove":
@@ -583,7 +600,7 @@ class ItemActions(QObject):
     def _submenu(self, menu, row, label, tip, ok, children):
         """`children` in a submenu of `menu`: `MENU_PAGE` of them, then *More…* holding the rest, page by page (a long
         *Same show as…* or *Split here…* list never runs past the window). -> the submenu."""
-        sub = menu.addMenu(label)
+        sub = drag.sub_menu(menu, label)             # R5: a kept submenu (`list_menu`'s), never a new one
         sub.setObjectName("rowmenu")
         sub.setToolTipsVisible(True)
         sub.menuAction().setToolTip(tip)
@@ -596,13 +613,12 @@ class ItemActions(QObject):
         return sub
 
     def _action(self, menu, row, e):
-        act = QAction(e.label, menu)
+        act = drag.menu_action(menu, e.label, lambda n=e.name, pl=e.payload: self.menu_pick(row, n, pl))
         act.setToolTip(e.tip)
         act.setEnabled(e.ok)
         if e.checked is not None:
             act.setCheckable(True)
             act.setChecked(e.checked)
-        act.triggered.connect(lambda _c=False, n=e.name, pl=e.payload: self.menu_pick(row, n, pl))
         menu.addAction(act)
         return act
 
@@ -621,6 +637,8 @@ class ItemActions(QObject):
             payload()
         elif name == "folder":
             self.open_folder(row)
+        elif name == "watched-all" and payload:          # a7: one command, one Undo (`drag.done_many`)
+            self.page.done_many(row, payload)
         elif name == "remove":
             self.ask_remove(row)
         elif name == "rename":                           # --- LM11b G3
@@ -643,10 +661,16 @@ class ItemActions(QObject):
         words, tip = strings.ITEM_EP_MARK
         out = [Entry("ep-unwatched" if ep.watched else "ep-watched", words.format(action=action),
                      tip.format(ep=name, action=action) if reason is None else reason, reason is None)]
+        k = next((i for i, e in enumerate(row.episodes) if e.id == ep.id), None)
+        upto = [] if k is None or ep.watched else \
+            [e for e in view_rows.to_finish(row.episodes[:k + 1]) if not e.watched]
+        if len(upto) >= 2:                           # a7 (DIAGNOSIS 11): *Mark watched*'s extension (Sonic 10-30), right
+            words, tip = strings.ITEM_EP_UPTO        # under it: it and every one before it, at once
+            out.append(Entry("ep-upto", words, tip.format(ep=name, n=len(upto)) if reason is None else reason,
+                             reason is None, payload=upto))
         if ep.can_play:                              # IK-2: ▶'s own verb and tip (`view_rows`: the episode's media)
             out.append(Entry("ep-play", view_rows.VERB.get(ep.media_word or row.media_word, view_rows.VERB["video"]),
                              ep.play_tip, True))
-        k = next((i for i, e in enumerate(row.episodes) if e.id == ep.id), None)
         if joinable(row) and k is not None and k + 1 < len(row.episodes) and \
                 view_rows.split_piece(row, k + 1) is not None:
             words, tip = strings.ITEM_SPLIT_HERE.format(ep=name), \
@@ -675,10 +699,9 @@ class ItemActions(QObject):
         for e in own + hooked:
             if hooked and e is hooked[0]:
                 m.addSeparator()                     # the modules' entries apart from the episode's own (AD-8)
-            act = QAction(e.label, m)
+            act = drag.menu_action(m, e.label, lambda n=e.name, pl=e.payload: self.episode_pick(row, ep, n, pl))
             act.setToolTip(e.tip)
             act.setEnabled(e.ok)
-            act.triggered.connect(lambda _c=False, n=e.name, pl=e.payload: self.episode_pick(row, ep, n, pl))
             m.addAction(act)
         self.last_menu = m
         m.popup(at)
@@ -687,6 +710,8 @@ class ItemActions(QObject):
     def episode_pick(self, row, ep, name, payload=None):
         if name in ("ep-watched", "ep-unwatched"):
             self.page.done(row, ep)                  # the one path for a Done (S12): watched ↔ not watched
+        elif name == "ep-upto" and payload:
+            self.page.done_many(row, payload)        # a7: one command, one Undo (`drag.done_many`)
         elif name == "ep-play":
             self.lst.play_requested.emit(ep)         # ▶'s own path
         elif name == "split" and payload is not None:
@@ -945,17 +970,18 @@ class ItemActions(QObject):
 
     # --- drop-to-join (G3; `drag.DragController` asks) ------------------------------------------------------------- #
     def target(self, d, global_pos):
-        """The key of the row under the hand that a drop joins: a part of the same show at once; another show's, or a
-        group, once the hand has rested `JOIN_REST_MS` on it (LM11b G2). Else None."""
+        """The key of the row under the hand that a drop joins (a part of the same show) or groups with (another show's,
+        or a group: LM11b G2) — only once the hand has held `JOIN_REST_MS` on it (Sonic 2026-11-01; a quick drop
+        there places it by halves). Else None."""
         hit = self._over(d, global_pos)
         other, ep = hit if hit is not None else (None, None)
-        if other is None or (d.row is not None and same_show(d.row, other)):
+        if other is None:
             self._resting = self._rested = self._group_key = self._ep_at = None
             self._rest.stop()
-            return other.key if other is not None else None
+            return None
         self._ep_at = (other.key, ep) if ep is not None else None
         if self._rested == (d, other.key):
-            self._group_key = other.key
+            self._group_key = None if d.row is not None and same_show(d.row, other) else other.key
             return other.key
         self._group_key = None
         if self._resting != (d, other.key):          # a new row under the hand: its rest starts now
@@ -965,7 +991,7 @@ class ItemActions(QObject):
 
     def _over(self, d, global_pos):
         """(the row under the hand a drop would join, the opened group's episode it is on — not its last — or None),
-        else None: over a row's middle (its edges place beside it), or anywhere on an opened group's episodes. A drag
+        else None: over a row's middle where a hold counts (`holds_on`), or anywhere on an opened group's episodes. A drag
         from the list: a joinable part; New arrivals' (IK-3): a group only."""
         row = d.row
         if d.external:
@@ -989,12 +1015,14 @@ class ItemActions(QObject):
             return None                              # a tray file on a show's part: placed in the list, as before
         rect = self.lst.visualRect(idx)
         ep = self.lst.delegate.episode_at(entry, rect, pos) if group else None
+        if isinstance(ep, view_rows.Fold):           # --- a8: on a fold's line, after its run's last part
+            ep = other.episodes[ep.end]
         if ep is not None:
             return other, (ep if ep.id != other.episodes[-1].id else None)
         slab = self.lst.delegate.slot_rect(kind, rect, _lines)
-        edge = round(slab.height() * JOIN_EDGE)
-        if not slab.top() + edge <= pos.y() <= slab.bottom() - edge:
-            return None                              # its edges place it beside the part, as any row's do
+        still = drag.part_offset(d.src, self.moves.slot_at(pos.y()), idx.row(), 1) == 0
+        if not holds_on(pos.y(), slab.top(), slab.bottom(), still, self._rested == (d, other.key)):
+            return None                              # its edges, and the half the gap opens under, place it by halves
         return other, None
 
     def _rested_on(self):
@@ -1002,8 +1030,17 @@ class ItemActions(QObject):
         d = self.moves.running
         if d is None or self._resting is None or self._resting[0] is not d:
             return
+        hit = self._over(d, d.at)                    # asked before it counts as held: the row still under the hand
+        if hit is None or hit[0].key != self._resting[1]:
+            self._resting = None                     # (the next move starts its hold again)
+            return
         self._rested = self._resting
         self.moves._follow(d.at)
+
+    def ended(self):
+        """The drag is over: its hold let go (`DragController._end`; a drop still reads `_ep_at`)."""
+        self._rest.stop()
+        self._resting = self._rested = None
 
     def show(self, key):
         self.lst.set_join(key, strings.JOIN_GROUP_LABEL if key is not None and key == self._group_key else None)

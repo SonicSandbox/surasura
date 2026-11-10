@@ -37,14 +37,16 @@ change writes are `settings_catalog`'s; the page paints it and hands every chang
   time in `slice_ms`.
 """
 import bisect
+import math
 import os
+import sys
 import time
 from collections import Counter
 from contextlib import contextmanager
 
 from PyQt6 import sip
 from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QIcon, QPainter, QPalette, QPixmap
+from PyQt6.QtGui import QFontMetricsF, QIcon, QPainter, QPalette, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (QApplication, QBoxLayout, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                              QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
@@ -141,7 +143,25 @@ def _show(widget, shows):
     `when` says no (a row built hidden after its slab first showed)."""
     explicit = widget.testAttribute(Qt.WidgetAttribute.WA_WState_ExplicitShowHide)
     if widget.isHidden() == shows or not explicit:
+        _unsized(widget, shows)
         widget.setVisible(shows)
+
+
+def _unsized(widget, shows):
+    """A widget shown for the first time under a paused layout (`SettingsPage._paused`) given no room yet: never
+    sized, Qt shows it at a default 100 × 30 at its parent's top left — over the rows there, which repainted (WC F2:
+    *More options*' first open painted its section's head) — until the layout places it."""
+    if shows and not widget.testAttribute(Qt.WidgetAttribute.WA_Resized):
+        widget.resize(0, 0)
+
+
+def _shown_in(layouts):
+    """What `layouts` hold and which of it shows: (`SettingsPage._paused`'s before and after)."""
+    out = []
+    for layout in layouts:
+        items = (layout.itemAt(i) for i in range(layout.count()))
+        out.append(tuple((w, w.isHidden()) for w in (it.widget() for it in items) if w is not None))
+    return out
 
 
 def _alive(w):
@@ -164,6 +184,23 @@ class _Scroll(QScrollArea):
         if moved:
             self.tab_scrolls += 1
         return moved
+
+
+class _Body(QWidget):
+    """The scrolled body, opaque: it paints its own ground (the stylesheet's `settingsbody` colour), so a scroll moves
+    what is already on screen and paints only the strip it uncovers — Qt moves a widget that way only when it is
+    opaque; before, every wheel notch and glide frame painted the whole page in view (a9.1). Its contents static: a
+    new height (rows shown or hidden) paints only the part it gained, never the page in view again (WC F1, F2)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(event.rect(), style.qcolor(style.colours()["content"]))
+        p.end()
 
 
 class Search(QWidget):
@@ -263,7 +300,20 @@ class Slab(QWidget):
         self.adv.setVisible(False)
         self.placed = {"main": [], "adv": []}          # catalog index of each widget placed, per container
         self._fold = None
+        # resized (a row shown or hidden in it), only what changed repaints: the part it gained and the edge its
+        # rounded corners and bottom border move to (`resizeEvent`) — never its head and rows above (WC F1, F2)
+        self.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)
         self.restyle()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        old, new = event.oldSize(), event.size()
+        if old.isValid():
+            edge = theme.RADII["r"] + 2                # the corners' radius and the borders
+            if old.height() != new.height():
+                self.update(0, min(old.height(), new.height()) - edge, new.width(), edge)
+            if old.width() != new.width():
+                self.update(min(old.width(), new.width()) - edge, 0, edge, new.height())
 
     def place(self, widget, index, adv):
         """`widget` into its container at the place of its catalog `index` (a slice may build out of order)."""
@@ -294,12 +344,124 @@ class Slab(QWidget):
         self.setMaximumWidth(round(theme.size("settings-card-max", style.current()[1])))
 
 
+# a9.1 (Sonic: "the subtitles unless it's absolutely needed, to be hidden with a ? hover icon instead. To keep settings
+# extremely clean"): a row's description — its catalog help line — stands behind a ? beside its label (`HelpMark`),
+# except on these rows, where the learner must read it before pressing (PROVISIONAL; the register lists why): data
+# leaving this computer, something that replaces or deletes for good, and Anki Miner's credit (Sonic's own words). A
+# live line in its place — a state, a warning, a readout — always shows (`described`).
+HELP_SHOWN = frozenset((
+    "known_import",              # replaces your known words
+    "update_check_enabled",      # asks GitHub at start
+    "telemetry_enabled",         # what the counts never hold
+    "covers_download",           # what goes to AniList and YouTube
+    "remove_downloaded_covers",  # deletes for good: what stays
+    "practice_ai",               # what goes to that AI's company
+    "enable_koe",                # each sentence goes to Google
+    "anki_miner",                # Sonic's credit to its maker
+))
+
+
+def described(row, text):
+    """Whether `text` is `row`'s own description (its catalog help, a live word in it filled in: *Anki's own setting for
+    {deck}…*), not a live line standing in its place."""
+    if not row.help or not text:
+        return False
+    if "{" not in row.help:
+        return text == row.help
+    import re
+    pattern = "".join(".+" if part.startswith("{") else re.escape(part)
+                      for part in re.split(r"(\{[^}]*\})", row.help) if part)
+    return re.fullmatch(pattern, text, re.DOTALL) is not None
+
+
+# Help cards (§4.1, §6.4): the rows whose ? opens their area's help card on a click (its description stays the hover)
+ROW_CARDS = {"connect_enabled": "cards", "mine_line": "current", "anki_sync_auto": "known", "automation": "automation",
+             "placing_rules": "arrivals", "keep_watched": "stones", "finish_cards": "finished",
+             "enable_junban": "junban", "backfill_patterns": "backfill",
+             "level": "level"}
+
+
+class HelpMark(QLabel):
+    """A row's ? (a9.1): its description in the bubble on hover, on keyboard focus (Tab) and on a click or Enter /
+    Space (the bubble's own rules, `tooltip.Tooltips`: wrapped to its width). A row with a help card (`ROW_CARDS`,
+    `card`): a click or Enter / Space opens that card instead (its hover says so)."""
+
+    card = None
+
+    def __init__(self, parent=None):
+        super().__init__(S.HELP_MARK, parent)
+        self.setObjectName("helpmark")
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setVisible(False)
+
+    def set_about(self, label, text):
+        if text and self.card is not None:
+            from app.services import help_cards
+            if help_cards.available(self.card):
+                text = S.HELP_MARK_CARD.format(text=text)
+        if self.toolTip() != text:
+            self.setToolTip(text)
+            self.setAccessibleName(S.HELP_MARK_NAME.format(label=label) if label else S.HELP_MARK)
+            self.setAccessibleDescription(text)
+        if self.isHidden() == bool(text):
+            self.setVisible(bool(text))
+
+    def _ask(self):
+        if self.card is not None and self.toolTip().endswith(S.HELP_MARK_CARD.split("{text}", 1)[1]):
+            from app.qt import help_card
+            help_card.open_card(self, self.card)
+            return
+        tips = getattr(self.window(), "tooltips", None)
+        if tips is not None and self.toolTip():
+            tips.request(self)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._ask()                                       # the press hid the bubble: a click shows it again
+
+    def keyReleaseEvent(self, event):
+        super().keyReleaseEvent(event)
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self._ask()
+
+
+class Words(QLabel):
+    """A row's word-wrapped label or help line whose height for a width is worked out once per (width, its minimum
+    width, text) — the minimum moves as a row stacks (`RowView.arrange`), and Qt answers at the larger of the two: Qt lays
+    the text out again on every ask, and the page's every layout asks each of its ~270 lines at two widths or more
+    (~5 ms a pass at 250 %, a9.1). Forgotten when the font, the style or the margins change."""
+
+    FORGETS = (QEvent.Type.FontChange, QEvent.Type.StyleChange, QEvent.Type.ContentsRectChange,
+               QEvent.Type.LayoutDirectionChange)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._heights = {}
+
+    def heightForWidth(self, width):
+        key = (width, self.minimumWidth(), self.text())
+        height = self._heights.get(key)
+        if height is None:
+            if len(self._heights) >= 8:
+                self._heights.clear()
+            height = self._heights[key] = super().heightForWidth(width)
+        return height
+
+    def changeEvent(self, event):
+        if event.type() in self.FORGETS:
+            self._heights.clear()
+        super().changeEvent(event)
+
+
 class RowView(QWidget):
-    """One setting row (the mock's `.srow`): its label and help on the left, its control (and doors) on the right, in
-    `slot`; when the row is too narrow for both side by side (text size L in a narrow window), its words stand above
-    its control (B4). The level stands stacked always (S7): its label and *Automatic* (`aside`) on top, the slider the
-    row's full width under them, its readout (the help line) under the slider. Washed once by a reveal (`wash`,
-    0 … 1, painted under its children)."""
+    """One setting row (the mock's `.srow`): its label (its ? beside it: `HelpMark`) and help on the left, its control
+    (and doors) on the right, in `slot`; when the row is too narrow for both side by side (text size L in a narrow
+    window), its words stand above its control (B4). The level stands stacked always (S7): its label and *Automatic*
+    (`aside`) on top, the slider the row's full width under them, its readout (the help line) under the slider. A
+    `links` block (a9.1) stands stacked too: its title, then its buttons evenly across. Washed once by a reveal
+    (`wash`, 0 … 1, painted under its children)."""
 
     def __init__(self, row, parent=None):
         super().__init__(parent)
@@ -308,13 +470,21 @@ class RowView(QWidget):
         self.wash = 0.0
         self.controls = []                    # the value controls, in order (the level: its slider, then Automatic)
         self.doors = {}                       # opener name -> Door
+        self.links = {}                       # a `links` block's page name -> its button (a9.1)
         self.stacked = None                   # the words above the control (True) or beside it (False)
-        self.label = QLabel(self)
+        self.label = Words(self)
         self.label.setObjectName("settingssublabel" if row.sub else "settingslabel")
         self.label.setWordWrap(True)
-        self.help = QLabel(self)
+        self.help = Words(self)
         self.help.setObjectName("settingshelp")
         self.help.setWordWrap(True)
+        self.mark = HelpMark(self)
+        self.mark.card = ROW_CARDS.get(getattr(row, "id", None))
+        self.title = QHBoxLayout()                # the label, its ?, room after
+        self.title.addWidget(self.label, 1000)    # (as wide as its words, `_fit_title`; the room after takes the rest)
+        self.title.addWidget(self.mark, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.title.addStretch(1)
+        self._least = 0                           # the words' minimum width beside the control (`arrange`)
         self.slot = QWidget(self)
         self.slot.setObjectName("settingsslot")
         slot = QHBoxLayout(self.slot)
@@ -323,17 +493,27 @@ class RowView(QWidget):
         if row.kind == "slider":
             line = QVBoxLayout(self)
             top = QHBoxLayout()
-            top.addWidget(self.label, 1)
+            top.addLayout(self.title, 1)
             self.aside = QHBoxLayout()
             top.addLayout(self.aside)
             line.addLayout(top)
             line.addWidget(self.slot)
             line.addWidget(self.help)
             self.stacked = True
+        elif row.kind == "links" or row.id in catalog.STACKED:
+            if row.kind != "links":               # the choices packed from the left at their own size, never spread
+                slot.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            line = QVBoxLayout(self)
+            self.words = QVBoxLayout()
+            self.words.addLayout(self.title)
+            self.words.addWidget(self.help)
+            line.addLayout(self.words)
+            line.addWidget(self.slot)
+            self.stacked = True
         else:
             line = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
             self.words = QVBoxLayout()
-            self.words.addWidget(self.label)
+            self.words.addLayout(self.title)
             self.words.addWidget(self.help)
             line.addLayout(self.words, 1)
             self.words.setAlignment(Qt.AlignmentFlag.AlignTop)    # the words together at the top beside a tall control
@@ -361,16 +541,23 @@ class RowView(QWidget):
         return m.left() + m.right() + self._words_min() + self.layout().spacing() + slot
 
     def minimumSizeHint(self):
-        """As narrow as the stacked row: the page never cuts a control at its right edge, it stacks the row (B4)."""
+        """As narrow as the stacked row: the page never cuts a control at its right edge, it stacks the row (B4); a
+        `links` block as narrow as its widest button (its buttons stack too, `arrange`)."""
         hint = super().minimumSizeHint()
         m = self.layout().contentsMargins()
-        return QSize(m.left() + m.right() + max(self.slot.minimumSizeHint().width(), self._words_min() // 2),
-                     hint.height())
+        slot = self.slot.minimumSizeHint().width()
+        if self.row.kind == "links":
+            slot = max((b.minimumSizeHint().width() for b in self.links.values()), default=0)
+        return QSize(m.left() + m.right() + max(slot, self._words_min() // 2), hint.height())
 
     def arrange(self, width=None):
-        """Side by side when `width` (the row's own) holds both, else the words above the control."""
-        if self.row.kind == "slider":
+        """Side by side when `width` (the row's own) holds both, else the words above the control; a `links` block's
+        buttons side by side when they fit, else one under another."""
+        if self.row.kind == "links":
+            self._arrange_links(self.width() if width is None else width)
             return
+        if self.row.kind == "slider" or self.row.id in catalog.STACKED:
+            return                                      # (stacked always: the words, then the control under them)
         width = self.width() if width is None else width
         stacked = width < self.side_by_side()
         if stacked == self.stacked:
@@ -380,18 +567,53 @@ class RowView(QWidget):
         line.setDirection(QBoxLayout.Direction.TopToBottom if stacked else QBoxLayout.Direction.LeftToRight)
         line.setAlignment(self.slot, self._slot_align(stacked))
         least = 0 if stacked else self._words_min()
-        self.label.setMinimumWidth(least)
+        self._least = least
         self.help.setMinimumWidth(least)
+        self._fit_title()
+
+    def _arrange_links(self, width):
+        m, box = self.layout().contentsMargins(), self.slot.layout()
+        need = sum(b.minimumSizeHint().width() for b in self.links.values()) + box.spacing() * (len(self.links) - 1)
+        across = width - m.left() - m.right() >= need
+        direction = QBoxLayout.Direction.LeftToRight if across else QBoxLayout.Direction.TopToBottom
+        if box.direction() != direction:
+            box.setDirection(direction)
+
+    def _fit_title(self):
+        """The ? right after the label's last word (a9.1): the label never wider than its words on one line — it wraps
+        as before when the row is narrower — and never held wider by the words' minimum (the help line holds that)."""
+        text = self.label.text()
+        self.label.ensurePolished()
+        natural = 0
+        if text:                                  # as QLabel lays a wrapped line out (bearings, hinting), with room
+            metrics = QFontMetricsF(self.label.font())
+            laid = metrics.boundingRect(QRectF(0, 0, 1e6, 1e6), int(Qt.TextFlag.TextWordWrap), text).width()
+            m = self.label.contentsMargins()
+            natural = math.ceil(max(laid, metrics.horizontalAdvance(text))) + m.left() + m.right() + \
+                2 * self.label.margin() + 4
+        if self.label.maximumWidth() != max(1, natural):
+            self.label.setMaximumWidth(max(1, natural))
+        least = min(self._least, natural)
+        if self.label.minimumWidth() != least:
+            self.label.setMinimumWidth(least)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.arrange(event.size().width())
 
     def set_words(self, label, help_):
+        """The label, and the line under it: a live line, or a description on a `HELP_SHOWN` row (the level's readout
+        too), in sight; any other description behind the ? (its text kept in `help`, hidden: one rule, every row)."""
         self.label.setText(label)
         self.label.setVisible(bool(label))
+        self._fit_title()
         self.help.setText(help_)
-        self.help.setVisible(bool(help_))
+        own = described(self.row, help_)
+        shown = bool(help_) and (not own or self.row.id in HELP_SHOWN or self.row.kind == "slider")
+        if self.help.isHidden() == shown:
+            self.help.setVisible(shown)
+        about = "" if shown and own else help_ if own else self.row.help if "{" not in self.row.help else ""
+        self.mark.set_about(label, about if label else "")
 
     def restyle(self):
         f = _f()
@@ -400,15 +622,20 @@ class RowView(QWidget):
         self.layout().setContentsMargins(round(left * f), round(pad_y * f), round(pad_x * f), round(pad_y * f))
         self.layout().setSpacing(round((6 if self.row.kind == "slider" else 14) * f))
         self.slot.layout().setSpacing(round(8 * f))
+        self.title.setSpacing(round(6 * f))
+        self._fit_title()                         # a new text size: the label's words measured again
         if self.aside is not None:
             self.aside.setSpacing(round(8 * f))
         else:
-            self.words.setSpacing(round(1 * f))
+            self.words.setSpacing(round((8 if self.row.kind == "links" else 1) * f))
         for c in self.controls:
             c.restyle()
         if self.row.id in logos.ROWS:         # PL: the service's cleared logo before its words, at this size
             logos.show(self)
-        if self.row.kind != "slider" and self.stacked is not None:     # a new text size: asked again (a row not
+        if self.row.kind == "links":                                    # a new size: its buttons measured again
+            self._arrange_links(self.width())
+        elif self.row.kind != "slider" and self.row.id not in catalog.STACKED and self.stacked is not None:
+            #                                                           a new text size: asked again (a row not
             self.stacked = None                                         # yet laid out is asked at its first resize)
             self.arrange()
 
@@ -521,9 +748,10 @@ class SettingsPage(QWidget):
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.body = style.styled(QWidget(), "settingsbody")
+        self.body = style.styled(_Body(), "settingsbody")
         outer = QHBoxLayout(self.body)
         self.column = QWidget(self.body)
+        self.column.setAttribute(Qt.WidgetAttribute.WA_StaticContents, True)     # (it paints nothing: as the body)
         outer.addWidget(self.column, 1)
         outer.addStretch(0)
         self.column_box = QVBoxLayout(self.column)
@@ -652,12 +880,17 @@ class SettingsPage(QWidget):
         with self._keeping(self._anchor_for_build(), fallback=False):
             settings, ctx = self._settings(), self._ctx()
             matches = self._matches(settings, ctx)
+            shown = False
+            openers = {op.name: op for op in windows.OPENERS}
             while self._queue and (time.perf_counter() - t0) * 1000 < BUILD_MS:
                 if not _WARMED and _WARM_ROWS(self._queue[0][1]):
                     break                     # its module is still being imported on the worker: never raced here
                 index, row = self._queue.pop(0)
-                if self._build_guarded(index, row, settings):
-                    self._show_section(row.section, settings, ctx, matches)   # shown in the slice that built it
+                if self._build_guarded(index, row, settings):                # shown in the slice that built it
+                    self._show_section(row.section, settings, ctx, matches, openers, tint=False)
+                    shown = True
+            if shown:
+                self._tint()
             self._show_nothing(matches)
         self._aim()
         self._slice_end = time.perf_counter()
@@ -782,6 +1015,8 @@ class SettingsPage(QWidget):
         view = RowView(row, slab.adv if row.adv else slab.main)
         if "{" in row.label or "{" in row.help:                # a live word (the version, the deck): its owner's
             view.set_words(_live(row.label), _live(row.help))
+        elif row.id == "known_from_anki":                      # its line names the states picked (a7, DIAGNOSIS 3)
+            view.set_words(row.label, catalog.help_line(row, settings, self.language))
         if row.kind in PLACEHOLDER_KINDS:
             view.slot.layout().addWidget(self.slots[row.id])
         else:
@@ -790,7 +1025,16 @@ class SettingsPage(QWidget):
             label, tip = S.ROW_DOORS.get(row.id, {}).get(name) or S.DOORS[name]
             door = sc.Door(label, tooltip=tip, name=label, parent=view.slot)
             door.clicked.connect(lambda _c=False, n=name: self.open_door(n))
-            view.slot.layout().addWidget(door)
+            if row.kind == "toggle":
+                # a9.1: a switch that opens its own door (*Preview a video…* on YouTube preview's switch): the door
+                # stands before the switch and keeps its room while hidden — the flip never moves the switch under
+                # the hand, nor grows the row (a choice never moves the page)
+                policy = door.sizePolicy()
+                policy.setRetainSizeWhenHidden(True)
+                door.setSizePolicy(policy)
+                view.slot.layout().insertWidget(len(view.doors), door)
+            else:
+                view.slot.layout().addWidget(door)
             view.doors[name] = door
         self._show_doors(view, settings)
         if row.group:
@@ -809,12 +1053,21 @@ class SettingsPage(QWidget):
 
     def _make_controls(self, view, row, settings):
         kind, tip, name = row.kind, row.tip or None, row.label or None
-        if kind == "door" or (kind != "link" and not row.keys and row.id != "known_road"):
+        if kind == "door" or (kind not in ("link", "links") and not row.keys and row.id != "known_road"):
             return
         if kind == "link":
             link = qpress.room(sc.Door(S.LINK_OPEN, tooltip=tip, name=name, parent=view.slot))
-            link.clicked.connect(lambda _c=False, b=link: qpress.open(self.shell, S.HOW_PARSING_URL, control=b))
+            link.clicked.connect(lambda _c=False, b=link, u=S.LINK_URLS[row.id]: qpress.open(self.shell, u, control=b))
             view.slot.layout().addWidget(link)
+            return
+        if kind == "links":                      # a9.1: a button per page, evenly across the block, each one width
+            for page in row.options:
+                label, page_tip, url = S.LINKS[page]
+                link = qpress.room(sc.Door(label, tooltip=page_tip, name=label, parent=view.slot))
+                link.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                link.clicked.connect(lambda _c=False, b=link, u=url: qpress.open(self.shell, u, control=b))
+                view.slot.layout().addWidget(link, 1)
+                view.links[page] = link
             return
         value = None
         try:
@@ -834,6 +1087,8 @@ class SettingsPage(QWidget):
         control.changed.connect(lambda v, r=row, c=control: self._changed(r, v, c))
         view.controls.append(control)
         view.slot.layout().addWidget(control)
+        if row.id in catalog.PROGRAM_ROWS:       # *Videos open in* / *Books open in*: the program's picker
+            self._program_controls(view, row, control, settings)
         if kind == "slider":                     # *Automatic* beside the slider: the row's other key
             words = QLabel(view.slot)
             words.setObjectName("settingsaffix")
@@ -856,7 +1111,7 @@ class SettingsPage(QWidget):
             opts = list(catalog.options(row, settings, self.language))
             if value not in [v for v, _l, _line in opts]:
                 opts.append((value, str(value), ""))       # a value no option names (hand-edited): shown, kept
-            tips = S.OPTION_TIPS.get(row.id, {})
+            tips = catalog.option_tips(row, settings)
             if kind == "cards":
                 control = sc.Cards([(v, label, line) for v, label, line in opts], value, tooltip=tip, name=name)
             else:
@@ -906,8 +1161,14 @@ class SettingsPage(QWidget):
                 self._show_decks(view, settings)
             return False
         value = self._shown(row, settings)
+        if row.id == "known_from_anki":                  # its line names the states picked (a7, DIAGNOSIS 3)
+            view.set_words(row.label, catalog.help_line(row, settings, self.language))
         values = [value[row.keys[0]], value[row.keys[1]]] if row.kind == "slider" else [value]
         moved = False
+        if row.id in catalog.PROGRAM_ROWS:                 # the program's name on its choice, *Change…* once kept
+            label, tip = catalog.program_label(row, settings)
+            moved = view.controls[0].set_label("program", label, tip)
+            view.change.setVisible(bool(catalog.program(row, settings)))
         for control, v in zip(view.controls, values):
             if control.value() == v:
                 continue
@@ -932,8 +1193,9 @@ class SettingsPage(QWidget):
         label.setVisible(bool(decks))
 
     # --- doors ---------------------------------------------------------------------------------------------------- #
-    def _show_doors(self, view, settings):
-        openers = {op.name: op for op in windows.OPENERS}
+    def _show_doors(self, view, settings, openers=None):
+        if openers is None:
+            openers = {op.name: op for op in windows.OPENERS}
         if view.row.id == "anki_decks":
             self._show_decks(view, settings)
         for name, door in view.doors.items():
@@ -943,15 +1205,11 @@ class SettingsPage(QWidget):
                 door.setVisible(shows)
 
     def refresh(self):
-        """The doors asked again (`windows._found`: the modules were looked for; a write that can move a door)."""
+        """The doors asked again (`windows._found`: the modules were looked for; a write that can move a door), the
+        rows with them in the same pass: a door row shows once one of its doors is there (S1)."""
         if not _alive(self):
             return
-        settings = self._settings()
-        with self._keeping(self._last):
-            for view in self.rows.values():
-                if view.doors:
-                    self._show_doors(view, settings)
-        self._refresh_visibility(anchor=self._last)       # a door row shows once one of its doors is there (S1)
+        self._refresh_visibility(anchor=self._last, doors=True)
 
     def open_door(self, name):
         """A door's click: its window, through the shell (`windows.launch`: a failure said in the bar), or `door_asked`."""
@@ -960,6 +1218,45 @@ class SettingsPage(QWidget):
             windows.launch(self.shell, op)
         else:
             self.door_asked.emit(name)
+
+    # --- *Videos open in* / *Books open in*: the program chosen (Sonic 2026-11-05) --------------------------------- #
+    def _program_controls(self, view, row, control, settings):
+        """A program row's *Change…* beside its choice (shown once a program is kept), and its "program" choice taken
+        here while none is kept: the picker first (`takes`)."""
+        change = sc.Door(S.PROGRAM_CHANGE, tooltip=S.PROGRAM_CHANGE_TIP, name=S.PROGRAM_CHANGE, parent=view.slot)
+        change.clicked.connect(lambda _c=False, r=row: self._pick_program(r))
+        view.slot.layout().addWidget(change)
+        view.change = change
+        change.setVisible(bool(catalog.program(row, settings)))
+        self.takes[row.id] = lambda value, r=row: self._take_program(r, value)
+
+    def _take_program(self, row, value):
+        """`takes`' hook: "program" picked while no program is kept opens the picker (-> True: handled here); any other
+        change is the catalog's to write (-> False)."""
+        if value != "program" or catalog.program(row, self._settings()):
+            return False
+        return self._pick_program(row)
+
+    def _pick_program(self, row):
+        """*Choose a program…* / *Change…*: a program picked (the system's own file dialog, as the folders' is), then
+        both keys written in one change — the choice "program" and the program's path. Cancelled: nothing written, the
+        choice shows the settings' value again. -> True (the change is handled here)."""
+        settings = self._settings()
+        kept = catalog.program(row, settings)
+        path, _filter = QFileDialog.getOpenFileName(self, S.PROGRAM_PICK_TITLE[row.id],
+                                                    os.path.dirname(kept) if kept else "",
+                                                    S.PROGRAM_FILTER.get(sys.platform, ""))
+        from app.services import play
+        if path and not play.program_allowed(path):        # (a name typed past the filter: a .bat, a .lnk)
+            applog.log("settings", f"{row.id}: not a program ▶ can start: {os.path.basename(path)}")
+            path = ""
+        if path:
+            changes = {row.keys[0]: "program", catalog.PROGRAM_ROWS[row.id]: os.path.normpath(path)}
+            self.store.set({k: v for k, v in changes.items() if catalog.value_of(settings, k) != v})
+        view = self.rows.get(row.id)
+        if view is not None:
+            self._show_value(view, self._settings())        # cancelled: back to what is saved; picked: shown at once
+        return True
 
     def _add_folder(self, control):
         folder = QFileDialog.getExistingDirectory(self, S.FOLDER_PICK_TITLE)
@@ -1027,9 +1324,7 @@ class SettingsPage(QWidget):
                 continue
             if self._show_value(view, settings):
                 self.paints[row_id] += 1
-        if windows._moves_doors(keys):
-            self.refresh()
-        self._refresh_visibility(anchor=self._last)
+        self._refresh_visibility(anchor=self._last, doors=windows._moves_doors(keys))
 
     def set_language(self, language):
         """The main window's language changed: every row asked again for it (the Japanese / Chinese rows), the
@@ -1040,8 +1335,7 @@ class SettingsPage(QWidget):
         for view in self.rows.values():
             if self._show_value(view, settings):
                 self.paints[view.row.id] += 1
-        self._refresh_visibility(anchor=self._last)
-        self.refresh()
+        self._refresh_visibility(anchor=self._last, doors=True)
         self.language_set.emit(language)
 
     # --- what shows ------------------------------------------------------------------------------------------------ #
@@ -1050,36 +1344,87 @@ class SettingsPage(QWidget):
             return None
         return set(catalog.find(self._query, settings, self.language, ctx))
 
-    def _row_shows(self, row, settings, ctx, matches):
-        return self._visible(row, settings, ctx) and (matches is None or row.id in matches)
-
-    def _visible(self, row, settings, ctx):
+    def _visible(self, row, settings, ctx, openers=None):
         """The catalog's `when`, and for a door row at least one of its doors there (registered in `windows.OPENERS`
-        and available): a door row with no door never shows as a bare label (RUNBOOK 🧭 2)."""
+        and available): a door row with no door never shows as a bare label (RUNBOOK 🧭 2). `openers`: the
+        registry by name, made once per pass by the caller (else here)."""
         if not catalog.visible(row, settings, self.language, ctx):
             return False
         if row.kind != "door":
             return True
-        openers = {op.name: op for op in windows.OPENERS}
+        if openers is None:
+            openers = {op.name: op for op in windows.OPENERS}
         return any(name in openers and windows.available(openers[name], settings, self.language) for name in row.door)
 
-    def _section_shows(self, section_id, settings, ctx):
-        return any(self._visible(row, settings, ctx) for row in catalog.rows(section_id))
+    def _section_shows(self, section_id, settings, ctx, openers=None):
+        return any(self._visible(row, settings, ctx, openers) for row in catalog.rows(section_id))
 
-    def _refresh_visibility(self, anchor=None, fallback=True):
+    def _refresh_visibility(self, anchor=None, fallback=True, doors=False):
         """Every row's `when` (and the search) asked again; only what changed is shown or hidden; the anchor keeps its
-        place in the viewport."""
+        place in the viewport. `doors`: each door asked again first (`refresh`), in the same pass."""
         settings, ctx = self._settings(), self._ctx()
         matches = self._matches(settings, ctx)
-        with self._keeping(anchor, fallback=fallback):
+        openers = {op.name: op for op in windows.OPENERS}
+        with self._keeping(anchor, fallback=fallback), self._paused():
+            if doors:
+                for view in self.rows.values():
+                    if view.doors:
+                        self._show_doors(view, settings, openers)
             for section in catalog.SECTIONS:
-                self._show_section(section.id, settings, ctx, matches)
+                self._show_section(section.id, settings, ctx, matches, openers, tint=False)
+            self._tint()
             self._show_nothing(matches)
         self._light_nav()
 
-    def _show_section(self, section_id, settings, ctx, matches):
+    @contextmanager
+    def _paused(self):
+        """Rows shown and hidden with the page's layouts paused, laid out once as the pass ends: Qt lays out every
+        ancestor of a widget it shows at once, so each row shown laid the whole page out again — a search cleared
+        showed 126 rows in ~100 ms at 250 % (a9.1). Resumed in one pass from the top (WC F1–F3): every size asked
+        afresh first (a row shown or hidden under a paused layout never told its slab's), the body given its new
+        height by the scroll area, then each layout laid out at its container's final size, outermost first — resumed
+        deepest first, each one laid out inside its container's old size and again once the body grew: every slab
+        moved twice and the page in view repainted, rows above the change too. Nested: the outermost resumes."""
+        if getattr(self, "_pausing", False):
+            yield
+            return
+        layouts = []
+        for slab in self.slabs.values():
+            layouts += [slab.main_box, slab.adv.layout(), slab.layout()]
+        layouts += [self.column_box, self.body.layout()]
+        watched = layouts + [slab.adv_box for slab in self.slabs.values()]     # (the options' rows: nested in adv)
+        before = _shown_in(watched)
+        self._pausing = True
+        for layout in layouts:
+            layout.setEnabled(False)
+        try:
+            yield
+        finally:
+            self._pausing = False
+            for layout in layouts:
+                layout.setEnabled(True)
+            if _shown_in(watched) == before:      # nothing shown, hidden or put in: nothing to lay out again
+                for layout in layouts:
+                    if layout.parentWidget().isVisible():
+                        layout.activate()         # (a row's own change, if any, as it asked)
+            else:
+                for layout in layouts:            # deepest first: sizes asked afresh, nothing laid out yet
+                    layout.invalidate()
+                    layout.parentWidget().updateGeometry()
+                # the body at its new height: the scroll area resizes it, and the resize lays each layout out in turn
+                # from the top, each at its container's final size (an invalidated layout lays out as its widget
+                # resizes)
+                QApplication.sendEvent(self.scroll, QEvent(QEvent.Type.LayoutRequest))
+
+    def _show_section(self, section_id, settings, ctx, matches, openers=None, tint=True):
+        """`section_id`'s nav button, slab, rows, group names and fold shown as the rules (and the search) say — each
+        row's rule asked once. `tint`: the slabs tinted again after (a pass over every section tints once, at its
+        end)."""
+        if openers is None:
+            openers = {op.name: op for op in windows.OPENERS}
+        visible = {row.id: self._visible(row, settings, ctx, openers) for row in catalog.rows(section_id)}
         nav = self.nav[section_id]
-        nav_shows = self._section_shows(section_id, settings, ctx)
+        nav_shows = any(visible.values())
         if nav.isHidden() == nav_shows:
             nav.setVisible(nav_shows)
         slab = self.slabs.get(section_id)
@@ -1087,7 +1432,7 @@ class SettingsPage(QWidget):
             return
         any_main = adv_count = 0
         groups = {False: [], True: []}                       # per container: [group label, any row under it shown]
-        shown = {row.id: self._row_shows(row, settings, ctx, matches) for row in catalog.rows(section_id)
+        shown = {row.id: visible[row.id] and (matches is None or row.id in matches) for row in catalog.rows(section_id)
                  if row.id in self.rows}
         if not any(shown.values()) and not slab.isHidden():
             slab.setVisible(False)                           # hidden first: its rows then change unseen (S3)
@@ -1110,14 +1455,17 @@ class SettingsPage(QWidget):
             _show(group, shows)
         opened = adv_count > 0 and (section_id in self._open or matches is not None)
         if slab.adv.isHidden() == opened:
+            _unsized(slab.adv, opened)
             slab.adv.setVisible(opened)
         if slab.more_row.isHidden() == (adv_count > 0):
+            _unsized(slab.more_row, adv_count > 0)
             slab.more_row.setVisible(adv_count > 0)
         slab.set_open(opened, adv_count)
         slab_shows = bool(any_main or adv_count)
         if slab.isHidden() == slab_shows:
             slab.setVisible(slab_shows)
-        self._tint()
+        if tint:
+            self._tint()
 
     def _tint(self):
         """Every other shown section tinted (the mock's `nth-of-type(even)`), counted over the slabs shown."""
@@ -1156,7 +1504,7 @@ class SettingsPage(QWidget):
     # --- search ---------------------------------------------------------------------------------------------------- #
     def _searched(self, text):
         """A keystroke: rows hidden and shown, nothing rebuilt. With the search in view nothing above it can move, so
-        the layout is left to the loop's own turn (no settle on the keystroke: S3)."""
+        nothing is settled or corrected on the keystroke (S3); the rows are laid out once as the pass ends (`_paused`)."""
         self._query = text
         self._refresh_visibility(anchor=None if self._in_view(self.search) else self.search,
                                  fallback=not self._in_view(self.search))
@@ -1211,7 +1559,7 @@ class SettingsPage(QWidget):
             return
         self._prioritise(section_id)
         settings = self._settings()
-        with self._keeping(self._anchor_for_build()):
+        with self._keeping(self._anchor_for_build()), self._paused():
             while self._queue and self._queue[0][1].section == section_id:
                 index, row = self._queue.pop(0)
                 self._build_guarded(index, row, settings)

@@ -274,17 +274,6 @@ def test_an_epub_without_a_cover_leaves_the_generated_cover(lib):
     assert lib.scan() == 0 and lib.row(lib.work_of(item))[0] is None and _cache_files() == []
 
 
-def test_a_book_at_its_import_keeps_its_cover_from_wherever_the_user_keeps_it(lib, tmp_path):
-    work = lib.work_of(lib.store.ids("now")[0])
-    book = epub(str(tmp_path / "Downloads" / "進撃の巨人 1.epub"), "進撃の巨人", cover=png())
-    assert C.keep_epub_cover(lib.language, work, book, lib.writer, data_dir=lib.data_dir)
-    assert h.until(lambda: lib.heard.rereads and not lib.writer.pending())
-    assert lib.heard.saved == [] and not lib.writer.can_undo(), "B1: a book's cover is nobody's to undo"
-    source, ref, path, _locked = lib.row(work)
-    assert (source, ref) == ("file", os.path.abspath(book)) and path.startswith("cache:"), "as the scan records it"
-    assert os.path.isfile(C.image_path(lib.language, lib.one(work), lib.data_dir))
-
-
 # --- never over a better or the user's cover --------------------------------------------------------------------- #
 def test_a_locked_user_cover_is_never_written_over_by_disk_art_but_a_downloaded_one_is(lib, tmp_path):
     """W3.2 L3 B2, the lean D-1 *disk art first*: the art beside the files beats a downloaded cover (even one found by

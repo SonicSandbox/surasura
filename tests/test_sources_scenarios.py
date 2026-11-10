@@ -247,7 +247,33 @@ def _rows():
                      {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv"),
                       f"{{S}}/{extra}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{extra}/{ep(1)}.{{T}}.srt",
                                                             f"{{S}}/{extra}/{ep(1)}.mkv")},
-                     f"`{extra}`'s 01 is not the show's episode 1: its own show beside it"))
+                     f"`{extra}`'s 01 is not the show's episode 1: its own episodes"
+                     + (" in a folder of its own, part of the show's title (Kura-G: a specials folder is part of the "
+                        "title of the folder it sits in)" if extra != "Bonus" else ": its own show beside it (`Bonus` "
+                                                                                    "names no specials folder)")))
+    # Kura-G (2026-11-06, the laptop try's Code Geass: 4 titles in Goal for its 2): the show's folder read itself,
+    # holding two series folders, each with an `extras/` of videos that have no subtitle (picture dramas, a creditless
+    # opening); R2 has a subtitle for two of its three videos (his R2's own-way names, `<Show> Hangyaku 01.srt` beside
+    # `<Show>_Ep01_….mkv`, pair with no video: a pairing gap, BOARD 2026-11-06 Kura-G, not this row's)
+    r1 = [f"[Grp]_{{S}}_{n:02d}_(1080p_BD)" for n in (1, 2)]
+    r2v = [f"{{S}}_Ep{n:02d}_Title_[720p,BluRay]" for n in (1, 2, 3)]
+    rows.append(("two series folders, each with extras/", "laptop try (Code Geass)",
+                 "`<Show>/<Show> R1/` videos + `.srt` 01–02 and `extras/` two picture dramas (videos only); "
+                 "`<Show>/<Show> R2/` videos 01–03, `.srt` 01–02, and `extras/` a creditless "
+                 "opening; the show's folder added itself", "{S}",
+                 _pairs("{S}/{S} R1", r1, ".srt")
+                 + [("{S}/{S} R1/extras/[Grp]_{S}_Picture_Drama_3.25_(1080p_BD).mkv", "V"),
+                    ("{S}/{S} R1/extras/[Grp]_{S}_Picture_Drama_9.75_(1080p_BD).mkv", "V")]
+                 + [(f"{{S}}/{{S}} R2/{v}.mkv", "V") for v in r2v]
+                 + [(f"{{S}}/{{S}} R2/{v}.srt", "J") for v in r2v[:2]]
+                 + [("{S}/{S} R2/extras/{S}_Creditless_OP1_[720p,BluRay].mkv", "V")], None,
+                 {**{f"{{S}} R1/{s}.srt": _ep(f"{{S}}/{{S}} R1/{s}.srt", f"{{S}}/{{S}} R1/{s}.mkv") for s in r1},
+                  "{S} R1/extras/[Grp]_{S}_Picture_Drama_3.25_(1080p_BD).mkv": WAIT,
+                  "{S} R1/extras/[Grp]_{S}_Picture_Drama_9.75_(1080p_BD).mkv": WAIT,
+                  **{f"{{S}} R2/{v}.srt": _ep(f"{{S}}/{{S}} R2/{v}.srt", f"{{S}}/{{S}} R2/{v}.mkv") for v in r2v[:2]}},
+                 "two titles, R1 and R2 (two series, each its own); each extras folder's videos wait as part of the "
+                 "title of the series folder they sit in, never a third and fourth title; the creditless opening "
+                 "never waits, nor (K5, as before) R2's third video in a folder that has text"))
     rows.append(("Movie folder", "convention",
                  "`<Show>/Movie/<Show> Movie (1080p).mkv` + `.ja.srt` beside the episodes", "",
                  _pairs("{S}", [ep(1)], ".{T}.srt") + _pairs("{S}/Movie", ["{S} Movie (1080p)"], ".{T}.srt"), None,
@@ -511,6 +537,49 @@ def _rows():
                  [("{S}/{S} - 01.mkv", "V"), ("{S}/{S} - NCOP1.mkv", "V")], None,
                  {"{S}/{S} - 01.mkv": WAIT},
                  "only the episode waits"))
+    # Kura-G (2026-11-07, his Code Geass R2): subtitles that write a bare number (`<Show> Hangyaku 01.srt`: no ` - `,
+    # `Ep`, `E` before it) under another name beside one show's episode videos. By names alone that is also a bonus
+    # run (`<Show> Picture Drama 1.srt`, `2.srt`; `Omake`, `Vol`, `Part`): either could be, so the look pairs neither
+    # (A4: never a guess; a pairing by number made them versions of the episodes, Kura-G's adversary). They pair on
+    # the *no video* card's *Find videos* (the window's reading of the bare number, the learner's *Link these*:
+    # tests/test_services_needs.py's Code Geass test)
+    geass = [f"{{S}}_Ep{n:02d}_The_Title_[720p,BluRay,x264]_-_gg" for n in (1, 2, 3)]
+    rows.append(("bare-numbered subtitles beside marked videos", "laptop try (Code Geass R2)",
+                 "`<Show>/<Show>_Ep01_<title>_[720p,BluRay,x264]_-_gg.mkv` (01–03) and `<Show> Hangyaku 01.srt`, "
+                 "`02.srt` (a bare number, another name of the show)", "",
+                 [(f"{{S}}/{v}.mkv", "V") for v in geass]
+                 + [(f"{{S}}/{{S}} Hangyaku {n:02d}.srt", "J") for n in (1, 2)], None,
+                 {f"{{S}}/{{S}} Hangyaku {n:02d}.srt": f"{{S}}/{{S}} Hangyaku {n:02d}.srt" for n in (1, 2)},
+                 "two items, unpaired: by their names they could be the episodes or a bonus run, so the look never "
+                 "guesses; *Find videos* on the no-video card pairs them with the learner's yes"))
+    rows.append(("a bonus run beside the episodes", "convention (A4; Kura-G's adversary)",
+                 "`<Show>/[Grp] <Show> - 01.mkv`, `- 02.mkv`, their `.ja.srt`, and `<Show> Picture Drama 1.srt`, "
+                 "`2.srt` with no video", "",
+                 _pairs("{S}", ["[Grp] {S} - 01", "[Grp] {S} - 02"], ".{T}.srt")
+                 + [("{S}/{S} Picture Drama 1.srt", "J"), ("{S}/{S} Picture Drama 2.srt", "J")], None,
+                 {**{f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt": _ep(f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt",
+                                                                   f"{{S}}/[Grp] {{S}} - {n:02d}.mkv") for n in (1, 2)},
+                  "{S}/{S} Picture Drama 1.srt": "{S}/{S} Picture Drama 1.srt",
+                  "{S}/{S} Picture Drama 2.srt": "{S}/{S} Picture Drama 2.srt"},
+                 "four items: the episodes paired by name, the picture dramas their own — never versions of episodes "
+                 "1 and 2, never given their videos"))
+    rows.append(("a bonus run, its episodes' subtitles a look later", "convention (A4; Kura-G's adversary)",
+                 "`<Show> Picture Drama 1.srt`, `2.srt` beside `[Grp] <Show> - 01.mkv`, `- 02.mkv`; the episodes' "
+                 "`.ja.srt` arrive later", "",
+                 [("{S}/[Grp] {S} - 01.mkv", "V"), ("{S}/[Grp] {S} - 02.mkv", "V"),
+                  ("{S}/{S} Picture Drama 1.srt", "J"), ("{S}/{S} Picture Drama 2.srt", "J")],
+                 [(f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt", "J") for n in (1, 2)],
+                 {**{f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt": _ep(f"{{S}}/[Grp] {{S}} - {n:02d}.{{T}}.srt",
+                                                                   f"{{S}}/[Grp] {{S}} - {n:02d}.mkv") for n in (1, 2)},
+                  "{S}/{S} Picture Drama 1.srt": "{S}/{S} Picture Drama 1.srt",
+                  "{S}/{S} Picture Drama 2.srt": "{S}/{S} Picture Drama 2.srt"},
+                 "the dramas never took the episodes' videos at the first look, so each episode's subtitle comes in "
+                 "and pairs with its own"))
+    rows.append(("one bare-numbered subtitle alone", "convention (A10)",
+                 "`<Show>/<Show> 100.srt` beside `<Show>/[Grp] <Show> - 01.mkv`", "",
+                 [("{S}/[Grp] {S} - 01.mkv", "V"), ("{S}/{S} 100.srt", "J")], None,
+                 {"{S}/{S} 100.srt": "{S}/{S} 100.srt"},
+                 "a title may end in a number (`Mob Psycho 100`): never paired with episode 1's video by a guess"))
     rows.append(("subtitle folder named sub / 字幕", "convention (LM1b, A11)",
                  "`<Show>/<Show> - 01.mkv` + `sub/`, `<Show> - 02.mkv` + `字幕/` each holding its subtitle", "",
                  [("{S}/{S} - 01.mkv", "V"), ("{S}/sub/{S} - 01.{T}.srt", "J"), ("{S2}/{S2} - 02.mkv", "V"),
@@ -698,6 +767,63 @@ def _rows():
                  {**{f"{{S}}/{ep(n)}.{{T}}.srt": _ep(f"{{S}}/{ep(n)}.{{T}}.srt", f"{{S}}/{ep(n)}.mkv") for n in (1, 2)},
                   **{f"{{S}}/Part 2/{ep(n)}.{{T}}.srt": f"{{S}}/Part 2/{ep(n)}.{{T}}.srt" for n in (1, 2)}},
                  "part 1's items keep their text; Part 2 its own show"))
+
+    # (h) a8 (alpha 7's try; Sonic 2026-10-31, PROVISIONAL): a loose episode at the source's top whose show is a folder
+    # beside it, apart only by punctuation (`episode_names.show_key`), is that folder's show: one folder, one title
+    loose = lambda n, s="{S}": [(f"{ep(n, s)}.mkv", "V"), (f"{ep(n, s)}.{{T}}.srt", "J")]     # noqa: E731
+    at_top = lambda n, s="{S}": _ep(f"{ep(n, s)}.{{T}}.srt", f"{ep(n, s)}.mkv")              # noqa: E731
+    bang = {f"{{S}}!/{ep(1)}.{{T}}.srt": _ep(f"{{S}}!/{ep(1)}.{{T}}.srt", f"{{S}}!/{ep(1)}.mkv"),
+            f"{{S}}!/{ep(2)}.{{T}}.srt": at_top(2)}
+    rows.append(("`<Show>!/` beside a loose episode of `<Show>`", "laptop try (a8)",
+                 "`<Show>!/` holding 01 and, at the source's top, `[Grp] <Show> - 02 (1080p).mkv` + `.ja.srt`", "",
+                 _pairs("{S}!", [ep(1)], ".{T}.srt") + loose(2), None, bang,
+                 "one show: the loose episode's copy goes into the folder's show"))
+    rows.append(("a loose episode of `<Show>!/` arriving later", "laptop try (a8)",
+                 "`<Show>!/` holding 01; later `[Grp] <Show> - 02 (1080p)` at the source's top", "",
+                 _pairs("{S}!", [ep(1)], ".{T}.srt"), loose(2), bang,
+                 "the next episode joins the show already in, never a second title"))
+    rows.append(("`Re：Zero/` beside a loose `Re Zero - 03`", "convention (a8)",
+                 "`Re：Zero/` (a full-width colon, as a Windows folder writes `:`) holding 01 and a loose "
+                 "`[Grp] Re Zero - 03 (1080p)`", "",
+                 _pairs("Re：Zero", [ep(1, "Re Zero")], ".{T}.srt") + loose(3, "Re Zero"), None,
+                 {f"Re：Zero/{ep(1, 'Re Zero')}.{{T}}.srt": _ep(f"Re：Zero/{ep(1, 'Re Zero')}.{{T}}.srt",
+                                                              f"Re：Zero/{ep(1, 'Re Zero')}.mkv"),
+                  f"Re：Zero/{ep(3, 'Re Zero')}.{{T}}.srt": at_top(3, "Re Zero")},
+                 "one show"))
+    rows.append(("`<Show>/` and `<Show>!/` beside a loose `<Show>`", "convention (a8)",
+                 "two folders apart only by punctuation, and a loose `[Grp] <Show> - 03 (1080p)` at the top", "",
+                 _pairs("{S}", [ep(1)], ".{T}.srt") + _pairs("{S}!", [ep(2)], ".{T}.srt") + loose(3), None,
+                 {f"{{S}}/{ep(1)}.{{T}}.srt": _ep(f"{{S}}/{ep(1)}.{{T}}.srt", f"{{S}}/{ep(1)}.mkv"),
+                  f"{{S}}!/{ep(2)}.{{T}}.srt": _ep(f"{{S}}!/{ep(2)}.{{T}}.srt", f"{{S}}!/{ep(2)}.mkv"),
+                  f"{{S}}/{ep(3)}.{{T}}.srt": at_top(3)},
+                 "the loose one goes to the folder named exactly; the two folders are one title as they come in "
+                 "(3.0.1 item 12; before, the helper's run joined them later)"))
+    rows.append(("`<Show>'/` and `<Show>°/` beside a loose `<Show>`", "convention (a8)",
+                 "two seasons named apart only by punctuation (`Gintama'`, `Gintama°`) and a loose "
+                 "`[Grp] <Show> - 03 (1080p)` at the top, no folder named exactly `<Show>`", "",
+                 _pairs("{S}'", [ep(1)], ".{T}.srt") + _pairs("{S}°", [ep(2)], ".{T}.srt") + loose(3), None,
+                 {f"{{S}}'/{ep(1)}.{{T}}.srt": _ep(f"{{S}}'/{ep(1)}.{{T}}.srt", f"{{S}}'/{ep(1)}.mkv"),
+                  f"{{S}}°/{ep(2)}.{{T}}.srt": _ep(f"{{S}}°/{ep(2)}.{{T}}.srt", f"{{S}}°/{ep(2)}.mkv"),
+                  f"{{S}}/{ep(3)}.{{T}}.srt": at_top(3)},
+                 "two folders of one show and neither is it: the loose episode keeps its own show folder, as "
+                 "before — all three one title as they come in (punctuation apart, no exception: 3.0.1 item 12)"))
+    one, two = "Gintama", "Gintama'"                    # seasons named by punctuation (SHOW_KEY_EXCEPTIONS)
+    rows.append(("`Gintama/` and `Gintama'/` beside loose episodes of each", "convention (a8, an exception)",
+                 "two seasons named by punctuation (`episode_names.SHOW_KEY_EXCEPTIONS`), each with a loose episode "
+                 "of its own at the top", "",
+                 _pairs(one, [ep(1, one)], ".{T}.srt") + _pairs(two, [ep(1, two)], ".{T}.srt")
+                 + loose(5, one) + loose(4, two), None,
+                 {**{f"{s}/{ep(1, s)}.{{T}}.srt": _ep(f"{s}/{ep(1, s)}.{{T}}.srt", f"{s}/{ep(1, s)}.mkv")
+                     for s in (one, two)},
+                  f"{one}/{ep(5, one)}.{{T}}.srt": at_top(5, one), f"{two}/{ep(4, two)}.{{T}}.srt": at_top(4, two)},
+                 "each season's loose episode goes to its own season's folder, never the other's"))
+    rows.append(("a loose episode beside `<Show> 2/`", "convention (a8)",
+                 "`<Show> 2/` holding 01 and a loose `[Grp] <Show> - 05 (1080p)`", "",
+                 _pairs("{S} 2", [ep(1, "{S} 2")], ".{T}.srt") + loose(5), None,
+                 {f"{{S}} 2/{ep(1, '{S} 2')}.{{T}}.srt": _ep(f"{{S}} 2/{ep(1, '{S} 2')}.{{T}}.srt",
+                                                            f"{{S}} 2/{ep(1, '{S} 2')}.mkv"),
+                  f"{{S}}/{ep(5)}.{{T}}.srt": at_top(5)},
+                 "a number is part of a show's name: two shows"))
     return rows
 
 
@@ -718,6 +844,13 @@ def _languages(row):
 
 
 CASES = [pytest.param(row, language, id=f"{row[0]}-{language}") for row in ROWS for language in _languages(row)]
+# the rows whose show folders are ONE title (3.0.1 item 12: a new show folder joins the one title of its show key);
+# every other row's folders are a title each
+_ONE_TITLE = ("`<Show>/` and `<Show>!/` beside a loose `<Show>`", "`<Show>'/` and `<Show>°/` beside a loose `<Show>`",
+              # Kura-G: a specials folder is part of the title of the folder it sits in (`library_store.specials_home`)
+              *(f"{extra} folder numbered from 01" for extra in ("Specials", "SP", "OVA", "Extras")))
+# rows with two titles or more, each {folder: its title's other folders} (the rest of the row's folders: a title each)
+_TITLES = {"two series folders, each with extras/": {"{S} R1": ("{S} R1/extras",)}}
 
 
 @pytest.mark.parametrize("row,language", CASES)
@@ -742,6 +875,12 @@ def test_a_layout_is_read_as_a_learner_would_want(row, language, record_property
         _look(store, language, rid, full=True)
         again = _state(store, data_dir, drive, made)
     shows = sorted({os.path.dirname(k) for k in want})
+    if _id in _ONE_TITLE:
+        shows = [" + ".join(shows)]
+    for home, inside in _TITLES.get(_id, {}).items():
+        inside = [_fill(f, language) for f in inside]
+        shows = sorted([" + ".join(sorted([_fill(home, language)] + inside))]
+                       + [s for s in shows if s not in inside and s != _fill(home, language)])
     assert got == (shows, want)
     assert again == got, "a Refresh changed what the looks made"
 

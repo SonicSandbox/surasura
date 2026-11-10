@@ -29,6 +29,9 @@ from app.anki_sync import YOUNG_FILE
 # The practice chat's name as the learner sees it (Sonic 2026-10-29, "for now"): the Settings row, the server's title,
 # the prompt and the copied setup say it; the server's id stays `surasura`, so a copied setup outlives a new name.
 NAME = "Piyo ぴよ"
+# The first message to send once it's added (Settings' *Copy a starter message*, the copied setup's last line): a plain
+# request any AI app understands with the server's instructions. A short story is a good first try (Sonic, 2026-10-30).
+STARTER = "Start a Surasura practice round: write me a short story with 5 of my words."
 MODES = ("chat", "reading")
 READING_SHARE = 0.03            # a reading's new words: under 3 % of its words (Sonic, P-1)
 RECENT = 100                    # the words a round practises first (`practise_terms`), at most

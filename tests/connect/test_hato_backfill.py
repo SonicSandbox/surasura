@@ -287,6 +287,22 @@ def test_an_answer_it_cant_use_registers_nothing_and_logs_why(trouble, tmp_path,
     assert not os.path.exists(book.path()), "no Needs you entry from an answer it can't use"
 
 
+@pytest.mark.parametrize("verbs, said", [
+    ([], "hato isn't offering its pairings now (its Connect to Surasura setting is off, or it's older than 1.1.0)"),
+    (["status"], "hato isn't offering its pairings now"),
+    ("pairings", "this hato doesn't offer its pairings (hato 1.1.0 and later do)")])
+def test_a_switched_off_hato_is_named_so_and_a_broken_verbs_list_keeps_the_old_words(tmp_path, verbs, said):
+    """hato 1.1.0 switched off keeps its hato.json with `verbs: []`: the Processing Log must never tell a learner on
+    1.1.0 to install 1.1.0. A list without `pairings` says hato isn't offering them now; a `verbs` that is no list (a
+    broken or pre-1.1.0 entry) keeps the old words. Nothing else changes: still Unavailable, hato never started."""
+    fake = c.fake_hato(tmp_path, [], c.result_line(0, None))
+    fake.entry(verbs=verbs)
+    with pytest.raises(hato.Unavailable) as e:
+        hato.find()
+    assert e.value.reason.startswith(said)
+    assert fake.calls() == []
+
+
 def test_hato_is_started_with_no_window_and_its_stdin_closed(monkeypatch):
     """A console window flashing up at every switch-on, or a hato waiting on a stdin nobody writes: neither."""
     seen = {}

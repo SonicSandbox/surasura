@@ -35,11 +35,13 @@ import time
 REPO = "0xzerolight/anki_miner"
 # Alpha 4 M5 (Sonic 2026-10-27: "we should have approved versions that go out for each time … if we test it at 3.10.1,
 # then we should make that the new default"): the one Anki Miner Surasura installs and offers as an update — the
-# version drill LOOP passed at (2026-10-24, run 3) — and its Windows installer's sha256 as GitHub lists it. A newer
-# release is offered only once the drill passes at it and these two lines are bumped (the planning folder's
+# version drill LOOP passed at, run from its source tag (3.11.0: 2026-11-02, run 9, with the Stop and Z-9 drills;
+# 3.10.1 before it) — and its Windows installer's sha256 as GitHub lists it (the Install drill downloads and checks
+# the installer, never runs it: that would replace the drill PC's own Anki Miner). A newer release is offered only
+# once the drill passes at it and these two lines are bumped (the planning folder's
 # `tracks/pipeline/work/alpha4/anki-miner-pin.md`). A newer Anki Miner you installed yourself still runs.
-APPROVED = "3.10.1"
-APPROVED_SHA256 = "12ab3adca05a5584a5202cda3d1228150731207a3ba2c5bf46a5d0aa7f114c75"
+APPROVED = "3.11.0"
+APPROVED_SHA256 = "07338ce2f7a67b501211ca92c5adfc504f317f9a9164db4f2c61a78239626c9a"
 STATE = "am_release.json"
 RELEASES = f"https://github.com/{REPO}/releases"
 EVERY_S = 24 * 3600             # at most once a day
@@ -129,9 +131,11 @@ def _page(url):
 
 def _allowed(settings, fetch):
     """May a check read or write anything: Connect on (`settings_manager.connect_on`: its switch and D29's automation
-    — the daily check is unattended, P4.1 row 4.1.1), and the real fetch not gated (NO_CHECK_ENV)."""
+    — the daily check is unattended, P4.1 row 4.1.1), *Check for updates* on (`update_check_on`: off, Surasura asks
+    GitHub nothing), and the real fetch not gated (NO_CHECK_ENV)."""
     from app import settings_manager
-    return settings_manager.connect_on(settings) and not (fetch is None and os.environ.get(NO_CHECK_ENV))
+    return (settings_manager.connect_on(settings) and settings_manager.update_check_on(settings)
+            and not (fetch is None and os.environ.get(NO_CHECK_ENV)))
 
 
 def _claim(now):
@@ -272,3 +276,49 @@ def notice(installed_version, state=None):
         return {"version": APPROVED, "url": approved_page()}
     except Exception:
         return None
+
+
+# Michi-U (alpha 9.1 try, Sonic 2026-11-02: "if anki miner has an update, it would show in needs you right?"): what
+# an update to the approved release opens. `_OPENS` keeps the last look's inputs (the setup record's stamp `mines_now`
+# took and the installer's version), so a view of many waiting rows reads the record once (S19).
+_OPENS = {}
+KIND_WORDS = {"books": "books and texts", "audio": "audiobooks and podcasts"}
+
+
+def opens(kind, looked=False):
+    """Would updating Anki Miner to the approved release (`APPROVED`) let Connect make cards from `kind` ("books",
+    "audio": `anki_miner.WAITS`)? -> APPROVED, or None. Yes only when this Surasura knows the kind's ask
+    (`anki_miner.mines(kind)`), the Anki Miner Connect last found doesn't name it (`mines_now`) and the one installed
+    (`installed()`) is known and older than APPROVED — the release Surasura approves answers every ask it knows. The
+    one answer for *Needs you*'s line (`update_for`) and the rows' tip (`view_rows`). `looked`: the caller has just
+    asked `mines_now` (a row's status) — its read is taken as it is, no second look at the record's file (a row
+    build stays as fast as before: S19). Never raises."""
+    try:
+        from app.connect import anki_miner
+        if not anki_miner.mines(kind):
+            return None
+        last = anki_miner._NOW
+        if looked and "stamp" in last:
+            info = last.get("info")
+            if anki_miner.mines(kind, info if isinstance(info, dict) else {"features": []}):
+                return None
+        elif anki_miner.mines_now(kind):
+            return None
+        stamp = (anki_miner._NOW.get("stamp"), anki_miner.installed_version())     # (`mines_now` just took it)
+        if _OPENS.get("stamp") != stamp:
+            _OPENS.update(stamp=stamp, installed=installed())
+        version = _OPENS["installed"]
+        return APPROVED if known(version) and _key(version) < _key(APPROVED) else None
+    except Exception:
+        return None
+
+
+def update_for(kinds):
+    """*Needs you*'s line (Michi-U): {"version": APPROVED, "kinds": the kinds of `kinds` an update opens, in
+    `anki_miner.WAITS`' order} when there is one, else None. `kinds`: what the view's unmined items wait on."""
+    try:
+        from app.connect import anki_miner
+        opened = tuple(k for k in anki_miner.WAITS if k in set(kinds or ()) and opens(k))
+    except Exception:
+        return None
+    return {"version": APPROVED, "kinds": opened} if opened else None

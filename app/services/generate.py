@@ -19,7 +19,8 @@ requests to settle, for a job it can't run beside, or for another program's Gene
   program's Generate may take it, and the analyzer waits its turn).
 - **Cancel during a run** is the run's own decision: the controller makes the run's cancel file
   (`SURASURA_CANCEL_FILE`), and the analyzer
-  stops at its next step if it hasn't reached *Writing your list* (the CSV writes aren't atomic: P1.2 deferred that),
+  stops at its next step if it hasn't reached *Writing your list* (each list is written whole since a7, the outputs
+  together are not one write),
   else finishes. Only the run knows which step it is in — the reader always trails it — so the controller never ends
   the child itself. A run started without `--progress-json` (the Tk dashboard's) can't be asked: a cancel waits for its
   end. A cancelled run leaves the last journey's files as they were; the analyzer dropped its stamp as it started, so
@@ -34,7 +35,8 @@ requests to settle, for a job it can't run beside, or for another program's Gene
   line); a language switch forgets them (`forget_failure`). A run that finished though it was asked to stop (past
   *Writing your list*) is a finished run: `current`, and its job done, not cancelled (E3.2's review A12 / A13).
 - Children are started with `subprocess` and read on a reader thread (§4.1: no QProcess, headless in tests), with the
-  environment from `path_utils.build_subprocess_env`. A window that starts the child its own way (the Tk dashboard:
+  environment from `path_utils.build_subprocess_env`, below normal priority (`power.popen_below_normal`, a7: the
+  window, at normal priority, stays quick beside a run). A window that starts the child its own way (the Tk dashboard:
   its log, spinner and update wait) hands `request` a `launcher` and reports the end through the run (`Run.ended`).
 
 Nothing here waits on the caller's thread. Listeners (`subscribe`, a request's `on_wait`) run on the controller's
@@ -75,7 +77,7 @@ def percent(state):
 
 def can_cancel(state):
     """Whether a click cancels now: asked for or waiting, or running before *Writing your list* (from there the run
-    finishes — the CSV writes aren't atomic)."""
+    finishes — the outputs together aren't one write)."""
     if state.state == QUEUED:
         return True
     if state.state != RUNNING:
@@ -129,12 +131,14 @@ class Labelled:
 class Run:
     """One Generate on its way: its argv, its job, and what its launcher reports (`started`, `feed`, `ended`)."""
 
-    def __init__(self, controller, argv, language, quiet, on_wait, cancel_event, launcher, inline, label=None):
+    def __init__(self, controller, argv, language, quiet, on_wait, cancel_event, launcher, inline, label=None,
+                 cause=None):
         self.controller = controller
         self.argv = argv
         self.language = language
         self.quiet = quiet
         self.label = label                 # the bar's words for its job (None: the controller's)
+        self.cause = cause if quiet else None   # why an automatic one was asked for (`causes.Cause`; help cards' *Why?*)
         self.on_wait = on_wait
         self.cancel_event = threading.Event()
         self.external_cancel = cancel_event
@@ -294,7 +298,9 @@ class GenerateController:
     # --- the journey check -------------------------------------------------------------------------------------- #
     def check(self, settings, language, then=None):
         """Is the journey current? Asked on a worker; the state moves to `current` / `stale` (or `idle` when it
-        can't tell) unless a run is in flight. `then(answer)` after, on that worker."""
+        can't tell) unless a run is in flight — `current` too when only the order or the pins moved since the last
+        Generate (Sonic 2026-11-06, A: `journey.only_moved`; the engine already re-planned the list, and the journey
+        catches up when a reader wants it). `then(answer)` after (the analyzer's own answer), on that worker."""
         def work():
             from app import analyzer, run_args
             try:
@@ -302,8 +308,14 @@ class GenerateController:
             except Exception as e:
                 print(f"Generate: the journey check failed: {e}")
                 answer = None
+            settled = {True: CURRENT, False: STALE}.get(answer, IDLE)
+            if answer is False:
+                from app.services import journey
+                if journey.only_moved(settings, language):
+                    settled = CURRENT       # A: only the order moved — the list is the engine's; the journey's dot says
+                                            # its sentences are catching up (one rule: `journey.only_moved`)
             with self._lock:
-                self._settled = {True: CURRENT, False: STALE}.get(answer, IDLE)
+                self._settled = settled
                 if answer is True and self._failure and self._failure[2] == language:
                     self._failure = None    # current after all (another program generated cleanly): over
                 if self._run is None and self._pending is None:
@@ -317,20 +329,21 @@ class GenerateController:
 
     # --- asking for a run --------------------------------------------------------------------------------------- #
     def request(self, language, settings=None, argv=None, quiet=False, restart=False, settle=None, launcher=None,
-                on_wait=None, cancel_event=None, inline=False, label=None):
+                on_wait=None, cancel_event=None, inline=False, label=None, cause=None):
         """Ask for a Generate. `argv` (`['analyzer.py', …]`) or `settings` (settings.json's shape) say what to run;
         `quiet`: automatic. Either way the journey is written, never opened (laptop fixes, Sonic: "the journey should
         never automatically pop up"; the header's *Journey ↗* opens it: `run_args`' `opens=False`). `launcher(run)`:
         start the child another way (else this controller spawns and reads it). `on_wait(holder)`: once, if another program's Generate holds `results`.
         `cancel_event`: another Event that also drops the run while it waits (the window's closing). `inline`: take a
         free `results` lock and launch on this thread (a test harness with no queue to drain). `label`: the bar's
-        words for its job (`labelled`). Returns at once."""
+        words for its job (`labelled`). `cause`: why a quiet one was asked for (`causes.Cause`: its job's, the phase
+        strip's *Why:* line); a user's request has none. Returns at once."""
         if argv is None:
             from app import run_args
             argv = run_args.analyzer_args(settings or {}, language, opens=False) + [PROGRESS_FLAG]
         if not isinstance(cancel_event, threading.Event):
             cancel_event = self.closing if isinstance(self.closing, threading.Event) else None
-        run = Run(self, list(argv), language, quiet, on_wait, cancel_event, launcher, inline, label)
+        run = Run(self, list(argv), language, quiet, on_wait, cancel_event, launcher, inline, label, cause)
         snap = None
         with self._lock:
             waiting = self._pending
@@ -378,8 +391,9 @@ class GenerateController:
 
     def withdraw(self, run):
         """Take back one request (`run`, as `request` returned it) and nothing else — E3.2's journey keeper withdraws
-        its own automatic run when the moves start again, never a run the user asked for: dropped while it settles or
-        waits its turn; cancelled in flight (as `cancel`). Nothing when it is over or another request took its place."""
+        its own automatic run when its window closes (never for a move since a7: the move looks again after the run),
+        never a run the user asked for: dropped while it settles or waits its turn; cancelled in flight (as `cancel`).
+        Nothing when it is over or another request took its place."""
         snap = None
         with self._lock:
             pending = self._pending is run
@@ -399,7 +413,7 @@ class GenerateController:
 
     def withdrawn(self, job_id):
         """finish-pending (FP-A3): was the Generate job `job_id` taken back by its asker (`withdraw`: the journey
-        keeper's run, asked again once the moves settle), not stopped by the user? Any thread."""
+        keeper's run, its window closing), not stopped by the user? Any thread."""
         with self._lock:
             return any(run.job is not None and run.job.id == job_id for run in self._withdrawn)
 
@@ -429,7 +443,7 @@ class GenerateController:
                 return
             self._begin(run)
         job = self.registry.submit("generate", label, start=begin, cancel=lambda job: self._cancel_run(run),
-                                   automatic=run.quiet, on_quit="cancel")
+                                   automatic=run.quiet, on_quit="cancel", cause=run.cause)
         run.job = job
         if run.cancel_event.is_set() and job.state in (jobs_module.QUEUED, jobs_module.WAITING):
             job.cancel()                    # cancelled while the job was being made
@@ -499,9 +513,10 @@ class GenerateController:
         run.cancel_file = os.path.join(folder, f"generate-cancel-{os.getpid()}-{id(run)}.flag")
         env["SURASURA_CANCEL_FILE"] = run.cancel_file
         flags = 0x08000000 if sys.platform == "win32" else 0          # CREATE_NO_WINDOW
-        proc = subprocess.Popen(command_line(run.argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", bufsize=1,
-                                env=env, creationflags=flags)
+        from app.connect.power import popen_below_normal                # a7: never beside the window at its priority
+        proc = popen_below_normal(command_line(run.argv), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace", bufsize=1,
+                                  env=env, creationflags=flags)
         run.started(proc)
 
         def read():

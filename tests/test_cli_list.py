@@ -62,3 +62,23 @@ def test_a_text_file_keeps_the_journeys_rows(generated):
 def test_a_missing_subtitle_is_bad_data(generated, tmp_path):
     code, lines = h.run_cli("list", "--file", str(tmp_path / "ない.srt"), "--order", "encounter")
     assert code == 1 and h.answer(lines)["code"] == "bad-data"
+
+
+def test_a_list_a_generate_left_unfinished_is_busy_try_later_never_bad_data(generated):
+    """Alpha 6 try #6: a Generate withdrawn part-way drops the run stamp and leaves its list. Reading that list is a
+    moment's state — `busy`, exit 3, `list: unfinished` — so Connect waits and looks again; `bad-data` (exit 1) made
+    it *Needs you*, once per episode. Both the whole list and a file's encounter order answer so; a stamp ends it."""
+    from app import analyzer
+    stamp = os.path.join(h.root(), "results", analyzer.RUN_STAMP_FILE)
+    with open(stamp, "rb") as f:
+        kept = f.read()
+    os.remove(stamp)
+    for args in (("list",), ("list", "--file", os.path.join(generated, "phrases_sample.srt"), "--order", "encounter")):
+        code, lines = h.run_cli(*args)
+        error = h.answer(lines)
+        assert code == 3 and error["code"] == "busy" and error.get("list") == "unfinished", (args, error)
+        assert "didn't finish" in error["message"]
+    with open(stamp, "wb") as f:
+        f.write(kept)
+    code, lines = h.run_cli("list")
+    assert code == 0 and h.answer(lines)["words"], "the stamp back: the list reads again"

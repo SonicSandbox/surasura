@@ -83,6 +83,7 @@ def test_an_epub_from_disk_opens_extract_with_it_and_joins_once_it_is_added(find
     ny._say = said.append
     ny.pick_file = lambda _title, _folder: str(tmp_path / "notes.txt")
     ny._book_from_disk(entry)
+    assert wait_until(lambda: said, 5)                    # a7: the picker's start looked for on a worker first
     assert said == [strings.NEEDS_FIND_NOT_EPUB] and not any(c[0] == "audiobook_pick" for c in writer.calls)
     opened = []
 

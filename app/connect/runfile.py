@@ -28,6 +28,9 @@ SCHEMA = 1
 MAX_BYTES = 8 * 1024 * 1024
 RUN_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 TAG_PREFIX = "surasura::connect::"
+# Michi-NS (Q5 ✅ Sonic 2026-10-31): on every card mined from a subtitle Anki Miner made from the episode's audio
+# (`no_subs`, the record's verdict "transcribed"): a misheard word can happen, so the learner can find and check them
+FROM_AUDIO_TAG = "surasura::from-audio"
 NAME_TAG = "surasura::name"     # on every card of a name (G1.3), added after mining: Anki Miner tags by episode
 # Laptop round 8 #50 (LF4-3 = A, Sonic: "the show title it came from, and … the show that it's targeted for"): the show a
 # card was mined from (fixed: Connect's run file, with the job's tag) and the show it is ordered for (Junban's, moving
@@ -52,6 +55,7 @@ BOLD_TARGET = "bold-target"                     # Z-5: `bold_target_in_sentence`
 WORD_FROM_LINE = "word-from-line"               # Z-2: a named word made from its line; `surface`, `reading`
 DRY_RUN = "dry-run"                             # Z-7: `dry_run` in the run file
 READING = "reading"                             # Z-9 (round 2): an episode naming `reading_file`; `unit_index`
+AUDIO = "audio-episodes"                        # Z-16 (round 2, 3.11): an episode naming `audio_file`
 
 # IS:271–275: every filter off. `use_whitelist` stays the profile's own: before Z-1 the "Surasura" profile's whitelist
 # is how the named words pass his name lists (N10, P1.5-14); from 3.7 every named word is whitelisted, any profile.
@@ -169,11 +173,25 @@ def word_requests(words, features=(), book=False):
     return out
 
 
-def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0):
+def episode(run_id, video, subtitle, words, tags="", subtitle_offset=0.0, audio=False, names=None):
     """One episode of a run: its video and subtitle (absolute paths), the words, the job's tags, and the subtitle's
-    offset from the fit check (0 until tsubasa's check is wired, P2.4) — always sent (IS:269)."""
-    return {"run_id": run_id, "video_file": os.path.abspath(video), "subtitle_file": os.path.abspath(subtitle),
-            "subtitle_offset": float(subtitle_offset), "tags": tags, "words": list(words)}
+    offset from the fit check (0 until tsubasa's check is wired, P2.4) — always sent (IS:269). `audio` (Z-16): `video`
+    is an audio file (`audio_file`, the clips cut from it), and the cards' Source names it as a video's does —
+    `<its folder> — <its name>` (`series_name_override`: Anki Miner's own series for audio, `Audio`, names no show,
+    so 順's one source-name rule couldn't tie the card to its file). `names` (Michi-YT): [folder, name] the Source
+    names instead — an online title's video, fetched into Connect's own folder, carries its transcript's (each set
+    only when it holds a letter)."""
+    out = {"run_id": run_id, ("audio_file" if audio else "video_file"): os.path.abspath(video),
+           "subtitle_file": os.path.abspath(subtitle), "subtitle_offset": float(subtitle_offset), "tags": tags,
+           "words": list(words)}
+    folder = os.path.basename(os.path.dirname(os.path.abspath(video))) if audio else ""
+    if names:
+        folder, name = (str(n or "") for n in names)
+        if name.strip():
+            out["episode_name_override"] = name
+    if folder.strip():
+        out["series_name_override"] = folder
+    return out
 
 
 def reading_episode(run_id, reading_file, words, tags=""):

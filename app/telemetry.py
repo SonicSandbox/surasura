@@ -28,7 +28,67 @@ except Exception:
 TELEMETRY_URL = os.getenv("TELEMETRY_URL")
 TELEMETRY_ENV = os.getenv("TELEMETRY_ENV", "production")
 
+# The last receiver address update.json named (`update_checker`: its `telemetry_url`), in the persistent data folder
+# beside the telemetry id: the next heartbeat goes there, so the receiver moves without a release. None kept: the
+# build's .env TELEMETRY_URL.
+URL_CACHE = "telemetry_url.json"
+
 _OPEN_COUNT_INCREMENTED = False
+
+
+def remember_url(url):
+    """Keep `url` (update_checker checked it) for the next heartbeat; written only when it changed, atomically (a
+    temporary file of this process's own, then replaced). Never raises: a failed write keeps the old file, and the
+    next update check tries again."""
+    tmp = None
+    try:
+        if _cached_url() == url:
+            return
+        path = os.path.join(path_utils.get_persistent_user_data_path(), URL_CACHE)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"url": url}, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            if tmp and os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _cached_url():
+    """The kept address when it is still a valid one, else None. Reads only: no folder made."""
+    try:
+        from app import update_checker
+        with open(os.path.join(path_utils.persistent_root(), URL_CACHE), "r", encoding="utf-8") as f:
+            return update_checker.valid_telemetry_url(json.load(f).get("url"))
+    except Exception:
+        return None
+
+
+def receiver_url():
+    """Where a heartbeat goes: the address update.json last named, else the build's .env TELEMETRY_URL (or None)."""
+    return _cached_url() or TELEMETRY_URL
+
+
+# The receiver's own address, as the build's packaging/build_config.json names it (`release.telemetry_url`; a test
+# holds the two equal): where Send report goes when no address is kept and the .env names none (update checks off).
+BUILT_IN_URL = "https://surasura-telemetry.sonicswain.workers.dev"
+# The same Worker deployed apart for tests (SR-3: its own storage, a report kept a day and never posted), so the live
+# one sees no report before the release (PROVISIONAL: Minato-SR's lean, 2026-11-01)
+BUILT_IN_TEST_URL = "https://surasura-telemetry-test.sonicswain.workers.dev"
+
+
+def report_receiver(env="production"):
+    """Where Send report goes (`app/send_report.py`): a `test` report (from source, a dev build or an alpha:
+    `send_report.env()`) to the test Worker; else the heartbeat's receiver, else the built-in one. The heartbeat's own
+    None (nothing to send to) is unchanged."""
+    if env == "test":
+        return BUILT_IN_TEST_URL
+    return receiver_url() or BUILT_IN_URL
 
 def get_telemetry_state():
     """
@@ -83,14 +143,15 @@ def _send_heartbeat_thread(status, respect_optout=True):
     Executes the network request in a background thread.
 
     respect_optout=True (normal heartbeats): if the user disabled telemetry, send nothing.
-    respect_optout=False (forced events, e.g. an auto-update): the event is still sent, but
+    respect_optout=False (a forced event; unused since 3.0.0): the event is still sent, but
     when telemetry is OFF it carries a throwaway gibberish id instead of the persistent one —
     so the ping can't be tied back to the user and their stored id/open_count are untouched.
     """
-    if not TELEMETRY_URL:
+    if TELEMETRY_ENV == "dev":
         return
 
-    if TELEMETRY_ENV == "dev":
+    url = receiver_url()
+    if not url:
         return
 
     language = "ja" # Default
@@ -132,7 +193,7 @@ def _send_heartbeat_thread(status, respect_optout=True):
         # Imported here, on the heartbeat's own thread: at module level it cost every start ~0.1 s before the
         # window's first frame, a start that sends nothing (a dev build, no URL, opted out) too.
         import requests
-        requests.get(TELEMETRY_URL, params=params, timeout=2)
+        requests.get(url, params=params, timeout=2)
     except Exception:
         # Fail silently
         pass
@@ -141,8 +202,8 @@ def init(status='Multilingual-beta'):
     """
     Initializes and sends the telemetry heartbeat.
     """
-    # Only run if URL is configured
-    if TELEMETRY_URL and TELEMETRY_ENV != "dev":
+    # Never in a dev build; the address (the kept one, else .env's) is looked up on the heartbeat's own thread.
+    if TELEMETRY_ENV != "dev":
         thread = threading.Thread(target=_send_heartbeat_thread, args=(status,), daemon=True)
         thread.start()
 
@@ -150,14 +211,14 @@ def init(status='Multilingual-beta'):
 def send_update_event(from_version):
     """Record a successful in-place auto-update, from->to, in the heartbeat's status field.
 
-    Sent regardless of the telemetry opt-out (we always want to know an update landed), but
-    when the user has telemetry OFF it goes out anonymized — a throwaway id, no persistent
-    state — via respect_optout=False. Still honors the dev-env skip and fails silently. The
-    'to' version is the running __version__ (the code is already the new build when this fires).
+    Honors the telemetry opt-out like any heartbeat (3.0.0): with telemetry OFF nothing is sent
+    (updates are still counted by GitHub's in-app update downloads). Also honors the dev-env skip
+    and fails silently. The 'to' version is the running __version__ (the code is already the new
+    build when this fires).
     """
-    if TELEMETRY_URL and TELEMETRY_ENV != "dev":
+    if TELEMETRY_ENV != "dev":
         status = f"Updated {from_version} -> {__version__}"
         thread = threading.Thread(
             target=_send_heartbeat_thread, args=(status,),
-            kwargs={"respect_optout": False}, daemon=True)
+            kwargs={"respect_optout": True}, daemon=True)
         thread.start()

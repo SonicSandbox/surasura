@@ -74,7 +74,8 @@ def test_upgrade_to_2_keeps_every_order_tier_and_id(language):
 def test_upgrade_seeds_one_work_per_title_folder_across_tiers(language):
     """02 §2.6 step 2: the folder below the tier folder is the title — one show in NOW's and 6+ Months' folders is one
     work (L0.1: shows split across tier folders); `A/Season 1` and `B/Season 1` stay two; a loose file is a work of its
-    own, titled by its title."""
+    own, titled by its title. A season folder's title is its show's and its season (`<show> Season 1`, a7: never the
+    path `<show>/Season 1`), the path kept among its other titles."""
     w = names(language)
     data_dir, user_files_dir = roots(language)
     rels = {"now": [f"HighPriority/{w[1]}/{w[1]}_01.srt", f"HighPriority/{w[2]}/Season 1/{w[2]}_01.srt",
@@ -93,7 +94,10 @@ def test_upgrade_seeds_one_work_per_title_folder_across_tiers(language):
     assert work[rels["now"][1]] != work[rels["goal"][1]], "A/Season 1 and B/Season 1: two titles"
     assert len(set(work.values())) == 4
     titles = dict(store.conn.execute("SELECT id, title FROM works"))
-    assert titles[work[rels["now"][0]]] == w[1] and titles[work[rels["now"][1]]] == f"{w[2]}/Season 1"
+    assert titles[work[rels["now"][0]]] == w[1] and titles[work[rels["now"][1]]] == f"{w[2]} Season 1"
+    others = dict(store.conn.execute("SELECT id, titles FROM works"))
+    assert json.loads(others[work[rels["now"][1]]]) == [f"{w[2]}/Season 1"], "the path: still found by search"
+    assert json.loads(others[work[rels["now"][0]]]) == [], "a show folder's title is its name, nothing else kept"
     assert titles[work[rels["now"][2]]] == f"{w[4]}.txt", "a loose file: its own title"
     store.close()
 

@@ -196,18 +196,22 @@ def test_the_spelling_shown_reads_as_the_phrase_does(bpd, tmp_path, monkeypatch)
 def test_the_module_is_written_with_its_attribution(bpd, tmp_path):
     """The generated module decodes to the rows written, with JMdict's date, a revision and the EDRDG's licence."""
     path = tmp_path / "phrase_data.py"
-    rows = [["気|が|為る", "キ|ガ|スル", "cgl", "気がする", "キガスル", 0], ["罪|無い", "ツミ|ナイ", "cl", "罪なき", "ツミナキ", 1],
-            ["ああ|言う", "アア|イウ", "cc", "ああいう", "アアイウ", 2]]
+    rows = [["気|が|為る", "キ|ガ|スル", "cgl", "気がする", "キガスル", 0, 0], ["罪|無い", "ツミ|ナイ", "cl", "罪なき", "ツミナキ", 1, 0],
+            ["ああ|言う", "アア|イウ", "cc", "ああいう", "アアイウ", 2, 0], ["か|も|知れる|ない", "カ|モ|シレル|ナイ", "ggbg",
+            "かもしれない", "カモシレナイ", 0, 1]]
     revision = bpd.write_module(rows, "2026-09-28", str(path))
     spec = importlib.util.spec_from_file_location("toy_phrase_data", str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.phrases() == rows and module.COUNT == 3 and module.REVISION == revision
+    assert module.phrases() == rows and module.COUNT == 4 and module.REVISION == revision
     assert module.JMDICT_CREATED == "2026-09-28" and "CC BY-SA 4.0" in module.__doc__
     doc = " ".join(module.__doc__.split())
     assert "pre-noun adjectival (2 phrases), 2 when it also says it is usually written in kana (1 of them" in doc
+    assert "grammar 1 for a grammar expression (1:" in doc
     with pytest.raises(AssertionError):
-        bpd.write_module([["気", "キ", "c", "気", "キ", 0]], "", str(path))      # one word is no phrase
+        bpd.write_module([["気", "キ", "c", "気", "キ", 0, 0]], "", str(path))      # one word is no phrase
+    with pytest.raises(AssertionError):     # a grammar expression starts with grammar, every other word its own
+        bpd.write_module([["気|が|為る", "キ|ガ|スル", "cgl", "気がする", "キガスル", 0, 1]], "", str(path))
 
 
 def test_a_phrase_is_marked_pre_noun_only_when_jmdict_classes_it_so_and_nothing_else():

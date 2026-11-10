@@ -703,6 +703,28 @@ def test_junban_held_back_writes_nothing_and_the_service_runs(live, monkeypatch,
     _settle(auto, registry)
     assert calls == []
     assert len(anki.syncs) == (0 if why == "update-staged" else 1)
+    # No `junban` job at all: one that ended would tell an open 順 window "Anki's cards were moved meanwhile" and
+    # throw its preview away for a re-order that never ran (Mattias's alpha-3 notes: every Reorder refused).
+    assert not [v for v in registry.snapshot() if v.kind == "junban"]
+    auto.close()
+
+
+def test_junban_with_its_window_open_starts_no_job_and_runs_once_it_closes(live, monkeypatch):
+    """順's window open: the automatic step starts no `junban` job (nothing to tell that window), and the 5-minute wait
+    isn't spent on it — the first focus after the window closes runs the step."""
+    calls = _junban(monkeypatch, window=True)
+    fake = sys.modules["modules.junban.auto"]
+    clock = _Clock(0.0)
+    auto, registry, _c, _l = _make(_settings(anki_sync_auto=False), clock=clock, journey=lambda s, l: True)
+    auto.activated()
+    _settle(auto, registry)
+    assert calls == [] and not [v for v in registry.snapshot() if v.kind == "junban"]
+    fake.window_open = lambda: False
+    clock.now = 1.0                         # well inside the 5 minutes: the open window's look spent none of it
+    auto.activated()
+    _settle(auto, registry)
+    assert calls == [("ja", True)]
+    assert [v.kind for v in registry.snapshot()].count("junban") == 1
     auto.close()
 
 
@@ -1523,3 +1545,45 @@ def test_michi_c_without_junban_in_this_surasura_the_sync_hook_does_nothing(monk
         raise ImportError(name)
     monkeypatch.setattr(A.importlib, "import_module", missing)
     assert A.backlog_shows("ja", {"junban_deck": "Mining"}, "http://127.0.0.1:8765") is None
+
+
+# --- help cards, WP1: each automatic duty says why it started (its job's `cause`, the strip's *Why:* line) ---------- #
+def _causes(registry, kind):
+    return [v.cause.line if v.cause is not None else None for v in registry.snapshot() if v.kind == kind]
+
+
+def test_each_sync_trigger_names_itself_and_a_sync_you_asked_for_names_none(live, monkeypatch):
+    """What a wrong answer would cost: a *Why:* that says "Surasura opened" for the sync your language switch started,
+    or one on the sync your own click asked for (your press is its cause)."""
+    h.seed_library("ja")
+    _synced_once("ja")
+    _Anki(monkeypatch)
+    clock = _Clock(1000.0)
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False), clock=clock)
+    auto.activated()
+    _settle(auto, registry)
+    auto.language_changed("ja")
+    _settle(auto, registry)
+    auto.session_began(True)
+    _settle(auto, registry)
+    assert _asked(auto) == [None]
+    _settle(auto, registry)
+    assert _causes(registry, "anki-sync") == [A.WHY_BACK, A.WHY_LANGUAGE.format(language="Japanese"), A.WHY_SESSION,
+                                              None]
+    assert all(v.cause.card == "known" for v in registry.snapshot() if v.kind == "anki-sync" and v.cause)
+    auto.close()
+
+
+def test_the_reorder_after_a_generate_and_the_one_on_coming_back_name_different_causes(live, monkeypatch):
+    """順 (automatic): forced after a Generate that wrote the list says so; asked again on a focus, the focus."""
+    from types import SimpleNamespace
+    auto, registry, _c, _l = _make(_settings(anki_auto_generate=False))
+    asked = []
+    monkeypatch.setattr(auto.junban, "maybe", lambda force=False, cause=None: asked.append((force, cause)))
+    auto._ended(SimpleNamespace(language="ja", job=None), "current")
+    auto.activated()
+    assert auto.worker.idle(5)
+    after = [c for f, c in asked if f]
+    assert len(after) == 1 and after[0].line == A.WHY_JUNBAN_GENERATE and after[0].card == "junban"
+    assert any(not f and c is None for f, c in asked)          # a focus: `maybe`'s own default (WHY_BACK)
+    auto.close()

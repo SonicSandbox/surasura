@@ -475,7 +475,7 @@ def test_install_opens_anki_miners_releases_page_and_the_star_line_its_github_pa
     QTest.mouseClick(rows.miner.install, Qt.MouseButton.LeftButton)
     assert world.opened == [setup.RELEASES]
     QTest.mouseClick(rows.miner.star_line, Qt.MouseButton.LeftButton)
-    assert wait_until(lambda: world.opened[-1] == settings_values.STAR_URL, 5)
+    assert wait_until(lambda: world.opened and world.opened[-1] == settings_values.STAR_URL, 5)
     assert wait_until(settings_values.star_answered, 5), "a star click is kept as answered"
     assert store.calls == []
 
@@ -528,16 +528,26 @@ def test_ready_offers_the_star_until_not_now_which_is_kept_in_local_data_never_s
     QTest.mouseClick(card.not_now, Qt.MouseButton.LeftButton)
     assert not card.star_box.isVisibleTo(page) and card.star_link.isVisibleTo(page)
     path = settings_values.star_path()
-    assert wait_until(lambda: os.path.exists(path), 5)
+    kept = {}
+
+    def read():
+        # until it reads, not until it is there: on Windows a file `os.replace` just named can still refuse an open
+        # (PermissionError) while the rename's own handle closes (flakes-2026-11-05 #7)
+        try:
+            with open(path, encoding="utf-8") as f:
+                kept.update(json.load(f))
+            return True
+        except (OSError, ValueError):
+            return False
+    assert wait_until(read, 5)
     assert path.startswith(os.environ["SURASURA_TEST_ROOT"])
-    with open(path, encoding="utf-8") as f:
-        assert json.load(f)["answer"] == "not-now"
+    assert kept["answer"] == "not-now"
     assert store.calls == [] and "star" not in json.dumps(store.file)
     QTest.mouseClick(card.check_again, Qt.MouseButton.LeftButton)
     assert wait_until(lambda: not card.checking and len(world.checked) == 2, 5)
     assert not card.star_box.isVisibleTo(page) and card.star_link.isVisibleTo(page)
     QTest.mouseClick(card.open_miner, Qt.MouseButton.LeftButton)
-    assert wait_until(lambda: world.opened[-1] == MINER, 5)
+    assert wait_until(lambda: world.opened and world.opened[-1] == MINER, 5)   # (empty until the worker opens it)
 
 
 def test_browse_writes_only_the_programs_path_through_the_service_and_checks_again(world):

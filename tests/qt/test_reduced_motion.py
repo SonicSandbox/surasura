@@ -57,6 +57,8 @@ SITES = {
     "arrivals.py:ArrivalsInset._sink": "a cover's press sink",
     "arrivals.py:ArrivalsTray.start_drag": "the tray's picture fading as a drag leaves it",
     "confirm.py:Confirm.open": "a question's card",
+    "help_card.py:HelpCard._open": "a help card's opening (help cards)",
+    "help_card.py:ClipPlayer._sync": "a help card's clip: a loop on the clock, its poster and ▶ under Reduced",
     "drag.py:Parting.move_to": "the gap slide and the slot's glide",
     "drag.py:DragController._glide_home": "the ghost's glide home",
     "drag.py:DragController._glide_away": "the ghost's fade into a well",
@@ -79,11 +81,14 @@ SITES = {
     "toast.py:ToastHost.show": "a toast's rise",
     "wizard.py:Switch._slide": "the wizard's switch knob",
     "phase_strip.py:PhaseStrip._fade": "a phase circle's done tick fading back",
+    "sort_screen.py:LoadScreen.next_line": "setup's load screen: its gentle line fading out (Mado-O)",
+    "sort_screen.py:LoadScreen.next_line.<locals>.swap": "… and the next line fading in",
 }
 # "file:Class" -> each overlay (a `motion.Overlay` no other overlay builds on) opened at least once
 OVERLAYS = {
     "add_menu.py:PasteCard", "arrivals.py:ArrivalsTray", "confirm.py:Confirm", "duties.py:UpdateSheet",
-    "finished.py:WhatIfCard", "frame.py:LevelPop", "goal_sheet.py:GoalSheet", "search.py:Results",
+    "finished.py:WhatIfCard", "frame.py:LevelPop", "goal_sheet.py:GoalSheet", "help_card.py:HelpCard",
+    "search.py:Results",
     "settings_live.py:FormatPop", "settings_live.py:CreditsCard", "toast.py:ToastCard",
 }
 STARTS = ("animate", "spring", "open_overlay", "fall_into_place")
@@ -536,6 +541,23 @@ def test_sweep_the_wizards_switch_knob_jumps(sweep):
     switch.close()
 
 
+@drives("sort_screen.py:LoadScreen.next_line", "sort_screen.py:LoadScreen.next_line.<locals>.swap",
+        "motion.py:Spinner._sync")
+def test_sweep_the_load_screens_line_changes_within_fast_and_its_bird_is_still(sweep):
+    from app.qt import sort_screen
+    load = sort_screen.LoadScreen()
+    load.resize(800, 600)
+    sweep.on()
+    load.show()                                             # the bird's wingbeat asked: never on the clock
+    _settle()
+    first = load.line.text()
+    load.next_line()
+    sweep.still()
+    assert load.line.text() != first and load.line.level == 1.0
+    assert not load.mark.on_clock and load.mark.angle == 0.0
+    load.close()
+
+
 @drives("phase_strip.py:PhaseStrip._fade", "motion.py:Spinner._sync")
 def test_sweep_the_phase_strip_turns_no_arc_and_its_done_tick_fades_within_fast(sweep):
     from app.qt import phase_strip
@@ -791,3 +813,18 @@ def test_sweep_a_decisions_wash_is_steady_for_its_second_then_gone(sweep):
     QTest.qWait(theme.SETTINGS_MOTION["row-wash-steady"] + 200)
     assert sip.isdeleted(w) or not w.isVisible()
     stage.close()
+
+
+@drives("help_card.py:HelpCard._open", "help_card.py:HelpCard", "help_card.py:ClipPlayer._sync")
+def test_sweep_a_help_card_opens_in_place_and_its_clip_rests_on_its_poster_with_a_play_button(sweep, world):
+    # Help cards (§6.3): under Reduced the card opens in place (a fade within FAST) and a clip never loops on the
+    # clock — it rests on its poster with ▶; the press plays it once (the learner's own choice).
+    seed, win, writer = _reduced_window(sweep, world)
+    sweep.on()
+    card = win.open_help("current")
+    sweep.still()
+    assert card.isVisible() and motion.opening_of(card) is None
+    card.clip.set_clip("help-current.webp", None, JA)        # (no such file: never read under Reduced)
+    sweep.still()
+    assert card.clip.play.isVisibleTo(card) and sweep.clock.active == [] and card.clip.decoded == 0
+    card.close()

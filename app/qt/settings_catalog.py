@@ -6,14 +6,16 @@ says and hands every change on through `change()`; it decides nothing.
   out of the page and the nav.
 - **Rows** (`Row`): `keys` the settings a control writes (a top-level key, or a dotted `logic.` path); `reaches` the
   ones a door row's window holds (decks, fields, the deck pickers, Speech's tunables, Backfill's note types — reached
-  there, shown here, never written here: 🧭 call 3); `adv` under *More options*; `group` a group name above it; `sub`
-  indented under the row above; `when(settings, language, ctx)` whether it shows; `door` the opener names
-  (`app/qt/windows.OPENERS`) its buttons open; `target` the section a summary's *Change ›* goes to.
+  there, shown here, never written here: 🧭 call 3; a `PROGRAM_ROWS` row's program, its own picker's); `adv` under
+  *More options*; `group` a group name above it; `sub` indented under the row above; `when(settings, language, ctx)`
+  whether it shows; `door` the opener names (`app/qt/windows.OPENERS`) its buttons open; `target` the section a
+  summary's *Change ›* goes to.
 - **Kinds:** `toggle` (a bool key; with `options` one value of a list key, Q31) · `choice` (one of a few) · `cards`
   (choice cards, a line under each) · `tablets` (a list value's picks, each lit one ticked — never the vein a choice
   draws under its one, so no multi-pick reads as a pick-one: Q31; picks a word each says better are switches, a row
   each) · `list` (a list value: its items + the empty bed) · `slider` (the level) · `number` · `range` (two numbers) ·
-  `text` · `select` (a long one-of) · `door` · `status` · `summary` (Your setup) · `link` · `action` (an export, P11) ·
+  `text` · `select` (a long one-of) · `door` · `status` · `summary` (Your setup) · `link` · `links` (a block of its
+  own: its title, then a button per page in `options` across its width, a9.1) · `action` (an export, P11) ·
   `custom` (a row its own package draws: Connect's switch, the store lines, the placing rules, Anki Miner's card, the
   credits…).
 - `ctx`: a frozenset of the optional modules found (`installed_modules()`: "modules.junban", …), "koe_revealed" (the
@@ -31,10 +33,12 @@ says and hands every change on through `change()`; it decides nothing.
 """
 import copy
 import importlib.util
+import os
 import unicodedata
 from collections import namedtuple
 from collections.abc import Mapping
 
+from app import settings_manager
 from app.connect import settings_values
 from app.qt import settings_strings as S
 from app.services import tools_found
@@ -46,6 +50,7 @@ Row = namedtuple("Row",
 MODULES = ("modules.junban", "modules.koe", "modules.youtube_downloader")
 LANGUAGES = ("ja", "zh")
 PER_LANGUAGE = ("connect_backlog_cap", "connect_video_folders")
+SYNC_SUSPENDED = "anki_sync_include_suspended"      # a9.1: also written by *Count as known in Anki* (`_wanted`)
 
 SECTIONS = tuple(Section(id_, icon, S.SECTIONS[id_]) for id_, icon in (
     ("setup", "star"), ("known", "words"), ("anki", "anki"), ("junban", "order"), ("backfill", "fill"),
@@ -55,8 +60,8 @@ SECTIONS = tuple(Section(id_, icon, S.SECTIONS[id_]) for id_, icon in (
 # Doors no `OPENERS` entry held when this was written, and who brings each (the intent keeper's S8: none pending at
 # release — `pending(registered)` lists the ones still missing; an entry that has landed is harmless until tidied).
 PENDING_OPENERS = {
-    "apkg_known": "W3.4 row 2", "migaku": "W3.4 row 2", "jiten": "W3.4 row 2", "extract": "W3.4 row 2",
-    "anki": "W3.4 row 3", "youtube-downloader": "W3.4 row 4", "youtube-preview": "W3.4 row 4", "koe": "W3.4 row 4",
+    "apkg_known": "W3.4 row 2", "migaku": "W3.4 row 2", "jiten": "W3.4 row 2",
+    "anki": "W3.4 row 3", "youtube-preview": "W3.4 row 4", "koe": "W3.4 row 4",
     "backfill": "W3.4 row 5", "junban": "W3.4 row 6", "put-back": "W3.4 row 6",
 }
 
@@ -74,7 +79,7 @@ FILLED_BY = {
     "new_cards_a_day": _CONNECT_ROWS, "connect_enabled": _CONNECT_ROWS, "anki_miner": _CONNECT_ROWS,
     "placing_rules": _RULES,
     "library_folders": "app.qt.settings_sources",          # --- SRC W1b: the folders read where they are
-    "fresh_library": "app.qt.settings_sources",            # --- K7: *Start a fresh library…*
+    "fresh_library": "app.qt.settings_sources",            # --- K7: *Sort again or start over…*
     "mine_line": _STORE, "soon_line": _STORE, "set_up_again": _STORE,
     "settings_file": "app.qt.settings_io",                 # --- a6: *Export settings…* · *Import settings…*
     "keep_watched": _STORE,                     # --- W-1: the library's *Keep studying watched episodes*
@@ -170,6 +175,17 @@ def _connect_switch(settings, language, ctx):
     return tools_found.make_cards_shown(level, _CONNECT(settings, language, ctx))
 
 
+def _update_check(settings, language, ctx):
+    """*Update automatically* shows under *Check for updates* while it is on — the one rule the check obeys."""
+    return settings_manager.update_check_on(settings)
+
+
+def _signal(settings, language, ctx):
+    """Whether Known from Anki runs (`settings_manager.connect_on`, the one rule it obeys): *Count as known in Anki*
+    shows, and writes the sync's switch, only then (a9.1)."""
+    return settings_manager.connect_on(settings)
+
+
 def _needs_miner(settings, language, ctx):
     return "looked" in ctx and not _connect_switch(settings, language, ctx)
 
@@ -198,8 +214,14 @@ ROWS = (
     _row("anki_auto_generate", "known", "toggle", ("anki_auto_generate",), sub=True, when=_road("anki")),
     _row("known_import", "known", "door", sub=True, when=_road("import"), door=("migaku", "jiten", "apkg_known")),
     _row("words_to_leave_out", "known", "door", door=("word-lists",)),
+    # a9.1 (Sonic: "anything redundant we don't want"): one question, one row — the sync's switch while Known from
+    # Anki can't run, Connect's *Count as known in Anki* while it can (`_signal`: Make cards for me and Automation on;
+    # it reads every suspended card, new ones too); each key keeps its meaning — unpicking Suspended there turns the
+    # sync's off too (`_wanted`), and its line says when the sync's still counts more than it shows (`help_line`)
     _row("anki_sync_include_suspended", "known", "toggle", ("anki_sync_include_suspended",), adv=True,
-         group="counts_as_known"),
+         group="counts_as_known", when=lambda settings, language, ctx: not _signal(settings, language, ctx)),
+    _row("known_from_anki", "known", "tablets", ("known_from_anki",), adv=True,
+         group="counts_as_known", options=tuple(term for term, _label in settings_values.KNOWN), when=_signal),
 
     # Anki & mining
     _row("anki_connection", "anki", "status"),
@@ -212,9 +234,6 @@ ROWS = (
     _row("connect_send_grammar", "anki", "toggle", ("connect_send_grammar",), when=_CONNECT),
     _row("connect_open_anki", "anki", "choice", ("connect_open_anki",), options=(False, True), when=_CONNECT),
     _row("connect_backlog_cap", "anki", "number", ("connect_backlog_cap",), when=_CONNECT, bounds=(0, 5000)),
-    _row("known_from_anki", "anki", "tablets", ("known_from_anki",),
-         options=tuple(term for term, _label in settings_values.KNOWN), when=_CONNECT),
-    _row("connect_video_folders", "anki", "list", ("connect_video_folders",), when=_CONNECT),
     _row("connect_trust_timing", "anki", "toggle", ("connect_trust_timing",), when=_CONNECT),
     # Q29: *Your own cards* — first, or in the list's order — and, under it, the tag that marks them (it keeps them
     # from being suspended under either choice, so it is never greyed)
@@ -226,12 +245,15 @@ ROWS = (
     _row("journey_settle_s", "anki", "number", ("journey_settle_s",), adv=True, bounds=(0, None)),
     _row("journey_settle_battery_s", "anki", "number", ("journey_settle_battery_s",), adv=True, bounds=(0, None)),
     _row("connect_anki_miner_profile", "anki", "text", ("connect_anki_miner_profile",), adv=True, when=_CONNECT),
+    # a7 (DIAGNOSIS 5): the library's own folders are always searched, so a folder here is only an extra
+    _row("connect_video_folders", "anki", "list", ("connect_video_folders",), adv=True, when=_CONNECT),
     _row("anki_connect_url", "anki", "text", ("anki_connect_url",), adv=True),
 
     # Junban (with modules/junban; its rows follow the switch, Put Anki back stays: N3)
     _row("enable_junban", "junban", "toggle", ("enable_junban",), when=_JUNBAN),
+    # a9.1: Junban's window has one door, here (it held *Preview order* on a row of its own too)
     _row("junban_scope", "junban", "choice", ("junban_scope",), options=("deck", "all"), when=_JUNBAN_ON,
-         door=("junban",), reaches=("junban_deck",)),
+         door=("junban",), reaches=("junban_deck", "junban_word_fields")),
     _row("junban_order", "junban", "choice", ("junban_order",), options=("content", "priority"), when=_JUNBAN_ON),
     _row("junban_unlisted", "junban", "choice", ("junban_unlisted",), options=("list_first", "journey", "back"),
          when=_JUNBAN_ON),
@@ -243,7 +265,6 @@ ROWS = (
     _row("junban_later_suspend", "junban", "toggle", ("junban_later_suspend",), when=_JUNBAN_ON),
     _row("junban_auto_reorder", "junban", "toggle", ("junban_auto_reorder",), when=_JUNBAN_ON),
     _row("junban_auto_actions", "junban", "toggle", ("junban_auto_actions",), when=_JUNBAN_ON),
-    _row("junban_door", "junban", "door", when=_JUNBAN_ON, door=("junban",), reaches=("junban_word_fields",)),
     _row("put_back", "junban", "door", when=_JUNBAN, door=("put-back",)),
     _row("junban_write_frequency", "junban", "toggle", ("junban_write_frequency",), adv=True, when=_JUNBAN_ON),
     _row("junban_frequency_field", "junban", "text", ("junban_frequency_field",), adv=True, sub=True,
@@ -261,13 +282,12 @@ ROWS = (
          when=_JUNBAN_ON),
     _row("backfill_sentence", "backfill", "toggle", ("junban_backfill_fills",), options=("sentence",),
          when=_JUNBAN_ON),
+    # a9.1: Backfill's window has one door, here (it had three: the deck, Preview, the fields)
     _row("junban_backfill_cards", "backfill", "choice", ("junban_backfill_cards",), options=("all", "new"),
-         when=_JUNBAN_ON, door=("backfill",), reaches=("junban_backfill_deck",)),
+         when=_JUNBAN_ON, door=("backfill",),
+         reaches=("junban_backfill_deck", "junban_backfill_fields", "junban_backfill_note_languages")),
     _row("junban_backfill_replace", "backfill", "toggle", ("junban_backfill_replace",), when=_JUNBAN_ON),
     _row("junban_auto_backfill", "backfill", "toggle", ("junban_auto_backfill",), when=_JUNBAN_ON),
-    _row("backfill_door", "backfill", "door", when=_JUNBAN_ON, door=("backfill",)),
-    _row("backfill_fields", "backfill", "door", adv=True, when=_JUNBAN_ON, door=("backfill",),
-         reaches=("junban_backfill_fields", "junban_backfill_note_languages")),
 
     # Level (New words a day went to Anki & mining's *New cards a day*: G1.2-5)
     _row("level", "level", "slider", ("logic.selection.band", "logic.selection.auto")),
@@ -300,12 +320,20 @@ ROWS = (
     # SRC W1b: the store's sources, read where they are; row 32: a summary here, the folders in their own window
     _row("library_folders", "content", "custom", door=("library-folders",)),
     _row("fresh_library", "content", "custom"),                       # K7: the library set aside, the folders read again
+    # Sonic 2026-11-05 (the mock's rows): what ▶ opens a file with, what finishing does to its cards — each its name
+    # on one line, its choices under it (`STACKED`); the program kept beside the choice (`PROGRAM_ROWS`)
+    _row("open_video", "content", "choice", ("open_video",), options=("default", "program"),
+         reaches=("open_video_program",)),
+    _row("open_book", "content", "choice", ("open_book",), options=("default", "program"),
+         reaches=("open_book_program",)),
+    _row("finish_cards", "content", "choice", ("finish_cards",), options=settings_manager.FINISH_CARDS),
     _row("split_books_by", "content", "choice", ("split_books_by",), options=("chapters", "even")),
     _row("split_length", "content", "number", ("split_length",), bounds=(1, None)),
     _row("use_every_core", "content", "toggle", ("use_every_core",), adv=True),      # K5 C4: big first reads
     _row("enable_youtube_transcripts", "content", "toggle", ("enable_youtube_transcripts",), when=_YOUTUBE),
-    _row("enable_youtube_preview", "content", "toggle", ("enable_youtube_preview",), when=_YOUTUBE),
-    _row("content_doors", "content", "door", door=("extract", "youtube-downloader", "youtube-preview")),
+    # a9.1: *Add from* went (Extract… and YouTube… are in + Add); *Preview a video…* sits on its switch, shown while on
+    _row("enable_youtube_preview", "content", "toggle", ("enable_youtube_preview",), when=_YOUTUBE,
+         door=("youtube-preview",)),
 
     # New arrivals: one line per source, merged per key with the defaults (D30, RD-S16; a default's Wait is kept)
     _row("placing_rules", "arrivals", "custom", ("placing_rules",),
@@ -359,15 +387,25 @@ ROWS = (
     # App (no theme picker: one theme in 3.0, RS-1)
     _row("text_size", "app", "choice", ("text_size",), options=("S", "M", "L")),
     _row("app_motion", "app", "choice", ("app_motion",), options=("follow", "full", "reduced")),
-    _row("auto_update_enabled", "app", "toggle", ("auto_update_enabled",)),
+    _row("update_check_enabled", "app", "toggle", ("update_check_enabled",)),
+    _row("auto_update_enabled", "app", "toggle", ("auto_update_enabled",), sub=True, when=_update_check),
     _row("telemetry_enabled", "app", "toggle", ("telemetry_enabled",)),
-    _row("logs", "app", "custom"),
+    _row("version", "app", "custom"),                            # a9.1: the version, *Copy*
+    _row("logs", "app", "custom"),                               # a9.1: *Data folder* · *Logs*, the one way to both
     _row("data_credits", "app", "custom"),
-    _row("version", "app", "custom"),
     _row("settings_file", "app", "custom"),                      # a6: export / import, `settings_io`
     _row("set_up_again", "app", "custom"),                       # S10: the wizard (W3.5 part 3), `settings_store`
+    # a9.1 (Sonic: "a button for each that launches"): a block of its own, three buttons evenly across — the server's
+    # invite, surasura.dev, the star ask's GitHub (never prompted), each in the browser (*Start over completely* went:
+    # Content's *Sort again or start over…* offers it)
+    _row("surasura", "app", "links", options=("github", "discord", "website")),
 )
 ROW = {row.id: row for row in ROWS}
+# A row that stands stacked always (Sonic 2026-11-05: "One for the term and then a row or 2 for the buttons")
+STACKED = ("open_video", "open_book", "finish_cards")
+# A choice row whose "program" choice opens a program kept in another key: row id -> that key (its path; the page's
+# picker writes it, *Change…* picks again)
+PROGRAM_ROWS = {"open_video": "open_video_program", "open_book": "open_book_program"}
 
 # Every setting no row shows, and why (the test holds it to PLACED).
 NOT_SHOWN = {
@@ -376,6 +414,7 @@ NOT_SHOWN = {
     "setup_seen": "state: the version whose setup pages were seen (the wizard, WZ-8)",
     "setup_passed": "state: the setup pages saved before setup finished (the wizard)",
     "hints_seen": "state: the one-time hints shown, each per library (W-1's first watched mark)",
+    "subs_with_hato": "the learner's one yes in Needs you (*Find them with hato*, NS-2; hato's card: 3.0.1's next step)",
     "open_count": "state: a launch counter",
     "skipped_version": "state: its way back is App's *Offer <version> again*",
     "youtube_risk_acknowledged": "the downloader's own one-time ask",
@@ -469,6 +508,28 @@ def _one(settings, key, language):
     return found
 
 
+def help_line(row, settings, language):
+    """The line under `row`'s label now: its help, except *Count as known in Anki* with two states or more picked —
+    then it names them, all at once (a7, DIAGNOSIS 3: an "and" that catches almost nothing is never silent) — and, while
+    the sync's own *Count suspended cards as known* (not on screen with it, a9.1) counts more than the picks, it says so
+    (set there before, or in the Anki window)."""
+    if row.id == "known_from_anki":
+        held = set(value(row, settings, language) or ())
+        picked = [t for t in row.options if t in held]                  # in the setting's order (`known_value`)
+        names = S.OPTIONS[row.id]
+        flags = [t for t in picked if t.startswith("flag:")]
+        line = None
+        if len(flags) > 1:                              # a card holds one flag: never two at once (A7S-7)
+            line = S.KNOWN_FLAGS.format(flags=" + ".join(names.get(t, t) for t in flags))
+        elif len(picked) > 1:
+            line = S.KNOWN_ALL_OF.format(states=" + ".join(names.get(t, t) for t in picked))
+        if _one(settings, SYNC_SUSPENDED, language) is True and picked != ["suspended"]:
+            line = f"{line}. {S.KNOWN_SYNC_TOO}" if line else S.KNOWN_SYNC_TOO
+        if line:
+            return line
+    return row.help
+
+
 def value(row, settings, language):
     """What `row`'s control shows: one key's value; several keys as {key: value}; a door its window's value for this
     language where it shows one (the decks); the road its side; None for a row that holds no setting."""
@@ -496,7 +557,32 @@ def options(row, settings, language):
     if row.id == "anki_sync_delay_min":
         return tuple((v, label, "") for label, v in settings_values.sync_choices(value_of(settings, row.keys[0])))
     labels, lines = S.OPTIONS.get(row.id, {}), S.OPTION_LINES.get(row.id, {})
+    if row.id in PROGRAM_ROWS:
+        labels = dict(labels, program=program_label(row, settings)[0])
     return tuple((v, labels.get(v, str(v)), lines.get(v, "")) for v in (row.options or ()))
+
+
+def program(row, settings):
+    """The program a `PROGRAM_ROWS` row keeps (its path, stripped), or "" — none chosen (or a hand-edited non-text)."""
+    found = value_of(settings, PROGRAM_ROWS[row.id])
+    return found.strip() if isinstance(found, str) else ""
+
+
+def program_label(row, settings):
+    """(label, tip) of a `PROGRAM_ROWS` row's "program" choice: the program's name (its file's, without .exe) and its
+    path once one is chosen; before, *Choose a program…* and its own tip."""
+    path = program(row, settings)
+    if not path:
+        return S.OPTIONS[row.id]["program"], S.OPTION_TIPS[row.id]["program"]
+    return os.path.splitext(os.path.basename(path.replace("\\", "/")))[0] or path, path
+
+
+def option_tips(row, settings):
+    """{value: tip} of a choice's options: the strings table's, a program row's chosen program its path."""
+    tips = dict(S.OPTION_TIPS.get(row.id, {}))
+    if row.id in PROGRAM_ROWS:
+        tips["program"] = program_label(row, settings)[1]
+    return tips
 
 
 def rows(section_id):
@@ -564,14 +650,16 @@ def _fold(text):
 
 
 def find(query, settings, language, ctx=frozenset()):
-    """The ids of the visible rows whose label, help, search words or choice labels hold `query` (NFKC, case-folded);
-    an empty query: every visible row."""
+    """The ids of the visible rows whose label, help, search words, choice labels or door labels hold `query` (NFKC,
+    case-folded); an empty query: every visible row."""
     q = _fold(query).strip()
     found = []
     for row in ROWS:
         if not visible(row, settings, language, ctx):
             continue
         labels = [label for _v, label, _l in options(row, settings, language)]
+        # a9.1: a door's own words find its row too (one opener per window: *Preview a video…* is on its switch)
+        labels += [(S.ROW_DOORS.get(row.id, {}).get(name) or S.DOORS.get(name, ("",)))[0] for name in row.door]
         text = " ".join([row.label, row.help, row.words] + labels)
         if not q or q in _fold(text):
             found.append(row.id)
@@ -633,7 +721,11 @@ def change(row, settings, language, new):
     current = value(row, settings, language)
     if len(row.keys) == 1:
         current = {row.keys[0]: current}
-    return {key: v for key, v in wanted.items() if key in row.keys and current.get(key) != v}, None
+    rides = row.id == "known_from_anki" and _signal(settings, language, None)
+    if rides:                                   # a9.1: the sync's switch rides along (`_wanted`), never shown here
+        current[SYNC_SUSPENDED] = bool(_one(settings, SYNC_SUSPENDED, language))
+    keys = set(row.keys) | ({SYNC_SUSPENDED} if rides else set())
+    return {key: v for key, v in wanted.items() if key in keys and current.get(key) != v}, None
 
 
 def _member(row):
@@ -670,11 +762,15 @@ def _wanted(row, settings, language, new):
         picked = new if isinstance(new, Mapping) else {key: key in set(new) for key in keys}
         return {key: bool(v) for key, v in picked.items()}
     key = keys[0]
+    if row.id == "known_from_anki":
+        # a9.1: one row for both answers — the picks are Connect's; the sync's switch (studied cards, then suspended)
+        # stays on only while Suspended alone is picked, so a card is never counted on an answer the row no longer
+        # shows (it is never turned on from here: that is its own row's, with Make cards for me off)
+        picked = settings_values.known_value(set(new or ()))
+        held = bool(_one(settings, SYNC_SUSPENDED, language))
+        return {key: picked, SYNC_SUSPENDED: held and picked == ["suspended"]}
     if row.kind == "tablets":
-        picked = set(new or ())
-        if key == "known_from_anki":
-            return {key: settings_values.known_value(picked)}
-        return {key: [v for v in row.options if v in picked]}
+        return {key: [v for v in row.options if v in set(new or ())]}
     if row.id == "placing_rules":
         from app import settings_manager
         rules = _one(settings, key, language)       # merged per key; a hand-edited non-dict: the defaults

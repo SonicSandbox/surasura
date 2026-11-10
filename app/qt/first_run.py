@@ -12,26 +12,80 @@ its close asks again. `open_again(shell, page="cards")`: Settings' *Install Anki
 page (the one place the install route, its confirm and its checks live).
 """
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QObject, Qt
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt
 
 from app.qt import applog
 from app.qt import wizard as wizard_module
 
 ATTR = "_setup_wizard"                                  # the open wizard, on its main window
+OWN_MINIMUM, COVER_NEEDS = "_own_minimum", "_cover_needs"     # on the main window: its own minimum; each cover's need
 
 
 class _Cover(QObject):
-    """Keeps the wizard over the whole central area as the window is resized."""
+    """Keeps the wizard (or any cover: the sort screen, a load screen) over the whole central area as the window is
+    resized — and the window's minimum size one where the cover fits (Mado-P, Sonic's alpha 9 try: "Text is cut off if
+    my screen isn't fully expanded"). A cover is placed by its geometry, outside the window's layouts, so the window
+    never learnt the room it needs and let itself be made smaller: buttons narrower than their words, a title's
+    second line cut. While the cover is shown, the window's minimum is its own (`theme.WINDOW_MIN`) grown to the
+    cover's minimum size hint plus the window's parts round the central area — never past the screen's room — asked
+    again as the cover's layout changes; the window's own minimum comes back when the cover hides or goes."""
 
     def __init__(self, wiz, area):
         super().__init__(wiz)
         self.wiz, self.area = wiz, area
+        self.win = area.window()
+        self.win.__dict__.setdefault(OWN_MINIMUM, self.win.minimumSize())
         area.installEventFilter(self)
+        wiz.installEventFilter(self)
+        key, win = id(self), self.win
+        wiz.destroyed.connect(lambda *_a: _needs(win, key, None))
+        self._ask()
 
     def eventFilter(self, obj, event):
-        if obj is self.area and event.type() == QEvent.Type.Resize and not sip.isdeleted(self.wiz):
+        kind = event.type()
+        if obj is self.area and kind == QEvent.Type.Resize and not sip.isdeleted(self.wiz):
             self.wiz.setGeometry(self.area.rect())
+            self._ask()                                  # (its words wrap again at the new width: their height)
+        if obj is self.wiz and kind in (QEvent.Type.LayoutRequest, QEvent.Type.Show):
+            self._ask()
+        elif obj is self.wiz and kind == QEvent.Type.Hide and not event.spontaneous():
+            _needs(self.win, id(self), None)
         return False
+
+    def _ask(self):
+        if sip.isdeleted(self.wiz) or sip.isdeleted(self.win) or self.wiz.isHidden():
+            return
+        need = self.wiz.minimumSizeHint().expandedTo(self.wiz.minimumSize())
+        if self.wiz.hasHeightForWidth():                  # wrapped words take their lines at the width it has
+            need.setHeight(max(need.height(), self.wiz.heightForWidth(max(need.width(), self.area.width()))))
+        around = self.win.size() - self.area.size() if self.area.isVisible() else QSize(0, 0)
+        room = _room(self.win)
+        _needs(self.win, id(self), need + around if room is None else (need + around).boundedTo(room))
+
+
+def _room(win):
+    """The most a window's inside can be on its screen (its frame taken off), or None: no window may need more (one
+    bigger than its screen can't be used)."""
+    screen = win.screen()
+    if screen is None:
+        return None
+    return screen.availableGeometry().size() - (win.frameGeometry().size() - win.size())
+
+
+def _needs(win, key, need):
+    """Cover `key` needs `need` (None: nothing any more): the window's minimum is its own grown to every need."""
+    if sip.isdeleted(win):
+        return
+    needs = win.__dict__.setdefault(COVER_NEEDS, {})
+    if need is None:
+        needs.pop(key, None)
+    else:
+        needs[key] = need
+    want = win.__dict__.get(OWN_MINIMUM, win.minimumSize())
+    for size in needs.values():
+        want = want.expandedTo(size)
+    if want != win.minimumSize():
+        win.setMinimumSize(want)
 
 
 def opened(shell):
@@ -53,13 +107,16 @@ def host(shell, api=None, miner=None):
         return None
 
 
-def open_again(shell, api=None, miner=None, page=None):
+def open_again(shell, api=None, miner=None, page=None, resort=None):
     """Settings' *Set up again*: the wizard, preselected from the settings now (finished or not); `page` (a page id,
     `wizard.PAGES`) shown first. -> the wizard, or None (never raises into Settings' click: a wizard that can't open
-    leaves the window as it is, and says why in the log)."""
+    leaves the window as it is, and says why in the log). `resort(changes)` (Fresh library's *Change folders…*): the
+    folders page alone, its *Next* handing back {"add", "stop", "skip"} — it never reads a folder itself (P11)."""
     try:
         back = shell.current_tab() if hasattr(shell, "current_tab") else "current"
-        wiz = _open(shell, api, miner, back=back)
+        wiz = _open(shell, api, miner, back=back, resort=resort)
+        if resort is not None:
+            return wiz
     except Exception as e:
         applog.log("wizard", f"the setup wizard didn't open again: {e}")
         return None
@@ -71,17 +128,17 @@ def open_again(shell, api=None, miner=None, page=None):
     return wiz
 
 
-def _open(shell, api, miner, back="current"):
+def _open(shell, api, miner, back="current", resort=None):
     wiz = opened(shell)
     if wiz is not None:
         wiz.raise_()
-        return wiz
+        return wiz if resort is None else None            # (setup up: *Change folders…* waits for it)
     area = shell.centralWidget()
     held = _hold(area)
     _say_held(shell, True)
     wiz = None
     try:
-        wiz = wizard_module.SetupWizard(shell, parent=area, api=api, miner=miner)
+        wiz = wizard_module.SetupWizard(shell, parent=area, api=api, miner=miner, resort=resort)
         wiz.setGeometry(area.rect())
         _Cover(wiz, area)
         wiz.finished.connect(lambda how, w=wiz: _closed(shell, w, held, how, back))

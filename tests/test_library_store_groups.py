@@ -690,6 +690,24 @@ def test_G1_a_group_across_the_soon_line_stays_one_group_however_the_line_moves(
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
+def test_G1_a_title_sent_to_soon_lands_after_a_group_the_line_runs_through_never_inside_it(language):
+    """Alpha 9 #JNFJ8Q: Soon's top past the line is after the Soon rows of a group the line cuts (the view's one row),
+    so the sort screen's Soon never puts a title inside the group. A plain run of the group's last show starting Soon
+    right after it is another row: the title goes before it."""
+    store = _three(language)
+    (p2, m2), (pl, ml) = _runs(store, "now")[-2:]
+    store.join([p2, pl], how="group")
+    store.move([store.ids("goal")[-1]], "now", before_id=store.ids("now")[0])
+    assert store.item(ml[-1])["tier"] == "soon", "the line runs through the group"
+    sent = store.ids("goal")[0]
+    store.place([sent], "soon")
+    soon = store.ids("soon")
+    assert soon.index(sent) == soon.index(ml[-1]) + 1
+    assert {_piece(store, i) for i in m2 + ml} == {p2} and pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
 def test_G1_an_episode_dragged_from_a_group_at_nows_end_to_the_top_of_soon_stays_in_it(language):
     """Beside its group across the line is within the group: a reorder, never a foreign drop."""
     store = _three(language)
@@ -697,6 +715,26 @@ def test_G1_an_episode_dragged_from_a_group_at_nows_end_to_the_top_of_soon_stays
     store.join([p2, pl], how="group")
     store.move([m2[0]], "soon", before_id=store.ids("soon")[0])
     assert _piece(store, m2[0]) == p2 and _kind(store, p2) == "group" and pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_two_episodes_dragged_out_of_a_group_together_leave_it_though_they_land_side_by_side(language):
+    """A row leaving its piece has no piece until it takes its new one (R6: the store never writes that blank, the
+    reads in between see it): two of a group's episodes dropped together in another tier sit beside each other — each
+    other's neighbour is no row of the group, so they leave it (their own title's part there), and the group stays."""
+    store = _three(language)
+    (pa, ma), (pb, mb) = [r for r in _runs(store, "goal") if len(r[1]) == 4][:2]
+    store.join([pa, pb], how="group")
+    assert _kind(store, pa) == "group" and _members(store, pa) == ma + mb
+    store.move(mb[1:3], "soon", before_id=store.ids("soon")[0])
+    moved = {_piece(store, i) for i in mb[1:3]}
+    assert pa not in moved and len(moved) == 1, "out of the group, one part of their own title"
+    work = store.conn.execute("SELECT w.title FROM items i JOIN works w ON w.id = i.work_id WHERE i.id = ?",
+                              (mb[1],)).fetchone()[0]
+    assert _title(store, moved.pop()) == work and _kind(store, _piece(store, mb[1])) == "run",         "a part of its own title, named by it — never a piece cut from the group (unnamed)"
+    assert _members(store, pa) == ma + [mb[0], mb[3]] and _kind(store, pa) == "group"
+    assert pieces_ok(store) is None
     store.close()
 
 

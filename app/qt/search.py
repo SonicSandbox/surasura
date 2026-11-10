@@ -29,7 +29,7 @@ from PyQt6.QtGui import QKeySequence, QLinearGradient, QPainter, QPainterPath, Q
 from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QLabel, QLineEdit, QScrollArea, QSizePolicy,
                              QToolButton, QVBoxLayout, QWidget)
 
-from app import theme
+from app import scrub, theme
 from app.qt import bridge, motion, rows, shadow, strings, style
 
 DEBOUNCE_MS = 120                       # A2 #85: the query asked this long after the last keystroke
@@ -180,10 +180,11 @@ class HitRow(QWidget):
         title_font, sub_font = rows.TEXT.font("row-title"), rows.TEXT.font("row-sub")
         tm, sm = rows.TEXT.metrics("row-title"), rows.TEXT.metrics("row-sub")
         base = mid - 2 * f
-        title = tm.elidedText(self.hit.title, Qt.TextElideMode.ElideRight, int(width))
+        whole = scrub.shown(self.hit.title)                # (a picture being taken: scrubbed, never half a name)
+        title = tm.elidedText(whole, Qt.TextElideMode.ElideRight, int(width))
         p.setFont(title_font)
         at = x
-        for text, lit in split_lit(title, self.hit.spans):
+        for text, lit in split_lit(title, self.hit.spans if whole == self.hit.title else ()):
             p.setPen(style.qcolor(cs["accent" if lit else "ink"]))
             p.drawText(QPointF(at, base), text)
             if lit:
@@ -193,7 +194,7 @@ class HitRow(QWidget):
         p.setFont(sub_font)
         p.setPen(style.qcolor(cs["overlay-ink-dim"]))
         p.drawText(QPointF(x, base + sm.ascent() + 3 * f),
-                   sm.elidedText(self.hit.where, Qt.TextElideMode.ElideRight, int(width)))
+                   sm.elidedText(scrub.shown(self.hit.where), Qt.TextElideMode.ElideRight, int(width)))
         p.end()
 
 
@@ -261,6 +262,8 @@ class Results(motion.Overlay):
         self.scroll.setWidget(self.body)
         box.addWidget(self.scroll)
         self.hits = []                                   # the HitRows shown, in order
+        self._kept = {}                                  # (a fill) what the last one showed, to take back
+        self._made_f = None                              # the text size the rows shown were made at
         self.query = None
         self.groups = ()
         self.fills = 0                                   # times refilled (tests: a keystroke refills, never re-opens)
@@ -277,24 +280,25 @@ class Results(motion.Overlay):
         self.query, self.groups = query, tuple(groups or ())
         self.fills += 1
         self.setAccessibleName(strings.SEARCH_RESULTS_NAME.format(query=query))
+        # R5 (WC C2): the rows already made are kept and taken back — a hit's row by its hit, a line by its words —
+        # and only what this fill shows anew is made; what it no longer shows goes. A row's height and margins are
+        # its text size's (`_f`, set as it is made): after a text-size change every row is made anew.
+        f = _f()
+        same_size, self._made_f = f == self._made_f, f
+        self._kept = {}
         while self.lines.count():
-            item = self.lines.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-        self.hits, self.picked = [], -1
-        if not self.groups:
-            self._label("searchnone", strings.SEARCH_NONE.format(query=query.strip()))
-        for g in self.groups:
-            self._label("searchgroup", g.label.upper())
-            for hit in g.hits:
-                row = HitRow(hit, self.body)
-                row.clicked.connect(self.cut.reveal)
-                row.play.connect(self.cut.play)
-                row.top.connect(self.cut.top)
-                self.lines.addWidget(row)
-                self.hits.append(row)
-            if g.total > len(g.hits):
-                self._label("searchmore", strings.SEARCH_MORE.format(n=g.total - len(g.hits)))
+            w = self.lines.takeAt(0).widget()
+            if w is not None:
+                self._kept.setdefault((w.hit if isinstance(w, HitRow) else (w.objectName(), w.text()))
+                                      if same_size else object(), []).append(w)
+        try:
+            self._fill()
+        finally:
+            for gone in self._kept.values():
+                for w in gone:
+                    w.hide()
+                    w.deleteLater()
+            self._kept = {}
         self.place()
         if not self.isVisible() and motion.opening_of(self) is None:
             self.opens += 1
@@ -302,7 +306,38 @@ class Results(motion.Overlay):
         else:
             self.raise_()
 
+    def _fill(self):
+        """(`show_groups`) The lines for `self.groups`, each taken back from the last fill or made."""
+        query = self.query
+        for row in self.hits:
+            row.set_current(False)
+        self.hits, self.picked = [], -1
+        if not self.groups:
+            self._label("searchnone", strings.SEARCH_NONE.format(query=query.strip()))
+        for g in self.groups:
+            self._label("searchgroup", g.label.upper())
+            for hit in g.hits:
+                row = self._take(hit)
+                if row is None:
+                    row = HitRow(hit, self.body)
+                    row.clicked.connect(self.cut.reveal)
+                    row.play.connect(self.cut.play)
+                    row.top.connect(self.cut.top)
+                self.lines.addWidget(row)
+                self.hits.append(row)
+            if g.total > len(g.hits):
+                self._label("searchmore", strings.SEARCH_MORE.format(n=g.total - len(g.hits)))
+
+    def _take(self, key):
+        """A widget the last fill showed for `key` (a hit, or a line's (name, words)), taken back; else None."""
+        same = self._kept.get(key)
+        return same.pop(0) if same else None
+
     def _label(self, name, text):
+        label = self._take((name, text))
+        if label is not None:
+            self.lines.addWidget(label)
+            return label
         f = _f()
         label = QLabel(text, self.body)
         label.setObjectName(name)
@@ -584,8 +619,7 @@ class SearchCut(QWidget):
         if self.results is not None:
             self.results.hide()
         if hit.group in ("current", "finished"):
-            self.shell.show_tab(hit.group)
-            QTimer.singleShot(0, lambda: self._scroll_to(hit.group, hit.key))
+            self.show_row(hit.group, hit.key)
             return
         if hit.group == "arrivals":
             show = getattr(self.shell, "show_arrival", None)            # Q1's tray, opened at it
@@ -602,6 +636,11 @@ class SearchCut(QWidget):
         dock = getattr(self.shell, "dock", None)
         if dock is not None and dock.isVisible():
             self._wash(dock.parentWidget(), lambda: dock.geometry() if _alive(dock) else None)
+
+    def show_row(self, group, key):
+        """The row `key` of Current or Finished shown in place and washed: a hit's click, a phase circle's *Show*."""
+        self.shell.show_tab(group)
+        QTimer.singleShot(0, lambda: self._scroll_to(group, key))
 
     def _wash(self, parent, rect_of):
         self.washed_at = rect_of()                       # where the last wash went (tests: its fade may be over)

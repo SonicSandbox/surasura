@@ -19,9 +19,9 @@ functions at the top, Qt-free); the GUI thread only paints the answer, and repai
   quit's way and the same program starts again on this tab (the shell's `restart`), *Later* says *Restart to apply*
   (`LIVE_TEXT_SIZE` on: the shell's `set_text_size` or `set_look` — it saves — then `page.restyle()`). *Motion* saved
   by the page and set on the motion clock at once.
-  *Offer {version} again* beside *Update automatically* while `updates.skipped()` names a newer version. *Processing
-  log* and *Data folder* open their folders; **Data credits** opens a layer-3 card (Esc, the mouse's Back, a click
-  outside or *Done* close it; never modal: N6) with `credits.data_credits()` in read-only text, README's names it lacks
+  *Offer {version} again* beside *Update automatically* while `updates.skipped()` names a newer version. *Folders*'
+  *Data folder* and *Logs* open theirs; *Version*'s *Copy* puts the version on the clipboard (a9.1); **Data
+  credits** opens a layer-3 card (Esc, the mouse's Back, a click outside or *Done* close it; never modal: N6) with `credits.data_credits()` in read-only text, README's names it lacks
   (S11), and the licence line; the licence line also stands under the row (none → nothing).
 - **Export:** each row asks what `exports.NEEDS` names — the format in a small layer-2 pop under its button, 2.4's
   warning through `confirm.ask`, the file with `QFileDialog` — then runs on a worker; the bar says the outcome in
@@ -37,8 +37,8 @@ from PyQt6.QtCore import QObject, QPoint, QRectF, Qt
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout
 
-from app import settings_manager, theme
-from app.qt import applog, bridge, confirm, motion, shadow, strings, style, windows
+from app import ankiconnect_addon, settings_manager, theme
+from app.qt import addon_steps, applog, bridge, confirm, motion, shadow, strings, style, windows
 from app.qt import press as qpress
 from app.qt import settings_catalog as catalog
 from app.qt import settings_controls as sc
@@ -111,9 +111,10 @@ def read_level(settings, language):
 
 
 def probe_anki(settings):
-    """*Check*: AnkiConnect asked once at the one address every Anki caller reads (loopback only) -> `probe`'s dict."""
+    """*Check*: AnkiConnect asked once at the one address every Anki caller reads (loopback only) -> `probe`'s dict;
+    when nothing answered, its `running` too (an Anki process seen: AnkiConnect may be missing — the wizard's look)."""
     from app import anki_connect
-    return anki_connect.probe(anki_connect.address(settings_service.thaw(settings)), timeout=PROBE_TIMEOUT)
+    return ankiconnect_addon.look(anki_connect.address(settings_service.thaw(settings)), timeout=PROBE_TIMEOUT)
 
 
 def read_hato():
@@ -148,6 +149,11 @@ def read_credits():
     return text, missing, credits.licence_line()
 
 
+def _version():
+    from app import __version__
+    return __version__
+
+
 def logs_folder():
     from app.connect import status
     return status.logs_folder()
@@ -167,8 +173,14 @@ def ready_to_export(export):
     return exports.ready(export)
 
 
-def run_export(export, language, fmt, dest):
+def run_export(export, language, fmt, dest, services=None):
+    """(A worker.) One export; `services` (the window's): a journey being brought in — moves only, or a background
+    Generate on its way (Sonic 2026-11-06, A) — is waited for first (`Services.journey_for_reading`), so the file holds
+    the lists of the order as it stands."""
     from app import exports
+    wait = getattr(services, "journey_for_reading", None)
+    if wait is not None:
+        wait("export")
     if export == "sentence_list":
         return exports.sentence_list(language, dest)
     return getattr(exports, export)(language, fmt, dest)
@@ -184,6 +196,8 @@ def connection(report=None, sync=None):
             return False, "busy"
         if report.get("version") is not None:
             return False, "denied"                       # Anki answered, and kept Surasura out
+        if ankiconnect_addon.needs_addon(report):        # the wizard's rule: an Anki seen (or can't tell), no answer
+            return False, "unsure" if report.get("running") is None else "no_addon"
         return False, "closed"
     return {"synced": (True, "connected"), "anki-closed": (False, "closed"), "failed": (False, "failed"),
             "syncing": (False, "syncing")}.get(sync, (False, "unknown"))
@@ -560,7 +574,16 @@ class Live(QObject):
             slot = self._slot(row_id).layout()
             slot.addWidget(mark)
             slot.addWidget(check)
-            self.parts[row_id] = {"mark": mark, "check": check}
+            # AnkiConnect may be missing: *Copy code* + the three steps under the row's help (the wizard's same part),
+            # and *Check* by itself once Anki answers (the shell's poll; armed by `_paint_anki`)
+            view = self.page.row(row_id)
+            steps = addon_steps.AddonSteps(lambda text, tip: sc.Door(text, tooltip=tip), "settingshelp",
+                                           lambda text: self.say(text, row_id), view, url=self._anki_url,
+                                           checked=self.check, timer=addon_steps.ticker(self.shell))
+            (view.words if view.words is not None else view.layout()).addWidget(steps)    # under the row's help
+            watch = addon_steps.Watch(view, addon_steps.ticker(self.shell), self._anki_url, self.check)
+            self.parts[row_id] = {"mark": mark, "check": check, "steps": steps, "watch": watch}
+            self._paint_anki()
         elif row_id == "connect_needs_miner":           # row 13: Anki Miner not found — the way to its card
             door = sc.Door(S.SET_UP_MINER, tooltip=S.SET_UP_MINER_TIP, name=f"{row.label}: {S.SET_UP_MINER}")
             door.clicked.connect(lambda _c=False: self.page.reveal("anki_miner"))
@@ -580,6 +603,14 @@ class Live(QObject):
             self.parts[row_id] = {"hint": hint}
         elif row_id == "level":
             self._paint_level(keep=False)
+        elif row_id == "automation":                    # help cards (§6.6): the tour's door, under the row's words
+            tour = sc.Door(S.HELP_TOUR_DOOR, tooltip=S.HELP_TOUR_DOOR_TIP, name=S.HELP_TOUR_DOOR)
+            tour.clicked.connect(lambda _c=False: self.open_tour())
+            line = QHBoxLayout()
+            line.addWidget(tour)
+            line.addStretch(1)
+            self.page.row(row_id).layout().itemAt(0).layout().addLayout(line)
+            self.parts[row_id] = {"tour": tour}
         elif row_id == "auto_update_enabled":
             offer = sc.Door(S.OFFER_AGAIN_NAME, tooltip=S.OFFER_AGAIN_TIP)
             offer.clicked.connect(lambda _c=False: self.offer_again())
@@ -587,16 +618,19 @@ class Live(QObject):
             self._slot(row_id).layout().insertWidget(0, offer)
             self.parts[row_id] = {"offer": offer}
             self._paint_offer(self.facts.get("skipped", ""))
-        elif row_id == "logs":
-            door = qpress.room(sc.Door(S.LOGS_OPEN, tooltip=row.tip, name=row.label))
-            door.clicked.connect(lambda _c=False: self.open_logs())
+        elif row_id == "logs":                          # a9.1: *Data folder* · *Logs*, the one way to either
+            data = qpress.room(sc.Door(S.DATA_FOLDER, tooltip=S.DATA_FOLDER_TIP, name=S.DATA_FOLDER))
+            data.clicked.connect(lambda _c=False: self.open_data_folder())
+            logs = qpress.room(sc.Door(S.LOGS_OPEN, tooltip=S.LOGS_OPEN_TIP, name=S.LOGS_OPEN))
+            logs.clicked.connect(lambda _c=False: self.open_logs())
+            self._slot(row_id).layout().addWidget(data)
+            self._slot(row_id).layout().addWidget(logs)
+            self.parts[row_id] = {"data": data, "open": logs}
+        elif row_id == "version":                       # a9.1: the version, copied (the data folder went to *Folders*)
+            door = sc.Door(S.VERSION_COPY, tooltip=row.tip, name=f"{S.VERSION_COPY}: {_version()}")
+            door.clicked.connect(lambda _c=False: self.copy_version())
             self._slot(row_id).layout().addWidget(door)
-            self.parts[row_id] = {"open": door}
-        elif row_id == "version":
-            door = qpress.room(sc.Door(S.DATA_FOLDER, tooltip=S.DATA_FOLDER_TIP))
-            door.clicked.connect(lambda _c=False: self.open_data_folder())
-            self._slot(row_id).layout().addWidget(door)
-            self.parts[row_id] = {"open": door}
+            self.parts[row_id] = {"copy": door}
         elif row_id == "data_credits":
             door = qpress.room(sc.Door(S.CREDITS_VIEW, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.open_credits())
@@ -625,6 +659,28 @@ class Live(QObject):
                 slot.addWidget(door)
                 copies[app] = door
             self.parts[row_id] = copies
+            # A7: under the row's help, *Copy a starter message*; what leaves and how to start a round behind its ?
+            # (Sonic: the row's words no longer than *Download covers*')
+            import html
+            from app.practice import STARTER
+            view = self.page.row(row_id)
+            words = view.layout().itemAt(0).layout()                      # the row's words column
+            starter = sc.Door(S.PRACTICE_STARTER, tooltip=S.PRACTICE_STARTER_TIP, name=S.PRACTICE_STARTER)
+            starter.clicked.connect(lambda _c=False: self.copy_practice("starter"))
+            from app.qt import help_card           # help cards (§6.4): the ? is a press now — Piyo's card
+            then = help_card.help_mark("piyo", view)
+            then.setAccessibleName(S.PRACTICE_HELP_NAME)
+            then.setToolTip(S.PRACTICE_LEAVES + "<br><br>"
+                            + html.escape(S.PRACTICE_THEN.format(starter=STARTER), quote=False).replace("\n", "<br>")
+                            + S.PRACTICE_HELP_CLICK)
+            line = QHBoxLayout()
+            line.addWidget(starter)
+            line.addSpacing(8)
+            line.addWidget(then)
+            line.addStretch(1)
+            words.addSpacing(6)                                           # apart from the row's help line
+            words.addLayout(line)
+            self.parts["practice_then"] = {"then": then, "starter": starter}
         elif row_id == "remove_downloaded_covers":                 # --- W3.2 L3
             door = qpress.room(sc.Door(S.COVERS_REMOVE, tooltip=row.tip, name=row.label))
             door.clicked.connect(lambda _c=False: self.remove_covers())
@@ -761,12 +817,29 @@ class Live(QObject):
         return connection(self.facts.get("report"), self.facts.get("sync"))
 
     def _paint_anki(self):
-        mark = self.parts.get("anki_connection", {}).get("mark")
+        parts = self.parts.get("anki_connection", {})
+        mark = parts.get("mark")
         if mark is None:
             return
         lit, key = self._anki_now()
         if mark.value() != lit or mark.words() != S.ANKI_WORDS[key]:
             mark.set_value(lit, S.ANKI_WORDS[key])
+        steps, watch = parts.get("steps"), parts.get("watch")
+        if steps is not None and key != "checking":       # while a Check runs the row keeps its steps: no jump
+            shown = key in ("no_addon", "unsure")
+            if shown:
+                steps.set_unsure(key == "unsure")
+            if key == "connected":
+                addon_steps.answered()                    # an install's done line goes: AnkiConnect is in
+            steps.want(shown)                             # an install under way keeps it on screen (Anki closed)
+        if watch is not None and key != "checking":
+            report = self.facts.get("report") or {}
+            # a sync's "closed" took no process look: as none seen, so an Anki opened without AnkiConnect is noticed
+            watch.arm(key in ("closed", "no_addon", "unsure"), report.get("running", False))
+
+    def _anki_url(self):
+        from app import anki_connect
+        return anki_connect.address(settings_service.thaw(self._settings()))
 
     def check(self):
         """*Check*: the status service refreshed, and AnkiConnect asked once on a worker (its word shown when it comes)."""
@@ -874,6 +947,12 @@ class Live(QObject):
             with self.page._keeping(self.page._last):
                 offer.setVisible(bool(version))
 
+    def open_tour(self):
+        """*Show me what runs by itself* (help cards §6.6): the tour, over the window (a GUI-only overlay: no pending)."""
+        opener = getattr(self.shell, "open_tour", None)
+        if opener is not None:
+            opener()
+
     def offer_again(self):
         updates = getattr(self.services, "updates", None)
         if updates is None:
@@ -883,15 +962,22 @@ class Live(QObject):
 
     def copy_practice(self, app):
         """*Practise with your AI*: `app`'s whole setup on the clipboard (app/cli/mcp_server.setup_text: one sentence to
-        paste to the AI and the exact line, this install's path in it). The press shows *Copied* at once, back to the
-        app's name two seconds later; the line in the bar says where to paste it. Writes nothing anywhere else."""
+        paste to the AI and the exact line, this install's path in it), or for "starter" the first message to send
+        once it's added (mcp_server.STARTER). The press shows *Copied* at once, back to its name two seconds later; the
+        line in the bar says where to paste it. Writes nothing anywhere else."""
         from PyQt6 import sip
         from PyQt6.QtCore import QTimer
         from PyQt6.QtWidgets import QApplication
         from app.cli import mcp_server
-        QApplication.clipboard().setText(mcp_server.setup_text(app))
-        name = S.PRACTICE_APPS[app]
-        door = self.parts.get("practice_ai", {}).get(app)
+        if app == "starter":
+            QApplication.clipboard().setText(mcp_server.STARTER)          # app/practice.STARTER
+            name, said = S.PRACTICE_STARTER, S.PRACTICE_STARTER_COPIED_LINE
+            door = self.parts.get("practice_then", {}).get("starter")
+        else:
+            QApplication.clipboard().setText(mcp_server.setup_text(app))
+            name = S.PRACTICE_APPS[app]
+            said = S.PRACTICE_COPIED_LINE.format(app=name)
+            door = self.parts.get("practice_ai", {}).get(app)
         if door is not None:
             door.setText(S.PRACTICE_COPIED)
             self._copies[app] = press = self._copies.get(app, 0) + 1      # a second press restarts the two seconds
@@ -900,16 +986,35 @@ class Live(QObject):
                 if not sip.isdeleted(door) and self._copies.get(app) == press:
                     door.setText(name)
             QTimer.singleShot(2000, back)
-        self.say(S.PRACTICE_COPIED_LINE.format(app=name), "practice_ai")
+        self.say(said, "practice_ai")
 
     def open_logs(self):
-        """*Processing log*: its folder found and opened on a worker (`press.open`), the door's arc turning by."""
+        """*Folders* › *Logs*: its folder found and opened on a worker (`press.open`), the door's arc turning by."""
         qpress.open(self.shell, logs_folder, control=self.parts.get("logs", {}).get("open"), key="settings:logs")
 
     def open_data_folder(self):
         language = self.page.language
-        qpress.open(self.shell, lambda: data_folder(language), control=self.parts.get("version", {}).get("open"),
+        qpress.open(self.shell, lambda: data_folder(language), control=self.parts.get("logs", {}).get("data"),
                     key="settings:data_folder")
+
+    def copy_version(self):
+        """*Version*'s *Copy* (a9.1): the version on the clipboard; the press shows *Copied* at once, back to its name
+        two seconds later (as *Practise with your AI*'s), and the bar says it. Writes nothing anywhere else."""
+        from PyQt6 import sip
+        from PyQt6.QtCore import QTimer
+        from PyQt6.QtWidgets import QApplication
+        version = _version()
+        QApplication.clipboard().setText(version)
+        door = self.parts.get("version", {}).get("copy")
+        if door is not None:
+            door.setText(S.VERSION_COPIED)
+            self._copies["version"] = press = self._copies.get("version", 0) + 1
+
+            def back():
+                if not sip.isdeleted(door) and self._copies.get("version") == press:
+                    door.setText(S.VERSION_COPY)
+            QTimer.singleShot(2000, back)
+        self.say(S.VERSION_COPIED_LINE.format(version=version), "version")
 
     def _show_licence(self, line):
         self.facts["licence"] = line or ""
@@ -1007,7 +1112,7 @@ class Live(QObject):
         if not path.lower().endswith(ext):
             path += ext
         self._press(row_id, "export", run_export, export, self.page.language, fmt, os.path.normpath(path),
-                    busy=S.EXPORT_RUNNING.format(name=catalog.ROW[row_id].label),
+                    self.services, busy=S.EXPORT_RUNNING.format(name=catalog.ROW[row_id].label),
                     then=lambda outcome: self._exported(row_id, outcome),
                     failed=lambda info: self._exported(row_id, None, info))
 

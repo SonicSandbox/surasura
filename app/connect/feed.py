@@ -11,7 +11,7 @@
   its id (*Mine anyway*'s); `made` / `total` its cards so far of the words picked (*Mining 3 of 12*); `progress` /
   `doing` a mining item's percent through the whole episode and its step in words (`status._progress`; laptop round
   5 #23), else None; `stoppable` True while *Stop* can be pressed (#47); `stopping` True from that press until the
-  job has stopped (#56).
+  job has stopped (#56); `writing_cards` True while a stopping job's Anki Miner adds its cards (#BS0A1K).
 - Kinds are told by the runner's and the Anki session's named reasons (`runner.NO_VIDEO`, `anki_session.CLOSED`, …)
   and the job's own `kind` (`asked`, row 4.1.3), never by a wording a test can't see.
 - `Provider(language, settings_get)`: one per window and language, a worker's call. Off → the off Feed, nothing read.
@@ -26,6 +26,10 @@ from collections import namedtuple
 EVERY_S = 3                     # the window's tick while Connect is on (the Tk row's; `services.status.TICKS`)
 
 Feed = namedtuple("Feed", "on mining items line state unseen updating")
+# `miner` (Michi-U): the Anki Miner Connect knows of — the setup record's stat and its installer's version, the status
+# stamp's last two parts (`miner_of`) — so a Feed moves when it does: the reader builds the rows' *Waits for Anki Miner*
+# again and *Needs you* gathers again (an update by hand, or *Update*'s, followed). None before any look
+Feed = namedtuple("Feed", Feed._fields + ("miner",), defaults=(None,))
 # `progress` / `doing` (laptop round 5 #23): a mining item's percent (0–99) and its step in words, else None
 # `stoppable` (laptop round 8 #47): True while the item's job can still be stopped (`actions.stop`: before its cards
 # are made, and not stopped already), else None
@@ -33,8 +37,11 @@ Feed = namedtuple("Feed", "on mining items line state unseen updating")
 # `moved` (MV-2): a *No video* item whose video left its folder — that folder (`runner.moved_folder`), else None
 # `title` (alpha 2's try, T3): the episode as Connect's record names it (the store's title, else its file's name) — the
 # phase strip's 鉱 line names the episode being mined; else None
-Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved title",
-                  defaults=(None, None, None, None, None, None))
+# `writing_cards` (#BS0A1K): True while a stopping job's Anki Miner is in its card-writing stage (never ended there:
+# it finishes adding the cards it has ready), else None
+# `since` (help cards): when its wait's reason was set (the ledger's `reason_at`, UTC "…Z"), else None
+Item = namedtuple("Item", "kind words tip job made total progress doing stoppable stopping moved title writing_cards "
+                          "since", defaults=(None, None, None, None, None, None, None, None))
 
 # ANKI waits on Anki for you to act (closed, a prompt, another profile or none: `runner.anki_needs_you`, amber);
 # ANKI_WAIT waits on Anki for something that clears by itself (you reviewing, Anki busy, another writer, one slow
@@ -43,7 +50,14 @@ Item = namedtuple("Item", "kind words tip job made total progress doing stoppabl
 # skipped until its timing, subtitle or video changes (or *Mine anyway*): no waiting episode (T2, Sonic's correction)
 MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED = (
     "mining", "waiting", "anki", "anki_wait", "no_video", "not_timed", "held", "skipped", "battery", "asked")
-KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED)
+# Michi-AB Stage B (AB-Q3): a book waiting while Anki Miner lines it up with its audiobook (`runner.lining_up`) — its
+# line is the stone's words (*Lining up its audiobook… file 2 of 6*), with *Stop* while it can be stopped
+LINING_UP = "lining_up"
+KINDS = (MINING, WAITING, ANKI, ANKI_WAIT, NO_VIDEO, NOT_TIMED, HELD, SKIPPED, BATTERY, ASKED, LINING_UP)
+# A7N-3 (Sonic 2026-10-30): Connect's needs that are faults, nothing to decide — its own Generate failed. Red, never
+# amber: ス says it as a Generate you start does (the window, `shell._connect_fault`); its card stays on *Needs you*,
+# and an episode it holds is a plain wait (never HELD)
+FAULT_KINDS = ("generate",)
 
 # The status read out — the stone's words on hover and keyboard focus, and what a screen reader says (RS-6)
 WORDS = {
@@ -57,6 +71,7 @@ WORDS = {
     SKIPPED: "Skipped: not timed to its video",
     BATTERY: "Waiting: on battery",
     ASKED: "Asked: its cards come next",
+    LINING_UP: "Lining up its audiobook",
 }
 # *Mine anyway* on a pairing hato placed by its name only (`verdict: untimed`, 09-hato-layer v2 §1.2; hato's
 # wrong-episode finding): the warning W3.2's *Needs you* entry carries (row 4.1.9)
@@ -86,12 +101,12 @@ def _off(settings):
 
 def build(record, language):
     """The Feed of one language's status record (`status.read`'s) -> Feed (on)."""
-    from app.connect import actions, runner
+    from app.connect import actions, anki_miner, runner
     from app.connect import ledger as book
     rec = ((record or {}).get("languages") or {}).get(language) or {}
     running = bool((record or {}).get("running"))
     not_timed = {n.get("item") for n in rec.get("needs") or () if n.get("kind") == "not-timed"}
-    need_says = {n.get("say") for n in rec.get("needs") or () if n.get("say")}
+    need_says = {n.get("say") for n in rec.get("needs") or () if n.get("say") and n.get("kind") not in FAULT_KINDS}
     skipped = set(rec.get("skipped") or ())
     items, mining = {}, set()
     for job in rec.get("jobs") or ():
@@ -111,6 +126,8 @@ def build(record, language):
             kind = HELD
         elif reason == runner.ON_BATTERY:
             kind = BATTERY
+        elif runner.lining_up(reason):          # Stage B: its audiobook lined up first (the row's line, *Stop*)
+            kind = LINING_UP
         elif runner.anki_wait(reason):                  # the runner's one rule (laptop round 5 #24) …
             kind = ANKI if runner.anki_needs_you(reason) else ANKI_WAIT     # … and its one rule for amber (T1)
         elif job.get("kind") == "asked":
@@ -122,6 +139,7 @@ def build(record, language):
         step = (job.get("progress") or None) if kind == MINING else None      # `status._progress`'s
         progress, doing = (step.get("percent"), step.get("doing")) if step else (None, None)
         stopping = True if job.get("stopping") else None
+        writing_cards = True if stopping and step and (step.get("stage") or 0) >= anki_miner.CARDS_STAGE else None
         stoppable = (True if job.get("job") is not None
                      and actions.stoppable(job.get("state"), job.get("resume"), job.get("progress"))
                      and reason != runner.STOPPED_BY_YOU and not stopping else None)
@@ -130,9 +148,20 @@ def build(record, language):
                               made=job.get("made") or 0, total=job.get("words") or 0, progress=progress, doing=doing,
                               stoppable=stoppable, stopping=stopping,
                               moved=runner.moved_folder(reason) if kind == NO_VIDEO else None,
-                              title=job.get("title") or None)
+                              title=job.get("title") or None,
+                              writing_cards=writing_cards, since=job.get("since") if reason else None)
     return Feed(on=True, mining=frozenset(mining), items=items, line=rec.get("line"), state=rec.get("state"),
-                unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")))
+                unseen=rec.get("unseen") or 0, updating=bool(rec.get("updating")),
+                miner=miner_of((record or {}).get("stamp")))
+
+
+def miner_of(stamp):
+    """Michi-U: the Anki Miner part of a status stamp (`status.stamp`: the setup record's [size, mtime] and the
+    installer's version, its last two parts) as a hashable value, or None."""
+    if not isinstance(stamp, (list, tuple)) or len(stamp) < 2:
+        return None
+    record = stamp[-2]
+    return (tuple(record) if isinstance(record, (list, tuple)) else record, stamp[-1])
 
 
 def _next(running, rec):
@@ -216,6 +245,7 @@ class Provider:
         try:
             from app.connect import status
             now = (self._stamp or status.stamp)(languages=[self.language])
+            self._follow(settings, now)
             if self._last is not None and self._last[0] == now:
                 return self._last[1]
             record = (self._read or status.read)(languages=[self.language]) or {}
@@ -226,6 +256,22 @@ class Provider:
             print(f"Connect's status wasn't read: {e}")      # the last good read stays keyed on its own stamp
             return Feed(on=True, mining=frozenset(), items={}, line=UNREADABLE, state="waiting", unseen=0,
                         updating=False)
+
+    def _follow(self, settings, stamp):
+        """Michi-U: an Anki Miner updated by hand is followed at once — the stamp's last part is its installer's version
+        (`status.stamp`), and one the setup record doesn't hold yet has the checks run again on a thread and Connect
+        kicked (`setup.follow_in_background`: in memory each look, no Settings visit, no 15-minute wait)."""
+        if self._stamp is not None:
+            return                                  # a test's stand-in stamp: no installer's version in it
+        if not isinstance(stamp, (list, tuple)) or not stamp or not isinstance(stamp[-1], str):
+            return                                  # no installer's version (not installed by its installer)
+        try:
+            from app.connect import setup
+            if setup.to_follow(stamp[-1]):          # in memory each look; the settings copied only then
+                from app.services.settings import thaw
+                setup.follow_in_background(thaw(settings), self.language, stamp[-1])
+        except Exception as e:
+            print(f"Connect's feed couldn't follow Anki Miner's update: {e}")
 
     def mining(self):
         """`LibraryReader`'s hook: the item ids whose cards are being made."""

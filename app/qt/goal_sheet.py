@@ -25,12 +25,11 @@ updates its tiles in place and never animates it again.
 Nothing here reads or writes the store: the tiles come from the reader's view, every command goes through the window's
 writer (`drag.DragController._give`: its toast, Undo and E4's refusal).
 """
-import os
 import time
 
 from PyQt6.QtCore import QEvent, QObject, QRect, QRectF, Qt, QTimer
 from PyQt6.QtGui import QAction, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import QAbstractItemView, QApplication, QMenu, QScrollArea, QToolButton, QWidget
+from PyQt6.QtWidgets import QAbstractItemView, QApplication, QScrollArea, QToolButton, QWidget
 
 from app import path_utils, theme
 from app.qt import confirm, frame, motion, rows, shadow, strings, style
@@ -604,10 +603,8 @@ class GoalSheet(motion.Overlay):
         from app.qt import item_menu
         _moves, writer = self._writer()
         n = len(self.picked())
-        m = QMenu(self)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
-        m.aboutToHide.connect(m.deleteLater)
+        from app.qt import drag
+        m = drag.list_menu(self, strings.PICKS_TITLES.format(n=f"{n:,}"))     # R5: the sheet's one kept menu
         item_menu.fill_picks_menu(m, n, "goal", writer, self.send_picks, goal=True)
         self.last_menu = m
         m.popup(at if at is not None else tile.more.mapToGlobal(tile.more.rect().bottomLeft()))
@@ -648,10 +645,8 @@ class GoalSheet(motion.Overlay):
         if not writable:
             raw = (writer.reason() if writer is not None else None) or ""
             reason = strings.MENU_REFUSED_TIP.format(reason=strings.READ_ONLY_REASONS.get(raw) or raw)
-        m = QMenu(self)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
-        m.setAccessibleName(strings.MENU_NAME.format(title=work.title))
+        from app.qt import drag
+        m = drag.list_menu(self, work.title)            # R5 (WC C1): the sheet's one menu, emptied as it hides
         for name, label, tip, ok in menu_entries(work, writable, reason):
             if name == "folder":                                    # --- W3.2 L3: Change cover… after the moves
                 qcovers.add_cover_menu(m, work, writable, reason)
@@ -743,14 +738,18 @@ class GoalSheet(motion.Overlay):
         """⋯ *Open folder*: a press (`press.open`, round 8 row 45) — the tile's ⋯ turns (IK-2), and the folder opens
         on a worker, never on the window's thread (it stalled it)."""
         from app.qt import press as qpress
+        from app.services import own_folder
         base = path_utils.get_data_path(getattr(self.win, "language", None) or "ja")
-        path = os.path.join(base, *work.folder.split("/")) if work.folder else base
+        opener = own_folder.opener_of(self.win)
 
         def failed(_info):
             say = getattr(self.win, "say", None)
             if say is not None:
                 say(strings.GOAL_FOLDER_FAILED.format(title=work.title))
-        return qpress.open(self.win, path, key=("open-folder", work.key), failed=failed,
+        # a7: the content's own folder (`own_folder`), worked out on the press's worker
+        return qpress.open(self.win, lambda: own_folder.read(opener, base, tuple(work.item_ids or ()),
+                                                             folders=(work.folder or "",)),
+                           key=("open-folder", work.key), failed=failed,
                            at=qpress.widget_mark(tile.more) if tile is not None else None)
 
     # --- a drag ----------------------------------------------------------------------------------------------- #

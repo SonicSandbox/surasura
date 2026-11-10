@@ -4,6 +4,7 @@ One table, so the wizard can be translated with the rest of the window (`app/qt/
 keeps its own, as a module keeps its `qt_strings.py`). RS-7: the title says the benefit, at most one short line under
 it, nothing about what's under the hood; anything longer is a tooltip, with its action on a "• " line of its own.
 """
+from app import ankiconnect_addon as _addon
 
 # --- the frame -------------------------------------------------------------------------------------------------------- #
 NAME = "Setting up Surasura"
@@ -16,6 +17,16 @@ SKIP = "Skip"
 SKIP_TIP = "Leave this step for now: nothing is changed. You can set it in Settings later."
 NEXT = "Next"
 NEXT_TIP = "Keep these choices and go on.\n• Enter"
+# Fresh library 3.0.1: *Change folders…* (the folders page alone, from Settings' *Sort again or start over…*)
+RESORT_NEXT = "Sort again"
+RESORT_NEXT_TIP = ("Set your library's order aside in a backup, read these folders again and sort each title.\n"
+                   "• Your known words and settings stay\n• Enter")
+RESORT_BACK = "Back"
+PUT_BACK_LINK_NAME = "Put back what you had"
+PUT_BACK_LINK = "Put back what you had (from {date})"                       # page 1, after a Start over (Q2)
+PUT_BACK_LINK_TIP = ("Bring back your library, settings and known words as they were before you started over.\n"
+                     "• Surasura closes and opens again. What you've set up since goes into a backup of its own.")
+RESORT_BACK_TIP = "Back to Sort again or start over. Nothing is changed."
 GENERATE = "Generate"
 GENERATE_TIP = "Make your list from your shows now, and open it when it's ready.\n• Enter"
 KEY_ENTER = "Enter"
@@ -27,17 +38,17 @@ STEPS = {"language": "Your language", "known": "What you know", "shows": "Your s
 RECOMMENDED = "RECOMMENDED"
 SWITCH_TIP = "{name}\n{tip}"                # a switch has no words of its own: its tip names it first
 ANKI_CLOSED = "Anki isn't open"
-# §C11: Anki open, AnkiConnect not answering (an Anki process seen) — or a look that can't tell the two apart
-ANKI_NO_CONNECT = "Anki is open, but AnkiConnect isn't answering"
-ANKI_NO_CONNECT_HOW = ("In Anki, install the AnkiConnect add-on (Tools › Add-ons › Get Add-ons…, code 2055492159), "
-                       "then restart Anki and press Check again.")
+# §C11: Anki open, AnkiConnect not answering (an Anki process seen) — or a look that can't tell the two apart. The
+# words and the steps beside *Copy code* are the one set Settings' row and Connect's check show (`app/ankiconnect_addon`)
+ANKI_NO_CONNECT = _addon.NO_CONNECT
+ANKI_NO_CONNECT_HOW = _addon.steps_line()
 ANKI_NO_CONNECT_CARD = "AnkiConnect isn't answering"          # the From Anki card's short line
-ANKI_UNSURE = "Anki isn't open, or AnkiConnect isn't answering"
+ANKI_UNSURE = _addon.UNSURE
 ANKI_UNSURE_CARD = "Anki closed, or no AnkiConnect"
-ANKI_UNSURE_HOW = ("Open Anki. If it's open already, install the AnkiConnect add-on (Tools › Add-ons › Get Add-ons…, "
-                   "code 2055492159), then restart Anki and press Check again.")
+ANKI_UNSURE_HOW = _addon.steps_line(unsure=True)
 CHECK_AGAIN = "Check again"
-CHECK_AGAIN_TIP = "Look for Anki again, once it's open."
+CHECK_AGAIN_TIP = ("Look for Anki again now.\n"
+                   "• Surasura also looks by itself every few seconds while this shows")
 CHECKING = "Looking for Anki…"
 # Brought over from Surasura 2 (WZ-8): the whole setup once, each page showing the choices already made there
 UPGRADE_LINE = ("Welcome to Surasura 3. Your choices from Surasura 2 are already picked; "
@@ -101,8 +112,10 @@ ROW_FILES = ("1 file", "{n:,} files")
 ROW_LINE = "{count} · {folder}"
 ROWS_MORE = "and {n:,} more"
 COVERS = "Show covers"
-COVERS_LINE = "Sends each show's AniList id or name to AniList, and a video's id to YouTube. Nothing else."
+COVERS_LINE = ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. Near a show's last "
+               "episode, also asks AniList whether it is still airing, so it isn't finished early. Nothing else.")
 COVERS_TIP = ("Covers for your shows, looked up by each show's name.\n"
+              "• Near a show's last episode, whether it is still airing\n"
               "• Turn it off any time: Settings")
 COVERS_PICTURE_NAME = "A plain tile becomes the show's cover"
 UPGRADE_SHOWS_LINE = ("Your known words and settings came over from Surasura 2. "
@@ -113,11 +126,48 @@ FOLDERS_NAME = "The folders your shows and books are in"
 PICK_FOLDER = "Choose a folder…"
 PICK_ANOTHER = "Add another folder…"
 PICK_FOLDER_TIP = ("Choose a folder your shows and books are in: Surasura reads them where they are.\n"
+                   "• You sort it show by show next; the rest wait in New arrivals (Surasura 2 tiers are kept)\n"
                    "• Nothing in it is changed; each new episode joins your library by itself")
 PICK_TITLE = "Where are your shows and books?"
+# Alpha 8 (Sonic: "You just pick the file or you pick the folder"): a file, a folder, or YouTube links — each kind found
+PICK_FILE = "Choose a file…"
+PICK_FILE_TIP = ("Choose an episode's subtitles or its video, a text or an EPUB: Surasura sees which it is.\n"
+                 "• It goes at the top of Current; nothing in the file is changed")
+PICK_FILE_TITLE = "Choose a file"
+PICK_FILE_FILTER = "Subtitles, videos, texts and books ({patterns});;All files (*)"
+FILE_NOT_READ = "{name}: Surasura reads subtitles, texts and EPUBs only."
+# alpha 8 (A8P-L6, Sonic "Yes do that"): a video chosen as a file — its subtitle found beside it by the library's rule
+VIDEO_LOOKING = "Looking beside {name} for its subtitle…"
+VIDEO_SUBTITLE = "{name}: its subtitle {subtitle} comes in."
+VIDEO_SUBTITLE_BEST = "{name}: {subtitle} comes in (the best of {n} subtitles beside it)."
+VIDEO_NO_SUBTITLE = ("{name}: no subtitle beside it, and Surasura reads a video's subtitle file, not the video. "
+                     "Choose its folder to look through it, its Subs folder too.")
+VIDEO_NO_SUBTITLE_PLAIN = ("{name}: no subtitle beside it, and Surasura reads a video's subtitle file, not the video. "
+                           "Choose its subtitle file instead.")
+VIDEO_STILL_LOOKING = "Still looking for your video's subtitle: Next again in a moment."
+VIDEO_ITS_FOLDER = "Choose its folder"
+VIDEO_ITS_FOLDER_NAME = "Choose the folder {folder}"
+VIDEO_ITS_FOLDER_TIP = ("Read the video's whole folder instead, as Choose a folder… does:\n"
+                        "• Each video's subtitle is found by its name, a Subs folder too")
+FILES_ADDED = "Bringing in {what}: they go at the top of Current."
+FILES_N = ("1 file", "{n:,} files")
+BOOK_ADDED = "{name} is in Current: {parts} parts."
+BOOK_FAILED = "{name} couldn't be brought in: {why}"
+YOUTUBE = "YouTube…"
+YOUTUBE_TIP = ("Paste YouTube links, one a line. Each line's first video comes in while setup finishes.\n"
+               "• A playlist: its other videos come in after, in the background (the bottom bar shows them)")
+YOUTUBE_NAME = "YouTube links, one a line"
+YOUTUBE_HINT = "One link a line: a video, or a playlist (its first video now, the rest after)"
+YOUTUBE_RISK_LINE = "YouTube can turn requests away for a while; it's for your own study."
+YOUTUBE_NEEDS_RISK = "Tick “{risk}” to bring in from YouTube, or clear the links."
+YOUTUBE_NONE = "Paste a YouTube link first: one a line."
+YOUTUBE_BUSY = "Your last links are still coming in: press Next again once they're in, or add these later."
+YOUTUBE_HAD = "already in your library: nothing new came in"
+YOUTUBE_NOT_ADDED = "couldn't be added to your library: they wait in Processed"
+FILES_NOT_ADDED = "Your files couldn't be added just now: your library can't be saved. Try Next again in a moment."
 FOLDER_REMOVE = "Remove"
 FOLDER_REMOVE_NAME = "Remove {folder}"
-FOLDER_REMOVE_TIP = "Leave this folder out: nothing is read from it."
+FOLDER_REMOVE_TIP = "Leave it out: nothing is read from it."
 FOLDER_REFUSED = "{folder}: {why}"
 # K6: a folder inside the ones picked that is never read (a backup, a game's files), skipped before the first look
 SKIP_FOLDER = "Skip a folder…"
@@ -129,15 +179,16 @@ SKIP_REMOVE = "Read it after all"
 SKIP_REMOVE_NAME = "Read {folder} after all"
 SKIP_REMOVE_TIP = "Read this folder after all: it isn't skipped."
 READING = "Found {episodes} in {shows}…"
-READ_DONE = "Found {episodes} in {shows}."
-READ_STOPPED = "Stopped: {episodes} in {shows} came in, and they're kept."
+# a7 (DIAGNOSIS 2), Mado-O: the first read lands in New arrivals for the sort screen: said where it happens
+READ_DONE = "Found {episodes} in {shows}: any not sorted wait in New arrivals."
+READ_STOPPED = "Stopped: {episodes} in {shows} came in, kept for you to sort."
 READ_UNREACHABLE = "{folder} isn't reachable: nothing was read from it."
 READ_FAILED = "{folder} couldn't be read: {why}"
 READ_BUSY = "Surasura is already reading your folders: try again in a moment."
 COPYING = "Copying into your library: {done:,} of {total:,} files…"                       # K5
 READ_BIG = "{line} · That's a big library: over 15,000 items. You can Stop and pick fewer folders."   # K5 (A4K-4)
 EVERY_CORE = "Use every core"                                                              # K5 C4
-EVERY_CORE_LINE = "Reads a big library sooner; the computer is busier meanwhile. Settings › Content has it too."
+EVERY_CORE_LINE = "Reads your library faster; the computer is busier while it does. Settings › Content has it too."
 EVERY_CORE_TIP = ("On: reading and copying your library use every core of your computer, so it ends sooner.\n"
                   "Off: half of them, so the computer stays quick to use")
 READ_WAITING = "Waiting for your library: another part of Surasura is saving. Reading goes on by itself…"   # K4
@@ -278,7 +329,93 @@ EVERY_N = "{h:.0f} h"
 EVERY_MIN = "{m:.0f} min"
 NONE_YET = "—"
 COUNTING = "Counting your shows…"
+DISCORD = "Questions? Join us on Discord"                     # 3.0: the last page's one line (a link, in the browser)
+DISCORD_TIP = "Surasura's Discord: ask anything, or tell us what went wrong.\n• Opens it in your browser"
 NO_SHOWS = "Add a show first, and the numbers show here."
-MAKING = "Making your list…"
-MAKING_PCT = "Making your list… {pct} %"
+# a7 (DIAGNOSIS 1, Sonic): the first Generate reads the whole library — said in the line he watches
+MAKING = "Making your list… The first time reads every show and book, so it can take a few minutes."
+MAKING_PCT = "Making your list… {pct} % · The first time can take a few minutes."
 NOT_STARTED = "Your list couldn't start: press Generate at the top when you're ready."
+
+# --- after page 3: the load screen and the sort screen (Sonic 2026-10-30) ------------------------------------------- #
+LOAD_NAME = "Getting your library ready"
+LOAD_MARK_NAME = "Surasura"
+LOAD_SCAN = "Reading your library · {episodes} in {shows}"
+LOAD_COPY = "Bringing your files in · {done:,} of {total:,}"
+LOAD_WAIT = "Waiting for your library…"
+LOAD_INDEX = "Reading the words · {done:,} of {total:,}"
+LOAD_INDEX_START = "Reading the words…"
+LOAD_COVERS = "Finding covers · {done:,} of {total:,}"
+LOAD_COVERS_START = "Finding covers…"
+LOAD_ANKI = "Bringing in your known words from Anki…"
+LOAD_YOUTUBE = "Bringing in your videos from YouTube…"                        # alpha 8: the load waits for it last
+YOUTUBE_FETCHING = "YouTube · bringing in {what}…"
+YOUTUBE_VIDEOS = ("1 video", "{n:,} videos")
+YOUTUBE_DONE = "YouTube · {what} in New arrivals"
+YOUTUBE_PLACED = "YouTube · {what} in your library"
+YOUTUBE_FAILED = "YouTube · {why}"
+YOUTUBE_SOME_FAILED = "YouTube · {what} in New arrivals · {why}"
+YOUTUBE_REST = ("the first of its playlist: the rest follows in the background",           # alpha 8: a playlist's
+                "the first of {n:,} playlists: the rest follows in the background")         # rest, after setup
+YOUTUBE_REST_ONLY = ("its playlist follows in the background", "their {n:,} playlists follow in the background")
+LOAD_STOP = "Stop"
+LOAD_STOP_TIP = ("Stop here and sort what was read so far. Nothing read is lost; a folder not reached yet stays on "
+                 "the page to read again.")
+LOAD_STOPPING = "Stopping…"
+LOAD_LINES = ("Come back after an episode",
+              "Your shows are read once, so every list after this is quick",
+              "Make a tea; this part only happens once",
+              "Every word you already know will fade from your list",
+              "The bigger the library, the better the list")
+SORT_NAME = "Sort your library"
+SORT_TITLE = "Where does each one go?"
+SORT_LINE = "Sort the one at the top. The next one comes up by itself."
+SORT_COUNT = "{n:,} left to sort"
+SORT_GROUPS = {"new": "NEW", "watched": "ALREADY WATCHED"}
+# (key, label, tip, the key's name on screen): Soon first, the one key that isn't an arrow (Sonic 2026-10-30)
+SORT_CHOICES = (("soon", "Soon", "Below Current's Soon line: after what you're on now. It still counts toward your "
+                                 "list.", "S"),
+                ("now", "Current", "Study it now: it goes to the top of Current.", "→"),
+                ("goal", "Goal", "Someday, in no order: what you'll get to later. It counts toward your list.", "↓"),
+                ("finished", "Finished", "Watched or read already: a record, and still a source of sentences. Its "
+                                         "words stop pushing your list around.", "↑"),
+                ("ignore", "Ignore", "Never read its folder again, when the folder holds only this; otherwise it's "
+                                     "taken out of your library. Your files stay where they are; Undo brings it "
+                                     "back.", "←"))
+SORT_UNDO = "Undo"
+SORT_UNDO_TIP = "Bring back the last one you sorted.\n• Ctrl+Z"
+SORT_REST = "Put the rest in…"
+SORT_REST_TIP = "Every title still here in one place, at once. One Undo brings them all back."
+SORT_DONE = "Done"
+SORT_DONE_TIP = "Go on. Anything still here waits in New arrivals."
+SORT_TOUR = "See what Surasura does by itself"          # help cards (§6.6): Done, then the tour once the window is up
+SORT_TOUR_TIP = "Done — then a short tour of what runs by itself, one card each"
+SORT_CLOSE_TIP = "Close. Anything still here waits in New arrivals.\n• Esc"
+SORT_RESORT_DONE_TIP = "Done sorting: on to Current. Anything still here waits in New arrivals.\n• Esc"   # Sort again
+SORT_DONE_TIPS = {"setup": SORT_DONE_TIP, "arrivals": SORT_CLOSE_TIP, "resort": SORT_RESORT_DONE_TIP}
+SORT_MORE = "and {n:,} more"
+SORT_EMPTY = "All sorted."
+SORT_PLACED = {"now": "{title} → Current", "soon": "{title} → Soon", "goal": "{title} → Goal",
+               "finished": "{title} → Finished", "ignore": "{title} ignored"}
+SORT_REST_PLACED = "{n:,} titles → {place}"
+# Mado-O (alpha 8, Sonic 2026-10-31: "the ability to reset from the beginning")
+SORT_OVER = "Start sorting over"
+SORT_OVER_TIP = ("Everything you sorted here goes back to be sorted again, including the ones you ignored, and you "
+                 "start from the top. Undo puts your sorting back.")
+SORT_OVER_ASK = "Start sorting over?"
+SORT_OVER_BODY = ("The {n:,} titles you sorted here go back to New arrivals, including the ones you ignored, and you "
+                  "start again from the top. A title you've moved since stays where you put it. Undo puts your "
+                  "sorting back.")
+SORT_OVER_BODY_ONE = ("The title you sorted here goes back to New arrivals, even if you ignored it, and you start again "
+                      "from the top. Undo puts it back.")
+SORT_OVER_BODY_PLAIN = ("The {n:,} titles you sorted here go back to New arrivals, and you start again from the top. A "
+                        "title you've moved since stays where you put it. Undo puts your sorting back.")
+SORT_OVER_BODY_PLAIN_ONE = ("The title you sorted here goes back to New arrivals, and you start again from the top. Undo "
+                            "puts it back.")
+SORT_OVER_YES = "Start over"
+SORT_OVER_YES_TIP = "Put them back to sort, and start from the top."
+SORT_OVER_SAID = "{n:,} titles back to sort"
+SORT_OVER_SAYING = "Putting {n:,} titles back to sort…"
+SORT_OVER_SAYING_ONE = "Putting 1 title back to sort…"
+SORT_OVER_SAID_ONE = "1 title back to sort"
+SORT_KEYS_NAME = "Keys"

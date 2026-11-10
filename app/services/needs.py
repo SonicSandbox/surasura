@@ -53,9 +53,14 @@ Tk-free, pandas-free (the import guard); nothing here reads or writes the store.
   backlog_shows`' last offer, read-only) — *Your 2,300 new cards come from 14 shows; 12 are on this PC. Add the 3
   that aren't in your list yet?* · *Add them* (the window's writer, `place(ids, "soon")`: one Undo) · *Leave them*
   (answered; a show placed since, or a new one waiting, asks again).
+- **Anki Miner out of date** (Michi-U, alpha 9.1 try): ONE line while titles wait only because the Anki Miner installed
+  is older than the approved one (`miner_update(view)`: `am_release.update_for` the kinds the view's unmined items wait
+  on — books and texts, audiobooks and podcasts) — *Update Anki Miner to 3.11.0 to make cards from your books and
+  texts* · *Update* (Surasura's own install route: the approved release, checked by its sha256; it asks first). No
+  *Dismiss*: it goes by itself once Anki Miner is updated, by that button or by hand (`setup.follow_install`).
 - **setup's first cards** (SRC S1 + D1, Sonic ✅ 2026-10-16): setup's first scan of the folders the shows and books are in
-  logs nothing, so Connect makes no card for them by itself; once it took something in, it offers ONE line (`offer`,
-  kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
+  logs nothing, so Connect makes no card for them by itself; once its sort screen put some in the mine line
+  (`setup_wizard.sorted_offer`, Mado-O), it offers ONE line (`offer`, kept in the seen file): *Make cards for your first 20 episodes?* · *Not now* — either answer takes it off for good.
 
 An entry's `actions` are names only; the window maps each to its call and hides the names in `WIRED_LATER` until a
 callable is set. `badge(entries)` counts the unseen ones (P1.2-1: seen ones stay listed and stop counting).
@@ -69,10 +74,12 @@ key falls off by age or count: `prune` takes out those whose trouble is gone (a 
 again — asked again the next time it goes offline).
 
 `find_videos(language, need, settings)` (a worker; never writes, never opens a video, never a cloud placeholder): for each
-line of a *no video* card, the show's own folder, then Connect's video folders (`connect_video_folders`, their
-subfolders `videos.DEPTH` deep) for a video whose episode number (`view_rows.episode_number`) is the line's ->
-[(label, path or None, why)]. The show's folder wins over the video folders; two in one place is no answer (Connect
-never guesses), unless one of them sits in a folder named like the show. `find_all` does every card with one listing.
+line of a *no video* card, the show's own folder, then the library's own folders (the sources the store reads, as
+Connect's video index reads them; alpha 6 try #5 — they hold every show, so only a video named like this one: a folder
+on its path, the source's own or its file name), then the video folders you added (`connect_video_folders`) — each
+with its subfolders `videos.DEPTH` deep — for a video whose episode number (`view_rows.episode_number`) is the line's
+-> [(label, path or None, why)]. The first place with one wins; two in one place is no answer (Connect never
+guesses), unless one of them sits in a folder named like the show. `find_all` does every card with one listing.
 """
 import hashlib
 import json
@@ -82,7 +89,7 @@ import threading
 import time
 from collections import namedtuple
 
-from app import library_store, path_utils
+from app import ankiconnect_addon, library_store, path_utils
 from app.services import view_rows
 
 Entry = namedtuple("Entry", "key kind title lines actions unseen say data", defaults=("", None))
@@ -110,19 +117,27 @@ LIBRARY_EMPTIED = "library-emptied"   # A5K-2: the library folder held none of t
 AUDIOBOOK_ASK = "audiobook-ask"       # Hon (H-8): is this audiobook that book? Asked once per pair, the answer kept
 AUDIOBOOK_FIND = "audiobook-find"     # Hon (a5-2): after a *No*, find its book — or it has none (never asked again)
 AUDIOBOOK_TRANSCRIPT = "audiobook-transcript"   # Hon (a6, H-13): an audiobook's transcript isn't its book's: not used
+AUDIOBOOK_LINEUP = "audiobook-lineup"   # Michi-AB Stage B: nothing of an audiobook lined up with its book — together?
 BACKLOG_SHOWS = "backlog-shows"       # Michi-C (A7B-3): the shows behind 順's deck's new cards, on this PC, not listed
 SETTINGS_FOLDER = "settings-folder"   # a6 settings import (SI-3): a video folder the imported settings name isn't here
+# Michi-U (alpha 9.1 try): titles wait only because the Anki Miner installed is older than the approved one
+MINER_UPDATE = "miner-update"
+# Michi-NS (3.0.1, SPEC no-subs §3; NS-2): videos with no subtitles, ONE card: *Find them with hato* (once hato takes a
+# list and you haven't said yes) and, per show, *Make them from the audio* (Anki Miner 3.11's `transcribe`)
+NO_SUBS = "no-subs"
 FOLDER_MIN = 10                 # gone files (of two shows or more) before a folder is one card
 LIBRARY_MIN = 20                # gone files (of two shows or more) before the library is one card
 KINDS = (BULK, GONE, NO_VIDEO, ASK, OFFLINE, FAILURE, GAP, FIRST_CARDS, KNOWN_OFFER, ANKI_WAIT, FOLDER_GONE,
          FILES_FOLDER, LIBRARY_GONE, LIBRARY_EMPTIED, AUDIOBOOK_ASK, AUDIOBOOK_FIND, AUDIOBOOK_TRANSCRIPT, SETTINGS_FOLDER,
-         BACKLOG_SHOWS)
+         BACKLOG_SHOWS, AUDIOBOOK_LINEUP, MINER_UPDATE, NO_SUBS)
 # action names the window hides until P4.1 sets their callable (RUNBOOK §2). Alpha 4 M1: *Mine the text only* is gone
 # (it opened Anki Miner's own window — Sonic 2026-10-27: "I honestly don't want to ever have to open anki miner. Ever.")
 WIRED_LATER = frozenset(("make_cards",))   # (K1's *Start fresh*: the window's `SourceLooks.fresh`)
 # Connect's kinds and their one action beside *Dismiss* (`connect_window.HOW`'s, as the Qt window offers them now)
 CONNECT_ACTIONS = {"not-timed": ("mine_anyway",), "no-pairing": ("ask_hato",), "repick": ("open_logs",),
-                   "mine-failed": ("open_logs",), "error": ("open_logs",)}
+                   "mine-failed": ("open_logs",), "error": ("open_logs",),
+                   # Michi-AB Stage B (AB-Q2): the speech model's one question — *Download it* · *Not now*
+                   "speech-model": ("get_speech_model", "no_speech_model")}
 SEEN_VERSION = 1
 _NO_VIDEO_REASON = "No video: its video isn't on this computer (or isn't downloaded yet)."   # runner.NO_VIDEO's words
 
@@ -148,9 +163,30 @@ STRINGS = {
                             "book's: Surasura doesn't use it. The book's words count, as they did.",
     "abook_transcript_say_none": "Its lines aren't in that book, so it's another edition's or another book's: "
                                  "Surasura doesn't use it. The book's words count, as they did.",
+    # Michi-AB Stage B (Sonic 2026-11-02, PROVISIONAL): Anki Miner lined up nothing of an audiobook with its book
+    "abook_lineup_title": "This audiobook doesn't match 「{book}」",
+    "abook_lineup_say": "{files}: Anki Miner listened and found none of the book's sentences in it. Keep them "
+                        "together (listen alongside; the book's cards come without sentence audio), or separate them "
+                        "(the audiobook becomes its own title again)?",
     "anki_closed_title": "Anki isn't open: {n} wait for it",
     "anki_needs_title": "Anki needs you: {n} wait for it",
+    # Mado-N (Sonic 2026-10-31, MA-1 / MA-2): AnkiConnect may be missing — Mado-A's words (`ankiconnect_addon`)
+    "anki_no_addon_title": ankiconnect_addon.NO_CONNECT + ": {n} wait for it",
+    "anki_unsure_title": ankiconnect_addon.UNSURE + ": {n} wait for it",
     "anki_one": "1 episode", "anki_n": "{n:,} episodes",
+    # Michi-U (alpha 9.1 try, Sonic: "if anki miner has an update, it would show in needs you right?")
+    # Michi-NS (PROVISIONAL words, SPEC §9; Mado tunes them)
+    "no_subs_title": "{n} videos have no subtitles yet", "no_subs_title_one": "A video has no subtitles yet",
+    "no_subs_line": "{title} ({n})",
+    "no_subs_say_both": "hato can look for them online, by each show's title. Anki Miner can make each one's subtitle "
+                        "from its audio, on this computer: a misheard word can happen.",
+    "no_subs_say_make": "Anki Miner can make each one's subtitle from its audio, on this computer, a show at a time: "
+                        "a misheard word can happen.",
+    "no_subs_say_hato": "hato can look for them online, by each show's title (jimaku.cc, with your jimaku key).",
+    "miner_update_title": "Update Anki Miner to {version} to make cards from your {what}",
+    "miner_update_say": "{n} for it. Surasura downloads Anki Miner {version} from its own GitHub release, checks it "
+                        "and opens its installer: it asks first. Connect makes their cards by itself once it's updated.",
+    "miner_update_one": "1 title waits", "miner_update_n": "{n:,} titles wait",
     "bulk_title_files": "{n:,} files are gone in {m:,} shows",
     "bulk_title_videos": "{n:,} episodes in {m:,} shows have no video",
     "bulk_title_both": "{m:,} shows are missing files or videos",
@@ -182,12 +218,13 @@ STRINGS = {
     "files_folder_say": "{shows} were in it. Moved it? Choose its folder… to point them at their files there, or "
                         "remove them from your library (Undo brings them back).",
     "library_title": "Most of your library's files are gone ({n} of {total})",
-    "library_say": "Was Surasura installed again, or its library moved? Start fresh sets this library aside in a backup "
-                   "(nothing is deleted) and reads your folders again; choose a folder… if you moved its files.",
-    "emptied_title": "Your library folder was emptied: start a fresh library?",
-    "emptied_say": "Surasura found this library from before ({n} files), but its folder holds none of them now. Start "
-                   "fresh sets it aside in a backup (nothing is deleted) and reads your folders again. Keep my old "
-                   "library carries on with it: its places, and the files you removed stay out.",
+    "library_say": "Was Surasura installed again, or its library moved? Sort my library again clears its order "
+                   "into a backup (nothing is deleted) and reads your folders again; choose a folder… if you moved "
+                   "its files.",
+    "emptied_title": "Your library folder was emptied: sort your library again?",
+    "emptied_say": "Surasura found this library from before ({n} files), but its folder holds none of them now. "
+                   "Sort my library again clears its order into a backup (nothing is deleted) and reads your folders "
+                   "again. Keep my old library carries on with it: its places, and the files you removed stay out.",
     "offline_say": "Its files keep their places and their words. They come back by themselves once it's connected.",
     "drive": "Drive {d}", "folder": "The folder {p}",
     "gap_title": "Connect lost track of your moves {span}: {n} {noun} in the top 20 {have} no cards",
@@ -196,8 +233,8 @@ STRINGS = {
     "first_say": "Your shows came in from your folders without cards: Surasura asks before it makes any.",
     "known_title": "You'd already {states} {n} cards in Anki: mark their words known?",
     "known_title_one": "You'd already {states} a card in Anki: mark its word known?",
-    "known_say": "Count as known in Anki (Settings › Anki) found them there when it first looked, so it asks once. "
-                 "Every card you {states} from now on counts by itself.",
+    "known_say": "Count as known in Anki (Settings › Known words) found them there when it first looked, so it asks "
+                 "once. Every card you {states} from now on counts by itself.",
     # Michi-C (A7B-1…A7B-3 PROVISIONAL): the shows behind the backlog
     "behind_cards": "Your {n:,} new cards", "behind_cards_one": "Your new card",
     "behind_cards_some": "{n:,} of your new cards",
@@ -230,7 +267,7 @@ REASONS = {ASK: "reason_ask", FOLDER_GONE: "reason_folder", OFFLINE: "reason_off
            "repick": "reason_cards", "mine-failed": "reason_cards", "error": "reason_cards", GAP: "reason_gap"}
 REASON_AT = 3                       # cards of one reason that bring its line (the bulk answer's own: two shows)
 # the cards whose own two answers both end them: no ⋯ (its *Not now* would say the same as their own)
-NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS))
+NO_LATER = frozenset((FIRST_CARDS, KNOWN_OFFER, BACKLOG_SHOWS, MINER_UPDATE))   # (Michi-U: the rows' tip points here)
 
 
 # --- small pieces ---------------------------------------------------------------------------------------------------- #
@@ -293,7 +330,7 @@ def item_key(item_id):
 # --- the entries ----------------------------------------------------------------------------------------------------- #
 def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(), asks=(), answered=frozenset(),
             mine_line=20, offers=frozenset(), cards_on=False, miner_found=True, gone_folders=(), settled=False,
-            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None):
+            hidden=frozenset(), emptied=None, settings_folders=(), backlog=None, miner_update=None, no_subs=None):
     """The page's entries in order (see the module's doc). `view`: the reader's `View` (None: no library); `failures`:
     `status` Entries (text, at, seen); `connect`: one language's Connect record (`read_connect`; None: Connect off);
     `seen` / `answered`: `read_seen` / `read_answered`; `offline_roots`: `find_offline`'s Roots; `asks`: `asks_of`'s
@@ -308,7 +345,9 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     `settings_folders` (a6, SI-3): the video folders an imported settings file names that this PC lacks
     (`settings_io.missing_folders`), one card each beside the gone source folders';
     `backlog` (Michi-C): `backlog_offer`'s record — one card while a show behind 順's deck's new cards waits in New
-    arrivals (only the files New arrivals still holds), until *Leave them* (a new show asks again)."""
+    arrivals (only the files New arrivals still holds), until *Leave them* (a new show asks again); `miner_update`
+    (Michi-U): `miner_update(view)`'s answer — ONE line while titles wait only for the approved Anki Miner; `no_subs`
+    (Michi-NS): `no_subs_offer`'s answer — ONE card while videos have no subtitle and a way to get one is here."""
     seen, answered, hidden = frozenset(seen or ()), frozenset(answered or ()), frozenset(hidden or ())
     rows = tuple(view.rows) if view is not None and view.mode == "store" else ()
     by_id = {e.id: (r, e) for r in rows for e in r.episodes}
@@ -369,6 +408,12 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     anki = _anki_entry(connect, seen) if cards_on else None    # Connect may run (it clears the line by itself: A-5)
     if anki is not None:
         out.append(anki)
+    update = _miner_entry(miner_update, rows, seen) if miner_update and cards_on else None    # Connect may run
+    if update is not None:
+        out.append(update)
+    subs = _no_subs_entry(view, no_subs, seen) if no_subs else None            # Michi-NS: with Connect off too (Q3)
+    if subs is not None:
+        out.append(subs)
     bulk = _bulk(shows)
     if bulk is not None:
         out.append(bulk)
@@ -382,7 +427,8 @@ def entries(view, failures=(), connect=None, seen=frozenset(), offline_roots=(),
     for ask in asks or ():
         entry = _audiobook_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_ASK else \
             _audiobook_find_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_FIND else \
-            _transcript_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_TRANSCRIPT else _ask_entry(ask, by_id, seen)
+            _transcript_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_TRANSCRIPT else \
+            _lineup_entry(ask, seen) if ask.get("kind") == AUDIOBOOK_LINEUP else _ask_entry(ask, by_id, seen)
         if entry is not None:
             out.append(entry)
     for root in roots:
@@ -450,7 +496,13 @@ def _anki_entry(connect, seen):
     *Open Anki* where Surasura can start it: `anki_openable`, `read_connect`'s), or *Anki needs you* with Anki's own
     reason (a permission prompt, another profile). No *Dismiss*: it goes by itself once Anki opens (Connect's next look
     gives its episodes another reason). Its key holds the reason: closed again later after it went, it counts again
-    (`prune`)."""
+    (`prune`).
+    Mado-N (Sonic 2026-10-31, MA-1 / MA-2): Connect can't tell a closed Anki from AnkiConnect missing (and its answer
+    may be two minutes old), so the closed line takes a look of its own (`read_connect`'s `anki_look`: AnkiConnect and
+    the process list together) and Mado-A's one rule (`ankiconnect_addon.needs_addon`): an Anki seen running is *Anki is open, but AnkiConnect isn't answering* with
+    *Copy code* and the three steps (`data["steps"]` "no_addon"; no *Open Anki*: it is open), one it can't tell is
+    *Anki isn't open, or AnkiConnect isn't answering* with *Open Anki* first in the steps ("unsure"), one seen closed
+    the plain line. The key stays the reason's: the words changing never count it again."""
     waits = _anki_waits(connect)
     if not waits:
         return None
@@ -458,14 +510,137 @@ def _anki_entry(connect, seen):
     episodes = STRINGS["anki_one"] if n == 1 else STRINGS["anki_n"].format(n=n)
     closed = _anki_closed() in waits
     reason = _anki_closed() if closed else max(waits, key=waits.get)
-    title = STRINGS["anki_closed_title" if closed else "anki_needs_title"].format(n=episodes)
+    look = ((connect or {}).get("anki_look") or {}) if closed else {}
+    steps = (("unsure" if look["running"] is None else "no_addon") if ankiconnect_addon.needs_addon(look) else None)
+    title = STRINGS[{"no_addon": "anki_no_addon_title", "unsure": "anki_unsure_title"}.get(
+        steps, "anki_closed_title" if closed else "anki_needs_title")].format(n=episodes)
     if n == 1:
         title = title.replace(" wait for it", " waits for it")
     key = f"anki:{_digest([reason])}:{_SESSION}"     # this window's run: closed again after a restart, it counts again
                                                       # (A-4); `prune` takes an earlier run's key out
-    actions = ("open_anki",) if closed and (connect or {}).get("anki_openable") else ()
+    actions = ("open_anki",) if closed and steps != "no_addon" and (connect or {}).get("anki_openable") else ()
     return Entry(key=key, kind=ANKI_WAIT, title=title, lines=(), actions=actions, unseen=key not in seen,
-                 say="" if closed else reason, data={"episodes": n, "reason": reason})
+                 say="" if closed else reason,
+                 data={"episodes": n, "reason": reason, "closed": closed, "steps": steps,
+                       "running": look.get("running", False)})
+
+
+def _waiting(e):
+    """What an unmined, present episode waits for Anki Miner to mine — "books", "audio" (the rows' `Episode.text`,
+    Connect's `library.waits_for`) — else None. An audiobook's own item with no text (`waiting`, Hon's H-7) waits on
+    its text whatever Anki Miner mines: never one an update would open (review r2 #2)."""
+    if any(getattr(e, name, False) for name in ("cards", "mined", "deleted", "missing", "waiting")):
+        return None
+    return getattr(e, "text", None) or None
+
+
+def waiting_kinds(view):
+    """The kinds the view's unmined items wait on (Michi-U) -> a set; empty for no store view."""
+    if view is None or view.mode != "store":
+        return set()
+    return {k for r in view.rows for e in r.episodes for k in (_waiting(e),) if k}
+
+
+def miner_update(view):
+    """(A worker.) Michi-U: `am_release.update_for` the kinds the view's items wait on — {"version", "kinds"} when
+    the approved Anki Miner would let Connect make their cards, else None. Never raises."""
+    kinds = waiting_kinds(view)
+    if not kinds:
+        return None
+    try:
+        from app.connect import am_release
+        return am_release.update_for(kinds)
+    except Exception:
+        return None
+
+
+def _miner_entry(update, rows, seen):
+    """Michi-U: ONE line while titles wait only because the Anki Miner installed is older than the approved one —
+    *Update Anki Miner to 3.11.0 to make cards from your books and texts* · *Update* (Surasura's own install route:
+    the approved release, its sha256). No *Dismiss*: it goes by itself once Anki Miner is updated (`am_release.opens`
+    says no more). Its key holds the version and the kinds: a later approved release counts again."""
+    kinds = tuple(k for k in update.get("kinds") or () if k)
+    n = sum(1 for r in rows if any(_waiting(e) in kinds for e in r.episodes))
+    if not kinds or not n:
+        return None
+    from app.connect import am_release
+    version = update.get("version") or am_release.APPROVED
+    what = " and ".join(am_release.KIND_WORDS.get(k, k) for k in kinds)
+    key = f"{MINER_UPDATE}:{version}:{'+'.join(kinds)}"
+    wait = STRINGS["miner_update_one"] if n == 1 else STRINGS["miner_update_n"].format(n=n)
+    return Entry(key=key, kind=MINER_UPDATE, title=STRINGS["miner_update_title"].format(version=version, what=what),
+                 lines=(), actions=("update_miner",), unseen=key not in seen,
+                 say=STRINGS["miner_update_say"].format(n=wait, version=version),
+                 data={"version": version, "kinds": kinds, "titles": n})
+
+
+def _no_subs_all(view):
+    """Every waiting video of the view, once (its audiobooks and files gone left out): what the card's key holds, so
+    the card keeps its key while one of them is being made (alpha 4 D2: *Not now* holds until a NEW video waits)."""
+    if view is None or view.mode != "store":
+        return []
+    out, seen = [], set()
+    for r in tuple(view.rows) + tuple(getattr(view, "arrivals", None) or ()):
+        for e in getattr(r, "episodes", None) or ():
+            if e.id not in seen and getattr(e, "waiting", False) and not e.missing and not view_rows._heard(e):
+                seen.add(e.id)
+                out.append((r, e))
+    return out
+
+
+def no_subs_waiting(view):
+    """Michi-NS: the view's waiting videos a way could get a subtitle for -> [(row, episode)] (Current's rows, then New
+    arrivals', each once): never an audiobook's own item, a file gone, one being made now, or one Anki Miner already
+    heard no speech in or couldn't open (`no_subs.DONE_NOTES`: offered again once a subtitle file comes)."""
+    from app import no_subs
+    out = []
+    for r, e in _no_subs_all(view):
+        said = getattr(e, "subs", None)
+        said = said[0] if isinstance(said, tuple) else said
+        if said != no_subs.MAKING and said not in no_subs.DONE_NOTES:
+            out.append((r, e))
+    return out
+
+
+def no_subs_offer(view, settings):
+    """(A worker.) Michi-NS: which ways can get the waiting videos a subtitle now -> {"make": Anki Miner makes them
+    from the audio (`no_subs.can_make`: 3.11's `transcribe`), "hato": hato takes a list and you haven't said yes yet},
+    or None (no waiting video, or neither way: the rows say *No subtitles yet*, as in 3.0). Never raises."""
+    if not no_subs_waiting(view):
+        return None
+    try:
+        from app import no_subs
+        make = no_subs.can_make(settings) is not None
+        hato = not (settings or {}).get(no_subs.SETTING) and no_subs.hato_finds() is not None
+    except Exception:
+        return None
+    return {"make": make, "hato": hato} if make or hato else None
+
+
+def _no_subs_entry(view, offer, seen):
+    """Michi-NS: ONE card for every video with no subtitle — a line per show (*Frieren (3)*, its own *Make them from
+    the audio* while Anki Miner can), *Find them with hato* on the card while hato takes a list and you haven't said
+    yes. Its key holds the videos' ids: a new one brings it back after *Not now* (SPEC §6); *Stop asking* (⋯) ends it."""
+    hits = no_subs_waiting(view)
+    if not hits:
+        return None
+    shows = {}
+    for r, e in hits:
+        shows.setdefault(_group(r), (r, []))[1].append(e)
+    make = bool(offer.get("make"))
+    lines = tuple(NeedLine(key=f"subs:{g}", text=STRINGS["no_subs_line"].format(title=r.title, n=len(eps)),
+                           item_id=None, label=r.title, number=len(eps), rel_path=None,
+                           actions=("make_from_audio",) if make else ())
+                  for g, (r, eps) in shows.items())
+    ids = sorted(e.id for _r, e in hits)
+    key = f"{NO_SUBS}:{_digest(sorted(e.id for _r, e in _no_subs_all(view)))}"
+    say = STRINGS["no_subs_say_both" if make and offer.get("hato") else "no_subs_say_make" if make else
+                  "no_subs_say_hato"]
+    title = STRINGS["no_subs_title_one"] if len(ids) == 1 else STRINGS["no_subs_title"].format(n=len(ids))
+    return Entry(key=key, kind=NO_SUBS, title=title, lines=lines,
+                 actions=("find_with_hato",) if offer.get("hato") else (), unseen=key not in seen, say=say,
+                 data={"shows": {f"subs:{g}": tuple(e.id for e in eps) for g, (_r, eps) in shows.items()},
+                       "item_ids": tuple(ids)})
 
 
 def _gone_entry(group, hits, seen):
@@ -1187,6 +1362,7 @@ def read_connect(language, path=None):
         rec["known_offer"] = known_offer(language)
         if _anki_closed() in _anki_waits(rec):          # A3W-6's *Open Anki*: Anki looked for only then
             rec["anki_openable"] = _anki_openable()
+            rec["anki_look"] = _anki_look()                 # Mado-N: open without AnkiConnect? (the steps)
         return rec
     except Exception:
         return None
@@ -1199,6 +1375,19 @@ def _anki_closed():
     """Connect's *Anki isn't open* reason (`runner.ANKI_CLOSED`)."""
     from app.connect.runner import ANKI_CLOSED
     return ANKI_CLOSED
+
+
+def _anki_look():
+    """Mado-N: AnkiConnect asked once and, unanswered, the process list (`ankiconnect_addon.look`), at the address every
+    Anki caller reads -> the look, or None: under `SURASURA_NO_ANKI_SYNC` (the suites: never a live Anki) or when it
+    failed. A worker's look."""
+    if os.environ.get("SURASURA_NO_ANKI_SYNC"):
+        return None
+    try:
+        from app import anki_connect, settings_manager
+        return ankiconnect_addon.look(anki_connect.address(settings_manager.load_settings()))
+    except Exception:
+        return None
 
 
 def _anki_openable():
@@ -1268,6 +1457,8 @@ def asks_of(store):
         out += [dict(a, kind=AUDIOBOOK_FIND) for a in store.audiobook_finds()]
     if hasattr(store, "transcript_mismatches"):          # a6 (H-13): a transcript its book doesn't hold
         out += [dict(a, kind=AUDIOBOOK_TRANSCRIPT) for a in store.transcript_mismatches()]
+    if hasattr(store, "audiobook_mismatches"):           # Stage B: nothing lined up with its book — together?
+        out += [dict(a, kind=AUDIOBOOK_LINEUP) for a in store.audiobook_mismatches()]
     return out
 
 
@@ -1315,6 +1506,20 @@ def _transcript_entry(ask, seen):
                                                                 book=ask.get("book") or "?"),
                  lines=(), actions=(), unseen=key not in seen, say=say,
                  data={"item_id": ask["item_id"], "transcript": ask.get("transcript") or ""})
+
+
+def _lineup_entry(ask, seen):
+    """Michi-AB Stage B's one question a pair: *This audiobook doesn't match 「…」* — *Keep them together*
+    (`keep_together`: an answer kept, the book's cards without sentence audio, never lined up again) · *Separate them*
+    (`separate_them`: its own title again, one Undo). Keyed by the pair (its answer key)."""
+    if not ask.get("key") or ask.get("item_id") is None:
+        return None
+    key = f"lineup:{_digest(['audiobook-lineup', str(ask['key'])])}"
+    return Entry(key=key, kind=AUDIOBOOK_LINEUP,
+                 title=STRINGS["abook_lineup_title"].format(book=ask.get("book") or "?"), lines=(),
+                 actions=("keep_together", "separate_them"), unseen=key not in seen,
+                 say=STRINGS["abook_lineup_say"].format(files=_audiobook_files(ask)),
+                 data={"item_id": ask["item_id"], "key": ask["key"], "title": ask.get("title") or ""})
 
 
 def _audiobook_entry(ask, seen):
@@ -1383,15 +1588,18 @@ class _Lister:
     def __init__(self):
         self._got = {}
 
-    def videos(self, folder, deep):
-        key = (os.path.normcase(os.path.abspath(folder)), deep)
+    def videos(self, folder, deep, skip=False):
+        """`skip`: a library folder's (a source's) own walk — the subfolders its look skips are never listed
+        (`library_store.skip_dir`: dot folders, the recycle bins, a folder link), as Connect's index walks it."""
+        key = (os.path.normcase(os.path.abspath(folder)), deep, skip)
         if key not in self._got:
-            self._got[key] = self._list(folder, deep)
+            self._got[key] = self._list(folder, deep, skip) if skip else self._list(folder, deep)
         return self._got[key]
 
     @staticmethod
-    def _list(folder, deep):
+    def _list(folder, deep, skip=False):
         from app.connect import runner, videos
+        from app.library_store import skip_dir
         out, todo = [], [(folder, 0)]
         while todo:
             where, depth = todo.pop()
@@ -1400,7 +1608,7 @@ class _Lister:
                     for entry in found:
                         try:
                             if entry.is_dir(follow_symlinks=False):
-                                if deep and depth < videos.DEPTH:
+                                if deep and depth < videos.DEPTH and not (skip and skip_dir(entry.name, entry)):
                                     todo.append((entry.path, depth + 1))
                             elif runner.video_file(entry.name, entry.stat(follow_symlinks=False).st_size):
                                 # Connect's one rule for a video file: never a Mac `._` copy or a small `.ts`
@@ -1416,25 +1624,62 @@ def _fold(text):
     return re.sub(r"[\W_]+", "", (text or "").casefold())
 
 
-def find_videos(language, need, settings, data_dir=None, _lister=None):
-    """A *no video* card's lines looked for (see the module's doc) -> [(label, path or None, why)], in its order."""
+_SUBS_FOLDER = re.compile(r"subs?|subtitles?|字幕", re.I)
+
+
+def _show_name(rel_path):
+    """The show's own name for the look: the nearest folder of `rel_path` that names something — never a tier, a
+    season or the specials (`episode_names.season_folder`), nor a subtitles folder — folded; '' when none does."""
+    from app import episode_names
+    for part in reversed([p for p in _norm(rel_path).split("/")[:-1] if p]):
+        if (part in library_store.TIER_OF_FOLDER or episode_names.season_folder(part) is not None
+                or _SUBS_FOLDER.fullmatch(part.strip())):
+            continue
+        return _fold(part)
+    return ""
+
+
+def _telling(name):
+    """Is a folded name long enough to tell one show from another (`K`, `JP` never)?"""
+    return len(name) >= 3 or (len(name) == 2 and not name.isascii())
+
+
+def find_videos(language, need, settings, data_dir=None, _lister=None, _sources_=None):
+    """A *no video* card's lines looked for (see the module's doc) -> [(label, path or None, why)], in its order.
+    `_sources_`: the library's folders read once already (`find_all`)."""
     if need.kind != NO_VIDEO:
         raise ValueError("find_videos serves the no-video card only: a gone file is relinked, never given a video")
     from app.connect import videos
     data_dir = data_dir or path_utils.get_data_path(language)
     lister = _lister or _Lister()
-    folders = videos.configured(settings, language)
+    sources = _sources(language, data_dir) if _sources_ is None else _sources_
+    places = (sources, videos.configured(settings, language))     # the library's folders first, then the ones you add
     title = (need.data or {}).get("title")
-    return [_find_one(line, data_dir, folders, title, lister) for line in need.lines]
+    return [_find_one(line, data_dir, places, title, lister) for line in need.lines]
 
 
 def find_all(language, entries_, settings, data_dir=None):
     """*Find all missing videos*: every *no video* card's lines, one listing per folder -> {entry key: results}."""
     lister = _Lister()
-    return {e.key: find_videos(language, e, settings, data_dir, lister) for e in entries_ if e.kind == NO_VIDEO}
+    sources = _sources(language, data_dir or path_utils.get_data_path(language))
+    return {e.key: find_videos(language, e, settings, data_dir, lister, sources) for e in entries_
+            if e.kind == NO_VIDEO}
 
 
-def _find_one(line, data_dir, folders, title, lister):
+def _sources(language, data_dir):
+    """The library's own folders (the sources the store reads: the ones on) — [] with no store to read (JSON mode, not
+    built, busy, damaged): the other places are still looked in."""
+    try:
+        store = library_store.open_store(language, data_dir, path_utils.get_user_files_path(language))
+        if store is None:
+            return []
+        with store:
+            return [s["path"] for s in store.sources(counts=False) if s.get("path")]
+    except Exception:                               # busy, damaged: the look goes on without them
+        return []
+
+
+def _find_one(line, data_dir, places, title, lister):
     from app.connect import runner
     if line.number is None:
         return line.label, None, STRINGS["why_no_number"]
@@ -1444,31 +1689,44 @@ def _find_one(line, data_dir, folders, title, lister):
     def matching(paths):
         return [p for p in paths if view_rows.episode_number(os.path.basename(p)) == line.number]
 
+    names = [n for n in (_fold(title), _show_name(line.rel_path)) if _telling(n)]
+
+    def named(path, top):
+        return any(n and n in _fold(os.path.relpath(path, top)) for n in names)
+
     own = matching(lister.videos(show, False))
-    own_keys = {os.path.normcase(p) for p in own}
-    others, seen_keys = [], set(own_keys)
-    for folder in folders:
-        for p in matching(lister.videos(folder, True)):
-            k = os.path.normcase(p)
-            if k not in seen_keys:
-                seen_keys.add(k)
+    seen_keys = {os.path.normcase(p) for p in own}
+    cloud = any(not runner._on_disk(p) for p in own)
+    tiers = []                                      # each place's matches, in its order (a video in two: its first)
+    for at, folders in enumerate(places):
+        others = []
+        for folder in folders:
+            for p in matching(lister.videos(folder, True, skip=at == 0)):
+                k = os.path.normcase(p)
+                if k in seen_keys:
+                    continue
+                if at == 0 and not named(p, os.path.dirname(os.path.abspath(folder))):
+                    continue                        # the library's folders hold every show: only one named like
+                seen_keys.add(k)                    # this one (a folder on its path, the source's own, or its name)
                 others.append((p, folder))
+        cloud = cloud or any(not runner._on_disk(p) for p, _f in others)
+        tiers.append([(p, f) for p, f in others if runner._on_disk(p)])
     here = [p for p in own if runner._on_disk(p)]
-    there = [(p, f) for p, f in others if runner._on_disk(p)]
     if len(here) == 1:
-        why = STRINGS["why_found_own"].format(name=os.path.basename(here[0]), k=len(there)) if there else \
+        more = sum(len(there) for there in tiers)
+        why = STRINGS["why_found_own"].format(name=os.path.basename(here[0]), k=more) if more else \
             STRINGS["why_found"].format(name=os.path.basename(here[0]))
         return line.label, here[0], why
     if len(here) > 1:
         return line.label, None, STRINGS["why_many"].format(k=len(here), n=shown)
-    if len(there) == 1:
-        return line.label, there[0][0], STRINGS["why_found"].format(name=os.path.basename(there[0][0]))
-    if len(there) > 1:
-        names = [_fold(title), _fold(os.path.basename(show))]
-        named = [p for p, f in there if any(n and n in _fold(os.path.relpath(os.path.dirname(p), f)) for n in names)]
-        if len(named) == 1:
-            return line.label, named[0], STRINGS["why_found_named"].format(name=os.path.basename(named[0]))
-        return line.label, None, STRINGS["why_many"].format(k=len(there), n=shown)
-    if own or others:                               # every match a cloud placeholder: never opened, never taken
+    for there in tiers:                             # the first place holding any decides: never a later one's guess
+        if len(there) == 1:
+            return line.label, there[0][0], STRINGS["why_found"].format(name=os.path.basename(there[0][0]))
+        if len(there) > 1:
+            close = [p for p, f in there if named(os.path.dirname(p), f)]
+            if len(close) == 1:
+                return line.label, close[0], STRINGS["why_found_named"].format(name=os.path.basename(close[0]))
+            return line.label, None, STRINGS["why_many"].format(k=len(there), n=shown)
+    if cloud:                                       # every match a cloud placeholder: never opened, never taken
         return line.label, None, STRINGS["why_cloud"].format(n=shown)
     return line.label, None, STRINGS["why_none"].format(n=shown)

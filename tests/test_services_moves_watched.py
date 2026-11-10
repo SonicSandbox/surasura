@@ -358,7 +358,7 @@ def test_W1_after_a_drop_the_tiers_order_is_read_only_when_the_anchor_is_needed(
     assert numbers.after_move([goal[-1]["id"]], "graduated", after_id=fin[0]["id"], order=counting, aside=aside) == {}
     assert numbers.after_move(hero[:2], "now", before_id=hero[2], order=counting, aside=aside) == {}
     assert numbers.after_move([fin[0]["id"]], "now", after_id=hero[1], order=counting, aside=aside) == {}
-    assert counting.reads == 0 and resyncs == [1, 1]
+    assert numbers.idle(10) and counting.reads == 0 and resyncs == [1, 1]   # the resyncs run on the worker
     touched = numbers.after_move([goal[-1]["id"]], "now", after_id=hero[1], order=counting, aside=aside)
     assert touched and counting.reads == 1 and resyncs == [1, 1]
     numbers.close()

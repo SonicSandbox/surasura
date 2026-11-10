@@ -39,6 +39,8 @@ def load_build_config(path=BUILD_CONFIG):
     if not isinstance(release, dict) or not all(_version_tuple(release.get(k)) for k in ("min_from",
                                                                                          "installer_min_from")):
         problems.append("release must give min_from and installer_min_from")
+    elif not _telemetry_url_ok(release.get("telemetry_url")):
+        problems.append("release must give telemetry_url, the receiver's https address (update.json carries it)")
     parts = config.get("parts")
     names = [p.get("name") for p in parts if isinstance(p, dict)] if isinstance(parts, list) else []
     if not isinstance(parts, list) or not parts or len(names) != len(parts) or len(set(names)) != len(names) or \
@@ -49,6 +51,12 @@ def load_build_config(path=BUILD_CONFIG):
     if problems:
         raise ValueError("packaging/build_config.json: " + "; ".join(problems))
     return config
+
+
+def _telemetry_url_ok(value):
+    """The client's own rule (`update_checker.valid_telemetry_url`): what the release writes, every 3.x reads."""
+    from app import update_checker
+    return update_checker.valid_telemetry_url(value) is not None
 
 
 def _version_tuple(text):
@@ -361,10 +369,11 @@ def read_signing_key(path):
 def _build_release(final_dist, version, config, out_dir="dist", installer=None, needs_installer=False):
     """Write a 3.x release's update artifacts into `out_dir`: one zip per part (surasura_part_<name>_v<ver>.zip),
     update.json and, when a signing key is set, update.json.sig. `installer`: the built installer's path in `out_dir`
-    (its 2.x hand-off block is written only then). `package.install_shape`: the .iss's shape (`install_shape`); a 3.x
-    program stamped with another runs the installer. `needs_installer`: the manual override, for what the shape can't
-    see (`--needs-installer`). -> the manifest dict, or None when SURASURA_SIGNING_KEY_FILE names a key that can't be
-    used: then nothing is written (a release named a key, so it never goes out unsigned)."""
+    (its 2.x hand-off block is written only then, naming the updater's copy). `package.install_shape`: the .iss's
+    shape (`install_shape`); a 3.x program stamped with another runs the installer. `needs_installer`: the manual
+    override, for what the shape can't see (`--needs-installer`). -> the manifest dict, or None when
+    SURASURA_SIGNING_KEY_FILE names a key that can't be used: then nothing is written (a release named a key, so it
+    never goes out unsigned)."""
     import zipfile
     from app import ed25519
 
@@ -400,6 +409,7 @@ def _build_release(final_dist, version, config, out_dir="dist", installer=None, 
         "critical": False,
         "sha256": "",
         "notes_url": f"https://github.com/SonicSandbox/surasura/releases/tag/v{version}",
+        "telemetry_url": config["release"]["telemetry_url"],    # where 3.x's next heartbeat goes (signed with it)
         "format": 2,
         "package": {"parts": parts, "files": files, "needs_installer": bool(needs_installer),
                     "min_from": config["release"]["min_from"], "install_shape": install_shape()},
@@ -407,8 +417,12 @@ def _build_release(final_dist, version, config, out_dir="dist", installer=None, 
     if installer:
         # 2.x's hand-off (S1.3-6): 2.5 runs this installer, its wizard showing (args empty); 2.4.0 and older see a
         # download. A 3.x release without an installer is "full" to every 2.x.
+        # The updater downloads its own copy of the same bytes (`updater_installer_name`), so the setup's download count
+        # on GitHub is people's, never an update's.
+        for_updates = os.path.join(out_dir, updater_installer_name(version))
+        shutil.copyfile(installer, for_updates)
         manifest["update_type"] = "installer"
-        manifest["installer"] = {"asset": os.path.basename(installer), "sha256": _sha256(installer), "args": [],
+        manifest["installer"] = {"asset": os.path.basename(for_updates), "sha256": _sha256(for_updates), "args": [],
                                  "min_from": config["release"]["installer_min_from"]}
 
     data = canonical_json(manifest)
@@ -467,6 +481,12 @@ def installer_name(version):
     return f"Surasura-{version}-setup.exe"
 
 
+def updater_installer_name(version):
+    """The installer's second name: the same bytes, published once more for the in-app updater alone (update.json's
+    `installer.asset`), named so nobody downloads it by mistake (Sonic, 2026-10-30)."""
+    return f"in-app-updates-{version}.exe"
+
+
 def installer_defines(version, data_name, program_dir, real_name):
     """The .iss's defines. The real program: APP_GUID, "Surasura", %LOCALAPPDATA%\\Programs\\Surasura. A test build:
     an AppId of its own (derived from its data_name, so each test name has one), "Surasura (test)", and its data_name
@@ -484,6 +504,35 @@ def installer_defines(version, data_name, program_dir, real_name):
         "DataName": data_name,
         "ProgramDir": os.path.abspath(program_dir),
     }
+
+
+# The installer's agreement page (Inno's LicenseFile: "I accept" before Next): packaging/agreement.txt (your content, no
+# warranty, liability), then the LICENSE the program folder ships (the repo's, copied by this build), so a licence change
+# needs no edit here.
+AGREEMENT_HEAD = os.path.join(os.path.dirname(INSTALLER_SCRIPT), "agreement.txt")
+AGREEMENT_FILE = os.path.join("build", "installer_agreement.txt")
+AGREEMENT_RULE = "-" * 60
+
+
+def write_agreement(out=AGREEMENT_FILE, head=AGREEMENT_HEAD, licence="LICENSE"):
+    """packaging/agreement.txt, a rule, then `licence` as it is, into `out` (UTF-8 with a BOM, CRLF: what Inno's page
+    reads) -> `out`'s absolute path, or None (said why) when either can't be read: never an installer without them."""
+    texts = []
+    for path in (head, licence):
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                text = f.read().strip()
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"Installer not built: {path} can't be read for the agreement page ({e}).")
+            return None
+        if not text:
+            print(f"Installer not built: {path} is empty (the agreement page needs it).")
+            return None
+        texts.append(text)
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:
+        f.write(f"{texts[0]}\n\n{AGREEMENT_RULE}\n\n{texts[1]}\n")
+    return os.path.abspath(out)
 
 
 def find_iscc():
@@ -510,6 +559,10 @@ def build_installer(final_dist, version, data_name, real_name, out_dir="dist"):
     if os.path.exists(out):
         os.remove(out)
     defines = installer_defines(version, data_name, final_dist, real_name)
+    agreement = write_agreement(licence=os.path.join(final_dist, "LICENSE"))
+    if agreement is None:
+        return None
+    defines["AgreementFile"] = agreement
     cmd = [iscc, "/Qp", f"/O{os.path.abspath(out_dir)}", f"/F{os.path.splitext(installer_name(version))[0]}"] + \
         [f"/D{name}={value}" for name, value in defines.items()] + [INSTALLER_SCRIPT]
     print(f"Compiling the installer ({defines['AppName']}, AppId {{{defines['AppGuid']}}}) ...")
@@ -1032,7 +1085,7 @@ def build(zip_output=False, skip_tests=False, release=False, full_update=False, 
             return False
         print("  -> Attach to the GitHub release: the full zip, every surasura_part_*.zip, update.json"
               + (", update.json.sig" if os.path.isfile(os.path.join("dist", SIGNATURE_NAME)) else "")
-              + (", the installer" if built_installer else ""))
+              + (", the installer under both its names" if built_installer else ""))
 
     print("\n---------------------------------------------------")
     print(f"Build Complete! Package located at: {os.path.abspath(final_dist)}")

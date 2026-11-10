@@ -412,6 +412,9 @@ MOTION = MappingProxyType({
     "mining-spin": 1200, "footer-pulse": 1400, "generate-bar": 300,
     "press-glint": 2400,                 # round 8 row 45: the known count's glint running along its underline once
     "phase-fade": 260,                   # the phase strip: a circle's done tick fading back to dim (after its 2 s)
+    "help-clip": 1000,                   # help cards: the clip player's loop on the clock (it swaps at its frames' own times)
+    "pad-flash": 320,                    # the sort screen: a pad key flashing as its key is pressed (Mado-P)
+    "mark-flap": 2800,                   # setup's load screen: the mark's wings, one slow beat down and up again
     "tooltip-delay": 380, "tooltip-again": 60,
     "tooltip-again-within": 500, "fit-debounce": 80, "drag-start-px": 6, "click-swallow-after-drag": 50,
     "auto-scroll-px-per-frame": 12, "auto-scroll-edge": 50, "auto-scroll-dock": 48,
@@ -578,7 +581,10 @@ DRAG = MappingProxyType({
     "placeholder-ring": 1.5,        # the slot left behind: its fill and an inset accent ring at 60 %
     "placeholder-ring-alpha": 0.6,
     "placeholder-radius": 8,
+    "join-fill-alpha": 0.14,        # a held join's target: its tint under the dashed outline (Sonic 2026-11-01: clear)
     "settle-ms": 300,               # the window's own order stands until the writer has been idle this long
+    "answer-ms": 10000,             # ... then till the store's view read after that comes: one that never comes lets
+                                    # it go this long after the ask (alpha 9.1, `drag.DragController._no_answer`)
     "message-ms": 4000,             # a line said in the footer's slot holds it this long (over the update chip)
     "near": 3,                      # painted neighbours on each side handed to the writer (an anchor gone meanwhile)
     "px-rest": 0.05,                # a px spring rests once this close (L5: its drawn value no longer changes)

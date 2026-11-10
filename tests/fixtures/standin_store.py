@@ -2,7 +2,8 @@
 real scale (2,000 and 20,000 files) before the window meets the real store (W3.1).
 
 It mirrors `app/library_store.py`'s **read** API as the window uses it — names, signatures and shapes, nothing invented:
-- 3.0-dev's reads: `check_mode`, `ordered`, `schedule` (W-1: the numbers' order), `ids`, `item`, `versions`, `meta`,
+- 3.0-dev's reads: `check_mode`, `ordered`, `schedule` (W-1), `scheduled_ids` / `item_keys` (W4.1: the numbers'
+  order and keys), `ids`, `item`, `versions`, `meta`,
   `token`, `changed_since`, `plan_current`, `journey_pending`;
 - L3.1's (Kura, `kura/L3.1-store-additions`; its Inbox lines name them for the window): the change feed —
   `data_version()` and `read_feed(seen, epoch)` with `FEED_ITEM_FIELDS` / `FEED_WORK_FIELDS`, `FEED_POLL` — `pinned()`,
@@ -24,7 +25,7 @@ import threading
 FEED_POLL = 0.1
 FEED_ITEM_FIELDS = ("id", "tier", "ord", "rel_path", "title", "parent_folder", "source_type", "availability",
                     "work_id", "piece_id", "watched", "mined_at", "pinned", "mine_asked", "graduated_at",
-                    "in_learning_order", "added_at", "feed_in")
+                    "in_learning_order", "added_at", "feed_in", "mtime_ns")
 FEED_WORK_FIELDS = ("id", "title", "title_by_user", "titles", "folder_key", "anilist_id", "tmdb_id", "youtube_channel",
                     "media_type", "media_type_by", "cover_source", "cover_ref", "cover_path", "cover_fetched_at",
                     "cover_locked", "feed_in")
@@ -268,6 +269,22 @@ class StandinStore:
                 out[ASIDE] = [{"physical_path": r["rel_path"], "source_type": r["source_type"]}
                               for t in ANALYSED for r in self._tier_rows(t) if not counts(t, r["watched"], keep)]
             return out
+
+    def scheduled_ids(self):
+        """`Store.scheduled_ids`: [(item_id, tier)] of what `schedule` lists, in its order — ids alone."""
+        from app.library_store import ANALYSED, counts
+        self._here()
+        with self._lib._lock:
+            keep = self._lib._meta.get("keep_watched", 0)
+            return [(r["id"], t) for t in ANALYSED for r in self._tier_rows(t)
+                    if counts(t, r["watched"], keep) and r["availability"] != "waiting"]
+
+    def item_keys(self):
+        """`Store.item_keys`: {rel_key: item_id} of every item (`path_key` of its path)."""
+        from app.library_store import path_key
+        self._here()
+        with self._lib._lock:
+            return {path_key(r["rel_path"]): r["id"] for r in self._lib._items.values()}
 
     def ids(self, tier):
         self._here()

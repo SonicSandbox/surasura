@@ -10,13 +10,10 @@ if app_root not in sys.path:
 
 def log_error(msg):
     # The app's log lives in the per-install local data folder (P0.3 02-contract §6), never in the folder Surasura was
-    # started from. Logging never stops the app.
+    # started from; each line stamped with its time and process (path_utils.write_app_log). Logging never stops the app.
     try:
-        from app.path_utils import get_local_data_path
-        folder = os.path.join(get_local_data_path(), "logs")
-        os.makedirs(folder, exist_ok=True)
-        with open(os.path.join(folder, "app_debug_log.txt"), "a", encoding="utf-8") as f:
-            f.write(f"{msg}\n")
+        from app.path_utils import write_app_log
+        write_app_log(msg)
     except Exception:
         pass
 
@@ -73,6 +70,71 @@ def _qt_window():
             log_error(f"The window needs PyQt6, which isn't installed ({e}): opening the Tk dashboard")
             return None
         raise
+
+
+_run = {}      # the command this process runs and when it began (`run`), for its one end line (`_log_end`)
+
+
+def _log_end(code):
+    """The command's end, once: how long it ran and its exit code (a7: the log had no times, so a Generate's length,
+    or how many ran in a burst, could only be guessed). A process that ends by `os._exit` calls it first (the
+    arrivals worker); a killed one writes none."""
+    import time
+    started = _run.pop("started", None)
+    if started is not None:
+        log_error(f"Ended {_run.get('command')} after {time.monotonic() - started:.1f} s (exit {code})")
+    if _run.pop("marked", False):                    # its running mark goes with its end (an `os._exit` too)
+        from app import locks
+        locks.release_running()
+
+
+def _hold_running(command, headless):
+    """This program's running mark for its life (Fresh library, P13: what *Start over completely* waits for, on every
+    OS) -> True when held. A Start over or Put back running (the profile-move lock): waited for, then logged, said
+    (unless headless) and exit 3 — nothing of the profile is touched while it moves. A mark that can't be taken is only
+    logged: never a refusal to start."""
+    from app import locks
+    try:
+        return locks.hold_running(command)
+    except locks.MoveRunning:
+        log_error(f"{command}: a Start over or Put back is running; not started")
+        if not headless:
+            _error_box("Surasura", locks.MOVE_RUNNING)
+        sys.exit(3)
+    except Exception as e:
+        log_error(f"{command}: its running mark couldn't be taken ({e!r})")
+        return False
+
+
+def init_telemetry():
+    """Telemetry's start (either window): the Tk dashboard's here, the 3.0 window's after its start gate."""
+    try:
+        from app import telemetry
+        telemetry.init()
+    except Exception as e:
+        log_error(f"Telemetry init failed: {e}")
+
+
+def run():
+    """The program: one command (`main`, the dispatch), its end logged (`_log_end`), its running mark held throughout."""
+    import time
+    args = [arg for arg in sys.argv[1:] if arg != "--headless"]
+    command = args[0] if args else "window"
+    if command == "--multiprocessing-fork":         # a frozen run's pool worker (freeze_support): no command of its own
+        return main()
+    _run.update(command=command, started=time.monotonic())
+    code = 0
+    try:
+        _run["marked"] = _hold_running(command, "--headless" in sys.argv[1:])
+        main()
+    except SystemExit as e:
+        code = 0 if e.code is None else e.code
+        raise
+    except BaseException as e:
+        code = type(e).__name__
+        raise
+    finally:
+        _log_end(code)
 
 
 def main():
@@ -224,7 +286,7 @@ def main():
                 # on stdin / stdout; it ends when its input closes, on "quit", or idle. Started by the window's
                 # services (app/services/arrivals.py), never by a user.
                 from app import arrivals_worker
-                sys.exit(arrivals_worker.main(sys.argv[2:]) or 0)
+                sys.exit(arrivals_worker.main(sys.argv[2:], before_exit=_log_end) or 0)
 
             elif command == 'word-lists-find':
                 # *Words to leave out*'s Paste text (W3.3 FX-wl, n16 "a worker process"): `word-lists-find --headless`,
@@ -269,20 +331,15 @@ def main():
             log_error("Headless: nothing to run; the dashboard never opens headless")
             sys.exit(2)
 
-        # Telemetry Initialization (either window)
-        try:
-            from app import telemetry
-            telemetry.init()
-        except Exception as e:
-            log_error(f"Telemetry init failed: {e}")
-
         # Default: the window. On the 3.0 line that is the PyQt6 window (W2.1, the window's spec 01 §1.6); the Tk
-        # dashboard opens for `dashboard`, or when PyQt6 is missing.
+        # dashboard opens for `dashboard`, or when PyQt6 is missing. The window's telemetry starts after its start gate
+        # (`shell.main`): it reads settings.json, which a Start over moves at the gate (Fresh library, R2)
         window = None if use_tk else _qt_window()
         if window is not None:
             log_error("Launching the window")
-            sys.exit(window.main(list(sys.argv)) or 0)
+            sys.exit(window.main(list(sys.argv), after_gate=init_telemetry) or 0)
 
+        init_telemetry()
         log_error("Launching Dashboard")
         from app import main as dashboard
         dashboard.main()
@@ -297,4 +354,4 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    run()

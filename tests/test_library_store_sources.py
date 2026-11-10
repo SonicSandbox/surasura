@@ -1289,6 +1289,71 @@ def test_sources_counts_their_items_without_a_grouped_read_and_a_look_asks_for_n
         assert [s["id"] for s in listed] == [one, two] and not [s for s in reads if "pairings" in s]
 
 
+class _RowsToPython:
+    """A store's connection that counts the rows its statements hand to Python (each `fetchone`, `fetchall`, row)."""
+
+    def __init__(self, conn):
+        self.conn, self.rows = conn, 0
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+    def execute(self, *args):
+        return _CountedRows(self, self.conn.execute(*args))
+
+
+class _CountedRows:
+    def __init__(self, counter, cursor):
+        self.counter, self.cursor = counter, cursor
+
+    def __getattr__(self, name):
+        return getattr(self.cursor, name)
+
+    def __iter__(self):
+        for row in self.cursor:
+            self.counter.rows += 1
+            yield row
+
+    def fetchone(self):
+        row = self.cursor.fetchone()
+        self.counter.rows += row is not None
+        return row
+
+    def fetchall(self):
+        rows = self.cursor.fetchall()
+        self.counter.rows += len(rows)
+        return rows
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_sources_counts_in_sqlite_and_brings_no_origin_into_python(language):
+    """W4.1 (the RC's intake stutter): every look's summary (`_publish`) counts each folder's items, and the count read
+    every origin's key into Python — at 20k origins ~0.1 s alone, ~1 s while the window scrolled, its thread waiting
+    for the interpreter row after row. Now SQLite counts each folder (one row a folder), whatever the origins: the same
+    counts as before — `<show>` never counts `<show> S2`, an item with two origins once, a removed one nowhere."""
+    store, data_dir = _empty(language)
+    src = _source_root("a")
+    near = names(language)[127]
+    with store:
+        one = store.add_source(src)
+        ids = store.take_in(one, [_found(language, data_dir, src, f"{near} S2", f"ep{n}.srt", n, episode=n)
+                                  for n in range(1, 31)], first=True).added
+        store.take_in(one, [dict(_found(language, data_dir, src, f"{near} S2", "ep1b.srt", 1, copy=False),
+                                 item_id=ids[0])])
+        os.makedirs(os.path.join(src, near))
+        beside = store.add_source(os.path.join(src, near))
+        inside = store.add_source(os.path.join(src, f"{near} S2"))
+        store.remove([ids[1]])
+        counter = _RowsToPython(store.conn)
+        store.conn = counter
+        try:
+            counted = [(s["id"], s["items"]) for s in store.sources()]
+        finally:
+            store.conn = counter.conn
+        assert counted == [(one, 29), (beside, 0), (inside, 29)]
+        assert counter.rows <= 2 * len(counted), counter.rows      # its root's row, then its count: one each a folder
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_take_in_keeps_the_waiting_videos_between_its_batches_while_nothing_else_writes(language):
     """Every batch of a look read every origin's record for the videos still waiting for their subtitle (22 ms a

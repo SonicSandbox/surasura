@@ -39,11 +39,17 @@ the window's spec A2 #69–70, G4–G7, 06 E8, E10, E11, P1.2-1).
   (`relink_many`: one toast, one Undo; what the store couldn't take said in the bar). The library's card waits for
   every folder's look (`settled`: the shell's judged summary) and offers *Start fresh* — Settings' own sheet, then
   `SourceLooks.fresh` (the old library backed up in the trash, never deleted).
+- **Anki closed, or AnkiConnect missing** (A3W-6; Mado-N, Sonic 2026-10-31 MA-1 / MA-2): the Anki line wears Mado-A's
+  part (`addon_steps.AddonSteps`: *Copy code* + the three steps) where the one rule says AnkiConnect may be missing
+  (`ankiconnect_addon.needs_addon`, the entry's `steps`), and its watch (`addon_steps.Watch`, on the shell's status
+  poll while the card is on screen): once Anki answers it wakes Connect (`kick`), whose look takes the card away; an
+  Anki opened or closed meanwhile reads the line again.
 - **Opening the page** marks its entries seen (`needs.mark_all_seen`, on a worker): they stay listed and stop
   counting (P1.2-1).
 """
 import collections
 import os
+import threading
 import time
 
 from PyQt6.QtCore import QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
@@ -52,7 +58,7 @@ from PyQt6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QScr
                              QVBoxLayout, QWidget)
 
 from app import path_utils, settings_manager, theme
-from app.qt import bridge, motion, strings, style, toast
+from app.qt import addon_steps, bridge, motion, strings, style, toast
 from app.qt import press as qpress
 from app.services import needs as service
 from app.services import phase
@@ -214,6 +220,17 @@ def _settings_folders(settings, language):
         return []
 
 
+def _small(parent, text, tip):
+    """A card's button: small, its tip, reached by Tab, the hand over it."""
+    b = QPushButton(text, parent)
+    b.setProperty("size", "sm")
+    b.setToolTip(tip)
+    b.setAccessibleName(text)
+    b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    return b
+
+
 def _label(text, name, parent, wrap=True):
     lab = _Words(text, parent)
     lab.setObjectName(name)
@@ -228,9 +245,11 @@ def _label(text, name, parent, wrap=True):
 # it (a line's own answer, asking hato again, a folder, a program, the logs)
 ANSWERS = ("mark_known", "leave_known", "keep_all", "leave_them", "mine_anyway", "dismiss", "make_cards",
            "first_cards", "first_cards_on", "not_now", "not_now_on", "find_folder", "stop_reading", "keep_waiting",
-           "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows")
+           "start_fresh", "same_book", "not_book", "no_book", "add_shows", "leave_shows", "get_speech_model",
+           "no_speech_model", "keep_together", "separate_them")
 PRESSED = ANSWERS + ("keep_words", "ask_hato", "choose_folder", "open_logs", "save_logs",
-                     "open_anki", "find_book")
+                     "open_anki", "find_book", "choose_video", "choose_file",      # a7: a picker's start looked for
+                     "make_from_audio", "find_with_hato")                          # Michi-NS: each a long ask
 
 
 class NeedsCards(QWidget):
@@ -258,6 +277,7 @@ class NeedsCards(QWidget):
         self.shown = lambda name, entry, line=None: True
         self.adopt = lambda button, name, entry: None   # a button made again while its press is live: it shows it
         self.has_more = lambda entry: False     # alpha 4 D2: whether a card shows a ⋯ (`NeedsYou.more_entries`)
+        self.addon = lambda card, box, entry: None  # Mado-N: the Anki line's *Copy code* + steps (`NeedsYou._addon`)
         self._owed = None                       # C1: the entries given while the page is hidden, built when it shows
         self._want = ()                         # alpha 4 B: every entry, in order (built or not)
         self._found, self._looking = {}, ()
@@ -401,15 +421,10 @@ class NeedsCards(QWidget):
 
     def _button(self, parent, name, entry, line=None, label=None):
         text, tip = strings.NEEDS_ACTIONS[name]
-        b = QPushButton(label or text, parent)
-        b.setProperty("size", "sm")
+        b = _small(parent, label or text, tip)
         b.setProperty("action", name)
         if line is not None:
             b.setProperty("line", line.key)     # round 8 row 45: a line's own answer (its arc on that line's button)
-        b.setToolTip(tip)
-        b.setAccessibleName(label or text)
-        b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
         b.clicked.connect(lambda _c=False, n=name, e=entry, ln=line: self.action.emit(n, e, ln))
         if name in PRESSED:
             qpress.room(b)                      # round 8 row 45: its arc's room kept at rest, so nothing moves
@@ -429,6 +444,7 @@ class NeedsCards(QWidget):
         box.addWidget(_label(e.title, "needstitle", card))
         if e.say:
             box.addWidget(_label(e.say, "sheetline", card))
+        self.addon(card, box, e)
         by_line = dict(zip((ln.key for ln in e.lines), results or ())) if results else {}
         shown = FOLDER_LINES_SHOWN if e.kind in (service.FILES_FOLDER, service.LIBRARY_GONE) else LINES_SHOWN
         for ln in e.lines[:shown]:
@@ -502,6 +518,69 @@ def _find_miner(settings):
     (`services.tools_found`, B2-7)."""
     from app.services import tools_found
     return tools_found.make_cards_shown(tools_found.tools_found(settings).miner)
+
+
+def _subs_ready(language, settings):
+    """(A worker.) Michi-NS: can Anki Miner make subtitles from the audio now -> "ready" · "no_model" (its speech
+    model isn't there: the window asks) · "no_miner" (none here that can) · "busy" (it can't be asked now)."""
+    from app import no_subs
+    from app.services.settings import thaw
+    miner = no_subs.can_make(thaw(settings))
+    if miner is None:
+        return "no_miner"
+    ready = no_subs.speech_ready(miner, language)
+    return "ready" if ready else "no_model" if ready is False else "busy"
+
+
+def _default_make(opener, registry, language, item_ids, settings, title, install, cancel):
+    """(A worker.) Michi-NS: one show's subtitles made from the audio (`no_subs.make`) through a store handle of this
+    worker's own (closed after), as ONE `transcribe` job in `registry` (its Cancel sets `cancel`; quitting cancels it)
+    — `install` first Anki Miner's speech model (`no_subs.install_speech`). -> `make`'s counts, or {"model_failed":
+    why}."""
+    from app import no_subs
+    from app.services.settings import thaw
+    settings = thaw(settings)
+    job = None
+    if registry is not None:
+        job = registry.record(no_subs.JOB_KIND, strings.NEEDS_SUBS_JOB.format(title=title),
+                              cancel=lambda _job: cancel.set(), on_quit="cancel")
+    got, ok = {}, False
+    try:
+        if install:
+            if job is not None:
+                job.progress(strings.NEEDS_SUBS_JOB_MODEL)
+            miner = no_subs.can_make(settings)
+            why = no_subs.install_speech(miner, language, cancel=cancel.is_set) if miner else None
+            if why == no_subs.STOPPED:
+                return got                          # its Cancel: the bar says *Stopped* (its setup goes on alone)
+            if why:
+                got = {"model_failed": why}
+                return got
+        if opener is None or getattr(opener, "mode", None) != "store" or not hasattr(opener, "handle"):
+            return got
+        store = opener.handle()
+        if store is None:
+            return got
+
+        def progress(n, total, pct):
+            if job is not None:
+                job.progress(strings.NEEDS_SUBS_JOB_STEP.format(title=title, n=min(n + 1, total), total=total),
+                             pct, 100)
+        try:
+            got = no_subs.make(store, language, item_ids, settings, stop=cancel.is_set, on_progress=progress)
+        finally:
+            close = getattr(opener, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    pass
+        ok = bool(got.get("made")) or not any(got.get(k) for k in ("failed", "no_miner", "no_model"))
+        return got
+    finally:
+        if job is not None:
+            job.finish(ok=ok or cancel.is_set(), cancelled=cancel.is_set(),
+                       message=None if ok else strings.NEEDS_SUBS_FAILED)
 
 
 def _default_asks(opener):
@@ -624,6 +703,7 @@ class NeedsYou(QObject):
         self.view = None
         self.data_dir = None                     # None: the language's data folder (looked up on the worker)
         self.connect_line = None
+        self._miner = None                       # Michi-U: the Anki Miner the last gather knew of (the feed's `miner`)
         self.gathers = 0                         # entries worked out (tests: N9)
         self.gone_folders = None                 # T6: the looks' gone rows (None: no look has said yet)
         self._gone_judged = False                # ... and whether every folder was looked at (else no key is pruned)
@@ -643,6 +723,9 @@ class NeedsYou(QObject):
         self.read_connect = service.read_connect
         self.read_asks = lambda: _default_asks(opener)
         self.read_books = lambda item_id: _default_books(opener, item_id)      # a5-2 (Hon)
+        # Michi-NS: *Make them from the audio*'s two steps, each on a worker (tests replace them)
+        self.subs_ready = _subs_ready
+        self.make_subs = lambda *args: _default_make(opener, *args)
         self.open_extract = None                 # a5-2: + Add's EPUB door for a book from disk (tests replace it)
         self.find_offline = service.find_offline
         self.read_settings = win.services.settings.get
@@ -662,10 +745,12 @@ class NeedsYou(QObject):
                               "dismiss": _connect_callable("status", "dismiss"),
                               "save_logs": _connect_callable("status", "save_logs"),
                               "kick": _connect_callable("kick", "kick"),
-                              "open_anki": _connect_callable("open_anki", "for_you")}     # A3W-6
+                              "open_anki": _connect_callable("open_anki", "for_you"),     # A3W-6
+                              "speech_model": _connect_callable("actions", "speech_model")}   # Michi-AB Stage B
         self.cards = page.cards
         self.cards.shown = self.available
         self.cards.has_more = lambda e: e.kind not in service.NO_LATER
+        self.cards.addon = self._addon
         self.cards.more.connect(self.more_menu)
         self.cards.adopt = lambda b, name, entry: qpress.adopt(b, self._press_key(name, entry, b.property("line")),
                                                                win=self.win)
@@ -706,7 +791,8 @@ class NeedsYou(QObject):
         old, self.view = self.view, view
         if view is None:
             return
-        if old is not None and old.mode == view.mode and old.loading == view.loading:
+        miner, self._miner = self._miner, self._miner_now()
+        if old is not None and old.mode == view.mode and old.loading == view.loading and miner == self._miner:
             if _same(old.rows, view.rows):
                 return                               # another tab's change: these entries can't have moved
             if not self._running and _reads_same(old.rows, view.rows) and self._in_order(view.rows):
@@ -737,6 +823,16 @@ class NeedsYou(QObject):
             return
         self.connect_line = key
         self.refresh()
+
+    def _miner_now(self):
+        """Michi-U: the Anki Miner Connect's feed last saw (`feed.Feed.miner`: the setup record's stat, the installer's
+        version) — no read. When it moves (an update by hand, followed), the view's rows read alike yet the Anki Miner
+        line may go: the entries are gathered again."""
+        try:
+            from app.qt.shell import connect_feed
+            return connect_feed(self.language, self.win.services.settings).latest().miner
+        except Exception:
+            return None
 
     def _anki_waiting(self):
         """The feed's episodes waiting on Anki for you, as (item, reason)s — no read (`Provider.latest`)."""
@@ -850,7 +946,9 @@ class NeedsYou(QObject):
                                   settled=gone_judged is not None,            # K1: every folder had its look
                                   emptied=emptied,                            # A5K-2: the folder emptied
                                   settings_folders=_settings_folders(settings, lang),     # a6: imported, not here
-                                  backlog=service.backlog_offer(lang, settings))   # Michi-C: the backlog's shows
+                                  backlog=service.backlog_offer(lang, settings),   # Michi-C: the backlog's shows
+                                  miner_update=service.miner_update(view),    # Michi-U: Anki Miner out of date
+                                  no_subs=service.no_subs_offer(view, settings))   # Michi-NS: videos, no subtitle
             return asked, tuple(out)
         bridge.run_in_worker(gather, then=self._got, failed=self._gather_failed)
 
@@ -919,7 +1017,8 @@ class NeedsYou(QObject):
 
     # --- the actions ------------------------------------------------------------------------------------------- #
     WRITES = frozenset(("choose_file", "choose_folder", "choose_video", "link_these", "remove", "remove_episode",
-                        "remove_all", "this_one", "its_new", "same_book", "not_book", "find_book", "no_book"))
+                        "remove_all", "this_one", "its_new", "same_book", "not_book", "find_book", "no_book",
+                        "keep_together", "separate_them"))
 
     def available(self, name, entry=None, line=None):
         """Whether `name` has a callable here (its button shown)."""
@@ -929,6 +1028,8 @@ class NeedsYou(QObject):
             return getattr(self.win, "moves", None) is not None
         if name in ("mine_anyway", "ask_hato", "dismiss", "save_logs", "open_anki"):
             return self.connect_calls.get(name) is not None
+        if name in ("get_speech_model", "no_speech_model"):
+            return self.connect_calls.get("speech_model") is not None
         if name == "stop_reading":                   # T6: through the window's writer (its Undo)
             return getattr(self.win, "moves", None) is not None
         if name == "find_folder":                    # ... and the looks read the folder picked
@@ -1047,25 +1148,59 @@ class NeedsYou(QObject):
         self.found.pop(entry.key, None)
         self._paint()
 
-    def _do_choose_video(self, entry, line):
-        folder = os.path.join(self._data(), *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
-        path = self.pick_file(strings.NEEDS_CHOOSE_VIDEO_TITLE.format(label=line.label), folder)
-        if not path:
+    def _start_then(self, name, entry, find, pick, line=None):
+        """a7 (DIAGNOSIS 7): where a picker starts, worked out on a worker (`find()`: a drive may be slow or gone) under
+        one press — `name`'s arc turns from the click, a second click meanwhile does nothing (A7S-3) — then
+        `pick(folder)` here, only on the window and language it was pressed in (ids repeat across stores: A4B-5)."""
+        language = getattr(self.win, "language", None)
+        p = qpress.begin(self._control(name, entry, line), self._press_key(name, entry, line and line.key),
+                         win=self.win)
+        if p is None:
             return
-        writer = self.win.services.writer
-        self._give(line.label, (line.item_id,), lambda t: writer.link_video(line.item_id, path, label=t),
-                   toast_it=False)
-        self.win.toasts.show(strings.NEEDS_LINKING_ONE.format(label=line.label))
+
+        def then(folder):
+            if p.live():
+                qpress.end(p, self.win)
+            if self._alive() and getattr(self.win, "language", None) == language:
+                pick(folder)
+        bridge.run_in_worker(find, then=then, failed=lambda _info: then(self._data()))
+
+    def _do_choose_video(self, entry, line):
+        """*Choose file…* for a video: the picker starts in the content's own folder (`own_folder`, a7: where its
+        subtitles are read from — a video is linked wherever it is), else the nearest one above, else the copy's."""
+        from app.services import own_folder
+        data, opener = self._data(), own_folder.opener_of(self.win)
+        ids = (line.item_id,) + tuple(ln.item_id for ln in entry.lines if ln.item_id != line.item_id)
+        folders = ((entry.data or {}).get("folder", ""),)
+
+        def pick(folder):
+            path = self.pick_file(strings.NEEDS_CHOOSE_VIDEO_TITLE.format(label=line.label), folder)
+            if not path:
+                return
+            writer = self.win.services.writer
+            self._give(line.label, (line.item_id,), lambda t: writer.link_video(line.item_id, path, label=t),
+                       toast_it=False)
+            self.win.toasts.show(strings.NEEDS_LINKING_ONE.format(label=line.label))
+        self._start_then("choose_video", entry, lambda: own_folder.read(opener, data, ids, (line.rel_path,), folders),
+                         pick, line)
 
     # a file gone: point it at its file (relink), keep its words, or remove it
     def _do_choose_file(self, entry, line):
-        folder = os.path.join(self._data(), *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
-        path = self.pick_file(strings.NEEDS_CHOOSE_FILE_TITLE.format(label=line.label), folder)
-        if not path:
-            return
-        writer = self.win.services.writer
-        self._give(strings.NEEDS_RELINKED.format(label=line.label), (line.item_id,),
-                   lambda t: writer.relink(line.item_id, path, label=t))
+        """*Choose file…* for a file gone: the picker starts at its copy's folder, else the nearest one above it in the
+        library (`own_folder.library_side`: the store takes only a file inside the library, `Store.relink`)."""
+        from app.services import own_folder
+        data = self._data()
+        folders = ((entry.data or {}).get("folder", ""),)
+
+        def pick(folder):
+            path = self.pick_file(strings.NEEDS_CHOOSE_FILE_TITLE.format(label=line.label), folder)
+            if not path:
+                return
+            writer = self.win.services.writer
+            self._give(strings.NEEDS_RELINKED.format(label=line.label), (line.item_id,),
+                       lambda t: writer.relink(line.item_id, path, label=t))
+        self._start_then("choose_file", entry, lambda: own_folder.library_side(data, (line.rel_path,), folders), pick,
+                         line)
 
     def _do_choose_folder(self, entry, _line):
         """*Choose a folder…*: one press from the click to the toast (round 8 row 45) — its arc turns while the folder
@@ -1077,7 +1212,6 @@ class NeedsYou(QObject):
         it was pressed in: closed, or another library shown since (ids repeat across stores), nothing is given
         (A4B-5)."""
         data = self._data()
-        start = os.path.join(data, *[p for p in (entry.data or {}).get("folder", "").split("/") if p])
         lines = tuple(entry.lines)
         tree = entry.kind in (service.FILES_FOLDER, service.LIBRARY_GONE)
         language = getattr(self.win, "language", None)
@@ -1096,7 +1230,7 @@ class NeedsYou(QObject):
             if not here():
                 ended()
                 return
-            folder = self.pick_folder(strings.NEEDS_CHOOSE_FOLDER_TITLE, start if there else data)
+            folder = self.pick_folder(strings.NEEDS_CHOOSE_FOLDER_TITLE, there or data)
             if not folder:
                 ended()
                 return
@@ -1113,7 +1247,10 @@ class NeedsYou(QObject):
                 self._failed(info)
             bridge.run_in_worker(_matched_inside, folder, (entry.data or {}).get("folder", ""), lines, tree, data,
                                  then=matched, failed=broke)
-        bridge.run_in_worker(os.path.isdir, start, then=pick, failed=lambda _info: pick(False))
+        # a7: the copy's folder, else the nearest one above it in the library (only a file inside it is taken)
+        from app.services import own_folder
+        bridge.run_in_worker(own_folder.library_side, data, (), ((entry.data or {}).get("folder", ""),),
+                             then=pick, failed=lambda _info: pick(None))
 
     def _relink_many(self, found, n, folder, tree):
         """`found` = (the pairs matched inside the library folder, how many more were matched outside it): every one
@@ -1282,16 +1419,21 @@ class NeedsYou(QObject):
         picked at once (looked up on a worker: its sha256 against the library's books). Any other opens + Add's own
         door (Extract) with it, and the audiobook joins it once Extract has added THAT file (`on_added`, keyed by its
         path: another job's book never). Closed before it ends: the book is in the library and the card's list holds
-        it."""
-        path = self.pick_file(strings.NEEDS_FIND_FILE_TITLE.format(audio=entry.data.get("title") or ""), "")
-        if not path or not path.lower().endswith(".epub"):
-            if path:
-                self._say(strings.NEEDS_FIND_NOT_EPUB)
-            return
+        it. The picker starts in the audiobook's own folder (`own_folder`, a7: a book often sits beside it)."""
+        from app.services import own_folder
         item_id = entry.data["item_id"]
-        read = self.read_books
-        self._press("find_book", entry, lambda: _held_book(read(item_id), path),
-                    then=lambda held: self._held_or_extract(entry, path, held), goes=False)
+        data, opener = self._data(), own_folder.opener_of(self.win)
+
+        def pick(folder):
+            path = self.pick_file(strings.NEEDS_FIND_FILE_TITLE.format(audio=entry.data.get("title") or ""), folder)
+            if not path or not path.lower().endswith(".epub"):
+                if path:
+                    self._say(strings.NEEDS_FIND_NOT_EPUB)
+                return
+            read = self.read_books
+            self._press("find_book", entry, lambda: _held_book(read(item_id), path),
+                        then=lambda held: self._held_or_extract(entry, path, held), goes=False)
+        self._start_then("find_book", entry, lambda: own_folder.read(opener, data, (item_id,)), pick)
 
     def _held_or_extract(self, entry, path, held):
         if not self._alive():
@@ -1319,6 +1461,48 @@ class NeedsYou(QObject):
         if self._give(entry.title, (item_id,), lambda t: writer.audiobook_no_book(item_id, label=t),
                       toast_it=False) is not None:
             self._say(strings.NEEDS_NO_BOOK)
+
+    # Michi-AB Stage B (PROVISIONAL): nothing of an audiobook lined up with its book — keep them together (an answer)
+    # or separate them (its own title again: the toast's Undo)
+    def _do_keep_together(self, entry, _line):
+        writer = self.win.services.writer
+        item_id, key = entry.data["item_id"], entry.data["key"]
+        if self._give(entry.title, (item_id,), lambda t: writer.audiobook_keep(item_id, key, label=t),
+                      toast_it=False) is not None:
+            self._say(strings.NEEDS_KEPT_TOGETHER)
+
+    def _do_separate_them(self, entry, _line):
+        writer = self.win.services.writer
+        item_id, key = entry.data["item_id"], entry.data["key"]
+        if self._give(entry.title, (item_id,), lambda t: writer.audiobook_separate(item_id, key, label=t)) \
+                is not None:
+            self._say(strings.NEEDS_SEPARATED)
+
+    # Michi-AB Stage B (AB-Q2): the speech model's one question, Connect's (on a worker; Connect kicked after)
+    def _do_get_speech_model(self, entry, _line):
+        self._speech_model(entry, True)
+
+    def _do_no_speech_model(self, entry, _line):
+        self._speech_model(entry, False)
+
+    def _speech_model(self, entry, yes):
+        answer, kick, lang, read_settings = (self.connect_calls["speech_model"], self.connect_calls.get("kick"),
+                                             self.language, self.read_settings)
+        need_id = entry.data["need_id"]
+        name = "get_speech_model" if yes else "no_speech_model"
+
+        def run():
+            ok = answer(lang, need_id, yes)
+            if ok and kick is not None:
+                kick(read_settings() or {})
+            return ok
+
+        def done(ok):
+            if not ok:
+                self._stays(name, entry)
+            self._connect_done((strings.NEEDS_SPEECH_YES if yes else strings.NEEDS_SPEECH_NO) if ok else
+                               strings.NEEDS_MINE_ANYWAY_NOT)
+        self._press(name, entry, run, then=done)
 
     # T6: a source folder that is gone
     def _do_find_folder(self, entry, _line):
@@ -1568,75 +1752,24 @@ class NeedsYou(QObject):
         bridge.run_in_worker(write, lang, keys, then=lambda n: finish(then, n),
                              failed=lambda info: finish(failed, info))
 
-    # K1: the library mostly gone — *Start fresh* (`SourceLooks.fresh`, with Settings' own sheet)
+    # K1: the library mostly gone — *Start fresh* (Settings' own sheet: Sort again first; Fresh library 3.0.1)
     def _do_start_fresh(self, entry, _line):
-        """*Start fresh*: Settings' *Start a fresh library?* sheet (`settings_sources.fresh_sheet`: what goes, what
-        stays, the store's counts read on the looks' worker first; *Also forget my known words* off; Enter, Esc or a
-        click outside is No), then `SourceLooks.fresh` on the looks' worker — the old library in one dated backup in
-        the trash, never deleted — and the bar says how it went (Settings' words). The arc turns from the press while
-        the counts are read, and from Yes until the reset answers."""
+        """*Start fresh*: Settings' one sheet (`settings_sources.open_fresh`, *Sort my library again* first, no
+        known-words box: Q3), open at once; its press acts over the window (`settings_sources.act`: the load screen
+        and the sort screen, or Start over's restart) — the old library in one dated backup, never deleted. Esc, Back
+        or a click outside closes it, nothing done; the card goes with the fresh library's view."""
+        from PyQt6 import sip
         from app.qt import settings_sources
-        looks = getattr(self.win, "looks", None)
-        if looks is None:
+        if getattr(self.win, "looks", None) is None:
             self._say(strings.NEEDS_FIND_CLOSED)
             return
-        p = qpress.begin(self._control("start_fresh", entry), self._press_key("start_fresh", entry), win=self.win)
-        if p is None:
-            return                                   # one press: its counts or its reset under way
+        sheet = getattr(self, "confirming", None)
+        if sheet is not None and not sip.isdeleted(sheet) and sheet.answer is None:
+            return                                   # one sheet: the press that opened it is still up
 
-        def ask(counts):
-            if p.live():
-                qpress.end(p, self.win)
-                p.release()                          # (the sheet is up: its Yes presses again, or No asks again)
-            if not self._alive():
-                return
-
-            def answered(yes):
-                card, self.confirming = self.confirming, None
-                if yes:
-                    forget = bool(card is not None and card.checked)
-                    self._looks_press("start_fresh", entry, lambda then: looks.fresh(forget, then))
-            self.confirming = settings_sources.fresh_sheet(self.win, counts, answered)
-        counts = getattr(looks, "fresh_counts", None)
-        if counts is None:
-            ask(None)
-            return
-        relay = bridge.Relay(self.win)
-
-        def counted(found):
-            relay.deleteLater()
-            ask(found)
-        relay.said.connect(counted)
-        if not counts(relay.call):
-            relay.deleteLater()
-            ask(None)
-
-    def _looks_press(self, name, entry, call):
-        """`SourceLooks.fresh` on the looks' worker, its button's arc turning until it answers; the bar says how it
-        went (`settings_sources.fresh_said`). Done, the card goes with the fresh library's view; refused or failed,
-        it stays (pressed again, it asks again)."""
-        from app.qt import settings_sources
-        p = qpress.begin(self._control(name, entry), self._press_key(name, entry), win=self.win, goes=True)
-        if p is None:
-            return
-        relay = bridge.Relay(self.win)
-
-        def answered(answer):
-            relay.deleteLater()
-            answer = answer or {}
-            failed = not answer.get("done")
-            if p.live():
-                qpress.end(p, self.win, failed=failed)
-            if failed:
-                self._stays(name, entry)
-            self._say(settings_sources.fresh_said(answer))
-            self.refresh()
-        relay.said.connect(answered)
-        if not call(relay.call):
-            relay.deleteLater()
-            qpress.end(p, self.win, failed=True)
-            self._stays(name, entry)
-            self._say(strings.NEEDS_FIND_CLOSED)
+        def closed():
+            self.confirming = None
+        self.confirming = settings_sources.open_fresh(self.win, self.win, first="sort", done=closed)
 
     # Connect's entries (each on a worker; the window never makes Connect's ledger)
     def _do_mine_anyway(self, entry, _line):
@@ -1660,6 +1793,131 @@ class NeedsYou(QObject):
         self._press("ask_hato", entry, lambda: backfill(lang, read_settings() or {}),
                     then=lambda _s: self._connect_done(strings.NEEDS_ASKED_HATO), goes=False)
 
+    def _do_update_miner(self, entry, _line):
+        """Michi-U: *Update* on Anki Miner's line — asked first in the window (the wizard's words: nothing is
+        downloaded before the yes), then `_update_miner`."""
+        from app.qt import confirm
+        from app.qt import wizard_strings as W
+        version = (entry.data or {}).get("version") or ""
+        self.confirming = confirm.ask(
+            self.win, strings.NEEDS_UPDATE_MINER_ASK.format(version=version), W.INSTALL_ASK_BODY, W.INSTALL_ASK_YES,
+            W.INSTALL_ASK_YES_TIP, no=W.INSTALL_ASK_NO, no_tip=W.INSTALL_ASK_NO_TIP,
+            on_answer=lambda yes: yes and self._update_miner(entry))
+
+    def _update_miner(self, entry):
+        """Surasura's own install route on a worker (`anki_miner_setup.install_as_job`: the approved release, checked
+        by its sha256, its installer opened and waited for; the bar lists it with its Cancel), then the update followed
+        (`setup.follow_install`, forced: the checks run again and Connect is kicked — it starts on the waiting titles).
+        The arc turns until the route ends; the line goes once Anki Miner is updated (the page gathers again); the bar
+        says how it ended."""
+        registry = getattr(getattr(self.win, "services", None), "registry", None)
+        lang, read_settings, cancel = self.language, self.read_settings, threading.Event()
+
+        def run():
+            from app.connect import am_release, setup
+            from app.services import anki_miner_setup as route
+            from app.services.settings import thaw
+            result = route.install_as_job(registry, lambda _done, _total: None, cancel, lambda _r: None,
+                                          confirm=lambda: True)          # (asked above, before any byte)
+            if result == route.INSTALLER_CLOSED:
+                setup.follow_install(thaw(read_settings() or {}), lang, force=True)
+            version = am_release.installed()
+            return result, am_release.known(version) and am_release._key(version) >= am_release._key(
+                am_release.APPROVED)
+
+        def done(answer):
+            from app.qt import wizard_strings as W
+            result, updated = answer
+            self._say(strings.NEEDS_MINER_UPDATED if updated else {
+                "busy": strings.NEEDS_MINER_BUSY, "opened-releases": W.INSTALL_OPENED,
+                "cancelled": W.INSTALL_STOPPED}.get(
+                result, strings.NEEDS_MINER_NOT_UPDATED))
+            self.refresh()
+        self._press("update_miner", entry, run, then=done, goes=False)
+
+    # Michi-NS (3.0.1, SPEC no-subs §3, §7.3): videos with no subtitle
+    def _do_make_from_audio(self, entry, line):
+        """*Make them from the audio* on a show's line: Anki Miner asked on a worker whether it can listen now
+        (`_subs_ready`); its speech model missing, asked once in the window (nothing downloaded before the yes); then
+        `_make_subs`. The arc turns from the press to the end."""
+        from app.qt import confirm
+        ids = tuple(((entry.data or {}).get("shows") or {}).get(line.key) or ()) if line is not None else ()
+        if not ids:
+            return
+        lang, read_settings = self.language, self.read_settings
+
+        def ready(answer):
+            if answer == "ready":
+                self._make_subs(entry, line, ids, install=False)
+            elif answer == "no_model":
+                self.confirming = confirm.ask(
+                    self.win, strings.NEEDS_SUBS_MODEL_ASK, strings.NEEDS_SUBS_MODEL_BODY, strings.NEEDS_SUBS_MODEL_YES,
+                    strings.NEEDS_SUBS_MODEL_YES_TIP, no=strings.NEEDS_SUBS_MODEL_NO,
+                    no_tip=strings.NEEDS_SUBS_MODEL_NO_TIP,
+                    on_answer=lambda yes: yes and self._make_subs(entry, line, ids, install=True))
+            else:
+                self._say(strings.NEEDS_SUBS_NO_MINER if answer == "no_miner" else strings.NEEDS_SUBS_BUSY)
+        self._press("make_from_audio", entry, lambda: self.subs_ready(lang, read_settings() or {}), line=line,
+                    then=ready, goes=False)
+
+    def _make_subs(self, entry, line, ids, install):
+        """The show's subtitles made on a worker as ONE job in the bottom bar (its Cancel stops the episode under way:
+        Anki Miner keeps nothing of it; the ones done stay) — the speech model first after the yes (`install`). Each
+        episode's row lights up as it's filled (the store's feed); the bar says how it ended."""
+        registry = getattr(getattr(self.win, "services", None), "registry", None)
+        lang, read_settings, cancel = self.language, self.read_settings, threading.Event()
+        title = line.label or ""
+        make = self.make_subs
+
+        def done(got):
+            got = got or {}
+            if got.get("model_failed"):
+                self._say(strings.NEEDS_SUBS_MODEL_FAILED.format(why=got["model_failed"]))
+            elif got.get("made"):
+                self._say(strings.NEEDS_SUBS_MADE_ONE if got["made"] == 1 else
+                          strings.NEEDS_SUBS_MADE.format(n=got["made"]))
+            elif cancel.is_set():
+                self._say(strings.NEEDS_SUBS_STOPPED)
+            elif got.get("no_miner"):
+                self._say(strings.NEEDS_SUBS_NO_MINER)
+            elif got.get("busy") or got.get("no_model"):
+                self._say(strings.NEEDS_SUBS_BUSY)
+            elif got.get("no_speech") or got.get("unreadable"):
+                self._say(strings.NEEDS_SUBS_NONE.format(why=strings.NEEDS_SUBS_NO_SPEECH))
+            else:
+                self._say(strings.NEEDS_SUBS_FAILED)
+            if got.get("beside_refused"):
+                self._say(strings.NEEDS_SUBS_BESIDE)
+            self.refresh()
+        self._press("make_from_audio", entry, lambda: make(registry, lang, ids, read_settings() or {}, title, install,
+                                                           cancel), line=line, then=done, goes=False)
+
+    def _do_find_with_hato(self, entry, _line):
+        """*Find them with hato* (NS-2: the one press, the first time): the yes kept (`no_subs.SETTING`, through the
+        settings service), Surasura's tools entry written again (hato's `register` listed: Q3), then a look — after it
+        the waiting videos go to hato on the looks' own worker (`SourceLooks._fill_tracks`)."""
+        from app import no_subs
+        settings = self.win.services.settings
+        settings.set({no_subs.SETTING: True})
+        looks = getattr(self.win, "looks", None)
+        read_settings = self.read_settings
+
+        def run():
+            from app import tools_entry
+            from app.services.settings import thaw
+            try:
+                tools_entry.refresh(thaw(read_settings() or {}))
+            except Exception as e:
+                print(f"Needs you: Surasura's tools entry wasn't written again: {e!r}")
+            return True
+
+        def done(_ok):
+            self._say(strings.NEEDS_HATO_ON)
+            if looks is not None and hasattr(looks, "asked"):
+                looks.asked(refreshed=True)
+            self.refresh()
+        self._press("find_with_hato", entry, run, then=done, goes=False)
+
     def _do_open_anki(self, entry, _line):
         """A3W-6: *Open Anki* on the Anki line — Anki started on Connect's profile, on a worker; the line stays until
         Connect's next look finds it open (it goes by itself)."""
@@ -1668,6 +1926,48 @@ class NeedsYou(QObject):
                       strings.NEEDS_OPENING_ANKI if started else strings.NEEDS_ANKI_NOT_STARTED)
         self._press("open_anki", entry, self.connect_calls["open_anki"], self.read_settings() or {}, then=done,
                     goes=False)
+
+    def _addon(self, card, box, entry):
+        """Mado-N (Sonic 2026-10-31, MA-1 / MA-2): the Anki line while Anki is closed — or AnkiConnect missing — wears
+        Mado-A's part: *Copy code* + the three steps where the one rule says (the entry's `steps`: `needs_addon`), and
+        its watch, which takes the light look every few seconds while the card is on screen; its news (Anki answering,
+        an Anki opened or closed) is `_anki_answered`'s."""
+        data = entry.data or {}
+        if entry.kind != service.ANKI_WAIT or not data.get("closed"):
+            return
+        if data.get("steps") or addon_steps.holding():   # 3.0.1: an install under way stays on its line (Anki closed)
+            steps = addon_steps.AddonSteps(lambda text, tip: _small(card, text, tip), "sheetline", self._say, card,
+                                           url=self._anki_url, checked=lambda: self._anki_answered(None),
+                                           timer=addon_steps.ticker(self.win))
+            steps.copy.setProperty("action", "copy_code")
+            steps.set_unsure(data.get("steps") == "unsure")
+            steps.want(bool(data.get("steps")))
+            box.addWidget(steps)
+            card.steps = steps
+        watch = card.watch = addon_steps.Watch(card, addon_steps.ticker(self.win), self._anki_url, None)
+        watch.answered = lambda w=watch: self._anki_answered(w.news)
+        watch.arm(True, data.get("running"))
+
+    def _anki_url(self):
+        from app import anki_connect
+        from app.services.settings import thaw
+        return anki_connect.address(thaw(self.read_settings() or {}))
+
+    def _anki_answered(self, news):
+        """The watch's news: the entries read again (an Anki opened without AnkiConnect: the steps show; closed: they
+        go). AnkiConnect answering (`news` True) also wakes Connect to look now (`kick`, as *Open Anki*'s own wait does:
+        `open_anki.kick_when_open`) — its waiting episodes go, and the card with them, within seconds, never at its
+        2-minute look."""
+        kick, read_settings = self.connect_calls.get("kick"), self.read_settings
+        if news is True:
+            addon_steps.answered()                      # an install's done line goes: AnkiConnect is in
+            if addon_steps.quiet_open():                # AC-4 A: Anki opened from that done line wakes nothing
+                kick = None
+        if news is True and kick is not None:
+            from app.qt import applog
+            bridge.run_in_worker(lambda: kick(read_settings() or {}), then=lambda _p: None,
+                                 failed=lambda info: applog.log("needs", f"Connect wasn't woken: {info[0]!r}"))
+        self.refresh()
 
     def _do_dismiss(self, entry, _line):
         dismiss = self.connect_calls["dismiss"]

@@ -43,6 +43,7 @@ def pytest_collection_modifyitems(config, items):
 
 
 _errors = []
+_POINTER = []
 
 
 def _record(kind, value, tb):
@@ -54,6 +55,8 @@ def qapp():
     from PyQt6.QtWidgets import QApplication
     from app.qt import style
     app = QApplication.instance() or QApplication(["surasura-tests"])
+    from PyQt6.QtGui import QCursor
+    _POINTER.append(QCursor.pos())                # where the session's pointer starts: each test starts there again
     sys.excepthook = _record
     style.apply(app, "night", "M", "ja")
     yield app
@@ -80,13 +83,21 @@ def _per_test_window_state(request, monkeypatch):
         looks(self, *a, **k)
         made.append(self)
     monkeypatch.setattr(source_looks.SourceLooks, "__init__", made_looks)
+    from app.qt import star_ask                   # Surasura's star ask taken as seen (as the first mark's hint is in
+    monkeypatch.setattr(star_ask.StarAsk, "_seen", lambda self: True)   # `test_drag.open_window`): a test's landed
+    #                                               cards show no toast it didn't ask for; test_star_ask.py asks for it
     before = list(app.children())                 # (some children aren't hashable: compared by identity)
     yield
+    from app.qt import shell as shell_module      # a test that ran `shell.main` / `prepare_process`: the window's idle
+    if shell_module._IDLE_WIRED:                  # no longer told (a test loop wakes without resting: every later
+        shell_module.unwire_idle()                # worker's step would wait `window_idle.CAP_S`)
     qt_bridge = sys.modules.get("app.qt.bridge")
     if qt_bridge is not None and hasattr(qt_bridge, "drop_answers"):
         qt_bridge.drop_answers()                  # before any window goes: an answer on its way lands on nothing (a
         #   window whose close was put off — a move or a job still pending — never ran its own drop)
     for w in app.topLevelWidgets():
+        if _kept(w):                              # a screen a file builds once (`tests/qt/work_counts.py`'s `kept`)
+            continue                              # and its popups: closed by its own module fixture at the file's end
         w.close()
         w.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -116,6 +127,9 @@ def _per_test_window_state(request, monkeypatch):
         except RuntimeError:
             pass
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    if _POINTER:                                  # the one cursor put back where the session began: `QTest.mouseMove`
+        from PyQt6.QtGui import QCursor           # moves it for good, and a test after one that left it over a list
+        QCursor.setPos(_POINTER[0])               # met a hover it never made (train 18: r47 → the wheel's count)
     stones = sys.modules.get("app.qt.stones")
     if stones is not None:                        # (AD-13) a window that never painted nor went: its hold let go
         for token in list(stones._HELD):
@@ -128,6 +142,15 @@ def _per_test_window_state(request, monkeypatch):
     if errors and not getattr(request.node, "_qt_errors_expected", False):
         import traceback
         pytest.fail("an exception escaped a Qt slot:\n" + "".join(traceback.format_exception(*errors[0])))
+
+
+def _kept(w):
+    """A top-level a file keeps for its next test (`wc_keep`), or a popup / bubble parented to one."""
+    while w is not None:
+        if w.property("wc_keep"):
+            return True
+        w = w.parentWidget()
+    return False
 
 
 @pytest.fixture
@@ -180,3 +203,15 @@ def wait_until(predicate, timeout=5.0):
         time.sleep(0.005)
     QApplication.processEvents()
     return predicate()
+
+
+def own_folder_answers(monkeypatch, tmp_path, name):
+    """a7: `own_folder.read` answering with a real folder (a non-ASCII path, as the user keeps shows) and recording
+    what each press asked it."""
+    from app.services import own_folder
+    there = tmp_path / "ユーザーの棚" / name
+    there.mkdir(parents=True)
+    asked = []
+    monkeypatch.setattr(own_folder, "read", lambda opener, data, ids=(), rels=(), folders=():
+                        asked.append((tuple(ids), tuple(rels), tuple(folders))) or str(there))
+    return str(there), asked

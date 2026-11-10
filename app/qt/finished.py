@@ -31,7 +31,7 @@ import os
 import time
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QAction, QPainter
+from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QToolButton,
                              QVBoxLayout)
 
@@ -44,23 +44,20 @@ LAND_MS = 50                                         # how often the import toas
 LAND_DEADLINE_S = 300                                # ... and for how long (W3.2 H T2): then a line, never for ever
 
 
-def folder_of(language, row):
-    """The folder a Finished row's first file is in (on disk), or None."""
-    rel = next((e.rel_path for e in row.episodes if e.rel_path), None)
-    if not rel:
-        return None
-    return os.path.dirname(os.path.join(path_utils.get_data_path(language), *rel.split("/")))
-
-
 def open_folder_of(win, language, row, lst, say):
     """*Open its folder* (Current's ⋯ and Finished's), one press (`press.open`, round 8 row 45): the row's ⋯ turns in
-    `lst` (IK-2) from the frame of the press; the folder is looked for (a drive may be slow or gone, N4) and opened on
-    a worker; none there — or it couldn't open — `say` says so. A second press meanwhile does nothing."""
-    path = folder_of(language, row)
-    ids = [row.episodes[0].id] if row.episodes else []
+    `lst` (IK-2) from the frame of the press; the folder — the content's own (`own_folder`, a7: its originals', else the
+    nearest one above, else its stored copy's) — is looked for (a drive may be slow or gone, N4) and opened on a worker;
+    none there — or it couldn't open — `say` says so. A second press meanwhile does nothing."""
+    from app.services import own_folder
+    every = [e.id for e in row.episodes]
+    rels = [e.rel_path for e in row.episodes if e.rel_path]
+    ids = every[:1]
+    data, opener = path_utils.get_data_path(language), own_folder.opener_of(win)
 
     def there():
-        return path if path is not None and os.path.isdir(path) else None
+        path = own_folder.read(opener, data, every, rels)
+        return path if path and os.path.isdir(path) else None
 
     def opened(found):
         if not found:
@@ -472,10 +469,7 @@ class FinishedActions(QObject):
         are picked, the picks' own (`picks_menu`)."""
         if row.key in self.lst.picked_rows and len(self.lst.picked_rows) > 1:
             return self.picks_menu(row, at)
-        m = QMenu(self.lst)
-        m.aboutToHide.connect(m.deleteLater)            # one menu per click, gone once it closes (L1 N7)
-        m.setObjectName("rowmenu")
-        m.setToolTipsVisible(True)
+        m = drag.list_menu(self.lst, row.title)         # R5: the list's one menu, emptied as it hides (L1 N7)
         m.setAccessibleName(strings.FIN_MENU_NAME.format(title=row.title))
         for name, label, tip, ok, children in self.menu_entries(row):
             if name == "folder":                                    # --- W3.2 L3: Change cover… before Open its folder
@@ -485,7 +479,7 @@ class FinishedActions(QObject):
                 qcovers.add_cover_menu(m, row, writable, None if writable else strings.FIN_REFUSED_TIP.format(
                     reason=strings.READ_ONLY_REASONS.get(raw) or raw))
             if children is not None:
-                sub = m.addMenu(label)
+                sub = drag.sub_menu(m, label)
                 sub.setObjectName("rowmenu")
                 sub.setToolTipsVisible(True)
                 sub.menuAction().setToolTip(tip)
@@ -498,10 +492,9 @@ class FinishedActions(QObject):
         return m
 
     def _action(self, menu, row, name, label, tip, ok):
-        act = QAction(label, menu)
+        act = drag.menu_action(menu, label, lambda n=name: self.menu_pick(row, n))
         act.setToolTip(tip)
         act.setEnabled(ok)
-        act.triggered.connect(lambda _c=False, n=name: self.menu_pick(row, n))
         menu.addAction(act)
         return act
 
@@ -585,9 +578,8 @@ class FinishedActions(QObject):
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
         for (label, tip), how in ((strings.FIN_IMPORT_FILES, "files"), (strings.FIN_IMPORT_FOLDER, "folder")):
-            act = QAction(label, m)
+            act = drag.menu_action(m, label, lambda h=how: self._choose(h))
             act.setToolTip(tip)
-            act.triggered.connect(lambda _c=False, h=how: self._choose(h))
             m.addAction(act)
         self.last_menu = m
         b = self.page.importer

@@ -560,6 +560,7 @@ def test_the_dashboards_save_drops_nothing_from_the_file(library):
 @pytest.mark.parametrize("path, value", [
     ("telemetry_enabled", False),
     ("auto_update_enabled", False),
+    ("update_check_enabled", False),         # Check for updates (3.0, Settings → App): GitHub asked at start, no run
     ("onboarding_completed", True),
     ("split_length", 5000),
     ("add_graduated_words", False),

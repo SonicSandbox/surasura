@@ -58,12 +58,14 @@ import time
 from collections import deque
 
 from app.services.automation import Worker
+from app.services import window_idle
 
 UNDO_DEPTH = 40                 # A2: Ctrl+Z and every move toast's Undo reach this far back
 SAVING_AFTER_S = 0.3            # a command waiting this long marks its rows *saving…* (04 §4.5)
 RETRY_S = 0.25                  # a busy store is asked again this often (a write itself waits LOCK_TIMEOUT first)
 WAIT_S = 0.5                    # the thread looks at its queue at least this often
 MODE_RECHECK_S = 2.0            # idle, the thread asks the store's mode this often (`can_write` reads the answer)
+DEFER_MAX_S = 0.25              # a press's command waits at most this long for the window's go (`Writer.defer`)
 JOURNAL_VERSION = 1
 JOURNAL_TRIES = 10              # a journal write Windows refuses (the file held a moment) is tried this many times
 JOURNALLED = ("move", "nudge", "set_tier", "finish", "set_watched",
@@ -119,6 +121,12 @@ JOURNALLED += ("relink_many",)
 KEPT += ("pairs",)
 # --- a5-2 (Hon): an audiobook's *Find its book…* (its book's EPUB `path`) and *It has no book*
 JOURNALLED += ("audiobook_pick", "audiobook_no_book")
+# --- Michi-AB Stage B: a paired audiobook nothing of which lined up with its book — *Keep them together* (an answer)
+# and *Separate them* (its own title again, one Undo)
+JOURNALLED += ("audiobook_keep", "audiobook_separate")
+# --- Mado-O (alpha 8): the sort screen's *Start sorting over* (`placed`: its placements' records)
+JOURNALLED += ("start_over",)
+KEPT += ("placed",)
 # --- end W3.2 B
 PART = ".part"                  # a dropped file is copied under its name + this (no content name: no sync takes it up),
 #                                 then renamed whole
@@ -145,17 +153,26 @@ def plan_check(language, settings):
     reason when a Generate must come first, else None — current, re-plan now (only the known words or the lists moved:
     *N new* still follows the order), or stands aside (`Numbers` says so itself)."""
     def check(plan, store):
-        from app import analyzer, plan_engine, run_args
-        from app.path_utils import get_user_file
+        from app import plan_engine
         values = settings() if callable(settings) else settings
-        schedule = store.schedule(with_aside=True)
-        found = analyzer.resolve_found_files(language, verbose=False, schedule=schedule, missing=True)
-        args = analyzer.parse_analysis_args(run_args.analyzer_args(values, language)[1:])
-        parts = analyzer.run_signature_parts(language, found, args, analyzer.aside_files(language, schedule))
-        stamp = analyzer.read_run_stamp(get_user_file("results"))
-        verdict = plan_engine.check(plan, language, analyzer.engine_id(), stamp, parts, store.versions().get("epoch"))
+        verdict = plan_engine.check(plan, language, *plan_inputs(language, values, store))
         return verdict[1] if verdict is not None and verdict[0] == "generate-first" else None
     return check
+
+
+def plan_inputs(language, values, store):
+    """What `plan_engine.check` reads of the library as it stands, after the plan: (engine, run stamp, the run
+    signature's parts, the store's epoch) — every file stat'd, a missing item keeping its place, the set-aside files
+    from the same read (the replan host's `_parts` / `_verdict`). One recipe: `plan_check`'s and the journey's
+    `only_moved`. A worker's call."""
+    from app import analyzer, run_args
+    from app.path_utils import get_user_file
+    schedule = store.schedule(with_aside=True)
+    found = analyzer.resolve_found_files(language, verbose=False, schedule=schedule, missing=True)
+    args = analyzer.parse_analysis_args(run_args.analyzer_args(values, language)[1:])
+    parts = analyzer.run_signature_parts(language, found, args, analyzer.aside_files(language, schedule))
+    stamp = analyzer.read_run_stamp(get_user_file("results"))
+    return analyzer.engine_id(), stamp, parts, store.versions().get("epoch")
 
 
 def open_library(language, check=None, log=None, **reader_kw):
@@ -179,6 +196,13 @@ def open_library(language, check=None, log=None, **reader_kw):
     held.append(weakref.ref(reader))
     reader.subscribe_moves(lambda _language, _versions: numbers.resync())
     return opener, numbers, reader
+
+
+class Kept(dict):
+    """The numbers' table while the plan can't be followed (stale): each row's *N new* is the last plan's, kept until a
+    plan that can be is read — the rows paint it faded (Sonic, 2026-10-31: "only faded, that's all"). The table and its
+    state travel as one object, so a reader never pairs a fresh table with a stale mark."""
+    kept = True
 
 
 def _nothing(*_args):
@@ -221,6 +245,7 @@ class Writer:
         self._pending = deque()                     # commands in the order given; the head is the one being written
         self._seq = itertools.count(1)
         self._undo = deque(maxlen=depth)            # the Changes saved, newest last
+        self._replaced = {}                         # SO-1: an Ignore's change -> the one a Start over's Undo gave again
         self._journalled = set()                    # seqs the journal file holds now
         self._journal_dirty = False
         self._head_waits = False                    # P-2-F: the head met a busy store (until it lands)
@@ -233,6 +258,7 @@ class Writer:
         self._stop = False
         self._abandoned = False
         self._mode_at = 0.0
+        self._defer_until = 0.0                     # a press's command waits until then, or the window's `go()`
         self._thread = None
         self._copier = Worker(f"window-copier-{language}")    # an Explorer drop's files, off the writer's thread
         self._copying = 0                           # drops whose files are being copied (not queued yet)
@@ -259,11 +285,13 @@ class Writer:
         return False
 
     def _writable(self):
-        return self.opener.mode == "store" or getattr(self.opener, "reason", None) == "busy"
+        mode, reason = _state_of(self.opener)
+        return mode == "store" or reason == "busy"
 
     def reason(self):
-        """The store's reason when it can't be written (the read-only bar's words), else None."""
-        return None if self._writable() else (getattr(self.opener, "reason", None) or self.opener.mode)
+        """The store's reason when it can't be written (the read-only bar's words), else None — from one answer."""
+        mode, reason = _state_of(self.opener)
+        return None if mode == "store" or reason == "busy" else (reason or mode)
 
     def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
         """`Store.move`. `near`: [(item_id, "before" | "after"), …], the nearest first — where the window would place the
@@ -310,12 +338,15 @@ class Writer:
         # (a show's folder, so the file joins its show; a folder added, its own folders kept).
         # --- K21 (laptop fixes): each file copied in from outside the data folder gets an origin record on its new item,
         # in the same command (`Store._add_origins`: where it came from, the video beside it); `origin=False` (a pasted
-        # text: its temporary file is removed once it lands) records none."""
+        # text: its temporary file is removed once it lands) records none; a dict {a file: its video} (alpha 8, setup's
+        # *Choose a file…* given a video: the one the user picked, paired by the library's rule) names the video."""
         if not self._writable():
             return None                             # E4
         cmd = {"op": "insert_at", "ids": [], "files": [os.fspath(p) for p in paths], "tier": tier,
                "before_id": before_id, "after_id": after_id, "near": [list(n) for n in near or ()], "label": label,
                "origin": bool(origin)}
+        if isinstance(origin, dict) and origin:
+            cmd["videos"] = {os.fspath(k): os.fspath(v) for k, v in origin.items()}
         if into is not None:                        # --- W3.2 Q3
             cmd["into"] = [into] * len(cmd["files"]) if isinstance(into, str) else list(into)
             if len(cmd["into"]) != len(cmd["files"]):
@@ -362,6 +393,27 @@ class Writer:
         if where not in PLACES:
             raise ValueError(f"unknown place {where!r}")
         return self._put({"op": "place", "ids": list(ids), "where": where, "label": label})
+
+    def start_over(self, changes, label=None):
+        """Mado-O (alpha 8): the sort screen's *Start sorting over* — `Store.unsort` of the placements it made
+        (`changes`, saved), one command: every title still where the screen put it back in New arrivals; undone as one
+        move. SO-1: its Ignores too — their files back from the trash under the same write lock (`_start_over`), and
+        ignored again by its Undo (`_undo_start_over`), after which each Ignore's own Undo takes back the new one. Journalled with the placements' records (`library_store.change_record`): a crash before it lands replays
+        it; one that landed before the crash is let go quietly."""
+        from app import library_store
+        with self._cond:                            # SO-1: an Ignore given again by a reset's Undo: its new change
+            changes = [self._latest(c) for c in changes if c is not None]
+        placed = [library_store.change_record(c) for c in changes]
+        ids = list(dict.fromkeys(it["id"] for rec in placed for it in rec["items"]))
+        return self._put({"op": "start_over", "ids": ids, "placed": placed, "label": label, "changes": changes})
+
+    def _latest(self, change):
+        """(Under `_cond`.) `change`, or the change that took its place (`_replaced`, followed to the end)."""
+        seen = set()
+        while change in self._replaced and id(change) not in seen:
+            seen.add(id(change))
+            change = self._replaced[change]
+        return change
 
     def put_back(self, ids, label=None):
         """`Store.put_back_finished`: Finished's *Put back* — the top of Current and its cards back in the order, one
@@ -415,6 +467,16 @@ class Writer:
         """`Store.audiobook_no_book` (Hon, a5-2): *It has no book* — the audiobook stays alone, never asked about a
         book again; kept, as an answer is (never on the Undo stack, `on_reread`)."""
         return self._put({"op": "audiobook_no_book", "ids": [item_id], "label": label})
+
+    def audiobook_keep(self, item_id, key, label=None):
+        """`Store.audiobook_keep_together` (Michi-AB Stage B): *Keep them together* — the pair stays, its cards without
+        sentence audio, never lined up again; an answer kept (never on the Undo stack, `on_reread`)."""
+        return self._put({"op": "audiobook_keep", "ids": [item_id], "key": key, "label": label})
+
+    def audiobook_separate(self, item_id, key, label=None):
+        """`Store.audiobook_separate` (Michi-AB Stage B): *Separate them* — the audiobook its own title again, one
+        command with its Undo (the pair, the answer and the title back as they were)."""
+        return self._put({"op": "audiobook_separate", "ids": [item_id], "key": key, "label": label})
 
     def link_video(self, item_id, video_path, label=None):
         """Connect's *Link…* (`app/connect/link.link`): the episode's video, as a pairing on the existing item —
@@ -651,6 +713,15 @@ class Writer:
         with self._cond:
             return bool(self._undo)
 
+    def newest(self):
+        """The change Ctrl+Z's undo takes back as the queue reaches it — the newest saved, when nothing queued before it
+        can change the Undo stack (3.0.1 item 12: a background cover, a download's registration, Settings' store lines,
+        a replay never do; a move, a Done or another Undo might) — else None: not known yet. Any thread."""
+        with self._cond:
+            if self._copying or any(_stacks(c) for c in self._pending):
+                return None
+            return self._undo[-1] if self._undo else None
+
     def pending(self):
         with self._cond:
             return len(self._pending) + self._copying
@@ -693,6 +764,21 @@ class Writer:
             self._held = False
             self._cond.notify_all()
 
+    def defer(self):
+        """(The window's thread, at a press, before it gives its command.) What is queued waits for `go()` — the window
+        calls it once it has painted the press — or `DEFER_MAX_S`: the writer's thread never takes Python's lock from
+        the window's while it paints the press (Up next at 20,000 files: ~20 ms of the press's stretch was the two
+        threads taking turns)."""
+        with self._cond:
+            self._defer_until = time.monotonic() + DEFER_MAX_S
+
+    def go(self):
+        """(Any thread.) The press is painted: what `defer` held back is written now."""
+        with self._cond:
+            if self._defer_until:
+                self._defer_until = 0.0
+                self._cond.notify_all()
+
     def replay(self):
         """At start: the journal's moves (a crash, or a quit that ran out of time) go first in the queue, applied by id;
         those whose items changed meanwhile are listed once. Nothing while the store can't be written (ask again: the
@@ -727,6 +813,7 @@ class Writer:
             if self._stop:
                 return not self._pending            # finished already: the journal is as that left it
             self._held = False
+            self._defer_until = 0.0
             waiting = bool(self._pending or self._copying)
             self._cond.notify_all()
         if waiting:
@@ -790,6 +877,7 @@ class Writer:
                     elif job == "check":
                         self._check()
                     else:
+                        window_idle.wait()          # Up next 2: a write starts while the window rests
                         self._attempt(cmd)
                 except Exception as e:              # never dies: the command is let go with a note, the queue goes on
                     print(f"Window writer: {e!r}")
@@ -814,7 +902,7 @@ class Writer:
                     self._replay_due = False
                     return "replay", None
                 now = time.monotonic()
-                blocked = self._held or now < self._retry_at
+                blocked = self._held or now < self._retry_at or now < self._defer_until
                 if self._pending and not blocked:
                     return "apply", self._pending[0]
                 if self._journal_dirty and self._pending:
@@ -825,6 +913,8 @@ class Writer:
                 wait = WAIT_S
                 if not self._held and now < self._retry_at:
                     wait = min(wait, self._retry_at - now)
+                if not self._held and now < self._defer_until:
+                    wait = min(wait, self._defer_until - now)
                 self._cond.wait(wait)
 
     def _check(self):
@@ -835,20 +925,24 @@ class Writer:
             print(f"Window writer: the store's mode couldn't be read: {e!r}")
 
     def _store(self):
-        """(handle, busy): this thread's handle, or None with whether the store is only busy."""
+        """(handle, busy): this thread's handle, or None with whether the store is only busy. The opener's answer read
+        as one (`_state_of`); a store whose handle is gone by the time it is asked for (the opener's mode moved under
+        it: another thread's look settling on the shared opener) is busy — asked again, never a refusal: a refusal lets
+        the move go unwritten and unjournalled (LM11b, Up next 4)."""
         self._check()
-        if self.opener.mode == "store":
+        mode, reason = _state_of(self.opener)
+        if mode == "store":
             h = self.opener.handle()
-            if h is not None:
-                return h, False
-        return None, getattr(self.opener, "reason", None) == "busy"
+            return (h, False) if h is not None else (None, True)
+        return None, reason == "busy"
 
     def _attempt(self, cmd):
         lib = _ls()
         cmd.setdefault("first_try", time.monotonic())
         store, busy = self._store()
         if store is None and not busy:
-            reason = getattr(self.opener, "reason", None) or self.opener.mode
+            mode, reason = _state_of(self.opener)
+            reason = reason or mode
             cmd["refused"] = f"{reason}"
             self._landed(cmd)
             self._empty(cmd)
@@ -876,6 +970,11 @@ class Writer:
             elif cmd["op"] == "move" and not cmd.get("numbered"):
                 cmd["numbered"] = (cmd["before_id"], cmd["after_id"])   # the numbers follow the drop once, before its
                 self._numbers_move(cmd, store)                          # first write
+            elif cmd["op"] == "place" and cmd["where"] in PLACED_TOP and not cmd.get("numbered"):
+                cmd["numbered"] = (None, None)      # Up next · Goal's top: `Store.place` is a move to the tier's top —
+                self._numbers_move(cmd, store, tier=PLACED_TOP[cmd["where"]])   # followed as one
+            elif _follows_after(cmd) and not cmd.get("numbered") and self._numbers_expect(cmd):
+                cmd["numbered"] = "after"           # a nudge, a place by its rule: followed from the store's own result
             self._apply(store, cmd)
         except lib.StoreBusy:
             self._busy(cmd)
@@ -948,13 +1047,17 @@ class Writer:
             change.copied = [r["rel_path"] for r in map(store.item, change.added) if r is not None]
         self._refresh_seen(store, cmd["ids"])
         self._refresh_before(store, cmd, change)
+        if cmd.get("numbered") == "after":          # (before it lands for the numbers and before `on_saved`)
+            cmd["followed"] = change is not None and note is None and self._numbers_follow(cmd, store)
+        stacked = not cmd.get("replay") and change is not None and not cmd.get("auto")   # B1: a background cover is
+        if stacked:                                 # nobody's to undo. On the stack before it leaves the queue: while it
+            with self._cond:                        # waits there `newest` says "not known" (review ITEM12 #3: never the
+                self._undo.append(change)           # change before it, in the moment between)
         self._landed(cmd)
         if cmd.get("replay"):
             if change is not None:
                 self._replay_applied += 1
-        elif change is not None and not cmd.get("auto"):  # B1: a background cover is nobody's to undo
-            with self._cond:
-                self._undo.append(change)
+        elif stacked:
             change.landed = _stamp(store)           # finish-pending: what its re-order must reach (the window waits)
             self._call(self.on_saved, change, cmd.get("label"))
         if note is not None:
@@ -975,8 +1078,9 @@ class Writer:
             if change is None:                  # W3.2 (S5): its ticket settles, others pending
                 self._empty(cmd)
             self._call(self.on_reread)
-        if op not in UNORDERED and (op != "move" or change is None or note is not None or
-                                    cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
+        if op not in UNORDERED and not cmd.get("followed") and (
+                op != "move" or change is None or note is not None or
+                cmd.get("numbered") not in (None, (cmd["before_id"], cmd["after_id"]))):
             self._numbers_resync()                  # (a tier's end that moved between the numbers and the write too)
         elif cmd.get("counted"):                    # W-1 (K-W4): a watched mark that moved what counts, only then
             self._counted()
@@ -990,6 +1094,11 @@ class Writer:
             return store.place(ids, cmd["where"])
         if op == "put_back":
             return store.put_back_finished(ids)
+        if op == "start_over":                      # Mado-O (alpha 8)
+            change = self._start_over(store, cmd)
+            if change is not None:
+                change.sources = list(cmd.get("changes") or ())     # SO-1: the Ignores its Undo gives a new change
+            return change
         if op == "import_finished":
             return store.import_finished(cmd["paths"])
         if op == "relink":
@@ -1010,6 +1119,11 @@ class Writer:
         if op == "audiobook_no_book":               # a5-2: an answer kept, nothing to undo
             store.audiobook_no_book(ids[0])
             return None
+        if op == "audiobook_keep":                  # Stage B: an answer kept, nothing to undo
+            store.audiobook_keep_together(ids[0], cmd.get("key"))
+            return None
+        if op == "audiobook_separate":              # Stage B: undone as one change (a pick's Undo)
+            return store.audiobook_separate(ids[0], key=cmd.get("key"))
         if op == "stop_source":                     # T6: None when it wasn't being read (a replay that landed)
             return store.stop_source(cmd["root"])
         if op == "link_video":
@@ -1049,13 +1163,15 @@ class Writer:
         raise ValueError(f"unknown command {op!r}")
 
     # --- the trash: Remove, Put back, their Undo ------------------------------------------------------------------ #
-    def _remove(self, store, cmd):
+    def _remove(self, store, cmd, moved=None):
         """*Remove...*: under the store's write lock first (busy → StoreBusy before any file moves), each file to the
         trash (`trash_file`: its 30-day clock restarted; a missing item has none), then `Store.remove` in the same
         transaction; the files back where they were if anything fails. (The renames are quick: the lock is held for
-        them, so nothing can change the rows between the look and the write.)"""
+        them, so nothing can change the rows between the look and the write.) `moved` (SO-1): a caller's list, inside
+        its own write — the caller moves them back."""
         lib = _ls()
-        moved = []
+        own = moved is None
+        moved = [] if own else moved
         try:
             with store._writing():
                 trashed = {}
@@ -1070,15 +1186,17 @@ class Writer:
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
                 return store.remove(cmd["ids"], trashed)
         except BaseException:
-            _move_back(moved)
+            if own:
+                _move_back(moved)
             raise
 
-    def _skip_folder(self, store, cmd):
+    def _skip_folder(self, store, cmd, moved=None):
         """K6: under the store's write lock, the refusal asked first (no file moves for a refused folder), then each
         item's copy under the folder to the trash, as `_remove` does, then `Store.skip_folder` in the same transaction;
-        the files back where they were if anything fails."""
+        the files back where they were if anything fails. `moved`: as `_remove`'s."""
         lib = _ls()
-        moved = []
+        own = moved is None
+        moved = [] if own else moved
         try:
             with store._writing():
                 reason = store.skip_refused(cmd["path"])
@@ -1094,8 +1212,78 @@ class Writer:
                         moved.append((_full(store, to), _full(store, row["rel_path"])))
                 return store.skip_folder(cmd["path"], trashed)
         except BaseException:
+            if own:
+                _move_back(moved)
+            raise
+
+    # --- Mado-O (SO-1): *Start sorting over* brings the screen's Ignores back, and its Undo ignores them again ------ #
+    def _start_over(self, store, cmd):
+        """Under the store's write lock: the Ignores' files back from the trash first (`_from_trash`), then
+        `Store.unsort` in the same transaction; a file whose row didn't come back (its folder read again meanwhile)
+        goes back to the trash, and every file goes back if anything fails."""
+        moved, mine = [], {}
+        try:
+            with store._writing():
+                rel_paths = {}
+                for rec in cmd["placed"]:
+                    if rec.get("kind") == "remove":
+                        ids = [t for t in rec.get("trash_ids") or () if isinstance(t, int)]
+                        for row in store.trash_rows(ids):
+                            mine[row["id"]] = []
+                            rel_paths.update(self._from_trash(store, [row], cmd, mine[row["id"]]))
+                            moved += mine[row["id"]]
+                change = store.unsort(cmd["placed"], rel_paths=rel_paths)
+                left = [r["id"] for r in store.trash_rows(list(mine)) if not r["restored_at"]]
+                for trash_id in left:               # its row stayed in the trash: so does its file (and no note)
+                    gone = {os.path.basename(back) for back, _was in mine[trash_id]}
+                    if cmd.get("renamed"):
+                        cmd["renamed"] = [n for n in cmd["renamed"] if n not in gone]
+                    _move_back(mine[trash_id])
+                return change
+        except BaseException:
+            cmd.pop("renamed", None)
             _move_back(moved)
             raise
+
+    def _undo_start_over(self, store, change, cmd):
+        """The Undo of a Start over that brought Ignores back: under the write lock, the placements back where the sort
+        had them (`Store.undo`), then each Ignore given again as it was (its folder skipped / its titles removed, their
+        files to the trash: `_skip_folder` / `_remove`) — one transaction; every file back if anything fails. Each
+        Ignore's own change is then the new one (`_replaced`): the screen's Undo of it takes that back."""
+        lib = _ls()
+        moved, made = [], []
+        try:
+            with store._writing():
+                out = store.undo(change) if change.items else None     # (per title: one moved since stays)
+                for ign in change.ignored:
+                    now = store.check(ign["ids"]).items
+                    ids = [i for i in ign["ids"] if now.get(i) == change.version]   # untouched since the reset
+                    new = None
+                    if ids and ign.get("folder") and len(ids) == len(ign["ids"]) and \
+                            set(store.items_under(ign["folder"])) == set(ids):
+                        try:
+                            new = self._skip_folder(store, {"path": ign["folder"]}, moved)
+                        except lib.NotASource:      # (skipped above it, or no source now: its titles alone)
+                            new = None
+                    if ids and new is None:         # the folder holds more now (a new episode): its titles alone
+                        new = self._remove(store, {"ids": ids}, moved)
+                    made.append((ign.get("of"), new))
+                if not any(new for _of, new in made) and not getattr(out, "items", None):
+                    raise lib.UndoRefused("every title changed since")      # nothing put back: *Can't undo*
+        except BaseException:
+            cmd.pop("renamed", None)
+            _move_back(moved)
+            raise
+        sources = getattr(change, "sources", None) or ()
+        with self._cond:
+            for of, new in made:
+                old = next((c for c in sources if c.version == of), None)
+                if old is not None and new is not None:
+                    self._replaced[old] = new
+                    for k, c in enumerate(self._undo):      # Ctrl+Z reaches the new one where the old one stood
+                        if c is old:
+                            self._undo[k] = new
+        return out
 
     def _from_trash(self, store, rows, cmd, moved):
         """A Put back's file half (Undo of a remove, `restore`), under the caller's write lock: each row's file back
@@ -1295,7 +1483,8 @@ class Writer:
                     out.append(dest)
                 if st is not None:
                     try:
-                        origins[dest] = _origin_of(path, st, dest, parts, lib, listings)
+                        origins[dest] = _origin_of(path, st, dest, parts, lib, listings,
+                                                   video=(cmd.get("videos") or {}).get(path))
                     except OSError as e:            # H16: recording where it came from never stops the add
                         print(f"+ Add: where {os.path.basename(path)} came from isn't kept ({e!r})")
         finally:
@@ -1392,6 +1581,10 @@ class Writer:
         if change is None:
             with self._cond:
                 change = cmd["change"] = self._undo[-1] if self._undo else None
+        asked = change
+        with self._cond:                            # SO-1: an Ignore a Start over's Undo gave again: its new change
+            if change is not None:
+                change = cmd["change"] = self._latest(change)
         if change is None:
             self._landed(cmd)
             return
@@ -1402,6 +1595,9 @@ class Writer:
         try:
             if change.kind == "remove":             # its rows are in the trash: what it checks is theirs
                 self._undo_removed(store, change, cmd)
+                ok, changed = None, ()
+            elif getattr(change, "ignored", None):  # SO-1: a Start over that brought Ignores back
+                self._undo_start_over(store, change, cmd)
                 ok, changed = None, ()
             else:
                 ok, changed = store.undo_check(change)
@@ -1419,7 +1615,9 @@ class Writer:
             refused = True
             cmd.pop("renamed", None)
         with self._cond:
-            for done in (change, then if tried else None):     # a drop refused first: its choice stays undoable
+            for done in (change, then if tried else None, asked if asked is not change else None):
+                if done is None:                    # (a drop refused first: its choice stays undoable)
+                    continue
                 try:
                     self._undo.remove(done)
                 except ValueError:
@@ -1490,7 +1688,13 @@ class Writer:
                 del self._let_go[:-64]
 
     def _landed(self, cmd):
-        """The head is done with (saved, let go or refused): out of the queue and out of the journal."""
+        """The head is done with (saved, let go or refused): out of the queue and out of the journal; a move the numbers
+        followed ahead of the store, landed for them too (`Numbers.landed`)."""
+        if cmd.pop("numbers_ahead", False) and self.numbers is not None:
+            try:
+                self.numbers.landed()
+            except Exception as e:
+                print(f"Window writer: the numbers couldn't be told a move landed: {e!r}")
         with self._cond:
             if self._pending and self._pending[0] is cmd:
                 self._pending.popleft()
@@ -1655,6 +1859,13 @@ class Writer:
                 return True
         if cmd["op"] == "remove" and _removed(store, cmd["ids"]):
             return "done"                           # W3.2 H (C3): its rows in the trash already, as it leaves them
+        if cmd["op"] == "start_over":               # Mado-O: none still where the screen put it (as it leaves them)
+            now = store.check(cmd["ids"]).items
+            waiting = [t for rec in cmd.get("placed") or () if rec.get("kind") == "remove" for t in rec.get("trash_ids")
+                       or ()]                       # SO-1: an Ignore still in the trash is still to bring back
+            if not any(now.get(it["id"]) == rec["version"] for rec in cmd.get("placed") or () for it in rec["items"]) \
+                    and not any(not r["restored_at"] for r in store.trash_rows(waiting)):
+                return "done"
         if cmd["op"] == "skip_folder" and store.skip_refused(cmd["path"]) == _ls().SKIP_ALREADY:
             return "done"                           # K6: the folder (or one holding it) skipped already, as it leaves
         seen = cmd.get("seen")
@@ -1669,13 +1880,13 @@ class Writer:
         return False
 
     # --- the numbers ---------------------------------------------------------------------------------------------- #
-    def _numbers_move(self, cmd, store):
+    def _numbers_move(self, cmd, store, tier=None):
         if self.numbers is None:
             return
         try:                                        # W-1: `order`, the tier's ids from this thread's handle (read only
-            self.numbers.after_move(cmd["ids"], cmd["tier"], before_id=cmd["before_id"],   # for an anchor the numbers
-                                    after_id=cmd["after_id"], order=lambda tier: store.ids(tier),    # don't hold)
-                                    aside=lambda ids: _set_aside(store, ids))
+            self.numbers.after_move(cmd["ids"], tier or cmd["tier"], before_id=cmd.get("before_id"),   # for an anchor
+                                    after_id=cmd.get("after_id"), order=lambda tier: store.ids(tier),  # they don't hold)
+                                    aside=lambda ids: _set_aside(store, ids), landing=cmd)
         except Exception as e:
             print(f"Window writer: the numbers couldn't follow the move: {e!r}")
 
@@ -1685,6 +1896,37 @@ class Writer:
         so the Rarity preview follows)."""
         self._numbers_resync()
         self._call(self.on_counted)
+
+    def _numbers_expect(self, cmd):
+        """A command whose result only the store knows (a nudge, a place by its rule): the numbers told before its
+        write that the order is about to move without them (`Numbers.expect`: on its way until it lands). -> whether
+        they were (a provider without `expect` asks again after the write, as before)."""
+        expect = getattr(self.numbers, "expect", None)
+        if expect is None:
+            return False
+        try:
+            expect(cmd)
+            return True
+        except Exception as e:
+            print(f"Window writer: the numbers couldn't be told a move is coming: {e!r}")
+            return False
+
+    def _numbers_follow(self, cmd, store):
+        """(After the write, before it lands.) The numbers follow the block to where the store put it — its tier and
+        the item just before it there (none: the tier's top), as a move: the one rule that every command moving the
+        order is followed once, never worked out again whole (a nudge was a full re-plan of 20,000 files at each
+        Alt+↑ / ↓). -> True when followed (else the numbers compare after the write, as before)."""
+        try:
+            at = _placed(store, cmd["ids"])
+            if at is None:
+                return False
+            tier, block, prev = at
+            self.numbers.after_move(block, tier, after_id=prev, order=lambda t: store.ids(t),
+                                    aside=lambda ids: _set_aside(store, ids))
+            return True
+        except Exception as e:
+            print(f"Window writer: the numbers couldn't follow the store's move: {e!r}")
+            return False
 
     def _numbers_resync(self):
         if self.numbers is not None:
@@ -1700,6 +1942,10 @@ class Writer:
             print(f"Window writer: a listener failed: {e!r}")
 
 
+PLACED_TOP = {"top": "now", "goal": "goal"}
+#   `place` targets that are `Store.move` to the tier's very top (`Store._tier_top`; never Soon's: the slot below the
+#   Soon line): the numbers follow them before the write, as a move (Up next at 20,000 files: else each was a full
+#   re-plan after it, the reader's view of the save waiting on the numbers)
 UNORDERED = ("set_watched", "pin", "keep_cards", "ask_mining", "set_cover", "set_media_type", "split",
              "forget_covers", "ungroup", "rename_piece", "merge_works", "stop_source")
 #   commands that never change the order: the numbers aren't asked again after them — W-1 (K-W4): but a watched mark
@@ -1715,6 +1961,47 @@ def _stamp(store):
     try:
         v = store.versions()
         return {k: v.get(k, 0) for k in ("epoch", "order_version", "pins_version")}
+    except Exception:
+        return None
+
+
+def _state_of(opener):
+    """An opener's (mode, reason) read as one answer (`StoreOpener.state`; a stand-in without it: its two
+    attributes)."""
+    state = getattr(opener, "state", None)
+    return state() if state is not None else (opener.mode, getattr(opener, "reason", None))
+
+
+def _follows_after(cmd):
+    """The commands whose place only the store's rule decides (`Store.nudge`'s group jumps, Soon's slot below its line,
+    after-show): the numbers follow them from the store's result, after the write (`Writer._numbers_follow`)."""
+    return cmd["op"] == "nudge" or (cmd["op"] == "place" and cmd.get("where") in ("soon", "after-show"))
+
+
+def _placed(store, ids):
+    """(tier, the block in the store's order, the item just before it in that tier or None at its top): where `ids`
+    stand now — two short reads. None: none of them is there."""
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return None
+    q = ",".join("?" * len(ids))
+    rows = store.conn.execute(f"SELECT id, tier, ord FROM items WHERE id IN ({q})", ids).fetchall()
+    if not rows:
+        return None
+    tiers = [r[1] for r in rows]                    # the block's tier: where most of it is (each tier's `ord` is its
+    tier = max(dict.fromkeys(tiers), key=tiers.count)  # own: never compared across tiers)
+    block = [r[0] for r in sorted((r for r in rows if r[1] == tier), key=lambda r: (r[2], r[0]))]
+    first = next(r for r in rows if r[0] == block[0])
+    prev = store.conn.execute("SELECT id FROM items WHERE tier = ? AND (ord < ? OR (ord = ? AND id < ?)) "
+                              "ORDER BY ord DESC, id DESC LIMIT 1", (tier, first[2], first[2], first[0])).fetchone()
+    return tier, block, prev[0] if prev is not None else None
+
+
+def _versions_of(store):
+    """The store's versions (one meta read; `state_version` moves with every write), or None when unreadable: equal
+    twice, nothing was written between the two reads."""
+    try:
+        return tuple(sorted(store.versions().items()))
     except Exception:
         return None
 
@@ -1760,6 +2047,13 @@ def _skips(out):
         if head.isdigit() and "changed since" in str(note):
             n += int(head)
     return n
+
+
+def _stacks(cmd):
+    """Can `cmd`, queued, change the Undo stack as it lands (go on it, or take one off it)? Never a background write
+    (`auto`), a replay, a download's registration or Settings' store lines (`_set_options`): what Ctrl+Z takes stays
+    the newest saved behind them (`Writer.newest`)."""
+    return not (cmd.get("auto") or cmd.get("replay")) and cmd["op"] not in ("register", "set_options")
 
 
 def _journals(cmd):
@@ -2007,16 +2301,17 @@ def _into(sub, folder, walked, lib):
     return parts
 
 
-def _origin_of(path, st, copy, parts, lib, listings=None):
+def _origin_of(path, st, copy, parts, lib, listings=None, video=None):
     """(K21) Where a file + Add or a drop copied in came from, for its origin record (`Store._add_origins`): the
     original's absolute path, its size and time (`st`, taken before it was read), the sha256 of the bytes copied (the
     copy's), the show its `Library` folder names, and the video beside the original with its name, found as Connect's
     `runner.beside` finds it (a listing and a stat: the video is never opened; `listings`: the add's own, so each
-    folder is listed once per add, H6). An OSError is the caller's: no origin, the add goes on (H16)."""
+    folder is listed once per add, H6). `video`: the one the user picked for it (alpha 8), when it is still there.
+    An OSError is the caller's: no origin, the add goes on (H16)."""
     from app.connect import runner
     f = {"origin": os.path.abspath(path), "size": st.st_size, "mtime_ns": st.st_mtime_ns,
          "sha256": lib.sha256_of(copy), "show": "/".join(parts[1:])}
-    video = runner.beside(path, listings=listings)
+    video = video if video and os.path.isfile(video) else runner.beside(path, listings=listings)
     if video:
         f.update(video_path=os.path.abspath(video), video_size=os.path.getsize(video))
     return f
@@ -2184,6 +2479,11 @@ class Numbers:
         self._plan_key = None
         self._why = "not read yet"
         self._changed = {}                          # version -> the item ids it changed (None: all)
+        self._ahead = 0                             # moves the engine followed (`after_move`) not landed in the store
+        #                                             yet (`landed`): the store's order is behind the engine's meanwhile
+        self._moves = 0                             # moves followed, ever (a resync's read of the order outlived by one)
+        self._put_off = False                       # a resync came while one was on its way: run once none is
+        self._at = None                             # the store's versions the engine was last found to follow
         self.worker = Worker(f"window-numbers-{language}")
         self.renumbered = 0                         # full passes (tests)
 
@@ -2236,7 +2536,27 @@ class Numbers:
         self.worker.put(self._close_handle)
         self.worker.close()
 
-    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None):
+    def expect(self, landing):
+        """(The writer's thread, before a write whose result only the store knows: a nudge, a place by its rule.) The
+        store's order is about to move ahead of the engine: on its way until `landed()` (`landing["numbers_ahead"]`), as
+        a followed move — a resync meanwhile waits for it; the writer then follows the store's result (`after_move`)."""
+        with self._lock:
+            self._ahead += 1
+            self._at = None
+        landing["numbers_ahead"] = True
+
+    def landed(self):
+        """(The writer's thread.) A move `after_move(landing=…)` followed is in the store now, or was let go: once none
+        is on its way, a resync put off meanwhile runs."""
+        with self._lock:
+            self._ahead = max(0, self._ahead - 1)
+            again = self._put_off and not self._ahead
+            if again:
+                self._put_off = False
+        if again:
+            self.worker.put(self._resync)
+
+    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None, landing=None):
         """The window's drop, as `Store.move` places it: the touched rows' new figures {item_id: (known, counted,
         n_new)} — the moved items and every item whose *N new* changed — and a new version; {} when the engine can't
         follow (see `why()`), the rows keeping their figures.
@@ -2246,7 +2566,10 @@ class Numbers:
         the last Generate) will count, so the numbers are worked out again, as before. An anchor the engine doesn't
         hold gives way to the nearest neighbour it does, in the tier's order as the store holds it (`order(tier)`: the
         store's ids in order, read only when the drop will be followed, before the lock) — so a drag of a show holding
-        watched episodes keeps its numbers at the drop instead of a resync."""
+        watched episodes keeps its numbers at the drop instead of a resync.
+        `landing` (the writer's command): the engine followed the move before the store has it — marked
+        (`landing["numbers_ahead"]`, never journalled) and on its way until the writer calls `landed()`; a resync meanwhile waits for it (it would
+        find the store a move behind and work the old order out again, then the new one once more)."""
         from app import plan_engine
         ids = list(dict.fromkeys(ids))
         anchor = before_id if before_id is not None else after_id
@@ -2276,6 +2599,9 @@ class Numbers:
             block = [i for i in ids if i not in dropped]
             if not block:
                 return {}                           # nothing that counts moved: every row keeps its figures
+            if not all(_holds(eng, i) for i in block):
+                self.worker.put(self._resync)       # an item the plan never counted (New arrivals, Finished, a file
+                return {}                           # added since): it will count, so worked out again — never a move
             if seq is not None and not _holds(eng, anchor):
                 at = _nearest_held(eng, seq, anchor, before_id is not None, set(ids), tier)
                 if at is not None:
@@ -2283,10 +2609,15 @@ class Numbers:
             before = list(eng._n_new)
             try:
                 _words, moved = eng.move(block, tier, before_id=before_id, after_id=after_id)
-            except plan_engine.PlanError as e:
+            except plan_engine.PlanError as e:      # the engine's own refusal (an anchor gone meanwhile)
                 self.worker.put(self._resync)
                 print(f"Window numbers: the move couldn't be followed: {e}")
                 return {}
+            self._moves += 1
+            self._at = None                         # (the engine is past what the store said)
+            if landing is not None:
+                landing["numbers_ahead"] = True     # (never "ahead": a join's own word, journalled)
+                self._ahead += 1
             after = eng._n_new
             files = {eng._f_of[i] for i in moved}
             files.update(f for f, (a, b) in enumerate(zip(before, after)) if a != b)
@@ -2325,7 +2656,7 @@ class Numbers:
             return
         key = (st.st_mtime_ns, st.st_size)
         try:
-            plan = plan_engine.load(path)
+            plan = plan_engine.load(path, pools=False)
         except plan_engine.PlanError as e:
             self._set(None, {}, f"plan: {e}", key)
             return
@@ -2336,32 +2667,29 @@ class Numbers:
         if store is None:                           # asked again at the next resync (no key kept)
             self._set(None, {}, f"no store: {getattr(self.opener, 'reason', None) or self.opener.mode}", None)
             return
-        by_path = {}
-        for tier in library_store.TIERS:
-            for item_id, entry, _availability in store.ordered(tier):
-                by_path[library_store.path_key(entry.get("physical_path") or "")] = item_id
-        ids = [by_path.get(library_store.path_key(entry[0])) for entry in plan.files]
+        by_key = store.item_keys()
+        ids = [by_key.get(library_store.path_key(entry[0])) for entry in plan.files]
         counts = {}
         for f, item in enumerate(ids):
             if item is not None:
                 total, baseline = plan.per_file[f]["prog"][0], plan.per_file[f]["prog"][1]
                 counts[item] = (baseline, total, None)
-        why = self._stale(plan, store, ids)
+        order = self._order(store)                  # read once a load: the staleness check and the engine share it
+        why = self._stale(plan, store, ids, order)
         if why is not None:
-            self._set(None, counts, why, key)
+            self._set(None, self._kept(counts), why, key)
             return
         try:
             eng = plan_engine.Engine(plan, ids, numbers_only=True)  # an i+1 plan: its numbers (row 36)
             del plan                                # the per-file lines go: the engine keeps its own tables
-            order = self._order(store)
             eng._numbers(order)
         except plan_engine.PlanError as e:
-            self._set(None, counts, f"stale: {e}", key)
+            self._set(None, self._kept(counts), f"stale: {e}", key)
             return
         self.renumbered += 1
         self._set(eng, self._figures(eng, counts), None, key)
 
-    def _stale(self, plan, store, ids):
+    def _stale(self, plan, store, ids, order):
         aside = _plan_engine().stands_aside(plan)
         if aside and not all(r in _plan_engine().NUMBERS_EXACT for r in _plan_engine().aside_reasons(plan)):
             return f"stands aside: {aside}"                               # (i+1 alone: *N new* follows it, row 36)
@@ -2369,7 +2697,7 @@ class Numbers:
         if epoch is not None and epoch != store.versions().get("epoch"):
             return "stale: the library was rebuilt since the last Generate"
         held = {i for i in ids if i is not None}
-        if any(item not in held for item, _tier in self._order(store)):
+        if any(item not in held for item, _tier in order):
             return "stale: files came in since the last Generate"
         if self._check is not None:
             try:
@@ -2383,17 +2711,12 @@ class Numbers:
     def _order(self, store):
         """The analysed tiers' items as a Generate counts them — the store's one rule, read through `Store.schedule`:
         a video waiting for its subtitle (K5) is in none, so it never makes the numbers stale (round 7 review A-3);
-        nor (W-1) an item that doesn't count, a watched episode while *Keep studying watched episodes* is off."""
-        from app.library_store import TIERS, path_key
-        schedule = store.schedule()
-        out = []
-        for tier in ANALYSED:
-            counted = {path_key(e["physical_path"]) for e in schedule.get(TIERS[tier][0], ())}
-            out += [(item, tier) for item, entry, _availability in store.ordered(tier)
-                    if path_key(entry.get("physical_path") or "") in counted]
-        return out
+        nor (W-1) an item that doesn't count, a watched episode while *Keep studying watched episodes* is off. Its ids
+        alone (`Store.scheduled_ids`), no entry read: this runs after every arrival and move (W4.1)."""
+        return store.scheduled_ids()
 
     def _resync(self):
+        window_idle.wait()                          # Up next 2: the order read and compared while the window rests
         path = self._plan_path()
         try:
             st = os.stat(path)
@@ -2410,23 +2733,42 @@ class Numbers:
         store = self._store()
         if store is None:
             return
+        at = _versions_of(store)                    # read before the order: the order read is at least this far
+        with self._lock:
+            if self._ahead:                         # a move the engine followed isn't in the store yet: compared once
+                self._put_off = True                # it is (`landed`), never against the order a move behind
+                return
+            if at is not None and at == self._at and self._engine is eng:
+                return                              # nothing written since the engine was found to follow the store
+            moves = self._moves
         order = self._order(store)
         plan_engine = _plan_engine()
         said = None
         with self._lock:
             if self._engine is not eng:
                 return
+            if self._moves != moves:                # a move followed while the order was read: read it again
+                self.worker.put(self._resync)
+                return
+            if self._ahead:                         # one began meanwhile (the store may hold it, the engine not yet)
+                self._put_off = True
+                return
             if [(eng._ids[f], ANALYSED[eng._tier[f]]) for f in eng._order] == order:
+                self._at = at
                 return                              # the window's own moves, already followed
             counts = self._table
             try:
                 eng._numbers(order)
             except plan_engine.PlanError as e:      # an item the plan doesn't hold came in: Generate first
                 self._engine, self._why = None, f"stale: {e}"
-                self._publish({i: (k, c, None) for i, (k, c, _n) in counts.items()}, None)
                 said = self._why                    # logged after the lock (a file write: never while a read waits)
+                # The rows keep the last plan's *N new* until the next one is read (the Generate it waits for): never
+                # a blank between the drop and that Generate — faded (`Kept`), only the rows that show one rebuilt.
+                kept = Kept(counts)
+                self._publish(kept, _faded_ids(counts, kept))
             else:
                 self.renumbered += 1
+                self._at = at
                 table = self._figures(eng, counts)
                 changed = {i for i, v in table.items() if counts.get(i) != v}
                 if not changed:
@@ -2435,6 +2777,16 @@ class Numbers:
         if said is not None:
             self._say(said)
         self._call_change()
+
+    def _kept(self, counts):
+        """A plan that can't be followed (stale): each row's last *N new* kept until a plan that can be is read — a
+        Generate that ends while the library moved on (known words from cards that landed meanwhile) is followed by
+        the next one, and the rows never blink blank between the two; faded (`Kept`). A row the last table never
+        numbered has none."""
+        with self._lock:
+            last = self._table
+        return Kept({item: (known, counted, (last.get(item) or (0, 0, None))[2])
+                     for item, (known, counted, _n) in counts.items()})
 
     def _figures(self, eng, counts):
         n_new = eng._n_new
@@ -2446,9 +2798,16 @@ class Numbers:
 
     def _set(self, eng, table, why, key):
         with self._lock:
+            last = self._table
+        # The fade coming or going (either table kept): what changed, worked out before the lock (a read of the numbers
+        # never waits on it: U-A6), so only those rows rebuild (U-1, U-A1); a move published meanwhile: unknown. Any
+        # other load replaces every figure: unknown, as ever (M47)
+        changed = _faded_ids(last, table) if isinstance(last, Kept) or isinstance(table, Kept) else None
+        with self._lock:
             said = self._why
             self._engine, self._why, self._plan_key = eng, why, key
-            self._publish(table, None)
+            self._at = None
+            self._publish(table, changed if self._table is last else None)
         if why != said:
             self._say(why)
         self._call_change()
@@ -2482,6 +2841,15 @@ class Numbers:
 def _plan_engine():
     from app import plan_engine
     return plan_engine
+
+
+def _faded_ids(old, new):
+    """The items whose figures look different from `old` to `new`: another value, gone, or a figure shown whose fade
+    changed (one table kept, the other not)."""
+    flip = isinstance(old, Kept) != isinstance(new, Kept)
+    out = {i for i, v in new.items() if old.get(i) != v or (flip and v[2] is not None)}
+    out.update(i for i in old if i not in new)
+    return out
 
 
 def _set_aside(store, ids):

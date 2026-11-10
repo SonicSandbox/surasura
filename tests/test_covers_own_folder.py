@@ -111,8 +111,9 @@ class Shelf:
         return C.works_from(feed["items"], feed["works"], C.originals(self.store, ids))
 
     def work_titled(self, title):
-        """The work named `title` (a season folder's: `<show>/Season 2`)."""
-        return next(w for w in self.works() if self.store._work_row(w.id)["title"].split("/")[0] == title)
+        """The work of a folder below `title` (a season folder's: `<show>/Season 2`, titled `<show> Season 2`)."""
+        return next(w for w in self.works()
+                    if (self.store._work_row(w.id)["folder_key"] or "").split("/")[0] == ls.path_key(title))
 
     def row(self, work_id):
         r = self.store._work_row(work_id)

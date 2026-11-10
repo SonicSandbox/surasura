@@ -16,6 +16,11 @@
   (`runner.STOPPED_BY_YOU`) until you press *Mine now*; Connect goes on with the next one. Once its cards are being
   filled and ordered (seconds) the job finishes (`stoppable`).
 
+- `speech_model(language, need_id, yes)` (Michi-AB Stage B, AB-Q2 PROVISIONAL): the speech model's one question —
+  *Download it* (Anki Miner's own setup downloads it at Connect's next look; then every book paired with its audiobook
+  is lined up by itself, and an audiobook's own subtitles are spot-checked) or *Not now* (their cards without sentence
+  audio). The answer kept for good (`lineup.set_answer`), the question fixed, every episode it held queued again.
+
 Each runs on the window's worker, one short ledger transaction; the caller kicks Connect after (`kick.kick`). No
 ledger → nothing written (the window never makes one). Light: the standard library and the ledger.
 """
@@ -46,6 +51,29 @@ def mine_anyway(language, need_id, path=None):
         picked["forced"] = True
         ledger.set_state(job["id"], "queued", picked=picked)        # its reason and resume step cleared: picks anew
         ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE id = ?", (book._now(), need_id))
+    return True
+
+
+def speech_model(language, need_id, yes, path=None):
+    """*Download it* (`yes`) / *Not now* -> True when the question was open (answered now); False (nothing written)
+    when there's no ledger or no such open question of this language."""
+    path = path or book.path()
+    if not os.path.exists(path):
+        return False
+    from app.connect import lineup
+    with book.Ledger(path) as ledger, ledger.transaction():
+        row = ledger.conn.execute("SELECT 1 FROM needs WHERE id = ? AND language = ? AND kind = 'speech-model' AND "
+                                  "fixed_at IS NULL", (need_id, language)).fetchone()
+        if row is None:
+            return False
+        says = {r[0] for r in ledger.conn.execute("SELECT say FROM needs WHERE language = ? AND kind = 'speech-model' "
+                                                  "AND fixed_at IS NULL", (language,))}
+        lineup.set_answer(yes)
+        for job in ledger.jobs(language, states=("waiting",)):      # either wording, asked before or since (B-6)
+            if job.get("reason") in says or lineup.asks_speech(job.get("reason")):
+                ledger.set_state(job["id"], "queued")      # its reason cleared: picks anew, the answer read then
+        ledger.conn.execute("UPDATE needs SET fixed_at = ? WHERE language = ? AND kind = 'speech-model' AND "
+                            "fixed_at IS NULL", (book._now(), language))
     return True
 
 

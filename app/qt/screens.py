@@ -52,7 +52,7 @@ def state_key(view):
 def media_to_open(language, episode, media):
     """The file ▶ opens for an episode, or (None, the bar's line): `services.play.to_open`'s answer (the rule is the
     service's, shared with Connect), worded for the bar. Runs on a worker (it reads the store and looks at the disk)."""
-    path, why = play.to_open(language, episode.id, episode.rel_path, media)
+    path, why = play.to_open(language, episode.id, episode.rel_path, media, getattr(episode, "online", None))
     return (path, None) if path else (None, strings.PLAY_FAILED.format(name=episode.label, why=why))
 
 
@@ -60,6 +60,22 @@ def _ole32():
     """Windows' COM library (a seam: the tests count its calls)."""
     import ctypes
     return ctypes.windll.ole32
+
+
+def open_with_program(program, path):
+    """(A worker.) `path` handed to the program the user chose in Settings (*Videos open in* / *Books open in*:
+    `play.program_for`) as its one argument — no shell, nothing else on its command line (a macOS .app through `open
+    -a`). Raises OSError, in the bar's words, when the program isn't there any more, isn't a program ▶ may start
+    (`play.program_allowed`: on Windows an .exe or .com) or couldn't start."""
+    name = os.path.basename(program.rstrip("\\/")) or program
+    if not play.program_allowed(program):
+        raise OSError(strings.PLAY_NOT_A_PROGRAM.format(program=name))
+    app = sys.platform == "darwin" and program.rstrip("/").endswith(".app")       # a macOS app is a folder
+    if not (os.path.isdir(program) if app else os.path.isfile(program)):
+        raise OSError(strings.PLAY_NO_PROGRAM.format(program=name))
+    import subprocess
+    subprocess.Popen(["open", "-a", program, path] if app else [program, path], close_fds=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def open_with_system(path):
@@ -72,6 +88,16 @@ def open_with_system(path):
             os.startfile(path)                      # the user's own player
     else:
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+
+def show_in_folder(path):
+    """A file shown in its folder, selected (Explorer's `/select,`: the report zip, ready to drag); off Windows its
+    folder opened. Explorer answers 1 even when it showed it, so its answer isn't read."""
+    if sys.platform == "win32":
+        import subprocess
+        subprocess.Popen(f'explorer /select,"{os.path.normpath(path)}"')
+    else:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(path)))
 
 
 # --- small parts ------------------------------------------------------------------------------------------------- #
@@ -201,23 +227,34 @@ class Page(QWidget):
         (`media_to_open`) and the open, both on a worker; a second ▶ meanwhile does nothing. -> the press, or None."""
         media = self._media_of(episode)
         found = []
+        services = getattr(self.window(), "services", None)
+        settings = services.settings.get() if services is not None else {}   # (frozen: read on the worker as it is)
 
         def look():
             path, why = media_to_open(self.language, episode, media)
             found.append((path, why))
             return path
 
+        def opener(path):
+            program = play.program_for(settings, path, media)    # Settings' *Videos open in* / *Books open in*
+            if program:
+                open_with_program(program, path)
+            else:
+                qpress.open_now(path)
+
         def opened(path):
             if path is None:
                 self.message.emit(found[0][1] if found else "")
-                self.not_found.emit(episode.id)           # row 55 A-7: the app now knows; its ▶ is looked at again
+                if not getattr(episode, "online", None):  # (an online video's ▶ is never looked for on disk)
+                    self.not_found.emit(episode.id)       # row 55 A-7: the app now knows; its ▶ is looked at again
 
         def failed(info):
             path = found[0][0] if found else None
-            self.message.emit(strings.PLAY_FAILED.format(name=os.path.basename(path) if path else episode.label,
+            named = path and "://" not in path                # (an online video's page: named by its episode)
+            self.message.emit(strings.PLAY_FAILED.format(name=os.path.basename(path) if named else episode.label,
                                                          why=str(info[0])))
         return qpress.open(self.window(), look, key=("play", episode.id), then=opened, failed=failed,
-                           at=at or qpress.row_mark(self.list, [episode.id], "play"))
+                           at=at or qpress.row_mark(self.list, [episode.id], "play"), opener=opener)
 
 
 class CurrentPage(Page):
@@ -227,6 +264,7 @@ class CurrentPage(Page):
         # W3.1a: what the rows ask for, handed to whoever does it (package F: the window's writer, the toasts, Undo).
         # Until a hook is set, nothing is written.
         self.on_done = None                         # (row, episode): the Done — watched, its toast, Undo, the finish
+        self.on_done_many = None                    # a7 (row, episodes): ⋯'s mark-many — one command, one Undo
         self.on_nudge = None                        # (row, -1 | +1): ↑ ↓
         self.on_menu = None                         # (row, global QPoint): ⋯
         self.on_journey = None                      # (row, episode): Up Next's ↗
@@ -243,6 +281,11 @@ class CurrentPage(Page):
         `✓ X watched · next: Y` with Undo, and after a Done that leaves no file unwatched the signed finish toast). A
         stone already watched is the old chip's click: the hook reads `episode.watched` and turns it back."""
         self._ask(self.on_done, row, episode)
+
+    def done_many(self, row, episodes):
+        """a7: ⋯'s *…and everything before it* / *Mark all watched* — `on_done_many(row, episodes)`: one command, one
+        toast, one Undo, then what the one Done does once nothing is left unwatched."""
+        self._ask(self.on_done_many, row, episodes)
 
     @staticmethod
     def _ask(hook, *args):
@@ -273,11 +316,10 @@ class FinishedPage(Page):
 
     def __init__(self, tooltips=None, language="ja", parent=None):
         super().__init__("finished", strings.FINISHED_HEADING, tooltips, language, parent)
-        self.help = QLabel(strings.FINISHED_HELP, self)
-        self.help.setObjectName("helpmark")
+        from app.qt import help_card                # help cards (§6.4): the ? is a press now — Finished's card
+        self.help = help_card.help_mark("finished", self)
         self.help.setToolTip(strings.FINISHED_HELP_TIP)
         self.help.setAccessibleName(strings.FINISHED_HELP_NAME)
-        self.help.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.head_row.insertWidget(1, self.help)
         # --- W3.2 Q4: what the rows ask for, handed to Finished's actions (`app/qt/finished.py`); until a hook is set,
         # nothing is written. The importer's button shows once its hook is set (a window with a writer).

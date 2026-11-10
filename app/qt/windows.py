@@ -13,6 +13,17 @@ the Settings tab's waiting page lists them** (`launchers`, the shell's one hook)
 while `available` says so and its module (when it names one) imports — the Tk dashboard's visibility rules. W3.3 and
 W3.2 attach the same openers to their rows and **retire the list** (IK-16: it never ships by default).
 `show(shell, name, make)`: one window of a kind per main window, kept and raised if open.
+
+**A minimised window goes into its icon** (try a9 #5, Sonic: "When I minimize the Junban screen, it goes to the bottom
+left"): a window owned by the main window has no taskbar button of its own, so Windows parked it minimised in the
+desktop's corner as a bare title bar. Every secondary window's minimise now hides it into its icon in the main window's
+bottom bar instead (`tool_icons.ToolIcons`: one per open window, turning while it works) — the icon, or its door
+again, brings it back (`bring_back`). The main window minimised takes its windows with it, as Windows does.
+
+**Its icon's right-click** (try a9.1, Sonic: "if minimize they can right click on it for an option to stop it"): *Show*
+· *Stop* (while it runs work it can stop: `stoppable` / `stop_work`, a subclass's) · *Close* (`close_for_good`: closed
+even while it works, as the app's quit closes it). A window whose work goes on past X (the YouTube downloader) goes
+into its icon instead of closing (`tuck_away`) — `for_good` tells the two closes apart.
 """
 import contextlib
 import importlib.util
@@ -83,6 +94,7 @@ class SecondaryWindow(QWidget):
     def __init__(self, shell, name, language=None):
         super().__init__(shell, Qt.WindowType.Window)
         self.shell = shell
+        self.tool_name = name                             # its name in the bottom bar's icon (try a9 #5)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.setWindowTitle(strings.SECONDARY_TITLE.format(name=name))
         self.setObjectName("secondary")
@@ -92,6 +104,7 @@ class SecondaryWindow(QWidget):
         self.destroyed.connect(lambda *_a: alive.__setitem__(0, False))
         self._writes = 0
         self._language_waiting = None
+        self.for_good = False                             # closed by the quit or its icon's *Close*: never kept going
         f = theme.text_factor(style.current()[1])
         root = QVBoxLayout(self)
         pad = round(16 * f)
@@ -111,6 +124,7 @@ class SecondaryWindow(QWidget):
         self.presses = press_service.Presses()           # round 8 row 45: its presses; the status line is its bar —
         self._holds, self._unheld = {}, ""               # ... a press's words held there (`say(…, hold=)`), and the
         self.bar_arc = qpress.BarArc(self, corner=True)  # ... bar's arc in its corner (a menu's press, IK-2)
+        self.presses.subscribe(lambda _press: self.tell_icon())     # its icon turns while a press of its runs
         self.setMinimumWidth(round(theme.size("pop", style.current()[1])))
         heard = getattr(shell, "bridge", None)
         if heard is not None:
@@ -146,6 +160,7 @@ class SecondaryWindow(QWidget):
         self.status.setText(text)
         self.status.setVisible(bool(text))
         self.status_paints += 1
+        self.tell_icon()                                  # (its icon's hover says what it is doing)
 
     def alive(self, fn):
         """`fn`, dropped once the window closed: a worker's answer arriving after it is never painted."""
@@ -167,11 +182,13 @@ class SecondaryWindow(QWidget):
 
     def begin_write(self):
         self._writes += 1
+        self.tell_icon()
 
     def end_write(self, result=None):
         """A write ended (`result`: its line). A language switch that waited for it happens now, and the result goes
         to the bottom bar as well (the window is about to show the other language)."""
         self._writes = max(0, self._writes - 1)
+        self.tell_icon()
         if self._writes or self._language_waiting is None or self.gone:
             return
         language, self._language_waiting = self._language_waiting, None
@@ -198,11 +215,99 @@ class SecondaryWindow(QWidget):
     def language_changed(self, language):
         """A subclass re-reads for `language` (the window is idle)."""
 
+    def at_work(self):
+        """Whether work it started is under way — a write (`begin_write`) or a press of its — for its icon's arc."""
+        return self.busy() or self.presses.any_live()
+
+    def stoppable(self):
+        """Whether it runs work its icon's *Stop* can stop (try a9.1): a subclass that runs a job says so."""
+        return False
+
+    def stop_work(self):
+        """Its icon's *Stop*: a subclass stops the work it runs (the window stays open)."""
+
+    def close_for_good(self):
+        """Closed even while it works (the app's quit, its icon's *Close*): a close a subclass never turns into a
+        tuck. -> whether it closed."""
+        self.for_good = True
+        return self.close()
+
+    def tuck_away(self):
+        """Into its icon in the main window's bottom bar now (X while its work goes on), still open; with no bar to
+        hold the icon, minimised as Windows does."""
+        main = main_of(self)
+        if getattr(main, "tool_icons", None) is None or main.isMinimized():
+            self.showMinimized()
+            return
+        self.hide()
+        self.tell_icon()
+
+    def tucked(self):
+        """Hidden into its icon (minimised, try a9 #5), still open."""
+        return not self.gone and not self.isVisible()
+
+    def tell_icon(self):
+        """Its icon in the main window's bottom bar looks again (opened, closed, tucked, at work, said something)."""
+        try:
+            icons = getattr(main_of(self), "tool_icons", None)
+            if icons is not None:
+                icons.refresh()
+        except RuntimeError:                              # the main window is going
+            pass
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and self.isMinimized() and not self.gone:
+            QTimer.singleShot(0, self._tuck)              # (after the system's own minimise has settled)
+
+    def _tuck(self):
+        """Minimised: hidden into its icon instead (no bare title bar in the desktop's corner) — unless the main window
+        went down too (it takes its windows with it), or there is no bar to hold the icon."""
+        if self.gone or not self.isMinimized():
+            return
+        main = main_of(self)
+        if main.isMinimized() or getattr(main, "tool_icons", None) is None:
+            return
+        self.hide()                                       # first, still minimised: never restored on screen
+        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)   # (kept maximised if it was)
+        self.tell_icon()
+
     def closeEvent(self, event):
         """A subclass that refuses a close calls `event.ignore()` before this (QWidget's own would accept it again)."""
         if event.isAccepted():
             self._closed = True
             self.closed.emit()
+            self.tell_icon()
+
+
+def main_of(win):
+    """The main window a secondary window (or one it opened: Backfill's Fields) belongs to."""
+    while isinstance(win, SecondaryWindow):
+        win = win.shell
+    return win
+
+
+def bring_back(win):
+    """`win` shown again where it was — out of its icon, or from behind — raised and focused."""
+    win.setWindowState(win.windowState() & ~Qt.WindowState.WindowMinimized)
+    win.show()
+    win.raise_()
+    win.activateWindow()
+    win.tell_icon()
+
+
+def open_tools(shell):
+    """The secondary windows open now under `shell`, in the order they opened, a window's own after it:
+    [(name, window)] (the bottom bar's icons, try a9 #5)."""
+    out = []
+
+    def walk(owner):
+        for name, win in list(owner.__dict__.get("_secondary_windows", {}).items()):
+            if win is not None and not win.gone:
+                out.append((name, win))
+                walk(win)
+    walk(shell)
+    return out
 
 
 def say_in_bar(shell, text):
@@ -219,17 +324,18 @@ def show(shell, name, make):
     opened = shell.__dict__.setdefault("_secondary_windows", {})
     win = opened.get(name)
     if win is not None and not win.gone:
-        win.show()
-        win.raise_()
-        win.activateWindow()
+        bring_back(win)                                   # (out of its icon too)
         return win
     win = make(shell)
     opened[name] = win
-    win.closed.connect(lambda w=win: opened.get(name) is w and opened.pop(name, None))
-    win.adjustSize()
+    if getattr(win, "_shown_as", None) != name:           # (a window kept built and shown again: connected once,
+        win._shown_as = name                              # ... and shown at the size it was kept at — sized to its
+        win.closed.connect(lambda w=win: opened.get(name) is w and opened.pop(name, None))
+        win.adjustSize()                                  # ... hint again, it grew back as its lines landed: Mado-SO)
     win.show()
     win.raise_()
     win.activateWindow()
+    win.tell_icon()
     return win
 
 
@@ -246,7 +352,7 @@ def close_all(shell):
     opened_now = [w for w in list(shell.__dict__.get("_secondary_windows", {}).values()) if not w.gone]
     for win in opened_now:
         try:
-            win.close()
+            getattr(win, "close_for_good", win.close)()   # (a run past X stops at the quit: never kept going)
         except RuntimeError:                              # already deleted with its parent
             pass
     return len(opened_now)
@@ -328,7 +434,8 @@ def youtube_record(path, language):
     own header (line 2: `<channel> | <published> | <length>`), else the id its name ends with. Producer `youtube` (the
     module's, bilibili.tv's too); `channel_id` = the channel's name as the header gives it (the downloader keeps no
     channel id), which `placing_rules`' `youtube:<channel>` names; no channel (bilibili.tv names none) → the producer's
-    rule alone. The show is the channel, so one channel's videos are one title."""
+    rule alone. The show is the channel, so one channel's videos are one title. A playlist's video carries its place
+    in the list (`playlist` {"id", "index"}, the sidecar's: the store adds it in the list's order, Mado-Q)."""
     stem = os.path.splitext(path)[0]
     side = {}
     try:
@@ -360,6 +467,10 @@ def youtube_record(path, language):
     if channel and channel != "Unknown" and site == "youtube":
         record["channel_id"] = channel
         record["show"] = {"title": channel}
+    from app.library_store import list_place
+    place = list_place(side)                              # Mado-Q: a playlist's video lands in the list's order
+    if place is not None:
+        record["playlist"] = {"id": place[0], "index": place[1]}
     return record
 
 
@@ -379,14 +490,16 @@ def arrived_line(waiting, placed, missed=0):
     return line
 
 
-def youtube_arrivals(shell):
+def youtube_arrivals(shell, then=None, quiet=False):
     """The downloader's `on_complete(paths)` (the window's thread): its created files (and the files in the folders it
     made) registered through the window's writer — never the store on this thread — each waiting in New arrivals
     unless the user's `placing_rules` (`youtube`, `youtube:<channel>`) place it; once they land, the downloader's
     status line and the bottom bar say where they went. Always the callable (the downloader's window is kept and
     raised: one opened before the library must still hand its files over; L1 N2). Raises when no library is open, the
     files aren't in the open library's folder (the language switched mid-download; L1 S3) or the store can't be
-    written — the downloader says why; the files wait in Processed."""
+    written — the downloader says why; the files wait in Processed. `then(waiting, placed, missed)` (alpha 8, setup's
+    *YouTube*): told once they landed, on the window's thread; `quiet` (a playlist's rest, which says its own line):
+    the bar and the downloader's line say nothing."""
 
     def complete(paths):
         writer = getattr(shell.services, "writer", None)  # the library open now (a switch makes another)
@@ -403,7 +516,7 @@ def youtube_arrivals(shell):
         rules = {str(k): v for k, v in rules.items()} if hasattr(rules, "items") else {}
         language = writer.language
         relay = bridge.Relay(parent=shell)
-        relay.said.connect(lambda counts: _arrived(shell, relay, counts))
+        relay.said.connect(lambda counts: _arrived(shell, relay, counts, then, quiet))
         seq = writer.register(paths, lambda path: youtube_record(path, language), rules=rules,
                               label=strings.YT_ARRIVED_LABEL,
                               done=lambda waiting, placed, missed: relay.call((waiting, placed, missed)))
@@ -413,13 +526,48 @@ def youtube_arrivals(shell):
     return complete
 
 
-def _arrived(shell, relay, counts):
+def resume_youtube(shell):
+    """(Alpha 8, at each start) The rest of a playlist setup began — or what a run stopped by a quit, an outage or a
+    stall left — goes on in the background while the downloader is on (`enable_youtube_transcripts`) and its risk was
+    acknowledged; the module's record is looked for on a worker. Nothing without the module."""
+    try:
+        settings = shell.services.settings.get()
+        if not (settings.get("enable_youtube_transcripts") and settings.get("youtube_risk_acknowledged")):
+            return
+        language = settings.get("target_language") or "ja"
+    except Exception as e:
+        applog.log("windows", f"youtube rest at start: {e}")
+        return
+
+    def waiting(found):
+        if not found:
+            return
+        try:
+            from modules.youtube_downloader import bring_in_rest
+            bring_in_rest(shell, language)
+        except Exception as e:                            # the module gone or broken: the app goes on
+            applog.log("windows", f"youtube rest at start: {e}")
+    bridge.run_in_worker(_rest_waiting, language, then=waiting,
+                         failed=lambda info: applog.log("windows", f"youtube rest at start: {info[0]}"))
+
+
+def _rest_waiting(language):
+    try:
+        from modules.youtube_downloader import rest_waiting
+    except ImportError:
+        return False
+    return rest_waiting(language)
+
+
+def _arrived(shell, relay, counts, then=None, quiet=False):
     try:
         relay.deleteLater()
     except RuntimeError:
         pass
+    if then is not None:
+        then(*counts)
     line = arrived_line(*counts)
-    if not line:
+    if not line or quiet:
         return
     say_in_bar(shell, line)
     win = shell.__dict__.get("_secondary_windows", {}).get("youtube-downloader")
@@ -430,6 +578,9 @@ def _arrived(shell, relay, counts):
 
 def _open_preview(shell):
     from modules.youtube_downloader import open_preview
+    services = getattr(shell, "services", None)
+    if services is not None:
+        services.journey_brought("youtube-preview")   # A: it scores against the list: a catch-up owed to moves now
     return open_preview(shell)
 
 

@@ -281,6 +281,26 @@ def test_the_test_switch_keeps_the_check_off(world, monkeypatch):
     assert "check" not in world.log and svc.state().state == U.NONE
 
 
+def test_check_for_updates_off_sends_no_request_at_start_or_on_offer_again(world, monkeypatch):
+    """*Check for updates* off (Settings → App, `update_check_enabled` False): no request to GitHub — not at start, not
+    from *Offer this version again* — while the last update's outcome is still read (a local file, no request). The
+    switch on again: the next check asks."""
+    order = []
+    monkeypatch.setattr(updater, "consume_result", lambda: order.append("reconcile"))
+    monkeypatch.delenv("SURASURA_NO_UI_TIMERS")
+    settings = FakeSettings({"update_check_enabled": False, "skipped_version": NEWER})
+    svc = world.service(settings)
+    svc.begin()
+    assert h.until(lambda: order == ["reconcile"], seconds=10)
+    assert svc.check() is False and svc.check(now=True) is False
+    svc.offer_again()
+    time.sleep(0.2)
+    assert "check" not in world.log and svc.state().state == U.NONE
+    settings.values["update_check_enabled"] = True
+    world.offered(svc)
+    assert world.log.count("check") == 1
+
+
 def test_begin_reconciles_then_checks_and_reads_both_switches(world, monkeypatch):
     """__init__'s `after(800, reconcile_update_result)` (off under SURASURA_NO_UI_TIMERS) and the start-up check (off
     under SURASURA_NO_UPDATE_CHECK): reconcile first, so a version that just failed is never offered in place."""

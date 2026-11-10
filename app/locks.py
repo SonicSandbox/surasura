@@ -345,3 +345,178 @@ def take(name, verb, wait=0.0, cancel=None, on_wait=None, owner=None):
             _release_all(handles)
             _registry.pop(name, None)
         raise
+
+
+# --- Running marks and the profile-move lock (Fresh library, 3.0.1; spec §4.1, §5, P13) -------------------------- #
+# Every Surasura program (the window, the command line and Piyo's MCP server, Connect, the window's children) holds a
+# RUNNING MARK for its life: an OS lock on its own `<install folder>/locks/running/<pid>-<n>.lock`, with a holder
+# record beside it (`.json`: program, pid, kind, started). The OS lets go when the program dies, so a mark held means a
+# program alive — on every OS, which is what *Start over completely* asks before it renames a thing (Windows' refused
+# rename is only a second check). The mover takes PROFILE_MOVE first and then looks at the marks; a program takes its
+# mark first and then looks at PROFILE_MOVE: whichever order the two meet in, one of them sees the other.
+PROFILE_MOVE = "profile-move"
+RUNNING_DIR = "running"
+MOVE_WAIT = 60.0        # s: a program starting while a move runs waits this long for it, then stops with MOVE_RUNNING
+MOVE_RUNNING = "Surasura is setting your old Surasura aside: try again in a moment."
+
+_mark = {}              # this process's mark: {"handle", "path", "count"}; guarded by `_registry_lock`
+
+
+class MoveRunning(Busy):
+    """A Start over or Put back is running (PROFILE_MOVE held): a program starting now waits, then stops with
+    MOVE_RUNNING. Its mark is let go first."""
+
+
+def _running_folders():
+    """The running marks' folders of every install of this data name: this one's (`get_local_data_path`) and each
+    install folder in the local root — they share the roaming root, so another install's programs count too."""
+    mine = os.path.join(path_utils.get_local_data_path(), "locks", RUNNING_DIR)
+    out = [mine]
+    root = path_utils.local_data_root()
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        names = []
+    for name in names:
+        where = os.path.join(root, name, "locks", RUNNING_DIR)
+        if path_utils._INSTALL_DIR.match(name) and os.path.normcase(where) != os.path.normcase(mine) \
+                and os.path.isdir(where):
+            out.append(where)
+    return out
+
+
+def hold_running(kind, wait=None, cancel=None):
+    """This process's running mark, for `kind` ("window", "cli", "mcp", a command's name), held until it ends or
+    `release_running` -> True. Once a process: a second call only counts (the command line called in-process again).
+    PROFILE_MOVE held by another program, or (for every program but the window, whose start gate settles it) a move a
+    kill left in this install's journal: the mark is let go, the move waited for up to `wait` s (MOVE_WAIT), the mark
+    taken again; still so -> `MoveRunning`. A mark that can't be written (a read-only folder) is no mark: False, logged
+    by the caller — never a refusal to start, though a move running is still waited for."""
+    with _registry_lock:
+        if _mark:
+            _mark["count"] += 1
+            return True
+    deadline = time.monotonic() + max(0.0, float(MOVE_WAIT if wait is None else wait))
+    while True:
+        handle, path = _take_mark(kind)
+        if not _moving() and (kind == "window" or not _journal_in_flight()):
+            if handle is None:
+                return False
+            with _registry_lock:
+                _mark.update(handle=handle, path=path, count=1)
+            return True
+        if handle is not None:
+            _drop_mark(handle, path)
+        if time.monotonic() >= deadline or (cancel is not None and cancel.is_set()):
+            raise MoveRunning(PROFILE_MOVE, read_holder(PROFILE_MOVE))
+        time.sleep(POLL)
+
+
+def _moving():
+    """Is PROFILE_MOVE held by another program? (This process's own move never stops its own programs.)"""
+    if held_in_process(PROFILE_MOVE):
+        return False
+    try:
+        return any(_held_at(path, 2, 0.01) for path, _record in _all_paths(PROFILE_MOVE))
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _journal_in_flight():
+    """Does this install's journal hold a move a kill left part way (or one that can't be read)? Only the window's
+    start gate may settle it: until then nothing else reads the half-moved profile. An asked request is no move."""
+    try:
+        with open(os.path.join(path_utils.get_local_data_path(), path_utils.PROFILE_JOURNAL), "r",
+                  encoding="utf-8") as f:
+            journal = json.load(f)
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError, RuntimeError):
+        return True
+    return not isinstance(journal, dict) or journal.get("status") != "asked"
+
+
+def _take_mark(kind):
+    """A new mark file, locked, with its record -> (handle, path), or (None, None)."""
+    try:
+        folder = os.path.join(path_utils.get_local_data_path(), "locks", RUNNING_DIR)
+        os.makedirs(folder, exist_ok=True)
+        for n in range(100):
+            path = os.path.join(folder, f"{os.getpid()}-{time.time_ns()}-{n}.lock")
+            if os.path.exists(path):
+                continue
+            handle = path_utils.try_lock(path)
+            if handle is None:
+                continue
+            try:                                    # cleared by another's tidy-up between our open and our lock (POSIX)
+                if os.path.samestat(os.fstat(handle.fileno()), os.stat(path)):
+                    record = {"program": _program(), "pid": os.getpid(), "kind": kind,
+                              "started": datetime.datetime.now().isoformat(timespec="seconds")}
+                    _write_holder(path[:-len(".lock")] + ".json", record)
+                    return handle, path
+            except OSError:
+                pass
+            path_utils.release_lock(handle)
+    except OSError:
+        pass
+    return None, None
+
+
+def _drop_mark(handle, path):
+    for doomed in (path[:-len(".lock")] + ".json",):
+        try:
+            os.remove(doomed)
+        except OSError:
+            pass
+    path_utils.release_lock(handle)
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def release_running():
+    """Let go of this process's mark (the last of its in-process holds). Never raises."""
+    with _registry_lock:
+        if not _mark:
+            return
+        _mark["count"] -= 1
+        if _mark["count"] > 0:
+            return
+        handle, path = _mark.pop("handle"), _mark.pop("path")
+        _mark.clear()
+    _drop_mark(handle, path)
+
+
+def running_others():
+    """The holder records of every running mark held by another program, oldest first; a mark whose program has died
+    is tidied away (its OS lock was free). Never raises."""
+    found = []
+    try:
+        folders = _running_folders()
+    except (OSError, RuntimeError):
+        return found
+    for where in folders:
+        try:
+            names = sorted(n for n in os.listdir(where) if n.endswith(".lock"))
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(where, name)
+            handle = path_utils.try_lock(path)          # (this process's own mark is held: it reads as a holder)
+            if handle is not None:                  # nobody holds it: a program that died
+                _drop_mark(handle, path)
+                continue
+            record = None
+            try:
+                with open(path[:-len(".lock")] + ".json", "r", encoding="utf-8") as f:
+                    record = json.load(f)
+            except (OSError, ValueError):
+                pass
+            if not isinstance(record, dict):
+                record = {"program": None, "pid": None, "kind": None, "started": None}
+            if record.get("pid") == os.getpid():
+                continue                            # this process's own (taken under another name)
+            found.append(dict(record, mark=path))
+    found.sort(key=lambda r: str(r.get("started") or ""))
+    return found

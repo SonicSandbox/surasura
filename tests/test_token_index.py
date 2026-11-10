@@ -755,9 +755,9 @@ def test_a_store_from_before_a_counters_one_kanji_word_was_a_piece_is_rebuilt(tm
 
 def test_a_store_from_before_the_caption_cleaner_is_rebuilt_without_the_reading_rows(tmp_path):
     """v19 -> v20 (P1.3-1 a): an .ass file is read through the caption cleaner — a TV caption's small-type reading row
-    (もんばん over 門番) is no line and no words; a v19 store counted its kana: it must be dropped and rebuilt. Pinned
-    exactly: the next bump updates this knowingly."""
-    assert ti.SCHEMA_VERSION == 20
+    (もんばん over 門番) is no line and no words; a v19 store counted its kana: it must be dropped and rebuilt. At least
+    v20, never pinned exactly: every later bump would break it."""
+    assert ti.SCHEMA_VERSION >= 20
     import shutil
     db = _db(tmp_path)
     f = tmp_path / "tv_captions.ass"

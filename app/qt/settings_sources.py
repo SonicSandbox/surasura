@@ -25,11 +25,14 @@ rows' packages — never by the page itself.
   its language, so a root id another store also holds is never stopped there (ids repeat across stores). Without a
   library (no looks), the buttons are greyed and say why.
 
-***Start a fresh library…*** (K7, its own row below): the confirm sheet says what goes and what stays, with *Also
-forget my known words* (off); Esc, Back or a click outside is No. Yes → `SourceLooks.fresh` on the looks' worker (the
-store's `start_fresh`: one dated backup, then the folders read again from scratch); the bar says *Fresh library:
-reading your folders…* once the reset landed, or why nothing was changed. Greyed with why while there is no library
-or it can't be written, and while one runs. No restore button (the backup's `reset.json` says how by hand).
+***Sort again or start over…*** (K7; Fresh library 3.0.1, the spec §3): the door to one sheet (`open_fresh`; *Needs
+you*'s *Start fresh* is the other; a9.1: App's *Start over completely…* went — this one offers it). **Sort my library again** (*Sort again* · *Change folders…*): the load screen over the window, the
+looks' `fresh` on their worker, the sort screen (`sort_again`), *Library sorted again · Put back* at its end.
+**Start over completely** (*Start over…* → a second step): the request written, the window restarts, the start gate
+moves everything aside (`start_over`). **Backups** (listed on a worker; five, then *Show all*): each *Put back…*
+(this language's Sorted-again ones in the window, `put_back`; Started-over ones by a restart) and *Show in folder*;
+one a kill stopped part way first, with *Put it back*. Esc, Back, *Close* or a click outside close the sheet, doing
+nothing. Greyed with why while there is no library or it can't be written, and while one runs.
 
 GUI_Design_Guidelines_Qt: the page's controls and label styles, the window's base (Esc closes it), a tooltip on every
 button.
@@ -38,7 +41,7 @@ import os
 
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, Qt
-from PyQt6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QFileDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from app import theme
 from app.qt import press as qpress
@@ -872,18 +875,20 @@ def give_stop(shell, root_id, text, language, told=None):
 
 
 class FreshRow(QObject):
-    """*Start a fresh library…* (K7): `button`; `card` while the sheet is open; `running` from Yes until the reset
-    answered."""
+    """*Sort again or start over…* (K7; Fresh library 3.0.1): `button` opens the one sheet (`open_fresh`), Sort again
+    first. `card` while the sheet is open; `running` while a Sort again or a Put back it began is under way (the
+    window's `fresh_running`)."""
+
+    first = "sort"
+    row_id = FRESH_ID
 
     def __init__(self, page):
         super().__init__(page)
         self.page = page
         self.shell = page.shell
         self.card = None
-        self.running = False
-        self.counting = False                             # the sheet's counts being read (the looks' worker)
-        slot = page.custom_row(FRESH_ID)
-        self.button = qpress.room(sc.Door(S.FRESH_OPEN, tooltip=S.FRESH_TIP, parent=slot))
+        slot = page.custom_row(self.row_id)
+        self.button = qpress.room(sc.Door(self._label(), tooltip=self._tip(), parent=slot))
         self.button.clicked.connect(lambda _c=False: self.ask())
         slot.layout().addWidget(self.button)
         seen = getattr(self.shell, "sources_seen", None)
@@ -891,150 +896,750 @@ class FreshRow(QObject):
             seen.connect(self._seen)
         self.enable()
 
+    def _label(self):
+        return S.FRESH_OPEN
+
+    def _tip(self):
+        return S.FRESH_TIP
+
+    @property
+    def running(self):
+        return running(self.shell)
+
     def alive(self):
         return _alive(self.page)
 
     def _looks(self):
-        return getattr(self.shell, "looks", None) if self.shell is not None else None
+        return _looks(self.shell)
 
     def why_not(self):
-        """Why the library can't be started afresh now (the button's tooltip), or None."""
+        """Why the sheet can't open now (the button's tooltip), or None. It opens without a library, or one that can't
+        be written, too: the sheet greys Sort again with why, and Start over stays (a9.1: the one door to it)."""
         if self.running:
             return S.FRESH_RUNNING_TIP
-        if self._looks() is None:
-            return S.STORE_NO_LIBRARY_TIP
-        return cant_write(getattr(self.page, "services", None))
+        return None
 
     def enable(self):
-        """Greyed with why while it can't run; repainted only when it turned (S19). Round 8 row 45: never greyed while
-        it runs — its arc turns (`ask`, `start`) and its tooltip says it is starting."""
+        """Greyed with why while it can't open; repainted only when it turned (S19)."""
         if not self.alive():
             return
         why = self.why_not()
-        tip = why or S.FRESH_TIP
-        on = why is None or (self.running and why == S.FRESH_RUNNING_TIP)
-        if self.button.isEnabled() != on:
-            self.button.setEnabled(on)
-        if self.button.toolTip() != tip:
-            self.button.setToolTip(tip)
+        _turn(self.button, why is None, why or self._tip())
 
     def _seen(self, _summary):
         self.enable()
 
     def ask(self):
-        """The sheet: what goes, what comes back, what stays, with the store's counts of what never comes back and of
-        the cards left suspended (`SourceLooks.fresh_counts`, read on the looks' worker first: the card opens when they
-        land), the known-words box (off). -> the card when it opened at once (looks that can't count), else None."""
+        """The sheet, open at once (its counts and its backups read on workers as it shows). -> the sheet, or None."""
         self.enable()
-        if self.card is not None and self.card.answer is not None:
+        if self.card is not None and (sip.isdeleted(self.card) or self.card.answer is not None):
             self.card = None                              # dropped (its window hidden): no callback comes (H13)
-        if self.why_not() is not None or self.card is not None or self.counting:
+        if self.why_not() is not None or self.card is not None or self.shell is None:
             return None
-        counts = getattr(self._looks(), "fresh_counts", None)
-        if counts is None:
-            return self._sheet(None)
-        from app.qt import bridge
-        relay = bridge.Relay(self)
-        p = qpress.begin(self.button, "settings:fresh", win=self.shell)   # round 8 row 45: the arc from the press,
-        #                                                                    painted before the counts are asked
-
-        def counted(found):
-            relay.deleteLater()
-            self.counting = False
-            if p is not None:
-                qpress.end(p, self.shell)
-            if self.alive() and self.why_not() is None and self.card is None:
-                self._sheet(found)
-        relay.said.connect(counted)
-        self.counting = True
-        if not counts(relay.call):
-            relay.deleteLater()
-            self.counting = False
-            if p is not None:
-                qpress.end(p, self.shell)
-            return self._sheet(None)
-        return None
-
-    def _sheet(self, counts):
-        self.card = fresh_sheet(self.page, counts, self._answered)
+        self.card = open_fresh(self.shell, self.page, first=self.first, done=self._closed)
         return self.card
 
-    def _answered(self, yes):
-        card, self.card = self.card, None
-        if yes:
-            self.start(forget_known=bool(card is not None and card.checked))
-
-    def start(self, forget_known=False):
-        """The reset on the looks' worker (never this thread); the bar says how it went. -> True when it was queued."""
-        looks = self._looks()
-        if looks is None or self.running:
-            return False
-        from app.qt import bridge
-        relay = bridge.Relay(self)
-        # round 8 row 45: the arc from Yes, and *Starting a fresh library…* held in the bar until the reset answers
-        p = qpress.begin(self.button if self.alive() else None, "settings:fresh", busy=S.FRESH_RUNNING_TIP,
-                         win=self.shell)
-
-        def landed(answer):
-            relay.deleteLater()
-            if p is not None:
-                qpress.end(p, self.shell, failed=not answer.get("done"))
-            self.running = False
-            self.enable()
-            if self.shell is not None:
-                windows.say_in_bar(self.shell, fresh_said(answer))
-        relay.said.connect(landed)
-        self.running = True                               # before the ask: an answer may land at once
+    def _closed(self):
+        self.card = None
         self.enable()
-        if not looks.fresh(forget_known, relay.call):
-            relay.deleteLater()
-            if p is not None:
-                qpress.end(p, self.shell, failed=True)
-            self.running = False
-            self.enable()
-            return False
-        return True
 
 
-def fresh_sheet(parent, counts, on_answer):
-    """*Start a fresh library?* — the one sheet (Settings' row, and *Needs you*'s card for a library mostly gone, K1):
-    what goes, what comes back, what stays (`fresh_body`), *Also forget my known words* (off); Esc, Back, Enter or a
-    click outside is No. `on_answer(yes)`; the card's `checked` is the box. -> the card."""
+# --- the one sheet (the spec §3.1: two choices, the Backups list; three doors) ----------------------------------- #
+SHOWN_BACKUPS = 5                                   # the newest five, then *Show all* (P15)
+RUNNING = "_fresh_running"                          # on the window: a Sort again or a Put back under way (its words)
+KEPT = "_fresh_kept"                                # on the window: the sheet's card kept built since its close
+_SIZES = {}                                         # (folder, its time) -> bytes: a backup's size, worked out once
+
+
+def running(shell):
+    """The words of a Sort again or a Put back under way in `shell`, or None."""
+    return shell.__dict__.get(RUNNING) if shell is not None else None
+
+
+def _set_running(shell, words):
+    if shell is None:
+        return
+    if words:
+        shell.__dict__[RUNNING] = words
+    else:
+        shell.__dict__.pop(RUNNING, None)
+
+
+def _when(stamp):
+    """A record's time (`2026-10-30T15:40:12`, as the stores write it) in the sheet's words: *30 Oct 2026, 15:40*."""
+    import datetime
+    text = str(stamp or "")
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y%m%d-%H%M%S"):
+        try:
+            return datetime.datetime.strptime(text[:19] if "T" in text or "-" in text[:5] else text, fmt).strftime(
+                "%d %b %Y, %H:%M").lstrip("0")
+        except ValueError:
+            continue
+    return text[:16] or "?"
+
+
+def _size_words(n):
+    if n is None:
+        return S.FRESH_SIZE_WAIT
+    mb = n / (1024 * 1024)
+    return S.FRESH_SIZE_MB.format(mb=max(1, round(mb))) if mb < 1024 else S.FRESH_SIZE_GB.format(gb=mb / 1024)
+
+
+def backup_line(entry, size=None):
+    """One backup's line: *Sorted again · 30 Oct 2026, 15:40 · 182 MB* (*· stopped part way* first in its words)."""
+    parts = [S.FRESH_KINDS.get(entry.get("kind"), entry.get("kind") or ""), _when(entry.get("date")), _size_words(size)]
+    if entry.get("stopped"):
+        parts.append(S.FRESH_STOPPED)
+    return " · ".join(parts)
+
+
+def list_backups(language):
+    """(A worker.) The backups this window can put back: every Started-over one, and this language's Sorted-again ones
+    (`profile_reset.backups`) -> the list, or None when it couldn't be read."""
+    try:
+        from app import profile_reset
+        return [b for b in profile_reset.backups() if b.get("scope") == "profile" or b.get("language") == language]
+    except Exception as e:
+        print(f"Fresh library: the backups couldn't be listed: {e!r}")
+        return None
+
+
+def backup_sizes(entries):
+    """(A worker.) {folder: bytes} for `entries` (`profile_reset.backup_size`), each worked out once per folder time."""
+    from app import profile_reset
+    out = {}
+    for entry in entries:
+        folder = entry["folder"]
+        try:
+            key = (folder, os.stat(folder).st_mtime_ns)
+        except OSError:
+            key = (folder, None)
+        if key not in _SIZES:
+            _SIZES[key] = profile_reset.backup_size(entry)
+        out[folder] = _SIZES[key]
+    return out
+
+
+class FreshSheet(QObject):
+    """The sheet's own parts inside the window's one confirmation card (`confirm.ask`, its title *Sort again or start
+    over*, its one button *Close*): **Sort my library again** (*Sort again*, *Change folders…*), **Start over
+    completely** (*Start over…*) — `first` on top — and **Backups** (hidden while there are none; *Looking for
+    backups…* until the worker's list lands; five, then *Show all*; each *Put back…* / *Put it back* and *Show in
+    folder*). A press sets `choice` (("sort",), ("folders",), ("over",), ("put-back", entry)) and closes the card
+    with Yes; `on_choice(choice)` follows. Nothing here runs anything. Kept built with its card (`open_fresh`):
+    `renew` makes it a new sheet again for the next opening."""
+
+    def __init__(self, card, first="sort", why=None, connect_on=False, on_choice=None, busy=None):
+        super().__init__(card)
+        self.card, self.first, self.choice, self._on_choice = card, first, None, on_choice
+        self.busy = busy                              # a Sort again / Put back / Generate under way: nothing acts
+        self.backups = None                           # the worker's list (None: still looking)
+        self.sizes = {}
+        self.all_shown = False
+        self.row_widgets = []
+        self.row_words = []                           # [(entry, its words label)] of the rows listed
+        self.on_show_all = None                       # (the sheet's opener: the sizes of the rest, on a worker)
+        self._rows_key = None
+        self.relay = None                             # (the opening's: its workers' answers, dropped with it)
+        self.opening = 0                              # each opening's number: an earlier one's answer never lands
+        f = theme.text_factor(style.current()[1])
+        box = card.layout()
+        at = box.count() - 1                          # (above the card's own button row)
+        self.sort_part, sort_box = self._part(S.FRESH_SORT_HEAD, S.FRESH_SORT_BODY)
+        self.counts_line = self._line(sort_box, "")
+        self.cards_line = self._line(sort_box, S.FRESH_SORT_CARDS if connect_on else "")
+        row = QHBoxLayout()
+        row.setSpacing(round(10 * f))
+        self.btn_sort = self._button(S.FRESH_SORT, why or S.FRESH_SORT_TIP, ("sort",), row, "primary")
+        self.btn_folders = self._button(S.FRESH_FOLDERS, why or S.FRESH_FOLDERS_TIP, ("folders",), row, link=True)
+        row.addStretch(1)
+        sort_box.addLayout(row)
+        for b in (self.btn_sort, self.btn_folders):
+            b.setEnabled(why is None)
+        self.over_part, over_box = self._part(S.FRESH_OVER_HEAD, S.FRESH_OVER_BODY)
+        self.suspended_line = self._line(over_box, "")
+        row = QHBoxLayout()
+        self.btn_over = self._button(S.FRESH_OVER, busy or S.FRESH_OVER_TIP, ("over",), row, "danger")
+        self.btn_over.setEnabled(busy is None)
+        row.addStretch(1)
+        over_box.addLayout(row)
+        parts = (self.over_part, self.sort_part) if first == "over" else (self.sort_part, self.over_part)
+        self.backups_part, backups_box = self._part(S.FRESH_BACKUPS, None)
+        self.looking = self._line(backups_box, S.FRESH_LOOKING)
+        self.scroll = QScrollArea(self.card)          # *Show all*: the list scrolls, the card never grows past it
+        self.scroll.setObjectName("foldersscroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget(self.scroll)
+        body.setObjectName("foldersbody")
+        self.rows = QVBoxLayout(body)
+        self.rows.setContentsMargins(0, 0, 0, 0)
+        self.rows.setSpacing(round(6 * f))
+        self.scroll.setWidget(body)
+        self.scroll.setVisible(False)
+        backups_box.addWidget(self.scroll)
+        row = QHBoxLayout()
+        self.btn_all = self._button("", S.FRESH_SHOW_ALL_TIP, None, row, link=True)
+        self.btn_all.clicked.connect(lambda _c=False: self.show_all())
+        self.btn_all.setVisible(False)
+        row.addStretch(1)
+        backups_box.addLayout(row)
+        for i, part in enumerate(parts + (self.backups_part,)):
+            box.insertWidget(at + i, part)
+
+    def renew(self, why=None, connect_on=False, busy=None):
+        """(Kept, hidden.) As a new sheet opens: nothing chosen, its counts and its Backups not read yet (*Looking for
+        backups…*), the greying of now."""
+        self.choice, self.busy = None, busy
+        self.backups, self.sizes, self.all_shown, self._rows_key = None, {}, False, None
+        for w in self.row_widgets:
+            self.rows.removeWidget(w)
+            w.hide()
+            w.deleteLater()
+        self.row_widgets, self.row_words = [], []
+        _say(self.counts_line, "")
+        _say(self.suspended_line, "")
+        _say(self.cards_line, S.FRESH_SORT_CARDS if connect_on else "")
+        for b, tip in ((self.btn_sort, S.FRESH_SORT_TIP), (self.btn_folders, S.FRESH_FOLDERS_TIP)):
+            b.setToolTip(why or tip)
+            b.setEnabled(why is None)
+        self.btn_over.setToolTip(busy or S.FRESH_OVER_TIP)
+        self.btn_over.setEnabled(busy is None)
+        self.looking.setVisible(True)
+        self.scroll.setVisible(False)
+        self.btn_all.setVisible(False)
+        self.backups_part.setVisible(True)
+
+    # --- building ------------------------------------------------------------------------------------------------ #
+    def _part(self, head, body):
+        part = QWidget(self.card)
+        lay = QVBoxLayout(part)
+        lay.setContentsMargins(0, round(6 * _f()), 0, 0)
+        lay.setSpacing(round(6 * _f()))
+        title = QLabel(head, part)
+        title.setObjectName("confirmhead")
+        title.setTextFormat(Qt.TextFormat.PlainText)
+        lay.addWidget(title)
+        if body:
+            self._line(lay, body)
+        return part, lay
+
+    def _line(self, layout, text):
+        label = QLabel(text, self.card)
+        label.setObjectName("confirmline")
+        label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setWordWrap(True)
+        label.setVisible(bool(text))
+        layout.addWidget(label)
+        return label
+
+    def _button(self, text, tip, choice, row, kind=None, link=False):
+        b = QPushButton(text, self.card)
+        b.setToolTip(tip)
+        b.setAccessibleName(text)
+        b.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        b.setAutoDefault(False)
+        if link:
+            b.setObjectName("windowlink")
+        if kind:
+            b.setProperty("kind", kind)
+        if choice is not None:
+            b.clicked.connect(lambda _c=False, c=choice: self.choose(c))
+        row.addWidget(b)
+        return b
+
+    def buttons(self):
+        """Every button of the sheet's own, in reading order (Tab's ring, with the card's *Close*)."""
+        parts = (self.over_part, self.sort_part) if self.first == "over" else (self.sort_part, self.over_part)
+        order = {self.sort_part: [self.btn_sort, self.btn_folders], self.over_part: [self.btn_over]}
+        out = [b for p in parts for b in order[p]]
+        for w in self.row_widgets:
+            out += [b for b in w.findChildren(QPushButton) if b.isVisible()]
+        if self.btn_all.isVisible():
+            out.append(self.btn_all)
+        return [b for b in out if b.isEnabled()]
+
+    # --- what it shows ------------------------------------------------------------------------------------------- #
+    def set_counts(self, counts):
+        """The store's counts (`fresh_counts`): what never comes back on the Sort again side, the cards left
+        suspended on the Start over side (a count of 0 says nothing)."""
+        counts = counts or {}
+        plural = lambda n: "" if n == 1 else "s"                                          # noqa: E731
+        parts = [words.format(n=counts[key], s=plural(counts[key])) for key, words in (
+            ("added", S.FRESH_GONE_ADDED), ("youtube", S.FRESH_GONE_YOUTUBE), ("other", S.FRESH_GONE_OTHER))
+            if counts.get(key)]
+        _say(self.counts_line, S.FRESH_GONE.format(parts=", ".join(parts)) if parts else "")
+        n = counts.get("suspended") or 0
+        _say(self.suspended_line, S.FRESH_SUSPENDED_OVER.format(n=n, s=plural(n)) if n else "")
+        self.card.place()
+
+    def set_backups(self, backups):
+        """The worker's list (None: it couldn't be read: the part goes)."""
+        self.backups = list(backups or ())
+        self._paint_rows()
+
+    def set_sizes(self, sizes):
+        """Sizes from the worker: each listed row's words repainted in place (its buttons keep the keyboard)."""
+        self.sizes.update(sizes or {})
+        for entry, words in self.row_words:
+            text = backup_line(entry, self.sizes.get(entry["folder"]))
+            if words.text() != text:
+                words.setText(text)
+
+    def show_all(self):
+        self.all_shown = True
+        self._paint_rows()
+        if self.on_show_all is not None:
+            self.on_show_all([b for b in self.shown() if b["folder"] not in self.sizes])
+        return self.shown()
+
+    def shown(self):
+        """The backups listed now (five, or all after *Show all*)."""
+        rows = self.backups or []
+        return rows if self.all_shown else rows[:SHOWN_BACKUPS]
+
+    def _paint_rows(self):
+        rows = self.shown()
+        key = tuple((b["folder"], b.get("stopped")) for b in rows) + (len(self.backups or ()), self.all_shown)
+        if key == self._rows_key:
+            return                                    # nothing it shows changed (S19)
+        self._rows_key = key
+        self.looking.setVisible(False)
+        for w in self.row_widgets:
+            self.rows.removeWidget(w)
+            w.hide()
+            w.deleteLater()
+        self.row_words = []
+        self.row_widgets = [self._row(b) for b in rows]
+        for w in self.row_widgets:
+            self.rows.addWidget(w)
+        self.scroll.setVisible(bool(rows))
+        more = len(self.backups or ()) - len(rows)
+        self.btn_all.setText(S.FRESH_SHOW_ALL.format(n=len(self.backups or ())))
+        self.btn_all.setAccessibleName(self.btn_all.text())
+        self.btn_all.setVisible(more > 0)
+        self.backups_part.setVisible(bool(self.backups))
+        self.card.place()
+
+    def fit(self):
+        """(After the card's own placing.) The card measured at its real width: each part's wrapped lines in full,
+        the Backups list five rows at most and never more than the window leaves (the rest scroll), the card centred
+        at that height."""
+        from app.qt import confirm
+        card, lay = self.card, self.card.layout()
+        lay.activate()
+        room = card._window.height() - 2 * confirm.MARGIN
+        parts = [p for p in (self.sort_part, self.over_part) if not p.isHidden()]     # (before it shows, too)
+        need = sum(p.heightForWidth(p.width()) if p.hasHeightForWidth() else p.sizeHint().height() for p in parts)
+        listed = not self.scroll.isHidden() and self.row_widgets
+        rows_h = self.scroll.height() if listed else 0
+        other = card.height() - sum(p.height() for p in parts) - rows_h
+        if listed:                                    # each row at its narrowest, its scrollbar beside it (shown or
+            #                                           not yet: measured as it will be, never as it is just now)
+            width = self.scroll.contentsRect().width() - self.scroll.verticalScrollBar().sizeHint().width()
+            one = max(w.heightForWidth(width) if w.hasHeightForWidth() else w.sizeHint().height()
+                      for w in self.row_widgets) + self.rows.spacing()
+            rows_h = max(one, min(min(len(self.row_widgets), SHOWN_BACKUPS) * one, room - other - need))
+            self.scroll.setFixedHeight(rows_h)
+        h = min(room, other + need + rows_h)
+        g = card.geometry()
+        card.setGeometry(g.x(), max(0, (card._window.height() - h) // 2), g.width(), h)
+
+    def _row(self, entry):
+        w = QWidget(self.rows.parentWidget())
+        line = QHBoxLayout(w)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(round(10 * _f()))
+        words = QLabel(backup_line(entry, self.sizes.get(entry["folder"])), w)
+        words.setObjectName("confirmline")
+        words.setTextFormat(Qt.TextFormat.PlainText)
+        words.setWordWrap(True)                       # (its buttons always in the card, however long the line)
+        line.addWidget(words, 1)
+        self.row_words.append((entry, words))
+        if entry.get("scope") == "profile" and entry.get("stopped"):
+            words.setToolTip(S.FRESH_OVER_STOPPED_TIP)   # F8: never a restart that is sure to be refused: by hand
+        else:
+            label, tip = (S.FRESH_PUT_IT_BACK, S.FRESH_PUT_IT_BACK_TIP) if entry.get("stopped") else \
+                (S.FRESH_PUT_BACK, S.FRESH_PUT_BACK_TIP)
+            b = self._button(label, self.busy or tip, ("put-back", entry), line)
+            b.setEnabled(self.busy is None)
+        show = self._button(S.FRESH_SHOW, S.FRESH_SHOW_TIP, None, line, link=True)
+        show.clicked.connect(lambda _c=False, e=entry: show_backup(e))
+        return w
+
+    # --- a press ------------------------------------------------------------------------------------------------- #
+    def choose(self, choice):
+        if self.choice is not None or self.card.answer is not None:
+            return
+        self.choice = choice
+        self.card._answer(True)
+
+
+def _say(label, text):
+    if label.text() != text:
+        label.setText(text)
+    if label.isHidden() == bool(text):
+        label.setVisible(bool(text))
+
+
+def show_backup(entry):
+    """*Show in folder*: the backup's folder (a Started-over one: the library folder's part, whose record names every
+    part) in the system's file window."""
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtGui import QDesktopServices
+    folder = entry.get("folder")
+    if folder and os.path.isdir(folder):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+
+def _connect_on(shell):
+    try:
+        return bool(shell.services.settings.get().get("connect_enabled", True))
+    except Exception:
+        return False
+
+
+def open_fresh(shell, parent, first="sort", done=None):
+    """The one sheet over `parent`'s window, at once (≤ 5 ms on the window's thread: its counts and its Backups list
+    read on workers as it shows; built once a window — kept at its close, `_kept` — and made a new sheet again at each
+    opening, `FreshSheet.renew`). Esc, Back, *Close* or a click outside close it, doing nothing; a press acts
+    (`act`). `done()` once it closed, either way. -> the card."""
+    from app.qt import bridge, confirm
+    looks = _looks(shell)
+    busy = running(shell) or _busy_now(shell)
+    why = busy or (S.STORE_NO_LIBRARY_TIP if looks is None else cant_write(getattr(shell, "services", None)))
+    holder = {}
+
+    def answered(_yes):
+        sheet = holder.get("sheet")
+        choice = sheet.choice if sheet is not None else None
+        if done is not None:
+            done()
+        if choice is not None:
+            act(shell, choice, parent=parent)
+
+    def build(card):                                  # its parts made before the card shows: one show, one polish
+        sheet = holder["sheet"] = FreshSheet(card, first=first, why=why, connect_on=_connect_on(shell), busy=busy)
+        card.sheet = sheet
+        card.ring = sheet.buttons                     # Tab goes round its buttons too (`confirm.Confirm`)
+        card.keep, card.made_in = True, style.current()   # (kept at its close: the next opening shows it again)
+        place = card.place
+
+        def fitted():                                 # the card's own placing, then measured again at its width
+            for w in sheet.row_widgets:               # (in their own fonts: the stylesheet's, before they show — the
+                w.ensurePolished()                    # ... card polishes the rest at its first place; rows come later)
+            card.layout().invalidate()
+            place()
+            card.layout().setGeometry(card.rect())    # (laid out at its placed size: hidden, no resize comes to do it)
+            sheet.fit()
+        card.place = fitted
+    card = _kept(shell, parent, first)
+    if card is not None:                              # built once: made a new sheet again, opened as a new one
+        sheet = holder["sheet"] = card.sheet
+        sheet.renew(why=why, connect_on=_connect_on(shell), busy=busy)
+        card.again(answered)
+    else:
+        card = confirm.ask(parent, S.FRESH_SHEET, "", None, None, no=S.FRESH_CLOSE, no_tip=S.FRESH_CLOSE_TIP,
+                           on_answer=answered, build=build)
+        sheet = holder["sheet"]
+        if shell is not None:
+            shell.__dict__[KEPT] = card
+    if sheet.relay is not None and not sip.isdeleted(sheet.relay):
+        sheet.relay.deleteLater()                     # (an earlier opening's answers dropped: never in this one)
+    relay = sheet.relay = bridge.Relay(card)
+    sheet.opening += 1
+    opening = sheet.opening
+    relay.said.connect(lambda said: opening == sheet.opening and _heard_sheet(sheet, said))
+    language = getattr(shell, "language", None)
+    counts = getattr(looks, "fresh_counts", None)
+    if counts is not None and not counts(lambda c: relay.call(("counts", c))):
+        pass                                          # (closed: no counts, the lines that always hold)
+
+    def listed(backups):
+        relay.call(("backups", backups))
+        if backups:
+            relay.call(("sizes", backup_sizes(backups[:SHOWN_BACKUPS])))
+    bridge.run_in_worker(lambda: listed(list_backups(language)),
+                         failed=lambda info: relay.call(("backups", None)))
+    sheet.on_show_all = lambda rest: rest and bridge.run_in_worker(
+        lambda: relay.call(("sizes", backup_sizes(rest))), failed=lambda info: None)
+    return card
+
+
+def _kept(shell, parent, first):
+    """The sheet's card kept since its close, for an opening over `parent`'s window with `first` on top — or None
+    (none kept, open now, let go with its window, another window, `first` or look: then let go here)."""
+    card = shell.__dict__.get(KEPT) if shell is not None else None
+    if card is None:
+        return None
+    if (not sip.isdeleted(card) and card.keep and card.answer is not None and card._window is parent.window()
+            and card.made_in == style.current() and card.sheet.first == first):
+        return card
+    shell.__dict__.pop(KEPT, None)
+    if not sip.isdeleted(card):
+        if card.answer is None:
+            card.keep = False                         # (open now: let go at its answer, as any card)
+        else:
+            card.scrim.deleteLater()
+            card.deleteLater()
+    return None
+
+
+def _busy_now(shell):
+    """Why nothing on the sheet may act now (§3.1's greying, the press rule): a Generate under way, or an update
+    staged (it swaps files at the next start) -> the words, or None. Connect's run is the store's own refusal."""
+    try:
+        if callable(getattr(shell, "generating", None)) and shell.generating():
+            return S.FRESH_GENERATING
+        from app import library_store
+        if library_store.update_staged():
+            return S.FRESH_UPDATING
+    except Exception:
+        return None
+    return None
+
+
+def _heard_sheet(sheet, said):
+    if sip.isdeleted(sheet) or sip.isdeleted(sheet.card) or sheet.card.answer is not None:
+        return
+    what, value = said
+    if what == "counts":
+        sheet.set_counts(value)
+    elif what == "backups":
+        sheet.set_backups(value)
+    else:
+        sheet.set_sizes(value)
+
+
+# --- what a press does (the spec §3.2–3.4, §6) -------------------------------------------------------------------- #
+def act(shell, choice, parent=None):
+    """The sheet's press, on the window's thread (the work on workers): *Sort again* → `sort_again`; *Change
+    folders…* → the wizard's folders page alone, its *Next* → `sort_again(changes)`, its *Back* → the sheet again;
+    *Start over…* → the second step, then `start_over`; *Put back…* → its confirm, then `put_back`."""
     from app.qt import confirm
-    return confirm.ask(parent, S.FRESH_ASK, fresh_body(counts), S.FRESH_YES, S.FRESH_YES_TIP, default_no=True,
-                       danger=True, check=S.FRESH_KNOWN, check_tip=S.FRESH_KNOWN_TIP, on_answer=on_answer)
+    kind = choice[0]
+    window = (parent or shell).window()
+    if kind == "sort":
+        return sort_again(shell)
+    if kind == "folders":
+        from app.qt import first_run
+        wiz = first_run.open_again(shell, resort=lambda changes: sort_again(shell, changes))
+        if wiz is None:
+            windows.say_in_bar(shell, S.FRESH_FOLDERS_BUSY)
+            return None
+        wiz.finished.connect(lambda how: how == "later" and open_fresh(shell, parent or shell, first="sort"))
+        return wiz
+    if kind == "over":
+        if shell.generating():
+            windows.say_in_bar(shell, S.FRESH_OVER_GENERATING)
+            return None
+        return confirm.ask(window, S.FRESH_OVER_ASK, S.FRESH_OVER_ASK_BODY, S.FRESH_OVER_YES, S.FRESH_OVER_YES_TIP,
+                           default_no=True, danger=True, no=S.FRESH_BACK, no_tip=S.FRESH_BACK_TIP,
+                           on_answer=lambda yes: yes and start_over(shell))
+    entry = choice[1]
+    date = _when(entry.get("date"))
+    if entry.get("scope") == "profile":
+        title, body = S.FRESH_PB_OVER_ASK.format(date=date), S.FRESH_PB_OVER_BODY.format(date=date)
+    elif entry.get("status") == "files-back":       # a Put back a kill stopped after its one write: finished
+        title, body = S.FRESH_PB_STOPPED_ASK, S.FRESH_PB_FINISH_BODY.format(date=date)
+    elif entry.get("stopped"):
+        title, body = S.FRESH_PB_STOPPED_ASK, S.FRESH_PB_STOPPED_BODY.format(date=date)
+    else:
+        title, body = S.FRESH_PB_ASK.format(date=date), S.FRESH_PB_BODY.format(date=date)
+        if entry.get("forgot_known"):                 # P9: a 3.0 backup made with *Also forget my known words*
+            body += "\n\n" + S.FRESH_PB_KNOWN
+    return confirm.ask(window, title, body, S.FRESH_PB_YES, S.FRESH_PB_YES_TIP, default_no=True,
+                       no=S.FRESH_BACK, no_tip=S.FRESH_BACK_TIP,
+                       on_answer=lambda yes: yes and put_back(shell, entry))
+
+
+def sort_again(shell, folders=None):
+    """*Sort my library again* (the spec §3.2, §6.1): the load screen over the window from the press (pending), the
+    looks' `fresh` on their worker — the reset, *Change folders…*'s changes, every folder read again for sorting,
+    its count on the screen (*Stop* ends the read between files and goes to the sorting) — then the load's other
+    steps and the sort screen (`door="resort"`). Its *Done*: Current, and *Library sorted again · Put back*. Refused
+    or failed: the cover goes and the bar says why (nothing changed). -> the `LoadRun`, or None."""
+    import threading
+    from app.qt import bridge, sort_screen
+    looks = _looks(shell)
+    if looks is None or running(shell):
+        windows.say_in_bar(shell, running(shell) or S.STORE_NO_LIBRARY_TIP)
+        return None
+    stop = threading.Event()
+    cover = sort_screen.cover_window(shell)
+    held = {"backup": None}
+
+    def ended():
+        _set_running(shell, None)
+        run.end()
+        run.deleteLater()
+
+    def after(_how):
+        ended()
+        _to_current(shell)
+        _sorted_toast(shell, held["backup"], S.FRESH_SORTED)
+
+    def empty():
+        stopped = bool(run.state and run.state.get("stopped"))
+        ended()
+        _to_current(shell)
+        if stopped:                                   # stopped before a title came in: the folders' next look now
+            asked = getattr(looks, "asked", None)
+            if asked is not None:
+                asked(refreshed=True)
+        _sorted_toast(shell, held["backup"], S.FRESH_SORTED_STOPPED if stopped else S.FRESH_SORTED_NOTHING)
+    run = sort_screen.LoadRun(shell, cover, door="resort", stop_scan=stop.set, after=after, empty=empty,
+                              parent=shell)
+    screen = run.begin()
+    screen.btn_stop.setEnabled(False)                 # F5: Stop once the order is aside (the reset never half-stops)
+    run.task(S.FRESH_SETTING_ASIDE)
+    _set_running(shell, S.FRESH_RUNNING_TIP)
+    relay = bridge.Relay(run)
+
+    def heard(said):
+        what, value = said
+        if run.ended:
+            return
+        if what == "answer":
+            if value.get("done"):
+                held["backup"] = value.get("backup")
+                if not sip.isdeleted(screen):
+                    screen.btn_stop.setEnabled(True)
+                run.said((0, 0))
+                refused = [why for _what, why in ((value.get("folders") or {}).get("refused") or ())]
+                if refused:
+                    windows.say_in_bar(shell, S.FRESH_FOLDERS_REFUSED.format(why=refused[0]))
+            else:
+                ended()
+                windows.say_in_bar(shell, fresh_said(value))
+        elif what == "said":
+            run.said(value)
+        else:
+            run.scanned(value.get("ids"))
+    relay.said.connect(heard)
+    if not looks.fresh(lambda a: relay.call(("answer", a)), folders=folders,
+                       progress=lambda found, shows: relay.call(("said", (found, shows))), stop=stop.is_set,
+                       scanned=lambda found: relay.call(("scanned", found))):
+        ended()
+        return None
+    return run
+
+
+def _to_current(shell):
+    try:
+        shell.show_tab("current")
+    except (AttributeError, RuntimeError):
+        pass
+
+
+def _sorted_toast(shell, backup, words):
+    toasts = getattr(shell, "toasts", None)
+    if toasts is None:
+        windows.say_in_bar(shell, words)
+        return
+    buttons = []
+    if backup:
+        buttons = [(S.FRESH_TOAST_PUT_BACK, S.FRESH_TOAST_PUT_BACK_TIP,
+                    lambda: put_back(shell, {"folder": backup, "scope": "library", "kind": "sorted-again"}))]
+    toasts.show(words, buttons=buttons)
+
+
+def put_back(shell, entry):
+    """*Put back*: a Sorted-again backup (this language's) on the looks' worker (`SourceLooks.put_back`: the library
+    from then in one write; the library now into a backup of its own), its running line in the bar until it answers,
+    then *Your library from <date> is back · Undo* (Undo puts back the backup just made); a Started-over one by a
+    restart (`start_over(..., backup=)`). -> True when it was asked."""
+    if entry.get("scope") == "profile":
+        return start_over(shell, backup=entry.get("stamp"))
+    from app.qt import bridge
+    looks = _looks(shell)
+    if looks is None or running(shell):
+        windows.say_in_bar(shell, running(shell) or S.STORE_NO_LIBRARY_TIP)
+        return False
+    p = qpress.begin(None, "settings:put-back", busy=S.FRESH_PB_RUNNING, win=shell)
+    _set_running(shell, S.FRESH_PB_RUNNING)
+    relay = bridge.Relay(shell)
+    date = _when(entry.get("date"))
+
+    def landed(answer):
+        relay.deleteLater()
+        _set_running(shell, None)
+        if p is not None:
+            qpress.end(p, shell, failed=not answer.get("done"))
+        if not answer.get("done"):
+            windows.say_in_bar(shell, put_back_said(answer))
+            return
+        _to_current(shell)
+        toasts = getattr(shell, "toasts", None)
+        made = answer.get("backup")
+        words = S.FRESH_PB_DONE.format(date=date) if entry.get("date") else S.FRESH_PB_DONE_PLAIN
+        if toasts is None:
+            windows.say_in_bar(shell, words)
+            return
+        toasts.show(words, undo=(lambda: put_back(shell, {"folder": made, "scope": "library",
+                                                           "kind": "put-back-over"})) if made else None)
+    relay.said.connect(landed)
+    if not looks.put_back(entry["folder"], relay.call):
+        relay.deleteLater()
+        _set_running(shell, None)
+        if p is not None:
+            qpress.end(p, shell, failed=True)
+        return False
+    return True
+
+
+def put_back_said(answer):
+    """The bar's words for a Put back that didn't happen."""
+    if answer.get("aside"):
+        return S.FRESH_NOT_ALL_BACK.format(folder=answer["aside"])
+    if answer.get("failed"):
+        return S.FRESH_PB_FAILED.format(reason=answer["failed"])
+    return S.FRESH_PB_REFUSED.format(reason=_reason_words(answer.get("refused")))
+
+
+def start_over(shell, backup=None):
+    """*Start over* (or *Put back* a Started-over backup, `backup` its stamp): the request written (`profile_reset.
+    request`, on the window's thread: one small file), then the window closes the quit's way and starts again; the
+    move runs at that start, before anything opens (the start gate). Refused (an update staged, a move in flight, the
+    request unwritable) or the program can't be started again: said, nothing changed, the window stays. -> True when
+    the restart was asked."""
+    from app import profile_reset
+    from app.qt import shell as shell_module
+    if running(shell):
+        windows.say_in_bar(shell, running(shell))
+        return False
+    why = shell_module.relaunch_refused()
+    if why:
+        windows.say_in_bar(shell, S.FRESH_RESTART_FAILED.format(why=why))
+        return False
+    try:
+        profile_reset.request(profile_reset.PUT_BACK if backup else profile_reset.START_OVER, backup)
+    except profile_reset.MoveRefused as e:
+        windows.say_in_bar(shell, e.words)
+        return False
+    except (OSError, ValueError) as e:
+        windows.say_in_bar(shell, profile_reset.REFUSED_JOURNAL.format(why=e))
+        return False
+    shell.restart(move=True)
+    return True
+
+
+def _reason_words(reason):
+    if reason == "no-library":
+        return S.STORE_NO_LIBRARY_TIP
+    if reason == "busy" or reason in strings.READ_ONLY_REASONS or str(reason).startswith("io"):
+        why = strings.STORE_BUSY_NOW if reason == "busy" else strings.store_reason(reason)
+        return why[:1].upper() + why[1:] + "."       # P-1: the store's own words, as a sentence
+    return str(reason or "")
 
 
 def fresh_said(answer):
-    """The bar's words for `SourceLooks.fresh`'s answer: the folders being read, or why nothing was changed."""
+    """The bar's words for `SourceLooks.fresh`'s answer when it didn't sort again: why nothing was changed."""
     if answer.get("done"):
-        known = answer.get("known") or ""
-        return S.FRESH_DONE_KNOWN_KEPT.format(why=known[len("kept: "):]) if known.startswith("kept: ") \
-            else S.FRESH_DONE
+        return S.FRESH_DONE
     if answer.get("aside"):
         return S.FRESH_NOT_ALL_BACK.format(folder=answer["aside"])
     if answer.get("failed"):
         return S.FRESH_FAILED.format(reason=answer["failed"])
-    reason = answer.get("refused")
-    if reason == "no-library":
-        reason = S.STORE_NO_LIBRARY_TIP
-    elif reason == "busy" or reason in strings.READ_ONLY_REASONS or str(reason).startswith("io"):
-        why = strings.STORE_BUSY_NOW if reason == "busy" else strings.store_reason(reason)
-        reason = why[:1].upper() + why[1:] + "."         # P-1: the store's own words, as a sentence
-    return S.FRESH_REFUSED.format(reason=reason)
-
-
-def fresh_body(counts):
-    """The sheet's words: `FRESH_BODY`, then what never comes back and the cards left suspended, by the store's counts
-    (`library_store.fresh_counts`; a count of 0 says nothing; None: the counts couldn't be read)."""
-    counts = counts or {}
-    plural = lambda n: "" if n == 1 else "s"                                              # noqa: E731
-    parts = [words.format(n=counts[key], s=plural(counts[key])) for key, words in (
-        ("added", S.FRESH_GONE_ADDED), ("youtube", S.FRESH_GONE_YOUTUBE), ("other", S.FRESH_GONE_OTHER))
-        if counts.get(key)]
-    lines = [S.FRESH_BODY]
-    if parts:
-        lines.append(S.FRESH_GONE.format(parts=", ".join(parts)))
-    if counts.get("suspended"):
-        lines.append(S.FRESH_SUSPENDED.format(n=counts["suspended"], s=plural(counts["suspended"])))
-    return "\n\n".join(lines)
+    return S.FRESH_REFUSED.format(reason=_reason_words(answer.get("refused")))

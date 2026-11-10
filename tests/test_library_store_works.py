@@ -998,11 +998,16 @@ def test_a_drop_below_hatos_folder_waits_too_and_read_only_mode_agrees(language)
 def test_place_soon_and_after_show(language):
     """04 §4.2: `place --where soon` is the first slot below the Soon line; `after-show` goes after the title's episode
     before it in Current, before the next when only later episodes are there, and to Current's top when its title is
-    only in Finished or 6+ Months (Q4-9). Each is one undoable command."""
+    only in Finished or 6+ Months (Q4-9). Each is one undoable command. The line takes Soon's first file up as the
+    item leaves NOW, so it then runs through that show: the slot is after the show's Soon files, never between its
+    halves (alpha 9 #JNFJ8Q: Soon's very top here was the bug — the show shown as two rows around the item)."""
     store = migrated(language, shows=2, episodes=4)
-    now = store.ids("now")
+    now, soon = store.ids("now"), store.ids("soon")
+    cut = [i for i in soon if store.item(i)["work_id"] == store.item(soon[0])["work_id"]]
+    assert len(cut) > 1, "the setup: the show the line takes a file up from has more files in Soon"
     change = store.place([now[0]], "soon")
-    assert store.ids("soon")[0] == now[0]
+    assert store.ids("now") == now[1:] + cut[:1]
+    assert store.ids("soon")[:len(cut)] == cut[1:] + [now[0]]
     store.undo(change)
     assert store.ids("now") == now
     goal_show = [i for i in store.ids("goal") if store.item(i)["parent_folder"]]

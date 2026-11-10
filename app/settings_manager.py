@@ -19,6 +19,19 @@ DEFAULT_SETTINGS = {
     "split_length": 3000,
     # how an EPUB is cut into parts when it is added: "chapters" (its TOC's, else its heading lines') or "even"
     "split_books_by": "chapters",
+    # What ▶ opens a video or an EPUB with (Settings → Content, *Videos open in* / *Books open in*; Sonic 2026-11-05,
+    # the mock's rows): "default" — the program Windows opens it with — or "program", the one chosen there
+    # (`open_video_program` / `open_book_program`: its path, kept when "default" is picked again). YouTube always opens
+    # on YouTube; a book with no EPUB opens in the default program. Read by `app/services/play.program_for` (▶'s open,
+    # `screens.Page._play`). Never in a signature.
+    "open_video": "default",
+    "open_video_program": "",
+    "open_book": "default",
+    "open_book_program": "",
+    # When you finish something (Settings → Content; the mock's *When something is finished*, N7): "ask" — the toast
+    # asks *Keep* or *Leave its new cards out of your order* (D14) — or always "keep", or always "out" (the toast then
+    # says so, its Undo takes both back). Read by `finish_cards()`. Never in a signature.
+    "finish_cards": "ask",
     "target_language": "ja",
     # Chinese only: read the whole library as "s" (Simplified) or "t" (Traditional); "asis" leaves
     # every file's script as written. Files are never converted on disk (app/zh_script.py).
@@ -32,6 +45,7 @@ DEFAULT_SETTINGS = {
     "only_i_plus_one": False,
     "ensure_audio_example": False,
     "add_graduated_words": True,
+    "update_check_enabled": True,  # ask GitHub at start whether a new version is out (off: no request at all)
     "auto_update_enabled": True,   # one-click in-place updates for minor releases
     "skipped_version": "",          # a version the user skipped — never offered again
     # Per-sentence source badge in the report: "off" | "icon" | "filename" | "full".
@@ -119,6 +133,10 @@ DEFAULT_SETTINGS = {
     # Show covers (the setup wizard's *Your shows* page, G1.2-19 / C1): on only by the user's own yes there — each show's
     # name is sent to AniList or TMDB for its cover. Off by default (and *Skip* writes nothing). Never in a signature.
     "covers_download": False,
+    # Find them with hato (Michi-NS, NS-2: *Needs you*'s one press, the first time; app/no_subs.py): from then Surasura
+    # hands hato its videos with no subtitle (only once hato takes a list: its tools entry lists `find`), and lists
+    # `register` for hato with Connect off too (Q3). Off by default. Never in a signature.
+    "subs_with_hato": False,
     # Keep practice rounds (A6, H9; Settings → Connections; app/practice_rounds.py): the practice server keeps each round
     # in User Files/<lang>/practice/ so the learner can do it again, and what they ask to keep is read back to later
     # rounds. On by default (PROVISIONAL A6P-6): nothing leaves; off, nothing is saved or read back. Never in a signature.
@@ -679,6 +697,25 @@ def connect_on(settings) -> bool:
     (off)."""
     on = settings.get("connect_enabled") if hasattr(settings, "get") else False
     return bool(on) and automation(settings)
+
+
+FINISH_CARDS = ("ask", "keep", "out")
+
+
+def finish_cards(settings) -> str:
+    """*When you finish something* (`finish_cards`) as every finish reads it: "ask", "keep" or "out"; absent, a
+    hand-edited value no choice names, or no settings: "ask" (the toast's question, as before the setting). Takes a
+    settings dict, a window's frozen copy, or None."""
+    value = settings.get("finish_cards") if hasattr(settings, "get") else None
+    return value if value in FINISH_CARDS else "ask"
+
+
+def update_check_on(settings) -> bool:
+    """*Check for updates* (Settings → App, on by default): may Surasura ask GitHub whether a new version is out —
+    its own release and Anki Miner's. Off, no update request is sent at all. Takes a settings dict, a window's frozen
+    copy, or None (on). The test switch `SURASURA_NO_UPDATE_CHECK` is each caller's own, as before."""
+    value = settings.get("update_check_enabled", True) if hasattr(settings, "get") else True
+    return value is not False
 
 
 def get_default_settings() -> Dict[str, Any]:

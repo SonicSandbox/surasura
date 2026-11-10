@@ -101,6 +101,24 @@ def _no_gui_update_check(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _switch_interval_put_back():
+    """A re-order host in this process lowers Python's switch interval while it lives (`replan_preview`'s
+    `_share_the_window`); a test that never stops its host would leave the rest of the run at 1 ms, timed bounds
+    included. Each test ends with no host counted, and the interval a host it left behind lowered put back, as the
+    host's own stop would (`_leave_the_window`). A test's own interval is its own: the harness guards' gap probe sets
+    1 µs for the 200 tests after it, and putting 5 ms back there let its busy watcher hold the lock 5 ms at every
+    release (its nested run 8 s → past its 300 s timeout)."""
+    yield
+    preview = sys.modules.get("app.replan_preview")
+    if preview is not None:
+        with preview._SHARING_LOCK:
+            left, was = preview._SHARING["hosts"], preview._SHARING["was"]
+            preview._SHARING.update(hosts=0, was=None)
+        if left and was is not None and sys.getswitchinterval() == preview.WINDOW_SWITCH_S:
+            sys.setswitchinterval(was)
+
+
+@pytest.fixture(autouse=True)
 def _replan_in_process(monkeypatch):
     """The fast re-plan preview's host in the test's own process (`replan_preview.open_host`), never a helper process:
     the suites' fake AnkiConnect is a patch of this process's `urlopen`, which a helper would never see. The helper
@@ -462,8 +480,22 @@ def pytest_runtest_logreport(report):
     # Worst outcome across setup/call/teardown wins.
     if report.failed:
         _PROF["outcome"][report.nodeid] = "FAILED"
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            _say_now(report)
     elif report.skipped:
         _PROF["outcome"].setdefault(report.nodeid, "skipped")
+
+
+def _say_now(report):
+    """(GitHub only.) A failed report printed as it happens, not only in pytest's closing summary: a shard whose
+    process dies a moment later (twice after test_settings_store's teardown ERROR, flakes-2026-11-05 #5) never reaches
+    that summary, and the error was lost both times."""
+    try:
+        text = report.longreprtext[-6000:]
+        sys.__stderr__.write(f"\n--- {report.nodeid} ({report.when}) failed; said at once:\n{text}\n---\n")
+        sys.__stderr__.flush()
+    except Exception:                   # never in the way of the run
+        pass
 
 
 def pytest_runtest_logfinish(nodeid, location):

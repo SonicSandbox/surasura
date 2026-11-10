@@ -38,17 +38,22 @@ def _record(features):
 # --------------------------------------------------------------------------- #
 # The feature: one answer, everywhere
 # --------------------------------------------------------------------------- #
-def test_books_are_mined_only_with_an_anki_miner_that_names_reading_and_audio_still_waits():
-    """`mines_now`: this Surasura knows Z-9 now, so books and texts open with the Anki Miner its setup record last found
-    naming `reading` — never without a record, never with one that doesn't name it; audio (Z-16) stays shut."""
-    assert anki_miner.mines("books") and not anki_miner.mines("audio")
+def test_books_are_mined_only_with_an_anki_miner_that_names_reading_and_audio_only_with_its_own_name():
+    """`mines_now`: this Surasura knows Z-9 (and Z-16 since Michi-AB), so books and texts open with the Anki Miner its
+    setup record last found naming `reading` — never without a record, never with one that doesn't name it; audio
+    opens only with `audio-episodes`, never with `reading`."""
+    assert anki_miner.mines("books") and anki_miner.mines("audio")
     assert not anki_miner.mines_now("books"), "no record yet: no"
     _record(["word-from-line", "dry-run"])
     assert not anki_miner.mines_now("books")
-    _record(["word-from-line", "reading", "audio-episodes"])
+    # (each record a size of its own: the record is read again only once its file's size or time changed, and two
+    # writes in one tick of a coarse clock keep the time)
+    _record(["word-from-line", "dry-run", "reading"])
     assert anki_miner.mines_now("books") and not anki_miner.mines_now("audio")
+    _record(["word-from-line", "reading", "audio-episodes"])
+    assert anki_miner.mines_now("books") and anki_miner.mines_now("audio")
     _record(["word-from-line"])                         # another Anki Miner found since: read again
-    assert not anki_miner.mines_now("books")
+    assert not anki_miner.mines_now("books") and not anki_miner.mines_now("audio")
 
 
 def test_without_reading_the_rows_the_gaps_and_the_mine_press_are_as_before(tmp_path):
@@ -320,8 +325,9 @@ class BookSteps(StoreSteps):
         return super().pick(lang, job, video)
 
 
-def _parts_in_store(tmp_path, lang="ja"):
-    """Two parts of a real EPUB (its first chapter's first two) added with their origin records (`<epub>#<n>` + Hon's `chapter`), as Extract does."""
+def _parts_in_store(tmp_path, lang="ja", chapter=True):
+    """Two parts of a real EPUB (its first chapter's first two) added with their origin records (`<epub>#<n>` + Hon's `chapter`), as Extract does
+    (`chapter` False: parts from before Hon's record)."""
     epub = _novel(tmp_path)
     docs, _ = extract.epub_documents(epub)
     pieces = extract.book_split(docs, 1500)[1:3]         # the first chapter's first two parts: one document shared
@@ -334,7 +340,7 @@ def _parts_in_store(tmp_path, lang="ja"):
         with open(files[-1], "w", encoding="utf-8") as f:
             f.write(p.text)
     origins = {f: {"origin": f"{epub}#{n}", "size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": "0" * 64,
-                   "show": "旅の記録", "episode": n, "chapter": p.chapter}
+                   "show": "旅の記録", "episode": n, **({"chapter": p.chapter} if chapter else {})}
                for n, (f, p) in enumerate(zip(files, pieces), 1)}
     with c.store(lang) as s:
         added = s.insert(files, "now", origins=origins).added

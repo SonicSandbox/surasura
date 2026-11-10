@@ -2,6 +2,7 @@
 (every directive and flag the spec names; the uninstall list exact); the packager's defines are checked for the real
 program and a test build; when Inno Setup's compiler is on this PC, the script is compiled over a tiny program folder
 (a test build's defines only: nothing is installed here; the install / uninstall proof is the row's own run)."""
+import ntpath
 import os
 import re
 import subprocess
@@ -114,6 +115,108 @@ def test_launch_is_offered_after_an_interactive_install_only():
     assert set(run[0]["Flags"].split()) == {"postinstall", "skipifsilent", "nowait"}
 
 
+def test_the_agreement_page_must_be_accepted_and_is_the_file_the_packager_writes():
+    """Sonic, 2026-11-02: an "I accept" page before anything installs. Inno's LicenseFile page keeps Next off until
+    "I accept the agreement" is chosen; the file is package_app.write_agreement's, named by a define."""
+    assert _setup()["LicenseFile"] == "{#AgreementFile}"
+    assert re.search(r'#ifndef AgreementFile\s+#define AgreementFile AddBackslash\(SourcePath\) \+ '
+                     r'"\.\.\\build\\installer_agreement\.txt"\s+#endif', _text())
+    assert os.path.abspath(os.path.join(PROJECT, "build", "installer_agreement.txt")) == \
+        os.path.abspath(os.path.join(PROJECT, package_app.AGREEMENT_FILE))
+
+
+def _licence_text():
+    with open(os.path.join(PROJECT, "LICENSE"), encoding="utf-8-sig") as f:
+        return f.read()
+
+
+def test_the_agreement_is_the_content_notice_and_terms_then_the_licence_as_it_is(tmp_path):
+    licence = tmp_path / "LICENSE"
+    licence.write_text(_licence_text(), encoding="utf-8")
+    out = package_app.write_agreement(out=str(tmp_path / "build" / "agreement.txt"), licence=str(licence))
+    assert out == str(tmp_path / "build" / "agreement.txt")
+    raw = (tmp_path / "build" / "agreement.txt").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")                          # UTF-8 with a BOM: how Inno's page reads UTF-8
+    assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")  # CRLF only
+    text = raw.decode("utf-8-sig").replace("\r\n", "\n")
+    with open(package_app.AGREEMENT_HEAD, encoding="utf-8") as f:
+        head = f.read().strip()
+    assert text == f"{head}\n\n{package_app.AGREEMENT_RULE}\n\n{_licence_text().strip()}\n"
+    # the order Sonic asked for: the user's content first, then no warranty and liability, then the licence
+    places = [text.index(words) for words in ("1. YOUR CONTENT", "You are responsible for the content you use",
+                                              "own or have the right to use", "2. NO WARRANTY",
+                                              "3. LIMITATION OF LIABILITY", "4. THE LICENCE", package_app.AGREEMENT_RULE,
+                                              _licence_text().strip().splitlines()[0])]
+    assert places == sorted(places)
+
+
+def test_the_agreement_follows_the_licence_file_so_the_gpl_switch_needs_no_installer_edit(tmp_path):
+    # A licence switch is a new LICENSE: the page reads whatever the program folder ships, nothing in the .iss changes.
+    gpl = "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n\nCopyright (C) 2007 Free Software Foundation, Inc."
+    (tmp_path / "LICENSE").write_text(gpl, encoding="utf-8")
+    out = package_app.write_agreement(out=str(tmp_path / "a.txt"), licence=str(tmp_path / "LICENSE"))
+    text = open(out, encoding="utf-8-sig").read()
+    assert text.rstrip().endswith("Copyright (C) 2007 Free Software Foundation, Inc.")
+    assert "MIT License" not in text and "GNU GENERAL PUBLIC LICENSE" in text
+
+
+@pytest.mark.parametrize("missing", ["licence", "head", "empty licence"])
+def test_no_licence_or_no_terms_is_no_agreement_and_says_why(tmp_path, capsys, missing):
+    licence, head = tmp_path / "LICENSE", tmp_path / "agreement.txt"
+    licence.write_text("" if missing == "empty licence" else _licence_text(), encoding="utf-8")
+    if missing != "head":
+        head.write_text("SURASURA: TERMS OF USE\n", encoding="utf-8")
+    if missing == "licence":
+        licence.unlink()
+    out = tmp_path / "out.txt"
+    assert package_app.write_agreement(out=str(out), head=str(head), licence=str(licence)) is None
+    assert not out.exists()
+    assert "Installer not built" in capsys.readouterr().out
+
+
+def test_a_program_folder_without_its_licence_is_no_installer(tmp_path, monkeypatch, capsys):
+    # The page shows the licence the program ships: without LICENSE in the program folder, ISCC is never run.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(package_app, "find_iscc", lambda: str(tmp_path / "ISCC.exe"))
+    monkeypatch.setattr(package_app.subprocess, "run", lambda *a, **k: pytest.fail("ISCC is never run"))
+    (tmp_path / "dist" / "Surasura").mkdir(parents=True)
+    assert package_app.build_installer(str(tmp_path / "dist" / "Surasura"), "3.0.0", "Surasura-test", "Surasura") is None
+    assert "LICENSE" in capsys.readouterr().out
+
+
+def test_iscc_is_handed_the_agreement_written_from_the_programs_licence(tmp_path, monkeypatch):
+    # Without the define the .iss falls back to build\installer_agreement.txt, which a hand compile may have left stale.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(package_app, "find_iscc", lambda: str(tmp_path / "ISCC.exe"))
+    seen = []
+    monkeypatch.setattr(package_app.subprocess, "run",
+                        lambda cmd, **k: seen.append(cmd) or subprocess.CompletedProcess(cmd, 1))
+    program = tmp_path / "dist" / "Surasura"
+    program.mkdir(parents=True)
+    (program / "LICENSE").write_text("GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n", encoding="utf-8")
+    package_app.build_installer(str(program), "3.0.0", "Surasura-test", "Surasura")
+    agreement = str(tmp_path / "build" / "installer_agreement.txt")
+    assert len(seen) == 1 and f"/DAgreementFile={agreement}" in seen[0]
+    assert open(agreement, encoding="utf-8-sig").read().rstrip().endswith("Version 3, 29 June 2007")
+
+
+def test_the_agreement_terms_say_the_same_as_readmes_your_content():
+    """The installer's terms and README's *Your content* are one notice: its sentences, line breaks aside, in both."""
+    with open(package_app.AGREEMENT_HEAD, encoding="utf-8") as f:
+        head = " ".join(f.read().split())
+    with open(os.path.join(PROJECT, "README.md"), encoding="utf-8") as f:
+        readme = f.read()
+    section = re.search(r"^## [^\n]*Your content\n(.*?)(?=^## )", readme, re.M | re.S).group(1)
+    section = " ".join(section.replace("**", "").split())
+    for sentence in ("Surasura provides no content.", "You are responsible for the content you use with Surasura",
+                     "use only content you own or have the right to use, and follow the law and the terms of the "
+                     "sites and services you get it from.",
+                     "Surasura does not host or share your content: it stays on your computer, except what you "
+                     "choose to send: to a service you connect, or in a problem report you send."):
+        assert sentence.lower() in head.lower() and sentence.lower() in section.lower(), sentence
+    assert head.isascii()                                          # plain text whatever the page's font
+
+
 def test_uninstall_deletes_exactly_what_an_update_may_add_and_never_a_wildcard():
     deletes = [(e["Type"], e["Name"]) for e in _entries("uninstalldelete")]
     assert deletes == [("filesandordirs", r"{app}\_internal"), ("files", r"{app}\Surasura.exe"),
@@ -144,7 +247,45 @@ def test_the_installer_never_creates_the_library_folder_and_the_uninstaller_dele
     assert re.findall(r"(ForceDirectories|CreateDir)\(([^)]*\)?)", code) == [("ForceDirectories",
                                                                              "ExtractFileDir(Note)")]
     assert "DelTree" not in code
-    assert re.findall(r"DeleteFile\((\w+)\)", code) == ["Note"]    # only library.json, replaced by its new copy
+    # library.json (replaced by its new copy) and surasura.json when it names this install (the test below)
+    assert re.findall(r"DeleteFile\((\w+)\)", code) == ["Note", "Entry"]
+
+
+def test_the_uninstall_forgets_the_tools_entry_only_when_it_names_this_installs_command_line():
+    # rc_checks R2 (2026-10-30): after an uninstall, Houseki\tools\surasura.json still named the removed
+    # surasura-cli.exe, so hato would call a missing program. The uninstaller forgets it, silent or not, where
+    # tools_entry writes it, and only when its cli is this install's (JSON-escaped as tools_entry writes it: UTF-8,
+    # backslashes doubled, never \u): an entry another Surasura wrote is left.
+    from app import path_utils, tools_entry
+    code = "\n".join(_sections()["code"])
+    forget = code[code.index("procedure ForgetToolsEntry"):code.index("procedure CurUninstallStepChanged")]
+    tools = ntpath.join(r"{localappdata}", path_utils.VENDOR, "tools", tools_entry.TOOL + ".json")
+    assert f"Entry := ExpandConstant('{tools}');" in forget
+    assert r"Cli := ExpandConstant('{app}\surasura-cli.exe');" in forget
+    assert "StringChangeEx(Cli, '\\', '\\\\', True);" in forget
+    assert "Pos('\"' + AnsiLowercase(Cli) + '\"', AnsiLowercase(UTF8Decode(Raw))) > 0" in forget
+    step = code[code.index("procedure CurUninstallStepChanged"):]
+    assert step.index("if CurUninstallStep = usPostUninstall then\nForgetToolsEntry;") < step.index("UninstallSilent")
+
+
+def test_the_uninstallers_search_finds_the_bytes_tools_entry_writes_and_never_a_sibling_folder(tmp_path, monkeypatch):
+    # The uninstaller's match above, done the script's way on what tools_entry really writes: a profile folder in
+    # Japanese and mixed case is found (UTF-8, never \u); a test build's folder beside it (Surasura-test) never is.
+    # A change to tools_entry's format (ensure_ascii, forward slashes) fails here, not in a learner's uninstall.
+    from app import tools_entry
+    programs = "C:\\Users\\ミカエル\\AppData\\Local\\Programs"
+    cli = programs + "\\Surasura\\surasura-cli.exe"
+    monkeypatch.setenv("SURASURA_TOOLS_CLI", cli)
+    monkeypatch.setenv("HOUSEKI_TOOLS_DIR", str(tmp_path))
+    assert tools_entry.refresh({}) is True
+    with open(tmp_path / (tools_entry.TOOL + ".json"), "rb") as f:
+        text = f.read().decode("utf-8").lower()             # UTF8Decode, AnsiLowercase
+
+    def found(app):                                         # StringChangeEx(Cli, '\', '\\'), then Pos('"' + Cli + '"')
+        return ('"' + (app + "\\surasura-cli.exe").replace("\\", "\\\\").lower() + '"') in text
+
+    assert found(programs + "\\Surasura") and found(programs.upper() + "\\SURASURA")
+    assert not found(programs + "\\Surasura-test") and not found(programs + "\\Sura")
 
 
 def test_an_upgrade_keeps_library_json_unless_a_library_is_given():
@@ -432,6 +573,7 @@ def test_the_script_compiles_into_the_named_installer(tmp_path, monkeypatch):
     (program / "_internal").mkdir(parents=True)
     (program / "Surasura.exe").write_bytes(b"MZ")
     (program / "_internal" / "build_stamp.json").write_text('{"data_name": "Surasura-test"}', encoding="utf-8")
+    (program / "LICENSE").write_text(_licence_text(), encoding="utf-8")       # the agreement page shows it
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(package_app, "ISCC_PLACES", (ISCC,))
     out = package_app.build_installer(str(program), "3.0.0", "Surasura-test", "Surasura", out_dir=str(tmp_path / "dist"))

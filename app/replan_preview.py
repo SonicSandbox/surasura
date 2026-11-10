@@ -403,6 +403,8 @@ class Host:
         self._stop.set()
         self._cancel.set()
         self._wake.set()
+        if self.__dict__.pop("_shares_window", False):
+            _leave_the_window()
 
     # --- the worker ------------------------------------------------------------------------------------------ #
 
@@ -510,7 +512,7 @@ class Host:
         key = (st.st_mtime_ns, st.st_size)
         if key != self._plan_key or self._plan is None:
             try:
-                plan = plan_engine.load(path)
+                plan = plan_engine.load(path, pools=False)
             except plan_engine.PlanError as e:
                 self._plan = self._plan_key = self._engine = self._ids = None
                 return None, f"plan: {e}"
@@ -519,7 +521,7 @@ class Host:
 
     def _engine_for(self, store):
         from app import plan_engine
-        ids = [store.item_id(entry[0]) for entry in self._plan.files]
+        ids = store.item_ids([entry[0] for entry in self._plan.files])     # one read, not one a file (R6)
         if self._engine is None or ids != self._ids:
             self._engine, self._ids = plan_engine.Engine(self._plan, ids), ids
         return self._engine, ids
@@ -527,7 +529,7 @@ class Host:
     def _parts(self, settings, store):
         """The run signature's parts for the library as it stands (stats every file: on this worker only). A missing
         item keeps its place, as Generate and the journey checks sign it (3.0, E2.2's K2: `missing=True`); the set-aside
-        files are its "reference" part (W-1: a watched mark is a Generate first, both ways)."""
+        files are its "reference" part (W-1; a watched mark re-plans at once, Haya-W: `plan_engine._only_watched`)."""
         from app import analyzer, run_args
         schedule = store.schedule(with_aside=True)
         found = analyzer.resolve_found_files(self.language, verbose=False, schedule=schedule, missing=True)
@@ -576,13 +578,18 @@ class Host:
             return
         self._aside = None
         self._sync_at = self._due_sync(settings)      # a write elsewhere (順's own run, a closed window) armed one
-        store = self._open_store()
-        if store is None:
-            return                                   # no library store (JSON mode): nothing to re-plan from
-        try:
-            self._run_job(kind, settings, store)
-        finally:
-            store.close()
+        from app import library_store
+        # one handle a store and role for the whole job (`held`): Junban's reads inside it (`pins.read`, `read_out`,
+        # the journey's look) were three more opens and closes, ~20 ms each and partly under the interpreter lock —
+        # in the window's own process the window's thread waited ~5 ms for one (R6, the timer probe: Kura-B)
+        with library_store.held():
+            store = self._open_store()
+            if store is None:
+                return                               # no library store (JSON mode): nothing to re-plan from
+            try:
+                self._run_job(kind, settings, store)
+            finally:
+                store.close()
 
     def _run_job(self, kind, settings, store):
         versions, order = _snapshot(store)
@@ -1093,11 +1100,48 @@ def helper_processes():
         return list(_HELPERS)
 
 
+# A Host in the window's own process (the suites' IN_PROCESS_ENV; a helper that couldn't start): its job's Python
+# shares the window's interpreter lock, which Python hands between threads every 5 ms by default — the window's thread
+# waited up to that long behind a job step (R6's timer probe: 5–6 ms against 5). While one runs there, the lock changes
+# hands every 1 ms, as in the 3.0 window's own process (`app.qt.shell.SWITCH_INTERVAL_S`); the last one's stop puts
+# back what was set before.
+WINDOW_SWITCH_S = 0.001
+_SHARING = {"hosts": 0, "was": None}
+_SHARING_LOCK = threading.Lock()
+
+
+def _share_the_window():
+    with _SHARING_LOCK:
+        if _SHARING["hosts"] == 0:
+            _SHARING["was"] = sys.getswitchinterval()
+            if _SHARING["was"] > WINDOW_SWITCH_S:
+                sys.setswitchinterval(WINDOW_SWITCH_S)
+        _SHARING["hosts"] += 1
+
+
+def _leave_the_window():
+    with _SHARING_LOCK:
+        if _SHARING["hosts"] <= 0:
+            return
+        _SHARING["hosts"] -= 1
+        if _SHARING["hosts"] == 0 and _SHARING["was"] is not None:
+            if sys.getswitchinterval() == WINDOW_SWITCH_S:     # (someone else's own setting since: theirs stays)
+                sys.setswitchinterval(_SHARING["was"])
+            _SHARING["was"] = None
+
+
+def _in_the_window(host):
+    """`host`, run in the window's own process: the interpreter lock shared every 1 ms while it lives (above)."""
+    host._shares_window = True
+    _share_the_window()
+    return host
+
+
 def open_host(language, say=None, working=None, generate=None):
     """The window's host: `Remote` — the jobs in a helper process of its own — or, with IN_PROCESS_ENV ("1": the
     suites' fake Anki lives in their own process), the `Host` in the window's process. Same calls either way."""
     if os.environ.get(IN_PROCESS_ENV) == "1":
-        return Host(language, say=say, working=working, generate=generate)
+        return _in_the_window(Host(language, say=say, working=working, generate=generate))
     return Remote(language, say=say, working=working, generate=generate)
 
 
@@ -1330,7 +1374,8 @@ class Remote:
             waiting = [message["do"] for message in self._unseen + self._waiting]
             self._waiting, self._unseen = [], []
             ended_busy, self._said_working = self._said_working, False
-            self._local = Host(self.language, say=self._say, working=self._working, generate=self._generate)
+            self._local = _in_the_window(Host(self.language, say=self._say, working=self._working,
+                                              generate=self._generate))
             local = self._local
         if ended_busy:                            # the helper died mid-write: its job never says it ended — say so
             try:                                  # here; the window's own host says its own next write
@@ -1459,13 +1504,12 @@ PROGRESSIVE_COLUMNS = ("Sequence", "Source File", "Word", "Reading", "Score", "O
 
 
 def _lists():
-    import csv
-    from app.path_utils import get_user_file
+    from app.path_utils import get_user_file, list_reader
     out = {}
     for name, key in (("priority_learning_list.csv", "priority"), ("progressive_learning_list.csv", "progressive")):
         try:
             with open(os.path.join(get_user_file("results"), name), encoding="utf-8-sig", newline="") as f:
-                out[key] = list(csv.DictReader(f))
+                out[key] = list(list_reader(f))
         except OSError:
             out[key] = []
     return out

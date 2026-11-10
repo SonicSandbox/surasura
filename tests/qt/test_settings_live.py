@@ -347,7 +347,79 @@ def test_check_refreshes_the_status_and_shows_ankis_word_beside_the_emerald(qapp
     assert wait_until(lambda: not mark.value()) and mark.words() == S.ANKI_WORDS["closed"]
 
 
+def test_ankiconnect_missing_shows_copy_code_and_the_steps_and_a_closed_anki_shows_neither(qapp, fakes):
+    # Mado-A: an Anki seen without AnkiConnect answering (or a look that can't tell) says so in the wizard's words,
+    # with *Copy code* and the three steps under the row; a plainly closed Anki keeps its one line
+    from app import ankiconnect_addon as A
+    page, store, shell = make(fakes)
+    parts = page.live.parts["anki_connection"]
+    mark, steps = parts["mark"], parts["steps"]
+    assert steps.isHidden() and steps.copy.toolTip() and isinstance(steps.copy, sc.Door)
+    fakes.probe = {"ok": False, "version": None, "missing": [], "error": "refused", "running": True}
+    page.live.check()
+    assert wait_until(lambda: mark.words() == A.NO_CONNECT) and not mark.value()
+    assert not steps.isHidden() and steps.line.text() == A.steps_line()
+    assert help_of(page, "setup_anki") == A.NO_CONNECT
+    fakes.probe = dict(fakes.probe, running=None)
+    page.live.check()
+    assert wait_until(lambda: mark.words() == A.UNSURE)
+    assert not steps.isHidden() and steps.line.text() == A.steps_line(unsure=True)
+    QApplication.clipboard().setText("")
+    steps.copy.click()
+    assert QApplication.clipboard().text() == A.CODE and steps.copy.text() == A.COPIED
+    assert shell.bar_line.lines[-1] == A.COPIED_LINE
+    page.live._checking = True                            # A8A-2: while a Check runs the steps stay (no jump)
+    page.live._paint_anki()
+    assert mark.words() == S.ANKI_WORDS["checking"] and not steps.isHidden()
+    page.live._checking = False
+    fakes.probe = dict(fakes.probe, running=False)
+    page.live.check()
+    assert wait_until(lambda: mark.words() == S.ANKI_WORDS["closed"]) and steps.isHidden()
+
+
+def test_check_runs_by_itself_once_anki_answers_while_the_row_is_on_screen(qapp, fakes, monkeypatch):
+    # Mado-A: the row's watch rides the shell's poll; armed while Anki is closed or AnkiConnect missing, it takes the
+    # light look on a worker and, once AnkiConnect answers, runs *Check* itself; connected, it asks nothing more
+    from PyQt6.QtCore import QTimer
+    from app import ankiconnect_addon as A
+    from app.qt import addon_steps
+    tick = QTimer()
+    monkeypatch.setattr(addon_steps, "ticker", lambda _shell: tick)
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    asked = []
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append(url) or fakes.probe.get("ok"))
+    fakes.probe = {"ok": False, "version": None, "missing": [], "error": "refused", "running": True}
+    page, store, shell = make(fakes)
+    mark = page.live.parts["anki_connection"]["mark"]
+    tick.timeout.emit()
+    QApplication.processEvents()
+    assert asked == []                                    # not checked yet: nothing armed
+    watch = page.live.parts["anki_connection"]["watch"]
+    page.bridge.automation_changed.emit(automation_module.State("anki-closed", "ja", 0, None, "Anki is closed", None, 3))
+    assert wait_until(lambda: watch.armed) and watch.seen is False    # a sync's "closed": no process looked for yet
+    page.live.check()
+    assert wait_until(lambda: mark.words() == A.NO_CONNECT) and watch.seen is True
+    checks = fakes.names().count("probe_anki")
+    tick.timeout.emit()
+    assert wait_until(lambda: asked == ["http://127.0.0.1:8765"])
+    assert wait_until(lambda: not page.live.parts["anki_connection"]["watch"].looking)
+    assert fakes.names().count("probe_anki") == checks    # still no answer: no Check
+    fakes.probe = {"ok": True, "version": 6, "missing": [], "error": ""}
+    tick.timeout.emit()
+    assert wait_until(lambda: mark.value()) and mark.words() == "connected"
+    assert fakes.names().count("probe_anki") == checks + 1
+    assert page.live.parts["anki_connection"]["steps"].isHidden()
+    n = len(asked)
+    tick.timeout.emit()
+    QApplication.processEvents()
+    assert len(asked) == n
+
+
 def test_ankis_words_from_a_look():
+    assert live.connection({"ok": False, "error": "refused", "running": True}) == (False, "no_addon")
+    assert live.connection({"ok": False, "error": "refused", "running": None}) == (False, "unsure")
+    assert live.connection({"ok": False, "error": "refused", "running": False}) == (False, "closed")
+    assert live.connection({"ok": False, "error": "refused"}) == (False, "closed")      # an older look: no process seen
     assert live.connection({"ok": False, "timed_out": True}) == (False, "busy")
     assert live.connection({"ok": False, "version": 6, "error": "Anki did not grant access"}) == (False, "denied")
     assert live.connection(None, "synced") == (True, "connected")
@@ -394,7 +466,7 @@ def test_logs_and_the_data_folder_open_their_folders(qapp, fakes, monkeypatch):
     page, store, shell = make(fakes)
     page.live.parts["logs"]["open"].click()
     assert wait_until(lambda: opened == ["C:\\logs"])
-    page.live.parts["version"]["open"].click()
+    page.live.parts["logs"]["data"].click()                 # a9.1: beside the logs, *Folders*' (Version copies)
     assert wait_until(lambda: opened == ["C:\\logs", "C:\\data\\ja"])
     assert threads == [False, False]                        # never the window's thread
     from app import __version__
@@ -602,7 +674,8 @@ def test_a_format_export_asks_the_format_then_the_file_then_runs_and_says_so(qap
     assert name == exports.save_as(fmt, exports.INITIAL_NAMES[live.EXPORTS[row_id]])[2] and ext in filters
     assert wait_until(lambda: shell.bar_line.lines[-1:] == [live.flat(fakes.outcome.message)])
     export_call = next(args for name_, _gui, args in fakes.calls if name_ == "run_export")
-    assert export_call == (live.EXPORTS[row_id], "ja", fmt, "D:\\書き出し\\list" + ext)
+    # (A: the window's services go with it: the export waits for the journey's catch-up)
+    assert export_call == (live.EXPORTS[row_id], "ja", fmt, "D:\\書き出し\\list" + ext, page.services)
     # (IK-1, Sonic decided: *Exporting …* is said only once the export has run 300 ms — this one is quicker)
     assert page.row(row_id).isEnabled()
 
@@ -754,7 +827,8 @@ def test_practise_with_your_ai_copies_the_whole_setup_and_says_copied_at_once(qa
     doors = page.live.parts["practice_ai"]
     assert list(doors) == ["claude-code", "codex", "claude-desktop"]
     assert all(door.toolTip() for door in doors.values())                # a tooltip on every button
-    assert "Nothing else leaves" in help_of(page, "practice_ai")         # what leaves, beside the buttons
+    assert "AI's company" in help_of(page, "practice_ai")                # what leaves, beside the buttons
+    assert "Nothing else leaves" in page.live.parts["practice_then"]["then"].toolTip()   # in full behind its ?
     doors[app].click()
     copied = QApplication.clipboard().text()
     assert copied == mcp_server.setup_text(app)
@@ -765,6 +839,38 @@ def test_practise_with_your_ai_copies_the_whole_setup_and_says_copied_at_once(qa
     assert any(S.PRACTICE_APPS[app] in line for line in shell.bar_line.lines)
     assert store.calls == []                                             # no setting written
     assert wait_until(lambda: doors[app].text() == S.PRACTICE_APPS[app], 4)
+
+
+def test_piyo_says_both_ways_to_start_a_round_and_copies_a_starter_message(qapp, fakes):
+    """A7 (Sonic's first try, 2026-10-30: "I connected it with the prompt but now what"): the row's ? gives both ways
+    to start — Claude Code's /surasura:practice with its four words, every choice the round tool takes and one example;
+    or just saying it — and *Copy a starter message* puts that message on the clipboard, *Copied* at once, the bar
+    saying where to paste it. A story is a good first try (the tooltips). Nothing written. The row's own words stay
+    no longer than *Download covers*' (Sonic: "far too long"); what leaves, in full, is behind the ? too."""
+    from app import practice
+    from app.cli import mcp_server
+    page, store, shell = make(fakes)
+    parts = page.live.parts["practice_then"]
+    assert len(S.ROWS["practice_ai"][1]) <= len(S.ROWS["covers_download"][1])
+    assert parts["then"].text() == "?" and parts["then"].objectName() == "helpmark"
+    lines = parts["then"].toolTip().split("<br>")
+    assert lines[0].startswith("<b>What leaves:</b>") and lines[0].endswith("Nothing else leaves.")
+    assert lines[2] == "Then, to start a round:"
+    assert lines[3].startswith("• In Claude Code, type /surasura:practice and four words")
+    assert "/surasura:practice (MCP)" in lines[3] and lines[4] == f"• For example: {mcp_server.SLASH_EXAMPLE}"
+    for choice in tuple(mcp_server.ROLES) + tuple(mcp_server.KINDS) + mcp_server.SOURCES:
+        assert choice in lines[3], choice
+    assert lines[5] == f"• Or, in Claude Code, Codex or Claude Desktop, just say it: “{practice.STARTER}”"
+    assert page.row("practice_ai").isAncestorOf(parts["then"])          # the row's own words, beside the starter
+    starter = parts["starter"]
+    assert "story is a good first try" in starter.toolTip()
+    assert "short story is a good first try" in S.ROWS["practice_ai"][2]   # the row's own tooltip
+    starter.click()
+    assert QApplication.clipboard().text() == practice.STARTER
+    assert starter.text() == S.PRACTICE_COPIED                           # at once, before any event loop turn
+    assert S.PRACTICE_STARTER_COPIED_LINE in shell.bar_line.lines
+    assert store.calls == []                                             # no setting written
+    assert wait_until(lambda: starter.text() == S.PRACTICE_STARTER, 4)
 
 
 def test_piyo_names_the_row_and_keep_practice_rounds_is_its_switch_on_by_default(qapp, fakes):
@@ -780,3 +886,51 @@ def test_piyo_names_the_row_and_keep_practice_rounds_is_its_switch_on_by_default
     from tests.qt.test_settings_page import change
     change(toggle, False)
     assert store.calls == [({"practice_keep_rounds": False}, None)]
+
+
+# --- a9.1: App's *Version* copies; *Folders* holds the data folder and the logs ------------------------------------ #
+def test_version_copies_the_version_and_folders_opens_the_data_folder_and_the_logs_each_on_a_worker(
+        qapp, fakes, monkeypatch):
+    """Sonic (a9.1): *Version* showed the version but its button opened the data folder; the bar and App both opened
+    the logs. Now *Version*'s *Copy* puts the version on the clipboard (*Copied*, then its name again), and App's
+    *Folders* row holds *Data folder* and *Logs*, the one way to each — opened on a worker, nothing written."""
+    from app import __version__
+    monkeypatch.setattr(qpress, "open_now", lambda target: None)
+    page, store, shell = make(fakes, dict(ALL_ON))
+    copy = page.live.parts["version"]["copy"]
+    assert copy.text() == S.VERSION_COPY and copy.toolTip() and copy.accessibleName().endswith(__version__)
+    assert __version__ in page.row("version").label.text()
+    QApplication.clipboard().setText("")
+    copy.click()
+    assert QApplication.clipboard().text() == __version__ and copy.text() == S.VERSION_COPIED
+    assert shell.bar_line.lines[-1] == S.VERSION_COPIED_LINE.format(version=__version__)
+    assert wait_until(lambda: copy.text() == S.VERSION_COPY, 4)          # its name back two seconds later
+    folders = page.live.parts["logs"]
+    assert [folders["data"].text(), folders["open"].text()] == [S.DATA_FOLDER, S.LOGS_OPEN]
+    assert folders["data"].toolTip() and folders["open"].toolTip()
+    folders["data"].click()
+    assert wait_until(lambda: "data_folder" in fakes.names())
+    folders["open"].click()
+    assert wait_until(lambda: "logs_folder" in fakes.names())
+    assert fakes.on_gui() == [] and store.calls == []
+
+
+def test_ankiconnect_missing_offers_install_ankiconnect_for_me_above_copy_code(qapp, fakes, monkeypatch):
+    # 3.0.1 (AC-5): where the install can (its look: `can-install`), the row's part leads with *Install AnkiConnect
+    # for me* in the row's own look (a door), *Or add it in Anki yourself:* and Copy code under it; a closed Anki with
+    # nothing under way shows none of it
+    from app import ankiconnect_addon as A
+    from app.connect import ankiconnect_install as I
+    from app.qt import addon_steps
+    monkeypatch.setattr(addon_steps, "_STATE", None)
+    monkeypatch.setattr(I, "look", lambda: {"state": I.CAN_INSTALL, "disabled": False, "base": "B", "point": 1})
+    page, store, shell = make(fakes)
+    steps = page.live.parts["anki_connection"]["steps"]
+    fakes.probe = {"ok": False, "version": None, "missing": [], "error": "refused", "running": True}
+    page.live.check()
+    assert wait_until(lambda: steps.install is not None and steps.install.isVisible())
+    assert isinstance(steps.install, sc.Door) and steps.install.toolTip() == I.BUTTON_TIP
+    assert steps.heading.isVisible() and steps.copy.isVisible() and steps.line.text() == A.steps_line()
+    fakes.probe = dict(fakes.probe, running=False)
+    page.live.check()
+    assert wait_until(lambda: steps.isHidden())

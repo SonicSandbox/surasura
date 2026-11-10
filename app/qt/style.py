@@ -114,6 +114,10 @@ QPushButton[kind="primary"]:focus {{ border: 2px solid {c['ink']}; padding: 0 {r
 QPushButton[kind="chip"] {{ background: {c['bg']}; color: {c['ink-dim']}; border: 1px solid {c['line']}; border-radius: 7px;
   min-height: {px(22)}; padding: 0 {px(9)}; {font('status-pill')} }}
 QPushButton[kind="chip"]:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
+QPushButton[kind="link"] {{ background: transparent; color: {c['accent']}; border: 1px solid transparent;
+  padding: 0 {px(6)}; }}
+QPushButton[kind="link"]:hover {{ border-color: transparent; text-decoration: underline; }}
+QPushButton[kind="link"]:focus {{ border: 2px solid {c['accent']}; padding: 0 {round(6 * f) - 1}px; }}
 QToolButton {{ background: transparent; color: {c['ink-dim']}; border: 1px solid transparent; border-radius: 7px;
   padding: {px(4)}; }}
 QToolButton:hover {{ background: {c['raised']}; border-color: {c['line-hi']}; color: {c['ink']}; }}
@@ -171,6 +175,15 @@ QLabel#pageheading {{ color: {c['ink']}; {font('page-heading')} font-weight: 700
 QLabel#helpmark {{ color: {c['ink-faint']}; border: 1px solid {c['line-hi']}; border-radius: {px(8)};
   min-width: {px(16)}; max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; {font('key-hint')} }}
 QLabel#helpmark:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
+QLabel#helpmark:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; }}
+QToolButton#helpmark {{ color: {c['ink-faint']}; border: 1px solid {c['line-hi']}; border-radius: {px(8)};
+  min-width: {px(16)}; max-width: {px(16)}; min-height: {px(16)}; max-height: {px(16)}; padding: 0; {font('key-hint')} }}
+QToolButton#helpmark:hover {{ color: {c['ink']}; border-color: {c['accent']}; }}
+QToolButton#helpmark:focus {{ color: {c['ink']}; border: 2px solid {c['accent']}; }}
+QLabel#helpcausehead {{ color: {c['ink-faint']}; {font('key-hint')} }}
+QLabel#helpcause {{ color: {c['accent']}; {font('body')} font-weight: 600; }}
+QLabel#helpafter {{ color: {c['ink']}; {font('body')} font-weight: 400; }}
+QLabel#helpalso {{ color: {c['ink-dim']}; {font('row-sub')} }}
 QWidget#statebar {{ background: {c['raised']}; border-radius: 7px; }}
 QLabel#statebartext {{ color: {c['ink-dim']}; padding: {px(5)} {px(10)}; {font('row-sub')} }}
 QListView#rows {{ background: {c['bg']}; border: 0; }}
@@ -180,7 +193,7 @@ QListView#rows:focus {{ border: 0; }}
 /* menus, tabs a later screen may use, Qt's own tooltip (the shell shows its own bubble: tooltip.py) */
 QMenu {{ background: {c['overlay']}; color: {c['ink']}; border: 0; border-top: 1px solid {c['overlay-edge-top']};
   border-bottom: 1px solid {c['overlay-edge-bottom']}; padding: 6px; {font('menu-item')} }}
-QMenu::item {{ padding: {px(7)} {px(12)}; border-radius: 7px; }}
+QMenu::item {{ padding: {px(7)} {px(24)} {px(7)} {px(12)}; border-radius: 7px; }}   /* W4.1: room for a submenu's ▸ */
 QMenu::item:selected {{ background: {c['overlay-hover']}; }}
 QMenu::item:disabled {{ color: {c['overlay-ink-faint']}; }}
 QMenu::separator {{ height: 2px; margin: 4px 8px; background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -213,8 +226,6 @@ QPushButton[size="sm"]:focus {{ padding: 0 {round(10 * f) - 1}px; }}
 QPushButton[presses="true"] {{ padding: 0 {room}px; }}
 QPushButton[presses="true"]:focus {{ padding: 0 {room - 1}px; }}
 QToolButton[presses="true"] {{ padding: {px(4)} {room}px; }}
-QWidget#levelpop QPushButton#popjourney[presses="end"] {{ padding: 0 {2 * room}px 0 0; }}
-QWidget#levelpop QPushButton#popjourney[presses="end"]:focus {{ padding: 0 {2 * room - 1}px 0 {px(4)}; }}
 QPushButton#settingsmore[presses="end"] {{ padding: 0 {2 * room}px 0 0; }}
 QPushButton#settingsmore[presses="end"]:focus {{ padding: 0 {2 * room - 2}px 0 2px; }}
 """
@@ -236,7 +247,7 @@ QLabel#needswhy[found="true"] {{ color: {c['ok']}; }}
 """
     # --- end W3.2 Q5
     # --- W3.1a: the frame (frame.py) — the current tab's line is the vein (painted); the level ▾'s pop (W3.1b): its words,
-    # Generate quiet (its stale and failed looks kept), *Open your journey* as a link
+    # Generate quiet (its stale and failed looks kept)
     rules += f"""
 QLabel#popheading {{ color: {c['ink']}; {font('settings-label')} }}
 QWidget#levelpop QToolButton#pophelp {{ background: transparent; color: {c['overlay-ink-faint']}; border: 0;
@@ -252,18 +263,20 @@ QWidget#levelpop QPushButton#generate[look="stale"] {{ border: 1px solid {c['gen
 QWidget#levelpop QPushButton#generate[look="failed"] {{ border: 1px solid {c['warn']}; color: {c['warn']}; }}
 QWidget#levelpop QPushButton#generate:disabled {{ color: {c['overlay-ink-faint']}; }}
 QWidget#levelpop QPushButton#generate:focus {{ border: 2px solid {c['accent']}; }}
-QWidget#levelpop QPushButton#popjourney {{ background: transparent; color: {c['accent']}; border: 0; padding: 0;
-  text-align: left; }}
-QWidget#levelpop QPushButton#popjourney:hover {{ color: {c['ink']}; }}
-QWidget#levelpop QPushButton#popjourney:focus {{ border: 2px solid {c['accent']}; padding: 0 {px(4)}; }}
 """
     # --- W3.4: the ported windows (windows.py, confirm.py, row 1's windows; looks to re-skin with W3.3's surfaces)
     rules += f"""
 QLabel#windowstatus {{ color: {c['ink-dim']}; {font('footer')} font-weight: 400; }}
 QLabel#windowheading {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#windowline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
+QPushButton#windowlink {{ background: transparent; color: {c['ink-dim']}; border: 2px solid transparent;
+  border-radius: 6px; padding: 0 {2 * room}px 0 2px; min-height: 0; text-decoration: underline; {font('body')}
+  font-weight: 400; }}
+QPushButton#windowlink:hover {{ color: {c['ink']}; }}
+QPushButton#windowlink:focus {{ border-color: {c['accent']}; }}
 QLabel#confirmtitle {{ color: {c['ink']}; {font('dialog-title')} }}
 QLabel#confirmline {{ color: {c['ink-dim']}; {font('body')} font-weight: 400; }}
+QLabel#confirmhead {{ color: {c['ink']}; {font('body')} font-weight: 600; }}
 QPushButton[kind="danger"] {{ background: {c['bad']}; color: {c['bad-type']}; border: 0; }}
 QPushButton[kind="danger"]:focus {{ border: 2px solid {c['ink']}; }}
 QScrollArea#foldersscroll, QWidget#foldersbody {{ background: transparent; border: 0; }}

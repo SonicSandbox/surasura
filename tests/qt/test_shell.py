@@ -140,7 +140,6 @@ def test_a_command_line_failure_shows_in_the_bar_within_a_poll_and_never_as_a_di
                             "time": "2026-10-06T19:00:00"})
     assert wait_until(lambda: window.bar_failure.isVisibleTo(window), 5)
     assert window.bar_failure.full().startswith("⚠ Command line (status): Surasura's settings")
-    assert window.logs_button.isVisibleTo(window)
     assert not window.tab_buttons["needs"].isHidden()
     assert opened == [] and [w for w in QApplication.topLevelWidgets() if isinstance(w, QDialog)] == []
 
@@ -155,11 +154,12 @@ def test_the_ankiweb_mark_and_connects_line_show_only_when_they_exist(window):
 
 
 def test_open_the_logs_folder_goes_to_a_worker(window, monkeypatch):
+    # (a Needs-you card's *Open the logs folder* asks the window: a9.1 took the bar's own chip away)
     calls = []
     monkeypatch.setattr(shell.bridge, "run_in_worker", lambda fn, *a, **k: calls.append((fn, a)))
     monkeypatch.setattr(shell.sys, "platform", "win32")
     window.show_status(_snap(failure="Command line (x): it failed", logs="C:/logs"))
-    window.logs_button.click()
+    window.open_logs()
     assert len(calls) == 1                                     # one hand-over (round 8 row 45: `press.open`) …
     from app.qt import screens
     opened = []
@@ -337,6 +337,26 @@ def test_the_window_process_hands_pythons_lock_on_every_millisecond(monkeypatch)
         assert sys.excepthook is shell._log_unhandled
     finally:
         sys.excepthook, _ = before_hook, sys.setswitchinterval(before_interval)
+        shell.unwire_idle()                                     # (the rest of the session: no worker waits)
+
+
+def test_the_window_process_tells_its_background_when_the_window_rests(qapp):
+    """(Up next 2) The event dispatcher's own signals, wired once a process: inside a stretch of the window's thread
+    (a slot running) the window is busy — a worker's step waits — and once the loop goes back to wait it is idle."""
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtTest import QTest
+    from app.services import window_idle
+    seen = []
+    try:
+        shell.wire_idle()
+        shell.wire_idle()                                       # (once a process)
+        assert len(shell._IDLE_WIRED) == 1
+        QTimer.singleShot(0, lambda: seen.append(window_idle.idle()))
+        QTest.qWait(30)
+        assert seen == [False]
+    finally:
+        shell.unwire_idle()
+    assert window_idle.idle() and shell._IDLE_WIRED == []
 
 
 def test_quitting_flushes_settings_and_tells_the_jobs(qapp, monkeypatch):
@@ -363,9 +383,15 @@ def test_after_the_window_closes_none_of_its_app_wide_filters_act(qapp):
     other.close()
 
 
-def test_the_logs_button_needs_a_folder(window):
-    window.show_status(_snap(failure="Command line (x): it failed", logs=None))
-    assert window.bar_failure.isVisibleTo(window) and not window.logs_button.isVisibleTo(window)
+def test_a_failure_line_stands_alone_in_the_bar_the_logs_are_one_place_in_settings(window):
+    # a9.1 (Sonic: "Anything redundant we don't want"): the bar's *Open the logs folder* chip went — Settings › App ›
+    # *Folders* › *Logs* is the one way to them (Send report carries them too)
+    window.show_status(_snap(failure="Command line (x): it failed", logs="C:/logs"))
+    assert window.bar_failure.isVisibleTo(window) and window.bar_failure_cross.isVisibleTo(window)
+    footer = window.bar_failure.parentWidget()
+    from PyQt6.QtWidgets import QAbstractButton
+    texts = [b.text() for b in footer.findChildren(QAbstractButton) if b.isVisibleTo(window)]
+    assert "Open the logs folder" not in texts and not hasattr(window, "logs_button")
 
 
 def test_the_bars_lines_are_plain_text(window):
@@ -535,6 +561,178 @@ def test_coming_forward_raises_and_activates_the_window(window):
     window.showMinimized()
     window.bring_to_front(["--from", "a second start"])
     assert calls == ["raise", "activate"] and not window.isMinimized()
+
+
+# --- a9.1: one app-wide filter for the bubble and Esc / Back ------------------------------------------------------- #
+# Every event in the app passes an app-wide filter, each pass a call into Python: the bubble's and the router's were
+# two (~25 % of a Settings switch and of opening the Settings tab, 250 %). Now one (`shell.AppFilter`): the cases each
+# handled, through it, as before.
+class _Spy:
+    """Counts the calls into `cls.eventFilter` (the bubble's or the router's) while it lives."""
+
+    def __init__(self, monkeypatch, cls):
+        self.calls = []
+        real = cls.eventFilter
+
+        def counted(this, obj, event):
+            self.calls.append(event.type())
+            return real(this, obj, event)
+        monkeypatch.setattr(cls, "eventFilter", counted)
+
+
+def test_one_python_filter_sees_the_apps_events_and_only_the_ones_it_reads_go_further(window, monkeypatch):
+    from app.qt import tooltip
+    tips, router = _Spy(monkeypatch, tooltip.Tooltips), _Spy(monkeypatch, shell.EscapeRouter)
+    target = window.tab_buttons["finished"]
+    for kind in (QEvent.Type.User, QEvent.Type.UpdateRequest, QEvent.Type.LayoutRequest, QEvent.Type.Polish):
+        QApplication.sendEvent(target, QEvent(kind))
+    assert tips.calls == [] and router.calls == []            # an event neither reads goes on at once
+    delivered = []
+
+    class Count(QObject):
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Type.KeyPress:
+                delivered.append(obj)
+            return False
+    count_ = Count()
+    QApplication.instance().installEventFilter(count_)
+    try:
+        QTest.keyClick(window.centralWidget(), Qt.Key.Key_A)  # (a key no one takes goes on to the parents: each a pass)
+    finally:
+        QApplication.instance().removeEventFilter(count_)
+    assert delivered                                           # each read every pass once: one filter, never two
+    assert tips.calls.count(QEvent.Type.KeyPress) == router.calls.count(QEvent.Type.KeyPress) == len(delivered)
+    assert isinstance(window.app_filter, shell.AppFilter)
+
+
+def test_a_control_without_a_tooltip_lets_qts_own_tooltip_event_go_on(window):
+    plain = QWidget(window.centralWidget())
+    plain.show()
+    pos = QPoint(2, 2)
+    ev = QHelpEvent(QEvent.Type.ToolTip, pos, plain.mapToGlobal(pos))
+    assert window.app_filter.eventFilter(plain, ev) is False and window.tooltips.showing() is None
+
+
+def test_a_control_with_a_tooltip_takes_qts_tooltip_event_so_only_the_bubble_shows(window):
+    # Mutant M2: the bubble's filter answering True is what keeps Qt's own QToolTip from showing beside it.
+    from app.qt import freeze
+    freeze.set_frozen(True)
+    tab = window.tab_buttons["finished"]
+    pos = QPoint(2, 2)
+    ev = QHelpEvent(QEvent.Type.ToolTip, pos, tab.mapToGlobal(pos))
+    assert window.app_filter.eventFilter(tab, ev) is True and window.tooltips.showing() == tab.toolTip()
+
+
+def test_focus_by_the_mouse_shows_no_bubble(window):
+    from app.qt import freeze
+    freeze.set_frozen(True)
+    tab = window.tab_buttons["settings"]
+    tab.setFocus(Qt.FocusReason.MouseFocusReason)
+    QApplication.processEvents()
+    assert window.tooltips.showing() is None
+
+
+def _bubble_on(window, name="finished"):
+    from app.qt import freeze
+    freeze.set_frozen(True)
+    tab = window.tab_buttons[name]
+    _hover(tab)
+    assert wait_until(lambda: window.tooltips.showing() is not None)
+    return tab
+
+
+@pytest.mark.parametrize("kind", ["wheel", "double-click", "deactivate", "drag-enter"])
+def test_the_bubble_hides_on_each_of_its_events_anywhere(window, kind):
+    from PyQt6.QtCore import QMimeData, QPointF
+    from PyQt6.QtGui import QDragEnterEvent, QMouseEvent, QWheelEvent
+    _bubble_on(window)
+    elsewhere = window.centralWidget()
+    at = QPointF(10, 10)
+    event = {
+        "wheel": lambda: QWheelEvent(at, at, QPoint(), QPoint(0, -120), Qt.MouseButton.NoButton,
+                                     Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False),
+        "double-click": lambda: QMouseEvent(QEvent.Type.MouseButtonDblClick, at, at, Qt.MouseButton.LeftButton,
+                                            Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier),
+        "deactivate": lambda: QEvent(QEvent.Type.WindowDeactivate),
+        "drag-enter": lambda: QDragEnterEvent(QPoint(10, 10), Qt.DropAction.CopyAction, QMimeData(),
+                                              Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier),
+    }[kind]()
+    QApplication.sendEvent(elsewhere, event)
+    assert window.tooltips.showing() is None
+
+
+@pytest.mark.parametrize("kind", [QEvent.Type.Leave, QEvent.Type.Hide, QEvent.Type.FocusOut])
+def test_the_bubble_goes_when_its_own_control_is_left_hidden_or_unfocused_and_not_for_another(window, kind):
+    from PyQt6.QtGui import QFocusEvent
+    tab = _bubble_on(window)
+    other = window.tab_buttons["settings"]
+
+    def ev():
+        return QFocusEvent(kind) if kind == QEvent.Type.FocusOut else QEvent(kind)
+    QApplication.sendEvent(other, ev())
+    assert window.tooltips.showing() is not None              # another control's: the bubble stays
+    QApplication.sendEvent(tab, ev())
+    assert window.tooltips.showing() is None
+
+
+def test_the_bubble_goes_when_its_control_is_deleted(window):
+    from PyQt6.QtWidgets import QPushButton
+    b = QPushButton("Generate", window.centralWidget())
+    b.setToolTip("Make the list again")
+    b.show()
+    from app.qt import freeze
+    freeze.set_frozen(True)
+    _hover(b)
+    assert wait_until(lambda: window.tooltips.showing() == "Make the list again")
+    b.deleteLater()
+    from PyQt6.QtCore import QCoreApplication
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert window.tooltips.showing() is None
+
+
+def test_esc_with_the_bubble_up_hides_it_and_still_closes_the_overlay(window):
+    _bubble_on(window)
+    o = _overlay(window)
+    QTest.keyClick(window.centralWidget(), Qt.Key.Key_Escape)
+    assert window.tooltips.showing() is None and not o.isVisible() and window.isVisible()
+
+
+def test_esc_in_an_open_menu_is_the_menus_own(window):
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtWidgets import QMenu
+    menu = QMenu(window)
+    menu.addAction("Move to top").triggered.connect(lambda: None)
+    menu.popup(window.mapToGlobal(QPoint(100, 100)))
+    assert wait_until(menu.isVisible)
+    esc = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+    assert window.app_filter.eventFilter(menu, esc) is False   # the router leaves it to the menu
+    menu.close()
+
+
+def test_a_failure_in_the_bubbles_filter_never_takes_esc_with_it(window, monkeypatch):
+    # The adversary's S3: as two filters, Qt called the router even when the bubble's raised; one filter must too.
+    from app.qt import tooltip
+    logged = []
+    monkeypatch.setattr(shell, "_log_unhandled", lambda *info: logged.append(info[0]))
+
+    def broken(self, obj, event):
+        raise RuntimeError("wrapped C/C++ object has been deleted")
+    monkeypatch.setattr(tooltip.Tooltips, "eventFilter", broken)
+    o = _overlay(window)
+    QTest.keyClick(window.centralWidget(), Qt.Key.Key_Escape)
+    assert not o.isVisible() and window.isVisible() and RuntimeError in logged
+
+
+def test_the_app_filter_goes_when_the_window_closes(qapp, services, monkeypatch):
+    from app.qt import tooltip
+    win = shell.open_window(qapp, services)
+    win.show()
+    QApplication.processEvents()
+    win.close()
+    tips, router = _Spy(monkeypatch, tooltip.Tooltips), _Spy(monkeypatch, shell.EscapeRouter)
+    probe = QWidget()
+    QTest.keyClick(probe, Qt.Key.Key_A)
+    assert tips.calls == [] and router.calls == []
 
 
 # --- W3.1a: the stones' sheet after the first frame (S1), Up Next's ↗ opens the journey (S5) ---------------------- #

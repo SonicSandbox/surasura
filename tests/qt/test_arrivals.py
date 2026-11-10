@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import QApplication
 
 from app import settings_manager, theme
 from app.qt import arrivals, freeze, motion, shell, strings
-from app.services import library_reader, view_rows
+from app.services import library_reader, own_folder, view_rows
 from tests.fixtures import window_seed
 from tests.qt.conftest import wait_until
 from tests.qt.test_drag import (FakeWriter, LEFT, NONE, calls, mouse, move_global, release_global, row_point, settle,
@@ -378,6 +378,30 @@ def test_IK_11_finished_on_a_watched_arrival_offers_D14s_choice_and_take_out_fol
     assert got == ids and kw["keep_cards"] is False and kw["follows"] is not None
 
 
+@pytest.mark.parametrize("how", ["keep", "out"])
+def test_finished_on_an_arrival_follows_when_you_finish_something(world, how):
+    """Settings' *When you finish something* (Sonic 2026-11-05) holds for New arrivals' finish too: no question;
+    *Leave them out* gives the choice linked to the place (its Undo takes both back), *Keep its cards* nothing more."""
+    seed, win, writer = world()
+    win.services.settings.set({"finish_cards": how})
+    assert win.services.settings.flush(5)
+    open_tray(win)
+    row = tray_rows(win)[2]
+    ids, title = list(row.arrival.item_ids), row.arrival.title
+    row.click("icon")
+    card = win.toasts.card
+    words = strings.FINISHED_OUT[strings.DRAG_FINISHED] if how == "out" else strings.DRAG_FINISHED
+    assert card.base == words.format(title=title)
+    assert strings.DRAG_KEEP not in [b.text() for b in card.buttons if b.isVisible()]
+    if how == "out":
+        assert wait_until(lambda: calls(writer, "finish"), 5)
+        _op, got, kw = calls(writer, "finish")[0]
+        assert got == ids and kw["keep_cards"] is False and kw["follows"] is not None
+    else:
+        settle()
+        assert calls(writer, "finish") == []
+
+
 def test_IK_11_the_menus_finished_offers_the_same_choice(world):
     seed, win, writer = world()
     open_tray(win)
@@ -424,26 +448,33 @@ def test_open_its_folder_opens_the_arrivals_own_folder(world, monkeypatch):
     open_tray(win)
     row = tray_rows(win)[1]
     rel = row.arrival.rel_paths[0]
-    want = os.path.dirname(os.path.join(path_utils.get_data_path("ja"), *rel.split("/")))
-    tray_of(win).act(row.arrival, "folder")                           # N4: gone: looked for on a worker, then said
-    assert wait_until(lambda: win.bar_line.full() == strings.TRAY_NO_FOLDER.format(path=want), 5)
-    assert opened == []
+    data = path_utils.get_data_path("ja")
+    want = os.path.dirname(os.path.join(data, *rel.split("/")))
+    os.makedirs(data, exist_ok=True)                    # the library's folder (always there in the app)
+    tray_of(win).act(row.arrival, "folder")             # N4: gone: looked for on a worker — a7: the nearest one there
+    above = own_folder.library_side(data, (rel,))
+    assert not os.path.isdir(want) and above != want and want.startswith(above)
+    assert wait_until(lambda: opened == [above], 5)
+    assert wait_until(lambda: not win.presses.any_live(), 5)
     os.makedirs(want, exist_ok=True)
     menu = tray_of(win).menu(row.key)
     next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["folder"][0]).trigger()
-    assert wait_until(lambda: opened == [want], 5) and calls(writer) == []
+    assert wait_until(lambda: opened == [above, want], 5) and calls(writer) == []
 
 
-def test_N1_after_its_show_is_greyed_while_none_of_its_show_is_in_current_and_N4_the_menu_goes_once_hidden(world):
+def test_N1_after_its_show_is_greyed_while_none_of_its_show_is_in_current_and_N4_the_menu_holds_nothing_once_hidden(world):
+    """N4, as R5 has it since 2026-11-06 (WC found-B B2): the tray keeps one menu — closed, it hides and lets its
+    entries go (nothing of the closed row's is left in it), and the next ⋯ opens the same menu, no new one."""
     seed, win, writer = world()
     open_tray(win)
     row = tray_rows(win)[0]                                           # a YouTube video: no part of it in Current
     menu = tray_of(win).menu(row.key)
     act = next(a for a in menu.actions() if a.text() == strings.TRAY_MENU["after-show"][0])
     assert not act.isEnabled() and act.toolTip() == strings.TRAY_NO_SHOW
-    assert menu.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
     menu.close()
-    assert wait_until(lambda: sip.isdeleted(menu), 3)
+    assert wait_until(lambda: not menu.isVisible(), 3) and menu.actions() == []
+    assert not sip.isdeleted(menu) and tray_of(win).menu(tray_rows(win)[1].key) is menu
+    menu.close()
 
 
 def test_remove_asks_first_naming_the_count_esc_is_no_and_yes_removes_with_undo(world):
@@ -567,8 +598,10 @@ def _current_group(win, i, other_work=987654):
 
 
 def _middle(win, i):
+    """60 % down row `i`: the half that stays under a hand from outside the list (the gap opens above the other)."""
     lst = win.page_widgets["current"].list
-    return lst.viewport().mapToGlobal(lst.visualRect(lst.model().index(i, 0)).center())
+    r = lst.visualRect(lst.model().index(i, 0))
+    return lst.viewport().mapToGlobal(QPoint(r.center().x(), r.top() + round(0.6 * r.height())))
 
 
 def _rest():
@@ -1504,3 +1537,20 @@ def test_real_store_A4_two_picked_arrivals_to_goal_in_one_command_and_one_undo_b
     settle()
     next(b for b in win.toasts.card.buttons if b.text() == strings.TOAST_UNDO).click()
     assert wait_until(lambda: all(store.item(i)["tier"] == "arrivals" for i in ids), 5)
+
+
+from tests.qt.conftest import own_folder_answers as _own_folder_answers  # noqa: E402 (a7)
+
+
+def test_open_its_folder_opens_where_the_arrival_came_from(world, monkeypatch, tmp_path):
+    """a7 (DIAGNOSIS 7): New arrivals' *Open its folder* opens the content's own folder (`own_folder`)."""
+    from app.qt import screens
+    opened = []
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
+    seed, win, writer = world()
+    open_tray(win)
+    row = tray_rows(win)[1]
+    there, asked = _own_folder_answers(monkeypatch, tmp_path, "星降る喫茶店")
+    tray_of(win).act(row.arrival, "folder")
+    assert wait_until(lambda: opened == [there], 5)
+    assert asked == [(tuple(row.arrival.item_ids), tuple(row.arrival.rel_paths), ())] and calls(writer) == []

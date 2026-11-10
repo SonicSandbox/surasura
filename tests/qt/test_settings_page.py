@@ -44,6 +44,9 @@ ALL_ON = {
     "connect_enabled": True, "enable_junban": True, "strategy": "coverage", "enable_koe": True,
     "anki_sync_decks": {"ja": ["日本語::コア2k"], "zh": ["中文::HSK"]},
     "connect_backlog_cap": {"ja": 40, "zh": 25},
+    # *Videos open in* / *Books open in*: a program kept, so picking "program" is the catalog's one key (no picker)
+    "open_video_program": "C:\\Program Files\\mpv\\mpv.exe",
+    "open_book_program": "C:\\Program Files\\Calibre2\\ebook-viewer.exe",
     "connect_video_folders": {"ja": ["E:\\アニメ\\ひとり・で・ぽっぷ！"], "zh": ["D:\\视频\\中文"]},
 }
 NEW_FOLDER = "D:\\動画\\日本語"
@@ -112,6 +115,15 @@ def _full_motion():
     mode.set_setting("full")
     yield
     mode.set_setting(was)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_file_dialog(monkeypatch):
+    """A file dialog left unpatched would wait for a person (on the tests' hidden desktop): it fails at once instead."""
+    def refused(*_a, **_k):
+        raise AssertionError("a real file dialog opened: patch QFileDialog in the test")
+    monkeypatch.setattr(sp.QFileDialog, "getOpenFileName", refused)
+    monkeypatch.setattr(sp.QFileDialog, "getExistingDirectory", refused)
 
 
 @pytest.fixture(autouse=True)
@@ -190,6 +202,9 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
     page, store = make_page(ALL_ON, language)
     open_all_folds(page)
     walked = set()
+    # (a9.1: Automation's switch, walked, brings *Count suspended cards as known* in for *Count as known in Anki* —
+    # one row each way — after the walk passed its place)
+    shown_at_start = {v.row.id for v in shown_views(page) if v.controls}
     # backwards: a row's switch comes before the rows it shows, so the rows are walked while they show
     for view in reversed(shown_views(page)):
         if view.row.id == "target_language" or not view.isVisibleTo(page):
@@ -222,8 +237,10 @@ def test_every_visible_control_writes_exactly_its_keys_and_a_per_language_one_ke
                 assert set(changes) == set(expected) and set(changes) <= set(row.keys), (row.id, changes)
                 assert changes == expected
             store.land()
-    shown_with_controls = {v.row.id for v in shown_views(page) if v.controls} | walked
-    assert walked >= shown_with_controls - {"target_language"}
+    shown_at_end = {v.row.id for v in shown_views(page) if v.controls}
+    late = shown_at_end - shown_at_start - walked
+    assert late <= {"anki_sync_include_suspended"}, late                  # the one row a walked switch brings in
+    assert walked >= shown_at_end - late - {"target_language"}
     assert len(walked) > 60, walked
     # the language last: one key, and the page follows it once it lands
     view = page.rows["target_language"]
@@ -417,19 +434,56 @@ def never_moves(text_size="M", language="ja"):
     return problems, checked
 
 
-def test_a_choice_never_moves_the_page_at_100_percent(qapp):
+@pytest.fixture
+def every_door(monkeypatch):
+    """The doors' modules found, as the window's look answers once a window opened (`windows._FOUND` is the process's:
+    alone this file's pages would never show a door, in company they would) — so the switch that shows its own door
+    (*Preview a video…* on YouTube preview's) is flipped here alone as in any file's company."""
+    monkeypatch.setattr(windows, "_FOUND", {op.module: True for op in windows.OPENERS if op.module})
+
+
+def test_a_choice_never_moves_the_page_at_100_percent(qapp, every_door):
     problems, checked = never_moves("M")
     assert checked > 60 and problems == [], "; ".join(problems)
 
 
-def test_a_choice_never_moves_the_page_at_text_size_large(qapp):
+def test_a_choice_never_moves_the_page_at_text_size_large(qapp, every_door):
     problems, checked = never_moves("L")
     assert checked > 60 and problems == [], "; ".join(problems)
 
 
-def test_a_choice_never_moves_the_page_in_chinese(qapp):
+def test_a_choice_never_moves_the_page_in_chinese(qapp, every_door):
     problems, checked = never_moves("M", "zh")
     assert checked > 60 and problems == [], "; ".join(problems)
+
+
+def test_a_switch_that_shows_its_own_door_stays_under_the_hand_in_the_switch_column(qapp, every_door):
+    """a9.1: *Preview a video…* follows YouTube preview's own switch. The door stands before the switch and keeps its
+    room while hidden: flipped on and off, the switch never slides sideways under the cursor, the row never grows, and
+    it stays in the same column as every other switch on the page."""
+    if style.current()[1] != "M":
+        style.apply(QApplication.instance(), "night", "M", "ja")
+    page, store = make_page(dict(ALL_ON, enable_youtube_preview=False), "ja")
+    open_all_folds(page)
+    view = page.rows["enable_youtube_preview"]
+    switch, door = view.controls[0], view.doors["youtube-preview"]
+    other = page.rows["covers_download"].controls[0]
+
+    def right(w):
+        return w.mapTo(page.body, QPoint(w.width(), 0)).x()
+    page.go_to("content")
+    QApplication.processEvents()
+    assert not door.isVisibleTo(page)
+    before = (switch.mapTo(page.body, QPoint(0, 0)).x(), view.height())
+    assert right(switch) == right(other)                       # the switch column, door hidden
+    for on in (True, False):
+        change(switch, on)
+        store.land()
+        QApplication.processEvents()
+        assert door.isVisibleTo(page) is on
+        assert (switch.mapTo(page.body, QPoint(0, 0)).x(), view.height()) == before
+    assert right(door) < switch.mapTo(page.body, QPoint(0, 0)).x()   # the door before it, never after
+    page.close()
 
 
 @pytest.mark.parametrize("scale", ["1.5", "1.75"])
@@ -501,7 +555,8 @@ def test_search_reads_japanese_words_and_opens_a_fold_where_a_row_matches_then_r
     page.search.edit.setText("例文")                       # a label in Japanese: Backfill's fills
     assert page.rows["backfill_sentence"].isVisibleTo(page)
     page.search.edit.setText("suspended")                 # Known words' + row, its fold closed by the user
-    assert page.rows["anki_sync_include_suspended"].isVisibleTo(page)
+    assert page.rows["known_from_anki"].isVisibleTo(page)    # (Connect on: the one *What counts as known* row)
+    assert not page.rows["anki_sync_include_suspended"].isVisibleTo(page)
     assert page.slabs["known"].adv.isVisibleTo(page)
     page.search.edit.setText("")
     assert not page.slabs["known"].adv.isVisibleTo(page)  # closed again: as the user left it
@@ -700,7 +755,7 @@ def test_a_door_shows_only_while_its_opener_is_registered_and_available(qapp, mo
     monkeypatch.setattr(windows, "_FOUND", {})
     page, store = make_page(ALL_ON, "ja")
     anki = page.rows["anki_decks"].doors["anki"]
-    junban = page.rows["junban_door"].doors["junban"]
+    junban = page.rows["junban_scope"].doors["junban"]
     assert anki.isVisibleTo(page)
     assert not junban.isVisibleTo(page)                   # its module not found (yet)
     windows._found({"junban": True})                      # the look answered: every door row told
@@ -745,16 +800,18 @@ def test_every_door_a_row_names_has_its_words_and_pending_doors_are_named():
     assert set(catalog.pending(registered)) <= set(catalog.PENDING_OPENERS)
 
 
-def test_a6_9_junbans_settings_show_one_preview_order_and_the_deck_rows_door_says_it_chooses_the_deck(qapp):
-    # a tester saw two *Preview order* buttons (the *Which cards* row's door and the Preview row's): the same window,
-    # the same words, so neither said what was different — the deck row's door names the deck instead
+@pytest.mark.parametrize("section, opener, row_id", [("junban", "junban", "junban_scope"),
+                                                     ("backfill", "backfill", "junban_backfill_cards")])
+def test_junbans_and_backfills_windows_each_have_one_door_on_their_which_cards_row(qapp, section, opener, row_id):
+    """a6 #9 saw two *Preview order* buttons to one window; a9.1 (Sonic: "Anything redundant we don't want"): Junban's
+    window had two doors (the deck, Preview order) and Backfill's three (the deck, Preview, Fields) — one each now,
+    on the *Which cards* row, its tooltip naming everything the window holds."""
     page, _store = make_page(dict(ALL_ON, enable_junban=True), "ja")
-    junban = [d for r in catalog.ROWS if r.section == "junban" for d in page.rows[r.id].doors.values()]
-    labels = [d.text() for d in junban]
-    assert labels.count(S.DOORS["junban"][0]) == 1, labels
-    scope = page.rows["junban_scope"].doors["junban"]
-    assert scope.text() == S.ROW_DOORS["junban_scope"]["junban"][0] != S.DOORS["junban"][0]
-    assert "deck" in scope.toolTip().lower()
+    doors = [(r.id, name) for r in catalog.ROWS if r.section == section for name in page.rows[r.id].doors
+             if name == opener]                                       # (*Put Anki back…* is its own window)
+    assert doors == [(row_id, opener)]
+    door = page.rows[row_id].doors[opener]
+    assert door.text() == S.DOORS[opener][0] and "deck" in door.toolTip().lower()
 
 
 # --- the sliced build (B4) --------------------------------------------------------------------------------------------- #
@@ -896,6 +953,7 @@ def test_custom_rows_lay_out_an_empty_slot_their_owner_fills(qapp):
     view = page.rows["version"]
     assert view.label.text() != "" and "{" not in view.label.text()        # the version filled in
     assert not page.rows["new_cards_a_day"].help.isVisibleTo(page)         # its deck: P9's to say
+    assert not page.rows["new_cards_a_day"].mark.isVisibleTo(page)         # ... and no ? on an unfilled line
 
 
 def test_every_other_shown_section_is_tinted(qapp):
@@ -915,3 +973,107 @@ def test_the_nav_lights_the_section_in_view_and_a_click_goes_there(qapp):
     vp = page.scroll.viewport()
     assert abs(page.slabs["sentences"].mapTo(vp, QPoint(0, 0)).y()) <= round(theme.SPACING["settings-search-gap"] *
                                                                            theme.text_factor("M")) + 1
+
+
+# --- a9.1: *Connect with us* — a block of its own, three buttons evenly across ------------------------------------- #
+def test_connect_with_us_is_a_block_of_three_even_buttons_each_opening_its_page_found_by_the_old_rows_words(
+        qapp, monkeypatch):
+    """Sonic (a9.1): "combine the rows for website, github, and discord into one … Just a button for each that
+    launches" — then: a block of its own, three buttons below its title, evenly spaced, each saying what it does. The
+    old rows' words still find it; each opens its page in the browser (on a worker), nothing written."""
+    opened = []
+    monkeypatch.setattr(windows, "open_url", lambda url: opened.append(url) or True)
+    page, store = make_page(ALL_ON, "ja")
+    view = page.rows["surasura"]
+    assert view.isVisibleTo(page) and view.label.text() == S.ROWS["surasura"][0]
+    for word in ("discord", "community", "website", "homepage", "surasura.dev", "star", "github"):
+        page.search.edit.setText(word)
+        assert view.isVisibleTo(page), word
+    page.search.edit.setText("")
+    buttons = [view.links[p] for p in ("github", "discord", "website")]
+    assert all(b.isVisibleTo(page) for b in buttons)                    # (never hidden as a door no window holds)
+    assert [b.text() for b in buttons] == [S.LINKS[p][0] for p in ("github", "discord", "website")]
+    assert all(b.toolTip() == S.LINKS[p][1] for b, p in zip(buttons, ("github", "discord", "website")))
+    view.resize(1400, 160)                       # (offscreen fonts make wide buttons: room for three side by side)
+    view.layout().activate()
+    view.slot.layout().activate()
+    widths = {b.width() for b in buttons}
+    assert max(widths) - min(widths) <= 1, widths                       # evenly across: one width each
+    tops = {b.geometry().top() for b in buttons}
+    assert len(tops) == 1 and view.slot.geometry().top() > view.label.geometry().top()   # one line, under the title
+    for b, url in zip(buttons, (S.STAR_URL, S.DISCORD_URL, S.WEBSITE_URL)):
+        b.click()
+        assert wait_until(lambda u=url: opened and opened[-1] == u), url
+    assert store.calls == []
+
+
+# --- a9.1: a row's description behind its ? ------------------------------------------------------------------------ #
+def test_a_rows_description_waits_behind_its_question_mark_and_shows_on_hover_focus_and_click(qapp):
+    """Sonic (a9.1): "the subtitles unless it's absolutely needed, to be hidden with a ? hover icon instead. To keep
+    settings extremely clean." One rule in `RowView`: the catalog's line is kept as text, hidden, and is the ?'s
+    bubble — on hover, on Tab focus, on a click; a row without a line has no ?."""
+    page, store = make_page(ALL_ON, "ja")
+    view = page.rows["names_kanji"]
+    row = catalog.ROW["names_kanji"]
+    assert view.help.text() == row.help and not view.help.isVisibleTo(page)
+    assert view.mark.isVisibleTo(page) and view.mark.toolTip() == row.help and view.mark.text() == S.HELP_MARK
+    assert view.mark.accessibleName() == S.HELP_MARK_NAME.format(label=row.label)
+    assert view.mark.accessibleDescription() == row.help
+    assert view.mark.focusPolicy() == Qt.FocusPolicy.TabFocus           # the keyboard reaches it
+    assert view.mark.geometry().left() >= view.label.geometry().left()   # beside the title, never under the control
+    plain = page.rows["logs"]
+    assert plain.help.text() == catalog.ROW["logs"].help and plain.mark.isVisibleTo(page)
+    nothing = page.rows["version"]                                       # no line: no ?
+    assert not nothing.mark.isVisibleTo(page) and not nothing.help.isVisibleTo(page)
+    shown = [r.id for r in catalog.ROWS if r.help and r.id in page.rows and page.rows[r.id].isVisibleTo(page)
+             and page.rows[r.id].help.isVisibleTo(page) and sp.described(r, page.rows[r.id].help.text())]
+    assert set(shown) <= sp.HELP_SHOWN, sorted(set(shown) - sp.HELP_SHOWN)      # every other line behind its ?
+    assert store.calls == []
+
+
+@pytest.mark.parametrize("row_id", ["known_import", "update_check_enabled", "telemetry_enabled", "covers_download",
+                                    "remove_downloaded_covers", "practice_ai", "enable_koe"])
+def test_a_line_the_learner_must_read_before_pressing_stays_in_sight_without_a_question_mark(qapp, row_id):
+    """What leaves this computer, what replaces or deletes for good: read before the press, never hidden."""
+    data = dict(ALL_ON, known_road="import")
+    page, _store = make_page(data, "ja")
+    if row_id == "known_import":
+        change(page.rows["known_road"].controls[0], "import")
+    view = page.rows[row_id]
+    assert sp.described(view.row, view.help.text())
+    assert view.help.isVisibleTo(view) and view.mark.isHidden()
+
+
+def test_a_live_line_in_a_rows_place_shows_and_its_description_moves_behind_the_question_mark(qapp):
+    """A state, a warning or a readout always shows: *Count as known in Anki* with two states picked names them
+    (an "and" never silent: a7), the description behind the ? then; back to one state, the line hides again."""
+    page, store = make_page(dict(ALL_ON, known_from_anki=["suspended", "marked"]), "ja")
+    page.fold("known")
+    view, row = page.rows["known_from_anki"], catalog.ROW["known_from_anki"]
+    assert view.help.text() == S.KNOWN_ALL_OF.format(states="Suspended + Marked") and view.help.isVisibleTo(page)
+    assert view.mark.isVisibleTo(page) and view.mark.toolTip() == row.help
+    view.set_words(row.label, row.help)
+    assert not view.help.isVisibleTo(page) and view.mark.toolTip() == row.help
+
+
+def test_a_description_with_a_live_word_is_still_a_description():
+    row = catalog.ROW["new_cards_a_day"]
+    assert "{" in row.help
+    filled = row.help.replace("{deck}", "日本語::コア2k")
+    assert sp.described(row, filled) and not sp.described(row, "Anki is closed")
+    assert not sp.described(catalog.ROW["version"], "")                 # no line at all: nothing to hide
+
+
+def test_connect_with_us_stacks_its_buttons_when_the_row_is_too_narrow_for_them_side_by_side(qapp):
+    """Review S6 (a9.1): three buttons across set the page's least width; too narrow, they go one under another, so
+    the block is never what keeps the page from narrowing (B4's rule: stack, never cut)."""
+    from PyQt6.QtWidgets import QBoxLayout
+    page, _store = make_page(ALL_ON, "ja")
+    view = page.rows["surasura"]
+    widest = max(b.minimumSizeHint().width() for b in view.links.values())
+    m = view.layout().contentsMargins()
+    assert view.minimumSizeHint().width() <= m.left() + m.right() + max(widest, view._words_min() // 2)
+    view.arrange(widest + m.left() + m.right() + 10)
+    assert view.slot.layout().direction() == QBoxLayout.Direction.TopToBottom
+    view.arrange(4000)
+    assert view.slot.layout().direction() == QBoxLayout.Direction.LeftToRight

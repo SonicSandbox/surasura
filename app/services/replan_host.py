@@ -44,6 +44,10 @@ import time
 from app.services.automation import Worker
 
 LABEL = "Re-ordering Anki's new cards"     # the `replan` job's words (the bar, the update's list: `updater.REPLAN_ROW`)
+WHY_MOVED = "You moved something in your library: Anki's order follows"     # the job's *Why:* (help cards, §5.1)
+WHY_CATCH_UP = "Surasura opened: Anki's order catches up with your library"
+WHY_AFTER_GENERATE = "Generate ended: Anki's order follows your new list"
+WHY = {"poke": WHY_MOVED, "catch_up": WHY_CATCH_UP, "after_generate": WHY_AFTER_GENERATE}
 HOLDING = ("downloading", "waiting", "ready")  # the update service's states while it holds the children
 BUSY_LOOK = 0.05                           # at quit, how often the host is asked whether it still works
 
@@ -140,6 +144,8 @@ class ReplanHost:
         self._quitting = False              # the quit was asked (`close()`, at the call): nothing opens from here
         self._closed = False
         self._settle_until = 0.0            # monotonic: a move told until then may still be settling (`settling`)
+        self._trigger = None                # (call, wall time) of the newest call handed to the host: its write's
+                                            # *Why:* (help cards), used once by the `replan` job it starts
         self.worker = Worker("replan-host")
         self.opened = 0                     # hosts opened (tests)
 
@@ -237,6 +243,8 @@ class ReplanHost:
             host = self._open()
             if host is None:
                 return
+        with self._lock:
+            self._trigger = (call, time.time())
         getattr(host, call)()
 
     def _open(self):
@@ -342,7 +350,11 @@ class ReplanHost:
             if ended is not None and ended is not True:
                 ended.finish(ok=True)
             return
-        job = self.registry.record("replan", LABEL, automatic=True, on_quit="wait")
+        from app.services import causes
+        with self._lock:
+            trigger, self._trigger = self._trigger, None
+        cause = causes.Cause(WHY[trigger[0]], trigger[1], "junban") if trigger and trigger[0] in WHY else None
+        job = self.registry.record("replan", LABEL, automatic=True, on_quit="wait", cause=cause)
         with self._lock:
             mine = self._job is True and gen == self._gen
             if mine:
@@ -447,6 +459,21 @@ class Replan:
         keeper, _host = self._pair()
         keeper.marked("settings")
 
+    def journey_wanted(self, reason="journey"):
+        """A reader wants the journey now (*Journey ↗*, an export, the YouTube preview; Sonic 2026-11-06, A): the
+        keeper's catch-up owed only to moves asked for at once (`JourneyKeeper.want`). -> True when one was owed (the
+        reader goes on with what is there). Returns at once."""
+        return self._pair()[0].want(reason)
+
+    def journey_catching_up(self):
+        """A reader's wish waits for the keeper's look (`JourneyKeeper.catching_up`; F7: a plain move's redraw on its
+        way). No wait."""
+        return self._pair()[0].catching_up()
+
+    def journey_background(self):
+        """A2: a background Generate in flight brings the journey (`JourneyKeeper.background_run`). No wait."""
+        return self._pair()[0].background_run()
+
     def update_state(self, state):
         """The update service's state: while it holds the children the host is let go; when the hold ends, back."""
         holding = state in HOLDING
@@ -503,12 +530,11 @@ class Replan:
         return fresh() if fresh is not None else self._settings_now()
 
     def _asker(self, keeper):
-        """`keeper.changed` for the host's Generate asks and the journey look: skipped while a Generate runs or waits
-        (`keeper.generating`; its end re-orders through the keeper's `on_done`) — a move would withdraw the keeper's run
-        in flight and start one from scratch (one change, two Generates)."""
+        """`keeper.changed` for the host's Generate asks and the journey look. A Generate running or waiting is never
+        withdrawn for it (a7): the keeper looks once after it ends, whose check asks nothing when that run read it all —
+        a language switch's start look included, while the old language's run is being stopped."""
         def ask(reason):
-            if not keeper.generating():
-                keeper.changed(reason)
+            keeper.changed(reason)
         return ask
 
     def _automation(self):

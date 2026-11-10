@@ -966,17 +966,14 @@ def _journey_folds(data, file_order, marks, inline=False):
     from app.path_utils import infer_source_type
     from app.services import view_rows
     shared = {name for name, n in Counter(report_name(mark[0]) for mark in marks).items() if n > 1}
-    runs, run_of, last = [], {}, None
-    for rel, tier, watched, _counted, *show in marks:
-        key = (tier, tuple(show)) if watched and show else None
-        if key is None:
-            last = None
-            continue
-        if last is None or last[0] != key:
-            last = (key, len(runs))
-            runs.append(show[1] if len(show) > 1 else None)
-        if report_name(rel) not in shared:
-            run_of[report_name(rel)] = (last[1], rel)
+    runs, run_of = [], {}                            # a8: the window's opened rows fold by the same rule (`watched_runs`)
+    for a, b in view_rows.watched_runs([(tier, tuple(show)) if watched and show else None
+                                        for _rel, tier, watched, _counted, *show in marks]):
+        show = marks[a][4:]
+        for rel in (mark[0] for mark in marks[a:b + 1]):
+            if report_name(rel) not in shared:
+                run_of[report_name(rel)] = (len(runs), rel)
+        runs.append(show[1] if len(show) > 1 else None)
     if not runs:
         return
     entries = {entry["filename"]: entry for entry in data["progressive"]}
@@ -995,8 +992,7 @@ def _journey_folds(data, file_order, marks, inline=False):
             numbers = [n for n in (view_rows.episode_number(report_name(rel)) for rel in rels) if n is not None]
             for entry in group:
                 entry["fold"] = len(folds)
-            folds.append({"label": view_rows.STRINGS["fold_watched"].format(
-                range=view_rows.range_text(media, numbers, len(group))), "n": len(group)})
+            folds.append({"label": view_rows.fold_label(media, numbers, len(group)), "n": len(group)})
         group.clear()
 
     for entry in sidebar:
@@ -1010,11 +1006,13 @@ def _journey_folds(data, file_order, marks, inline=False):
         data["folds"] = folds
 
 
-def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None):
+def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_browser=True, language=None, marks=None,
+                         found=None):
     """Write the report. `language`: the run's (the analyzer's `--language`), whose journey's stones it draws (None:
     settings.json's); `marks`: those stones as the run read them (None: read here). Returns the marks the journey was
     drawn from — None for Zen or without a library store, `library_store.UNREAD` when they couldn't be read — for the
-    run's render signature (`analyzer.signed_render`)."""
+    run's render signature (`analyzer.signed_render`). `found`: the run's own `resolve_found_files` list, when it has
+    one (F7's redraw: every library file stat'd once a run)."""
     print(f"Generating static HTML (Theme: {theme})...")
     
     # Pre-load settings
@@ -1081,7 +1079,7 @@ def generate_static_html(theme="default", app_mode=False, zen_limit=0, open_brow
     try:
         from app import analyzer as _analyzer
         goal_files = {os.path.basename(path) for path, label, _weight, _type
-                      in _analyzer.resolve_found_files(target_lang, verbose=False)
+                      in (found if found is not None else _analyzer.resolve_found_files(target_lang, verbose=False))
                       if label == "GoalContent"}
     except Exception as e:
         print(f"Warning: could not read the library tiers for the report: {e}")

@@ -338,6 +338,7 @@ def _content(snap):
 # --- the window's providers (W3.5 row 7): plain functions, each made once per window and language ---------------- #
 CONNECT_JOB_KIND = jobs_module.CONNECT_KIND   # Connect's mining as the window's registry lists it (row 40; row 35's sheet)
 CONNECT_JOB_LABEL = "Making cards"
+CONNECT_STOPPING = "Stopping…"            # the mining line's step once its Stop is asked (try a9.1)
 CONNECT_JOB_MISSED = 2                    # looks without mining before its job ends (a gap between two batches)
 # The phase strip (its card's item 3; Michi's meanings, `app/connect/feed.py`): Connect's episodes that wait, each
 # class one recorded *waiting* job — never the mining kind (the close names and keeps that one alone, row 35):
@@ -375,6 +376,7 @@ def _waits(items):
     episode)."""
     from app.connect import anki_session, feed as connect_feed, runner
     reasons = {}
+    firsts = {}
     for it in items:
         slot = CONNECT_WAITS.get(it.kind)
         if slot is None or it.tip == runner.STOPPED_BY_YOU:
@@ -384,9 +386,14 @@ def _waits(items):
         why = connect_feed.WORDS[it.kind] if slot == "needs" else ((it.tip or "").strip().rstrip(".") or it.words)
         reasons.setdefault(slot, {}).setdefault(why, 0)
         reasons[slot][why] += 1
+        since = getattr(it, "since", None)          # help cards: the oldest wait for this reason, *since 14:02*
+        if since and (why not in firsts.setdefault(slot, {}) or since < firsts[slot][why]):
+            firsts[slot][why] = since
     out = {}
+    from app.services.view_rows import since_words
     for slot, counts in reasons.items():
-        words = "; ".join(f"{why} · {_episodes(n)}" for why, n in counts.items())
+        words = "; ".join(" · ".join(x for x in (why, _episodes(n), since_words(firsts.get(slot, {}).get(why))) if x)
+                          for why, n in counts.items())
         out[slot] = (words, words) if slot in NEEDS_SLOTS else (words, None)
     return out
 
@@ -411,7 +418,9 @@ def mirror_connect(registry, got):
     if item is not None:
         from app.services.view_rows import stem
         title = stem(getattr(item, "title", None)) or None   # T3: the line names the episode being mined (no ".srt")
-        if item.progress is not None:
+        if getattr(item, "stopping", None):              # try a9.1: a Stop asked — said at once, as the row's pill
+            step = (f"{title} · {CONNECT_STOPPING}" if title else CONNECT_STOPPING, None, None)
+        elif item.progress is not None:
             doing = f"{item.doing} {item.progress}%" if item.doing else f"{item.progress}%"
             step = (f"{title} · {doing}" if title else doing, None, None)
         else:

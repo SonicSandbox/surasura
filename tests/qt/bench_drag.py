@@ -31,6 +31,12 @@ each (>= 10 for a timed run), the moments run through the window's own paths:
     the sheet rises on its spring with its shadow (its tiles made at the first opening), closed after the repetition;
   - **the arrival moment** (`arrival`): a show never shown before lands in New arrivals (the store write the reader
     feeds as an arrival); the inset's covers part, the new one drops in, the count lifts (no toast exists: none added);
+  - **a stone's Done while the store is held** (`stone-held`, a8: Sonic's alpha 7 try, "it lagged by at least a second
+    before registering"): another program holds the store (the stand-in writer's `gate`: every command waits, as the
+    maintain step and the indexer make it wait through a Generate) and a stone's Done (`done_requested`) on a visible
+    row with files left to watch — noted: `lit_in_click` (1: the page's row is lit when the click returns, before any
+    event, so the next frame paints it), `click_ms` (the click's own time on the GUI thread); then the store let go,
+    the write saved, the row given back unwatched;
   - **the finish toasts**: `toast-done-all` — the last unwatched episode's Done (`done_requested`, drag.py's
     `DONE_ALL`); `toast-finished` — New arrivals' *Finished* (the tray's `act`: the Finished choice toast,
     arrivals.py); `toast-connect` — Connect's notice toast (`ShellWindow._show_chores`, its one line; Connect not run).
@@ -59,10 +65,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from app.services import window_idle                                  # noqa: E402
 from tests.qt import bench_moments                                    # noqa: E402
 
 DRAG = ("pickup", "slide", "autoscroll", "drop")
-GROUPS = ("drag", "lines", "menu", "keys", "hover", "goal-sheet", "arrival", "done", "finished", "connect")
+GROUPS = ("drag", "lines", "menu", "keys", "hover", "goal-sheet", "arrival", "done", "finished", "connect", "stone")
 
 
 def selected(only):
@@ -136,6 +143,9 @@ class StandinWriter:
         self.library, self.numbers, self.moments = library, numbers, None
         self.on_saved = self.on_saving = self.on_reread = self.on_note = self.on_undone = None
         self._pending = 0
+        self._go = threading.Event()                      # `defer` / `go`, as `moves.Writer`'s: a press's write waits
+        self._go.set()                                    # for the window's paint of it (`drag.after_paint`)
+        self.gate = None                                  # a8: another program holds the store until it is set
         if cover_scan:
             self.idle = self._idle
 
@@ -164,6 +174,12 @@ class StandinWriter:
     def release(self):
         pass
 
+    def defer(self):
+        self._go.clear()
+
+    def go(self):
+        self._go.set()
+
     def pending(self):
         return self._pending
 
@@ -180,6 +196,11 @@ class StandinWriter:
         name = moments.reps[-1][0] if moments is not None and moments.reps else None
 
         def run():
+            self._go.wait(0.25)                           # (`moves.DEFER_MAX_S`)
+            window_idle.wait()                            # (as `moves.Writer`: a write starts while the window rests)
+            gate = self.gate
+            if gate is not None:
+                gate.wait(30)
             write()
             self._pending -= 1
             if name is not None:
@@ -189,9 +210,19 @@ class StandinWriter:
         return 1
 
     def _move_now(self, ids, tier, before_id=None, after_id=None, piece_id=None):
-        """(The writer's thread.) The numbers, then the write."""
-        self.numbers.after_move(ids, tier, before_id=before_id, after_id=after_id)
-        _place(self.library, ids, tier, before_id, after_id, piece_id)
+        """(The writer's thread.) The numbers, then the write — landed for the numbers once written, as
+        `moves.Writer._landed` does (a resync meanwhile waits for it)."""
+        from app.services import moves
+        from tests.fixtures.standin_store import StandinStore
+        store = StandinStore(self.library)              # (this thread's handle: the tier's order and the set-aside
+        landing = {}                                      # rule read as the real writer reads them — W-1)
+        self.numbers.after_move(ids, tier, before_id=before_id, after_id=after_id, landing=landing,
+                                order=lambda t: store.ids(t), aside=lambda i: moves._set_aside(store, i))
+        try:
+            _place(self.library, ids, tier, before_id, after_id, piece_id)
+        finally:
+            if landing.get("numbers_ahead"):
+                self.numbers.landed()
 
     def move(self, ids, tier, before_id=None, after_id=None, near=(), label=None, end=False):
         return self._run(ids, label, lambda: self._move_now(ids, tier, before_id, after_id))
@@ -365,7 +396,7 @@ def open_goal_sheet(window):
 
 def close_open_row(lst):
     """A row left open closed, as a click on it closes it (`RowsView.toggle`) — before a moment's row is chosen, never
-    inside a repetition (the rows' places are read through `visualRect`, which lays the list out first). A drop on another part of the same title joins them and opens
+    inside a repetition (the rows' places are read through `visualRect`, which lays the list out first). A held drop on another part of the same title joins them and opens
     the result (`item_menu.join`); left open at 150 % it filled the list, no row was whole on screen, and the menu and
     key moments after it found none (M4.1 A, the key case at 11ff1bc). -> whether one was open."""
     model = lst.model()
@@ -821,6 +852,71 @@ def main_child(a):
         at(0, lambda: until(unwatched_again, 4000, "toast-done-all: never given back"))
         at(150, lambda: None)
 
+    used_stones = set()
+
+    def stone_cycle(c):
+        def prep():
+            v = page.view_model
+            by = {r.key: r for r in (v.rows if v is not None else ())}
+            shown = [lst.model().entries[i][1].key for i in visible_rows()]
+            for again in (False, True):                  # once every row was used, the used ones again (given back)
+                if again:
+                    used_stones.clear()
+                row = next((by[k] for k in shown if k in by and k not in used_stones
+                            and sum(not e.watched for e in by[k].episodes) > 1), None)
+                if row is not None:
+                    break
+            state["stone"] = None
+            if row is None:
+                result["skipped"]["stone-held: no row"] = result["skipped"].get("stone-held: no row", 0) + 1
+                return
+            used_stones.add(row.key)
+            state["stone"] = (row.key, next(e.id for e in row.episodes if not e.watched))
+            writer.gate = threading.Event()              # another program holds the store
+
+        def click():
+            if state["stone"] is None:
+                return
+            key, eid = state["stone"]
+            window.toasts.close()
+            row = next(r for r in page.view_model.rows if r.key == key)
+            t0 = time.perf_counter()
+            lst.done_requested.emit(row, next(e for e in row.episodes if e.id == eid))
+            ms = (time.perf_counter() - t0) * 1000
+            now = next((r for r in page.view_model.rows if r.key == key), None)
+            lit = now is not None and any(e.id == eid and e.watched for e in now.episodes)
+            moments.note("stone-held", "click_ms", round(ms, 2))
+            moments.note("stone-held", "lit_in_click", int(lit))
+
+        def let_go():
+            gate, writer.gate = writer.gate, None
+            if gate is not None:
+                gate.set()
+        at(0, prep)
+        at(200, lambda: None)
+        at(0, begin("stone-held"))
+        at(0, click)
+        at(0, end_after(400))
+        at(0, window.toasts.close)
+        at(0, let_go)
+        at(0, lambda: until(lambda: writer.pending() == 0, 4000, "stone-held: Done never saved"))
+
+        def give_back():
+            if state["stone"] is not None:
+                opener.pending.append({"items": [{"id": state["stone"][1], "watched": 0}]})
+
+        def unwatched_again():
+            if state["stone"] is None:
+                return True
+            key, eid = state["stone"]
+            row = next((r for r in page.view_model.rows if r.key == key), None)
+            return row is None or not any(e.id == eid and e.watched for e in row.episodes)
+        at(0, lambda: until(lambda: not getattr(window.moves, "expect_marks", None), 4000,
+                           "stone-held: marks never let go"))
+        at(0, give_back)
+        at(0, lambda: until(unwatched_again, 4000, "stone-held: never given back"))
+        at(150, lambda: None)
+
     def finished_cycle(c):
         def choose():
             tray = getattr(window, "arrivals_tray", None)
@@ -988,6 +1084,11 @@ def main_child(a):
             for c in range(n):
                 done_cycle(c)
             at(0, still("toast-done-all"))
+        if "stone" in groups:
+            at(0, lambda: lst.verticalScrollBar().setValue(0))
+            for c in range(n):
+                stone_cycle(c)
+            at(0, still("stone-held"))
         if "finished" in groups:
             for c in range(n):
                 finished_cycle(c)

@@ -4,6 +4,8 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
 - **hato's verdict** (its pairing record; 09-hato-layer v2 *Connect's gate*): `schema` 1, `verdict` `timed`, the
   library copy's sha256 = `subtitle_sha256`, `timing.segments` 1 and `timing.reference` one of tsubasa's three kinds
   (`REFERENCES`) → mine (hato's copy is already timed: no offset).
+- **The video's own track** (Michi-ST, `track_timed`): a subtitle Surasura copied out of the video it is mined with
+  (its origin record's `verdict` `extracted`, the copy's sha256 as recorded) → mine, no offset: no tsubasa asked.
 - **Anything else** (hato's `extracted` / `untimed`, a `timed` record that doesn't hold all five — a `reference`
   absent, `subtitle` (v1's, named no tsubasa reference) or unknown included — or no pairing: your own placement):
   tsubasa's command line when
@@ -13,6 +15,11 @@ known to be timed to its video — a card cut from a subtitle a few seconds off 
   Its offset (`_offset`: the answer's `offset`, else its one [start, offset] segment's) is the shift Anki Miner cuts
   the lines by (`subtitle_offset`, RUNBOOK-P1.3 1.3.4); none readable → not timed (never cut at 0.0): tsubasa
   checks with `--dry-run`, so the copy itself is never re-timed.
+- **An audio file's own subtitle, heard** (Michi-AB AB-Q5, Sonic 2026-11-02, PROVISIONAL: `spot`, the runner's
+  `lineup.spot_check` through Anki Miner's speech model): a few places of it heard and compared with its lines —
+  they match → mine at its own times (no shift); they don't → not timed (never a wrong clip: *Mine anyway* stays
+  yours); the model's question passed on as it is; no answer now → the rules below, as before (tsubasa has no
+  reference inside an audio file). *Trust my subtitles' timing* is asked first: you said they are synced.
 - **Neither** → not timed. 2.x lists it once in *Needs you*, with no button (E16; 3.0: *Mine anyway*, G1.3-6).
 - **Trust my subtitles' timing** (`connect_trust_timing`, off by default; laptop try row 9, P-LF-9): with nothing to
   check it — no tsubasa on this PC, or tsubasa's ERROR for a video with no subtitle track inside (a raw; P0.2) — and no
@@ -45,10 +52,14 @@ TIMED, NOT_TIMED, RETRY = "timed", "not timed", "retry"
 TIMEOUT_S = 120             # a file without a usable index is read whole: 10–30 s over a network share (P0.2)
 CREATE_NO_WINDOW = 0x08000000
 REFERENCES = ("text-track", "picture-track", "speech-mask")     # what tsubasa timed against (09-hato-layer v2 P13)
+SOURCE = "source"               # a source folder's origin record's producer (library_store.SOURCE_PRODUCER)
 NO_TRACK = "no subtitle track"   # tsubasa's ERROR for a raw video: nothing inside it to time against (P0.2)
 TRUST_LABEL = "Trust my subtitles’ timing"                         # Settings → Anki & mining (settings_strings)
 NO_CHECKER = ("Nothing on this PC can check its timing (no tsubasa), so no cards yet. If your subtitles are synced, "
               f"turn on {TRUST_LABEL} in Settings → Anki & mining.")
+SPOT_MATCHED, SPOT_NOT_MATCHED = "match", "no-match"      # `lineup.MATCHED` / `NOT_MATCHED`
+SPOT_NO_MATCH = ("Its subtitle doesn't match its audio where Connect listened, so no cards: a card's audio would hold "
+                 "another line. Mine anyway only if you know it plays in time.")
 
 
 def version(pairing):
@@ -72,11 +83,40 @@ def find_tsubasa():
 
 
 def check(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False):
-    """-> (TIMED, NOT_TIMED or RETRY, who decided: `hato` · `tsubasa` · `you` (`trust`) · None, the reason in plain
+    """-> (TIMED, NOT_TIMED or RETRY, who decided: `hato` · `track` · `tsubasa` · `you` (`trust`) · None, the reason in plain
     words when not timed). RETRY: tsubasa didn't answer (timed out, couldn't start) — the runner asks again at its next
     look. `tsubasa`: its program (default: found on PATH); `run`: `subprocess.run`'s stand-in (tests); `trust`:
     `connect_trust_timing`. The job's *Stop* ends tsubasa within a second: `stopping.Stopped` (row 56)."""
     return fit(pairing, video, subtitle, tsubasa, run, timeout, trust)[:3]
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+# Surasura's own verdicts on a source folder's video (`library_store.fill_track`): its own track copied out (Michi-ST),
+# a subtitle made from its own audio (Michi-NS)
+OWN_VERDICTS = ("extracted", "transcribed")
+
+
+def track_timed(pairing, subtitle):
+    """Michi-ST (`app/tracks.py`): the subtitle is the video's own track, copied out by Surasura — its own record (a
+    source folder's origin, `producer` "source"), `verdict` "extracted", and the library copy is that very file (its
+    sha256): timed to that video, nothing to check. A copy changed since is checked as any other. Michi-NS
+    (`app/no_subs.py`, Q5 ✅ Sonic 2026-10-31: mined like any timed subtitle): a subtitle Anki Miner made from the
+    video's own audio (`verdict` "transcribed") is timed to that audio the same way."""
+    pairing = pairing if isinstance(pairing, dict) else {}
+    want = pairing.get("subtitle_sha256")
+    if pairing.get("producer") != SOURCE or pairing.get("verdict") not in OWN_VERDICTS or             not isinstance(want, str) or not want or not subtitle:
+        return False
+    return _sha256(subtitle) == want.lower()
 
 
 def hato_timed(pairing, subtitle):
@@ -91,14 +131,7 @@ def hato_timed(pairing, subtitle):
     want = pairing.get("subtitle_sha256")
     if not isinstance(want, str) or not want or not subtitle:
         return False
-    digest = hashlib.sha256()
-    try:
-        with open(subtitle, "rb") as f:
-            for chunk in iter(lambda: f.read(1 << 20), b""):
-                digest.update(chunk)
-    except OSError:
-        return False
-    return digest.hexdigest() == want.lower()
+    return _sha256(subtitle) == want.lower()
 
 
 # Released by the switch: Surasura's own records — a folder's or + Add's origin (library_store.SOURCE_PRODUCER) and a
@@ -120,15 +153,26 @@ def others(pairing):
     return str(pairing.get("producer") or "hato").strip() not in OWN_PRODUCERS
 
 
-def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False):
+def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, trust=False, spot=None):
     """`check`, with the shift to cut by -> (verdict, who, why, offset in seconds: tsubasa's one segment's, else
-    0.0)."""
+    0.0). `spot()`: an audio file's spot-check (AB-Q5) -> SPOT_MATCHED / SPOT_NOT_MATCHED / None (no answer now), or a
+    whole answer of its own (the speech model's question), passed on."""
     if hato_timed(pairing, subtitle):
         return TIMED, "hato", None, 0.0
+    if track_timed(pairing, subtitle):
+        return TIMED, "audio" if pairing.get("verdict") == "transcribed" else "track", None, 0.0
+    if spot is not None and _media(video) == "audio":
+        heard = spot()
+        if heard == SPOT_MATCHED:
+            return TIMED, "spot-check", None, 0.0
+        if heard == SPOT_NOT_MATCHED:
+            return NOT_TIMED, "spot-check", SPOT_NO_MATCH, 0.0
+        if isinstance(heard, tuple):
+            return heard
     exe = tsubasa if tsubasa is not None else find_tsubasa()
     if not exe:
         if others(pairing):         # a pairing program paired it but didn't time it: the switch never releases that
-            return NOT_TIMED, None, "Not timed to its video, so no cards.", 0.0
+            return NOT_TIMED, None, f"Not timed to its {_media(video)}, so no cards.", 0.0
         if trust:                   # you said your subtitles are synced: cut where the subtitle puts the lines
             return TIMED, "you", None, 0.0
         return NOT_TIMED, None, NO_CHECKER, 0.0
@@ -154,7 +198,7 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
             return NOT_TIMED, "tsubasa", "tsubasa gave no shift to cut its lines by, so no cards.", 0.0
         return TIMED, "tsubasa", None, offset
     if outcome == "CONFIDENT" and isinstance(segments, list) and len(segments) > 1:
-        return NOT_TIMED, "tsubasa", "Its timing changes part-way through the video, so no cards.", 0.0
+        return NOT_TIMED, "tsubasa", f"Its timing changes part-way through the {_media(video)}, so no cards.", 0.0
     if outcome == "CONFIDENT":
         return NOT_TIMED, "tsubasa", "tsubasa found no timing to cut its lines by, so no cards.", 0.0
     reason = (answer or {}).get("reason")
@@ -162,10 +206,18 @@ def fit(pairing, video, subtitle, tsubasa=None, run=None, timeout=TIMEOUT_S, tru
     if raw and trust:               # nothing inside the video to time against, and you trust your subtitles
         return TIMED, "you", None, 0.0
     if outcome in ("REFUSED", "ERROR"):
-        return NOT_TIMED, "tsubasa", f"Not timed to its video ({outcome.lower()}), so no cards." + (
+        return NOT_TIMED, "tsubasa", f"Not timed to its {_media(video)} ({outcome.lower()}), so no cards." + (
             f" tsubasa: {reason}" if isinstance(reason, str) and reason else "") + (
             f" If your subtitles are synced, turn on {TRUST_LABEL} in Settings → Anki & mining." if raw else ""), 0.0
     return NOT_TIMED, "tsubasa", "tsubasa gave no answer, so no cards.", 0.0
+
+
+def _media(path):
+    """What the lines are cut from, in the reasons' words: "audio" for an audio file (Z-16: tsubasa 0.1.11 has no
+    reference inside one — its ERROR names no subtitle track, a raw's — so it waits for *Trust my subtitles' timing*
+    or *Mine anyway*, as a raw video does), else "video"."""
+    from app.connect.anki_miner import is_audio
+    return "audio" if is_audio(path) else "video"
 
 
 def _span(seconds):

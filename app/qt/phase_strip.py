@@ -32,6 +32,13 @@
   the circles in `opens` take a press and show the hand; one with no settings does nothing. A double-click or a held
   key opens once. The keyboard: one Tab stop, ← → between the circles that open, Enter or Space opens, an accent wash
   inside the one in focus (PROVISIONAL, the lead 2026-10-24), its hover shown when Tab brought it there.
+- **What's spinning, said and shown** (try a9.1, Sonic's report: "junban and anki miner are spinning but i don't know
+  what they are doing"): a running circle whose work can be seen somewhere (`SHOWS`: Anki Miner — the title it makes
+  cards for; 順 — its window) opens there on a press (`showing`; else its settings, as before) and its hover says so.
+  Its hover names the job with its step — Anki Miner's title and step, or *Stopping…*; a job with no step of its own
+  is followed by the circle's own line (順: *tomorrow's 20 cards placed · moving 281 more…*). **A right-click** (or
+  the menu key) is the bottom bar's one icon menu (`tool_icons.menu_of`, the open windows' too): *Show* · *Stop* (only
+  while its work can be stopped: the shell's `stops`) · *Settings* — each asked of the shell (`asked`).
 - **S19:** the strip repaints only the circle whose look changed (`paints` counts them); the arc's clock (`motion.Turn`)
   runs only while one turns and stops the moment none does; one single-shot timer wakes it for the next automatic
   job to show (Q6's 1 s) or a tick's end — never a frame's pace.
@@ -51,7 +58,7 @@ from PyQt6.QtWidgets import QWidget
 from app import theme
 from app.qt import logos, motion, strings, style
 from app import replan_preview
-from app.services import phase
+from app.services import causes, phase
 from app.services import press as press_service
 
 LOGOS = {phase.MINER: "anki_miner", phase.ANKI: "anki_outline"}   # the circles that show a logo (`logos.CLEARED`'s
@@ -66,6 +73,7 @@ FOCUS_WASH = 0.30               # the circle in the keyboard's focus: an accent 
 SETTINGS = {phase.ARRIVALS: "library_folders", phase.SURASURA: "level", phase.MINER: "connect_enabled",
             phase.JUNBAN: "junban", phase.ANKI: "known"}
 STANDING = {phase.JUNBAN: "replan", phase.MINER: "connect"}   # a circle -> its standing line's snapshot field
+SHOWS = frozenset({phase.MINER, phase.JUNBAN})   # the circles whose running work can be seen somewhere (try a9.1)
 
 
 def _named(view):
@@ -90,6 +98,7 @@ def _mix(a, b, t):
 
 class PhaseStrip(QWidget):
     opened = pyqtSignal(str)                   # a circle pressed (or Enter / Space on it): its settings, please
+    asked = pyqtSignal(str, str)               # its right-click menu's item: (circle, "show" · "stop" · "settings")
 
     def __init__(self, parent=None, now=None):
         super().__init__(parent)
@@ -123,14 +132,38 @@ class PhaseStrip(QWidget):
         self._hand = False                     # the pointer shows the hand (over a circle that opens)
         self._asks = None                      # 順's line when it is a part of its own (a decision or a fault), or None
         self.lands = None                      # Go -> whether its place holds the decision now (the shell's, a7)
+        self.on_states = None                  # states -> None, after each refresh (the shell's one-time hints, HC-3)
+        self.stops = None                      # circle -> whether its work can be stopped now (the shell's, try a9.1)
+        self.can_show = None                   # circle -> whether there is a place its work is seen now (the shell's)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.refresh)
         self._turn = motion.Turn(self, self._turned)
         self._looks = {c: self.look(c) for c in phase.CIRCLES}
-        side = theme.size("phase-circle")
-        self.setFixedSize(round(len(phase.CIRCLES) * side + (len(phase.CIRCLES) - 1) * theme.size("phase-gap")),
-                          round(side))
+        self.help = None                       # the ? after the circles (help cards, HC-2): the strip's own last mark
+        self._size()
+
+    def _size(self):
+        """Five circles and their gaps, and — once it has one — its ? after them, a gap on: the bar's line follows the
+        strip at the bar's own spacing (W3.1a's polish rule), never after a part of its own."""
+        side, gap = theme.size("phase-circle"), theme.size("phase-gap")
+        width = len(phase.CIRCLES) * side + (len(phase.CIRCLES) - 1) * gap
+        height = side
+        if self.help is not None:
+            hint = self.help.sizeHint()
+            self.help.setGeometry(round(width + gap), max(0, round((side - hint.height()) / 2)), hint.width(),
+                                  hint.height())
+            width += gap + hint.width()
+            height = max(height, hint.height())
+        self.setFixedSize(round(width), round(height))
+
+    def set_help(self, button):
+        """The circles' ? (`help_card.help_mark("circles", …)`), placed inside the strip after its five circles."""
+        button.setParent(self)
+        button.ensurePolished()
+        self.help = button
+        self._size()
+        button.show()
 
     # --- what comes in ---------------------------------------------------------------------------------------- #
     def set_jobs(self, views):
@@ -166,19 +199,37 @@ class PhaseStrip(QWidget):
             self.setAccessibleDescription(self.summary())
 
     def go(self, circle):
-        """Where `circle`'s decision is (`phase.Go`) while it is amber, else None: its press opens that place, the row
+        """Where `circle`'s decision is (`phase.Go`) while it is amber — or while its last run is a failure that waits on
+        you (`phase.FAILED_GO`: 順's Reorder refused until its Undo) — else None: its press opens that place, the row
         highlighted, instead of its settings (a7)."""
-        st = self.states[circle]
-        return st.go if st.needs else None
+        return self.states[circle].go
 
     def press_words(self, circle):
         """What a press on `circle` does, as its hover's last line says it: while it is amber, what to decide and where."""
         go = self.go(circle)
         if go is None:
-            return strings.PHASE_PRESS
+            return strings.PHASE_PRESS_SHOW if self.showing(circle) else strings.PHASE_PRESS
         if go.place == "junban":
             return strings.PHASE_PRESS_RESTORE if go.at == "restore" else strings.PHASE_PRESS_DECK
         return strings.PHASE_PRESS_NEEDS
+
+    def showing(self, circle):
+        """Whether a press shows where `circle`'s work is seen (try a9.1): it runs, it is one that can be seen, and the
+        shell has the place now (Anki Miner: an episode being mined — not its install, a press before Connect's job)."""
+        return (circle in SHOWS and self.states[circle].running
+                and (self.can_show is None or bool(self.can_show(circle))))
+
+    def menu_entries(self, circle):
+        """`circle`'s right-click menu: [((words, tip), what)] — *Show* while `showing`, *Stop* while the shell says its
+        work can be stopped, *Settings* when it has some."""
+        out = []
+        if self.showing(circle):
+            out.append((strings.PHASE_SHOW, "show"))
+        if self.stops is not None and self.stops(circle):
+            out.append((strings.PHASE_STOP, "stop"))
+        if circle in self.opens:
+            out.append((strings.PHASE_SETTINGS, "settings"))
+        return out
 
     def set_opens(self, circles):
         """The circles whose press opens their settings (the shell's: those with settings to show)."""
@@ -247,6 +298,8 @@ class PhaseStrip(QWidget):
         self._paint_changed()
         self._wake(now)
         self._retext()
+        if self.on_states is not None:
+            self.on_states(self.states)
 
     def _landed(self, st):
         """a7: amber only while its place holds the decision — a *Needs you* card put away
@@ -425,34 +478,63 @@ class PhaseStrip(QWidget):
         out = [f'<b>{esc(strings.PHASE_NAMES[circle])}</b> '
                f'<span style="color:{dim}">· {esc(strings.PHASE_ABOUT[circle])}</span>']
         now = list(st.lines)
+        if now and not st.stepped and self._standing.get(circle) and self._standing[circle] not in now:
+            now.append(self._standing[circle])         # (try a9.1: a bare job name, then the circle's own counted line)
         if not now and (st.running or st.waiting):      # lit by a press with no job yet (A3A-1): its words
             said = [p.words for p in self._shown if p.live() and phase.press_circle(p.key) == circle and p.words]
             now = said[:1] or [strings.PHASE_STARTING]
         elif not now and circle in self._standing:
             now = [self._standing[circle]]
-        out += [esc(line) for line in now]
+        why = dict(getattr(st, "why", ()) or ())        # help cards: a line's cause, under it (dim)
+        for line in now:
+            out.append(esc(line))
+            if line in why:
+                out.append(f'<span style="color:{dim}">{esc(self.why_line(why[line]))}</span>')
         last = st.last
         if st.failed and (last is None or last.state != "failed" or last.id in self._seen):
             out.append(esc(strings.PHASE_FAILED_NOW.format(why=st.failed)))
         if not now and not st.failed and not st.needs:
             out.append(esc(strings.PHASE_IDLE))
         if last is not None:
-            at = time.strftime(strings.PHASE_TIME, time.localtime(last.at)) if last.at else ""
+            at = causes.when(last.at, self.now()) if last.at else ""     # the one time rule (help cards, §5.1)
             what = getattr(self._last.get(circle), "label", None) or strings.PHASE_NAMES[circle]   # the job's name
             if last.state == "failed":
-                out.append(esc(strings.PHASE_FAILED.format(what=what, time=at, why=last.words or "")))
+                said = strings.PHASE_FAILED.format(what=what, time=at, why=last.words or "")
             elif last.state == "needs" and st.needs:
-                out.append(esc(strings.PHASE_NEEDS.format(why=last.words)))
+                said = strings.PHASE_NEEDS.format(why=last.words)
             elif last.state == "needs":                 # (a7: it named no place to decide — no *Needs you*)
-                out.append(esc(strings.PHASE_ENDED_WAITING.format(what=what, time=at, why=last.words)))
+                said = strings.PHASE_ENDED_WAITING.format(what=what, time=at, why=last.words)
             elif last.state == "stopped":
-                out.append(esc(strings.PHASE_STOPPED.format(what=what, time=at)))
+                said = strings.PHASE_STOPPED.format(what=what, time=at)
             else:
-                out.append(esc(strings.PHASE_DONE.format(what=what, time=at)))
-        if circle in self.opens or self.go(circle) is not None:
+                said = strings.PHASE_DONE.format(what=what, time=at)
+            cause = getattr(last, "cause", None)
+            if cause is not None and cause.line and not now:    # (live again: its own *Why:* says the newer cause)
+                said = strings.PHASE_LAST_WHY.format(last=said, line=cause.line)
+            out.append(esc(said))
+        if self._pressable(circle):
             press = self.press_words(circle)
             out.append(f'<span style="color:{dim}">{esc(press)}</span>')
+        press_does = "show" if self.showing(circle) else "settings" if self._pressable(circle) else None
+        more = [words for (words, _tip), what in self.menu_entries(circle) if what != press_does]
+        if more:                                        # (the press's own item is said once, above)
+            items = " · ".join(more)
+            out.append(f'<span style="color:{dim}">{esc(strings.PHASE_MENU_TIP.format(items=items))}</span>')
         return '<p style="margin:0">' + "<br>".join(out) + "</p>"
+
+    def why_line(self, cause):
+        """A cause as the hover says it (*Why: you moved … · 14:02*), the one time rule."""
+        return causes.said(cause, self.now(), strings.PHASE_WHY, strings.PHASE_WHY_AT)
+
+    def causes(self):
+        """Every lit circle's live jobs and why each started by itself: [(circle, line, cause)], in the strip's
+        order — the `circles` help card's list (spec §5.1)."""
+        out = []
+        for c in phase.CIRCLES:
+            st = self.states[c]
+            for line, cause in getattr(st, "why", ()) or ():
+                out.append((c, line, cause))
+        return out
 
     def summary(self):
         """The strip read out (its accessible description): the circle in the keyboard's focus and what a press does,
@@ -472,7 +554,7 @@ class PhaseStrip(QWidget):
 
     # --- the press: a circle's settings (alpha 3) --------------------------------------------------------------- #
     def _pressable(self, circle):
-        return circle is not None and (circle in self.opens or self.go(circle) is not None)
+        return circle is not None and (circle in self.opens or self.go(circle) is not None or self.showing(circle))
 
     def _under_mouse(self):
         return self.circle_at(self.mapFromGlobal(QCursor.pos())) if self.underMouse() else None
@@ -519,6 +601,25 @@ class PhaseStrip(QWidget):
         if self.tooltips is not None:
             self.tooltips.hide()
         self.opened.emit(circle)
+
+    def contextMenuEvent(self, e):
+        """The right-click (or the menu key, on the circle in focus): `circle`'s menu (`menu_entries`), each item asked
+        of the shell; none for a circle with nothing to offer."""
+        mouse = e.reason() == e.Reason.Mouse
+        circle = self.circle_at(e.pos()) if mouse else self._focus
+        entries = self.menu_entries(circle) if circle is not None else []
+        if not entries:
+            e.ignore()
+            return
+        from app.qt import tool_icons
+        if self.tooltips is not None:
+            self.tooltips.hide()
+        menu = tool_icons.menu_of(self, [(pair, lambda what=what: self.asked.emit(circle, what))
+                                         for pair, what in entries])
+        at = e.globalPos() if mouse else self.mapToGlobal(self.rect_of(circle).center().toPoint())
+        menu.exec(at)
+        if hasattr(menu, "deleteLater"):
+            menu.deleteLater()                 # (one a right-click: never kept for the session)
 
     def keyPressEvent(self, e):
         key = e.key()
@@ -572,6 +673,8 @@ class PhaseStrip(QWidget):
             self._set_hand(False)
             self._pressed = None
             self._leave_hover(self._focus if self.hasFocus() else None)   # (the keyboard's circle stays looked at)
+        elif et == QEvent.Type.LayoutRequest and self.help is not None:
+            self._size()                       # its ? took another size (the text size): placed again
         elif et == QEvent.Type.DevicePixelRatioChange:
             self._load_logos()                 # another screen's scale: decoded again at its ratio (PS-A8)
         elif et == QEvent.Type.MouseMove and self.tooltips is not None:

@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app import analyzer, library_store as ls, sentence_corpus as sc, token_index as ti
+from app import analyzer, library_store as ls, phrases, sentence_corpus as sc, token_index as ti
 from tests.test_generate_missing_item import _generate
 from tests.test_library_store_support import LANGUAGES, entry, roots, write_manifest
 from tests.test_token_store_aside import NAME, _cues, _names_bytes, _show, _srt, _surfaces
@@ -101,6 +101,18 @@ def _spy_tokenizing():
 # --------------------------------------------------------------------------- #
 # 1. Never inflates
 # --------------------------------------------------------------------------- #
+def _without_sentences(lists):
+    """`_generate`'s lists with every Context / Src column taken out (F7: Finished is a sentence source, so only they
+    may move), the rest as written."""
+    import csv
+    import io
+    if isinstance(lists, dict):
+        return {name: _without_sentences(raw) if name.endswith(".csv") else raw for name, raw in lists.items()}
+    text = lists.decode("utf-8-sig") if isinstance(lists, bytes) else lists
+    rows = list(csv.reader(io.StringIO(text)))
+    keep = [i for i, c in enumerate(rows[0]) if not (c.startswith("Context ") or c.startswith("Src "))] if rows else []
+    return [[row[i] for i in keep] for row in rows]
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_finished_show_never_counts_in_generate_the_rarity_slider_or_the_mine_line(language):
     """The six real files, Generated; then a finished show of other real text is added (the Finished importer's
@@ -133,7 +145,9 @@ def test_a_finished_show_never_counts_in_generate_the_rarity_slider_or_the_mine_
         mine = set().union(*(_lemmas(tokens, p) for p in ids))
         theirs = set().union(*(_lemmas(tokens, p) for p in show))
     after = _generate(root, language)
-    assert after == before, "Generate's lists: every count, Score, order and tier count as before"
+    # F7: Finished lends example sentences (Context / Src may move), never a count: every other column as before
+    assert _without_sentences(after) == _without_sentences(before), \
+        "Generate's lists: every count, Score, order and tier count as before"
     assert _library_frequency(root) == words_before, "and the whole-library map Junban reads"
     only_finished = {w for w in theirs - mine if analyzer.has_target_language(w, language)}
     # Not vacuous: the show holds words the list and the map lack — and, the lists unchanged, still lack.
@@ -218,8 +232,9 @@ def test_a_finished_shows_sentences_go_to_examples_and_the_sentence_dictionary(l
     _generate(root, language)
     with open(os.path.join(root, "results", "priority_learning_list.csv"), encoding="utf-8-sig") as f:
         contexts = f.read()
-    assert not any(s.strip() and s.strip() in contexts for s in show_only if len(s.strip()) > 6), \
-        "the list's own example sentences never come from Finished"
+    # F7 (Sonic 2026-11-06: "finished would be more valuable"): the list's own example sentences come from it too
+    assert any(s.strip() and s.strip() in contexts for s in show_only if len(s.strip()) > 6), \
+        "the list's example sentences take a finished show's lines"
 
 
 # --------------------------------------------------------------------------- #
@@ -483,7 +498,18 @@ def test_finishing_a_show_counts_right_and_keeps_its_names_and_sentences():
     after = {(r["Word"], r["Reading"]): r for r in _rows(root, "priority_learning_list.csv")}
 
     tokenize = ti.make_tokenizer("ja")
-    raw = {p: tokenize(p)["counts"] for k in shows for p in shows[k]}
+    found = phrases.load() if ti.phrase_rows_on("ja") else None
+
+    def counted(path):
+        """A file's words as the list counts them: its tokens, less the uses a set phrase or a grammar expression's
+        row takes there (する in として — ENGINE 38)."""
+        got = tokenize(path)
+        counts = dict(got["counts"])
+        if found is not None:
+            for key, n in phrases.tally(got["sentences"], found)[1].items():
+                counts[key] = counts.get(key, 0) - n
+        return counts
+    raw = {p: counted(p) for k in shows for p in shows[k]}
 
     def uses(key, paths):
         return sum(raw[p].get(f"{key[0]}|{key[1]}", 0) for p in paths)

@@ -344,11 +344,15 @@ class MineActions(QObject):
         row's status turns from the press (`lst`'s, IK-2; none: the bar's arc) until the picker shows."""
         if self.win.moves is None:
             return
-        folder = os.path.dirname(os.path.join(path_utils.get_data_path(self.win.language),
-                                              *(ep.rel_path or "").split("/")))
+        from app.services import own_folder
+        data, opener = path_utils.get_data_path(self.win.language), own_folder.opener_of(self.win)
         at = qpress.row_mark(lst, [ep.id], "no-media") if lst is not None else None
 
-        def pick(patterns):
+        def look():                                 # (the worker) the types, and where the picker starts: a7, the
+            return _video_patterns(), own_folder.read(opener, data, (ep.id,), (ep.rel_path,))   # content's own
+
+        def pick(found):
+            patterns, folder = found
             moves = self.win.moves
             path = self.pick_file(strings.LINK_TITLE.format(label=ep.label), folder, patterns)
             if not path or moves is None or moves.refused() is not None:
@@ -356,7 +360,7 @@ class MineActions(QObject):
             writer = moves.writer
             moves._give(drag.Ticket(strings.LINKING_ONE.format(label=ep.label), (row.key,), (ep.id,)),
                         lambda t: writer.link_video(ep.id, path, label=t))
-        qpress.run(None, ("link", ep.id), _video_patterns, then=pick, failed=lambda info: self.win.say(str(info[1])),
+        qpress.run(None, ("link", ep.id), look, then=pick, failed=lambda info: self.win.say(str(info[1])),
                    win=self.win, at=at)
 
     # --- MV-2: Find its folder… ------------------------------------------------------------------------------ #
@@ -419,22 +423,25 @@ def videos_of(row, ids):
     """K67 (IK S3: Anki Miner mines video only), one rule for one file and for many: of `ids`, the files that are
     videos, each by its own type (`Episode.media_word`; the row's for a first screen's cache from before — LM11b: a
     group holds several types) -> (their ids in order, the first other file's episode or None). A book's or a text's
-    file counts with them once Connect mines books (Z-9: `Episode.text`, `view_rows._mines`)."""
+    file counts with them once Connect mines books (Z-9: `Episode.text`, `view_rows._mines`), an audiobook's or a
+    podcast's once it mines audio (Z-16)."""
     by = {e.id: e for e in row.episodes}
     word = getattr(row, "media_word", "video")
     videos, other = [], None
     for i in ids:
         ep = by.get(i)
-        if ((ep.media_word if ep is not None else None) or word) == "video" or                 (getattr(ep, "text", False) == "books" and _mines_books()):
+        if ((ep.media_word if ep is not None else None) or word) == "video" or _mines_text(ep):
             videos.append(i)
         elif other is None:
             other = ep
     return videos, other
 
 
-def _mines_books():
+def _mines_text(ep):
+    """A book's, a text's or an audio file's episode that Connect mines now (`view_rows._mines`: Z-9, Z-16)."""
     from app.services import view_rows
-    return view_rows._mines("books")
+    text = getattr(ep, "text", False)
+    return text in ("books", "audio") and view_rows._mines(text)
 
 
 def _made_words(made):

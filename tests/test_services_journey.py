@@ -113,31 +113,76 @@ def test_changed_returns_at_once_and_reads_nothing():
     keeper.close()
 
 
-def test_a_second_burst_cancels_the_run_and_one_more_runs_after_it():
-    """A burst while the background run reads files: that run is asked to stop (its cancel file), answers cancelled,
-    and one more run starts the quiet time after the second burst — never two at once."""
+@pytest.mark.parametrize("step", [None] + list(G.STEPS))
+def test_a_burst_during_the_run_never_cancels_it_and_costs_one_more_run_at_most(step):
+    """a7 (alpha 6's 43 Generates in 70 minutes): forty store changes while the background run is at any step — before
+    its first line, reading files, writing — never ask it to stop (no cancel file, never *Stopping*); once it has
+    finished, ONE more run comes, the quiet time after its end, never two at once and never one per change."""
     keeper, controller, registry, launches = _keeper()
     keeper.changed("move")
     assert h.until(lambda: launches.count() == 1, seconds=5)
     first = launches.runs[0]
-    first.feed(_line("Counting words"))
-    for _ in range(5):
-        keeper.changed("move")
-        time.sleep(0.02)
-    assert os.path.exists(first.cancel_file), "the run in flight was asked to stop"
-    assert controller.state().state == G.CANCELLING
-    first.feed(CANCELLED)
-    first.ended(76)                                 # it stops in the middle of the burst ...
-    keeper.changed("move")                          # ... which goes on: the next run waits for its end, not for this one
-    last = time.monotonic()
-    time.sleep(0.05)
-    assert launches.count() == 1, "never re-queued the moment the cancelled run ended"
-    assert h.until(lambda: launches.count() == 2, seconds=5)
-    assert launches.times[1] - last >= FAST["journey_settle_s"] - 0.02
-    assert [v.cancelled for v in _generates(registry)][:1] == [True]
+    if step is not None:
+        first.feed(_line(step))
+    for _ in range(40):
+        keeper.changed("store")
+        time.sleep(0.005)
+    time.sleep(FAST["journey_settle_s"] + 0.3)        # longer than the quiet time: still nothing withdrawn, nothing new
+    assert not os.path.exists(first.cancel_file), "the run in flight was never asked to stop"
+    assert controller.state().state == G.RUNNING and launches.count() == 1
+    first.ended(0)
+    ended = time.monotonic()
+    assert h.until(lambda: launches.count() == 2, seconds=5), "the burst's one look after the run: one more run"
+    assert launches.times[1] - ended >= FAST["journey_settle_s"] - 0.05, "it waited the quiet time after the end"
     launches.runs[1].ended(0)
     assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
-    assert launches.count() == 2
+    time.sleep(FAST["journey_settle_s"] + 0.3)
+    assert launches.count() == 2 and keeper.asked == 2
+    assert [v.cancelled for v in _generates(registry)] == [False, False]
+
+
+def test_a_burst_the_run_already_read_costs_no_run_at_all():
+    """The changes came while the run was still waiting its turn (it read them as it started): the look after its end
+    finds the journey current (the run signature) and asks for nothing — N changes, one run."""
+    current = {"now": False}
+    keeper, controller, _registry, launches = _keeper(pending=lambda: not current["now"])
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    for _ in range(25):
+        keeper.changed("store")
+    assert not os.path.exists(launches.runs[0].cancel_file), "never asked to stop"
+    current["now"] = True                           # the run's own end: the journey is current
+    launches.runs[0].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.4)
+    assert launches.count() == 1 and keeper.asked == 1
+    assert not launches.runs[0].cancel_event.is_set()
+
+
+def test_changes_through_three_runs_in_a_row_never_stack_up():
+    """A library written all the time (a first scan of thousands of files): each run finishes; each burst during it
+    is one run after it — runs in a row, never a run withdrawn and never two queued."""
+    keeper, controller, registry, launches = _keeper()
+    keeper.changed("move")
+    for n in range(1, 4):
+        assert h.until(lambda: launches.count() == n, seconds=5)
+        for _ in range(10):
+            keeper.changed("store")
+        assert controller._pending is None, "nothing queued behind the run"
+        assert not os.path.exists(launches.runs[-1].cancel_file), "never asked to stop"
+        launches.runs[-1].ended(0)
+    assert h.until(lambda: launches.count() == 4, seconds=5)
+    launches.runs[-1].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.3)
+    assert launches.count() == 4
+    assert not any(v.cancelled for v in _generates(registry))
+    assert not any(run.cancel_event.is_set() for run in launches.runs)
+
+
+def test_in_flight_names_the_controllers_states():
+    """The keeper reads the controller's states by name (it imports the controller only when it runs)."""
+    assert J.IN_FLIGHT == (G.QUEUED, G.RUNNING, G.CANCELLING)
 
 
 def test_a_run_past_writing_your_list_finishes_and_the_next_burst_runs_after():
@@ -173,7 +218,8 @@ def test_a_failed_check_generates_to_be_sure():
 
 
 def test_the_users_generate_is_never_cancelled_and_the_automatic_one_waits_for_it():
-    """The user pressed Generate: a burst never withdraws the user's run; the automatic run waits behind it."""
+    """The user pressed Generate: a burst never withdraws the user's run, and the keeper asks for nothing beside it (a7:
+    nothing queued behind it either); its one look after the user's run brings the automatic run."""
     keeper, controller, registry, launches = _keeper()
     user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
     assert h.until(lambda: launches.count() == 1, seconds=5)
@@ -182,14 +228,33 @@ def test_the_users_generate_is_never_cancelled_and_the_automatic_one_waits_for_i
     time.sleep(FAST["journey_settle_s"] + 0.3)
     assert not os.path.exists(launches.runs[0].cancel_file), "the user's run is not the keeper's to cancel"
     assert launches.count() == 1, "never two at once"
-    keeper.changed("move")                          # a burst while the automatic one waits: it withdraws its own
-    assert controller._pending is None, "the waiting automatic request was taken back"
+    keeper.changed("move")                          # more of the burst: still nothing asked beside the user's run
+    assert controller._pending is None, "nothing queued behind the user's run"
     user.ended(0)
     assert h.until(lambda: launches.count() == 2, seconds=5), "the automatic run after the user's"
     assert launches.runs[1].quiet and not launches.runs[0].quiet
     launches.runs[1].ended(0)
     assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
     assert [v.cancelled for v in _generates(registry)] == [False, False]
+
+
+def test_a_quiet_time_that_ends_during_the_users_generate_asks_nothing_beside_it():
+    """a7 (mutant M2): a move armed the quiet time, then the user pressed Generate before it ended — the timer fires
+    during the user's run and asks for nothing beside it (nothing queued behind it either); its one look after the run
+    finds the journey current (the user's run read the move) and nothing more runs."""
+    state = {"pending": True}
+    keeper, controller, _registry, launches = _keeper(pending=lambda: state["pending"])
+    keeper.changed("move")
+    user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].feed(_line("Counting words"))
+    time.sleep(FAST["journey_settle_s"] + 0.4)      # the quiet time ends during the user's run
+    assert launches.count() == 1 and controller._pending is None, "nothing asked beside it, nothing queued"
+    state["pending"] = False                        # the user's run read the move
+    user.ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.5)
+    assert launches.count() == 1 and keeper.asked == 0
 
 
 def test_an_automatic_run_waiting_its_turn_gives_way_to_the_users():
@@ -286,17 +351,21 @@ def test_withdraw_drops_only_its_own_request():
 
 # --- the report then agrees with the plan (real Generates, RP-2's library) ----------------------------------------- #
 @pytest.mark.parametrize("case", ["rp2-ja", "rp2-zh"])
-def test_after_moves_the_background_run_agrees_with_the_plan(case):
-    """Moves in the library store → one background Generate through the controller → its lists equal the engine's for
-    that order (shadow mode finds no difference, writes no line), the window is handed the new plan, and the journey
-    is no longer pending."""
+def test_after_moves_the_journey_is_redrawn_from_the_plan_as_its_generate_writes_it(case, monkeypatch):
+    """Moves in the library store → at the quiet time the journey is redrawn from the plan (F7; Sonic 2026-11-06:
+    no Generate after a plain move — the real rule on the real plan and store, `moved_state`), never a Generate: the
+    plan stays the last Generate's (no new plan handed to the window), the journey is no longer pending, the next look
+    finds it drawn and asks nothing — and both lists, the journey and every list row's numbers and sentences are what
+    a Generate of that order run now writes (the redraw changes when, never what)."""
     import subprocess
     import sys
     from app import analyzer, library_store as ls, plan_engine
-    from app.path_utils import get_local_data_path
     from tests import plan_file_cases as cases
 
     root = h.root()
+    # One hash seed for every child: word_stats.json's "sources" and file_words.json list a set as Python iterates it,
+    # so two runs in two processes may order them apart whatever the order of the library — not what is compared here
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
     language = cases.ALL_CASES[case][0]
     cases.build(root, case)
     settings = dict(FAST, target_language=language, anki_connect_url="http://127.0.0.1:9")
@@ -337,34 +406,106 @@ def test_after_moves_the_background_run_agrees_with_the_plan(case):
         store.close()
 
     landed = []
-    compared = []
-    real_shadow = J.shadow
-
-    def spy(previous, plan, lists, stamp=False):
-        compared.append((previous is not None, bool(lists.get("priority"))))
-        return real_shadow(previous, plan, lists, stamp)
+    with open(os.path.join(root, "results", "library_frequency.json"), "rb") as f:
+        library_map = f.read()
     keeper = J.JourneyKeeper(controller, language, settings=lambda: settings, on_done=landed.append)
-    J.shadow = spy
-    try:
-        keeper.changed("move")
-        keeper.changed("move")
-        assert h.until(lambda: landed, seconds=300), controller.state()
-    finally:
-        J.shadow = real_shadow
-    assert compared == [(True, True)], "the keeper compared the new lists against a previous plan"
-    assert plan_engine.stands_aside(previous) is None
-    assert landed == [plan_path] and keeper.asked == 1
-    new = plan_engine.load(plan_path)
-    assert new.header["run_signature"] != previous.header["run_signature"]
-    assert new.header["order_free_signature"] == previous.header["order_free_signature"]
-    assert J.shadow(previous, new, J._lists()) == "", "the report agrees with the plan"
-    assert not os.path.exists(os.path.join(get_local_data_path(), "logs", J.SHADOW_LOG))
+    assert J.moved_state(settings, language) == "owed", "the real rule: only the order moved since the plan"
+    keeper.changed("move")
+    keeper.changed("move")
+    assert h.until(lambda: keeper.asked == 1 and controller._run is None
+                   and controller.state().state in (G.CURRENT, G.FAILED), seconds=120), controller.state()
+    assert controller.state().state == G.CURRENT
+    time.sleep(0.5)
+    assert landed == [], "the plan is the last Generate's still: nothing new for the window"
+    assert plan_engine.load(plan_path).header["run_signature"] == previous.header["run_signature"]
+    assert analyzer.redrawn_for(os.path.join(root, "results")) is not None
+    assert J.moved_state(settings, language) == "drawn"
+    from app import run_args
+    args = run_args.analyzer_args(settings, language)
+    assert analyzer.journey_is_current(args, language) is True, "redrawn for this order: current (S19)"
+    assert analyzer.journey_check(args, language) is True, "and so says surasura-cli's status"
+    with open(os.path.join(root, "results", "library_frequency.json"), "rb") as f:
+        assert f.read() == library_map, "the library map keeps the plan's numbering (Junban reads it through the order)"
+    # A redraw stopped part-way (its marker written first, its order never): never current, redrawn at the next look
+    marker = os.path.join(root, "results", analyzer.REDRAW_FILE)
+    with open(marker, encoding="utf-8") as f:
+        kept = f.read()
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"plan": previous.header["run_signature"], "run": None}, f)
+    assert analyzer.journey_is_current(args, language) is False
+    assert J.moved_state(settings, language) == "owed"
+    # ... and one another plan's redraw left (this order, but not this stamp's plan): never current either
+    drawn = json.loads(kept)
+    with open(marker, "w", encoding="utf-8") as f:
+        json.dump({"plan": "another plan's", "run": drawn["run"]}, f)
+    assert analyzer.journey_is_current(args, language) is False
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write(kept)
     store = ls.open_store(language, data_dir, user_files)
     try:
         assert not store.journey_pending()
     finally:
         store.close()
+    keeper.changed("start")                                                 # a focus's look: drawn, nothing asked
+    time.sleep(FAST["journey_settle_s"] + 1.0)
+    assert keeper.asked == 1
     keeper.close()
+
+    # Against a Generate of the same order run now (forced: the redraw marker and the old stamp are its to replace)
+    results = os.path.join(root, "results")
+    redrawn = _outputs(results)
+    assert {"priority_learning_list.csv", "progressive_learning_list.csv", "word_stats.json",
+            "reading_list_static.html", analyzer.REDRAW_FILE} <= set(redrawn)
+    os.environ["SURASURA_FORCE_RUN"] = "1"
+    try:
+        controller.request(language, settings=settings)
+        assert h.until(lambda: controller.state().state in (G.CURRENT, G.FAILED) and controller._run is None, 300)
+    finally:
+        del os.environ["SURASURA_FORCE_RUN"]
+    assert controller.state().state == G.CURRENT
+    at_once = _outputs(results)
+    assert analyzer.REDRAW_FILE not in at_once, "a Generate removes the redraw's marker"
+    moved = sorted(name for name in at_once if redrawn.get(name) != at_once[name])
+    print("moved:", moved)
+    assert set(moved) <= set(REDRAW_OWN), moved
+    for name in ("priority_learning_list.csv", "progressive_learning_list.csv", "reading_list_static.html",
+                 "file_statistics.json", "file_statistics.txt"):
+        assert redrawn[name] == at_once[name], name
+    _same_rows(json.loads(redrawn["word_stats.json"]), json.loads(at_once["word_stats.json"]), WORD_STATS_ORDERS)
+
+
+# What a redraw leaves as the last Generate wrote it (D1; F7): the plan and the run stamp (the Generate's own), the
+# library map (library_frequency.json: the plan's file numbers, which Junban reads through the order itself, and a word
+# under the cut-off's Score), the source table's order (sources.json: by path),
+# and what word_stats.json keeps in the walk's order (a word's last-met surface, its sources as a set). Everything a
+# row shows is the Generate's.
+REDRAW_OWN = ["plan.json.gz", "run_signature.txt", "library_frequency.json", "sources.json", "word_stats.json",
+              "file_words.json"]
+# word_stats.json's fields the order moves (the rest are the whole library's, or kept in the walk's order)
+WORD_STATS_ORDERS = ("score", "high_count", "low_count", "goal_count", "min_seq", "final_context_1", "final_src_1",
+                     "final_context_2", "final_src_2", "final_context_3", "final_src_3")
+
+
+def _same_rows(a, b, fields):
+    assert a.keys() == b.keys()
+    for key in a:
+        for field in fields:
+            assert a[key].get(field) == b[key].get(field), (key, field, a[key].get(field), b[key].get(field))
+
+
+# What a run writes that holds its own time or run: never compared (a run's stamp, logs, the plan file's header time)
+_RUN_OWN = (".log", ".flag", ".lock")
+
+
+def _outputs(results):
+    """{name: bytes} of every file a Generate leaves in `results/` (its lists, word stats, the journey's HTML)."""
+    out = {}
+    for name in sorted(os.listdir(results)):
+        path = os.path.join(results, name)
+        if os.path.isfile(path) and not name.endswith(_RUN_OWN):
+            with open(path, "rb") as f:
+                out[name] = f.read()
+    return out
 
 
 def test_shadow_names_the_first_difference():
@@ -396,8 +537,8 @@ def test_a_timer_already_firing_when_a_move_comes_asks_for_nothing():
 
 
 def test_an_automatic_request_never_takes_a_waiting_users_place():
-    """The user pressed Generate a moment ago (still settling): the keeper's quiet request leaves it in place — the
-    user's run runs, opens as the user's, and the keeper holds no run of the user's to withdraw."""
+    """The user pressed Generate a moment ago (still settling): the keeper asks for nothing beside it (a7: never while a
+    Generate waits or runs) — the user's run runs, opens as the user's; the keeper looks once after its end."""
     controller = GenerateController(JobRegistry(), settle=2.5)    # the user's request settles longer than the keeper
     launches = _Launches()
     user = controller.request("ja", argv=["analyzer.py", "--progress-json"], launcher=launches)
@@ -405,12 +546,15 @@ def test_an_automatic_request_never_takes_a_waiting_users_place():
                              battery=lambda: False, launcher=launches,
                              plan_path=os.path.join(h.root(), "no-plan.json.gz"))
     keeper.changed("move")
-    assert h.until(lambda: keeper.asked == 1, seconds=5)
-    assert controller._pending is user and keeper._run is None
+    time.sleep(FAST["journey_settle_s"] + 0.3)
+    assert keeper.asked == 0 and controller._pending is user and keeper._run is None
     keeper.changed("move")                          # a burst never withdraws the user's request
     assert h.until(lambda: launches.count() >= 1, seconds=10)
     assert launches.runs[0] is user and not user.quiet
     user.ended(0)
+    assert h.until(lambda: launches.count() == 2, seconds=5), "the keeper's one look after the user's run"
+    assert launches.runs[1].quiet and keeper.asked == 1
+    launches.runs[1].ended(0)
     keeper.close()
 
 
@@ -439,7 +583,7 @@ def test_a_list_that_cant_be_read_is_logged_and_the_window_still_rebaselines(mon
     keeper._plan_path = str(plan)
     monkeypatch.setattr(J, "_load_plan", lambda path: _Plan())
     monkeypatch.setattr(J, "_lists", lambda: (_ for _ in ()).throw(UnicodeDecodeError("utf-8", b"", 0, 1, "x")))
-    monkeypatch.setattr(J, "shadow", lambda previous, plan, lists, stamp=False: "")
+    monkeypatch.setattr(J, "shadow", lambda previous, plan, lists, stamp=False: lists() and "")   # the read, due
     monkeypatch.setattr(J, "_log_shadow", logged.append)
     keeper._landed(object())
     assert landed == [str(plan)] and logged and "comparison failed" in logged[0]
@@ -562,8 +706,9 @@ def test_reasons_are_cleared_when_nothing_is_asked():
     assert h.until(lambda: keeper.reasons == [], seconds=5)
 
 
-def test_a_move_while_the_request_is_made_takes_it_back():
-    """A move lands between the keeper's last check and its request: the request it just made is withdrawn at once."""
+def test_a_move_while_the_request_is_made_keeps_it_and_looks_after():
+    """A move lands between the keeper's last check and its request: the request it just made is kept (a7: never
+    withdrawn for a move) and the move starts its own quiet time; only the window's close takes it back."""
     class _Controller:
         def __init__(self):
             self.withdrawn = []
@@ -586,8 +731,10 @@ def test_a_move_while_the_request_is_made_takes_it_back():
     keeper = J.JourneyKeeper(controller, "ja", settings=lambda: dict(FAST), pending=lambda: True,
                              battery=lambda: False, plan_path=os.path.join(h.root(), "no-plan.json.gz"))
     keeper._ask(keeper._armed)
-    assert controller.withdrawn == [controller.made] and keeper._run is None
+    assert controller.withdrawn == [] and keeper._run is controller.made
+    assert keeper._timer is not None, "the move's own look is armed"
     keeper.close()
+    assert controller.withdrawn == [controller.made], "the window's close takes its own run back"
 
 
 def test_the_comparison_skips_lists_another_run_is_writing(monkeypatch):
@@ -645,3 +792,80 @@ def test_shadow_names_a_row_count_that_differs():
         progressive = []
     lists = {"priority": [{"Word": "猫", "Reading": "ネコ"}], "progressive": []}
     assert J._differs(_Result, lists) == "priority: 2 rows, the Generate wrote 1"
+
+
+def test_a_run_stopped_by_hand_owes_no_look():
+    """a7's review: changes came during the run, then the user pressed Stop — the keeper doesn't start one again by
+    itself 3 s later (Stop would feel ignored); the next change asks again."""
+    keeper, controller, _registry, launches = _keeper()
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    launches.runs[0].feed(_line("Counting words"))
+    for _ in range(5):
+        keeper.changed("store")
+    controller.cancel()                             # the user's Stop
+    assert os.path.exists(launches.runs[0].cancel_file)
+    launches.runs[0].feed(CANCELLED)
+    launches.runs[0].ended(76)
+    time.sleep(FAST["journey_settle_s"] + 0.5)
+    assert launches.count() == 1, "no run by itself after a Stop"
+    keeper.changed("store")                         # the next change: asked again
+    assert h.until(lambda: launches.count() == 2, seconds=5)
+    launches.runs[1].ended(0)
+
+
+def test_the_switch_turned_off_during_a_run_asks_for_nothing_after_it():
+    """D29: a look owed by changes during a run, the background Generate switched off before it ends — nothing runs."""
+    on = {"now": True}
+    keeper, controller, _registry, launches = _keeper(enabled=lambda: on["now"])
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    keeper.changed("store")
+    on["now"] = False
+    launches.runs[0].ended(0)
+    assert h.until(lambda: controller.state().state == G.CURRENT, seconds=5)
+    time.sleep(FAST["journey_settle_s"] + 0.5)
+    assert launches.count() == 1
+
+
+def test_after_a_run_the_next_background_one_rests_as_long_as_it_took():
+    """SRC-9 (a7): a library changing all the time never has Generate running without a break — after a run of
+    about a second the next background one waits that long, though the quiet time (0.2 s) has passed."""
+    keeper, controller, _registry, launches = _keeper()
+    keeper.changed("move")
+    assert h.until(lambda: launches.count() == 1, seconds=5)
+    keeper.changed("store")
+    time.sleep(1.0)                                 # the run takes a second
+    launches.runs[0].ended(0)
+    ended = time.monotonic()
+    assert h.until(lambda: launches.count() == 2, seconds=5)
+    assert launches.times[1] - ended >= 0.9, launches.times[1] - ended
+    launches.runs[1].ended(0)
+
+
+def test_the_rest_is_held_to_five_minutes():
+    """A run that took an hour (a first index on a huge library) rests the keeper five minutes at most."""
+    keeper, controller, _registry, _launches = _keeper()
+    keeper._running_since = time.monotonic() - 3600
+    keeper._state_changed(G.State(G.CURRENT, None, None, None, None, None, None, 1))
+    assert keeper._rest_until - time.monotonic() <= J.REST_MAX_S + 0.1
+    keeper.close()
+
+
+def test_the_lists_are_never_read_once_a_newer_generate_dropped_the_stamp(monkeypatch):
+    """O2 (alpha 6's replan_shadow.log): a run landed, then another started at once and dropped the stamp — the keeper's
+    shadow compare reads no list at all (it read them first, then checked, and logged "the comparison failed")."""
+    reads, logged = [], []
+    keeper, _controller, _registry, _launches = _keeper(on_done=lambda path: None)
+    previous, plan = _Plan("run-1"), _Plan("run-2")
+    previous.files = plan.files = []
+    monkeypatch.setattr(J, "_load_plan", lambda path: plan)
+    monkeypatch.setattr(J, "_lists", lambda: reads.append(1) or {})
+    monkeypatch.setattr(J, "_stamped", lambda signature: False)
+    monkeypatch.setattr(J, "_log_shadow", logged.append)
+    import app.plan_engine as plan_engine
+    monkeypatch.setattr(plan_engine, "stands_aside", lambda p: False)
+    monkeypatch.setattr(plan_engine, "Engine", type("E", (), {"__init__": lambda self, *a, **k: None,
+                                                              "replan": lambda self, files: "result"}))
+    keeper._landed(previous)
+    assert reads == [] and logged == []

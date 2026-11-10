@@ -137,9 +137,10 @@ class TestTelemetry(unittest.TestCase):
     @patch('app.telemetry.get_telemetry_state')
     @patch('os.path.exists')
     @patch('builtins.open', new_callable=unittest.mock.mock_open)
-    def test_forced_update_event_sends_anonymized_when_opted_out(self, mock_open, mock_exists, mock_get_state, mock_get_user_file, mock_get):
-        """A forced event (update) is STILL sent when opted out, but with a throwaway id and
-        without touching the user's persistent telemetry state."""
+    def test_forced_event_sends_anonymized_when_opted_out(self, mock_open, mock_exists, mock_get_state, mock_get_user_file, mock_get):
+        """A forced event (respect_optout=False; since 3.0.0 the update event isn't one: it honors
+        the opt-out) is STILL sent when opted out, but with a throwaway id and without touching the
+        user's persistent telemetry state."""
         mock_get_state.return_value = {"uid": "real-uid", "open_count": 5}
         mock_get_user_file.return_value = "dummy_settings.json"
         mock_exists.return_value = True
@@ -163,8 +164,8 @@ class TestTelemetry(unittest.TestCase):
     @patch('app.telemetry.get_telemetry_state')
     @patch('os.path.exists')
     @patch('builtins.open', new_callable=unittest.mock.mock_open)
-    def test_forced_update_event_uses_real_id_when_opted_in(self, mock_open, mock_exists, mock_get_state, mock_get_user_file, mock_get):
-        """When telemetry is ON, the update event carries the normal persistent id."""
+    def test_forced_event_uses_real_id_when_opted_in(self, mock_open, mock_exists, mock_get_state, mock_get_user_file, mock_get):
+        """When telemetry is ON, a forced event carries the normal persistent id."""
         mock_get_state.return_value = {"uid": "real-uid", "open_count": 7}
         mock_get_user_file.return_value = "dummy_settings.json"
         mock_exists.return_value = True

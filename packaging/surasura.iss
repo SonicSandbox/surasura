@@ -6,7 +6,9 @@
 ; It installs dist\Surasura as built into %LOCALAPPDATA%\Programs\<folder> (no folder page: the folder is always
 ; ours, so the uninstaller may name what it removes), asks one thing (the library folder) and writes the answer to
 ; %LOCALAPPDATA%\Houseki\<data name>\library.json; it never creates the library folder (Surasura does, at its first
-; start). Uninstalling removes the program only: never the library, the settings or the Houseki folders.
+; start). Uninstalling removes the program only: never the library, the settings or the Houseki folders; it
+; forgets the program's entry in the shared tools folder (Houseki\tools\surasura.json) only when that entry
+; names this install's surasura-cli.exe, so hato never calls a removed program.
 
 #ifndef AppVersion
   #error Pass /DAppVersion=<version> (python package_app.py --installer does)
@@ -25,6 +27,10 @@
 #endif
 #ifndef ProgramDir
   #define ProgramDir AddBackslash(SourcePath) + "..\dist\Surasura"
+#endif
+; The agreement page: packaging\agreement.txt + the program's LICENSE, written by package_app.py (write_agreement).
+#ifndef AgreementFile
+  #define AgreementFile AddBackslash(SourcePath) + "..\build\installer_agreement.txt"
 #endif
 
 [Setup]
@@ -56,6 +62,9 @@ OutputDir=..\dist
 OutputBaseFilename=Surasura-{#AppVersion}-setup
 SetupIconFile=..\app\assets\images\app_icon.ico
 WizardStyle=modern
+; "I accept the agreement" before Next (the user's content is theirs; no warranty; the licence). A silent run (the
+; updater's, the swapper's) never shows a page: Inno takes it as accepted.
+LicenseFile={#AgreementFile}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -322,10 +331,27 @@ begin
     'Remove Surasura now?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
 end;
 
+// surasura.json (app/tools_entry.py: UTF-8, its paths JSON-escaped, never \u) is how hato finds Surasura's command
+// line. The uninstall forgets it when its cli is this install's surasura-cli.exe, silent or not; an entry another
+// Surasura wrote (another folder) is left as it is.
+procedure ForgetToolsEntry;
+var
+  Entry, Cli: String;
+  Raw: AnsiString;
+begin
+  Entry := ExpandConstant('{localappdata}\Houseki\tools\surasura.json');
+  Cli := ExpandConstant('{app}\surasura-cli.exe');
+  StringChangeEx(Cli, '\', '\\', True);
+  if LoadStringFromFile(Entry, Raw) and (Pos('"' + AnsiLowercase(Cli) + '"', AnsiLowercase(UTF8Decode(Raw))) > 0) then
+    DeleteFile(Entry);
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Lib: String;
 begin
+  if CurUninstallStep = usPostUninstall then
+    ForgetToolsEntry;
   if (CurUninstallStep = usPostUninstall) and not UninstallSilent then begin
     Lib := NoteLibrary;
     if Lib = '' then

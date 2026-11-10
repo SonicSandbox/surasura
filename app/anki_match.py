@@ -43,6 +43,7 @@ from array import array
 from bisect import bisect_left
 from collections import namedtuple
 
+from app.path_utils import list_reader
 from app.unicode_ranges import HAN, KANA
 
 # --- normalisation ---------------------------------------------------------------------------- #
@@ -153,6 +154,50 @@ def card_word(raw, language=None):
         if word:
             return word
     return ""
+
+
+# --- a word field that holds a sentence ----------------------------------------------------------- #
+# Some decks keep a sentence where the word goes (Sonic, alpha 9: his Word field is the card's Sentence). A sentence is
+# no card's one word: the known-words sync reads it as it reads an "Also read" line — every word in it known — and the
+# Anki window says so. What makes one is Japanese's own marks, never a deck's: two clauses or more with a sentence end
+# (。！？: 今、何時？), or one clause with a stop or clauses parted by a comma (、，) or a space, unless every part is a
+# word of its own — a word with its reading (撒く まく, 撒く、まく。) or JMdict's kanji spellings (上層部、首脳部, 撒く。).
+# A list mark (・ ／ ；) parts words, never clauses. A field of one clause and no stop is read whole by `card_word`
+# already (そんな気がする, 気がする): no sentence. Chinese: the same marks but never a space (学习 xuéxí is a word and its
+# pinyin), no dictionary. The line is read in NFKC first, so ．！？ are . ! ? there — and . is no stop (1.5倍).
+_SENTENCE_END_RE = re.compile(r'[。!?‼⁇⁈⁉]')
+_CLAUSE_RE = re.compile(r'[、，,。!?‼⁇⁈⁉\s]')
+_ZH_CLAUSE_RE = re.compile(r'[、，,。!?‼⁇⁈⁉]')
+
+
+def holds_sentence(raw, language=None):
+    """Does a card's word field hold a sentence rather than a word? Its first line is read as `card_word` reads it (in
+    NFKC, its notes in brackets dropped), then parted into clauses (`_CLAUSE_RE`). Japanese: a sentence when it holds a
+    sentence end or two clauses or more: always for two clauses with a stop (今、何時？), else unless its clauses are a
+    word and its readings in kana (撒く まく, with no stop inside) or each a JMdict kanji spelling (上層部、首脳部,
+    撒く。); with the dictionary unread, every clause counts as no word. Chinese: a sentence end or two clauses holding a
+    Chinese character (`_ZH_CLAUSE_RE`). Any other language: never."""
+    if language not in ("ja", "zh") or not isinstance(raw, str):
+        return False
+    line = next((text for text in (normalize_word(part) for part in _LINE_TAG_RE.split(raw)) if text), "")
+    line = unicodedata.normalize("NFKC", line)
+    line = _NOTE_RE.sub("", line) or line
+    script = re.compile(f'[{HAN}]' if language == "zh" else f'[{KANA}{HAN}]')
+    clauses = [c for c in (_bare(p) for p in (_ZH_CLAUSE_RE if language == "zh" else _CLAUSE_RE).split(line))
+               if script.search(c)]
+    stop = bool(_SENTENCE_END_RE.search(line))
+    if not clauses or (len(clauses) < 2 and not stop):
+        return False
+    if language == "zh":
+        return True
+    han = re.compile(f'[{HAN}]')
+    if (len(clauses) > 1 and not _SENTENCE_END_RE.search(_bare(line)) and han.search(clauses[0])
+            and all(_KANA_ONLY_RE.match(c) for c in clauses[1:])):
+        return False                                    # a word and its readings: 撒く まく (本当？うん、そう is none)
+    if stop and len(clauses) > 1:
+        return True                                     # 今、何時？ — dictionary words, and a sentence
+    entries = _dictionary_entries()
+    return entries is None or not all(entries[0].get(c) for c in clauses)
 
 
 def fold_kana(text):
@@ -431,7 +476,7 @@ def build_index(csv_path=None, want_contexts=False, thresholds=None, only=None, 
             _read(rows)
         else:
             with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
-                _read(csv.DictReader(handle))
+                _read(list_reader(handle))
     except (OSError, UnicodeError, csv.Error):
         # A truncated or unreadable list means "no matches", which the planner already handles by
         # leaving every card where it is. It must never mean "crash on the way to a write".

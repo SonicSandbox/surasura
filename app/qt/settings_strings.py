@@ -6,6 +6,8 @@ mock's words carry a meaning 2.4 changed (A5: the one-kanji words, Junban's unli
 voice. A tooltip is 2.4's own where 2.4 had one, else the help line. Help is one line, never an essay; no fixed seed
 numbers (N5). `app/qt/settings_catalog.py` names each row's strings by its row id.
 """
+from app import ankiconnect_addon as _addon         # AnkiConnect missing: the one set of words (alpha 8)
+from app.connect.settings_values import WORDS as MINE_WORDS   # *Words to make cards from*: Connect's own words
 from app.practice import NAME as PRACTICE_NAME       # the practice chat's name (A6): one place, app/practice.py
 
 # --- the page ----------------------------------------------------------------------------------------------------- #
@@ -57,8 +59,30 @@ NAV_NAME = "Settings sections"
 MORE_TIP = "Shows this section's other settings, the ones most people never change"
 FEWER_TIP = "Hides this section's other settings again"
 LINK_OPEN = "Open ↗"
+HELP_MARK = "?"                                       # a9.1: a row's description, behind its ? (`RowView`)
+HELP_MARK_NAME = "About {label}"
 HOW_PARSING_URL = "https://github.com/SonicSandbox/surasura/blob/main/docs/How%20Parsing%20Works.md"
+DISCORD_URL = "https://surasura.dev/app/discord"      # the server's invite, by redirect (in the browser, never an app call)
+WEBSITE_URL = "https://surasura.dev"                  # Surasura's website (in the browser, never an app call)
+ISSUES_URL = "https://github.com/SonicSandbox/surasura/issues"
+STAR_URL = "https://github.com/SonicSandbox/surasura"   # the star ask's and App's row (in the browser, never an app call)
+# a9.1 (Sonic: "a button for each that launches"; wording PROVISIONAL): App's *Connect with us* block, a button per
+# page, each saying what it does — label, tooltip, page
+LINKS = {"github": ("⭐ Star on GitHub", "Opens Surasura's GitHub page in your browser: free and made by one person, a "
+                                        "⭐ helps other learners find it", STAR_URL),
+         "discord": ("Join the community", "Opens Surasura's Discord server in your browser: questions, help, and a "
+                                           "place to report a problem", DISCORD_URL),
+         "website": ("Visit the website", "Opens surasura.dev, Surasura's home page, in your browser", WEBSITE_URL)}
+# a link's page, by its name: the block's buttons, and Parsing's *How parsing works* row
+LINK_URLS = dict({name: url for name, (_label, _tip, url) in LINKS.items()}, how_parsing_works=HOW_PARSING_URL)
 FOLDER_PICK_TITLE = "Where videos are looked for"
+# *Videos open in* / *Books open in* (Sonic 2026-11-05): the program option before one is chosen, its *Change…*, the
+# picker (PROVISIONAL)
+PROGRAM_PICK = "Choose a program…"
+PROGRAM_CHANGE = "Change…"
+PROGRAM_CHANGE_TIP = "Choose another program"
+PROGRAM_PICK_TITLE = {"open_video": "The program videos open in", "open_book": "The program EPUBs open in"}
+PROGRAM_FILTER = {"win32": "Programs (*.exe)"}                   # other systems: every file
 
 # --- the controls' own words (settings_controls.py; moved here from its top, W3.3 P3) ------------------------------ #
 ADD = "Add"                                      # an empty bed's words when the page names none
@@ -71,7 +95,7 @@ STATUS_NAME = "{name}: {words}"                  # the status mark, for screen r
 # --- the sections (the mock's order, with Language & Parsing after Level: 05 §5.7) --------------------------------- #
 SECTIONS = {
     "setup": "Your setup", "known": "Known words", "anki": "Anki & mining", "junban": "Junban — card order",
-    "backfill": "Backfill — fill your cards", "level": "Level — rarity", "parsing": "Language & Parsing",
+    "backfill": "Backfill — fill your cards", "level": "Level", "parsing": "Language & Parsing",
     "content": "Content", "arrivals": "New arrivals", "connect": "Connections", "reading": "Journey",
     "sentences": "Sentences", "export": "Export", "app": "App",
 }
@@ -90,10 +114,11 @@ DOORS = {
     "jiten": ("Jiten", "Import from Jiten"),
     "apkg_known": (".apkg", "Import an Anki deck file"),
     "word-lists": ("Ignore list · Blacklist", "Opens your Ignore list and Blacklist"),
-    "junban": ("Preview order",
-               "Shows the new order and why, before anything moves; Undo the last reorder is there too"),
+    "junban": ("Junban…", "Opens Junban’s window: choose the deck, preview the new order and why before anything "
+                          "moves, undo the last reorder"),
     "put-back": ("Put Anki back…", "Puts Anki's new cards back the way they were before Surasura first changed them"),
-    "backfill": ("Preview", "Shows exactly what goes into each card; Fill and Restore are there too"),
+    "backfill": ("Backfill…", "Opens Backfill’s window: choose the deck and each note type's fields, see exactly what "
+                              "goes into each card, Fill and Restore"),
     "extract": ("Extract…", "EPUBs and Anki decks, split into parts"),
     "youtube-downloader": ("YouTube…", "Download a video's captions straight into your library"),
     "youtube-preview": ("Preview a video…", "Score a video against your words before you add it"),
@@ -103,12 +128,9 @@ DOORS = {
     "library-folders": ("Manage folders…", "Opens your folders: stop reading one, read a skipped one again, or look "
                                            "in them all again"),
 }
-# A row whose door says something else than the opener's own words: row id -> {opener: (label, tooltip)}
-ROW_DOORS = {
-    "junban_scope": {"junban": ("Choose the deck…", "Opens Junban’s window, where the deck is chosen")},   # a6 #9
-    "backfill_fields": {"backfill": ("Fields…", "Opens Backfill, where each fill's field and each note type's "
-                                                "language are set")},
-}
+# A row whose door says something else than the opener's own words: row id -> {opener: (label, tooltip)} (a9.1: none
+# — Junban's and Backfill's windows have one door each, on their *Which cards* row)
+ROW_DOORS = {}
 
 # --- the rows: row id -> (label, one-line help, tooltip, search words) --------------------------------------------- #
 ROWS = {
@@ -131,7 +153,7 @@ ROWS = {
                        "back to it", "sync automatically anki open"),
     "anki_auto_generate": ("Re-generate when new words come in", "In the background, at most every 10 minutes",
                            "When a sync brings in words you now know, Generate runs on its own in the background, so "
-                           "your list is current — without opening the report. At most every 10 minutes, and never "
+                           "your list is current — without opening your journey. At most every 10 minutes, and never "
                            "while an import or a Generate is running", "generate automatically new known words"),
     "known_import": ("Import from", "Replaces your known words — a backup is kept",
                      "Import your known words from Migaku, Jiten or an Anki deck file", "import migaku jiten apkg"),
@@ -140,9 +162,21 @@ ROWS = {
     "use_every_core": ("Use every core", "Reads a big library faster; the computer is busier meanwhile",
                        "Off: reading and copying a library uses half your computer's cores, so it stays quick to use. "
                        "On: every core — a first read of thousands of books ends sooner", "cores speed faster cpu"),
-    "anki_sync_include_suspended": ("Count suspended cards as known", "",
-                                    "Count cards you've suspended as known. Off by default — suspended cards are often "
-                                    "ones you struggled with", "suspended known"),
+    # a9.1 (Sonic: "anything redundant we don't want"): one question, one row — this one while Make cards for me is
+    # off (the sync's own answer), *Count as known in Anki* while it is on (A7S-1: the sync reads studied cards only —
+    # `anki_sync.scope_query`'s `-is:new`; the signal reads new ones too)
+    "anki_sync_include_suspended": ("Count suspended cards as known", "Cards you studied, then suspended",
+                                    "Cards you studied and then suspended count as known, whenever you suspended "
+                                    "them. Off by default: a suspended card is often one you struggled with. New "
+                                    "cards you suspend never count",
+                                    "suspended known count as known in anki"),
+    "known_from_anki": ("Count as known in Anki",
+                        "A card counts only when it is in every state you pick, all at once",
+                        "Suspend (or mark, or flag) a card in Anki to say “I know this”: its word turns known at the "
+                        "next sync, and you can undo it. A card counts only when it is in every state you pick — "
+                        "Suspended + Marked counts only cards both suspended and marked. Cards already suspended are "
+                        "asked about once. New cards count too. None picked: off",
+                        "known from anki suspended marked flag count suspended cards as known"),
 
     # Anki & mining
     "anki_connection": ("Connection", "Through the free AnkiConnect add-on", "Whether Surasura reaches Anki now",
@@ -161,7 +195,12 @@ ROWS = {
     "connect_needs_miner": ("Make cards for me", "Needs Anki Miner: set it up in Connections",
                             "Surasura Connect makes your cards with Anki Miner. Once it is installed, this switch "
                             "appears here", "connect make cards mine automatically anki miner needs"),
-    "connect_mine_words": ("Words to make cards from", "", "Which words of an episode become cards",
+    "connect_mine_words": ("Words to make cards from",
+                           "“Your list” uses i+1 lines where it can and takes the other words too. “Only i+1” skips "
+                           "them",
+                           "Which words of an episode become cards. Your list: every unknown word on your list, in "
+                           "the list's order, each on an i+1 line when it has one. Only i+1: only words with an i+1 "
+                           "line, on your list or not",
                            "words to make cards from mine mode which words all unknown i+1 list"),
     "mine_line": ("Mine automatically", "The files at the top of Current mine themselves the moment they’re placed",
                   "How many files at the top of Current mine themselves", "auto top mines itself mine line"),
@@ -175,12 +214,13 @@ ROWS = {
                             "Surasura makes cards while fewer new cards wait in Anki for this language: yours and "
                             "Surasura's. Suspended cards never count. 0: no limit",
                             "cap backlog waiting keep up to limit"),
-    "known_from_anki": ("Count as known in Anki", "A card in every state you pick marks its word known",
-                        "A card in every state you pick here marks its word known (all must hold: Suspended + Marked "
-                        "is both). None picked: off", "known from anki suspended marked flag"),
-    "connect_video_folders": ("Where videos are looked for", "Surasura pairs a subtitle with its video by name",
-                              "The folders (and their subfolders) where Connect looks for a moved video, for this "
-                              "language", "video folders pair moved"),
+    # a7 (DIAGNOSIS 5): an extra, under More options — the library's folders are always searched
+    "connect_video_folders": ("More video folders",
+                              "Your library’s own folders are always searched. Add one only if your videos live "
+                              "somewhere else",
+                              "Videos are found beside their subtitles and in your library’s folders, with their "
+                              "subfolders. Add a folder here (for this language) only for videos kept outside them",
+                              "video folders pair moved where videos looked for more"),
     "connect_trust_timing": ("Trust my subtitles’ timing",
                              "When nothing on this PC can check them, mine at the subtitles’ own times",
                              "Surasura mines an episode by itself only once hato or tsubasa has checked its subtitles "
@@ -226,7 +266,7 @@ ROWS = {
                       "Shows 順, which reorders the new cards already in your Anki into Surasura's learn order",
                       "junban reorder order backlog enable"),
     "junban_scope": ("Which cards", "This deck is chosen in Junban’s window", "This deck, or every deck with new cards",
-                     "scope deck all decks"),
+                     "scope deck all decks choose the deck preview order restore undo the last reorder"),
     "junban_order": ("Order", "", "As you'll meet the words in your content, or by leverage first",
                      "order leverage meet content priority"),
     "junban_unlisted": ("Cards too rare for your list go",
@@ -259,7 +299,6 @@ ROWS = {
     "junban_auto_actions": ("…and tag, flag or suspend then", "The automatic reorder applies Junban's marks too",
                             "Off, the automatic reorder moves cards only; on, it applies everything Junban has saved",
                             "auto actions tag flag suspend"),
-    "junban_door": ("", "", "Preview order · Undo the last reorder", "preview restore undo order"),
     "put_back": ("Put Anki back", "The way it was before Surasura first changed it",
                  "Puts Anki's new cards back in the order they had before Surasura first changed them, and takes "
                  "Surasura's tags, flags and suspensions off", "put back undo restore first touch"),
@@ -291,15 +330,13 @@ ROWS = {
                           "sentences examples fill 例文"),
     "junban_backfill_cards": ("Which cards", "The deck is chosen in Backfill’s window",
                               "All: every card except new ones whose word you know. New only: cards you haven't "
-                              "studied yet", "deck cards new all"),
+                              "studied yet", "deck cards new all choose the deck preview fill restore fields note "
+                                             "type lapis"),
     "junban_backfill_replace": ("Replace what’s already in the field", "Off: only empty fields are filled",
                                 "Overwrite what's in the field. Restore puts it back", "replace overwrite"),
     "junban_auto_backfill": ("Fill new cards by itself", "After each reorder",
                              "After a reorder, fill the new cards' empty fields — never a studied card, never a filled "
                              "field", "auto backfill automatic fill"),
-    "backfill_door": ("", "", "Preview · Fill · Restore", "preview fill restore"),
-    "backfill_fields": ("Fields, by note type", "Found by name; otherwise choose",
-                        "Which field each fill goes in, and each note type's language", "fields note type lapis"),
 
     # Level
     "level": ("Level", "", "Your level: your list holds the words at least as common as it",
@@ -309,7 +346,7 @@ ROWS = {
                  "Level, or a target coverage of your content", "coverage mode strategy"),
     "target_coverage": ("Coverage", "The share of your content you aim to know", "Target coverage, in percent",
                         "coverage percent target"),
-    "show_words_per_day": ("Show target days on your journey", "", "Show 'Target Days' in your report",
+    "show_words_per_day": ("Show target days on your journey", "", "Show 'Target Days' on your journey",
                            "target days words per day"),
     "min_count": ("A word must appear at least", "", "Fewer appearances than this and a word is never listed",
                   "min count appear at least"),
@@ -382,22 +419,38 @@ ROWS = {
                         "The folders Surasura reads where they are", "library folders source read where they are "
                                                                      "stop reading look again manage skipped "
                                                                      "read again"),
-    "fresh_library": ("Start a fresh library",
-                      "Your library set aside in one backup and your folders read again from scratch",
-                      "Empty your library and read your folders again; the old one is kept in a backup",
-                      "fresh library reset start over empty clear"),
+    # A7O-6 (Sonic 2026-10-30): named for what it does (was *Start a fresh library*); Fresh library 3.0.1: two choices
+    "fresh_library": ("Sort again or start over",
+                      "Sort your library again from scratch, or start Surasura over as on a new PC. Either can be put "
+                      "back",
+                      "Sort your library again, or start over completely; both can be put back",
+                      "sort library again order tiers fresh reset start over completely everything new pc clear read "
+                      "again put back backup restore"),
+    # Sonic 2026-11-05 (the mock's rows, "2 lines. One for the term and then a row or 2 for the buttons"); PROVISIONAL
+    "open_video": ("Videos open in", "What ▶ opens a video with: the program Windows uses for it, or one you choose. "
+                                     "YouTube and bilibili always open on their site",
+                   "What ▶ opens a video with", "open play video player program vlc mpv watch"),
+    "open_book": ("Books open in", "What ▶ opens an EPUB with: the program Windows uses for it, or one you choose. A "
+                                   "book with no EPUB opens its text file",
+                  "What ▶ opens an EPUB with", "open read book epub reader program"),
+    "finish_cards": ("When you finish something", "What happens to its new cards in Anki. Leaving them out suspends "
+                                                  "and tags them, never deletes them: Undo or Put back brings them "
+                                                  "back",
+                     "What finishing something does to its new cards in Anki",
+                     "finish finished done new cards keep leave out suspend order"),
     "split_books_by": ("Split books by", "Each book you add: its chapters, each cut into parts; or even parts across "
                                          "the book. Books already in keep their parts",
                        "How a book is cut into parts when you add it", "split books chapters even parts epub"),
     "split_length": ("Split books into parts of", "EPUBs and Anki decks, when you extract them",
-                     "The character limit for each part when a file is split", "split epub length"),
-    "enable_youtube_transcripts": ("YouTube transcripts", "Download a video’s captions straight into your library",
-                                   "Show the transcript downloader (YouTube and bilibili.tv)", "youtube transcripts"),
+                     "The character limit for each part when a file is split", "split epub length extract add from"),
+    # a9.1: *Add from* went — Extract… and YouTube… are in + Add; *Preview a video…* is on its switch's row
+    "enable_youtube_transcripts": ("YouTube transcripts", "Download a video’s captions straight into your library, "
+                                                          "from + Add",
+                                   "Show the transcript downloader (YouTube and bilibili.tv) in + Add",
+                                   "youtube transcripts download add from bilibili"),
     "enable_youtube_preview": ("YouTube preview", "Score a video against your words before you add it",
                                "Show 'Preview against library', and keep the library's word counts ready for it",
-                               "youtube preview score"),
-    "content_doors": ("Add from", "", "Extract a book or a deck, or download from YouTube",
-                      "extract youtube download preview"),
+                               "youtube preview score a video"),
 
     # New arrivals
     "placing_rules": ("Where new arrivals go", "A show's next episode joins it; the rest wait here, in New arrivals",
@@ -405,15 +458,14 @@ ROWS = {
                       "wait top"),
 
     # Connections
-    "anki_miner": ("Anki Miner", "Makes your cards from your own videos. Free, made by Zero",
+    "anki_miner": ("Anki Miner", "Makes your cards from your own videos. Free, made by Zero.\n"
+                                 "He's awesome. Please give him some love :)",     # (a no-break space: ":)" never alone)
                    "Anki Miner's state, and what it still needs", "anki miner install setup"),
     "hato": ("hato", "Finds subtitles for your shows, and sends new episodes to New arrivals",
              "Whether hato is installed", "hato install houseki suite subtitles"),
     "practice_ai": (f"{PRACTICE_NAME} — practise with your AI",
-                    "Your AI app runs Surasura on this computer. What Surasura tells it (your known words, your "
-                    "list's next words, lines from your library, what you kept from past rounds) goes to that AI's "
-                    "company, as anything you type there does. Nothing else leaves.",
-                    "Copy the setup for your AI app, then paste it to your AI",
+                    "Practise your words with your AI. What it's told goes to that AI's company",
+                    "Copy the setup for your AI app, then paste it to your AI. A short story is a good first try",
                     "piyo ぴよ practice practise ai claude codex desktop mcp chat tutor copy setup"),
     "practice_keep_rounds": ("Keep practice rounds",
                              "Your rounds stay on this computer so you can do one again, and what you ask your AI to "
@@ -429,10 +481,10 @@ ROWS = {
                           "they’re released", "More tools from Houseki", "houseki suite install tools"),
 
     # Journey
-    "theme": ("Look", "", "The report's look", "theme look dark flow report"),
+    "theme": ("Look", "", "Your journey's look", "theme look dark flow report journey"),
     "open_app_mode": ("Open in its own window",
                       "Its own browser window, so Yomitan and your other tools still work on it. Off: a tab",
-                      "Open the report in its own browser window", "open window tab browser"),
+                      "Open your journey in its own browser window", "open window tab browser"),
     "source_display": ("Where a sentence came from", "", "Show which file each example sentence came from",
                        "source badge file name"),
     "word_search_enabled": ("Word lookup button (⌕)", "More real sentences from Nadeshiko",
@@ -443,13 +495,13 @@ ROWS = {
                                  "label backlog anki waiting card mark"),
     "inline_completed_files": ("Show ‘Target met’ in place", "Met files keep their order instead of moving down",
                                "Keep met files in order instead of moving them down", "target met inline completed"),
-    "hide_audio_button": ("Hide the audio button", "No speaker icon on the report’s sentences",
-                          "Hide the speaker icon in the report", "audio button speaker hide"),
+    "hide_audio_button": ("Hide the audio button", "No speaker icon on your journey’s sentences",
+                          "Hide the speaker icon on your journey", "audio button speaker hide"),
     "word_search_category": ("Lookup examples from", "", "Which kind of sentences the lookup opens",
                              "lookup nadeshiko category anime"),
     "zen_limit": ("Zen mode shows", "", "How many words Zen mode shows", "zen limit"),
     "enable_koe": ("Speak sentences (Gemini)", "On your own key; each sentence goes to Google to be spoken",
-                   "Click a sentence's source badge in the report to hear it read aloud. Needs a Gemini API key and "
+                   "Click a sentence's source badge on your journey to hear it read aloud. Needs a Gemini API key and "
                    "sends that sentence to Google", "speech speak koe gemini voice"),
     "koe_door": ("Speech settings", "The key, voice and delivery", "Set the API key, voice and delivery",
                  "speech settings voice key"),
@@ -476,7 +528,7 @@ ROWS = {
     "export_reading_words": ("Reading words", "Words you’ll read more than hear",
                              "A Yomitan list of words you'll read but hardly ever hear", "reading words export"),
     "export_sentence_list": ("Sentence list for Anki", "A CSV of your list with its sentences",
-                             "An Anki-ready CSV with sentences from your report", "csv sentence list anki export"),
+                             "An Anki-ready CSV with sentences from your journey", "csv sentence list anki export"),
     "sentence_dictionary_source": ("Show where each sentence came from", "In the Yomitan popup",
                                    "A short file name under each sentence in the Yomitan popup",
                                    "source sentence dictionary"),
@@ -489,24 +541,37 @@ ROWS = {
     "app_motion": ("Motion",
                    "Follow Windows: as Windows’ Show animations is set. Reduced: nothing slides, rows jump into place, "
                    "short fades stay", "How much the window moves", "motion animation reduced slide fade"),
+    "update_check_enabled": ("Check for updates", "At start, asks GitHub whether a new version is out. Off: no request",
+                             "Ask GitHub at start whether a new Surasura (or Anki Miner) is out",
+                             "update check updates new version github offline privacy network"),
     "auto_update_enabled": ("Update automatically", "One click for small releases",
                             "Offer one-click in-app updates for small releases. Big ones always download by hand",
                             "update automatic"),
     "telemetry_enabled": ("Anonymous usage counts", "No words, files or content — ever",
                           "Send anonymous usage counts", "telemetry anonymous usage"),
-    "logs": ("Processing log", "", "Opens the logs folder", "log logs processing"),
+    # a9.1: the one way to the logs (the bar's *Open the logs folder* went; Send report carries them), beside the
+    # data folder (the *Version* row's door until a9.1)
+    "logs": ("Folders", "Your library's data, and the logs Surasura keeps", "Opens the folder in your file manager",
+             "log logs processing log data folder files"),
     "data_credits": ("Data credits", "The dictionaries and word lists Surasura ships or is built from, each with its "
                      "licence", "Every data source, with its licence",
                      "data credits licence license jmdict jmnedict unidic cedict jpdb jiten"),
-    "version": ("Version {version}", "", "Opens the data folder", "version data folder"),
+    # a9.1 (Sonic: "combine the rows for website, github, and discord into one"): a block, a button per page
+    "surasura": ("Connect with us", "", "Surasura's pages, each in your browser",
+                 "connect with us website homepage home page site web download surasura.dev discord community help "
+                 "chat support join server star github stars like repository source"),
+    "version": ("Version {version}", "", "Copies the version number, for a message or a report", "version copy about"),
     "set_up_again": ("Set up again", "Walks through the first steps again", "Opens the setup again",
                      "set up again wizard setup"),
     "settings_file": ("Your settings", "Save them to a file, or bring them in from one: for the next version or a new "
                       "computer", "Export or import every setting",
                       "settings export import save backup move new computer pc file"),
     # --- W3.2 L3: Connections' covers (the window's spec 01 §1.3: the switch says in one line what is sent)
+    # 3.0.1 item 5 (AA-1, PROVISIONAL): the same switch asks AniList whether a show near its end is still airing
     "covers_download": ("Download covers", "Sends each show's AniList id or name to AniList, and a video's id to "
-                        "YouTube. Nothing else.", "Fetch your shows' covers from AniList (YouTube videos: their own thumbnail)",
+                        "YouTube. Near a show's last episode, also asks AniList whether it is still airing, so it "
+                        "isn't finished early. Nothing else.", "Fetch your shows' covers from AniList (YouTube videos: their own "
+                        "thumbnail); near a show's last episode, ask whether it is still airing",
                         "covers download pictures anilist thumbnails posters"),
     "remove_downloaded_covers": ("Remove downloaded covers", "The pictures you chose and those beside your files stay",
                                  "Delete every cover Surasura downloaded; pictures beside your files come back by "
@@ -514,13 +579,20 @@ ROWS = {
     # --- end W3.2 L3
 }
 
+# *Count as known in Anki* with two states or more picked: its line names them (`settings_catalog.help_line`)
+KNOWN_ALL_OF = "Counts only cards that are {states}, all at once"
+KNOWN_FLAGS = "A card has one flag at a time: {flags} counts no card"           # two flags picked (A7S-7)
+# a9.1: the sync's *Count suspended cards as known* on, beside picks that aren't Suspended alone (`help_line`)
+KNOWN_SYNC_TOO = "Studied cards you suspended count too, from before: change a pick here to stop it"
+
 # Backfill's fills by name (`junban_backfill_fills`' values): its two switches, and Your setup's line
 FILLS = {"patterns": "パターン", "sentence": "例文"}
 
 # --- the choices: row id -> {value: label}; choice cards also have a line under each -------------------------------- #
 OPTIONS = {
+    "surasura": {name: label for name, (label, _tip, _url) in LINKS.items()},      # its buttons (searched as choices)
     "known_road": {"anki": "Anki", "import": "Import a list"},
-    "connect_mine_words": {"list": "Your list", "unknown": "Every unknown word", "i1": "Only i+1"},
+    "connect_mine_words": {value: label for value, label, _line in MINE_WORDS},
     "connect_open_anki": {False: "Wait for me", True: "Open Anki for me"},
     "junban_order_all": {False: "First, in the order you made them", True: "In your list’s order"},
     "known_from_anki": {"suspended": "Suspended", "marked": "Marked", "flag:1": "Flag 1 (Red)",
@@ -529,6 +601,9 @@ OPTIONS = {
     "junban_scope": {"deck": "This deck", "all": "All decks"},
     "junban_order": {"content": "As I’ll meet it", "priority": "By leverage"},
     "split_books_by": {"chapters": "Chapters", "even": "Even parts"},
+    "open_video": {"default": "Your default player", "program": PROGRAM_PICK},     # "program": its name once chosen
+    "open_book": {"default": "Your EPUB reader", "program": PROGRAM_PICK},
+    "finish_cards": {"ask": "Ask each time", "keep": "Keep its cards", "out": "Leave them out"},
     "junban_unlisted": {"list_first": "After it", "journey": "Mixed in", "back": "At the back"},
     "junban_only_markers": {"star": "✦", "lopsided": "⚖", "reading": "📖"},
     "backfill_patterns": {"patterns": FILLS["patterns"]}, "backfill_sentence": {"sentence": FILLS["sentence"]},
@@ -548,17 +623,22 @@ OPTIONS = {
 }
 # The line under each choice card (Connect's own words, P3.1)
 OPTION_LINES = {
-    "connect_mine_words": {"list": "Words on your list that you don't know and have no card yet.",
-                           "unknown": "Every word of the episode you don't know yet.",
-                           "i1": "Only words with a line whose other words you know."},
+    "connect_mine_words": {value: line for value, _label, line in MINE_WORDS},
 }
 # An option's own tooltip (a choice's or a tablet's), where its label alone doesn't say it
 OPTION_TIPS = {
-    "junban_only_markers": {"star": "High leverage: the words the report stars",
+    "junban_only_markers": {"star": "High leverage: the words your journey stars",
                             "lopsided": "Lopsided: words that come almost entirely from one part of your library",
                             "reading": "Reading: words you'll read but essentially never hear"},
     "junban_order_all": {False: "Your own cards go ahead of Connect's, in the order you made them",
                          True: "Your own cards go among Connect's, in your list's order"},
+    "open_video": {"default": "▶ opens a video in the program Windows opens it with",
+                   "program": "▶ opens a video in a program you choose"},       # once chosen: its path
+    "open_book": {"default": "▶ opens an EPUB in the program Windows opens it with",
+                  "program": "▶ opens an EPUB in a program you choose"},
+    "finish_cards": {"ask": "Finishing something asks: keep its new cards in your order, or leave them out",
+                     "keep": "Its new cards stay in your order, as they are",
+                     "out": "Its new cards leave your order: suspended in Anki and tagged, never deleted"},
 }
 
 # --- P4: the live rows (settings_live.py): Your setup, the level readout, the statuses, App's rows, the credits, Export
@@ -584,16 +664,22 @@ READOUT_NO_TIME = "≈{words} words · {coverage}% of your content"
 # Connection (Anki): the emerald's words (S6: never colour alone)
 ANKI_WORDS = {
     "connected": "connected", "closed": "Anki is closed", "busy": "Anki is open but isn’t answering",
+    "no_addon": _addon.NO_CONNECT, "unsure": _addon.UNSURE,               # AnkiConnect may be missing: the wizard's
     "denied": "Anki hasn’t let Surasura in yet", "failed": "the last sync from Anki didn’t finish",
     "syncing": "reading Anki…", "checking": "checking…", "unknown": "not checked yet",
 }
 ANKI_TIP = "Whether Surasura reaches Anki now, through AnkiConnect"
-CHECK_LIVE_TIP = "Asks Anki now whether AnkiConnect answers"
+CHECK_LIVE_TIP = ("Asks Anki now whether AnkiConnect answers\n"
+                  "• While Anki isn’t in, Surasura also looks by itself every few seconds")
 INSTALLED_PLAIN = "installed"
 # App's rows
-LOGS_OPEN = "View"
+LOGS_OPEN = "Logs"
+LOGS_OPEN_TIP = "Opens the folder of Surasura's logs, to look at them or send them"
 DATA_FOLDER = "Data folder"
-DATA_FOLDER_TIP = "Opens the data folder"
+DATA_FOLDER_TIP = "Opens the folder your library's data is kept in"
+VERSION_COPY = "Copy"
+VERSION_COPIED = "Copied"
+VERSION_COPIED_LINE = "Surasura {version} is copied"
 CREDITS_VIEW = "View"
 CREDITS_TITLE = "Data credits"
 CREDITS_NAME = "Data credits: every source, with its licence"
@@ -653,6 +739,31 @@ PRACTICE_APPS = {"claude-code": "Claude Code", "codex": "Codex", "claude-desktop
 PRACTICE_COPY_TIP = ("Copies the setup for {app}: paste it to {app} (it runs it for you), or follow it yourself")
 PRACTICE_COPIED = "Copied"
 PRACTICE_COPIED_LINE = "The setup for {app} is copied: paste it to {app}."
+# A7 (Sonic's first try, 2026-10-30: "How do i start piyo conversation?"): under the Copy buttons, both ways to start a
+# round (the slash form, its words and example: app/cli/mcp_server.SLASH_EXAMPLE and the prompt's arguments, a test keeps
+# them equal; the plain request: app/practice.STARTER)
+PRACTICE_THEN = ("Then, to start a round:\n"
+                 "• In Claude Code, type /surasura:practice and four words: how many (1–20) · who's talking (friend, "
+                 "coworker, boss, customer, senpai, kohai, shopkeeper, teacher, child) · what kind (chat, reading: a "
+                 "short story, quiz) · from what (soon: your list's next words, latest: what you watch or read next, "
+                 "mix). Type / and it's listed as /surasura:practice (MCP).\n"
+                 "• For example: /surasura:practice 5 friend reading soon\n"
+                 "• Or, in Claude Code, Codex or Claude Desktop, just say it: “{starter}”")
+# A7 (Sonic, 2026-10-30: the row's words no longer than *Download covers*'): what leaves and how to start, behind its ?
+PRACTICE_HELP = "?"
+PRACTICE_HELP_NAME = "About Piyo"
+PRACTICE_HELP_CLICK = "<br>• Click: its help card"
+HELP_MARK_CARD = "{text}\n• Click: its help card"         # a row's ? whose area has a help card
+# help cards (§6.6): the tour's door under *Run things by themselves*
+HELP_TOUR_DOOR = "Show me what runs by itself"
+HELP_TOUR_DOOR_TIP = "A short tour of what Surasura does by itself, one card each, with a Try it where one is safe"
+PRACTICE_LEAVES = ("<b>What leaves:</b> your AI app runs Surasura on this computer. What Surasura tells it (your known "
+                   "words, your list's next words, lines from your library, what you kept from past rounds) goes to "
+                   "that AI's company, as anything you type there does. Nothing else leaves.")
+PRACTICE_STARTER = "Copy a starter message"
+PRACTICE_STARTER_TIP = ("Copies a first message for your AI, once Piyo is added: a short story with 5 of your words. "
+                        "A story is a good first try")
+PRACTICE_STARTER_COPIED_LINE = "The starter message is copied: paste it to your AI."
 COPY_PATH = "Copy path"
 COPY_PATH_TIP = "Copy the whitelist file's path, to paste into Anki Miner's file chooser."
 PATH_COPIED = "The whitelist file's path is copied: paste it into Anki Miner's file chooser."
@@ -694,7 +805,7 @@ NEW_CARDS_READING = "Reading Anki…"
 NEW_CARDS_NO_DECK = "Junban’s deck"
 NEW_CARDS_DECK = "“{deck}”"
 NEW_CARDS_FIELD_TIP = "The number to set in Anki: nothing changes there until you press Change in Anki… and say yes"
-NEW_CARDS_UNREAD_TIP = "{why} Until Anki can be read, this is the report's pace: new words a day."
+NEW_CARDS_UNREAD_TIP = "{why} Until Anki can be read, this is your journey's pace: new words a day."
 NEW_CARDS_ASK = "Change New cards a day in Anki?"
 NEW_CARDS_YES = "Set it to {n}"
 NEW_CARDS_YES_TIP = "Writes the new number into the deck's options group in Anki"
@@ -771,36 +882,95 @@ SOURCES_SKIPPED_N = "{n:,} skipped"
 FOLDERS_NAME = "Library folders"
 FOLDERS_LINE = "Surasura reads these folders where they are and looks in them again for new episodes."
 
-# --- K7: *Start a fresh library…* (settings_sources.py: FreshRow; the store's `start_fresh`) ------------------------ #
-FRESH_OPEN = "Start a fresh library…"
-FRESH_TIP = ("Empty your library and read your folders again from scratch\nThe old library is kept in one backup in "
-             "User Files' .trash folder")
-FRESH_RUNNING_TIP = "Starting a fresh library…"
-FRESH_ASK = "Start a fresh library?"
-FRESH_BODY = ("Goes, into one dated backup (User Files › .trash › library-reset-…): your library's order, tiers, "
-              "New arrivals and Needs you, its JSON copy (master_manifest.json) and every copy Surasura keeps in its "
-              "data folder.\n\n"
-              "Comes back: what is in your video and text folders, read again from scratch into Current — episodes "
-              "you removed too. A book's text comes back only when Surasura reads its folder again.\n\n"
-              "Stays: your folders (only ever read) and the list of them, your settings, the cards in Anki (a card "
-              "you deleted is never made again) and, unless you tick the box, your known words.")
+# --- K7 + Fresh library 3.0.1: *Sort again or start over…* (settings_sources.py: FreshRow, the sheet) -------------- #
+FRESH_OPEN = "Sort again or start over…"
+FRESH_TIP = ("Sort your library again from scratch, or start Surasura over as on a new PC.\n"
+             "Either can be put back.")
+FRESH_RUNNING_TIP = "Sorting your library again…"
+FRESH_SETTING_ASIDE = "Setting your order aside…"
+FRESH_GENERATING = "A Generate is running: once it has finished, this can go on."
+FRESH_UPDATING = "An update is being installed: once it has finished, this can go on."
+FRESH_SHEET = "Sort again or start over"
+FRESH_CLOSE = "Close"
+FRESH_CLOSE_TIP = "Close. Nothing is changed.\n• Esc"
+FRESH_BACK = "Back"
+FRESH_BACK_TIP = "Back. Nothing is changed.\n• Esc"
+FRESH_SORT_HEAD = "Sort my library again"
+FRESH_SORT_BODY = ("Your folders, known words and settings stay. Your order, tiers, Finished and New arrivals go into "
+                   "a backup. Surasura reads your folders again and you sort each title.")
+FRESH_SORT_CARDS = "Shows you sort into your top 20 get cards, as when you drag them there."      # FL-1, Connect on
+FRESH_SORT = "Sort again"
+FRESH_SORT_TIP = ("Set your order aside in a backup, read your folders again and sort each title.\n"
+                  "Your known words, settings and Anki stay as they are.")
+FRESH_FOLDERS = "Change folders…"
+FRESH_FOLDERS_TIP = ("Add, remove or skip folders first, then sort again.\n"
+                     "Nothing changes until you press Sort again there.")
+FRESH_FOLDERS_BUSY = "Setup is open: finish it or close it first."
+FRESH_FOLDERS_REFUSED = "A folder you changed wasn't changed: {why}"
+FRESH_OVER_HEAD = "Start over completely"
+FRESH_OVER_BODY = ("Your library, settings, known words and everything Surasura worked out go into one dated backup. "
+                   "Anki and your own folders and files are never touched. Surasura opens again and setup starts "
+                   "from the beginning.")
+FRESH_OVER = "Start over…"
+FRESH_OVER_TIP = "Put everything Surasura keeps into one backup and start setup again. It asks once more first."
+FRESH_OVER_ASK = "Start over completely?"
+FRESH_OVER_ASK_BODY = ("Surasura will close and open again, then setup starts from the beginning. Everything it keeps "
+                       "goes into one dated backup, and Put back brings it back.")
+FRESH_OVER_YES = "Start over"
+FRESH_OVER_YES_TIP = "Close Surasura, set everything aside in one backup and start setup again"
+FRESH_OVER_GENERATING = "A Generate is running: start over once it has finished."
+FRESH_RESTART_FAILED = "Nothing was changed: Surasura couldn't start itself again ({why})."
+FRESH_BACKUPS = "Backups"
+FRESH_LOOKING = "Looking for backups…"
+FRESH_KINDS = {"sorted-again": "Sorted again", "started-over": "Started over", "put-back-over": "Put back over"}
+FRESH_STOPPED = "stopped part way"
+FRESH_SIZE_WAIT = "…"
+FRESH_SIZE_MB = "{mb:,} MB"
+FRESH_SIZE_GB = "{gb:,.1f} GB"
+FRESH_PUT_BACK = "Put back…"
+FRESH_PUT_BACK_TIP = "Bring this back. What you have now goes into a backup of its own first, so you can switch back."
+FRESH_PUT_IT_BACK = "Put it back"
+FRESH_PUT_IT_BACK_TIP = "This one was stopped part way: put your library back as it was before. It asks first."
+FRESH_SHOW = "Show in folder"
+FRESH_SHOW_TIP = "Open this backup's folder"
+FRESH_SHOW_ALL = "Show all {n:,}"
+FRESH_SHOW_ALL_TIP = "List every backup, oldest last"
+FRESH_PB_ASK = "Put back your library from {date}?"
+FRESH_PB_BODY = ("Comes back: your order, tiers, Finished and New arrivals as they were on {date}, and the folder list "
+                 "then. Your library now goes into a backup of its own, so you can switch back.")
+FRESH_PB_KNOWN = "Your known words stay as they are now; the ones from then are in the backup."          # P9
+FRESH_PB_STOPPED_ASK = "Put your library back as it was?"
+FRESH_PB_STOPPED_BODY = ("Sorting your library again was stopped part way on {date}. This puts your library back as "
+                         "it was before.")
+FRESH_PB_FINISH_BODY = ("Putting your library back was stopped part way on {date}, after the library itself came back. "
+                        "This finishes it.")
+FRESH_OVER_STOPPED_TIP = ("This Start over was stopped part way. Its start-over.json, in the library folder's part, "
+                          "names every part and where it is: put them back by hand.")
+FRESH_PB_OVER_ASK = "Put back everything from {date}?"
+FRESH_PB_OVER_BODY = ("Surasura will close and open again with everything as it was on {date}: library, settings, "
+                      "known words. What you have now goes into a backup of its own.")
+FRESH_PB_YES = "Put back"
+FRESH_PB_YES_TIP = "Put this back. What you have now goes into a backup of its own first"
+FRESH_PB_RUNNING = "Putting your library back…"
+FRESH_PB_DONE = "Your library from {date} is back"
+FRESH_PB_DONE_PLAIN = "Your library is back"
+FRESH_PB_REFUSED = "Nothing was put back. {reason}"
+FRESH_PB_FAILED = "Nothing was put back: {reason}"
+FRESH_SORTED = "Library sorted again"
+FRESH_SORTED_NOTHING = "Library sorted again: nothing to sort"
+FRESH_SORTED_STOPPED = "Library sorted again: your folders come in as New arrivals"
+FRESH_TOAST_PUT_BACK = "Put back"
+FRESH_TOAST_PUT_BACK_TIP = "Put back the library you had before sorting again"
 # The sheet's counts (the store's `fresh_counts`), each line only when its count isn't 0
 FRESH_GONE = "Only in the backup, never back: {parts}."
 FRESH_GONE_ADDED = "{n} file{s} you added with + Add from outside your folders"
 FRESH_GONE_YOUTUBE = "{n} YouTube transcript{s}"
 FRESH_GONE_OTHER = "{n} other text{s} with no folder to read again (pasted, hato's, from before 3.0)"
-FRESH_SUSPENDED = ("{n} card{s} Surasura took out of your learning order stay suspended in Anki: unsuspend them "
-                   "there if you want them back.")
+FRESH_SUSPENDED_OVER = "{n} card{s} Surasura took out of your learning order stay suspended in Anki."
 FRESH_NOT_ALL_BACK = "Not all of your library could be put back: the rest is in {folder}"
-FRESH_UNFINISHED = ("A fresh library was stopped part way: your old library may be in its backup, {folder} "
-                    "(reset.json there says how to put it back)")
-FRESH_YES = "Start fresh"
-FRESH_YES_TIP = "Set this library aside in a backup and read your folders again"
-FRESH_KNOWN = "Also forget my known words"
-FRESH_KNOWN_TIP = ("KnownWord.json is kept in the backup and replaced by an empty one\nWords from your Anki cards come "
-                   "back at the next Anki sync")
-FRESH_DONE = "Fresh library: reading your folders…"
-FRESH_DONE_KNOWN_KEPT = "Fresh library: reading your folders… Your known words were kept: {why}"
+FRESH_UNFINISHED = ("Sorting your library again stopped part way: put it back from Settings › Content › Sort again "
+                    "or start over ({folder})")
+FRESH_DONE = "Your order is in the backup: reading your folders again…"
 FRESH_REFUSED = "Nothing was changed. {reason}"
 FRESH_FAILED = "Nothing was changed: {reason}"
 FRESH_NOT_WRITABLE = "Your library can't be written now: {reason}"

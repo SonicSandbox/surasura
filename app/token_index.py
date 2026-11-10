@@ -117,7 +117,12 @@ from operator import itemgetter
 #    once with v8–v18.
 # v20 an .ass file is read through the caption cleaner (app/caption_clean.py, ENGINE_REVISION 31): a v19 blob holds a
 #    TV caption's small-type reading rows as words — the release after 2.5, so users rebuild once (P1.3-1 a).
-SCHEMA_VERSION = 20
+# v21 Kansai forms are read as Kansai (analyzer § Kansai, ENGINE_REVISION 38): the negative after a verb (やってへん,
+#    来えへん, 見いひん) is the verb + its ending, Kansai's ちゃう is 違う, and JMdict's Kansai words the tagger can't read
+#    are one word (あかん, おかん): a v20 blob holds 辺, 干る, 彼 and fillers there — 3.0, so users rebuild once.
+# v22 a pronoun is a compound's part and a verb's stem carries a suffix that makes a noun (私生活, 言い方 — ENGINE_REVISION
+#    39): a v21 blob holds them in pieces — 3.0, so users rebuild once with v20–v21.
+SCHEMA_VERSION = 22
 
 # The form of each file's remembered share of the name tables' adjustments (meta names_adjust_files,
 # Store._names_adjust): a change here, or to how a share is computed, makes every file's share computed again.
@@ -916,13 +921,14 @@ class Store:
         for key in ("phrases_and_titles", "pronoun_bases"):
             if not logic.get(key, True):
                 signature = f"{signature}|{key}=off"
-        # Idioms and set phrases on the list: a known phrase is also known as its lemmas joined — the phrases' own, so the
-        # phrase data's revision too (analyzer.load_known_words).
+        # Idioms and set phrases on the list: a known phrase is also known as its lemmas joined, and a known sentence's
+        # phrases are known — the phrases' own, found by their finder, so the phrase data's revision and the finder's
+        # version too (analyzer.load_known_words).
         if not logic.get("phrase_rows", True):
             return signature
         try:
-            from app import phrase_data
-            return f"{signature}|phrase_rows={phrase_data.REVISION}"
+            from app import phrase_data, phrases
+            return f"{signature}|phrase_rows={phrase_data.REVISION}/{phrases.MATCHER_VERSION}"
         except Exception:
             return f"{signature}|phrase_rows=on"
 
@@ -1040,7 +1046,7 @@ class Store:
         return _KeptText(kept_text_path(self.language, data_dir), data_dir)
 
     def reconcile(self, files, tokenize_file, build_signature=None, workers=None, kept=None, elsewhere=None,
-                  data_dir=None, forgotten=None, aside=None, moved=None):
+                  data_dir=None, forgotten=None, aside=None, moved=None, progress=None):
         """Bring the store in sync with the on-disk `files`, re-tokenizing ONLY changed/new files.
 
         tokenize_file(path) -> {"sentences": [...], "counts": Counter} (Japanese: and "names", the file's
@@ -1073,6 +1079,9 @@ class Store:
         name tables' evidence; a file moving to or from it moves its counts (or none, from kept), never re-tokenized.
         An aside row no list names stays aside with `aside` None, and goes, as a counted row does, when the caller
         names the list.
+
+        `progress(done, total)` (Mado-O, setup's load screen): after each file tokenized, of the files that need it —
+        nothing else about the run changes.
 
         Before anything is deleted or wiped, the text of every kept or set-aside file and of every counted file gone
         from the disk is kept (`_KeptText`, its own file, written first): read from its file (or `elsewhere`), else —
@@ -1258,8 +1267,10 @@ class Store:
             tokenized = _tokenized([t[1] for t in todo], tokenize_file, workers)
             keep_read = {}
             try:
-                for (key, realpath, (mtime, size), row, flag), result in zip(todo, tokenized):
+                for done, ((key, realpath, (mtime, size), row, flag), result) in enumerate(zip(todo, tokenized), 1):
                     write(key, mtime, size, result, row, flag)
+                    if progress is not None:
+                        progress(done, len(todo))
                     # A set-aside file, tokenized in the pool as a counted one is: its text kept as a kept file's
                     # (W-1b), read from its file — unless the text kept is already this file's, read from it.
                     if flag == ASIDE and not (key in have and have[key][1:] == (mtime, size) and not have[key][0]):

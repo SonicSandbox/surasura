@@ -18,6 +18,7 @@ from PyQt6.QtGui import QPalette, QStandardItem, QStandardItemModel
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
                              QListWidgetItem, QPlainTextEdit, QPushButton, QStyledItemDelegate, QWidget)
 
+from app import scrub
 from app.qt import bridge, confirm, style
 from app.qt import press as qpress
 from app.qt import word_lists_strings as s
@@ -44,6 +45,10 @@ class _RemoveDelegate(QStyledItemDelegate):
         if self.not_now():
             return style.qcolor(style.colours()["ink-faint"])
         return option.palette.color(QPalette.ColorRole.Text)
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        option.text = scrub.shown(option.text)             # (Report a problem's picture: a name in a list scrubbed)
 
     def mark_rect(self, option):
         side = option.rect.height()

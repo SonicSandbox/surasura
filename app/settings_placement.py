@@ -17,7 +17,7 @@ PLACED = {
     "zh_script": "analysis:zh", "telemetry_enabled": "neither", "words_per_day": "report",
     "show_words_per_day": "report", "zen_limit": "report", "onboarding_completed": "neither", "open_count": "neither",
     "only_i_plus_one": "analysis", "ensure_audio_example": "analysis",
-    "add_graduated_words": "neither", "auto_update_enabled": "neither", "skipped_version": "neither",
+    "add_graduated_words": "neither", "auto_update_enabled": "neither", "update_check_enabled": "neither", "skipped_version": "neither",
 "source_display": "report", "word_search_enabled": "report",
     "word_search_category": "report", "sentence_dictionary_source": "neither", "index_pool_workers": "neither",
     "use_every_core": "neither",
@@ -29,6 +29,10 @@ PLACED = {
     "connect_trust_timing": "neither",       # Trust my subtitles' timing (P-LF-9): what Connect mines, never a run
     "connect_open_anki": "neither",          # Open Anki for me (P2.3): when Anki is started, never a run
     "covers_download": "neither",            # Show covers (the setup wizard, G1.2-19): a cover's fetch, never a run
+    "subs_with_hato": "neither",             # Michi-NS: hato finds the waiting videos' subtitles, never a run
+    "open_video": "neither", "open_video_program": "neither",   # what ▶ opens a video with (Content): never a run
+    "open_book": "neither", "open_book_program": "neither",     # what ▶ opens an EPUB with (Content): never a run
+    "finish_cards": "neither",               # When you finish something (Content): its cards' choice, never a run
     "practice_keep_rounds": "neither",       # A6: the practice server keeps its rounds, never a run
     "setup_seen": "neither",                 # the setup pages seen (the setup wizard, WZ-8): never a run
     "hints_seen": "neither",                 # W-1: the one-time hints shown, each per library: never a run

@@ -60,10 +60,11 @@ def test_the_real_golden_list_indexes_by_orth_and_by_word():
     since a story's own kanji words the library keeps using are one word — the sample's 三玖, a name, joined the list
     near its head; 24 since set phrases are rows of their own — 席を譲る and このまま joined the list above it; 25 since
     one-kanji dictionary words are list words where they stand on their own — 門 joined the list above it; 28 since the
-    words the tagger cuts at their grammar are words of their own — それで, なんで and どこにも joined the list above it.)"""
+    words the tagger cuts at their grammar are words of their own — それで, なんで and どこにも joined the list above it;
+    29 since grammar expressions are rows of their own — とする joined the list above it.)"""
     index = anki_match.build_index(GOLDEN_LIST)
 
-    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 28
+    assert index.rank_of["中野"] == index.rank_of["ナカノ"] == 29
     assert index.rank_of["うう"] == 0
     assert index.marks_of, "markers are built for every row"
 
@@ -111,6 +112,50 @@ def test_a_half_width_field_is_read_as_the_word_in_full_width():
     word = anki_match.card_word("ﾊﾞｼｯと", "ja")
     assert anki_match.card_key(word, {"バシッ": 0, "冒険": 1}, "ja", None, tokenize) == ("バシッ", "L7")
     assert anki_match.card_word("ｶﾞｯｺｳ", "zh") == "ガッコウ", "a Chinese field is read in NFKC too"
+
+
+@pytest.mark.parametrize("raw", ["「撒く」", "撒く。", "撒く<br>まく", "撒く<div>まく</div>", "仰ぐ（あおぐ）", "勉強(する)",
+                                 "上層部、首脳部", "撒く・巻く", "撒く／巻く", "撒く 巻く", "撒く まく", "撒く、まく",
+                                 "引[ひ]きずる", "冒険", "ジョン・スミス", "ﾊﾞｼｯと", "気がする", "腑に落ちる", "気がする。",
+                                 "そんな気がする", "撒く - to scatter", "撒く まく。", "撒く (to scatter, 種を)",
+                                 "撒く<br>種を撒く。", "1.5倍", "", None, "<br>", '<img src="paste-8f3a.jpg">'])
+def test_a_word_field_holding_one_word_or_a_set_phrase_holds_no_sentence(raw):
+    """Every shape a one-word card is typed in (`card_word`'s own cases) — a stop, a reading after a space or a comma,
+    a list of dictionary words, a note in brackets — and a set phrase are no sentence: the sync reads them as their one
+    word, as before. One clause with no stop (そんな気がする) is none either: `card_word` reads it whole already. Only the
+    first line decides (a sentence on the second is the card's example), and a dot is no stop (1.5倍)."""
+    assert not anki_match.holds_sentence(raw, "ja")
+
+
+@pytest.mark.parametrize("raw", ["でも、そんな気がする", "でも、そんな気がする。", "もう遅い気がする。", "そうか。じゃあ行こう",
+                                 "いや、いい", "<b>気</b>がする、と思った", "昨日 友達と映画を見た", "今、何時？",
+                                 "嘘、本当？", "今日、雨。", "本当？うん、そう。", "ありがとう！",
+                                 "でも、そんな気がする。<br>But I feel that way."])
+def test_a_word_field_holding_a_sentence_says_so(raw):
+    """Sonic's Sentence chosen as the word field: a sentence end, or clauses parted by a comma or a space that are not
+    each a dictionary word, make a sentence — Japanese's own marks, never a deck's. Two clauses with a stop are one
+    even when each is a dictionary word (今、何時？), and kana after a word is no reading with a stop inside it
+    (本当？うん、そう。). Its first line decides."""
+    assert anki_match.holds_sentence(raw, "ja")
+
+
+def test_with_the_dictionary_unread_a_list_reads_as_a_sentence_and_a_reading_never_does(monkeypatch):
+    """No JMdict (the table can't be read): a list of words can't be told from clauses, so it reads as a sentence —
+    each word in it known — while a word and its reading in kana (撒く まく) and a word alone stay one word."""
+    monkeypatch.setattr(anki_match, "_dictionary_entries", lambda: None)
+    assert anki_match.holds_sentence("上層部、首脳部", "ja") and anki_match.holds_sentence("撒く。", "ja")
+    assert not anki_match.holds_sentence("撒く まく", "ja") and not anki_match.holds_sentence("撒く", "ja")
+
+
+def test_a_chinese_sentence_is_marked_by_its_punctuation_never_a_space():
+    """Chinese writes no space between words: a space parts a word from its pinyin or its other script (学习 xuéxí,
+    学习 / 學習), never two clauses. A comma between two clauses or a sentence end makes a sentence. Any other
+    language: never."""
+    for raw in ("学习 xuéxí", "学习", "学习 / 學習", "约翰・列侬", "学习（xuéxí）"):
+        assert not anki_match.holds_sentence(raw, "zh"), raw
+    for raw in ("我觉得，是这样", "我觉得是这样。", "这次的冒险很有意思！", "大学，研究"):
+        assert anki_match.holds_sentence(raw, "zh"), raw
+    assert not anki_match.holds_sentence("でも、そんな気がする。", "en")
 
 
 @pytest.mark.parametrize("raw", ["学习 (xuéxí)", "学习（xuéxí）", "学习 xuéxí", "学习 / 學習", "「学习」",
@@ -228,7 +273,7 @@ def test_the_real_golden_list_has_no_borrowed_one_character_key():
 
     assert all(key in lemmas for key in rank_of if len(key) == 1)
     assert {"門", "旬", "肝"} <= {key for key in rank_of if len(key) == 1}
-    assert rank_of["中野"] == rank_of["ナカノ"] == 28
+    assert rank_of["中野"] == rank_of["ナカノ"] == 29
 
 
 def test_lookup_answers_nothing_rather_than_guessing():
@@ -766,7 +811,8 @@ def test_an_adjective_made_a_noun_is_its_adjective():
 
 def test_what_is_no_polite_or_plural_grammar_stays_as_it_is():
     """やさしさ in kana could be 優しさ or 易しさ — the tagger's guess — so it keeps its さ. Two words before さ
-    (男らしさ) stay a phrase; 見方 and 先生方 are not taken apart (UniDic's 方 tells no plural from a way); a dictionary
+    (男らしさ) stay a phrase; 先生方 is not taken apart (UniDic's 方 tells no plural from a way) and 見方 is one word of its
+    own (a stem + a suffix that makes a noun), never 見る; a dictionary
     お / ご word (お守り, ご苦労) is one token and its own word; 御 read ミ is kept (御心 is not 心); two endings stay a
     phrase; a card that is only お or only たち is left alone."""
     tokenize = _tokenizer().tokenize
@@ -776,7 +822,7 @@ def test_what_is_no_polite_or_plural_grammar_stays_as_it_is():
                  "お", "たち", ""):
         assert anki_match.card_key(word, listed, "ja", None, tokenize) == ("", ""), word
     assert anki_match.card_key("お茶する", listed, "ja", None, tokenize) == ("お茶", "L7")
-    assert anki_match.one_word(tokenize("見方")) is None
+    assert anki_match.one_word(tokenize("見方"))[:2] == ("見方", "ミカタ")
     assert anki_match.affixes_off([("御", "オ", "お", "お")]) == [("御", "オ", "お", "お")]
     assert anki_match.card_key("お部屋", {"部屋": 0}, "zh", None, tokenize) == ("", "")
     assert anki_match.card_key("お部屋", {"部屋": 0}, "ja", None, None) == ("", "")

@@ -3,6 +3,7 @@ fold, a switch landing — Junban's —, a search keystroke, the page's build sl
 offscreen, never timed).
 
     python tests/qt/bench_settings.py [--rounds 10] [--scales 100,125,150,175,200,250] [--reduced] [--json OUT.json]
+                                      [--settings FILE]
 
 Not collected by pytest (no `test_` prefix). A timed run: start it through `locks/with-lock.sh timed …` from the copy.
 
@@ -21,7 +22,18 @@ and every GUI-thread step, `--rounds` times each (>= 10 for a timed run):
   - `slider-release`: the level slider (Settings › Level) pressed on its band's chamber and dragged to the next before
     the repetition, then let go: its `changed` and the page's refresh and write at the release (Gap 2: the choice and
     its save at the action), through the gem's settle into its chamber;
-  - `search-key`: a keystroke in the search (a word typed letter by letter, then taken back).
+  - `search-key`: a keystroke in the search (a word typed letter by letter, then taken back);
+  - `open-tab`: the Settings tab shown again from Current (the page built and kept);
+  - `scroll-wheel`: the page turned by the wheel, a burst of notches 50 ms apart (down, back up at the end);
+  - `report-open`: the bug's press with Settings in view (the pictures taken, the report window opened; closed
+    outside the repetition) — Sonic's "debug screen" (a9.1 report 3); its first press of the run apart
+    (`report-open-first`: the window made, never opened before — one a run: `--runs` for more);
+  - `fresh-sheet`: Content's *Sort again or start over…* pressed (the sheet built and opened on the motion clock, its
+    counts and Backups list landing from their workers; closed with *Close* outside the repetition) — its first open
+    of the run apart (`fresh-sheet-first`). The window counts as in front for it (a learner's click puts it there; this
+    bench shows it without taking the keyboard): the card opens through its lift, as on a learner's screen.
+`--settings FILE`: that settings.json in each run's root (a learner's own shape: which sections and rows show).
+`--moments a,b`: only those moments (the page's build always runs first; `report-open` takes its first press too).
 After each moment's last repetition the clock's wake-ups are counted once it is still.
 """
 import argparse
@@ -44,6 +56,13 @@ def main_parent(a):
     def one_run(scale, root, env, i):
         out_path = os.path.join(os.path.dirname(root), "result.json")
         env["SURASURA_INSTANCE_NAME"] = f"surasura-bench-settings-{os.getpid()}-{os.path.basename(os.path.dirname(root))}"
+        if a.settings:                                   # a learner's settings shape (reduced motion kept)
+            with open(a.settings, encoding="utf-8-sig") as f:      # (a file Notepad saved: its BOM)
+                shape = json.load(f)
+            if a.reduced:
+                shape["app_motion"] = "reduced"
+            with open(os.path.join(root, "settings.json"), "w", encoding="utf-8") as f:
+                json.dump(shape, f)
         cmd = [sys.executable, os.path.abspath(__file__), "--child", "--rounds", str(a.rounds), "--out", out_path]
         proc = subprocess.run(cmd, env=env, cwd=root, timeout=1200, check=False, capture_output=True, text=True,
                               encoding="utf-8", errors="replace")
@@ -57,10 +76,11 @@ def main_parent(a):
 
 
 def main_child(a):
-    from PyQt6.QtCore import QEvent, QPointF, Qt, QTimer
-    from PyQt6.QtGui import QKeyEvent, QMouseEvent
+    from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
+    from PyQt6.QtGui import QKeyEvent, QMouseEvent, QWheelEvent
     from PyQt6.QtWidgets import QApplication
-    from app.qt import hud as hud_module, settings_catalog as catalog, settings_page as sp, shell
+    from app.qt import hud as hud_module, report, settings_catalog as catalog, settings_page as sp, settings_sources
+    from app.qt import motion, shell
 
     app = QApplication([sys.argv[0]])
     shell.prepare_process()
@@ -272,6 +292,79 @@ def main_child(a):
         at(220, go)
         at(30, lambda: moments.end())
 
+    # --- the tab shown again ------------------------------------------------------------------------------------------ #
+    def open_tab(c):
+        at(250, lambda: window.show_tab("current"))
+
+        def go():
+            moments.begin("open-tab")
+            window.show_tab("settings")
+        at(250, go)
+        at(0, lambda: moments.end())
+
+    # --- the wheel ----------------------------------------------------------------------------------------------------- #
+    def wheel(c):
+        def notch():
+            p = page()
+            bar = p.scroll.verticalScrollBar()
+            if bar.value() >= bar.maximum():
+                state["wheel"] = 120
+            elif bar.value() <= bar.minimum():
+                state["wheel"] = -120
+            vp = p.scroll.viewport()
+            pos = QPointF(vp.width() / 2, vp.height() / 2)
+            QApplication.sendEvent(vp, QWheelEvent(pos, QPointF(vp.mapToGlobal(pos.toPoint())), QPoint(),
+                                                   QPoint(0, state.get("wheel", -120)), Qt.MouseButton.NoButton,
+                                                   Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
+
+        def go():
+            moments.begin("scroll-wheel")
+            notch()
+        at(50, go)
+        for _k in range(4):
+            at(50, notch)
+        at(200, lambda: moments.end())
+
+    # --- the bug's press (the debug screen) ---------------------------------------------------------------------------- #
+    def bug(c):
+        def go():
+            moments.begin("report-open-first" if c == 0 else "report-open")
+            report.open_report(window)
+        at(500, go)
+
+        def close():
+            moments.end()
+            w = report.windows.opened(window, report.NAME)
+            if w is not None:
+                w.close()
+        at(400, close)
+
+    # --- Content's Sort again or start over sheet ---------------------------------------------------------------- #
+    in_front = motion._in_front
+    def sheet(c):
+        def go():
+            rows = page().findChildren(settings_sources.SourcesRow)
+            state["fresh"] = rows[0].fresh if rows else None
+            if state["fresh"] is None or not state["fresh"].button.isEnabled():
+                why = "fresh-sheet: no door"
+                result["skipped"][why] = result["skipped"].get(why, 0) + 1
+                state["fresh"] = None
+                return
+            motion._in_front = lambda top: top is window   # (the learner's click: the window in front)
+            moments.begin("fresh-sheet-first" if c == 0 else "fresh-sheet")
+            state["fresh"].button.click()
+        at(500, go)                                      # (its opening and its lists' landing inside the repetition)
+
+        def close():
+            fresh = state.get("fresh")
+            if fresh is None:
+                return
+            moments.end()
+            if fresh.card is not None:
+                fresh.card.no.click()
+            motion._in_front = in_front
+        at(400, close)
+
     def still(name):
         return lambda: (lambda then: moments.still(name, then))
 
@@ -288,30 +381,56 @@ def main_child(a):
 
     def start():
         n = a.rounds
-        for c in range(n):
+        wanted = set(a.moments.split(",")) if a.moments else None
+
+        def on(name):
+            return wanted is None or name in wanted
+        for c in range(n if on("build") else 1):
             build(c)
         at(0, still("build"))
         at(0, lambda: until(lambda: page()._found is not None, 5000, "modules never looked for"))
-        for c in range(n):
-            glide(c)
-        at(0, still("nav-glide"))
-        for c in range(2 * ((n + 1) // 2)):
-            fold(c)
-        at(0, still("more-options"))
-        for c in range(2 * ((n + 1) // 2)):
-            switch(c)
-        at(0, still("switch-junban"))
-        for c in range(n):
-            slider(c)
-        at(0, still("slider-release"))
-        strokes = keystrokes()
-        k = 0
-        while k < max(n, len(strokes)):
-            ch, key = strokes[k % len(strokes)]
-            search(k, ch, key)
-            k += 1
-        at(0, lambda: page().search.edit.clear())
-        at(0, still("search-key"))
+        if on("nav-glide"):
+            for c in range(n):
+                glide(c)
+            at(0, still("nav-glide"))
+        if on("more-options"):
+            for c in range(2 * ((n + 1) // 2)):
+                fold(c)
+            at(0, still("more-options"))
+        if on("switch-junban"):
+            for c in range(2 * ((n + 1) // 2)):
+                switch(c)
+            at(0, still("switch-junban"))
+        if on("slider-release"):
+            for c in range(n):
+                slider(c)
+            at(0, still("slider-release"))
+        if on("search-key"):
+            strokes = keystrokes()
+            k = 0
+            while k < max(n, len(strokes)):
+                ch, key = strokes[k % len(strokes)]
+                search(k, ch, key)
+                k += 1
+            at(0, lambda: page().search.edit.clear())
+            at(0, still("search-key"))
+        if on("open-tab"):
+            for c in range(n):
+                open_tab(c)
+            at(0, still("open-tab"))
+        if on("scroll-wheel"):
+            at(0, lambda: page().scroll.verticalScrollBar().setValue(0))
+            for c in range(n):
+                wheel(c)
+            at(0, still("scroll-wheel"))
+        if on("fresh-sheet"):
+            for c in range(n):
+                sheet(c)
+            at(400, still("fresh-sheet"))
+        if on("report-open"):
+            for c in range(n):
+                bug(c)
+            at(0, still("report-open"))
         run()
 
     def finish():
@@ -339,6 +458,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=10, help="repetitions of each moment (>= 10 for a timed run)")
     ap.add_argument("--runs", type=int, default=1)
+    ap.add_argument("--settings", help="a settings.json copied into each run's root (a learner's shape)")
+    ap.add_argument("--moments", help="only these moments, comma-separated (the page's build always runs first)")
     bench_moments.add_arguments(ap)
     ap.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()

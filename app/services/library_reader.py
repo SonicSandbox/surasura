@@ -58,6 +58,9 @@ library store, on a plain thread of its own — never the window's thread.
 - **A drag holds it** (06 E6, `hold()` / `release()`): while held it still reads and merges the feed (its copy stays
   current) but builds and publishes nothing, so nothing moves under the hand; `release()` builds and publishes once. An
   item gone meanwhile is told at once (`subscribe_gone(cb)`: `cb(item_ids)`) — the drag of a removed item is let go.
+- **What arrived** (Hon a7, `subscribe_arrived(cb)`: `cb(work_ids)`; None at the first read): after each read, the
+  works whose files arrived or changed (a look, + Add, Extract, a drop; an item regrouped) — the window's covers look
+  at those titles only (`app/qt/covers.look`), never the library again.
 
 Qt-free (the import guard): the window reaches it through `app/qt/bridge.py`.
 """
@@ -69,7 +72,9 @@ import threading
 import time
 import weakref
 
+from app.services import airing as airing_module
 from app.services import view_rows
+from app.services import window_idle
 
 POLL_S = 0.1                     # the store's FEED_POLL
 _THAWED = [False]                # A4 P-gil: a reader stopped since the last freeze (its library may still be held)
@@ -122,6 +127,13 @@ def _hand_folders(ref, found):
         reader.set_folders(found)
 
 
+def _hand_airing(ref):
+    """AniList's new airing answers to the reader, while it is alive (3.0.1 item 5)."""
+    reader = ref()
+    if reader is not None:
+        reader.airing_moved()
+
+
 def _hand_playable(ref, answers):
     """▶'s answers to the reader, while it is alive (row 55)."""
     reader = ref()
@@ -160,15 +172,19 @@ class LibraryReader:
         self._subscribers = []
         self._move_subscribers = []
         self._gone_subscribers = []
+        self._arrived_subscribers = []     # Hon a7: told the works whose files arrived or changed (`_arrived`)
         self._version_subscribers = []     # finish-pending: told every move of the versions (the planned ones too)
         self._hold = threading.Event()     # a drag holds the view (E6)
         self._held_dirty = False           # something came in while held: built and published at the release
-        self._republish = False            # the drag's settle asked for the store's view (`republish`)
+        self._asks = 0                     # the window's asks for the store's view (`republish`), numbered
+        self._answered = (0, None)         # ... the newest one answered, and the view that answered it
         self._thread = None
         self._view = None
         # the reader thread's own copy of the library (touched only there)
         self._items, self._works, self._cards = {}, {}, {}
         self._pieces = {}                  # LM11b G1: the feed's pieces {id: {id, title, kind}} (a group's kind and name)
+        self._book_audio = {}              # a9.1: a paired book's part -> its audiobook's 🎧 summary (`_audio_hovers`)
+        self._book_audio_of = set()        # ... and the audiobook items that hold one
         self._options = {}
         self._seen = self._epoch = None
         self._data_version = None
@@ -185,6 +201,8 @@ class LibraryReader:
         self._cache_due_at = 0.0           # when a write first fell due (a store busy for long still gets one)
         self._cards_all_at = 0.0
         self._cards_stale = False
+        self._cards_asked = {}             # item -> its cards when last asked, for every item asked (`cards_rose`)
+        self._cards_rose = 0               # how many times an item asked before came back with more cards
         self._mode_at = 0.0
         self._recheck = False
         self._store_id = None
@@ -219,6 +237,12 @@ class LibraryReader:
         self._folders_asked = set()
         self._folders_owed = False         # ... the last view's arrivals to ask at the next look (no build for it)
         # --- end A4B-8
+        # --- 3.0.1 item 5: AniList's airing answers — the cache read on this thread when it moved (`Kept`), put on the
+        # view (`View.airing`); Current's titles near their end handed to the asker (`follow_airing`) at each build
+        self._airing_kept = airing_module.Kept(language)
+        self._airing = None                # the covers fetcher's `airing.Airing`, handed by the window
+        self._airing_new = False
+        # --- end 3.0.1 item 5
         # --- LM11b G5: a window command not written yet ({item_id: tier}, `expect`), built in until the feed holds it
         self._expected = {}
         self._expected_new = None          # the window's newest, taken in by the next look
@@ -268,6 +292,13 @@ class LibraryReader:
         with self._lock:
             self._gone_subscribers = [cb for cb in self._gone_subscribers if cb is not callback]
 
+    def subscribe_arrived(self, callback):
+        """Hon a7: `callback(work_ids)` for the works whose files arrived or changed since the last read (`_arrived`;
+        None at the first read: the whole library) — on the reader's thread, so it only hands them on (the window's
+        covers look on a worker of their own)."""
+        with self._lock:
+            self._arrived_subscribers.append(callback)
+
     # --- W3.2 Q1
     def set_estimates(self, estimates):
         """New arrivals' numbers ({item_id: N new}), from any thread: built into the next view, looked at now."""
@@ -305,6 +336,50 @@ class LibraryReader:
             self._folders_version += 1
             self._folders_new = True
         self._wake.set()
+
+    # --- 3.0.1 item 5
+    def follow_airing(self, service):
+        """AniList's airing asks (`airing.Airing`, made with the covers fetcher; None: none) — asked at each build for
+        Current's titles near their end; its answers (any thread) rebuild the next view. No view is built for the
+        asker itself: the view reads the cache, never the asker (a build forced here held the window's next one back
+        behind the burst rule, a4). Any thread."""
+        with self._lock:
+            if service is self._airing:
+                return
+            self._airing = service
+        if service is not None:
+            me = weakref.ref(self)                      # (never a cycle reader -> service -> reader: AD0-2)
+            service.on_change = lambda: _hand_airing(me)
+
+    def airing_moved(self):
+        """The cache moved (an answer kept, or cleared): the next look builds a view with it. Any thread."""
+        with self._lock:
+            self._airing_new = True
+        self._wake.set()
+
+    def _ask_airing(self, view):
+        """(The reader's thread.) Current's titles near their end (`airing.near_end`), handed to the asker, which keeps
+        only the due ones and returns at once — every build, none too: an id no longer near its end is never sent.
+        A show with no id near its end is handed by its title (`airing.near_end_titles`, Sonic 2026-11-02 item 2) to
+        an asker that asks titles (`find`). -> (whether AniList can be asked now — an asker, its switch on: a show with
+        an id and no answer yet waits for it, `airing.of_rows`' `asking` — and the kept title answers when titles are
+        asked, else None)."""
+        with self._lock:
+            service = self._airing
+        if service is None or view.cached:
+            return False, None
+        try:
+            asks_titles = getattr(service, "find", None) is not None and hasattr(service, "want_titles")
+            titles = self._airing_kept.titles() if asks_titles else None
+            service.want(airing_module.near_end(view.rows, self._works, titles))   # (none: the last ones let go)
+            if asks_titles:
+                service.want_titles(airing_module.near_end_titles(view.rows, self._works, titles))
+            on = getattr(service, "on", None)
+            return (bool(on()) if on is not None else False), titles
+        except Exception as e:                          # never in the way of a view
+            print(f"Library reader: airing wasn't asked: {e!r}")
+            return False, None
+    # --- end 3.0.1 item 5
 
     def _ask_folders(self, view):
         """(The reader's thread.) The arrivals' first files no answer was asked for yet, asked of the looks."""
@@ -406,6 +481,12 @@ class LibraryReader:
         with self._lock:
             return self._view
 
+    def cards_rose(self):
+        """How many times an item whose cards were asked before came back with more (Current, Soon, Finished): cards
+        that landed while this reader looked. Never an item's first count — cards there at the open, or a show with old
+        cards coming back into Current, start from theirs (Surasura's star ask, `app/qt/star_ask.py`). Any thread."""
+        return self._cards_rose
+
     def store_id(self):
         """The library's own id (its meta's `store_id`) once a read found it, else None (W-1: a hint shown once per
         library). Any thread."""
@@ -417,11 +498,23 @@ class LibraryReader:
         return self._emptied
 
     def republish(self):
-        """The window let go of its own order once every write landed: the next look builds and publishes the store's
+        """The window lets go of its own order once every write landed: the next look builds and publishes the store's
         view, changed or not (where the store placed a row otherwise than the window drew it, round 2 AD2-4): the last
-        one built, the same object, when nothing changed since (M4.1 B1: no build)."""
-        self._republish = True
+        one built, the same object, when nothing changed since (M4.1 B1: no build). -> the ask's number. The view that
+        answers it (`answered`) comes from a look begun after the ask, so it holds every write landed by then — never a
+        build begun before (alpha 9.1, report 1: a view a busy reader began before a drop's write, shown once the window
+        let go, put the row back where it was until the next build put it forward again). Any thread."""
+        with self._lock:
+            self._asks += 1
+            n = self._asks
         self._wake.set()
+        return n
+
+    def answered(self):
+        """(the newest ask answered, the view published for it) — the store's own view the window lets its order go
+        for (`drag.DragController.view_in`). Any thread."""
+        with self._lock:
+            return self._answered
 
     def start(self):
         """The thread started — never once `stop()` was asked (W3.2 P0: a reader a second language switch let go)."""
@@ -454,6 +547,9 @@ class LibraryReader:
         except Exception:
             pass                                    # a cache that can't be read is no cache
         while not self._stop.is_set():
+            window_idle.wait()                      # Up next 2: a look starts while the window rests (its stretch
+            if self._stop.is_set():                 # never takes turns at Python's lock with a view's build)
+                break                               # (stopped meanwhile: no look)
             paused = self._pause_gc()               # A4 P-gil
             try:
                 self._look()
@@ -488,12 +584,16 @@ class LibraryReader:
         # files — so a reader a language switch dropped holds none of them, whoever still holds the reader. The last
         # view stays (`view()`: the window shows it until the next language's first view comes)
         self._items, self._works, self._cards, self._options = {}, {}, {}, {}
+        self._cards_asked = {}
         self._pieces = {}
+        self._book_audio, self._book_audio_of = {}, set()     # a9.1
         self._folders, self._folders_ask = {}, None     # A4B-8
         self._tiers, self._pos, self._dirty, self._moved_in = None, {}, set(), {}
         self._overlaid, self._overlay_tiers = {}, {}
         self.row_cache = view_rows.RowCache()
         self._cache_due = None
+        with self._lock:
+            self._answered = (self._answered[0], None)     # (its view let go with the rest)
 
     def _handle(self):
         """(mode, reason, handle). The mode is asked of the opener at the start, after a failed read, and every few
@@ -503,7 +603,11 @@ class LibraryReader:
                                                          now - self._mode_at >= MODE_RECHECK_S)
         if stale:
             mode = self.opener.check()
-            reason = getattr(self.opener, "reason", None)
+            state = getattr(self.opener, "state", None)              # (mode, reason) as one answer (LM11b): never
+            if state is not None:                                     # a new mode with the old reason
+                mode, reason = state()
+            else:
+                reason = getattr(self.opener, "reason", None)
             self._mode_at, self._recheck = now, False
         else:
             mode, reason = self._mode
@@ -518,6 +622,8 @@ class LibraryReader:
             self._folders_owed = False
             if self._view is not None:
                 self._ask_folders(self._view)
+        with self._lock:
+            asked = self._asks                          # alpha 9.1: the window's asks this look answers (read after)
         mode, reason, h = self._handle()
         changed_mode = (mode, reason) != self._mode
         self._mode = (mode, reason)
@@ -526,12 +632,11 @@ class LibraryReader:
         version, numbers = self.numbers()
         held = self._hold.is_set()
         released = self._held_dirty and not held        # the drop: what came in during the drag, built once now
-        again = self._republish and not held            # M4.1 B1: the settle's ask, taken before the store is read
-        if again:
-            self._republish = False
+        again = asked > self._answered[0] and not held  # M4.1 B1: the settle's ask, until a view answers it
         if h is None:                                   # nothing to read: the last rows stay, under the mode's bar
             owed, self._view_owed = self._view_owed, False  # fix round (A4A-2): a view owed is this build (or the drop's)
-            if changed_mode or self._view is None or version != self._numbers_version or released or again or owed:
+            # (alpha 9.1: a look that read nothing answers no ask — its rows are the copy's, maybe from before a write)
+            if changed_mode or self._view is None or version != self._numbers_version or released or owed:
                 self._numbers_version = version         # the numbers' own version: a new one empties the row cache
                 if held:
                     self._held_dirty = True
@@ -544,6 +649,7 @@ class LibraryReader:
             estimates_new, self._folders_new = estimates_new or self._folders_new, False    # A4B-8: their folders
             numbers_new = estimates_new                 # fix round (IK-2): the arrivals' own numbers
             estimates_new, self._playable_new = estimates_new or self._playable_new, False     # row 55: ▶'s answers
+            estimates_new, self._airing_new = estimates_new or self._airing_new, False   # 3.0.1 item 5: AniList's
         estimates_new = estimates_new or self._connect_moved()      # P4.1 L2: a new Connect feed rebuilds the same way
         expected_moved = self._take_expected()                      # LM11b G5: and the window's expectation
         estimates_new = expected_moved or estimates_new
@@ -555,15 +661,19 @@ class LibraryReader:
                 and self._view is not None and not self._view.busy and not cards_due and not released \
                 and not estimates_new and not owed:     # W3.2 Q1
             if again:                                   # M4.1 B1: nothing changed since the last build
-                self._publish(self._view)
+                self._publish(self._view, asked)
             self._flush_cache()
             return
         feed = h.read_feed(self._seen, self._epoch)
         self.reads += 1
         options_before = dict(self._options)
         before = set(self._items) if held and feed["full"] else None
+        arrived = self._arrived(feed)                   # Hon a7: read against the copy before the merge
+        fresh = () if feed["full"] else [r for r in feed["items"] if r["id"] not in self._items]   # a9.1
         self._merge(feed)
-        self._audio_hovers(h, feed)                     # a5-2 (Hon): an audiobook's 🎧 hover, on its own row
+        self._audio_hovers(h, feed, fresh)              # a5-2 (Hon): an audiobook's 🎧 hover, on its rows
+        if arrived is None or arrived:
+            self._tell("_arrived_subscribers", arrived)
         if held:                                        # E6: the dragged item gone meanwhile lets the drag go
             gone = [i for k, i in feed["gone"] if k == "item"] if before is None else sorted(before - set(self._items))
             if gone:
@@ -595,13 +705,13 @@ class LibraryReader:
         if not changed:                                 # data_version moved with nothing for the window (a checkpoint)
             self.skipped += 1
             if again:                                   # M4.1 B1
-                self._publish(self._view)
+                self._publish(self._view, asked)
             self._flush_cache()                         # a look with nothing new: as quiet as one that read nothing
             return
         if self.coalesce and not urgent and self._hold_back(now, numbers_only, dv, estimates_only):
             return                                      # a4: built once it falls due (`_timeout` wakes the reader)
         view = self._build(numbers, mode, reason, rows_known=True)
-        self._publish(view)
+        self._publish(view, asked)
         self._view_owed, self._numbers_at = False, None     # a4
         if not estimates_only:                          # fix round (IK-2): a burst is the store's commits — a view of
             self._built_at = time.monotonic()           # the arrivals' numbers alone never holds the next commit back
@@ -803,13 +913,33 @@ class LibraryReader:
                 pass                                # a listener's fault never stops the reader
 
     def _tell_gone(self, ids):
+        self._tell("_gone_subscribers", ids)
+
+    def _tell(self, which, ids):
         with self._lock:
-            subscribers = list(self._gone_subscribers)
+            subscribers = list(getattr(self, which))
         for cb in subscribers:
             try:
                 cb(ids)
             except Exception:
                 pass                                # a listener's fault never stops the reader
+
+    def _arrived(self, feed):
+        """Hon a7: the works (sorted ids) whose files arrived or changed in this read — an item new to the reader's
+        copy, or its file or its work moved — read before the merge; none for a move, a mark or a cover written: only
+        what changed is looked at again (S19). None at the first read: the whole library, the open's scan's (scanned
+        by the look only when the open found no store to read)."""
+        with self._lock:
+            if not self._arrived_subscribers:
+                return []
+        if self._seen is None:
+            return None
+        out = set()
+        for r in feed["items"]:
+            work, old = r.get("work_id"), self._items.get(r["id"])
+            if work is not None and (old is None or old.get("work_id") != work or old.get("rel_path") != r.get("rel_path")):
+                out.add(work)
+        return sorted(out)
 
     def _card_counts(self, h):
         """{item_id: cards} for the items whose rows show cards (Current, Finished). A card made for an item doesn't
@@ -838,6 +968,12 @@ class LibraryReader:
                 else:
                     new.pop(i, None)
         self._changed_ids = set()
+        asked = self._cards_asked
+        for i in ids:
+            n = new.get(i, 0)
+            if n > asked.get(i, n):
+                self._cards_rose += 1
+            asked[i] = n
         return self._cards if new == self._cards else new
 
     def _merge(self, feed):
@@ -893,24 +1029,86 @@ class LibraryReader:
         self._options = dict(feed.get("options") or {})
         self._seen, self._epoch = feed["version"], feed["epoch"]
 
-    def _audio_hovers(self, h, feed):
+    def _audio_hovers(self, h, feed, fresh=()):
         """a5-2 (Hon): each audiobook item's summary for its row's 🎧 hover (`Store.audiobook_hovers`: its files, the
         first and last, its length), put on its own feed row as `audio` — read only when the feed brought an audiobook's
-        item (its record's change feeds it, `pair_audiobook`), so a row's cache keeps every other row (S19)."""
-        if feed["full"]:
+        item (its record's change feeds it, `pair_audiobook`), so a row's cache keeps every other row (S19).
+        a9.1 (Hon-S): its book's parts carry the same summary as `book_audio`, so a split book's every part keeps the
+        🎧, not just the one holding its item — whichever way it was split (✂, a part moved away, *Not part of this
+        title*): read again also when an audiobook's item went or its book's title took in a new item (`fresh`, the
+        feed's items the copy didn't hold — the titles of its marked parts and of the audiobook's item alike)."""
+        full = feed["full"]
+        if full:
             ids = [i for i, r in self._items.items() if r.get("source_type") == "audio"]
         else:
             ids = [r["id"] for r in feed["items"] if r.get("source_type") == "audio"]
-        if not ids or not hasattr(h, "audiobook_hovers"):
+        again = bool(ids) or any(k == "item" and i in self._book_audio_of for k, i in feed.get("gone") or ())
+        if not again and fresh and self._book_audio:
+            works = {self._items[i].get("work_id") for i in (*self._book_audio, *self._book_audio_of)
+                     if i in self._items}
+            again = any(r.get("work_id") in works for r in fresh)
+        if again and hasattr(h, "audiobook_hovers"):
+            try:
+                hovers = h.audiobook_hovers()
+            except Exception:
+                hovers = None
+            if hovers is not None:
+                for i in ids:
+                    r = self._items.get(i)
+                    if r is not None and i in hovers:
+                        r["audio"] = hovers[i]          # the feed's new row (never one a built view holds)
+                self._link_book_audio(hovers, None if full else {r["id"] for r in feed["items"]})
+                return
+        if full:
+            self._book_audio, self._book_audio_of = {}, set()
             return
-        try:
-            hovers = h.audiobook_hovers()
-        except Exception:
-            return
-        for i in ids:
+        for r in feed["items"]:                         # the feed's new rows: the mark they had, kept
+            said = self._book_audio.get(r["id"])
+            if said is not None:
+                r["book_audio"] = said
+
+    def _link_book_audio(self, hovers, fed):
+        """a9.1: `book_audio` on every part of a paired audiobook's book (`hovers`' `parts`) — set on the feed's new
+        rows (`fed`; None: a full read, every row new); a row the copy already held is swapped for a new dict only
+        when its mark changed, so the row cache rebuilds that row and keeps every other (S19)."""
+        marks = {}
+        for audio_id, said in sorted(hovers.items()):
+            if audio_id not in self._items or not said.get("parts"):
+                continue
+            mark = {k: v for k, v in said.items() if k != "parts"}
+            for p in said["parts"]:
+                marks.setdefault(p, mark)
+        old, self._book_audio = self._book_audio, marks
+        self._book_audio_of = {a for a, s in hovers.items() if s.get("parts")}
+        for i in set(old) | set(marks):
             r = self._items.get(i)
-            if r is not None and i in hovers:
-                r["audio"] = hovers[i]                  # the feed's new row (never one a built view holds)
+            if r is None or r.get("book_audio") == marks.get(i):
+                continue
+            if fed is None or i in fed:                 # the feed's new row: marked in place
+                if i in marks:
+                    r["book_audio"] = marks[i]
+                else:
+                    r.pop("book_audio", None)
+                continue
+            self._swap_item(dict(r, book_audio=marks[i]) if i in marks else
+                            {k: v for k, v in r.items() if k != "book_audio"})
+
+    def _swap_item(self, r):
+        """A row the copy holds replaced by `r` in place (its tier and order unchanged), as `_merge` swaps a row the
+        feed changed: a new object, so the row cache builds its row again."""
+        self._items[r["id"]] = r
+        if self._tiers is not None:
+            at = self._pos.get(r["id"])
+            if at is not None and at[1] < len(self._tiers.get(at[0]) or ()) and \
+                    self._tiers[at[0]][at[1]]["id"] == r["id"]:
+                self._tiers[at[0]][at[1]] = r
+            else:
+                self._dirty.add(r.get("tier"))
+                self._moved_in.setdefault(r.get("tier"), set()).add(r["id"])
+        if self._changed_ids is not None:
+            self._changed_ids.add(r["id"])
+        if self._build_changed is not None:
+            self._build_changed.add(r["id"])
 
     def _sorted_tiers(self):
         """Each tier's items in `(ord, id)` order: in full after a full read, else only the tiers something moved in."""
@@ -996,6 +1194,9 @@ class LibraryReader:
                                playable=self._playable,       # row 55
                                folders=folders)               # A4B-8
         view = view._replace(epoch=self._epoch)         # LM11b: a library rebuilt or reset lets the window's picks go
+        asking, titles = self._ask_airing(view)         # 3.0.1 item 5
+        view = view._replace(airing=airing_module.of_rows(view.rows, self._works, self._airing_kept.shows(),
+                                                          asking=asking, titles=titles))
         if self.play is not None:
             self._ask_play(view)                        # row 55
         self._ask_folders(view)                         # A4B-8
@@ -1089,9 +1290,13 @@ class LibraryReader:
         elif view is None:
             self._publish(view_rows.build({}, {}, {}, language=self.language, mode="store", busy=True, loading=True))
 
-    def _publish(self, view):
+    def _publish(self, view, asked=None):
+        """`view` to every subscriber. `asked` (a look's): the window's asks it answers — those taken before the look read
+        the store (a busy store's last view again, the first screen's cache, answer none)."""
         with self._lock:
             self._view = view
+            if asked is not None and asked > self._answered[0]:
+                self._answered = (asked, view)
             subscribers = list(self._subscribers)
         for cb in subscribers:
             try:

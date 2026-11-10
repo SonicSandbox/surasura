@@ -30,7 +30,8 @@ FINISHED_HELP = "?"
 FINISHED_HELP_NAME = "About Finished"
 FINISHED_HELP_TIP = ("<b>A record of what you've worked through.</b> Your list is ordered by how often a word turns up "
                      "in what you're <i>going</i> to watch and read. You won't meet a finished show again, so its words "
-                     "stop pushing your list around — but its sentences can still be your examples")
+                     "stop pushing your list around — but its sentences can still be your examples"
+                     "<br>• Click: its help card")
 FINISHED_EMPTY = ("Nothing finished yet", "What you finish is kept here: a record, and a source of sentences")
 # --- W3.2 Q4: Finished's actions (app/qt/finished.py): Put back, ⋯, *What if I added it back?*, the importer -------- #
 FIN_PUT_BACK = "Put back"
@@ -102,6 +103,9 @@ ITEM_MENU = {
     "cover": ("Change cover…", "Choose the picture it shows"),
     "folder": ("Open its folder", "Open the folder its files are in"),
     "remove": ("Remove…", "Take it out of your library: its files go to the trash for 30 days (asks first)"),
+    # a7 (DIAGNOSIS 11): every file not watched yet, marked at once ({n}: how many)
+    "watched-all": ("Mark all watched", "Mark every file of it watched: {n} not watched yet\n"
+                                        "• One Undo takes them all back"),
     # LM11b G4: on what Ctrl+click picked ({n}: the rows and episodes picked)
     "group": ("Group…", "Put these {n} into one row in Current\n• Undo takes them apart again"),
     # LM11b G3: on a group's ⋯ (IK-5), and *Same show as…* on a show's own row (IK-6)
@@ -116,6 +120,10 @@ MENU_MORE = ("More…", "The rest of this list")
 # row 28: an opened row's episode's own ⋯ ({ep}: the episode as ⋯ names it; {action}: its stone's click,
 # `ROWS_STONE_ACTION`) — its *Play* is ▶'s own verb and tip
 ITEM_EP_MARK = ("Mark {action}", "Mark {ep} {action}\n• Undo takes it back")
+# a7 (DIAGNOSIS 11): {ep} and every file before it not watched yet ({n} in all), marked at once — *Mark watched*'s
+# extension, right under it (Sonic 2026-10-30)
+ITEM_EP_UPTO = ("…and everything before it", "Mark {ep} and the files before it watched: {n} at once\n"
+                                            "• One Undo takes them all back")
 ITEM_EP_MENU_NAME = "What you can do with {ep}"
 ITEM_UNGROUPED = "Ungrouped {title}"
 ITEM_RENAME_ASK = "Rename this group"
@@ -163,7 +171,7 @@ ITEM_REMOVE_YES_TIP = "Take it out of your library: its files go to the trash fo
 ITEM_REMOVED = "Removed {title}"
 SEAM_LABEL = "✂ Split here"
 SEAM_TIP = "✂ Split here\n• Click to make {rest} a part of its own"
-JOIN_LABEL = "Drop to join"
+JOIN_LABEL = "Join as one show"                  # only after the hand holds on the part (`item_menu.JOIN_REST_MS`)
 # LM11b G2: another show dropped on a show once the hand rests on it (`item_menu.JOIN_REST_MS`): one row of both
 JOIN_GROUP_LABEL = "Drop to group"
 ITEM_GROUPED_WITH = "Grouped {other} with {title}"
@@ -185,10 +193,11 @@ STATE_LINES = {
     "busy": "Updating your library…",
     "read-only": "Read-only: {reason}. Nothing can be moved until it's fixed.",
     "migration-failed": "Your library couldn't be brought into 3.0's store, so it can't show here yet. "
-                        "Open the logs folder (the bar) and send it in; nothing of yours was changed.",
+                        "Send it in with Report a problem (the bug, top right: it carries the logs); nothing of "
+                        "yours was changed.",
 }
 READ_ONLY_REASONS = {
-    "damaged": "the library needs a repair — Surasura keeps its last good copy; send the logs folder (the bar) in",
+    "damaged": "the library needs a repair — Surasura keeps its last good copy; send it in with Report a problem",
     "made by a newer Surasura": "your library was saved by a newer Surasura — update Surasura to change it",
     "busy": "another program is saving your library — it opens as soon as that's done",
 }
@@ -204,6 +213,8 @@ def store_reason(reason):
 
 
 PLAY_FAILED = "Couldn't open {name}: {why}"
+PLAY_NOT_A_PROGRAM = "{program} isn't a program ▶ can start (Settings › Content: choose its .exe)"
+PLAY_NO_PROGRAM = "{program} isn't there any more (Settings › Content › Videos open in / Books open in)"
 GOAL_ACCESSIBLE = "{name}: {line}"
 ROWS_PCT = "{pct}%"
 ROWS_MORE_CHIP = "+{n}"
@@ -223,7 +234,7 @@ ROWS_STUDYING_TIP = "Its new cards go first in Anki until they're studied"
 ROWS_TICK_WATCHED = "Watched"
 ROWS_TICK_NOT = "Not watched yet"
 ROWS_MORE_CHIPS = "{n} more"
-ROWS_FAILURE_LINE = "Its details are in the logs folder (the bar's Open the logs folder)"
+ROWS_FAILURE_LINE = "Its details are in the logs (Settings › App › Folders › Logs)"
 # The string of stones, read out for a screen reader (W3.1a; `stone_plan.words`): "8 of 12 watched, 3 in Anki".
 STRING_WORDS = {
     "of_watched": "{k} of {n} watched", "in_anki": "{n} in Anki",
@@ -236,7 +247,7 @@ STRING_WORDS = {
 BAR_NAME = "Status"
 BAR_FAILURE_PREFIX = "⚠ "
 BAR_LOGS = "Open the logs folder"
-BAR_LOGS_TIP = "Open the folder where Surasura keeps its logs, to look at them or send them"
+BAR_LOGS_TIP = "Surasura's logs\n• Click: open their folder, to look at them or send them"
 BAR_FAILURE_TIP = "The newest problem a command-line run reported. Its details are in the logs folder"
 STANDING_HIDE = "✕"                                         # round 8 row 54: every standing line's (app/qt/standing.py)
 STANDING_HIDE_TIP = "Hide this until it changes"
@@ -251,6 +262,9 @@ HUD_LINE = "step p95 {sp} max {sm} >4ms {so}  ·  frame p95 {fp} max {fm}"
 # --- M2.1: toasts (05 §5.4) and the motion
 TOAST_UNDO = "Undo"
 TOAST_UNDO_TIP = "Undo this change"
+TOAST_WHY = "Why?"                                   # help cards (HG-2): on a toast for what Surasura did by itself
+TOAST_WHY_TIP = "What made this happen\n• Click: its help card, the reason on top"
+TOAST_WHY_NAME = "Why did this happen?"
 
 # --- W3.5: the dashboard's duties (the header's Generate and journey, the bar's marks, the update) ------------------ #
 GENERATE = "Generate"
@@ -272,7 +286,7 @@ GENERATE_FAILED_TIP = "Generate didn't finish: {message}\n• Click to try again
 GENERATE_AUTO_TIP = ("Generating by itself, because Anki brought in words you know: {step}\n• Click to generate now: "
                      "your own run takes its place")
 GENERATE_LOG = "Open the log"
-GENERATE_LOG_TIP = "Open the last Generate's log, to see what went wrong"
+GENERATE_LOG_TIP = "The last Generate's log\n• Click: open it, to see what went wrong"
 GENERATE_PROGRESS_NAME = "Generate's progress"
 JOURNEY_TIP = "Your list with its sentences, in its own window\n• Click to open your journey"
 JOURNEY_NONE_TIP = "Your journey appears after your first Generate"
@@ -284,8 +298,7 @@ HEADER_JOURNEY = "Journey ↗"
 HEADER_JOURNEY_NAME = "Open your journey"
 HELP = "?"
 HELP_NAME = "Help"
-HELP_TIP = "Help\n• Click for the online guide"
-HELP_GUIDE = "Online guide"
+HELP_TIP = "Help for this screen\n• Click: its help card — All help and the online guide are at its foot"
 
 # The bottom bar's marks: statuses with tooltips (W3.3 makes them open Settings' sections).
 BAR_KNOWN = "{n:,} known"
@@ -314,10 +327,11 @@ BAR_LEVEL_AUTO_NONE_TIP = "Your level is chosen for you after your first Generat
 JOURNEY_DOT = "●"
 JOURNEY_DOT_NAME = "Your journey's sentences are catching up"
 # The dot's tip: "by itself" only while the automation is on (D29: the journey's Generate runs), else press Generate.
-JOURNEY_DOT_TIP = ("Your journey's sentences are catching up with your newest list: a Generate brings them in by "
-                   "itself. Your journey opens meanwhile, with the sentences it has")
-JOURNEY_DOT_TIP_PRESS = ("Your journey's sentences are catching up with your newest list: press Generate to bring them "
-                         "in. Your journey opens meanwhile, with the sentences it has")
+# F7: after a move the journey is redrawn from the plan in a moment, no Generate — PROVISIONAL (the lead, 2026-11-06).
+JOURNEY_DOT_TIP = ("Your journey is catching up with your newest list by itself, in a moment. It opens at once, with "
+                   "what it has")
+JOURNEY_DOT_TIP_PRESS = ("Your journey is catching up with your newest list: press Generate to bring it up to date. "
+                         "It opens meanwhile, with what it has")
 
 # The update: the bar's mark, the sheet, Needs you's cards.
 UPDATE_READY = "Update ready"
@@ -394,7 +408,7 @@ LEVEL_POP_HEADING = "Level"
 LEVEL_POP_HELP = "?"
 LEVEL_POP_HELP_NAME = "What the level is"
 LEVEL_POP_HELP_TIP = ("How rare a word can be and still make your list.\nRaise it: more words join your list. "
-                      "Lower it: nothing is deleted.\n• Click for the level's settings")
+                      "Lower it: nothing is deleted.\n• Click: its help card, with Open its settings")
 LEVEL_POP_AUTO_WORD = "Automatic"
 LEVEL_POP_AUTO_TIP = ("Surasura picks the level for you and moves it as you learn: the commonest one whose list "
                       "holds enough words\n• Click to turn it on or off")
@@ -410,7 +424,6 @@ LEVEL_POP_COVERAGE_TIP = ("The level does nothing while your list is set by cove
                           "(the gear)")
 LEVEL_POP_GEAR_NAME = "Level settings"
 LEVEL_POP_GEAR_TIP = "Level settings\n• Click to open them in Settings"
-LEVEL_JOURNEY = "Open your journey ↗"
 FOOT_ANKI = "Anki"
 FOOT_ANKI_NAME = "Anki: {words}"
 FOOT_ANKI_TIP = "{words}\n{tip}"
@@ -429,9 +442,9 @@ FOOT_KNOWN_REFUSED = {"update-staged": "Not synced: an update is waiting to inst
                       "failed": "Not synced: the sync with Anki couldn't be started (the log says why)"}
 WELLS = {"soon": "Soon", "goal": "Goal", "finished": "Finished"}
 WELL_SUBS = {"soon": "next in line", "goal": "someday · in no order", "finished": "newest first"}
-WELL_TIPS = {"soon": "Soon: drop it here and it comes up next in line",
-             "goal": "Goal: drop it here for someday, in no order",
-             "finished": "Finished: drop it here when you're done with it"}
+WELL_TIPS = {"soon": "Soon: next in line\n• Drop a row here",
+             "goal": "Goal: someday, in no order — it still counts\n• Drop a row here",
+             "finished": "Finished: what you're done with — its words leave your list\n• Drop a row here"}
 WELL_UNLIT_SPLIT = "Finished: a split's first part finishes with its last part, not on its own"
 WELL_UNLIT_MIX = "Finished: hato's mix never finishes, it keeps bringing new videos"
 WELLS_NAME = "Where it can go: {wells}"
@@ -536,12 +549,12 @@ PHASE_STRIP_NAME = "What's running"
 PHASE_NAMES = {"arrivals": "Arrivals", "surasura": "Surasura", "miner": "Anki Miner", "junban": "Junban 順",
                "anki": "Anki"}
 PHASE_MARKS = {"arrivals": "届", "surasura": "ス", "junban": "順"}       # Anki Miner and Anki show their logos
-PHASE_ABOUT = {                                    # beside the name: what it does, short and plain
-    "arrivals": "finds new episodes and books in your folders",
-    "surasura": "makes your word list",
-    "miner": "makes cards from your episodes",
-    "junban": "puts Anki's new cards in your list's order",
-    "anki": "reads the words you know, and shows when cards wait for Anki",
+PHASE_ABOUT = {                                    # beside the name: what it is, a few words (help cards, HC-2)
+    "arrivals": "new files in your folders",
+    "surasura": "your word list",
+    "miner": "makes your cards",
+    "junban": "Anki's order",
+    "anki": "your known words",
 }
 PHASE_IDLE = "Nothing running now"
 PHASE_DONE = "Last: {what} — done {time}"
@@ -551,15 +564,44 @@ PHASE_FAILED_NOW = "Failed: {why}"
 PHASE_NEEDS = "Needs you: {why}"
 PHASE_ENDED_WAITING = "Last: {what} — stopped {time}: {why}"   # a7: it ended waiting, with nothing for you to decide
 PHASE_TIME = "%H:%M"
-PHASE_PRESS = "Press to open its settings"         # the hover's last line, on a circle that has some (mouse or keys)
+# Help cards (HG-2, *Why?* first; spec §5.1): under a job Surasura started by itself, why it did; an ended one keeps
+# its cause on its *Last:* line. The time is `causes.when`'s (today 14:02 · yesterday 21:14 · Oct 30, 21:14).
+PHASE_WHY = "Why: {line}"
+PHASE_WHY_AT = "Why: {line} · {time}"
+PHASE_LAST_WHY = "{last} · {line}"
+# try a9 #5 (Sonic: "How about an Icon for what is running at the right side to the left of Anki? … Like the windows
+# that you can still get back by clicking it"): the bottom bar's icons, one per open tool window (`app/qt/tool_icons.py`)
+TOOL_ICONS_NAME = "Open windows"
+TOOL_MARKS = {"junban": "順", "put-back": "戻", "backfill": "補", "youtube-downloader": "▶", "youtube-preview": "見",
+              "koe": "声", "anki": "A", "report": "報", "frequency-lists": "頻", "sentence-dictionary": "辞",
+              "word-lists": "除", "library-folders": "棚", "removed": "削"}    # else its name's first letter
+TOOL_WORKING = "Working"
+TOOL_OPEN = "Open"
+TOOL_TIP = "{name}: {doing}"
+TOOL_BACK_TIP = "Click to bring it back"
+TOOL_FRONT_TIP = "Click to bring it to the front"
+TOOL_MENU_TIP = "Right-click: Show · Stop · Close"           # try a9.1: the icon's own menu
+TOOL_SHOW = ("Show", "Bring the window back")
+TOOL_STOP = ("Stop", "Stop what it is doing — the window stays open")
+TOOL_CLOSE = ("Close", "Close the window — anything it is doing stops too")
+PHASE_PRESS = "• Click: its settings"         # the hover's last line, on a circle that has some (mouse or keys)
 # a7 (Sonic 2026-10-29): an amber circle's last line — what waits for your decision, and where a press takes you to it
-PHASE_PRESS_NEEDS = "Waiting for your decision: press to answer it in Needs you"
-PHASE_PRESS_DECK = "Waiting for your decision: press to pick your deck in 順's window"
-PHASE_PRESS_RESTORE = "Waiting for your decision: press to undo the unfinished reorder in 順's window"
+PHASE_PRESS_NEEDS = "• Click: decide it in Needs you"
+PHASE_PRESS_DECK = "• Click: pick your deck in 順's window"
+PHASE_PRESS_RESTORE = "• Click: undo the unfinished reorder in 順's window"
 # T6: 届's words while a source folder is gone (its *Needs you* card stands)
 PHASE_FOLDER_GONE = "{name} was moved or deleted: Needs you asks what to do"
 PHASE_FOLDERS_GONE = "{n} folders were moved or deleted: Needs you asks what to do"
 PHASE_STARTING = "Starting…"                       # lit by a press whose job hasn't begun, with no words of its own
+# try a9.1 (Sonic's report: "junban and anki miner are spinning but i don't know what they are doing"): a circle whose
+# work is under way and can be seen somewhere — the title Anki Miner makes cards for, 順's window — opens there; its
+# right-click is the bottom bar's one icon menu (`tool_icons.menu_of`): *Show* · *Stop* (where a stop exists) ·
+# *Settings*
+PHASE_PRESS_SHOW = "• Click: see it"
+PHASE_MENU_TIP = "• Right-click: {items}"
+PHASE_SHOW = ("Show", "Go to where it is happening: the title Anki Miner is making cards for, or 順's window")
+PHASE_STOP = ("Stop", "Stop what it is doing now. Cards already made stay; one being written to Anki is finished first")
+PHASE_SETTINGS = ("Settings", "Open its settings")
 # A job's plain name in the hover, by its kind (else by its label) where the job's own label is a word for us
 PHASE_JOB_NAMES = {
     "indexer": "Reading your files",
@@ -625,9 +667,11 @@ DRAG_REFUSED = "Your library can't be saved right now: {reason}"
 # W3.2 P0: a language switch, and a library that couldn't be opened
 SWITCHING = "Switching to {name}… Nothing can be moved until its library is open"
 MOVE_NOT_SAVED = "That change wasn't saved: try it again"
-LIBRARY_NOT_OPENED = "Your library couldn't be opened. Open the logs folder (the bar) and send it in"
+LIBRARY_NOT_OPENED = "Your library couldn't be opened. Send it in with Report a problem: it carries the logs"
 DONE_NEXT = "✓ {title} {ep} watched · next: {next}"
 DONE_ONE = "✓ {title} {ep} watched"
+DONE_MANY = "✓ {title}: {n} marked watched"        # a7: ⋯'s mark-many, one toast, one Undo
+DONE_MANY_LEFT = "✓ {title}: {n} marked watched — their words left your list."   # ... W-1's first mark (DONE_LEFT)
 DONE_UNDONE = "{title} {ep} marked not watched"
 # --- W-1 (Sonic 2026-10-22, Q4): while *Keep studying watched episodes* is off — the first mark (once per library), the
 # un-mark
@@ -638,13 +682,32 @@ DONE_OK = "OK"
 DONE_OK_TIP = "Leave them off your list"
 DONE_UNDONE_BACK = "{ep} not watched — its words are back."
 # --- end W-1
+# Surasura's star ask (Sonic 2026-10-31; `app/qt/star_ask.py`): once, ever, when cards from your own show first land
+STAR_ASK = "Surasura is free and made by one person. A ⭐ on GitHub helps other learners find it."
+STAR_ASK_STAR = "⭐ Star Surasura on GitHub"
+STAR_ASK_STAR_TIP = "Opens Surasura's GitHub page in your browser"
+STAR_ASK_NOT_NOW = "Not now"
+STAR_ASK_NOT_NOW_TIP = "Closes this; it isn't asked again"
 DONE_ALL = "✓ All {n} watched — finished with it?"
+# 3.0.1 item 5 (AA-3, PROVISIONAL): why AniList held a show back from finishing by itself
+DONE_ALL_WHY = "✓ All {n} watched · {why} — finished with it?"
+DONE_WHY_AIRING = "Still airing (AniList)"
+DONE_WHY_MORE = "AniList lists {n} episodes; you have up to {m}"
+DONE_WHY_ASKING = "Still asking AniList whether it's airing"     # alpha 9 #JNFJ8Q: no answer yet
 DONE_MOVE_FINISHED = "Move to Finished"
 DONE_MOVE_FINISHED_TIP = "Move it to Finished: a record of what you've worked through"
 # L6.3: what the last file's Done does by itself (its toast's Undo takes it back; the ✓ stays)
 DONE_FINISHED = "✓ {title} finished · its cards stay put"
 DONE_JOINED = "✓ Joined to {line}"                 # a split's part, onto its next part in Current
 DONE_CAME_UP = "✓ {line} came up from Goal"        # its next part, up from Goal after it
+# Help cards (spec §5.2): the *Why?* of a toast for what Surasura did more than the press said — fixed rules, no time
+WHY_DONE = {
+    "finish": "It was the last episode: a show with every episode watched moves to Finished. Its cards stay",
+    "joined": "A split show's parts join forward: the watched part joined its next part",
+    "came_up": "Its next part comes up from Goal after it",
+}
+WHY_MINES = "It's above your top-cards line: Make cards for me makes its cards by itself"
+WHY_NOTICE = "Another program (hato, a downloader) added these to your library while Surasura was closed"
 # --- LM11b G5: one show of a group all watched, the group's other shows not yet (GW-2 ⭐ A)
 DONE_SHOW_IN_GROUP = "✓ {show}: all {n} watched — finished with it?"
 DONE_MOVE_SHOW_FINISHED = "Move {show} to Finished"
@@ -653,7 +716,7 @@ DONE_MOVE_SHOW_FINISHED_TIP = "Move {show}'s {n} files to Finished, under its ow
 MENU_NAME = "What you can do with {title}"
 MENU_ITEMS = {
     "up-next": ("Up next", "Make it the next thing you watch or read"),
-    "soon": ("Soon", "Move it to Soon: next in line, after what's in NOW"),
+    "soon": ("Soon", "Move it to Soon: next in line in Current, after what's at its top"),
     "goal": ("Goal", "Move it to Goal: someday, in no order"),
     "finished": ("Finished", "Move it to Finished: you're done with it"),
     "journey": ("See it in your journey", "Open your journey"),                     # JO-2: short
@@ -704,6 +767,9 @@ TRAY_MENU = {
     "folder": ("Open its folder", "Show its files in Explorer"),
     "remove": ("Remove…", "Send its files to the trash (kept 30 days; Undo puts them back). Asks first"),
 }
+TRAY_SORT_ALL = "Sort them all…"            # Mado-O: the sort screen, New arrivals' full view
+TRAY_SORT_ALL_TIP = ("Every new title large, one at a time: Current, Soon, Goal, Finished or Ignore, by a key each.\n"
+                     "• Anything you don't sort stays here")
 TRAY_PLACED = {
     "top": "{title} is at the top of Current",
     "after-show": "{title} placed after its show",
@@ -782,7 +848,7 @@ CONFIRM_NO_TIP = "Leave everything as it is (Esc does the same)"
 
 # The frequency lists (from the Tk Frequency List Manager)
 FREQ_NAME = "Frequency lists"
-FREQ_TIP = "Add or remove general frequency lists (CSV): the report shows how common each word is in them"
+FREQ_TIP = "Add or remove general frequency lists (CSV): your journey shows how common each word is in them"
 FREQ_LIST_NAME = "Your frequency lists for this language"
 FREQ_LIST_TIP = ("Surasura already makes a frequency list from your own content. These general lists add a column, "
                  "to see how common each word is elsewhere")
@@ -1001,6 +1067,7 @@ EXTRACT_UNDERSTAND = "I understand"
 EXTRACT_UNDERSTAND_TIP = ("Only use an Anki deck if it is 100 % immersion content: otherwise your list's frequencies "
                           "go wrong\n• It's an alternative to adding subtitles or a visual novel's text")
 EXTRACT_SECTION_NAME = "The section the parts go to"
+EXTRACT_SECTION_LINE = "The parts go into Current unless you pick another section"     # a7 (DIAGNOSIS 2)
 EXTRACT_SECTIONS = {"now": "Current", "soon": "Soon", "goal": "Goal"}
 EXTRACT_GO = "Extract"
 EXTRACT_GO_TIP = "Split the file into parts and add them to the chosen section"
@@ -1060,9 +1127,14 @@ ANKI_RESOLVED = "{model} → {fields}"
 ANKI_RESOLVED_JOIN = "   ·   "
 ANKI_FIELDS_JOIN = " + "
 ANKI_SKIPPED = "{model} → (no such field — skipped)"
+ANKI_SENTENCES = ("This field holds sentences: every word in it counts as known. For the card's own word, choose "
+                  "{field}.")                                       # a9r2: a word field holding sentences (⭐ lead)
+ANKI_SENTENCES_PLAIN = ("This field holds sentences: every word in it counts as known. For the card's own word, choose "
+                        "the field that holds it.")
 ANKI_SUSPENDED = "Include suspended cards"
-ANKI_SUSPENDED_TIP = ("Count cards you've suspended as known. Off by default — suspended cards are often ones you "
-                      "struggled with")
+ANKI_SUSPENDED_TIP = ("Cards you studied and then suspended count as known. Off by default — a suspended card is "
+                      "often one you struggled with. New cards you suspend count only with Count as known in Anki, in "
+                      "Settings › Known words")                                    # a7 (A7S-1/8): Settings' words
 ANKI_AUTO = "Sync automatically when Anki is running"
 ANKI_AUTO_TIP = "When Anki is open, Surasura adds new known words on its own — at start-up and when you come back to it"
 ANKI_GENERATE = "Generate when Anki adds known words"
@@ -1222,8 +1294,9 @@ SOURCES_FROM = "from {name}"
 # `app/services/needs.STRINGS`) ------------------------------------------------------------------------------------- #
 NEEDS_EMPTY_TEXT = "\n".join(NEEDS_EMPTY)
 NEEDS_ACTIONS = {   # action name -> (label, tooltip)
-    "find_videos": ("Find videos", "Look in the show's folder and your video folders for each episode's video, by its "
-                                   "number. Nothing is linked until you say so"),
+    "find_videos": ("Find videos", "Look in the show's folder, then your library's folders, then any more video "
+                                   "folders you added, for each episode's video, by its number. Nothing is linked "
+                                   "until you say so"),
     "link_these": ("Link these · {n}", "Link each video found to its episode, so its cards get their pictures and "
                                        "audio"),
     "find_all": ("Find all missing videos", "Look for every show's missing videos at once, by episode number"),
@@ -1249,6 +1322,13 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "find_book": ("Find its book…", "Pick its book from your library, or an EPUB on your computer: the audiobook joins "
                                     "it as a Yes would. Undo takes it back"),
     "no_book": ("It has no book", "It stays an audiobook of its own: Surasura never asks about its book again"),
+    # Michi-AB Stage B (PROVISIONAL): Anki Miner's speech model, asked once; a pair nothing of which lined up
+    "get_speech_model": ("Download it", "Anki Miner downloads its speech model (0.5 GB) into its own folder, then lines "
+                                        "your books up with their audiobooks by itself"),
+    "no_speech_model": ("Not now", "Their cards are made without sentence audio. Surasura doesn't ask again"),
+    "keep_together": ("Keep them together", "Listen alongside: the book's cards come without sentence audio, and "
+                                            "Surasura doesn't try to line them up again"),
+    "separate_them": ("Separate them", "The audiobook becomes its own title again. Undo takes it back"),
     "mine_anyway": ("Mine anyway", "Make its cards without timing them to the video"),
     "ask_hato": ("Ask hato again", "Ask hato for the videos it paired, now"),
     "dismiss": ("Dismiss", "Take this off the list"),
@@ -1286,6 +1366,17 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "find_settings_folder": ("Find it…", "Choose where this folder is on this computer: Connect looks there instead"),
     "drop_settings_folder": ("Stop looking there", "Take this folder out of Connect's video folders. Nothing on disk "
                                                    "is touched"),
+    # Michi-U: Anki Miner's line (titles wait only for the approved Anki Miner)
+    "update_miner": ("Update", "Get the Anki Miner Surasura has tested, free: its installer from its own GitHub "
+                               "release, checked before it opens.\n• Asks before it downloads"),
+    # Michi-NS (PROVISIONAL words, SPEC §9): a video with no subtitle — made from its audio, or found online by hato
+    "make_from_audio": ("Make them from the audio", "Anki Miner listens to each episode and writes its subtitle on "
+                                                    "this computer, one at a time: the row lights up as each one is "
+                                                    "done. A misheard word can happen, so their cards are tagged "
+                                                    "surasura::from-audio"),
+    "find_with_hato": ("Find them with hato", "hato looks for their subtitles on jimaku.cc by each show's title, with "
+                                              "your jimaku key, and fits each one to its video. From then on it looks "
+                                              "for every new video with no subtitle by itself"),
     # A3W-6: the Anki line's one button (where Surasura can start Anki)
     "open_anki": ("Open Anki", "Start Anki on your cards' profile: the waiting episodes' cards are made once it's open"),
     # alpha 4 D2: every card's ⋯, and the line over many cards that share a reason
@@ -1296,9 +1387,10 @@ NEEDS_ACTIONS = {   # action name -> (label, tooltip)
     "stop_all": ("Stop asking for all", "Don't ask about any card below with this reason while it stays so. One "
                                         "that's fixed and happens again later asks again. Their items and words stay "
                                         "in your library"),
-    # alpha 4 K1: most of the library's files gone at once (*Start fresh*: Settings' *Start a fresh library* sheet)
-    "start_fresh": ("Start fresh", "Set this library aside in one backup in the trash, never deleted, and read your "
-                                   "folders again from scratch. It asks first"),
+    # alpha 4 K1: most of the library's files gone at once (Settings' *Sort my library again…* sheet; A7O-6 its name)
+    "start_fresh": ("Sort my library again…", "Sort again from scratch, or start Surasura over: your order goes "
+                                              "into a backup, never deleted, and either can be put back. It asks "
+                                              "first"),
     # A5K-2: the library folder emptied under its record
     "keep_old": ("Keep my old library", "Carry on with this library as it was: its places come back, and the files "
                                         "you removed stay out"),
@@ -1367,6 +1459,10 @@ NEEDS_SAME_BOOK = "The audiobook joins its book"
 NEEDS_NOT_BOOK = "Kept: never asked about these two again"
 NEEDS_PICKED = "The audiobook joins 「{book}」"            # a5-2: *Find its book…*'s pick (its toast's Undo)
 NEEDS_NO_BOOK = "Kept as an audiobook of its own: never asked again"
+NEEDS_SPEECH_YES = "Anki Miner downloads its speech model, then lines up your audiobooks"   # Michi-AB Stage B
+NEEDS_SPEECH_NO = "Their cards come without sentence audio"
+NEEDS_KEPT_TOGETHER = "Kept together: the book's cards come without sentence audio"
+NEEDS_SEPARATED = "The audiobook is its own title again"
 NEEDS_FIND_BOOK_LINE = "{title} · {n} parts"
 NEEDS_FIND_FILE = "An EPUB on your computer…"
 NEEDS_FIND_FILE_TIP = "Added the way + Add adds an EPUB (Extract), then the audiobook joins it"
@@ -1380,6 +1476,33 @@ NEEDS_DISMISSED = "Taken off the list"
 NEEDS_OPENING_ANKI = "Opening Anki · the line goes once it's open"
 NEEDS_ANKI_RUNNING = "Anki is already starting or open"
 NEEDS_ANKI_NOT_STARTED = "Anki couldn't be started from here: open it yourself"
+NEEDS_UPDATE_MINER_ASK = "Update Anki Miner to {version}?"
+# Michi-NS (PROVISIONAL words; SPEC §9): *Make them from the audio* and *Find them with hato*
+NEEDS_SUBS_MODEL_ASK = "Download Anki Miner's speech model?"
+NEEDS_SUBS_MODEL_BODY = ("Making subtitles from the audio needs Anki Miner's speech model: about 0.5 GB, downloaded once "
+                         "from huggingface.co into Anki Miner's own folder. It can't be paused once started. Everything "
+                         "after it happens on this computer.")
+NEEDS_SUBS_MODEL_YES = "Download it"
+NEEDS_SUBS_MODEL_YES_TIP = "Anki Miner downloads its speech model, then makes these subtitles one episode at a time"
+NEEDS_SUBS_MODEL_NO = "Not now"
+NEEDS_SUBS_MODEL_NO_TIP = "Nothing is downloaded: these videos keep waiting for a subtitle file"
+NEEDS_SUBS_JOB = "Making subtitles from the audio · {title}"
+NEEDS_SUBS_JOB_STEP = "{title}: episode {n} of {total}"
+NEEDS_SUBS_JOB_MODEL = "Downloading Anki Miner's speech model"
+NEEDS_SUBS_MADE = "Made {n} subtitles from the audio: their episodes count from now"
+NEEDS_SUBS_MADE_ONE = "Made a subtitle from the audio: its episode counts from now"
+NEEDS_SUBS_NONE = "No subtitle was made: {why}"
+NEEDS_SUBS_NO_SPEECH = "Anki Miner heard no speech in them"
+NEEDS_SUBS_FAILED = "Anki Miner couldn't make them now (its log says why); press again to try"
+NEEDS_SUBS_STOPPED = "Stopped: the episodes made so far are kept"
+NEEDS_SUBS_NO_MINER = "Anki Miner 3.11 or later makes subtitles from the audio: Settings → Anki & mining"
+NEEDS_SUBS_BUSY = "Anki Miner is busy (its setup, or another one being made): press again in a moment"
+NEEDS_SUBS_MODEL_FAILED = "Anki Miner's speech model didn't download: {why}"
+NEEDS_SUBS_BESIDE = "Kept in Surasura's library only: their video folder took no copy beside the video"
+NEEDS_HATO_ON = "hato looks for these subtitles now, and for every new video with none from now on"
+NEEDS_MINER_UPDATED = "Anki Miner is updated · Connect makes the waiting cards by itself"
+NEEDS_MINER_NOT_UPDATED = "Anki Miner wasn't updated: its installer closed before it finished"
+NEEDS_MINER_BUSY = "Anki Miner is in use (Connect is making cards, or its window is open): Update again once it's free"
 NEEDS_SAVED_LOGS = "Logs saved to {path}"
 NEEDS_SAVE_LOGS_TITLE = "Save logs to a file"
 NEEDS_CHOOSE_FILE_TITLE = "Choose {label}'s file"
@@ -1437,7 +1560,7 @@ LANGUAGE_SWITCHING = "Switching to {name}…"       # held in the bar while Sett
 # --- Report a problem (alpha 3 on; app/qt/report.py): the header's bug and its window
 REPORT_NAME = "Report a problem"                                  # the bug's name (icon-only: its tip starts with it)
 REPORT_TIP = "Report a problem\n• Note what went wrong, with a picture of Surasura's window"
-REPORT_TIP_COUNT = "Report a problem\n• {n} saved, ready to send in one zip"
+REPORT_TIP_COUNT = "Report a problem\n• {n} saved, ready to send in one report"
 REPORT_WINDOW_NAME = "Report a problem"
 REPORT_WHAT = "What happened?"
 REPORT_WHAT_HINT = "What you did, and what went wrong"
@@ -1450,12 +1573,12 @@ REPORT_PICTURE_TIP = "The picture of Surasura's window, taken as you pressed the
 REPORT_NO_PICTURE = "No picture with this one"
 REPORT_NO_PICTURE_TAKEN = "No picture: press the bug again to take one"
 REPORT_SAVE = "Save to my list"
-REPORT_SAVE_TIP = "Keep this report on your list (Ctrl+Enter). Send them all at once with Make the zip"
+REPORT_SAVE_TIP = "Keep this report on your list (Ctrl+Enter). Send them all at once with Send report"
 REPORT_SAVED = "Saved to your list. Note the next one whenever you like"
 REPORT_SAVE_FAILED = "That report couldn't be saved: {why}"
 REPORT_WHERE = "the {tab} tab"
 REPORT_LIST_HEADING = "Your list ({n})"
-REPORT_LIST_TIP = "The problems you've noted, oldest first. They stay here until you make the zip"
+REPORT_LIST_TIP = "The problems you've noted, oldest first. They stay here until they're sent or zipped"
 REPORT_LIST_NAME = "Your saved reports"
 REPORT_ROW = "{when}   {what}{notes}"
 REPORT_ROW_NOTES = "   · {n} note(s)"
@@ -1498,12 +1621,99 @@ REPORT_SHOW = "Show me what's in it"
 REPORT_SHOW_TIP = "List every file the zip will hold, and what's left out"
 REPORT_CONTENTS_HEADING = "What the zip will hold"
 REPORT_CONTENTS_TIP = "Every file the zip will hold, its size, and what's left out and why"
-REPORT_ZIP = "Make the zip"
-REPORT_ZIP_TIP = "Put every saved report, with what Sonic needs to look into it, in one zip, then open its folder"
-REPORT_ZIP_NONE_TIP = "Make the zip: save a report to your list first"
-REPORT_ZIPPED = "Made {name} in {folder}. Send this zip to Sonic"
+REPORT_ZIP = "Make a zip instead"
+REPORT_ZIP_TIP = ("Put every saved report, with what Sonic needs to look into it, in one zip on this PC, and show it "
+                  "in its folder: to post it on Discord or GitHub Issues yourself.\n• Your Windows name is taken out "
+                  "of it too; look it over before you post it")
+REPORT_ZIP_NONE_TIP = "Make a zip instead: save a report to your list first"
+REPORT_ZIPPED = "Made {name} in {folder}. Post it on Discord or GitHub Issues"
+REPORT_ZIPPED_CHECK = ("Made {name} in {folder}. {n} file(s) may still hold your Windows name: look them over (its "
+                       "MANIFEST.txt names them) before you post it")
 REPORT_ZIP_FAILED = "The zip couldn't be made: {why}. Your list is as it was"
-REPORT_HINT = "Send this zip to Sonic. Nothing is sent by Surasura: the zip stays on this PC until you send it"
+REPORT_HINT = ("A report holds Surasura's logs and settings (never a key or token), and your last lists if ticked: "
+               "they name the titles in your library. Your Windows name, PC name and home folder are taken out of "
+               "all of it first")
+# Send report (3.0, alpha 10; tracks/ship/work/send-report/SPEC.md §3): one press builds the scrubbed zip and shows
+# exactly what goes; Send sends it. Make a zip instead keeps the Discord / GitHub path by hand (SR-Q1, PROVISIONAL).
+REPORT_SEND = "Send report"
+REPORT_SEND_TIP = ("Make the report (what you've typed is saved to your list first) and show you exactly what goes, "
+                   "before anything leaves this PC.\n• Only Sonic, Surasura's developer, sees it")
+REPORT_SEND_NONE_TIP = "Send report: write what happened first"
+REPORT_PROMISE = "No personal data or identification is included"              # Sonic's words, as written
+REPORT_NAME_LABEL = "Your Discord name (optional, so Sonic can reply)"
+REPORT_NAME_HINT = "Discord name"
+REPORT_NAME_TIP = ("Your Discord name, if you'd like Sonic to reply there. It goes only when it's typed here, and this "
+                   "PC remembers it for next time (clear it to forget it)")
+REPORT_NAME_GOES = "Your Discord name goes with it, so Sonic can reply."
+REPORT_SENDER = "Your reports are grouped as {code}"
+REPORT_SENDER_TIP = ("A code made at random on this PC, sent with each report so Sonic can tell that several came from "
+                     "one place. It names no one and holds nothing from this PC")
+REPORT_NEW_CODE = "New code"
+REPORT_NEW_CODE_TIP = "Make a fresh code: reports you send from now on aren't grouped with the earlier ones"
+REPORT_NEW_CODE_DONE = "New code made: your next reports are grouped as {code}"
+# try a9.1 (Sonic: "it lagged when i hit the button … need something to indicate that it's thinking"): What goes opens at
+# the press and counts the files in while the worker scrubs them
+REPORT_GATHERING = "Gathering what goes in…"
+REPORT_GATHERING_N = "Gathering what goes in… {done} of {total} files, each with names and folders written as <you>"
+REPORT_GATHERING_CHECK = "Checking every file once more before it can go…"
+REPORT_GOES_HEADING = "This is exactly what goes"
+REPORT_GOES_TIP = "Every file that goes, its size, and what's left out and why"
+REPORT_GOES_PLACEHOLDERS = ("Your Windows name, PC name and home folder are written as <you>, <pc> and C:\\Users\\<you>. "
+                            "What you wrote goes as you wrote it, except your Windows name and any email, written as "
+                            "<you> and <email>.")
+REPORT_GOES_NAME = "Discord name: {name}"
+REPORT_GOES_NO_NAME = "No Discord name"
+REPORT_GOES_KEPT = "Kept privately for 90 days, seen only by Surasura's developer, then deleted."
+REPORT_GOES_PICTURES = "The picture(s) that go, as they go:"
+REPORT_GOES_PICTURE_TIP = "A picture that goes with the report: names and folders are already written as <you>"
+REPORT_GOES_SEND = "Send"
+REPORT_GOES_SEND_TIP = "Send this report to Sonic now"
+REPORT_GOES_OPEN = "Open the zip"
+REPORT_GOES_OPEN_TIP = "Show the zip that goes, selected in its folder: these exact bytes"
+REPORT_GOES_BACK_TIP = "Back to your list. Nothing is sent"
+REPORT_SENDING = "Sending… {size}"
+REPORT_SENT_ID = "Sent. Your report is #{id}"
+REPORT_COPY = "Copy"
+REPORT_ID = "#{id}"                                              # a sent report's #ID, as copied
+REPORT_COPY_TIP = "Copy #{id}, to quote it on Discord"
+REPORT_COPIED = "Copied #{id}"
+REPORT_INVITE = "Join us on Discord to follow it"
+REPORT_INVITE_ZIP = "Post it on Surasura's Discord"
+REPORT_INVITE_TIP = "Open Surasura's Discord in your browser ({url})"
+REPORT_SEND_OFFLINE = "Not sent: no connection. Your report is kept: send it when you're online"
+REPORT_SEND_LIMIT = "You've sent 5 today. Send it tomorrow, or make a zip instead"
+REPORT_SEND_BUSY = "Not sent: reports are busy today. Your report is kept: send it later, or make a zip instead"
+REPORT_SEND_TOO_BIG = "Too big to send: make a zip instead and post it on Discord"
+REPORT_SEND_PAUSED = "Sending is paused for now: make a zip instead and post it on Discord"
+REPORT_SEND_REFUSED = "Not sent: the report wasn't taken ({status}). It's kept: make a zip instead and post it on Discord"
+REPORT_SEND_UNSAFE = "Surasura couldn't make this report safe to send. Make a zip instead and look it over"
+REPORT_SEND_FAILED = "The report couldn't be sent: {why}"
+REPORT_WAITING = "1 report waiting to send"
+REPORT_SEND_NOW = "Send now"
+REPORT_SEND_NOW_TIP = "Send the report that's waiting (the same one: Sonic gets it once)"
+REPORT_DONT_SEND = "Don't send"
+REPORT_DONT_SEND_TIP = "Delete the waiting report's zip. Your saved reports stay on your list"
+REPORT_DISCARDED = "Not sent. Your saved reports are still on your list"
+REPORT_SENT_HEADING = "Sent reports"
+REPORT_SENT_ROW = "#{id}   {when}"
+# try a9 #6 (Sonic: "I don't see anything and now I can't see the 5 nor the zip"): the done line says where they went,
+# *Sent reports* sits right under it, and a sent #ID opens the reports it held
+REPORT_SENT_WHERE_ONE = "Sent. Your report is #{id}. The report it held is under Sent reports, just below"
+REPORT_SENT_WHERE_MANY = "Sent. Your report is #{id}. The {n} reports it held are under Sent reports, just below"
+REPORT_SENT_OPEN = "Open"
+REPORT_SENT_OPEN_TIP = "See the reports #{id} held, their words and pictures, as they were sent"
+REPORT_SENT_ZIP = "Open the zip"
+REPORT_SENT_ZIP_TIP = "Show this report's zip, as it was sent, selected in its folder (kept on this PC for 90 days)"
+REPORT_SENT_OPENED = "#{id}, sent {when}"
+REPORT_SENT_OPENED_TIP = "The reports this send held, as they went"
+REPORT_SENT_READ_FAILED = "#{id} couldn't be read: {why}"
+REPORT_SENT_EMPTY = "#{id} holds no reports to show: Open the zip to see what went"
+REPORT_SENT_PICTURE_TIP = "A picture this report held, as it went: names and folders already written as <you>"
+REPORT_SEND_WHERE = "Make a zip instead keeps it on this PC, to post on Surasura's Discord or GitHub Issues yourself."
+REPORT_ISSUES = "GitHub Issues works too"
+REPORT_ISSUES_TIP = ("Open Surasura's GitHub Issues in your browser, to post the zip there instead (needs a GitHub "
+                     "account)")
+REPORT_ZIP_BUSY = "A report is being made: press again once it's done"
 # --- end Report a problem
 
 # --- alpha 4 seams (P-seams: K1 / K3 / T6 option 2; app/qt/needs.py) ----------------------------------------------- #
@@ -1577,9 +1787,136 @@ PICKS_DONE = {
 }
 PICKS_FINISHED = "{title} finished · their cards stay put"
 PICKS_TAKEN_OUT = "{title}: their new cards are out of your order"
+# Settings' *When you finish something* = *Leave them out*: the finish toast says so, no question (its Undo takes both
+# back) — each finish toast's words and their *out* twin (`DragController._finish`)
+FINISHED_OUT = {
+    DRAG_FINISHED: "{title} finished · its new cards are out of your order",
+    PICKS_FINISHED: "{title} finished · their new cards are out of your order",
+    DONE_FINISHED: "✓ {title} finished · its new cards are out of your order",
+}
 PICKS_REMOVE_ASK = "Remove {title}?"
 PICKS_REMOVE_BODY = "Their {n} files go to the trash for 30 days. Undo puts them back where they were."
 PICKS_REMOVE_YES = "Remove {n} files"
 PICKS_REMOVE_YES_TIP = "Take them out of your library: their files go to the trash for 30 days"
 PICKS_REMOVED = "Removed {title} · in the trash for 30 days"
 # --- end A4 picks
+
+# --- the help cards (Sonic 2026-11-06 "Ok do it", into 3.0; spec tracks/window/work/help-cards; HG-1…HG-5, HC-1…HC-5,
+# PROVISIONAL): one card per area, opened by its ?, by *Why?* and by the strip's ?; and the tour of what runs by itself
+# (item 11). Each card: (title, what it is, before → after). The words describe what the app does now (3.0-dev after
+# #291, #295): a plain move no longer runs a Generate — the journey catches up when you open it, or after 5 quiet
+# minutes. `HELP_ALSO`: a card's extra line, where it has one.
+HELP_CARDS = {
+    "current": ("Current", "What you're watching or reading now, in order. The top rows get cards by themselves.",
+                "Drag a show above the top-cards line → its cards get made"),
+    "circles": ("What's running", "Five circles, one per part of Surasura. Hover one: what it's doing, and why.",
+                "Dim: resting · turning: working · still arc: waiting · ✓ done · red: failed · amber: a decision "
+                "waits — press it"),
+    "needs": ("Needs you", "What only you can decide, one card each.",
+              "Answer a card → it goes, and Surasura carries on"),
+    "finished": ("Finished", "A record of what you've worked through. Its sentences stay for your examples.",
+                 "Drop a show on Finished → its words leave your list; you choose if its unstudied cards stay"),
+    "stones": ("Stones and Done", "A stone is one episode. Press it once you've watched it.",
+               "Press a stone → ✓, its words leave your list · the last one → the show moves to Finished, its cards "
+               "stay"),
+    "moving": ("Soon · Goal · Finished", "Drag a row onto a bucket to move it, cards and all.",
+               "Drop on Goal → someday, in no order; it still counts"),
+    "arrivals": ("New arrivals", "New files wait here until you place them — unless a rule places them.",
+                 "3 new → open the tray → drag one into Current"),
+    "groups": ("Groups", "Several shows as one row.", "Ctrl+click two rows → ⋯ › Group… → one row"),
+    "level": ("Level", "How rare a word can be and still make your list.",
+              "Raise the level → more words join your list"),
+    "journey": ("Your journey", "Your list with its sentences, one page per episode.",
+                "Journey ↗ → the episode's page, open at once"),
+    "known": ("Known words from Anki", "Cards you study in Anki become words you know.",
+              "Click the known-words count → +12 known"),
+    "cards": ("Making cards", "Anki Miner makes cards for your top episodes, by itself.",
+              "Place an episode above the top-cards line → Making cards → 12 cards made today"),
+    "junban": ("順 Anki's order", "Your new cards, in the order you'll meet their words.",
+               "Preview → Reorder → the next cards come first"),
+    "backfill": ("Backfill (パターン · 例文)", "Fills two empty fields on your cards, from your library.",
+                 "Empty パターン and 例文 → filled"),
+    "generate": ("Your journey catches up", "After you move things, your journey catches up by itself.",
+                 "Move a row → the ● by Journey ↗ → it catches up in a moment, by itself"),
+    "piyo": ("Piyo ぴよ", "A practice chat with your own AI, checked by Surasura.",
+             "Copy the setup → paste it into your AI → play a round"),
+    "automation": ("What runs by itself", "Seven things Surasura does for you. Each one can be turned off.", ""),
+}
+HELP_ALSO = {
+    "current": "Its cards wait while Anki is closed",
+    "cards": "What stops it: Anki closed · the day's limit · Stop · a row below the top-cards line",
+    "finished": "Finishing never marks a word known",
+    "moving": "Undo: the toast's Undo, or Ctrl+Z",
+    "arrivals": "A show's next episode joins it by itself",
+    "groups": "Same title? asks once when two titles may be one show",
+    "known": "Suspended cards count only with Count suspended cards as known on",
+    "junban": "Undo the last reorder: in 順's window",
+    "backfill": "Only empty fields: never one you wrote",
+    "piyo": "What leaves: what Surasura tells your AI goes to that AI's company. Nothing else",
+    "generate": "Known words, the level or a new file: it catches up straight away",
+}
+# The tour's first card: the seven, one line each
+HELP_AUTOMATION_LIST = ("Making cards for your top episodes", "Known words from Anki", "Your journey catching up",
+                        "順 putting Anki's new cards in order", "Backfill filling empty fields",
+                        "Placing new arrivals by your rules", "Finishing a show after its last episode")
+HELP_AREAS = {"screens": "The screens", "library": "Your library", "words": "Your words",
+              "anki": "Anki", "automatic": "What runs by itself", "more": "More"}
+HELP_MARK = "?"                                           # the shared ? (`help_card.help_mark`)
+HELP_MARK_TIP = "Help: {title}\n• Click: its help card"
+HELP_MARK_NAME = "Help: {title}"
+HELP_CAUSE_HEADING = "Why this happened"
+HELP_CLIP_NAME = "Clip: {line}"
+HELP_PLAY = "▶"
+HELP_PLAY_TIP = "Play it once"
+HELP_SETTINGS = "Open its settings"
+HELP_SETTINGS_TIP = "Settings, at this part"
+HELP_ALL = "All help"
+HELP_ALL_TIP = "Every help card, by area"
+HELP_TOUR = "What runs by itself"
+HELP_TOUR_TIP = "A short tour: each thing Surasura does by itself, one card each"
+HELP_GUIDE = "Online guide"
+HELP_GUIDE_TIP = "The guide on GitHub, in your browser"
+HELP_CLOSE = "Close"
+HELP_CLOSE_TIP = "Close the help card (Esc)"
+HELP_BACK = "Back"
+HELP_BACK_TIP = "The card before"
+HELP_NEXT = "Next"
+HELP_NEXT_TIP = "The next card"
+HELP_DONE = "Done"
+HELP_DONE_TIP = "End the tour"
+HELP_STEP = "{n} of {total}"
+HELP_TOUR_FOOT = "Turn any of these off: Settings › Run things by themselves"
+HELP_LIT = "Now"                                          # the strip's card: every lit circle and its *Why*
+HELP_LIT_NONE = "Nothing is running now"
+HELP_LIT_LINE = "{name}: {line}"
+HELP_LIT_WHY = "   {line}"
+HELP_LIST_ITEM = "• {line}"
+HELP_ALL_HEADING = "All help"
+HELP_CARD_OPEN_TIP = "Open this help card"
+# *Try it* (§6.5): a press the window already has — real, small, and undoable or read-only
+HELP_TRY = {
+    "sync_known": ("Update known words now", "Reads your known words from Anki now — Anki itself is not changed"),
+    "mine_top": ("Make cards for the top episode now", "Asks Anki Miner for the first episode above the line now — "
+                 "Undo this batch takes them back"),
+    "junban": ("Open 順 to try it", "Opens 順's window: Try it on my cards moves your next 5 cards, with its own Undo"),
+    "update_journey": ("Update my journey now", "Brings your journey up to date now — it changes no file of yours"),
+}
+HELP_TRY_MISSING = {
+    "sync_known": "Choose your Anki decks first: Settings › Known words",
+    "mine_top": "Make cards for me is off, or Anki Miner isn't set up yet",
+    "junban": "順 isn't installed",
+    "update_journey": "Add something to your library first",
+}
+HELP_TRY_BUSY = "Already running: your journey is being brought up to date"
+HELP_CAUSE_WHY = "{line}"                                  # the card's cause line (its heading says *Why*)
+HELP_CAUSE_WHY_AT = "{line} · {time}"
+HELP_TRY_FIX = "Open its settings"
+HELP_TRY_FIX_TIP = "Settings, where it is set up"
+# the doors (§6.6) and the one-time hints (HC-3; §6.7)
+HINT_CARD_WAIT = "Cards wait: {reason}"
+HINT_AMBER = "A decision waits for you: press the amber circle"
+HINT_AUTO_GENERATE = "Your journey is catching up by itself"
+HINT_WHY = {"first_card_wait": "Anki Miner makes cards only while Anki is open and free",
+            "first_amber": "Amber means only you can decide something: the circle takes you to it",
+            "first_auto_generate": "After a move, new known words or a new file, your journey catches up by itself"}
+# --- end help cards

@@ -8,8 +8,8 @@ of the window around the pages, in the redesign's flat look.
   no share shows it whole and quieter. It replaces the bar's pulsing dot: light never pulses.
 - **The level ▾** (`LevelButton`) and **its pop** (`LevelPop`, a `motion.Overlay` in slate navy; W3.1b, the Level
   menu): *Level* ? and *Automatic*'s toggle, Settings' level slider (one name), words · % · how often, Generate and a
-  gear to Settings › Level, *Open your journey*. A small mark on the ▾ while Generate is stale or failed (amber) or the
-  journey's sentences are catching up (S6's lean).
+  gear to Settings › Level (a9.1: *Open your journey* went — the header's *Journey ↗*). A small mark on the ▾ while
+  Generate is stale or failed (amber) or the journey's sentences are catching up (S6's lean).
 - **The vein** (`Vein`): an uneven iris line under the current tab, from a fixed set of pre-drawn shapes (seeded,
   cached per width × ratio), its two ends travelling on springs (`vein-lead` ω 34, `vein-tail` ω 22); Reduced motion
   jumps it.
@@ -368,9 +368,9 @@ def level_readout(preview):
 class LevelPop(motion.Overlay):
     """The level ▾'s pop (W3.1b, the brief's round-5 pop): *Level* with a quiet ? and, on the right, *Automatic* and its
     toggle; the level slider (Settings' own, one name: the chosen band's under its gem) in its well; the readout —
-    words, %, how often; the foot: Generate (the shell adds it: `add_action`) and a gear to Settings › Level; then
-    *Open your journey ↗* with the journey's dot. Slate navy with its lit top edge (`style.paint_overlay`); Esc, Back, a
-    press elsewhere and the ▾ again close it.
+    words, %, how often; the foot: Generate (the shell adds it: `add_action`) and a gear to Settings › Level (a9.1: no
+    *Open your journey ↗*: the header's *Journey ↗* and its dot). Slate navy with its lit top edge
+    (`style.paint_overlay`); Esc, Back, a press elsewhere and the ▾ again close it.
 
     It decides nothing and writes nothing: a band picked (`picked`, its key), Automatic flipped (`automatic`, a bool)
     and the ? or the gear (`settings_asked`) go to the shell, which writes through the settings service as Settings
@@ -408,7 +408,7 @@ class LevelPop(motion.Overlay):
         self.help.setAccessibleName(strings.LEVEL_POP_HELP_NAME)
         self.help.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.help.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.help.clicked.connect(lambda _c=False: self._to_settings())
+        self.help.clicked.connect(lambda _c=False: self._to_help())    # help cards (P15): Level's card, its settings on it
         head.addWidget(self.help)
         head.addStretch(1)
         self.auto_word = QLabel(strings.LEVEL_POP_AUTO_WORD, self)
@@ -524,6 +524,12 @@ class LevelPop(motion.Overlay):
     def _to_settings(self):
         self.close()
         self.settings_asked.emit()
+
+    def _to_help(self):
+        """? (help cards, P15): the pop closes and Level's help card opens (*Open its settings* is on it)."""
+        self.close()
+        from app.qt import help_card
+        help_card.open_card(self, "level")
 
     def place(self):
         """Under its ▾, its right edge on the ▾'s, kept inside the window."""

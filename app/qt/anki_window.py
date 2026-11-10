@@ -70,6 +70,7 @@ class AnkiWindow(windows.SecondaryWindow):
         self._all_decks = []              # every deck Anki has
         self._counts = {}                 # chosen deck -> studied notes
         self._models = {}                 # note type -> its fields, in order
+        self._sentences = []              # note types whose word field holds sentences (the line under the fields)
         self._unsaved_pick = False        # the first open's pick, shown and not saved yet (S16)
         self._probe_seq = 0               # the newest probe / scope read (an older answer is dropped)
         self._scope_press = None          # a scope read's quiet mark on the counts (round 8 row 45), and its read
@@ -215,6 +216,9 @@ class AnkiWindow(windows.SecondaryWindow):
         self.box_field2.activated.connect(self._field2_chosen)
         row.addWidget(self.box_field2, 1)
         self.body.addLayout(row)
+        self.sentences = self._label("windowline")      # the word field holds sentences: said under it (a9r2)
+        self.sentences.setWordWrap(True)
+        self.body.addWidget(self.sentences)
         self.resolved = self._label("ankiresolved")
         self.resolved.setWordWrap(True)
         self.body.addWidget(self.resolved)
@@ -362,6 +366,9 @@ class AnkiWindow(windows.SecondaryWindow):
             if box.currentIndex() != index:
                 box.setCurrentIndex(index)
             box.blockSignals(False)
+        hint = AW.sentence_hint(self._models, self.chosen(), self._sentences)
+        self._set_label(self.sentences, "" if hint is None else
+                        strings.ANKI_SENTENCES.format(field=hint) if hint else strings.ANKI_SENTENCES_PLAIN)
         resolved, skipped = AW.field_lines(self._models, self.chosen())
         self._set_label(self.resolved, strings.ANKI_RESOLVED_JOIN.join(
             strings.ANKI_RESOLVED.format(model=m, fields=strings.ANKI_FIELDS_JOIN.join(r)) for m, r in resolved))
@@ -430,7 +437,8 @@ class AnkiWindow(windows.SecondaryWindow):
         self._probing = seq                               # the probe under way (a newer read may outdate its answer)
         self._paint_state("checking", strings.ANKI_STATE_CHECKING)
         self._paint_controls()
-        bridge.run_in_worker(AW.read_probe, snap["url"], snap["decks"], snap["suspended"],
+        bridge.run_in_worker(AW.read_probe, snap["url"], snap["decks"], snap["suspended"], snap["fields"],
+                             snap["language"],
                              then=self.alive(lambda probe: self._probed(probe, seq, snap["language"])),
                              failed=self.alive(lambda info: self._probed(
                                  AW.Probe({"ok": False, "error": str(info[0])}, [], None, {}, {}), seq,
@@ -463,6 +471,7 @@ class AnkiWindow(windows.SecondaryWindow):
                 if probe.preselected:
                     self.say(strings.ANKI_PICKED)
             self._counts, self._models = dict(probe.counts), dict(probe.models)
+            self._sentences = list(probe.sentences)
         else:
             self._paint_state("closed", strings.ANKI_STATE_CLOSED)
             self.state.setToolTip(detail or strings.ANKI_CLOSED_LINE)
@@ -485,7 +494,8 @@ class AnkiWindow(windows.SecondaryWindow):
             self._scope_read(seq, failed=True)
             if seq == self._probe_seq:
                 self.say(strings.ANKI_SCOPE_FAILED.format(error=info[0]))
-        bridge.run_in_worker(AW.read_scope, snap["url"], snap["decks"], snap["suspended"],
+        bridge.run_in_worker(AW.read_scope, snap["url"], snap["decks"], snap["suspended"], snap["fields"],
+                             snap["language"],
                              then=self.alive(lambda answer: self._scoped(answer, seq, snap["language"])),
                              failed=self.alive(broke))
 
@@ -499,7 +509,7 @@ class AnkiWindow(windows.SecondaryWindow):
         self._scope_read(seq)
         if seq != self._probe_seq or language != self.language:
             return
-        self._counts, self._models = dict(answer[0]), dict(answer[1])
+        self._counts, self._models, self._sentences = dict(answer[0]), dict(answer[1]), list(answer[2])
         self._render_decks()
         self._render_fields()
         self._paint_controls()
@@ -523,6 +533,7 @@ class AnkiWindow(windows.SecondaryWindow):
         if self.box_field1.itemData(index) == self.first:
             return                                        # the same choice: nothing to write or read (IK-46)
         self.first = self.box_field1.itemData(index)
+        self._sentences = []                              # read again for the field chosen now (`_scoped`)
         self._scope_changed()
 
     def _field2_chosen(self, index):
@@ -771,7 +782,7 @@ class AnkiWindow(windows.SecondaryWindow):
         the numbers); the old language's line goes."""
         self._probe_seq += 1
         self._probing = False
-        self._counts, self._models = {}, {}
+        self._counts, self._models, self._sentences = {}, {}, []
         self._unsaved_pick = False
         self._load_choices()
         self.chk_suspended.blockSignals(True)

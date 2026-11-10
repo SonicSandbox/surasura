@@ -576,9 +576,13 @@ def _last_error():
 # can take another's ring; a window that crashes frees its slot with its process. (Watching the store's own file
 # instead would be late by seconds whenever a save isn't flushed to disk at once: the watch study, §2.2.)
 
-def bell_name(db_path, slot):
-    key = hashlib.sha1(os.path.normcase(os.path.abspath(db_path)).encode("utf-8")).hexdigest()[:16]
-    return f"Local\\Surasura-bell-{key}-{slot}"
+def bell_key(db_path):
+    """The 16 hex characters a store's bell is named by (the report's scrub writes them `<install key>`)."""
+    return hashlib.sha1(os.path.normcase(os.path.abspath(db_path)).encode("utf-8")).hexdigest()[:16]
+
+
+def bell_name(db_path, slot, key=None):
+    return f"Local\\Surasura-bell-{key or bell_key(db_path)}-{slot}"
 
 
 def ring(db_path):
@@ -589,8 +593,9 @@ def ring(db_path):
     rung = 0
     try:
         k32 = _k32()
+        key = bell_key(db_path)                 # once a ring, not once a slot (R6: a hash + abspath per slot per save)
         for slot in range(BELL_SLOTS):
-            handle = k32.OpenEventW(0x0002, False, bell_name(db_path, slot))          # EVENT_MODIFY_STATE
+            handle = k32.OpenEventW(0x0002, False, bell_name(db_path, slot, key))     # EVENT_MODIFY_STATE
             if handle:
                 k32.SetEvent(handle)
                 k32.CloseHandle(handle)

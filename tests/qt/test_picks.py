@@ -514,6 +514,7 @@ def test_real_store_A4_picks_land_together_in_the_store_and_one_undo_puts_every_
     picked = [r for r in rs[2:] if lst.pickable(r) and not drag.split_first(rs, r)][-3:]
     ids = [i for r in picked for i in drag.ids_of(r)]
     before = {i: store.item(i)["tier"] for i in ids}
+    assert None not in before.values()                                  # so the Undo's check below needs each item back
     for r in picked:
         assert lst.pick_row(r)
     if name == "remove":
@@ -522,16 +523,19 @@ def test_real_store_A4_picks_land_together_in_the_store_and_one_undo_puts_every_
     else:
         win.items.send_picks(name)
     want = {"top": "now", "soon": "soon", "goal": "goal", "finished": "graduated"}.get(name)
+
+    def tier(i):                                    # one read: the writer can remove the item between two
+        return (store.item(i) or {}).get("tier")
     if want is None:
-        assert wait_until(lambda: all(store.item(i) is None or store.item(i).get("tier") is None for i in ids), 10)
+        assert wait_until(lambda: all(tier(i) is None for i in ids), 10)
     else:
-        assert wait_until(lambda: all(store.item(i)["tier"] == want for i in ids), 10)
+        assert wait_until(lambda: all(tier(i) == want for i in ids), 10)
     if name == "top":
         assert wait_until(lambda: [r.key for r in rows_of(win)[:3]] == [r.key for r in picked], 10)
     assert wait_until(lambda: win.moves.toasted is not None and win.moves.toasted.change is not None, 10)
     assert len([t for t in (win.moves.toasted,) if t.ids == tuple(ids)]) == 1      # one command for them all
     win.toasts.card.buttons[0].click()                                  # one Undo
-    assert wait_until(lambda: all(store.item(i) is not None and store.item(i)["tier"] == before[i] for i in ids), 10)
+    assert wait_until(lambda: all(tier(i) == before[i] for i in ids), 10)
 
 
 def test_A4_picks_holding_a_splits_first_part_grey_finished_and_its_drag_leaves_the_well_dark(world):

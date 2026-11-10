@@ -265,6 +265,84 @@ def test_set_watched_and_finished_save_and_undo(lib, make_writer):
     assert lib.store.item(now[0])["watched"] == 0 and lib.store.item(now[1])["watched"] == 0
 
 
+def test_newest_is_what_ctrl_z_takes_behind_writes_that_never_touch_the_undo_stack(lib, make_writer):
+    """3.0.1 item 12: Ctrl+Z on a saved Done waited behind other saves, its stone painted only with nothing queued.
+    `newest` is what Ctrl+Z's undo takes as the queue reaches it: the saved Done behind background writes that never
+    touch the Undo stack (forgotten covers, Settings' lines); unknown (None) once a write that may (another mark, an
+    Undo) waits before it. The undo named with it takes that Done back, whatever lands first."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: heard.saved)
+    done = heard.saved[0][0]
+    assert w.newest() is done
+    w.hold()                                            # (a drag: nothing lands until it lets go)
+    w.forget_covers()
+    w.set_options(keep_watched=False)
+    assert w.pending() == 2 and w.newest() is done
+    w.undo(w.newest())
+    assert w.newest() is None, "an Undo queued may take one off the stack"
+    w.release()
+    assert h.until(lambda: heard.undone)
+    assert heard.undone[0][0] is done and lib.store.item(now[0])["watched"] == 0
+    w.hold()
+    w.set_watched([now[1]], True)
+    assert w.newest() is None, "a mark queued goes on the stack: not known before it lands"
+    w.release()
+    assert h.until(lambda: len(heard.saved) == 2) and h.until(lambda: not w.pending())
+    assert w.newest() is heard.saved[1][0]
+
+
+def test_newest_never_names_the_change_before_one_that_is_landing(lib, make_writer):
+    """Review ITEM12 #3: a change goes on the Undo stack before its command leaves the queue — asked in the moment
+    between (`_landed`), `newest` says "not known" or names the new change, never the one saved before it (Ctrl+Z
+    would undo that one, and leave the new one)."""
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: heard.saved)
+    first = heard.saved[0][0]
+    seen, real = [], w._landed
+
+    def landed(cmd):
+        out = real(cmd)
+        seen.append(w.newest())                         # (the command has left the queue: its change is known)
+        return out
+    w._landed = landed
+    w.set_watched([now[1]], True)
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert seen and all(c is not first for c in seen)
+    assert w.newest() is heard.saved[1][0]
+
+
+def test_newest_behind_a_download_registered_is_the_saved_change_and_unknown_while_a_copy_runs(lib, make_writer):
+    """A download's registration queued before Ctrl+Z never goes on the Undo stack (`_register`): what Ctrl+Z takes is
+    the saved change behind it. While the copier still works (an Explorer drop's copy, a registration's records) what
+    it hands the queue isn't known: None."""
+    lib.store.set_library_options(arrivals_on=True)
+    w, heard = make_writer()
+    now = lib.ids("now")
+    w.set_watched([now[0]], True)
+    assert h.until(lambda: heard.saved)
+    done = heard.saved[0][0]
+    words = names(lib.language)
+    w.hold()
+    told = []
+    w.register([_download(lib, words[40], words[41], "ccccccccccc")], _keyed(_yt(words[41])), rules={},
+               done=lambda *n: told.append(n))
+    assert h.until(lambda: w.pending() and not w._copying)
+    assert w.newest() is done
+    with w._cond:
+        w._copying += 1                                 # (a copy under way: its command not queued yet)
+    try:
+        assert w.newest() is None
+    finally:
+        with w._cond:
+            w._copying -= 1
+    w.release()
+    assert h.until(lambda: told) and w.newest() is done
+
+
 def test_undo_with_nothing_saved_does_nothing(lib, make_writer):
     w, heard = make_writer()
     w.undo()
@@ -731,6 +809,113 @@ def test_a_raw_error_is_a_logged_note_and_the_queue_goes_on(stub_writer, capsys)
     assert "disk I/O error" in capsys.readouterr().out
 
 
+def test_a_deferred_press_is_written_only_after_the_windows_go(stub_writer):
+    """(Up next at 20,000 files.) The window defers its press's command until it has painted the press: the writer's
+    thread takes Python's lock in turns with the window's, so a write worked out during the paint doubled the press's
+    stretch. Nothing is tried before `go()`; after it, the command lands as ever."""
+    w, heard, store, _opener = stub_writer()
+    w.defer()
+    w.move([1], "goal", label="press")
+    time.sleep(0.1)                                    # (under DEFER_MAX_S: still waiting)
+    assert store.calls == [] and w.attempts == 0 and w.pending() == 1
+    w.go()
+    assert h.until(lambda: heard.saved)
+    assert heard.saved[0][1] == "press" and len(store.calls) == 1
+
+
+def test_a_deferred_press_whose_go_never_comes_is_written_after_DEFER_MAX_S(stub_writer):
+    """The window's go lost (it closed, an error before it): the write still happens, `DEFER_MAX_S` late at most."""
+    w, heard, store, _opener = stub_writer()
+    t0 = time.monotonic()
+    w.defer()
+    w.move([1], "goal")
+    assert h.until(lambda: heard.saved)
+    assert time.monotonic() - t0 >= M.DEFER_MAX_S * 0.9 and len(store.calls) == 1
+
+
+def test_a_write_starts_only_while_the_window_rests(stub_writer):
+    """(Up next 2) The writer's step waits while the window's thread is busy (`window_idle`), so its work never takes
+    turns at Python's lock with the window's stretch; the window resting lets it go at once."""
+    from app.services import window_idle
+    w, heard, store, _opener = stub_writer()
+    window_idle.busy()
+    try:
+        w.move([1], "goal", label="press")
+        time.sleep(0.03)                                   # (under window_idle.CAP_S)
+        assert store.calls == []
+        window_idle.rest()
+        assert h.until(lambda: heard.saved)
+    finally:
+        window_idle.rest()
+
+
+class MovingOpener(StubOpener):
+    """A store whose mode moves under the writer once (LM11b): its look says "store", then the handle it asks for is
+    gone — another thread's look settling on the shared opener. The next look is a store again."""
+
+    def __init__(self, store):
+        super().__init__(store)
+        self.moved = 1
+
+    def handle(self):
+        if self.moved:
+            self.moved -= 1
+            return None
+        return super().handle()
+
+
+def test_LM11b_a_store_whose_mode_moves_under_the_writer_keeps_the_move_and_writes_it_next(tmp_path):
+    """(LM11b, Up next 4: a language switch with a busy store lost the queued nudge 1 time in ~100.) The writer looked,
+    the store said "store", and the handle it asked for next was gone — the shared opener's mode moved under it, a look
+    on another thread settling. That was a refusal: the move neither written nor journalled. Now it is busy: kept,
+    asked again, written."""
+    store = StubStore()
+    opener = MovingOpener(store)
+    heard = Heard()
+    w = M.Writer(opener, "ja", journal_file=str(tmp_path / "window_pending_ja.json"), words=WORDS, retry=0.02,
+                 **heard.kw())
+    w.start()
+    try:
+        w.nudge([1], "up", label="nudge")
+        assert h.until(lambda: heard.saved or heard.notes)
+        assert heard.notes == [] and [c[0] for c in store.calls] == ["nudge"] and heard.saved[0][1] == "nudge"
+        assert opener.moved == 0
+    finally:
+        w.finish(time.monotonic() + 5)
+
+
+def test_LM11b_the_openers_mode_and_reason_are_read_as_one_answer_while_a_look_settles_on_another_thread(
+        monkeypatch, tmp_path):
+    """The opener's (mode, reason) is replaced whole: a reader on another thread (the writer) never sees a new mode
+    with an old reason — "json" with None, neither a store nor busy, the pair that made the writer refuse its move."""
+    answers = [("store", None), ("json", "busy")]
+    turn = [0]
+
+    def check_mode(language, data_dir, busy_wait=0.0):
+        turn[0] += 1
+        return answers[turn[0] % 2]
+    monkeypatch.setattr(ls, "check_mode", check_mode)
+    opener = ls.StoreOpener("ja", str(tmp_path), str(tmp_path))
+    stop = threading.Event()
+
+    def settle():
+        while not stop.is_set():
+            opener._settle()
+    t = threading.Thread(target=settle, daemon=True)
+    t.start()
+    seen = set()
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            seen.add(opener.state())
+            seen.add(M._state_of(opener))
+    finally:
+        stop.set()
+        t.join(5)
+    assert seen <= set(answers) | {("json", "not checked")}, seen
+    assert seen & set(answers)
+
+
 def test_a_value_error_outside_a_move_is_a_raw_error(stub_writer):
     w, heard, store, _opener = stub_writer()
     store.fail["set_tier"] = ValueError("unknown tier 'x'")
@@ -856,10 +1041,15 @@ def test_a_listener_that_raises_never_stops_the_writer(stub_writer):
 
 class Recorder:
     def __init__(self):
-        self.moves, self.resyncs = [], 0
+        self.moves, self.resyncs, self.landings = [], 0, 0
 
-    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None):
+    def landed(self):
+        self.landings += 1
+
+    def after_move(self, ids, tier, before_id=None, after_id=None, order=None, aside=None, landing=None):
         self.moves.append((list(ids), tier, before_id, after_id))
+        if landing is not None:
+            landing["numbers_ahead"] = True             # (as `Numbers.after_move` marks a move it followed)
         return {}
 
     def resync(self):
@@ -1124,6 +1314,64 @@ def test_the_numbers_log_why_after_their_lock_when_a_move_cant_be_followed(tmp_p
     numbers.close()
 
 
+def test_an_arrival_dropped_into_now_resyncs_quietly_and_every_row_keeps_its_new_count(tmp_path, capsys):
+    """RC captures (Minato, 2026-10-31): a drop from New arrivals into Current printed "the move couldn't be followed:
+    item N isn't in the order" — the numbers knew before the move that the plan never counted the arrival, yet asked the
+    engine to move it and printed its refusal — and every row lost its *N new* until the Generate after it (the resync
+    published None for each). Now: no move asked, no such line, a resync; the plan is stale (said once in the log) and
+    every row keeps the last plan's figure until a plan that can be followed is read — in a `Kept` table (U-1: painted
+    faded), one version naming only the rows that show a figure."""
+    seed, analysed, path = _small(tmp_path)
+    said = []
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, log=said.append)
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    before = dict(numbers()[1])
+    assert all(before[r["id"]][2] is not None for r in analysed)
+    arrival = dict(analysed[0], id=10 ** 6, rel_path="ja/HighPriority/新しい回.srt", tier="now",
+                   ord=analysed[0]["ord"] - 1)
+    seed.library.commit(items=[arrival], order=True)                  # the drop, as the store has it
+    v = numbers.version
+    assert numbers.after_move([arrival["id"]], "now", before_id=analysed[0]["id"]) == {}
+    assert numbers.idle(30) and numbers.why().startswith("stale:")
+    assert "isn't in the order" not in capsys.readouterr().out
+    assert numbers()[1] == before and isinstance(numbers()[1], M.Kept) and numbers.version == v + 1   # nothing blanked
+    assert numbers.changed(v) == {i for i, (_k, _c, n) in before.items() if n is not None}
+    assert said == ["N new (ja): follows the order", f"N new (ja): {numbers.why()}"]
+    write_plan(path, [arrival["rel_path"]] + [r["rel_path"] for r in analysed], ["now"] + [r["tier"] for r in analysed],
+               n_words=400, language="ja")                           # the Generate after the drop
+    os.utime(path, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
+    v = numbers.version
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why() is None and not isinstance(numbers()[1], M.Kept)      # the fade goes
+    assert numbers.changed(v) is not None                     # U-A1: what changed, named — never every row again
+    assert all(numbers()[1][i][2] is not None for i in [arrival["id"]] + [r["id"] for r in analysed])
+    numbers.close()
+
+
+def test_a_new_plan_read_stale_keeps_the_last_new_counts_until_one_can_be_followed(tmp_path):
+    """The other road to the blink (after Mine): a Generate ends while the library moved on (cards landed, known
+    words changed: the caller's check says stale), so its plan can't be followed; the rows keep the last figures —
+    never blank between that Generate and the next. A first plan read stale still has none to keep."""
+    seed, analysed, path = _small(tmp_path)
+    verdict = [None]
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path, check=lambda plan, store: verdict[0])
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    before = {i: n for i, (_k, _c, n) in numbers()[1].items()}
+    verdict[0] = "known words changed"
+    write_plan(path, [r["rel_path"] for r in analysed], [r["tier"] for r in analysed], n_words=300, seed=9)
+    os.utime(path, ns=(time.time_ns() + 10 ** 9, time.time_ns() + 10 ** 9))
+    numbers.resync()
+    assert numbers.idle(30) and numbers.why() == "stale: known words changed"
+    assert {i: n for i, (_k, _c, n) in numbers()[1].items()} == before and isinstance(numbers()[1], M.Kept)
+    numbers.close()
+    fresh = M.Numbers(seed.opener, "ja", plan_file=path, check=lambda plan, store: "known words changed")
+    fresh.load()
+    assert fresh.idle(30) and all(n is None for _k, _c, n in fresh()[1].values())
+    fresh.close()
+
+
 def test_a_plan_missing_a_file_the_library_counts_is_stale(tmp_path):
     seed, analysed, path = _small(tmp_path, drop=1)
     numbers = M.Numbers(seed.opener, "ja", plan_file=path)
@@ -1183,7 +1431,7 @@ def test_the_same_stale_plan_is_not_read_again_on_every_resync(tmp_path, monkeyp
     seed, analysed, path = _small(tmp_path, drop=1)
     loads = []
     real = plan_engine.load
-    monkeypatch.setattr(plan_engine, "load", lambda p: loads.append(p) or real(p))
+    monkeypatch.setattr(plan_engine, "load", lambda p, **kw: loads.append(p) or real(p, **kw))
     numbers = M.Numbers(seed.opener, "ja", plan_file=path)
     numbers.load()
     numbers.resync()
@@ -1366,6 +1614,125 @@ def test_resync_after_the_windows_own_move_works_nothing_out_again(tmp_path):
     now = sorted((r for r in seed.library.items() if r["tier"] == "now"), key=lambda r: (r["ord"], r["id"]))
     assert numbers.after_move([goal[-1]["id"]], "now")
     seed.library.commit(items=[{"id": goal[-1]["id"], "tier": "now", "ord": now[0]["ord"] - 1}], order=True)
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes
+    numbers.close()
+
+
+def _goal_to_now_top(seed, analysed):
+    """(item, the store's write that puts it at NOW's top): a Goal item moved to Up next."""
+    goal = [r for r in analysed if r["tier"] == "goal"]
+    now = sorted((r for r in seed.library.items() if r["tier"] == "now"), key=lambda r: (r["ord"], r["id"]))
+    item = goal[-1]["id"]
+    return item, lambda: seed.library.commit(items=[{"id": item, "tier": "now", "ord": now[0]["ord"] - 1}], order=True)
+
+
+def test_a_resync_asked_while_a_followed_move_is_on_its_way_waits_for_it_and_works_nothing_out_again(tmp_path):
+    """(Up next at 20,000 files, the probes' rare full re-plan.) The reader asks the numbers again after every write,
+    so a resync from the last move can run after the writer's `after_move` for the next one and before that write
+    lands: it found the store a move behind, worked the old order out again (12 ms of the worker's time at 20k, the
+    window's thread waiting for Python's lock), then the new one once more after the write. A move on its way is waited
+    for: no full pass at all, and the figures stay the move's."""
+    seed, analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    numbers.load()
+    assert numbers.idle(30) and numbers.why() is None
+    passes = numbers.renumbered
+    item, write = _goal_to_now_top(seed, analysed)
+    landing = {}
+    assert numbers.after_move([item], "now", landing=landing) and landing.get("numbers_ahead")
+    moved = dict(numbers()[1])
+    numbers.resync()                                   # the last write's resync: the store a move behind
+    assert numbers.idle(30) and numbers.renumbered == passes
+    write()
+    numbers.landed()
+    numbers.resync()                                   # this write's
+    assert numbers.idle(30) and numbers.renumbered == passes and numbers()[1] == moved and numbers.why() is None
+    numbers.close()
+
+
+def test_a_resync_put_off_for_a_move_on_its_way_still_follows_another_programs_write(tmp_path):
+    """A resync waited for the window's move: once that lands, it runs — another program's write that came meanwhile
+    is worked out (never lost by the wait), and a resync with nothing written since reads no order at all."""
+    seed, analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    numbers.load()
+    assert numbers.idle(30)
+    passes = numbers.renumbered
+    item, write = _goal_to_now_top(seed, analysed)
+    landing = {}
+    numbers.after_move([item], "now", landing=landing)
+    soon = sorted((r for r in seed.library.items() if r["tier"] == "soon"), key=lambda r: (r["ord"], r["id"]))
+    other = soon[-1]["id"]                             # another program: Soon's last to Goal's top
+    goal_top = min(r["ord"] for r in seed.library.items() if r["tier"] == "goal")
+    seed.library.commit(items=[{"id": other, "tier": "goal", "ord": goal_top - 1}], order=True)
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes          # put off: the window's move is on its way
+    write()
+    numbers.landed()                                   # (the reader's resync for it not even asked: the put-off one runs)
+    assert numbers.idle(30) and numbers.renumbered == passes + 1
+    reads = []
+    real = numbers._order
+    numbers._order = lambda store: reads.append(1) or real(store)
+    numbers.resync()
+    assert numbers.idle(30) and reads == [] and numbers.renumbered == passes + 1
+    numbers.close()
+
+
+def test_a_move_followed_while_a_resync_reads_the_order_is_never_worked_back(tmp_path):
+    """The writer follows a move while the worker is reading the store's order (the read a move behind): that read is
+    thrown away and the order read again once the move lands — never the engine worked back to the old order."""
+    seed, analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    numbers.load()
+    assert numbers.idle(30)
+    passes = numbers.renumbered
+    item, write = _goal_to_now_top(seed, analysed)
+    real = numbers._order
+    landing = {}
+
+    def order(store):
+        out = real(store)
+        if not landing:
+            numbers.after_move([item], "now", landing=landing)     # (the writer's thread, mid-read)
+        return out
+    numbers._order = order
+    seed.library.commit(items=[], order=True)          # something written: the read isn't skipped
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes and landing.get("numbers_ahead")
+    moved = dict(numbers()[1])
+    write()
+    numbers.landed()
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes and numbers()[1] == moved
+    numbers.close()
+
+
+def test_a_nudge_written_while_a_resync_reads_the_order_is_never_worked_out_whole(tmp_path):
+    """(Up next 2) A nudge's write lands while the worker reads the store's order (its read sees the nudge, the engine
+    not yet: the writer follows it from the store's result after the write): the resync puts itself off for the move on
+    its way (`expect`), and the follow and its landing leave nothing to work out — no full pass."""
+    seed, analysed, path = _small(tmp_path)
+    numbers = M.Numbers(seed.opener, "ja", plan_file=path)
+    numbers.load()
+    assert numbers.idle(30)
+    passes = numbers.renumbered
+    item, write = _goal_to_now_top(seed, analysed)
+    real = numbers._order
+    landing = {}
+
+    def order(store):
+        if not landing:
+            numbers.expect(landing)                    # (the writer's thread: told before its write ...)
+            write()                                    # (... and the write landing mid-read)
+        return real(store)
+    numbers._order = order
+    seed.library.commit(items=[], order=True)          # something written: the read isn't skipped
+    numbers.resync()
+    assert numbers.idle(30) and numbers.renumbered == passes and landing.get("numbers_ahead")
+    numbers._order = real
+    numbers.after_move([item], "now")                  # the writer's follow, from where the store put it
+    numbers.landed()
     numbers.resync()
     assert numbers.idle(30) and numbers.renumbered == passes
     numbers.close()
@@ -2448,6 +2815,215 @@ def test_S2_each_arrival_lands_where_its_icon_or_menu_says_and_its_undo_puts_it_
         w.place([a], "the top")                          # a window's slip: refused at the call, never queued
 
 
+def _tiers_and_values(lib, placed=()):
+    """Every item's tier, place and values — and `changed_in` for the `placed` (a neighbour the Soon line moved across
+    gets the line's own version, as any move's Undo gives it)."""
+    return [r[:-1] + ((r[-1],) if r[0] in placed else ()) for r in lib.store.conn.execute(
+        "SELECT id, tier, ord, graduated_at, watched, changed_in FROM items ORDER BY id")]
+
+
+def test_mado_o_start_over_is_one_saved_change_and_its_undo_puts_the_sort_back(lib, make_writer):
+    """The sort screen's *Start sorting over* (alpha 8): the placements it made, given back as one `start_over` — every
+    title in New arrivals, one change on the Undo stack; Ctrl+Z takes the reset back exactly, and the next Ctrl+Z the
+    newest placement (the stack under it intact)."""
+    w, heard = make_writer()
+    a, b, c = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("goal")[3], lib.ids("soon")[1]))
+    w.place([a], "top")
+    w.place([b], "goal")
+    w.place([c], "finished")
+    assert h.until(lambda: len(heard.saved) == 3)
+    placed = [ch for ch, _l in heard.saved]
+    sorted_ = _tiers_and_values(lib, (a, b, c))
+    w.start_over(placed, label="over")
+    assert h.until(lambda: len(heard.saved) == 4)
+    change, label = heard.saved[-1]
+    assert label == "over" and change.kind == "move" and {it["id"] for it in change.items} == {a, b, c}
+    assert set(lib.ids("arrivals")) >= {a, b, c} and not lib.store.item(c)["graduated_at"]
+    assert journal(lib.language) is None, "landed: out of the journal"
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 1)
+    assert _tiers_and_values(lib, (a, b, c)) == sorted_
+    w.undo()
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert lib.store.place_of(c)[0] == "arrivals" and lib.store.place_of(b)[0] == "goal"
+
+
+def test_mado_o_a_start_over_queued_at_a_crash_is_replayed_and_one_that_landed_is_let_go_quietly(
+        lib, make_writer, short_lock_wait):
+    """Journalled like any move: the placements' records replay it at the next start; a journal still naming one that
+    landed before the crash puts back nothing and lists nothing."""
+    w, heard = make_writer()
+    a, b = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("soon")[1]))
+    w.place([a], "top")
+    w.place([b], "finished")
+    assert h.until(lambda: len(heard.saved) == 2)
+    placed = [ch for ch, _l in heard.saved]
+    holder = LockHolder(lib.db)
+    w.start_over(placed)
+    assert h.until(lambda: journalled(lib.language) == [("start_over", [a, b])])
+    kept = journal(lib.language)
+    w._abandon()                                        # the crash
+    holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert lib.store.place_of(a)[0] == "arrivals" and lib.store.place_of(b)[0] == "arrivals"
+    assert heard2.notes == [] and heard2.saved == []
+    with open(M.journal_path(lib.language), "w", encoding="utf-8") as f:
+        json.dump(kept, f)                              # a journal left by a crash just after it landed
+    w3, heard3 = make_writer()
+    assert w3.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert heard3.notes == [] and lib.store.place_of(a)[0] == "arrivals"
+
+
+def test_so1_start_over_brings_an_ignored_titles_file_back_and_its_undo_ignores_it_again(lib, make_writer):
+    """SO-1 (Sonic 2026-10-31): an Ignore on the sort screen (a Remove: its file to the trash) is put back by Start
+    over — the file back where it was, the title in New arrivals — in the same one command as the placements; the
+    reset's Undo removes it again (file to the trash) and puts the placement back; the Ignore's own Undo then takes
+    back that new removal (the title and its file back once more)."""
+    w, heard = make_writer()
+    a, b = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("soon")[1]))
+    path = _file(lib, b)
+    w.place([a], "top")
+    w.remove([b])
+    assert h.until(lambda: len(heard.saved) == 2)
+    placed, ignore = heard.saved[0][0], heard.saved[1][0]
+    assert not os.path.exists(path) and lib.store.item(b) is None
+    w.start_over([placed, ignore], label="over")
+    assert h.until(lambda: len(heard.saved) == 3)
+    reset = heard.saved[-1][0]
+    assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and lib.store.place_of(a)[0] == "arrivals"
+    assert [i["ids"] for i in reset.ignored] == [[b]]
+    w.undo(reset)
+    assert h.until(lambda: len(heard.undone) == 1)
+    assert not os.path.exists(path) and lib.store.item(b) is None, "ignored again: its file in the trash"
+    assert lib.store.place_of(a)[0] == "now"
+    w.undo(ignore)                                       # the screen's Undo of its Ignore: the new removal
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and heard.notes == []
+
+
+def test_so1_a_start_over_of_an_ignore_queued_at_a_crash_brings_it_back_at_the_next_start(lib, make_writer,
+                                                                                            short_lock_wait):
+    """A reset holding only an Ignore, journalled, the app gone before it landed: its title is still in the trash, so
+    the replay brings it back (file and row) — never taken for one that landed."""
+    w, heard = make_writer()
+    b = _arrival(lib, lib.ids("soon")[1])
+    path = _file(lib, b)
+    w.remove([b])
+    assert h.until(lambda: len(heard.saved) == 1)
+    holder = LockHolder(lib.db)
+    w.start_over([heard.saved[0][0]])
+    assert h.until(lambda: [op for op, _i in journalled(lib.language)] == ["start_over"])
+    w._abandon()
+    holder.release()
+    w2, heard2 = make_writer()
+    assert w2.replay()
+    assert h.until(lambda: journal(lib.language) is None)
+    assert os.path.exists(path) and lib.store.place_of(b)[0] == "arrivals" and heard2.notes == []
+
+
+def _so1_sorted(lib, w, heard):
+    """A placed on top, B ignored (removed: its file to the trash), both saved. -> (a, b, b's path, place, ignore)."""
+    a, b = (_arrival(lib, i) for i in (lib.ids("goal")[2], lib.ids("soon")[1]))
+    path = _file(lib, b)
+    w.place([a], "top")
+    w.remove([b])
+    assert h.until(lambda: len(heard.saved) == 2)
+    return a, b, path, heard.saved[0][0], heard.saved[1][0]
+
+
+def _so1_over(w, heard, changes):
+    n = len(heard.saved)
+    w.start_over(changes)
+    assert h.until(lambda: len(heard.saved) == n + 1)
+    return heard.saved[-1][0]
+
+
+def test_so1_after_the_ignores_own_undo_ctrl_z_goes_on_to_the_choice_before_it(lib, make_writer):
+    """Adversary SO-1 #1: Start over, its Undo, then the Ignore's own Undo — the next Ctrl+Z takes back the placement
+    before it, never stuck on the Ignore's old change."""
+    w, heard = make_writer()
+    a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    reset = _so1_over(w, heard, [place, ignore])
+    w.undo(reset)
+    assert h.until(lambda: len(heard.undone) == 1)
+    w.undo(ignore)
+    assert h.until(lambda: len(heard.undone) == 2)
+    assert os.path.exists(path)
+    w.undo()                                             # Ctrl+Z
+    assert h.until(lambda: len(heard.undone) == 3)
+    assert lib.store.place_of(a)[0] == "arrivals" and heard.notes == []
+
+
+def test_so1_a_second_start_over_after_the_firsts_undo_brings_the_ignored_title_back_again(lib, make_writer):
+    """Adversary SO-1 #2: Start over, Undo it, Start over again (the screen hands the Ignore's old change): the title
+    comes back again — the writer takes the change that stands for it now."""
+    w, heard = make_writer()
+    _a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    reset = _so1_over(w, heard, [place, ignore])
+    w.undo(reset)
+    assert h.until(lambda: len(heard.undone) == 1) and not os.path.exists(path)
+    again = _so1_over(w, heard, [place, ignore])
+    assert [i["ids"] for i in again.ignored] == [[b]] and os.path.exists(path)
+    assert lib.store.place_of(b)[0] == "arrivals"
+
+
+def test_so1_the_resets_undo_leaves_a_brought_back_title_placed_since(lib, make_writer):
+    """Adversary SO-1 #3: a title Start over brought back and the learner placed since: the reset's Undo leaves it
+    where it was put (its file where it is), and still puts the rest back."""
+    w, heard = make_writer()
+    a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    reset = _so1_over(w, heard, [place, ignore])
+    w.place([b], "goal")
+    assert h.until(lambda: len(heard.saved) == 4)
+    w.undo(reset)
+    assert h.until(lambda: len(heard.undone) == 1)
+    assert lib.store.place_of(b)[0] == "goal" and os.path.exists(path)
+    assert lib.store.place_of(a)[0] == "now"
+
+
+def test_so1_an_ignore_whose_title_cant_come_back_keeps_its_file_in_the_trash(lib, make_writer, monkeypatch):
+    """A file brought out of the trash whose row then doesn't come back (its folder read again meanwhile, here the
+    store's Undo answering nothing): the file goes back to the trash in the same write — never a file in the
+    library with no title, nor a note naming it."""
+    w, heard = make_writer()
+    a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    trashed = [r["trashed_path"] for r in lib.store.trash_rows(ignore.trash_ids)]
+    real = ls.Store.undo
+
+    def undo(self, change, *args, **kw):
+        if change.kind == "remove":
+            return None                                  # (as an Ignore read again meanwhile: nothing put back)
+        return real(self, change, *args, **kw)
+    monkeypatch.setattr(ls.Store, "undo", undo)
+    with open(path, "w", encoding="utf-8") as f:       # (its name taken too: it would have come back renamed)
+        f.write("別のファイル\n")
+    _so1_over(w, heard, [place, ignore])
+    assert w.idle(5)
+    assert lib.store.place_of(a)[0] == "arrivals" and lib.store.item(b) is None
+    assert all(os.path.exists(os.path.join(lib.data_dir, *t.split("/"))) for t in trashed)
+    stem, ext = os.path.splitext(path)
+    assert not os.path.exists(f"{stem}_1{ext}") and not heard.notes, "no file left out, no note naming one"
+
+
+def test_so1_an_ignored_titles_file_whose_name_was_taken_comes_back_under_a_new_one(lib, make_writer):
+    """Its name taken meanwhile (a new file there): the Ignore's file comes back as name_1.ext — the title's row reads
+    that file, the other one untouched — and the note names it."""
+    w, heard = make_writer()
+    _a, b, path, place, ignore = _so1_sorted(lib, w, heard)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("別のファイル\n")
+    _so1_over(w, heard, [place, ignore])
+    rel = lib.store.item(b)["rel_path"]
+    stem, ext = os.path.splitext(os.path.basename(path))
+    assert rel.endswith(f"{stem}_1{ext}") and os.path.exists(os.path.join(lib.data_dir, *rel.split("/")))
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == "別のファイル\n"
+    assert h.until(lambda: heard.notes) and f"{stem}_1{ext}" in heard.notes[-1]
+
+
 def test_S2_after_show_with_no_show_to_follow_writes_nothing_and_rereads(lib, make_writer):
     w, heard = make_writer()
     loose = [i for i in lib.ids("goal") if lib.store.item(i)["rel_path"].count("/") == 1][0]   # a loose file
@@ -3425,6 +4001,99 @@ def test_an_arrival_dropped_on_finished_is_watched_and_one_undo_puts_it_back_wit
     assert h.until(lambda: heard.undone)
     assert lib.store.place_of(x)[0] == "arrivals" and lib.store.item(x)["watched"] != 1
     assert heard.notes == []
+
+
+def test_a_followed_move_lands_once_for_the_numbers_and_a_join_ahead_never(lib, make_writer):
+    """(Up next, the adversary's S1.) A move the numbers followed is landed for them exactly once, when its write is
+    done; a join placed `ahead` (its own word, journalled) is no move of theirs and never lands one — a stray landing
+    would let a resync read the store a move behind."""
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    show = lib.ids("now")[:4]
+    w.move([show[3]], "now", before_id=show[0], label="moved")
+    assert h.until(lambda: heard.saved)
+    assert len(numbers.moves) == 1 and numbers.landings == 1
+    piece = lib.store.item(show[0])["piece_id"]
+    lib.store.split(piece, show[2])
+    later = lib.store.item(show[2])["piece_id"]
+    w.join([later, piece], label="joined", ahead=True)
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert numbers.landings == 1
+
+
+def test_up_next_and_goal_by_the_rule_are_followed_by_the_numbers_before_their_write(lib, make_writer):
+    """(Up next at 20,000 files.) ⋯ › Up next is the writer's `place(…, "top")` — `Store.place` moves the block to the
+    tier's top — so the numbers follow it before the write, as a move (each was a full re-plan after the write, the
+    reader's view of the save waiting on the numbers meanwhile); Goal's top too. *Soon* (the slot below the Soon line,
+    the store's to find) and *after-show* are not: the numbers compare after their write, as before."""
+    numbers = Recorder()
+    w, heard = make_writer(numbers=numbers)
+    now, goal = lib.ids("now"), lib.ids("goal")
+    w.place([now[5]], "top", label="up next")
+    assert h.until(lambda: heard.saved)
+    assert lib.ids("now")[0] == now[5] and numbers.moves == [([now[5]], "now", None, None)] and numbers.landings == 1
+    w.place([now[6]], "goal", label="goal")
+    assert h.until(lambda: len(heard.saved) == 2)
+    assert lib.ids("goal")[0] == now[6] and numbers.moves[-1] == ([now[6]], "goal", None, None)
+    resyncs = numbers.resyncs
+    w.place([now[7]], "soon", label="soon")
+    assert h.until(lambda: len(heard.saved) == 3)
+    assert len(numbers.moves) == 2 and numbers.landings == 2 and numbers.resyncs == resyncs + 1
+
+
+class Expecting(Recorder):
+    """`Recorder` with `Numbers.expect`: the moves whose result only the store knows are followed after the write."""
+
+    def __init__(self):
+        super().__init__()
+        self.expects = 0
+
+    def expect(self, landing):
+        self.expects += 1
+        landing["numbers_ahead"] = True
+
+
+def test_a_nudge_and_a_soon_place_are_followed_once_from_where_the_store_put_them(lib, make_writer):
+    """(Up next 2: one rule for every command that moves the order.) A nudge (`Store.nudge`'s group jumps) and *Soon* by
+    its rule (the slot below the Soon line) are placed by the store alone: the numbers are told before the write that
+    the order is about to move (`expect`: on its way), then follow the block to where the store put it — after the item
+    just before it in its tier — and the write lands for them once; no compare after it (a nudge was a full re-plan of
+    the whole order at each Alt+↑ / ↓ at 20,000 files)."""
+    numbers = Expecting()
+    w, heard = make_writer(numbers=numbers)
+    now = lib.ids("now")
+    w.nudge([now[4]], "up", label="up")
+    assert h.until(lambda: heard.saved)
+    after = lib.ids("now")
+    at = after.index(now[4])
+    assert at < 4 and numbers.moves == [([now[4]], "now", None, after[at - 1] if at else None)], numbers.moves
+    assert numbers.expects == 1 and numbers.landings == 1 and numbers.resyncs == 0
+    w.place([now[6]], "soon", label="soon")
+    assert h.until(lambda: len(heard.saved) == 2)
+    soon = lib.ids("soon")
+    i = soon.index(now[6])
+    assert numbers.moves[-1] == ([now[6]], "soon", None, soon[i - 1] if i else None), numbers.moves
+    assert numbers.expects == 2 and numbers.landings == 2 and numbers.resyncs == 0
+
+
+def test_where_the_store_put_a_block_is_read_in_its_own_tier_never_by_ords_across_tiers(lib):
+    """(The adversary's hardening.) Each tier's `ord` is its own: a block read back after its write is the tier most of
+    it is in, in that tier's order, with the item just before it there — never the lowest `ord` across tiers."""
+    now, soon = lib.ids("now"), lib.ids("soon")
+    tier, block, prev = M._placed(lib.store, [soon[3], now[2], soon[2]])
+    assert tier == "soon" and block == [soon[2], soon[3]] and prev == soon[1]
+    tier, block, prev = M._placed(lib.store, [now[0]])
+    assert (tier, block, prev) == ("now", [now[0]], None)
+
+
+def test_a_nudge_at_the_tiers_top_moves_nothing_and_lands_once(lib, make_writer):
+    """A nudge up of the tier's first row writes nothing: the numbers were told, follow nothing, and the command lands
+    for them once (never left on its way, which would hold every resync off)."""
+    numbers = Expecting()
+    w, heard = make_writer(numbers=numbers)
+    w.nudge([lib.ids("now")[0]], "up", label="top")
+    assert h.until(lambda: w.pending() == 0 and (heard.saved or heard.rereads))
+    assert numbers.moves == [] and numbers.expects == numbers.landings == 1
 
 
 def test_a_join_ahead_is_one_journalled_command_and_a_no_op_hands_its_label_back(lib, make_writer):

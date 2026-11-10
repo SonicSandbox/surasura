@@ -1162,6 +1162,175 @@ def test_add_folder_leaves_graduated_and_demoted_episodes_where_they_are(languag
     store.close()
 
 
+def _selects_during(store, fn):
+    seen = []
+    store.conn.set_trace_callback(lambda sql: seen.append(sql) if sql.lstrip().upper().startswith(("SELECT", "WITH"))
+                                  else None)
+    try:
+        out = fn()
+    finally:
+        store.conn.set_trace_callback(None)
+    return out, len(seen)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_add_of_two_shows_interleaved_reads_each_folder_once_and_each_file_lands_after_its_own_show(language):
+    """R6 (§6.12: an Add Folder of a 50-file season cost a third over its allowance): each folder's place is read once
+    a call, not once a file, and whether a file is an item already is one read for the call. The places are as before:
+    a file of a show with rows in NOW lands after its last row, in the order given; a new folder's files land together
+    at the top of the tab chosen; a file already in is reported, never added twice, and a file given twice is one."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    show = [i for i in store.ids("now") if store.item(i)["parent_folder"]][:3]
+    folder = store.item(show[0])["rel_path"].rsplit("/", 1)[0]
+    last = [i for i in store.ids("now") if store.item(i)["rel_path"].startswith(folder + "/")][-1]
+    word = names(language)[97]
+
+    def files(n, base):
+        return [touch(data_dir, f"{folder}/{word}{base}_第{e:02d}話.srt") for e in range(base, base + n)] + \
+            [touch(data_dir, f"LowPriority/{word}{base}/{word}_{e:03d}.srt") for e in range(n)]
+    few = files(2, 10)
+    _ignored, small = _selects_during(store, lambda: store.insert([few[0], few[2], few[1], few[3]], "soon"))
+    many = files(20, 30)
+    mixed = [f for pair in zip(many[:20], many[20:]) for f in pair]      # A B A B …: the cache holds both folders
+    existing = os.path.join(data_dir, *store.item(show[1])["rel_path"].split("/"))
+    change, big = _selects_during(store, lambda: store.insert(mixed + [existing, mixed[0]], "soon"))
+    # 10× the files, the same reads: a read per file (three each, before) shows as ~100 more; a few for slack
+    assert big - small <= 4, (small, big)
+    assert [e[1] for e in change.existing] == [show[1]]
+    added = change.added
+    assert len(added) == 40 == len(set(added))
+    rel = {i: store.item(i)["rel_path"] for i in added}
+    own = [i for i in added if rel[i].startswith(folder + "/")]
+    loose = [i for i in added if not rel[i].startswith(folder + "/")]
+    now = store.ids("now")
+    at = now.index(last)
+    assert [i for i in now + store.ids("soon") if i in own] == own, "its show's files in the order given"
+    first_own = (now + store.ids("soon")).index(own[0])
+    assert first_own > at, "after the show's last row"
+    soon = store.ids("soon")
+    assert [i for i in soon if i in loose] == loose and \
+        soon.index(loose[-1]) - soon.index(loose[0]) == len(loose) - 1, "the new folder's files together, in order"
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_add_of_a_new_season_inserts_each_row_at_its_place_in_one_write(language):
+    """R6 (§6.12): an Add with one destination and only new files inserts each row at its key and with its title — no
+    update of the row after its insert to place it or title it — in the order given, at the top of the tab, each row fed this version; the next
+    Add's season lands above it, as before."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    word = names(language)[98]
+    first = [touch(data_dir, f"LowPriority/{word}A/{word}_{e:03d}.srt") for e in range(20)]
+    second = [touch(data_dir, f"LowPriority/{word}B/{word}_{e:03d}.srt") for e in range(5)]
+    placing = []
+    logged = store.conn.execute("SELECT COUNT(*) FROM origin_changes").fetchone()[0]
+    store.conn.set_trace_callback(lambda sql: placing.append(sql) if sql.lstrip().upper().startswith(
+        ("UPDATE ITEMS SET TIER", "UPDATE ITEMS SET WORK_ID")) else None)
+    a = store.insert(first, "soon")
+    store.conn.set_trace_callback(None)
+    assert store.conn.execute("SELECT COUNT(*) FROM origin_changes").fetchone()[0] == logged,         "new items with no records log nothing for the origins' reader"
+    assert placing == [], "the rows were inserted at their place, with their title"
+    works = {r[0] for r in store.conn.execute(
+        f"SELECT work_id FROM items WHERE id IN ({','.join('?' * len(a.added))})", a.added)}
+    assert len(works) == 1 and None not in works, "one title, its folder's"
+    b = store.insert(second, "soon")
+    soon = store.ids("soon")
+    assert [i for i in soon if i in set(a.added)] == a.added and [i for i in soon if i in set(b.added)] == b.added
+    assert soon.index(b.added[-1]) < soon.index(a.added[0]), "the later season above the earlier, both at the top"
+    assert soon.index(a.added[-1]) - soon.index(a.added[0]) == len(a.added) - 1
+    version = store.meta()["state_version"]
+    feeds = {r[0] for r in store.conn.execute(
+        f"SELECT feed_in FROM items WHERE id IN ({','.join('?' * len(b.added))})", b.added)}
+    assert feeds == {version}
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_store_keeps_its_statement_journals_in_memory_so_an_add_never_writes_a_temp_file_a_statement(language):
+    """R6: a write on `items` fires the origins' log trigger (another table), so SQLite keeps a statement journal for
+    the command's writes; in a temp file that was a file write per statement (a season's Add 7 → 12 ms at 100k). Every
+    handle that writes keeps it in memory; the Add still lands whole and in order."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    assert store.conn.execute("PRAGMA temp_store").fetchone()[0] == 2          # MEMORY
+    season = [touch(data_dir, f"LowPriority/{names(language)[99]}T/{e:03d}.srt") for e in range(12)]
+    change = store.insert(season, "soon")
+    soon = store.ids("soon")
+    assert [i for i in soon if i in set(change.added)] == change.added and len(change.added) == 12
+    assert pieces_ok(store) is None
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_within_its_tier_rewrites_no_folder_index_and_an_old_store_swaps_its_folder_index_at_open(language):
+    """R6 (moves at their line): the folder index is (tier, parent_folder) — no `ord`, so a moved row never rewrites
+    it — and a move within its tier writes no `tier` (SQLite rewrites an index's entry for every column a SET names).
+    A folder's last row is still read by that index, never by walking the tier's order. A store made before (the old
+    `items_folder` with `ord`) has it swapped at a writer's open, and so has one an older Surasura opened since (its own
+    pass made the old index and the old log trigger back); the order and every placement are the same."""
+    store = migrated(language)
+    names_ = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
+    assert "items_tier_folder" in names_ and "items_folder" not in names_
+    soon = store.ids("soon")
+    sets = []
+    store.conn.set_trace_callback(lambda sql: sets.append(sql) if sql.lstrip().upper().startswith("UPDATE ITEMS SET")
+                                  else None)
+    store.move([soon[0]], "soon", after_id=soon[2])
+    store.conn.set_trace_callback(None)
+    placing = [s for s in sets if " ord = " in s]
+    assert placing and not any("tier =" in s.split("WHERE")[0] for s in placing), placing
+    plan = " ".join(str(r) for r in store.conn.execute(
+        "EXPLAIN QUERY PLAN SELECT id, ord FROM items WHERE tier = ? AND parent_folder = ? ORDER BY ord + 0 DESC, id "
+        "DESC LIMIT ?", ("soon", "x", 1)).fetchall())
+    assert "items_tier_folder" in plan, plan
+    db = store.db_path
+    with store._writing():                                    # a store as an older Surasura left it: its own pass
+        store.conn.execute("CREATE INDEX items_folder ON items (tier, parent_folder, ord, id)")   # makes these back
+        store.conn.execute("CREATE TRIGGER origin_log_item_in AFTER INSERT ON items "
+                           "BEGIN INSERT INTO origin_changes (item_id) VALUES (NEW.id); END")
+    order = store.ids("soon")
+    store.close()
+    data_dir, user_files_dir = roots(language)
+    again = ls.open_store(language, data_dir, user_files_dir)
+    names_ = {r[0] for r in again.conn.execute("SELECT name FROM sqlite_master")}
+    assert "items_tier_folder" in names_ and "items_folder" not in names_ and again.db_path == db
+    assert "origin_log_item_back" in names_ and "origin_log_item_in" not in names_, "never both kept for good"
+    assert again.ids("soon") == order
+    again.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_move_that_splits_a_show_writes_the_piece_sequence_once_and_past_every_piece(language):
+    """K30 / LM11 G3 for pieces, written once a command (R6: a move into another show made two pieces and wrote the
+    sequence row twice — one write more than the 100k move's count allows): the row is past every piece id issued,
+    so a piece emptied and deleted later never gives its id away."""
+    store = big_store(language, 2_000)
+    soon = store.ids("soon")
+    item, anchor = soon[5], soon[40]                 # out of one show, into the middle of another (12 a show)
+    writes = []
+    store.conn.set_trace_callback(lambda sql: writes.append(sql) if "sqlite_sequence" in sql and
+                                  sql.lstrip().upper().startswith(("UPDATE", "INSERT")) else None)
+    before = store.conn.execute("SELECT MAX(id) FROM pieces").fetchone()[0]
+    store.move([item], "soon", after_id=anchor)
+    store.conn.set_trace_callback(None)
+    made = store.conn.execute("SELECT COUNT(*) FROM pieces WHERE id > ?", (before,)).fetchone()[0]
+    assert made == 2, "its own piece and the split's second half"
+    assert len(writes) == 1, writes
+    seq = store.conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'pieces'").fetchone()[0]
+    assert seq == store.conn.execute("SELECT MAX(id) FROM pieces").fetchone()[0] == before + 2
+    store.move([item], "soon", after_id=soon[4])     # back: its piece emptied and deleted, the split joined again
+    gone = store.conn.execute("SELECT MAX(id) FROM pieces").fetchone()[0]
+    store.move([soon[100]], "soon", after_id=soon[200])
+    assert store.conn.execute("SELECT MIN(id) FROM pieces WHERE id > ?", (gone,)).fetchone()[0] > seq, \
+        "never an id issued before"
+    assert pieces_ok(store) is None
+    store.close()
+
+
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_a_row_a_sync_added_mid_copy_is_taken_over(language):
     store = migrated(language)
@@ -1508,8 +1677,9 @@ def test_100k_moves_touch_only_the_moved_rows(language):
         times.append(time.perf_counter() - t0)
         log_rows = _last_log(store) - logs
         # the item, its log rows, 2 versions — and its piece (schema 2, 05 §5.2): it leaves its show's piece and takes
-        # a piece row of its own (3 writes); a show it lands inside splits at it (a piece row, at most 11 episodes)
-        assert store.conn.total_changes - before <= 1 + log_rows + 2 + 3 + 1 + 11
+        # a piece row of its own (3 writes); a show it lands inside splits at it (a piece row, and at most its 12
+        # episodes: `big_store`'s shows hold 12 — R6 at 100k drew a move that split one, 20 writes against "11")
+        assert store.conn.total_changes - before <= 1 + log_rows + 2 + 3 + 1 + 12
     if BENCH:
         work = statistics.median(t - f for t, f in zip(times, probe.times))
         _record(f"13 {language} 100k: move median {statistics.median(times) * 1000:.2f} ms, flush beside it "
@@ -1848,15 +2018,172 @@ def test_set_soon_line_and_the_library_options_undo(language):
 @pytest.mark.parametrize("language", LANGUAGES)
 def test_soons_top_is_the_first_slot_below_the_line(language):
     """05 §5.1: "the top of Soon" is the first slot below the line, counted without the rows being placed — an item
-    sent there from NOW lands first in Soon, never bounced back above the line."""
+    sent there from NOW lands in Soon, never bounced back above the line; and never between the NOW and Soon files of
+    the show the line then runs through (B2-1's rule in the store, alpha 9 #JNFJ8Q): the line takes Soon's first file
+    up, so the item lands after that show's Soon files."""
     store = migrated(language, shows=3, episodes=4)
     now, soon = store.ids("now"), store.ids("soon")
+    cut = [i for i in soon if store.item(i)["work_id"] == store.item(soon[0])["work_id"]]
+    assert len(cut) > 1, "the setup: the show the line takes a file up from has more files in Soon"
     store.move([now[0]], "soon")
-    assert store.ids("soon")[0] == now[0] and store.ids("now") == now[1:] + [soon[0]]
+    assert store.ids("now") == now[1:] + [soon[0]]
+    assert store.ids("soon")[:len(cut)] == cut[1:] + [now[0]]
     assert _line_holds(store)
     demoted = store.ids("now")[2]
     store.set_tier([demoted], "soon")
     assert store.item(demoted)["tier"] == "soon" and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_sent_to_soon_never_lands_inside_the_show_the_line_runs_through(language):
+    """Alpha 9 #JNFJ8Q (Sonic: "It seems to naturally have split ようこそ"): the Soon line counts files, so it can fall
+    inside a book's parts; a title the sort screen (New arrivals' `place --where soon`) sent to Soon landed at Soon's
+    very top — between the book's NOW and Soon parts — and the book showed as two rows around it. It lands after the
+    book's Soon files: one row, the title below it; nothing else moves (the line, NOW)."""
+    store = migrated(language, shows=3, episodes=4)
+    third = [i for i in store.ids("now") if store.item(i)["work_id"] == store.item(store.ids("now")[8])["work_id"]]
+    store.set_soon_line(10)                            # the line inside the third show: 2 files NOW, 2 Soon
+    now, soon = store.ids("now"), store.ids("soon")
+    assert now[-2:] == third[:2] and soon[:2] == third[2:]
+    sent = store.ids("goal")[:4]                       # a whole title from 6+ Months
+    store.place(sent, "soon")
+    assert store.ids("now") == now and store.ids("soon") == third[2:] + sent + soon[2:]
+    assert {store.item(i)["piece_id"] for i in third[2:]} == {store.item(third[2])["piece_id"]}
+    assert _line_holds(store)
+    store.set_tier([store.ids("goal")[0]], "soon")     # Demote's own path to Soon's top: the same rule
+    assert store.ids("soon")[:2] == third[2:]
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_sent_to_soon_still_goes_first_in_soon_when_the_line_falls_between_two_shows(language):
+    """The line between two shows (the usual case): Soon's very top, as before."""
+    store = migrated(language, shows=3, episodes=4)
+    store.set_soon_line(8)                             # after the second show's last file
+    first_soon = store.ids("soon")[0]
+    assert store.item(first_soon)["work_id"] != store.item(store.ids("now")[-1])["work_id"]
+    sent = store.ids("goal")[:4]
+    store.place(sent, "soon")
+    assert store.ids("soon")[:5] == sent + [first_soon] and _line_holds(store)
+    store.close()
+
+
+def _cut_third(language):
+    """3 shows of 4 and the line inside the third: 2 of its files NOW, 2 in Soon (its NOW and Soon halves)."""
+    store = migrated(language, shows=3, episodes=4)
+    third = [i for i in store.ids("now") if store.item(i)["work_id"] == store.item(store.ids("now")[8])["work_id"]]
+    store.set_soon_line(10)
+    assert store.ids("now")[-2:] == third[:2] and store.ids("soon")[:2] == third[2:]
+    return store, third
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_soons_top_stops_at_the_cut_shows_first_soon_piece_never_past_the_learners_own_split(language):
+    """Review M2: the view joins only Soon's FIRST piece to the row the line runs through (`view_rows.build`); a
+    learner's own split after it is a row of its own. A title sent to Soon lands between the two — never after the
+    split, which would leave that row above the title it was below."""
+    store, third = _cut_third(language)
+    store.split(store.item(third[2])["piece_id"], third[3])
+    assert store.item(third[2])["piece_id"] != store.item(third[3])["piece_id"]
+    soon = store.ids("soon")
+    sent = store.ids("goal")[:4]
+    store.place(sent, "soon")
+    assert store.ids("soon") == [third[2]] + sent + soon[1:] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_soon_row_sent_to_soons_top_lands_past_the_cut_show_with_nothing_leaving_now(language):
+    """Review L5: NOW already holds the line's count (nothing leaves it: `need` ≤ 0) and the row sent is itself a Soon
+    row — skipped while the cut show's Soon files are read, so it lands after them, not on its own old place."""
+    store, third = _cut_third(language)
+    soon = store.ids("soon")
+    sent = soon[3]
+    store.place([sent], "soon")
+    assert store.ids("soon") == third[2:] + [sent] + [i for i in soon[2:] if i != sent] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_demote_of_many_works_out_soons_top_once(language):
+    """Review L4: Demote / Graduate's `set_tier` places each item with no row of its folder there at the tier's top —
+    worked out once a call (nothing is placed before every item has its place), and all land together past the cut
+    show, in the order given."""
+    store, third = _cut_third(language)
+    goal = store.ids("goal")
+    picked = [goal[0], goal[4], goal[8]]                   # three titles' first files: no folder of theirs in Soon
+    asked = []
+    top = store._tier_top
+    store._tier_top = lambda tier, excl: asked.append(tier) or top(tier, excl)
+    store.set_tier(picked, "soon")
+    assert asked == ["soon"]
+    assert store.ids("soon")[:5] == third[2:] + picked and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_soon_item_put_back_with_its_neighbours_gone_lands_past_the_cut_show(language):
+    """Review L3: Put back finds its place by its old neighbours; with both gone from Soon it falls back to Soon's top —
+    `_tier_top`'s, past the show the line runs through, never between its halves."""
+    store, third = _cut_third(language)
+    soon = store.ids("soon")
+    gone = soon[2]                                         # the loose file right after the cut show
+    removed = store.remove([gone])
+    store.move([third[3], soon[3]], "goal")                # its old neighbours leave Soon
+    store.restore(list(removed.trash_ids))
+    assert store.ids("soon")[:2] == [third[2], gone] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_put_back_row_never_reads_itself_as_the_show_after_the_line(language):
+    """Review L3 (mutant S11): the row put back is in Soon already, at the order's middle (0.0), while its place is
+    worked out; where the cut show's Soon files sort after that (a line moved down one: the files keep their order
+    numbers), it must not read itself as Soon's first row (another show: Soon's very top, inside the cut show)."""
+    store = migrated(language, shows=3, episodes=4)
+    store.set_soon_line(len(store.ids("now")) + 1)        # the line takes one file of the next show up
+    soon = store.ids("soon")
+    cut = [i for i in soon if store.item(i)["work_id"] == store.item(store.ids("now")[-1])["work_id"]]
+    assert len(cut) == 3 and soon[:3] == cut and store.item(cut[0])["ord"] > 0
+    gone = soon[3]                                         # the next show's first file
+    removed = store.remove([gone])
+    store.move([cut[-1], soon[4]], "goal")                 # its old neighbours leave Soon
+    store.restore(list(removed.trash_ids))
+    assert store.ids("soon")[:3] == cut[:2] + [gone] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_row_sent_to_soon_from_between_the_line_and_the_cut_shows_soon_files_lands_past_them(language):
+    """Mutant S4: the row sent is read as gone while the place is worked out — a title sitting right below the line,
+    before the Soon files of the show the line runs through, sent to Soon goes after them (the view then joins the
+    show into one row) rather than staying between the halves."""
+    store, third = _cut_third(language)
+    sent = store.ids("goal")[0]
+    store.move([sent], "soon", before_id=third[2])         # a title between the cut show's halves (a drag's doing)
+    assert store.ids("soon")[:3] == [sent] + third[2:]
+    store.place([sent], "soon")
+    assert store.ids("soon")[:3] == third[2:] + [sent] and _line_holds(store)
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_a_title_sent_to_soon_goes_first_after_a_group_that_ends_at_the_line(language):
+    """Mutant S1: a group the line doesn't run through (it ends at the line) is no row Soon's first piece joins — the
+    title goes to Soon's very top, before the next show, as the view shows them apart."""
+    store = migrated(language, shows=3, episodes=4)
+    runs = []
+    for i in store.ids("now"):
+        if runs and runs[-1][0] == store.item(i)["piece_id"]:
+            runs[-1][1].append(i)
+        else:
+            runs.append((store.item(i)["piece_id"], [i]))
+    store.join([runs[-2][0], runs[-1][0]], how="group")   # NOW's last two runs, one group, the line right after it
+    first = store.ids("soon")[0]
+    sent = store.ids("goal")[0]
+    store.place([sent], "soon")
+    assert store.ids("soon")[:2] == [sent, first] and _line_holds(store)
     store.close()
 
 
@@ -2482,4 +2809,56 @@ def test_an_arrival_to_finished_is_recorded_as_watched_and_undone_with_it(langua
     assert store.item(b)["watched"] != 1, "only what came from New arrivals"
     store.undo(change)
     assert store.item(a)["tier"] == "arrivals" and store.item(a)["watched"] == before
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_item_ids_answers_what_item_id_answers_for_each_path_in_one_read(language):
+    """R6: the re-plan reads its plan's every file's item in one query (`item_ids`), as `item_id` gave one a file: in
+    the order given, a path given twice twice, a path no item holds None, a path spelled in another case its item."""
+    store = migrated(language)
+    rels = [store.item(i)["rel_path"] for i in store.ids("soon")[:5]]
+    asked = [rels[2], rels[0], "LowPriority/存在しない/第01話.srt", rels[2], rels[4].upper(), rels[1]]
+    reads = []
+    store.conn.set_trace_callback(lambda sql: reads.append(sql) if sql.lstrip().upper().startswith("SELECT") else None)
+    got = store.item_ids(asked)
+    store.conn.set_trace_callback(None)
+    assert got == [store.item_id(p) for p in asked]
+    assert got[2] is None and got[0] == got[3] and len(reads) == 1
+    store.close()
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_an_added_season_takes_its_fingerprints_from_one_listing_of_its_folder(language, monkeypatch):
+    """R6: an Add of a season reads its files' size and mtime from one listing of their folder (the fingerprints the
+    disk sync reads), with no `os.stat` a file — the same values `os.stat` gives. Files of a big folder past the
+    listing's reach, a file alone in its folder, and a file the listing spells another case are stat'ed one by one; a
+    file that isn't there is missing, as before."""
+    store = migrated(language)
+    data_dir, _u = roots(language)
+    w = names(language)
+    season = [touch(data_dir, f"LowPriority/{w[70]}/第{e:02d}話.srt", f"{w[e]}\r\n" * (e + 1)) for e in range(12)]
+    gone = os.path.join(data_dir, "LowPriority", w[70], "第99話.srt")             # never written
+    for n in range(40):                                                         # a big folder: these list first
+        touch(data_dir, f"LowPriority/{w[71]}/a{n:02d}.srt")
+    late = [touch(data_dir, f"LowPriority/{w[71]}/z{e:02d}.srt", w[e]) for e in range(4)]
+    alone = touch(data_dir, f"LowPriority/{w[72]}/第01話.srt")
+    spelled = [touch(data_dir, f"LowPriority/{w[73]}/Ep{e:02d}.srt") for e in range(4)]
+    if sys.platform != "win32":     # (the case only Windows ignores; the listing's name order only NTFS keeps)
+        spelled, late = [], []
+    asked = season + [gone] + late + [alone] + [p.replace(os.sep + "Ep", os.sep + "EP") for p in spelled]
+    stats = []
+    real_stat = os.stat
+    monkeypatch.setattr(ls.os, "stat", lambda p, *a, **k: (stats.append(os.path.normcase(os.fspath(p))),
+                                                           real_stat(p, *a, **k))[1])
+    store.insert(asked, "soon")
+    monkeypatch.setattr(ls.os, "stat", real_stat)
+    stated = {os.path.normcase(p) for p in late + [alone] + spelled}
+    assert not {os.path.normcase(p) for p in season} & set(stats), "the season: one listing, no stat a file"
+    assert stated <= set(stats), "past the listing's reach, alone, or spelled otherwise: stat'ed"
+    for p in season + late + [alone] + spelled:
+        item = store.item(store.item_id(os.path.relpath(p, data_dir).replace("\\", "/")))
+        st = real_stat(p)
+        assert (item["size"], item["mtime_ns"], item["availability"]) == (st.st_size, st.st_mtime_ns, "available"), p
+    assert store.item(store.item_id(os.path.relpath(gone, data_dir).replace("\\", "/")))["availability"] == "missing"
     store.close()

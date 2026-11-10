@@ -187,7 +187,7 @@ def test_start_fresh_on_a_store_still_busy_answers_busy_never_no_library(languag
     _busy_on_the_worker(monkeypatch)
     answers = []
     try:
-        assert looks.fresh(False, answers.append)
+        assert looks.fresh(answers.append)
         assert h.until(lambda: answers, seconds=10)
     finally:
         looks.close()

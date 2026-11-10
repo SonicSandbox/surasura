@@ -26,7 +26,7 @@ recipe: `replan_preview`'s `_snapshot`, `plan_path`, `places`) decides —
     is (its words keep their places; the raise only adds words) — and Generate after mining ("after");
   * anything else (no plan, another language or engine, a run that didn't finish, a changed or removed file, the store
     set up again, a level lowered — its Generate drops words the old list would have mined — another setting, the
-    args, a frequency list, the band with any of them, a band not found, the set-aside files — W-1: a watched mark
+    args, a frequency list, the band with any of them, a band not found, the set-aside files — W-1: a Finished drag
     either way, as the window's host reads it) and `stand-aside`: today's path, Generate first ("first").
 
 Any error reading it is "first" (logged): never worse than today. Read-only: nothing here writes the store, the plan
@@ -133,7 +133,7 @@ def _current(language, settings, store, previous):
         plan = previous.plan
     else:
         try:
-            plan = plan_engine.load(path)
+            plan = plan_engine.load(path, pools=False)
         except plan_engine.PlanError as e:
             log.warning("Connect couldn't read its plan (%s); it Generates first: %s", language, e)
             return Current(("generate-first", "plan"), "first", f"plan: {e}", versions=versions, key=at)
@@ -160,7 +160,7 @@ def _current(language, settings, store, previous):
         return Current(verdict, "first", verdict[1], plan=plan, versions=versions, key=at, plan_key=plan_key)
     # The re-plan to the store's order (`Host._replan`): each plan file's item, ranked NOW, Soon, 6+ Months as the
     # store holds them; a plan file that left the counted tiers is dropped
-    ids = [store.item_id(entry[0]) for entry in plan.files]
+    ids = store.item_ids([entry[0] for entry in plan.files])          # one read, not one a file (R6)
     engine = plan_engine.Engine(plan, ids)
     ranked = sorted(order[k] + (item_id,) for k, item_id in
                     ((library_store.path_key(entry[0]), item_id) for entry, item_id in zip(plan.files, ids)

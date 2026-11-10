@@ -38,14 +38,14 @@ from collections import namedtuple
 if __name__ == "__main__" and __package__ is None:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.path_utils import get_data_path, get_user_files_path, read_text
+from app.path_utils import BOOK_EXTENSIONS, CONTENT_EXTENSIONS, file_kind, get_data_path, get_user_files_path, read_text
 
 SECTIONS = ("now", "soon", "goal")             # the store's tiers a user may extract into (Current · Soon · Goal)
 DEFAULT_LENGTH = 1500                           # settings' `split_length` when it has none
 DEFAULT_OVERFLOW = 150                          # `logic.importer.split_overflow` when it has none
 DEFAULT_DELIMITER = r"\n\d+\n"
 DEFAULT_PARTS = 5
-TEXT_EXTENSIONS = (".epub", ".txt", ".md", ".srt", ".ass", ".ssa")
+TEXT_EXTENSIONS = BOOK_EXTENSIONS + CONTENT_EXTENSIONS     # (path_utils.file_kind's)
 RESULT_MARK = "RESULT "
 EXIT_DONE, EXIT_FAILED, EXIT_REFUSED, EXIT_PROCESSED_ONLY = 0, 1, 2, 3
 NAME_LIMIT = 60                                 # characters: a folder name, and its parts' names after it (a grouped
@@ -163,7 +163,7 @@ def check_options(method, value, group=False, parts=None):
 def extract_text_from_file(file_path, language):
     """(text, None) or (None, why)."""
     ext = os.path.splitext(file_path)[1].lower()
-    if ext == ".epub":
+    if file_kind(file_path) == "book":
         return convert_epub_to_text(file_path)
     elif ext in [".srt", ".ass", ".ssa"]:
         return extract_text_from_subtitle(file_path, language)
@@ -198,7 +198,7 @@ def convert_epub_to_text(epub_path):
 
 # --- an EPUB's documents, as Anki Miner reads them -------------------------------------------------------------- #
 # Its reading documents in the spine's order (the manifest's order scrambled some books) and its chapters' labels,
-# by Anki Miner 3.10.1's rules (`services/reading/epub_source.py`), so both name a book's chapters alike and its
+# by Anki Miner 3.11.0's rules (`services/reading/epub_source.py`), so both name a book's chapters alike and its
 # results (`location_label`: a TOC label, else `ch.<n>`, n = the document's place among these) map onto the parts.
 Doc = namedtuple("Doc", "href label text")      # href: its zip entry; label: the TOC's for it, or None
 
@@ -356,12 +356,25 @@ def _clean_text(raw):
     return "\n".join(lines)
 
 
-def epub_documents(epub_path):
-    """The EPUB's reading documents -> ([Doc], None) or (None, why), as Anki Miner 3.10.1 reads them: the spine in
+def _package(zf, names):
+    """(the package document's zip entry, its parsed root): the container's rootfile, else the first `.opf`; the root
+    None when there is none to read."""
+    opf = None
+    container = _xml(_member(zf, "META-INF/container.xml") or b"") if "META-INF/container.xml" in names else None
+    if container is not None:
+        opf = next((el.get("full-path") for el in container.iter()
+                    if _local(el) == "rootfile" and el.get("full-path") in names), None)
+    opf = opf or next((n for n in sorted(names) if n.lower().endswith(".opf")), None)
+    return opf, (_xml(_member(zf, opf) or b"") if opf else None)
+
+
+def epub_documents(epub_path, texts=True):
+    """The EPUB's reading documents -> ([Doc], None) or (None, why), as Anki Miner 3.11.0 reads them: the spine in
     order (`linear="no"` skipped), only (X)HTML documents; skipped: a cover / toc / colophon / caution / `p-ad-` file
     name, a cover-typed document, and front or back matter (landmarks, the `<guide>`, the body's own `epub:type`)
     within 15% of either end. Each Doc's `label` is its TOC label (the EPUB3 nav, else the NCX; 表紙 / 目次 / 奥付 /
-    扉 / 中扉 dropped; none under two usable entries), its text as the File Importer cleans it ('' for none)."""
+    扉 / 中扉 dropped; none under two usable entries), its text as the File Importer cleans it ('' for none; None
+    with `texts` False: the documents and their labels alone, no document's text cleaned)."""
     import posixpath
     try:
         zf = zipfile.ZipFile(epub_path)
@@ -370,14 +383,7 @@ def epub_documents(epub_path):
     try:
         with zf:
             names = set(zf.namelist())
-            opf = None
-            container = _xml(_member(zf, "META-INF/container.xml") or b"") if "META-INF/container.xml" in names \
-                else None
-            if container is not None:
-                opf = next((el.get("full-path") for el in container.iter()
-                            if _local(el) == "rootfile" and el.get("full-path") in names), None)
-            opf = opf or next((n for n in sorted(names) if n.lower().endswith(".opf")), None)
-            root = _xml(_member(zf, opf) or b"") if opf else None
+            opf, root = _package(zf, names)
             if root is None:
                 return None, "Failed to read EPUB: no package document"
             opf_dir = posixpath.dirname(opf)
@@ -425,15 +431,89 @@ def epub_documents(epub_path):
                 body, cover = _body(raw)
                 if body is None or cover or (zone and _matter_typed(body)):
                     continue
-                try:
-                    text = _clean_text(raw)
-                except Exception as e:
-                    print(f"Warning: Failed to parse item {entry}: {e}")
-                    text = ""
+                text = None
+                if texts:
+                    try:
+                        text = _clean_text(raw)
+                    except Exception as e:
+                        print(f"Warning: Failed to parse item {entry}: {e}")
+                        text = ""
                 docs.append(Doc(entry, labels.get(entry), text))
             return docs, None
     except Exception as e:
         return None, f"Failed to read EPUB: {e}"
+
+
+# A book's part as Anki Miner reads it (Michi-BK, report #BS0A1K): Anki Miner reads every sentence of the file it is
+# handed before it makes a card, so each part handed the whole EPUB paid the whole book's reading. A part's own copy
+# keeps every document in its place — the spine, the TOC, the cover, the book's title — so Anki Miner numbers and
+# labels each document as in the whole book (`ch.<n>`, its TOC label: what `connect.reading.place` reads), and the
+# other documents' bodies are emptied.
+_BODY_OPEN = re.compile(rb"<(?:[A-Za-z_][\w.-]*:)?body(?=[\s/>])[^>]*>", re.I)
+_BODY_CLOSE = re.compile(rb"</(?:[A-Za-z_][\w.-]*:)?body\s*>", re.I)
+
+
+def _emptied(raw):
+    """A document's bytes with nothing in its body (the body element and its attributes kept: Anki Miner still counts
+    it a reading document, one with no sentence), or None when its body isn't found in its bytes."""
+    start = _BODY_OPEN.search(raw)
+    if start is None:
+        return None
+    if start.group().endswith(b"/>"):
+        return raw                                  # <body/>: nothing in it already
+    ends = list(_BODY_CLOSE.finditer(raw, start.end()))
+    return raw[:start.end()] + raw[ends[-1].start():] if ends else None
+
+
+def epub_part(epub_path, out_path, empty):
+    """A copy of the EPUB at `out_path` (written aside, then put in place) whose documents in `empty` (zip entries)
+    have nothing in their bodies — never the nav document, which holds the TOC's labels — and without the pictures no
+    reading of a book's text looks at: every image the manifest lists but the cover (the cards' picture) and a spine
+    item; a book with an `encryption.xml` keeps them all. Every other entry as it is, in its order.
+    -> None, or why it couldn't (nothing is left at `out_path` then)."""
+    import posixpath
+    tmp = f"{out_path}.{os.getpid()}.tmp"
+    try:
+        with zipfile.ZipFile(epub_path) as zf:
+            names = set(zf.namelist())
+            opf, root = _package(zf, names)
+            if root is None:
+                return "no package document"
+            opf_dir = posixpath.dirname(opf)
+            manifest, spine, cover_meta = {}, set(), None
+            for el in root.iter():
+                name = _local(el)
+                if name == "item" and el.get("id") and el.get("href"):
+                    manifest[el.get("id")] = (_resolve(opf_dir, el.get("href")), (el.get("media-type") or "").lower(),
+                                              (el.get("properties") or "").split())
+                elif name == "itemref" and el.get("idref"):
+                    spine.add(el.get("idref"))
+                elif name == "meta" and el.get("name") == "cover" and cover_meta is None:
+                    cover_meta = el.get("content")
+            kept = {entry for i, (entry, _mt, props) in manifest.items()
+                    if i in spine or i == cover_meta or "cover-image" in props}
+            pictures = set() if "META-INF/encryption.xml" in names else \
+                {entry for entry, mt, _props in manifest.values() if mt.startswith("image/")} - kept
+            empty = set(empty) - {entry for entry, _mt, props in manifest.values() if "nav" in props}
+            with zipfile.ZipFile(tmp, "w") as out:
+                for info in zf.infolist():
+                    if info.filename in pictures:
+                        continue
+                    data = zf.read(info.filename)
+                    if info.filename in empty:
+                        data = _emptied(data)
+                        if data is None:
+                            return f"no body found in {info.filename}"
+                    entry = zipfile.ZipInfo(info.filename, info.date_time)
+                    entry.compress_type, entry.external_attr = info.compress_type, info.external_attr
+                    out.writestr(entry, data)
+        os.replace(tmp, out_path)
+        return None
+    except _READ_ERRORS + (ValueError,) as e:
+        return f"{type(e).__name__}: {e}"
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def deck_text(path, field):
@@ -647,7 +727,7 @@ def part_label(chapter):
 def _mark(directory, source):
     """Record that this output came from an EPUB (the report's source badge says 'book'); the marker travels with
     the folder."""
-    if not (source or "").lower().endswith(".epub"):
+    if file_kind(source) != "book":
         return
     from app.path_utils import write_source_marker
     write_source_marker(directory, "epub", origin=os.path.basename(source))
@@ -740,7 +820,7 @@ def parts_of(file_path, language, method="length", value=DEFAULT_LENGTH, field=N
         text = deck_text(file_path, field)
         return ([Part(text, None)] if text.strip() else []), None
     overflow = DEFAULT_OVERFLOW if overflow is None else overflow
-    if file_path.lower().endswith(".epub") and method != "delimiter":
+    if file_kind(file_path) == "book" and method != "delimiter":
         docs, error = epub_documents(file_path)
         if error:
             return None, error
@@ -813,7 +893,7 @@ def _book_origins(file_path, name, rels, pieces):
     """An EPUB's parts' origins, as a folder's look records a book's (`<epub>#<n>`, the EPUB's stats and sha256, each
     part's place in the book): {rel: origin}, so Anki Miner's results can be placed on an extracted book's parts too
     and a folder read later knows the book (SRC-7); None for anything else, or an EPUB that can't be read again."""
-    if not file_path.lower().endswith(".epub") or len(rels) != len(pieces):
+    if file_kind(file_path) != "book" or len(rels) != len(pieces):
         return None
     from app import library_store
     try:

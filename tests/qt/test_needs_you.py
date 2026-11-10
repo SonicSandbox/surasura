@@ -919,6 +919,124 @@ def test_a3w6_the_line_comes_and_goes_with_connects_anki_wait_even_when_connects
     assert wait_until(lambda: not any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)
 
 
+
+# --- Mado-N (Sonic 2026-10-31, MA-1 / MA-2): Copy code on the Anki line, and the look that ends it ------------------ #
+def _closed_jobs(n=3):
+    from app.connect import runner
+    return [{"item": 9000 + k, "job": k, "state": "waiting", "reason": runner.ANKI_CLOSED} for k in range(n)]
+
+
+def _refused(running):
+    """The closed line's own look (`needs.read_connect`'s `anki_look`): AnkiConnect refused, the process list's say."""
+    return {"ok": False, "version": None, "error": "refused", "running": running}
+
+
+def test_mado_n_anki_open_without_ankiconnect_wears_copy_code_and_the_steps_and_the_press_reacts_at_once(
+        world, monkeypatch):
+    # why: the stuck case — Anki open, AnkiConnect missing: the line names it, Copy code + the three steps (Mado-A's
+    # one part), no *Open Anki* ("already open"); the press says Copied in its own frame, the bar where to paste it
+    from app import ankiconnect_addon as A
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: False)
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(True)}
+    seed, win, writer, ny = world(connect=connect)
+    entry = entry_of(ny, service.ANKI_WAIT)
+    assert entry.title == f"{A.NO_CONNECT}: 3 episodes wait for it"
+    win.show_tab("needs")
+    card = ny.cards.card(entry.key)
+    assert wait_until(lambda: card.isVisible(), 5)
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"copy_code"}
+    copy = button(ny, entry.key, "copy_code")
+    assert copy.text() == A.COPY and copy.toolTip() == A.COPY_TIP
+    assert card.steps.line.text() == A.steps_line() and card.steps.line.objectName() == "sheetline"
+    QApplication.clipboard().clear()
+    copy.click()
+    assert copy.text() == A.COPIED and QApplication.clipboard().text() == A.CODE       # at once, no wait
+    assert win.bar_line.full() == A.COPIED_LINE
+
+
+def test_mado_n_a_look_that_cant_tell_puts_open_anki_first_and_a_closed_anki_shows_no_steps(world, monkeypatch):
+    from app import ankiconnect_addon as A
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: False)
+    connect = {"jobs": _closed_jobs(1), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(None)}
+    seed, win, writer, ny = world(connect=connect, connect_calls={"open_anki": lambda settings: True})
+    entry = entry_of(ny, service.ANKI_WAIT)
+    win.show_tab("needs")
+    card = ny.cards.card(entry.key)
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} == {"copy_code", "open_anki"}
+    assert card.steps.line.text() == A.steps_line(unsure=True)
+    connect["anki_look"] = _refused(False)                              # Anki seen closed: the plain line
+    ny.refresh()
+    assert wait_until(lambda: entry_of(ny, service.ANKI_WAIT).data["steps"] is None, 5)
+    key = entry_of(ny, service.ANKI_WAIT).key
+    assert key == entry.key, "the words changed, never the trouble: the same key"
+    assert {b.property("action") for b in ny.cards.buttons(key)} == {"open_anki"}
+    assert ny.cards.card(key).watch.armed, "a closed Anki is watched too: opening it ends the line"
+
+
+def test_mado_n_the_watch_wakes_connect_once_anki_answers_and_the_card_goes_with_its_next_look(world, monkeypatch):
+    # why: AnkiConnect installed and Anki restarted — Connect is woken at once (never its 2-minute look), on a worker,
+    # and Connect's look taking the episodes off *closed* takes the card away; the watch looks only while it shows
+    from app import ankiconnect_addon as A
+    main = threading.main_thread()
+    asked, kicked = [], []
+    answer = {"ok": False}
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: asked.append((url, seen)) or answer["ok"])
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(True)}
+    seed, win, writer, ny = world(connect=connect, connect_calls={
+        "kick": lambda settings: kicked.append((settings.get("connect_enabled"), threading.current_thread() is main))})
+    entry = entry_of(ny, service.ANKI_WAIT)
+    card = ny.cards.card(entry.key)
+    watch = card.watch
+    watch._tick()
+    assert asked == [], "the page isn't shown: no look"
+    win.show_tab("needs")
+    assert wait_until(lambda: card.isVisible(), 5)
+    watch._tick()
+    assert wait_until(lambda: asked and not watch.looking, 5)
+    assert asked[0] == ("http://127.0.0.1:8765", True) and kicked == [], "no answer: nothing woken"
+    answer["ok"] = True                                                 # AnkiConnect answers now
+    watch._last = 0.0
+    watch._tick()
+    assert wait_until(lambda: kicked, 5) and kicked == [(True, False)]  # Connect woken on a worker
+    assert not watch.armed, "once: the card's own look ends it"
+    connect["jobs"] = [dict(j, reason=None) for j in connect["jobs"]]  # Connect's look: Anki is in
+    connect.pop("anki_look")
+    ny.refresh()
+    assert wait_until(lambda: not any(e.kind == service.ANKI_WAIT for e in ny.entries), 5)
+
+
+def test_mado_n_an_anki_opened_where_none_was_seen_brings_the_steps_by_itself_and_closed_takes_them_away(
+        world, monkeypatch):
+    # why: Anki started without AnkiConnect after the line was read — the watch sees the process (seen False; once it
+    # has gone SETTLE s unanswered) and the entries are read again: the steps show with no press, Connect not woken
+    # (nothing for it yet). A8N-2: then Anki closed — the watch (seen True) sees it gone and the plain line is back
+    from app import ankiconnect_addon as A
+    monkeypatch.setattr(A, "EVERY", 0.0)
+    monkeypatch.setattr(A, "SETTLE", 0.0)
+    seen_by_look, kicked = [], []
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: seen_by_look.append(seen) or
+                        (A.OPENED if seen is False else A.GONE))
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(False)}
+    seed, win, writer, ny = world(connect=connect, connect_calls={"kick": kicked.append})
+    entry = entry_of(ny, service.ANKI_WAIT)
+    win.show_tab("needs")
+    card = ny.cards.card(entry.key)
+    assert wait_until(lambda: card.isVisible(), 5)
+    connect["anki_look"] = _refused(True)                               # (what the next read's own look finds)
+    card.watch._tick()
+    assert wait_until(lambda: entry_of(ny, service.ANKI_WAIT).data["steps"] == "no_addon", 5)
+    assert seen_by_look[0] is False and kicked == []
+    new = ny.cards.card(entry.key)
+    assert button(ny, entry.key, "copy_code") is not None and new.watch.seen is True
+    assert wait_until(lambda: new.isVisible(), 5)
+    connect["anki_look"] = _refused(False)                              # Anki closed
+    new.watch._tick()
+    assert wait_until(lambda: entry_of(ny, service.ANKI_WAIT).data["steps"] is None, 5)
+    assert seen_by_look[-1] is True and kicked == []
+    assert button(ny, entry.key, "open_anki") is not None and button(ny, entry.key, "copy_code") is None
+
+
 # --- Michi-C (A7B-1…A7B-3): the shows behind the backlog ---------------------------------------------------------- #
 def _behind(ids, away=True):
     shows = [{"title": "月影の旅人", "cards": 2300, "ids": list(ids), "state": "waiting"},
@@ -982,3 +1100,98 @@ def test_michi_c_a_new_backlog_offer_asks_needs_you_again_without_a_new_sync(wor
     assert not shell.needs_asked(before._replace(seq=7, shows="ab12"), before._replace(seq=6, shows="ab12"))
     assert shell.needs_asked(before, before._replace(sync=A.SYNCING))         # a sync that just ended, as before
     assert not shell.needs_asked(before._replace(seq=8), before)
+
+
+from tests.qt.conftest import own_folder_answers as _own_folder_answers  # noqa: E402 (a7)
+
+
+def test_choose_file_for_a_video_starts_in_the_shows_own_folder_and_for_a_gone_file_in_the_library(world, monkeypatch,
+                                                                                                 tmp_path):
+    """a7 (DIAGNOSIS 7, Sonic: "should be opening the location of the content itself"): a video is linked wherever it
+    is, so its picker starts where the show is read from (`own_folder`); a gone copy is pointed only at a file inside
+    the library (`Store.relink`), so that picker starts at the copy's side (`library_side`), never the show's folder."""
+    from app.services import own_folder
+    seed, win, writer, ny = world()
+    row, eps = no_video_show(win, n=2)
+    ny.read_connect = lambda _lang: jobs(*eps)
+    ny.read_settings = lambda: {"connect_enabled": True, "connect_video_folders": {}}
+    settle(ny)
+    card = next(e for e in ny.entries if e.kind == service.NO_VIDEO)
+    button(ny, card.key, "find_videos").click()
+    assert wait_until(lambda: card.key in ny.found and not ny.looking, 10)
+    there, asked = _own_folder_answers(monkeypatch, tmp_path, row.title)
+    started = []
+    ny.pick_file = lambda title, folder: started.append(folder) or ""
+    button(ny, card.key, "choose_video").click()
+    assert wait_until(lambda: started, 5)
+    assert started == [there]
+    assert asked[0][0][0] == card.lines[0].item_id and asked[0][1] == (card.lines[0].rel_path,)
+    gone = next(e for e in ny.entries if e.kind == service.GONE)
+    sides = []
+    monkeypatch.setattr(own_folder, "library_side", lambda data, rels=(), folders=():
+                        sides.append(rels) or data)
+    del started[:], asked[:]
+    button(ny, gone.key, "choose_file", gone.lines[0]).click()
+    assert wait_until(lambda: started, 5)
+    assert started == [ny.data_dir] and sides == [(gone.lines[0].rel_path,)] and asked == []
+
+
+def test_a_pickers_start_is_one_press_and_a_language_switch_meanwhile_picks_nothing(world, monkeypatch):
+    """A7S-3: the start is looked for on a worker (an offline share can take seconds): its arc turns from the click, a
+    second click meanwhile opens no second picker, and the window switched to another language before it answers
+    opens none (ids repeat across stores: the link would land in the other library)."""
+    from app.qt import press as qpress
+    from app.services import own_folder
+    seed, win, writer, ny = world()
+    row, eps = no_video_show(win, n=1)
+    ny.read_connect = lambda _lang: jobs(*eps)
+    ny.read_settings = lambda: {"connect_enabled": True, "connect_video_folders": {}}
+    settle(ny)
+    card = next(e for e in ny.entries if e.kind == service.NO_VIDEO)
+    button(ny, card.key, "find_videos").click()
+    assert wait_until(lambda: card.key in ny.found and not ny.looking, 10)
+    gate, started = threading.Event(), []
+    monkeypatch.setattr(own_folder, "read", lambda *_a, **_k: gate.wait(5) and ny.data_dir)
+    ny.pick_file = lambda title, folder: started.append(folder) or ""
+    key = ny._press_key("choose_video", card, card.lines[0].key)
+    button(ny, card.key, "choose_video").click()
+    assert qpress.live(win, key)                            # turning at once
+    button(ny, card.key, "choose_video").click()            # a second click meanwhile: nothing more
+    gate.set()
+    assert wait_until(lambda: started and not qpress.live(win, key), 5)
+    QApplication.processEvents()
+    assert started == [ny.data_dir]
+    gate.clear()
+    del started[:]
+    button(ny, card.key, "choose_video").click()
+    win.language = "zh"                                     # switched before the start came back
+    gate.set()
+    assert wait_until(lambda: not qpress.live(win, key), 5)
+    QApplication.processEvents()
+    assert started == [] and not any(c[0] == "link_video" for c in writer.calls)
+    win.language = seed.language
+
+
+def test_the_anki_line_offers_install_ankiconnect_for_me_and_keeps_a_press_under_way_once_anki_closes(
+        world, monkeypatch):
+    # 3.0.1 (AC-5): the line's part leads with *Install AnkiConnect for me* where the install can; an install under way
+    # (Anki closed to let it go: the entry has no steps) still wears the part, with its line
+    from app import ankiconnect_addon as A
+    from app.connect import ankiconnect_install as I
+    from app.qt import addon_steps
+    monkeypatch.setattr(A, "answers", lambda url, seen=None: False)
+    monkeypatch.setattr(addon_steps, "_STATE", None)
+    monkeypatch.setattr(I, "look", lambda: {"state": I.CAN_INSTALL, "disabled": False, "base": "B", "point": 1})
+    connect = {"jobs": _closed_jobs(), "gaps": [], "needs": [], "anki_openable": True, "anki_look": _refused(True)}
+    seed, win, writer, ny = world(connect=connect)
+    entry = entry_of(ny, service.ANKI_WAIT)
+    win.show_tab("needs")
+    card = ny.cards.card(entry.key)
+    assert wait_until(lambda: card.isVisible() and card.steps.install is not None and card.steps.install.isVisible())
+    assert {b.property("action") for b in ny.cards.buttons(entry.key)} >= {"copy_code", "install_ankiconnect"}
+    addon_steps.state().set(phase=addon_steps.RUNNING)     # a press under way, then Anki seen closed
+    box = card.steps.parentWidget().layout()
+    card.steps.setParent(None)
+    ny._addon(card, box, type(entry)(**dict(entry._asdict(), data=dict(entry.data, steps=None))))
+    assert card.steps.install_line.text() == I.RUNNING_LINE and card.steps.steps_row.isHidden()
+    addon_steps.state().set(phase=None)

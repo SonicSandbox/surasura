@@ -7,6 +7,8 @@ for a book's or a text's job, and where in the book a card Anki Miner made lies.
   text the words were picked from: a text, an Aozora book, a PDF's text, a book whose EPUB is away (lean Z9-2,
   PROVISIONAL: cards now, without the cover, over waiting for the EPUB). Both kinds are Zero's smaller version's
   (`.epub` and `.txt`).
+- `part_book(epub, record, folder)`: what Anki Miner reads of that EPUB for one part — a copy holding the part's own
+  documents, every document in its place (Michi-BK: the whole book read at every part made a long book take hours).
 - `place(location, line_text, parts, documents)`: the part a card's sentence lies in, by Hon's chapter record
   (`tracks/books/work/chapter-record.md`, origin key `chapter`; `library.book_parts`) and Anki Miner's `location`:
   `ch.<n>` is reading document n, a TOC label every document carrying it; among the parts whose documents span it,
@@ -33,6 +35,37 @@ def source(item_path, pairing):
     if book and book.lower().endswith(".epub") and runner._on_disk(book):
         return book, book
     return item_path, None
+
+
+def part_book(epub, record, folder):
+    """The book Anki Miner reads for one part (Michi-BK, report #BS0A1K) -> (its path, None), or (None, why) and the
+    whole EPUB is named as before. Anki Miner reads every sentence of its file before it makes a card: a part handed the
+    whole book paid the whole book's reading (minutes a part on a long book). The part's copy (`extract.epub_part`, in
+    `folder`, under the EPUB's own name) holds its own documents (Hon's record: `docs`, `hrefs`) with every other
+    document's body empty, so Anki Miner numbers and labels each document as in the whole book — read back and
+    compared before it is named — and the cover, the title and the cards' Source stay the book's. `folder` is the
+    book's one place (`runner.Steps.part_book`): Anki Miner names a book's picture by its file's path, so every part
+    of a book names one cover in Anki. A record that no longer matches the EPUB (changed since it was split), a part
+    from before the record: the whole EPUB."""
+    docs, hrefs = _docs(record), (record or {}).get("hrefs")
+    if docs is None or not isinstance(hrefs, list) or len(hrefs) != docs[1] - docs[0] + 1:
+        return None, "no chapter record"
+    from app import extract
+    listed, why = extract.epub_documents(epub, texts=False)
+    if listed is None:
+        return None, why
+    if docs[1] >= len(listed) or [d.href for d in listed[docs[0]:docs[1] + 1]] != hrefs:
+        return None, "the EPUB changed since it was split"
+    out = os.path.join(folder, os.path.basename(epub))
+    os.makedirs(folder, exist_ok=True)
+    why = extract.epub_part(epub, out, {d.href for d in listed} - set(hrefs))
+    if why:
+        return None, why
+    again, _why = extract.epub_documents(out, texts=False)
+    if [(d.href, d.label) for d in again or ()] != [(d.href, d.label) for d in listed]:
+        os.remove(out)
+        return None, "its copy didn't read as the book does"
+    return out, None
 
 
 def as_text(path, folder, language):

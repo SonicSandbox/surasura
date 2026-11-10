@@ -352,9 +352,14 @@ def test_open_its_folder_opens_the_titles_folder_in_the_data_folder(world, monke
     from app.qt import screens
     monkeypatch.setattr(screens, "open_with_system", opened.append)
     show = two_part(win)
+    from app import path_utils
+    from app.services import own_folder
+    base = path_utils.get_data_path("ja")
+    os.makedirs(os.path.join(base, *show.folder.split("/")), exist_ok=True)
     sheet.pick(show, "folder")
     assert wait_until(lambda: opened, 5)                                           # (on a worker, round 8 row 45)
-    assert opened[0].endswith(os.path.join("GoalContent", show.title))
+    assert opened[0].endswith(os.path.join("GoalContent", show.title))   # no original (a stand-in's): its copy's
+    assert opened[0] == own_folder.library_side(base, (), (show.folder,))
     def refused(path):
         raise OSError("The system cannot find the file specified")
     monkeypatch.setattr(screens, "open_with_system", refused)
@@ -534,3 +539,21 @@ def test_real_store_remove_sends_the_files_to_the_trash_and_undo_brings_them_bac
 
 def store_rel(store, path):
     return os.path.relpath(path, store.data_dir).replace(os.sep, "/")
+
+
+from tests.qt.conftest import own_folder_answers as _own_folder_answers  # noqa: E402 (a7)
+
+
+def test_open_its_folder_opens_the_titles_own_folder(world, monkeypatch, tmp_path):
+    """a7 (DIAGNOSIS 7): a Goal tile's *Open folder* opens where the title is kept (`own_folder`: its items, its
+    folder in the library as the last resort)."""
+    seed, win, writer = world()
+    sheet = open_sheet(win)
+    opened = []
+    from app.qt import screens
+    monkeypatch.setattr(screens, "open_with_system", opened.append)
+    show = two_part(win)
+    there, asked = _own_folder_answers(monkeypatch, tmp_path, show.title)
+    sheet.pick(show, "folder")
+    assert wait_until(lambda: opened == [there], 5)
+    assert asked == [(tuple(show.item_ids), (), (show.folder,))] and calls(writer) == []

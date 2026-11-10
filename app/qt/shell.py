@@ -3,7 +3,7 @@
 The window, edge to edge under Windows' own title bar (n1); the header (the mark, the wordmark, the subline); the tabs
 (Current · Finished · Needs you · Settings) over one page each; the bottom bar (what runs, the newest command-line
 failure, Connect's line when it exists). W3.1a's frame (`frame.py`): the header + tabs one band with the vein under the
-current tab and the jobs' hairline along its foot, the level ▾ and its pop (Generate, *Open your journey*) with *Journey ↗* beside it, the edges
+current tab and the jobs' hairline along its foot, the level ▾ and its pop (Generate) with *Journey ↗* beside it, the edges
 baked onto the content, the footer's emerald (the AnkiWeb mark's words in its hover) and known corner, and Current's
 Goal dock (its wells for the drag). Given a library (`Services(library=…)`: W2.2's reader),
 Current, Finished and Needs you show it (`screens.py`, display only until W3.1 / W3.2); without one, and Settings until
@@ -16,7 +16,8 @@ install's local data folder, never in settings.json (S16). The look — theme an
 QApplication before the first paint (`open_window`), and changes live (`set_look`, P-text: W2.1 row 9).
 
 App-wide: **Esc and the mouse's Back button** close every open overlay at once, else a secondary window, and **never
-the main window** (✅ G1.2-2); Forward does nothing. Tooltips are the bubble (`tooltip.py`).
+the main window** (✅ G1.2-2); Forward does nothing. Tooltips are the bubble (`tooltip.py`). Both read the events
+through one app-wide filter (`AppFilter`, a9.1).
 
 Run it: `python app_entry.py` on the 3.0 line (or `main()` here).
 """
@@ -28,13 +29,14 @@ import threading
 import time
 import traceback
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEvent, QObject, QPointF, QRect, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import (QFontMetrics, QFontMetricsF, QGuiApplication, QIcon, QKeySequence,
                          QLinearGradient, QPainter, QShortcut)
-from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QMenu, QPushButton,
+from PyQt6.QtWidgets import (QApplication, QButtonGroup, QDialog, QHBoxLayout, QLabel, QMainWindow, QPushButton,
                              QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
-from app import path_utils, theme
+from app import path_utils, scrub, theme
 from app.qt import applog, bridge, frame, hud, motion, strings, style, titlebar, toast, tooltip
 from app.services import jobs as jobs_module
 from app.services import press as press_service
@@ -45,8 +47,11 @@ from app.qt import screens                                # W2.2: the pages a li
 from app.qt import press as qpress                        # round 8 row 45: a press reacts at once
 from app.qt import standing as standing_qt                # round 8 row 54: every standing line's ✕
 from app.qt import phase_strip                            # the phase strip: five circles at the bar's bottom left
+from app.qt import star_ask                               # Surasura's star ask (2026-10-31)
+from app.qt import tool_icons                             # try a9 #5: the open windows beside Anki
 from app.services import phase as phase_service
 from app.services import standing as standing_service
+from app.services import window_idle
 from app.qt import covers as qcovers                      # --- W3.2 Q6: the titles' own pictures
 
 TABS = ("current", "finished", "needs", "settings")
@@ -61,6 +66,7 @@ JOURNEY_OLD_LOOK = "old-look"   # ... opened as drawn before a Journey setting c
 GONE_GO = phase_service.Go("needs", ("folder-gone",))   # a7: 届 amber for a gone folder opens its card (`needs.FOLDER_GONE`,
 #                                                         the services' needs module: not imported by the shell at load)
 JOURNEY_DRAW_WAIT = 60.0    # a6 #5: how long *Journey ↗* waits for a re-render (seconds), then opens the journey as it is
+JOURNEY_READ_WAIT = 600.0   # A: how long an export waits for the journey's catch-up (a big library's Generate), at most
 # E20 (IK-22): at quit, what can't stop part-way — an Anki write the window started (finishing its batch: Anki
 # finishes a request it received), Generate writing your list — is waited for up to this long ("≤ a few seconds"), with
 # the window up and its bar saying so (`ShellWindow._finish_first`), then whatever is left of it at `shutdown`. Under
@@ -93,6 +99,16 @@ QUIT_THREAD_JOIN_S = 2.0
 
 
 # --- the services the window calls ------------------------------------------------------------------------------- #
+def _redraw_coming(services):
+    """(Any thread; at once.) F7: a reader's wish waits for the journey keeper's look (`Replan.journey_catching_up`) —
+    a plain move's redraw from the plan is about to be asked for (seconds)."""
+    replan = getattr(services, "replan", None)
+    try:
+        return bool(replan is not None and replan.journey_catching_up())
+    except Exception:
+        return False
+
+
 class Services:
     """The window's services, made once per window (the settings file is read here, before the first paint).
 
@@ -535,7 +551,7 @@ class Services:
 
     @staticmethod
     def open_guide():
-        """(A worker.) ? › *Online guide*: the browser (IK-24; the Tk dashboard's Help › Tutorial opens the same)."""
+        """(A worker.) ?: the online guide in the browser (IK-24; the Tk dashboard's Help › Tutorial opens the same)."""
         import webbrowser
         webbrowser.open(path_utils.GUIDE_URL)
 
@@ -575,13 +591,20 @@ class Services:
         re-renders and re-analyses nothing (seconds) — asked once — until no Generate runs or waits. Never longer than
         `wait`, and never past the quit. A journey whose analysis is stale too is opened as it is: a full Generate is
         the user's to ask (the Generate button's mark says so) -> True then (its new look waits for that Generate); with
-        the duties not made yet (the first moments) it opens as it is too, -> None."""
+        the duties not made yet (the first moments) it opens as it is too, -> None.
+
+        A2 (Sonic 2026-11-06): it never waits for a background Generate (`journey_brought`): one bringing the journey
+        in opens it at once as it is (the ● dot says its sentences are catching up) -> None. F7: after a plain move the
+        journey is redrawn from the plan in seconds — asked for now (`journey_brought`'s ask), and waited for like the
+        keeper's re-render (`_redraw_coming`, then the run in flight)."""
         from app.services import generate as generate_module
         busy = (generate_module.QUEUED, generate_module.RUNNING, generate_module.CANCELLING)
         deadline = time.monotonic() + wait
         asked = False
         while not self.closing.is_set() and self.controller is not None and time.monotonic() < deadline:
-            if self.controller.state().state in busy:
+            if self.journey_brought("journey"):
+                return None
+            if _redraw_coming(self) or self.controller.state().state in busy:
                 self.closing.wait(0.1)                   # a run in flight or waiting: its end, then look again
                 continue
             try:
@@ -597,6 +620,38 @@ class Services:
             if asked or self.generate() is None:         # asked once: a run that ended and left it stale opens as is
                 return
             asked = True
+
+    def journey_brought(self, reason):
+        """(Any thread; returns at once.) Whether the journey is being brought in by itself (A + A2): a catch-up owed
+        only to moves — asked for now, for `reason` (`Replan.journey_wanted`) — or a background Generate in flight that
+        brings it (`Replan.journey_background`). The one rule a reader of the journey asks: *Journey ↗* then opens at
+        once (`draw_journey`), an export waits for it (`journey_for_reading`). False before the duties are made."""
+        replan = self.replan
+        if replan is None:
+            return False
+        try:
+            return bool(replan.journey_wanted(reason) or replan.journey_background())
+        except Exception as e:
+            applog.log("shell", f"the journey's catch-up: {e}")
+            return False
+
+    def journey_for_reading(self, reason, wait=JOURNEY_READ_WAIT):
+        """(A worker.) A reader of the journey's lists that has no ● of its own (an export: the file it writes is the
+        lists as they are): a catch-up owed to moves asked for now (`journey_brought`), then waited for while one is
+        owed or any Generate runs or waits (the user's too: the lists it writes are the order's) — until it has landed,
+        never longer than `wait` (a 20,000-file library's Generate takes minutes on a laptop), never past the quit.
+        Nothing owed, nothing in flight: at once."""
+        from app.services import generate as generate_module
+        self.journey_brought(reason)
+        busy = (generate_module.QUEUED, generate_module.RUNNING, generate_module.CANCELLING)
+        deadline = time.monotonic() + wait
+        while not self.closing.is_set() and time.monotonic() < deadline:
+            replan, controller = self.replan, self.controller
+            if replan is None or controller is None:
+                return
+            if not replan.journey_catching_up() and controller.state().state not in busy:
+                return
+            self.closing.wait(0.1)
 
     def level(self):
         """(A worker.) The level chip's (band, automatic) (`automation.level`)."""
@@ -1016,9 +1071,57 @@ class ElidingLabel(QLabel):
         self._fit()
 
     def _fit(self):
-        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(0, self.width()))
+        """(Report a problem's picture mode fits it again with the whole line scrubbed: `scrub.shown`.)"""
+        shown = self.fontMetrics().elidedText(scrub.shown(self._full), Qt.TextElideMode.ElideRight, max(0, self.width()))
         if shown != self.text():
             self.setText(shown)
+
+    shown_fit = _fit                # (Report a problem's picture mode: `report.PictureMode`)
+
+
+class SubLine(QLabel):
+    """The header's sub-line (the language · N in Current · M files), inside a holder of its own (`holder`, the item
+    in the header's layout, with no layout of its own): Qt asks a label's parent to lay out again at each new text, so
+    Goal's count at each move laid the header, the central widget and the window out again (6 ms at 20,000 files) and
+    repainted it whole. The holder takes the label's size; new words at the same size ask the header nothing — a new
+    size (a digit more, the text size, the look) asks it once."""
+
+    def __init__(self, parent):
+        self.holder = _LineHolder(parent)
+        super().__init__(self.holder)
+        self.holder.line = self
+
+    def setText(self, text):
+        if text == self.text():
+            return
+        before = self.sizeHint()
+        super().setText(text)
+        if self.sizeHint() != before:
+            self.holder.updateGeometry()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self.holder.updateGeometry()
+
+
+class _LineHolder(QWidget):
+    """`SubLine`'s place in the header: its line's size, the line laid over it whole."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.line = None
+
+    def sizeHint(self):
+        return self.line.sizeHint() if self.line is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        return self.line.minimumSizeHint() if self.line is not None else super().minimumSizeHint()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.line is not None:
+            self.line.setGeometry(self.rect())
 
 
 class TabButton(QToolButton):
@@ -1125,6 +1228,8 @@ class EscapeRouter(QObject):
     none open, they close that window if it's a secondary one; the main window is never closed. Forward does nothing.
     A menu (a popup) closes itself on Esc; Back closes it too."""
 
+    TYPES = frozenset({QEvent.Type.KeyPress, QEvent.Type.MouseButtonPress})       # every event `eventFilter` reads
+
     def __init__(self, main_window, parent=None):
         super().__init__(parent)
         self.main = main_window
@@ -1176,12 +1281,84 @@ class EscapeRouter(QObject):
         return True
 
 
+class AppFilter(QObject):
+    """The app's one event filter (a9.1): the tooltip bubble's (`tooltip.Tooltips`), then Esc and Back's
+    (`EscapeRouter`) — the order they ran in as two filters (the one installed last runs first). Every event in the
+    app passes an app-wide filter, each pass a call into Python: two were ~25 % of a Settings switch and of opening
+    the Settings tab (250 %). An event neither reads goes on at once."""
+
+    def __init__(self, tooltips, router, parent=None):
+        super().__init__(parent)
+        self.tooltips, self.router = tooltips, router
+
+    def eventFilter(self, obj, event):
+        if event.type() not in _FILTERED:
+            return False
+        try:
+            if self.tooltips.eventFilter(obj, event):
+                return True
+        except Exception:                                 # the bubble's failure never takes Esc and Back with it
+            _log_unhandled(*sys.exc_info())               # ... (as two filters: Qt called the router anyway)
+        return self.router.eventFilter(obj, event)
+
+
+_FILTERED = tooltip.Tooltips.TYPES | EscapeRouter.TYPES
+
+
+class Central(QWidget):
+    """The window's content (the central widget) and where the focus rests (no ring: `ClickFocus`); the overlays' stage.
+
+    - It paints nothing that follows the focus, so the focus coming or going repaints nothing: QWidget's own focus events
+      repaint the whole widget — here the whole window, each time ⋯ closed and the focus came back to it (Up next at
+      20,000 files: 15–20 ms of the press's stretch; S19).
+    - **It has no layout of its own** (Up next 2): the content — header, tabs, pages, the bar — is laid out in `body`,
+      which fills it, and the hand-placed overlays (the toast and its shadow, the Goal sheet, the tray, a confirmation…)
+      are its children above that. Qt lays a widget's parent out again whenever a child shows, hides or changes its
+      hints, and with the content's layout here every toast shown laid out the whole window (6 ms at 20,000 files) and
+      repainted it. A request from a child now asks the window only when the body's own hints changed. `layout()` (from
+      Python) answers the body's: the content's parts, as `first_run._hold` reads them."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.body = QWidget(self)
+        self.body.setObjectName("centralbody")
+        self._hints = None
+
+    def layout(self):
+        return self.body.layout()
+
+    def sizeHint(self):
+        return self.body.sizeHint()
+
+    def minimumSizeHint(self):
+        return self.body.minimumSizeHint()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.body.setGeometry(self.rect())
+
+    def event(self, event):
+        if event.type() == QEvent.Type.LayoutRequest:
+            hints = (self.body.sizeHint(), self.body.minimumSizeHint())
+            if hints != self._hints:                 # (the content's own size moved: the window learns it)
+                self._hints = hints
+                self.updateGeometry()
+            return True
+        return super().event(event)
+
+    def focusInEvent(self, event):
+        event.accept()
+
+    def focusOutEvent(self, event):
+        event.accept()
+
+
 class _Duties:
     """W3.5: the duties' controls, and the newest state each showed (the window's view of them)."""
 
     def __init__(self):
         self.module = None
-        self.generate = self.journey = self.help = self.known = self.anki = self.level = self.update_mark = None
+        self.generate = self.help = self.known = self.anki = self.level = self.update_mark = None
         self.update_cross = None                                   # round 8 row 54: the chip's ✕
         self.journey_button = None                                 # the header's *Journey ↗*, beside the level ▾
         self.sheet = self.cards = self.journey_dot = self.pop = None
@@ -1230,11 +1407,11 @@ class ShellWindow(QMainWindow):
             self.setWindowIcon(QIcon(icon))
         self.setMinimumSize(*theme.WINDOW_MIN)
 
-        central = QWidget(self)
+        central = Central(self)
         central.setObjectName("central")
         central.setFocusPolicy(Qt.FocusPolicy.ClickFocus)     # where focus rests at start: no ring until Tab is used
         self._rest = central
-        root = QVBoxLayout(central)
+        root = QVBoxLayout(central.body)                      # (the content's layout: `Central`)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._build_header())                  # header and tabs: one frame band, no line between
@@ -1276,12 +1453,17 @@ class ShellWindow(QMainWindow):
         self._jobs = ()                                   # the registry's newest snapshot (E20: what the close waits for)
         self._quit = None                                 # None · "waiting" (E20: an Anki write ends first) · "ready"
         self.restart_asked = False                        # *Restart now* (text size): main starts the program again
+        self.restart_move = False                         # … for a Start over / Put back (its start runs the move)
         self._quit_line = strings.QUIT_FINISHING          # the bar's one line while it waits
         self._quit_timer = None
         self._detached_card = None                        # row 35: the close's *Still finishing* sheet, while open
         self._detached_answered = False                   # ... answered (Quit or Stop and quit): asked once a close
+        from app.qt import hints as hints_module          # WP6: one helper for every one-time hint (HC-3 too)
+        self.hints = hints_module.Hints(self)
         self.bridge.jobs_changed.connect(self._jobs_changed)
         self.bridge.jobs_changed.connect(self.phase.set_jobs)
+        self.bridge.jobs_changed.connect(self.hints.jobs)    # HC-3: the first card wait, the first background Generate
+        self.phase.on_states = self.hints.strip              # ... and the first amber circle
         self.phase.set_jobs(services.registry.snapshot())
         self._library_needs = 0
         self._status_snap = None
@@ -1330,12 +1512,15 @@ class ShellWindow(QMainWindow):
         motion.install_mode_filter(QApplication.instance())
         self.bridge.settings_written.connect(self._settings_written)
         self.toasts = toast.ToastHost(central)
+        self.toasts.why_asked = self._why_asked           # help cards: a toast's *Why?* opens its card, the cause on top
+        self.star_ask = star_ask.StarAsk(self)            # Surasura's star ask (once, when your own cards first land)
 
         # app-wide behaviour
         app = QApplication.instance()
         self.router = EscapeRouter(self, parent=self)
-        app.installEventFilter(self.router)
-        self.tooltips = tooltip.Tooltips(parent=self).install(app)
+        self.tooltips = tooltip.Tooltips(parent=self)
+        self.app_filter = AppFilter(self.tooltips, self.router, parent=self)     # (one filter for both: a9.1)
+        app.installEventFilter(self.app_filter)
         self.phase.tooltips = self.tooltips
         for page in self.page_widgets.values():           # W2.2: painted parts' tooltips go through the bubble
             if hasattr(page, "list"):
@@ -1359,6 +1544,7 @@ class ShellWindow(QMainWindow):
             ny = self.needs_you
             self.phase.lands = lambda go: go.place != "needs" or ny.first_of(go.at) is not None
             self.needs_you.changed.connect(self.phase.refresh)
+            self.needs_you.changed.connect(self._connect_fault)
             needs_page.controller = self.needs_you
             self.needs_you.failures_in(services.status.snapshot().needs_you)
             if needs_page.view_model is not None:
@@ -1426,6 +1612,7 @@ class ShellWindow(QMainWindow):
         if services.library is not None:
             qcovers.use_library(self.language, getattr(getattr(services.library, "opener", None), "data_dir", None),
                                 services.writer, self, self.moves)
+            qcovers.follow(services.library, self.language, services.writer)     # Hon a7: what arrives from now on
         # --- end W3.2 Q6
         # --- W3.2 L3: online covers — Q7's fetcher made with the library (`cover_fetcher`), asked for what shows
         self._fetcher = None
@@ -1466,9 +1653,10 @@ class ShellWindow(QMainWindow):
         names.setContentsMargins(0, 0, 0, 0)
         self.wordmark = Wordmark(header)
         names.addWidget(self.wordmark)
-        self.subline = QLabel(strings.LANGUAGE_NAMES.get(self.language, ""), header)
+        self.subline = SubLine(header)
         self.subline.setObjectName("wordsub")
-        names.addWidget(self.subline)
+        self.subline.setText(strings.LANGUAGE_NAMES.get(self.language, ""))
+        names.addWidget(self.subline.holder)
         row.addLayout(names)
         # --- W3.2 Q3: the search cut after the name (shown with a library); + Add at the right, before ? (the level ▾
         # goes before it: `_attach_duties`)
@@ -1624,6 +1812,9 @@ class ShellWindow(QMainWindow):
             sheet.view_shown(view)                  # --- end W3.2 Q2
         if moved:                                   # a view that changed no list paints nothing ahead
             self._warm_hidden_pages()
+        star = getattr(self, "star_ask", None)      # Surasura's star ask: once, when your own cards first land
+        if star is not None:
+            star.view_shown(view, self.services.library)
 
     def _show_dock(self, view):
         """The Goal dock takes the reader's `view.goal`, repainted only when it changed; shown while there is a Goal and
@@ -1665,6 +1856,9 @@ class ShellWindow(QMainWindow):
             return
         self._arrivals_view = view                        # SRC W1b / A4B-8: each arrival names its folder — the
         tray.set_groups(getattr(view, "arrival_groups", ()) or ())     # reader's thread named it (`follow_folders`)
+        sorting = self.__dict__.get("_sort_screen")       # --- Mado-O: the sort screen over the window follows them
+        if sorting is not None and not sip.isdeleted(sorting):
+            sorting.set_groups(getattr(view, "arrival_groups", ()) or ())
         if not arrivals and not tray.kept_out[0] and (tray.isVisible() or motion.opening_of(tray) is not None):
             tray.close()                                  # (alpha 4: its kept-out foot keeps it open)
         if self.arrival_numbers is not None and getattr(view, "language", self.language) == self.language:
@@ -1812,15 +2006,18 @@ class ShellWindow(QMainWindow):
     def _follow_covers(self, reader, writer):
         """W3.2 L3: the covers follow the library shown — its data folder, its writer and its drag controller (never the
         language left's: held there, they kept its reader and writer alive past the switch), its own fetcher (the old
-        one stopped) and its disk scan (once the first frame is out: until then the frame's own scan runs)."""
+        one stopped), its disk scan (once the first frame is out: until then the frame's own scan runs) and the look
+        at each title that arrives or changes from now on (Hon a7)."""
         qcovers.stop_scan()
         qcovers.use_library(self.language, getattr(getattr(reader, "opener", None), "data_dir", None), writer, self,
                             self.moves)
+        qcovers.follow(reader, self.language, writer)                   # Hon a7: what arrives from now on
         if self._fetcher_for(reader, writer) is None and self._fetcher is not None:
             self._fetcher.stop(timeout=0)           # (no writer: nothing to record with, so no fetcher)
             if qcovers.fetcher() is self._fetcher:
                 qcovers.use_fetcher(None)
             self._fetcher = None
+        _follow_airing(reader, self._fetcher)       # 3.0.1 item 5: the reader asks the library's own fetcher
         if self._first_painted and writer is not None:
             qcovers.start_scan(getattr(reader, "opener", None), self.language, writer)
 
@@ -1865,6 +2062,7 @@ class ShellWindow(QMainWindow):
         f = self._fetcher = make(self.language, writer, settings=services.settings.get)
         f.data_dir = getattr(getattr(library, "opener", None), "data_dir", None) or f.data_dir   # disk first
         qcovers.use_fetcher(f, qcovers.resolver(getattr(library, "opener", None)))
+        _follow_airing(library, f)                     # 3.0.1 item 5
         return f
 
     def ask_shown_covers(self):
@@ -1945,12 +2143,19 @@ class ShellWindow(QMainWindow):
         self.phase.follow_presses(self.presses)
         # Alpha 3 (Sonic 2026-10-24, PROVISIONAL): a circle's press opens its settings — 順's only while Junban is here
         self.phase.opened.connect(self._circle_pressed)
+        self.phase.asked.connect(self._circle_asked)       # try a9.1: its right-click's Show · Stop · Settings
+        self.phase.stops = self._circle_stops
+        self.phase.can_show = self._circle_shows
         self.phase.set_opens(set(phase_strip.SETTINGS) - {phase_service.JUNBAN})
         bridge.run_in_worker(_junban_here, then=self._junban_found)
         row.addWidget(self.phase)
-        # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line with *Open the logs folder* while it
-        # applies, else the update chip while it applies (`_attach_duties` puts it here), else the status line (the
-        # pulsing dot gave way to the header's hairline: light never pulses)
+        # help cards (HC-2): one ? after the five circles opens their card — every lit circle with its *Why*
+        from app.qt import help_card
+        self.phase_help = help_card.help_mark("circles", footer)
+        self.phase.set_help(self.phase_help)              # inside the strip: the bar's line keeps its own edge
+        # W3.1a: one slot at the left (W31A-1, `_paint_slot`) — the failure line (and its ✕) while it applies, else
+        # the update chip while it applies (`_attach_duties` puts it here), else the status line (the pulsing dot gave
+        # way to the header's hairline: light never pulses)
         self.bar_line = ElidingLabel(footer)
         self.bar_line.setObjectName("barline")
         self.bar_line.setAccessibleName(strings.BAR_NAME)
@@ -1960,15 +2165,8 @@ class ShellWindow(QMainWindow):
         self.bar_failure.setToolTip(strings.BAR_FAILURE_TIP)
         self.bar_failure.setVisible(False)
         row.addWidget(self.bar_failure, 1)
-        self.logs_button = QPushButton(strings.BAR_LOGS, footer)
-        self.logs_button.setProperty("kind", "chip")
-        self.logs_button.setToolTip(strings.BAR_LOGS_TIP)
-        self.logs_button.setAccessibleName(strings.BAR_LOGS)
-        self.logs_button.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        qpress.room(self.logs_button)                      # round 8 row 45: its arc's room kept at rest
-        self.logs_button.clicked.connect(lambda _c=False: self.open_logs(control=self.logs_button))
-        self.logs_button.setVisible(False)
-        row.addWidget(self.logs_button)
+        # (a9.1: the failure line's *Open the logs folder* went — Settings › App › *Folders* is the one way to the logs,
+        # and Send report carries them)
         self.bar_failure_cross = standing_qt.Cross(footer)       # round 8 row 54: the failure off the bar (still listed)
         self.bar_failure_cross.clicked.connect(self._failure_dismissed)
         self.bar_failure_cross.setVisible(False)
@@ -1977,6 +2175,8 @@ class ShellWindow(QMainWindow):
         row.addWidget(self.bar_arc)                       # ... on screen turns here, no words (hidden at rest)
         row.addStretch(0)                                # the room left of the marks while the chip holds the slot
         # (W31A-1's quiet marks ⇅ ⇄ went in alpha 3: the re-order's and Connect's lines are 順's and Anki Miner's hovers)
+        self.tool_icons = tool_icons.ToolIcons(self, footer)    # try a9 #5: the open windows, each one click from back
+        row.addWidget(self.tool_icons)
         # W3.1a: the corner — the emerald and *Anki · N waiting* (the AnkiWeb mark's words in its hover), then known
         self.anki_mark = frame.AnkiMark(footer)
         row.addWidget(self.anki_mark)
@@ -2115,10 +2315,9 @@ class ShellWindow(QMainWindow):
         return until is not None and time.monotonic() < until
 
     def _paint_slot(self):
-        """W31A-1: the footer's one slot — the failure line (with *Open the logs folder* when there is a folder) while
-        it applies, else the update chip while it applies, else the status line (always the line while the close
-        waits: E20's one line); each part shown or hidden only when that changed (S19). A line just said (`say`) holds
-        the slot for a few seconds over both."""
+        """W31A-1: the footer's one slot — the failure line (and its ✕) while it applies, else the update chip while it
+        applies, else the status line (always the line while the close waits: E20's one line); each part shown or
+        hidden only when that changed (S19). A line just said (`say`) holds the slot for a few seconds over both."""
         saying = self._saying()
         if not saying and getattr(self, "_message_until", None) is not None:
             self._message_until = None               # the line said has had its time: the status line is back (or a
@@ -2127,8 +2326,7 @@ class ShellWindow(QMainWindow):
         failure = bool(self.bar_failure.full()) and self._quit != "waiting" and not saying
         d = self.duties
         update = d is not None and d.update_applies and not failure and self._quit != "waiting" and not saying
-        parts = [(self.bar_failure, failure, self.status_paints), (self.logs_button, failure and bool(self._logs_folder),
-                 self.status_paints), (self.bar_failure_cross, failure, self.status_paints),
+        parts = [(self.bar_failure, failure, self.status_paints), (self.bar_failure_cross, failure, self.status_paints),
                  (self.bar_line, not failure and not update, self.status_paints)]
         if d is not None:
             parts += [(d.update_mark, update, d.paints), (d.update_cross, update, d.paints)]
@@ -2215,15 +2413,89 @@ class ShellWindow(QMainWindow):
             self.needs_you.reveal_first(go.at)            # (at its card, not only the page)
             return
         if go is not None and go.place == "junban":
-            from app.qt import windows
-            opener = next((op for op in windows.OPENERS if op.name == "junban"), None)
-            if opener is not None:
-                win = windows.launch(self, opener)
-                if win is not None and hasattr(win, "highlight"):
-                    win.highlight(go.at)
+            if self._open_junban(go.at):
                 return
+        if self.phase.showing(circle) and self._show_circle(circle):
+            return                                         # try a9.1: running, where it can be seen
         if circle in self.phase.opens:
             self.open_setting(phase_strip.SETTINGS[circle])
+
+    def _open_junban(self, at=None):
+        """順's window, opened or brought to the front — at its control `at` (a7), if any. -> whether it opened."""
+        from app.qt import windows
+        opener = next((op for op in windows.OPENERS if op.name == "junban"), None)
+        if opener is None:
+            return False
+        win = windows.launch(self, opener)
+        if win is not None and at is not None and hasattr(win, "highlight"):
+            win.highlight(at)
+        return True
+
+    # --- try a9.1 (Sonic's report: "junban and anki miner are spinning but i don't know what they are doing") ------- #
+    def _circle_asked(self, circle, what):
+        """A circle's right-click menu: *Show* where its work is seen (else its settings), *Stop* it, its *Settings*."""
+        if what == "show" and self._show_circle(circle):
+            return
+        if what == "stop":
+            self._stop_circle(circle)
+            return
+        if circle in self.phase.opens:
+            self.open_setting(phase_strip.SETTINGS[circle])
+
+    def _mining_now(self):
+        """The episode Connect is making cards for, as its feed's last look has it (in memory, no read): (file id, its
+        feed Item), or None."""
+        try:
+            items = connect_feed(self.language, self.services.settings).latest().items or {}
+        except Exception:
+            return None
+        return next(((i, it) for i, it in items.items() if it.kind == "mining"), None)
+
+    def _circle_shows(self, circle):
+        """Whether `circle`'s work has a place to be seen now: an episode Connect is mining; 順's window (Junban here)."""
+        if circle == phase_service.JUNBAN:
+            return phase_service.JUNBAN in self.phase.opens
+        return circle == phase_service.MINER and self._mining_now() is not None
+
+    def _show_circle(self, circle):
+        """Where `circle`'s running work is seen: Anki Miner — the title it makes cards for, in its list, washed (its
+        Stop is on that row); 順 — its window. -> whether it showed something."""
+        if circle == phase_service.JUNBAN:
+            return self._open_junban()
+        if circle != phase_service.MINER:
+            return False
+        got = self._mining_now()
+        if got is None:
+            return False
+        for name in ("current", "finished"):
+            lst = getattr(self.page_widgets.get(name), "list", None)
+            key = lst.key_of(got[0]) if hasattr(lst, "key_of") else None
+            if key is not None:
+                self.search.show_row(name, key)
+                return True
+        self.show_tab("current")
+        return True
+
+    def _circle_stops(self, circle):
+        """Whether `circle`'s work can be stopped now: Anki Miner's episode before its cards are named (its row's
+        *Stop*, `actions.stoppable`), else a job of the circle's a Stop may cancel (`phase.stoppable`)."""
+        if circle == phase_service.MINER:
+            got = self._mining_now()
+            if got is not None and got[1].stoppable and not got[1].stopping and getattr(self, "mine", None):
+                return True
+        return bool(phase_service.stoppable(self.services.registry.live(), circle))
+
+    def _stop_circle(self, circle):
+        """*Stop* from a circle's menu: Anki Miner's episode through its row's own Stop (*Stopping…* on the row and in
+        the hover; refused once its cards are named, the bar says why); a cancellable job through its own cancel."""
+        if circle == phase_service.MINER:
+            got = self._mining_now()
+            if got is not None and got[1].stoppable and not got[1].stopping and getattr(self, "mine", None):
+                from app.qt import rows as qrows
+                self.mine.stop(qrows.Ask(got[0], (got[0],), None, got[1].job))
+                return
+        for job_id in phase_service.stoppable(self.services.registry.live(), circle):
+            self.services.registry.cancel(job_id)
 
     def _junban_found(self, here):
         """Alpha 3: 順's circle opens Junban's settings once Junban is found (`_junban_here`, a worker's file look)."""
@@ -2242,6 +2514,22 @@ class ShellWindow(QMainWindow):
         label.setToolTip(tip if text else "")
         label.setVisible(bool(text))
         self.status_paints[label] = self.status_paints.get(label, 0) + 1
+
+    def _connect_fault(self):
+        """A7N-3 (Sonic 2026-10-30): Connect's own Generate failed — its *Needs you* card (`feed.FAULT_KINDS`) makes ス
+        red with its words, as a Generate you start does: looked at, still said in the hover (no longer red); gone with
+        the card (fixed at Connect's next run, dismissed, *Not now*). The part is the need's own, at its time: the
+        same failure again (Connect reopens it, a new `at`) is news again, red, whatever its words."""
+        from app.connect import feed as connect_feed
+        fault = next((e for e in self.needs_you.shown_entries()
+                      if (e.data or {}).get("connect") and e.kind in connect_feed.FAULT_KINDS), None)
+        key = f"connect-fault:{fault.key}:{fault.data.get('at')}" if fault is not None else None
+        before = getattr(self, "_connect_fault_key", None)
+        if before is not None and before != key:
+            self.phase.set_extra(phase_service.SURASURA, before)
+        if key is not None:
+            self.phase.set_extra(phase_service.SURASURA, key, "failed", fault.title)
+        self._connect_fault_key = key
 
     def _paint_needs(self):
         """The Needs you tab: shown while anything is listed, its badge the unseen entries (the bar's failures, the
@@ -2269,6 +2557,9 @@ class ShellWindow(QMainWindow):
         if "covers_download" in keys:                   # --- W3.2 L3: turned on, what is on screen now is asked
             qcovers.ask_again()                         # (titles dropped while it was off too: N1)
             self.ask_shown_covers()
+            moved = getattr(self._reader_shown, "airing_moved", None)
+            if moved is not None:                       # alpha 9 (L1): AniList's *Still asking* follows the switch
+                moved()
         if "connect_enabled" in keys or "logic.automation" in keys:     # Connect's tick is skipped while off (its
             # switch or D29's automation, `connect_on`: P4.1 WF, review B1): its line asked now
             refresh = getattr(self.services.status, "refresh_soon", None)
@@ -2360,7 +2651,7 @@ class ShellWindow(QMainWindow):
         d = self.duties = _Duties()
         d.module = duties_module
         # the header (W3.1a): the level ▾ — its pop (W3.1b, the Level menu) holds the slider, Automatic, the
-        # readout, Generate and *Open your journey* — and ? (*Online guide* only until the tours, IK-15 / IK-24)
+        # readout and Generate — and ? (a click: the online guide, until the tours, IK-15 / IK-24)
         d.level = frame.LevelButton(self.header)
         d.pop = frame.LevelPop(self.centralWidget(), d.level)
         d.level.clicked.connect(d.pop.toggle)
@@ -2372,16 +2663,7 @@ class ShellWindow(QMainWindow):
         d.generate = duties_module.GenerateControl(d.pop)
         d.generate.pressed.connect(self._generate_pressed)
         d.generate.log_asked.connect(self._open_generate_log)
-        d.journey = QPushButton(strings.LEVEL_JOURNEY, d.pop)
-        d.journey.setObjectName("popjourney")
-        d.journey.setToolTip(strings.JOURNEY_NONE_TIP)
-        d.journey.setAccessibleName(strings.LEVEL_JOURNEY)
-        d.journey.setFocusPolicy(Qt.FocusPolicy.TabFocus)
-        d.journey.setCursor(Qt.CursorShape.PointingHandCursor)
-        d.journey.setEnabled(False)                     # until a journey is found on disk: hidden meanwhile
-        d.journey.setVisible(False)
-        qpress.room(d.journey, end=True)                # round 8 row 45: a link — its arc's room at its right end
-        d.journey.clicked.connect(lambda _c=False: self._open_journey(control=d.journey))
+        # (a9.1: the pop's *Open your journey ↗* went — the header's *Journey ↗* beside the ▾ is the one way in)
         # laptop fixes (Sonic: "the journey should never automatically pop up … a button by auto … to open the
         # journey"): *Journey ↗* beside the ▾, the header's own button look (as ?); shown while one is on disk
         d.journey_button = QToolButton(self.header)
@@ -2401,26 +2683,20 @@ class ShellWindow(QMainWindow):
         d.help.setAccessibleName(strings.HELP_NAME)
         d.help.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         d.help.setCursor(Qt.CursorShape.PointingHandCursor)
-        d.help.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QMenu(d.help)
-        menu.addAction(strings.HELP_GUIDE).triggered.connect(self._open_guide)
-        d.help.setMenu(menu)
-        d.journey_dot = QLabel(d.pop)                     # row 7: the sentences catching up (02-state-model, G10)
+        # help cards (HC-4): a click opens the help card of the screen in view (its foot: All help · What runs by
+        # itself · Online guide); no menu to read first. The card is a GUI-only overlay: no pending mark.
+        d.help.clicked.connect(lambda _c=False: self.open_help())
+        d.journey_dot = QLabel(self.header)               # row 7: the sentences catching up (02-state-model, G10)
         d.journey_dot.setObjectName("journeydot")
         d.journey_dot.setTextFormat(Qt.TextFormat.PlainText)
         d.journey_dot.setAccessibleName(strings.JOURNEY_DOT_NAME)
         d.journey_dot.setVisible(False)
         d.pop.add_action(d.generate)
-        journey_row = QHBoxLayout()
-        journey_row.setContentsMargins(0, 0, 0, 0)
-        journey_row.addWidget(d.journey)
-        journey_row.addWidget(d.journey_dot)
-        journey_row.addStretch(1)
-        d.pop.actions.addLayout(journey_row)
         # --- W3.2 Q3: the level ▾ before + Add, ? after it
         header_row = self.header.layout()
         header_row.insertWidget(header_row.indexOf(self.add_stone), d.level)
         header_row.insertWidget(header_row.indexOf(self.add_stone), d.journey_button)    # right of the ▾ (laptop fixes)
+        header_row.insertWidget(header_row.indexOf(self.add_stone), d.journey_dot)       # a9.1: its dot beside it
         header_row.insertWidget(header_row.indexOf(self.report_button), d.help)          # ? before the bug
         # --- end W3.2 Q3
         self._paint_level()
@@ -2478,15 +2754,20 @@ class ShellWindow(QMainWindow):
             self.services.setup_open.set()
         elif self.services.setup_open.is_set():
             bridge.run_in_worker(self.services.setup_ended)
+        if not up and self.__dict__.pop("_tour_after_setup", False):
+            QTimer.singleShot(0, self.open_tour)          # help cards §6.6: setup's last page asked for the tour
 
     def _session_said(self, line):
         from app.qt import windows
         windows.say_in_bar(self, line)
 
     def _duties_started(self):
-        """Started: what the bar and the header read from disk, read on workers."""
+        """Started: what the bar and the header read from disk, read on workers; a YouTube playlist's rest still to
+        come goes on (alpha 8, `windows.resume_youtube`)."""
         self._check_journey()
         self._read_level()
+        from app.qt import windows
+        windows.resume_youtube(self)
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -2568,9 +2849,97 @@ class ShellWindow(QMainWindow):
         if path:
             qpress.open(self, path, control=self.duties.generate.log_button, key="open:generate-log")
 
-    def _open_guide(self, _checked=False):
-        """? › *Online guide*: its menu has closed, so the bar's arc turns until the browser was asked (a worker)."""
-        qpress.run(None, "open:guide", self.services.open_guide, win=self)
+    # --- the help cards (Sonic 2026-11-06 "Ok do it"; spec tracks/window/work/help-cards) ------------------------- #
+    def open_help(self, card_id=None, cause=None, done=None):
+        """The help card `card_id` (None: the screen in view's, HC-4 — Settings' section in view where it has one, a
+        screen with none *All help*), opened over this window. -> the card."""
+        from app.qt import help_card
+        from app.services import help_cards
+        if card_id is None:
+            tab = self.current_tab()
+            card_id = help_cards.screen_card(tab, self._settings_section() if tab == "settings" else None)
+        card = help_card.card_for(self)
+        if card_id is None:
+            return card.show_all(done=done)
+        return card.show_card(card_id, cause=cause, done=done)
+
+    def open_tour(self):
+        """The tour of what runs by itself (item 11, HG-4): Settings' door and setup's last page."""
+        from app.qt import help_card
+        return help_card.card_for(self).show_tour()
+
+    def _why_asked(self, cause, done):
+        """A toast's *Why?*: its cause's card, the cause on top; `done()` (the toast's time runs on) when it closes."""
+        self.open_help(getattr(cause, "card", None) or "automation", cause=cause, done=done)
+
+    def _settings_section(self):
+        """The Settings section in view (its lit nav button), or None."""
+        page = getattr(self, "settings_page", None)
+        for section_id, b in (getattr(page, "nav", None) or {}).items():
+            if b.isChecked():
+                return section_id
+        return None
+
+    def help_try_ready(self, key):
+        """Whether *Try it* `key` can run now (§6.5): None, else what is missing (the card says it). GUI-only reads."""
+        settings = self.services.settings.get()
+        if key == "sync_known":
+            decks = (settings.get("anki_sync_decks") or {}).get(self.language) or []
+            return None if decks and self.services.automation is not None else strings.HELP_TRY_MISSING[key]
+        if key == "mine_top":
+            mine = getattr(self, "mine", None)
+            ok = (mine is not None and not getattr(mine, "off", None) and settings.get("connect_enabled")
+                  and self._top_to_mine() is not None)
+            return None if ok else strings.HELP_TRY_MISSING[key]
+        if key == "junban":
+            return None if self.phase is not None and phase_service.JUNBAN in self.phase.opens \
+                else strings.HELP_TRY_MISSING[key]
+        if key == "update_journey":
+            view = getattr(self.page_widgets.get("current"), "view_model", None)
+            ok = self.duties is not None and view is not None and bool(getattr(view, "rows", None))
+            gen = getattr(self.duties, "generate_state", None)
+            if ok and getattr(gen, "state", None) in ("queued", "running", "cancelling") and not getattr(gen, "quiet",
+                                                                                                         False):
+                return strings.HELP_TRY_BUSY            # (a background one: the press is yours, taking its place)
+            return None if ok else strings.HELP_TRY_MISSING[key]
+        return strings.HELP_TRY_MISSING.get(key)
+
+    def help_try(self, key, control=None):
+        """*Try it* `key` (§6.5): the press the window already has, with its own pending mark and its own undo —
+        the known-words sync (read-only on Anki), *Mine now* on the first episode above the line (*Undo this batch*),
+        順's window (its *Try it on my cards*), the Generate button's own request (the learner's, never quiet)."""
+        if self.help_try_ready(key) is not None:
+            return
+        if key == "sync_known":
+            self._known_clicked()
+        elif key == "mine_top":
+            got = self._top_to_mine()
+            if got is not None:
+                self.mine.mine_row(*got)
+        elif key == "junban":
+            self._open_junban()
+        elif key == "update_journey":
+            if self.duties is not None:
+                qpress.run(control, "generate", self.services.generate,
+                           failed=lambda info: self.say(str(info[0])), win=self)
+
+    def _top_to_mine(self):
+        """(row, ids) of the first row above the top-cards line with an episode *Mine now* would ask for, or None."""
+        from app.qt import rows as rows_module
+        view = getattr(self.page_widgets.get("current"), "view_model", None)
+        for row in getattr(view, "rows", None) or ():
+            episodes = getattr(row, "episodes", None) or ()
+            if not any(getattr(e, "in_top", False) for e in episodes):
+                continue
+            ids = [e.id for e in rows_module.asked_files("waiting", episodes) if e.in_top][:1]
+            if ids:
+                return row, ids
+        return None
+
+    def _open_guide(self, _checked=False, control=None):
+        """? (a9.1: a button, its one-item menu gone): `control`'s arc turns — else the bar's — until the browser was
+        asked (a worker)."""
+        qpress.run(control, "open:guide", self.services.open_guide, win=self)
 
     # Your journey
     def _check_journey(self):
@@ -2579,7 +2948,7 @@ class ShellWindow(QMainWindow):
 
     def _show_journey(self, exists):
         exists = bool(exists)
-        for b in (self.duties.journey, self.duties.journey_button):
+        for b in (self.duties.journey_button,):
             if b.isEnabled() != exists:
                 b.setEnabled(exists)
                 b.setVisible(exists)                       # W3.1a: shown only while there is one to open
@@ -2588,7 +2957,7 @@ class ShellWindow(QMainWindow):
             self.duties.pop.place()
 
     def _open_journey(self, *_checked, asked=False, control=None, at=None, episode=None):
-        """*Journey ↗* in the header, *Open your journey ↗* in the pop — and (`asked`, W3.1a S5) Up Next's *N new
+        """*Journey ↗* in the header — and (`asked`, W3.1a S5) Up Next's *N new
         words ↗*: with none on disk the entries go, and a click from Up Next says why in the bar. The only ways the
         journey opens: a Generate writes it and never opens it (laptop fixes). Round 8 row 45: one press for all four
         (`press.run`): `control`'s arc turns (or `at`: the row's ↗, ⋯; neither: the bar's) until the browser was
@@ -2627,7 +2996,7 @@ class ShellWindow(QMainWindow):
         junban = getattr(state, "junban", None)
         if junban and junban != d.junban_said:             # 順's line, once (the Tk `_on_junban_auto`: IK-23)
             d.junban_said = junban
-            self.toasts.show(junban)
+            self.toasts.show(junban, why=self._job_cause("junban"))   # help cards: the job's own cause (one record)
         known = getattr(state, "known", None)
         self._known_road()
         if d.known.set_known(known, strings.BAR_KNOWN_TIP):     # W3.1a: the known corner (repainted on a change only)
@@ -2826,11 +3195,23 @@ class ShellWindow(QMainWindow):
         if d.level.set_mark(mark) or changed:
             d.paints[d.level] = d.paints.get(d.level, 0) + 1
 
+    def _job_cause(self, kind):
+        """The newest `kind` job's cause in the registry (help cards §5.2: a toast reads its job's record, never a copy
+        of its own), or None."""
+        try:
+            views = [v for v in self.services.registry.snapshot() if v.kind == kind]
+        except Exception:
+            return None
+        return getattr(views[-1], "cause", None) if views else None
+
     def _show_chores(self, state):
         notice = getattr(state, "notice", None)
         if notice and notice != self.duties.notice:        # Connect's line, once: a toast
             self.duties.notice = notice
-            self.toasts.show(notice)
+            from app.connect import notice as notice_module    # help cards: the notice names what came, from where
+            from app.services import causes
+            why = causes.Cause(strings.WHY_NOTICE, None, "arrivals") if notice_module.names_arrivals(notice) else None
+            self.toasts.show(notice, why=why)
 
     # the update
     def _show_update(self, state, force_cards=False):
@@ -2936,12 +3317,14 @@ class ShellWindow(QMainWindow):
         self.update()
         return ms
 
-    def restart(self):
+    def restart(self, move=False):
         """*Restart now* (Settings › Text size; laptop fixes row 15): the window closes the quit's way — what can't
         stop part-way ends first (E20), the window state is saved (size, place, this tab), the settings written — and
         `main` starts the same program again once the quit is over, the store's close included (`relaunch`). Offered
-        only while no Generate runs (`generating`)."""
+        only while no Generate runs (`generating`). `move` (Fresh library: *Start over*, a Started-over *Put back*,
+        the request written first): that start's gate runs the move (`MOVE_START`, P16)."""
         self.restart_asked = True
+        self.restart_move = self.restart_move or bool(move)
         self.close()
 
     def generating(self):
@@ -3193,13 +3576,15 @@ class ShellWindow(QMainWindow):
         self.scan_covers()
         self._start_looks()                                    # --- SRC W1b: the first look after start (full)
 
-    def scan_covers(self):
+    def scan_covers(self, progress=None, then=None):
         """W3.2 Q6: the library's covers from disk (`covers.start_scan`), on a thread of its own — after the first
-        frame, and again when another library opens. -> the scan's thread, or None (no library or no writer)."""
+        frame, and again when another library opens (and from setup's load screen: `progress` / `then`, on the scan's
+        thread). -> the scan's thread, or None (no library or no writer)."""
         library, writer = self.services.library, self.services.writer
         if library is None or writer is None:
             return None
-        return qcovers.start_scan(getattr(library, "opener", None), self.language, writer)
+        listen = {k: v for k, v in (("progress", progress), ("then", then)) if v is not None}
+        return qcovers.start_scan(getattr(library, "opener", None), self.language, writer, **listen)
         # --- end W3.2 Q6
 
     def showEvent(self, event):
@@ -3431,7 +3816,7 @@ class ShellWindow(QMainWindow):
         except OSError as e:
             applog.log("shell", f"window state not saved: {e}")
         app = QApplication.instance()
-        app.removeEventFilter(self.router)
+        app.removeEventFilter(self.app_filter)
         self.tooltips.uninstall(app)
         super().closeEvent(event)
 
@@ -3443,6 +3828,14 @@ def _session_ending():
         return bool(app is not None and app.isSavingSession())
     except Exception:
         return False
+
+
+def _follow_airing(reader, fetcher):
+    """3.0.1 item 5: the reader asks AniList's airing status through the covers fetcher's own asker (its switch, its
+    throttle), or nothing without one."""
+    follow = getattr(reader, "follow_airing", None)
+    if follow is not None:
+        follow(getattr(fetcher, "airing", None))
 
 
 # --- W3.2 B: how the window wakes (IK0-5, L3.1-4) ----------------------------------------------------------------- #
@@ -3613,6 +4006,35 @@ def prepare_process():
     otherwise); Python's lock changes hands every millisecond."""
     sys.excepthook = _log_unhandled
     sys.setswitchinterval(SWITCH_INTERVAL_S)
+    wire_idle()
+
+
+_IDLE_WIRED = []
+
+
+def wire_idle():
+    """The window's idle for its process's background threads (`services.window_idle`): woken → busy, back to wait →
+    idle — the event dispatcher's own signals, wired once a process (the writer, the reader and the numbers start a
+    step only while the window rests, so a press's stretch never takes turns at Python's lock with them)."""
+    from PyQt6.QtCore import QAbstractEventDispatcher
+    d = QAbstractEventDispatcher.instance()
+    if d is None or any(x is d for x in _IDLE_WIRED):
+        return
+    d.awake.connect(window_idle.busy)
+    d.aboutToBlock.connect(window_idle.rest)
+    _IDLE_WIRED.append(d)
+
+
+def unwire_idle():
+    """(Tests.) The window's idle no longer told: the background never waits again."""
+    while _IDLE_WIRED:
+        d = _IDLE_WIRED.pop()
+        for signal, slot in ((d.awake, window_idle.busy), (d.aboutToBlock, window_idle.rest)):
+            try:
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
+    window_idle.rest()
 
 
 def connect_instance(window, instance):
@@ -3621,8 +4043,10 @@ def connect_instance(window, instance):
     window.closing.connect(instance.stop_listening)
 
 
-def main(argv=None):
-    """The window's start: one per session (`single.py`), the look before the first paint, the HUD when asked."""
+def main(argv=None, after_gate=None):
+    """The window's start: one per session (`single.py`), the look before the first paint, the HUD when asked.
+    `after_gate()` (app_entry's telemetry start) runs once the start gate let the window open: nothing before the gate
+    reads a place a Start over moves there (Fresh library, R2)."""
     argv = list(sys.argv if argv is None else argv)
     hud.mark("main")                                  # the probe's phases (M2.1 row D); nothing when it is off
     from app.qt import single as single_module
@@ -3634,13 +4058,17 @@ def main(argv=None):
         return 0
     hud.mark("claimed")
     from app.qt import start_gate
-    if not start_gate.gate(app):                      # W3.5: the 2.x import, the refusals, the merge — before the store
+    restarted = restart_mark()                        # alpha 4 M6: *Restart now*'s start (`relaunch`) — read before
+    moving = move_mark()                              # the gate: a Start over asked runs only on its own restart (P16)
+    if not (start_gate.gate(app, move=True) if moving else start_gate.gate(app)):     # W3.5: the 2.x import, the
+        #                                           refusals, the merge — before the store
         instance.release()
         return 0
+    if after_gate is not None:
+        after_gate()
     # W3.2 P0: the library and its writer (nothing read yet). A4 P-gil: the reader freezes Python's collector after each
     # view (a full collection walking the library held the window 40-75 ms at 20,000 files); its stop thaws it, so a
     # library a language switch let go is still freed (`library_reader`'s *Python's collector*)
-    restarted = restart_mark()                        # alpha 4 M6: *Restart now*'s start (`relaunch`)
     try:
         services = open_services(freeze_gc=True)
         services.restarted = restarted
@@ -3668,12 +4096,16 @@ def main(argv=None):
     try:
         code = app.exec()
     finally:
+        unwire_idle()                                     # (the loop has ended: the quit's saves never wait for it)
         try:
             services.shutdown(release=instance.release)   # the claim goes before the store's close trigger
         finally:
             instance.release()                            # (once: done already unless the quit failed before it)
             if window.restart_asked:                      # *Restart now* (`ShellWindow.restart`): the new start only
-                relaunch(argv)                            # once the store's close has ended (or its wait ran out, B2-4)
+                (relaunch(argv, move=True) if window.restart_move else relaunch(argv))   # once the store's close
+                #                                           has ended (or its wait ran out, B2-4)
+                #                                           (a move's start that failed: its request stays asked, and
+                #                                           the next start asks about it — never run unasked, P16)
             if meter is not None:                         # the HUD's native filter taken off here, on the GUI thread:
                 try:                                      # left to the collector, it can go on a worker, where Qt's
                     meter.stop()                          # removal misses and the next message crashes (0xC0000005)
@@ -3697,10 +4129,34 @@ def restart_mark():
     return os.environ.pop(RESTARTED, None) == "1"
 
 
-def relaunch(argv):
+# Fresh library 3.0.1: a restart asked by *Start over* / a Started-over *Put back* (its request already written): only
+# that start's gate runs the move; any other start that finds the request asks first (P16)
+MOVE_START = "SURASURA_MOVE_START"
+
+
+def move_mark():
+    """Was this start a Start over's own restart (`relaunch(move=True)`)? Read once, taken out of the environment."""
+    return os.environ.pop(MOVE_START, None) == "1"
+
+
+def relaunch_refused(argv=None):
+    """Why the program couldn't be started again now (the file it would run isn't there), or None — asked before a
+    Start over closes the window, so a restart that can't come is said while the window is still up."""
+    argv = list(sys.argv if argv is None else argv)
+    exe = sys.executable
+    if not exe or not os.path.isfile(exe):
+        return f"{exe or 'the program'} isn't there"
+    if not getattr(sys, "frozen", False) and argv and os.path.abspath(argv[0]) != os.path.abspath(__file__) and \
+            not os.path.isfile(os.path.abspath(argv[0])):
+        return f"{argv[0]} isn't there"
+    return None
+
+
+def relaunch(argv, move=False):
     """The same program started again, detached (laptop fixes row 15: *Restart now*): the frozen program with its own
     arguments, or this Python with the script `argv` names (app_entry.py from source), from the same folder, marked
-    `RESTARTED` (alpha 4 M6). -> the Popen, or None (logged: the window just doesn't come back)."""
+    `RESTARTED` (alpha 4 M6), and `MOVE_START` too for a move's restart (`move`). -> the Popen, or None (logged: the
+    window just doesn't come back)."""
     import subprocess
     if getattr(sys, "frozen", False):
         args = [sys.executable] + list(argv[1:])
@@ -3712,7 +4168,8 @@ def relaunch(argv):
     try:
         return subprocess.Popen(args, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                start_new_session=(sys.platform != "win32"), env=dict(os.environ, **{RESTARTED: "1"}))
+                                start_new_session=(sys.platform != "win32"),
+                                env=dict(os.environ, **{RESTARTED: "1"}, **({MOVE_START: "1"} if move else {})))
     except (OSError, ValueError) as e:
         applog.log("shell", f"restart: the new start failed: {e!r}")
         return None

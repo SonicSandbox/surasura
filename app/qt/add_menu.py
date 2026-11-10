@@ -1,5 +1,6 @@
 """+ Add (W3.2 Q3; the RUNBOOK §1 *+ Add*, §5 lean 2, §5a N14; the reference's row 6, the + stone): the stone at the
-header's right and its menu — and the same actions on the setup wizard's page 3 (IK-12).
+header's right and its menu. (Setup's page 3 keeps its own three — a file, a folder, YouTube — since alpha 8; its
+files go through `add_files`, the drop's path.)
 
 - **The stone** (`AddStone`): a faceted deep-sapphire stone with a + cut in it, flat (no blur); under the hand it
   rises 1 px and brightens. A click opens its menu.

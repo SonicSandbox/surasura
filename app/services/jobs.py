@@ -15,6 +15,8 @@ States: `queued` (asked for, not started) · `waiting` (held back, with its reas
 `cancelling` (asked to stop; still ending) · `done` · `failed` (with its message). A job cancelled before it started is
 `done` with `cancelled` set. A waiting or ended job may carry `needs`: why it waits on *you* (plain words: *Anki is
 closed*, *Not timed to its video*) — the phase strip's amber (its `app/services/phase.py`); None for every other wait.
+An automatic job may carry its `cause` (`app/services/causes.Cause`, the help cards' *Why?*): set once, by whoever asks
+for it, from the trigger it was given; kept as the job ends (the strip's *Last:* line says it); None for a user's job.
 
 The exclusion rules, in one table (`RESOURCES`): two jobs that use the same resource never run together — Generate and
 the indexer both write the token store, and one Anki writer at a time (`anki-writer`, E1.4) — and never two of a kind.
@@ -76,11 +78,17 @@ RESOURCES = {
     # IK-6: the window's start look at Anki (Q4-4, *Open Anki for me*): its session's sync is Anki's own, its
     # known-words sync a job of its own after it — beside everything
     "anki-session": set(),
+    # Michi-NS: a show's subtitles made from the audio (`no_subs.make`, Anki Miner's `transcribe`): one at a time, beside
+    # everything (it writes only Anki Miner's run folder, then one fill through the store's own lock)
+    "transcribe": set(),
+    # 3.0.1: *Install AnkiConnect for me* (`app/connect/ankiconnect_install.py`): AnkiWeb's add-on placed in Anki's
+    # add-ons folder while Anki is closed — touches no file the others write; its route's own lock keeps one at a time
+    "ankiconnect-install": set(),
 }
 
 Progress = namedtuple("Progress", "step done total")
 JobView = namedtuple("JobView", "id kind label state reason message progress started_at ended_at automatic on_quit "
-                                "cancelled gated pid can_cancel needs", defaults=(None, True, None))
+                                "cancelled gated pid can_cancel needs cause", defaults=(None, True, None, None))
 
 
 def conflicts(kind_a, kind_b):
@@ -141,7 +149,7 @@ def generating(jobs):
 class Job:
     """One job. Its owner reports `progress(...)` and `finish(...)`; anyone may `cancel()`."""
 
-    def __init__(self, registry, job_id, kind, label, automatic, on_quit, start, cancel, gated):
+    def __init__(self, registry, job_id, kind, label, automatic, on_quit, start, cancel, gated, cause=None):
         self._registry = registry
         self.id = job_id
         self.kind = kind
@@ -160,12 +168,13 @@ class Job:
         self.cancelled = False
         self.pid = None                 # the child process it runs, once started (`started_process`)
         self.needs = None               # why it waits on the user (a waiting or ended job), else None
+        self.cause = cause              # why it started by itself (`causes.Cause`), else None
         self.ended = threading.Event()
 
     def view(self):
         return JobView(self.id, self.kind, self.label, self.state, self.reason, self.message, self.progress_now,
                        self.started_at, self.ended_at, self.automatic, self.on_quit, self.cancelled, self.gated,
-                       self.pid, self._cancel is not None, self.needs)
+                       self.pid, self._cancel is not None, self.needs, self.cause)
 
     def progress(self, step, done=None, total=None):
         """Where the running job is: a step in the user's words, and how far through it."""
@@ -219,15 +228,16 @@ class JobRegistry:
         self._gates = []                    # check(kind) -> why a gated job of that kind may not start now, or None
 
     # --- asking ------------------------------------------------------------------------------------------------- #
-    def submit(self, kind, label, start, cancel=None, automatic=False, on_quit="cancel"):
+    def submit(self, kind, label, start, cancel=None, automatic=False, on_quit="cancel", cause=None):
         """A gated job: `start(job)` is called (at once, or when the table allows) to begin the work; `cancel(job)`
-        to ask a running one to stop. -> the Job (a user's request that absorbed a queued automatic one is still a new
-        Job; the automatic one ends, cancelled)."""
+        to ask a running one to stop; `cause`: why an automatic one was asked for (`causes.Cause`). -> the Job (a
+        user's request that absorbed a queued automatic one is still a new Job; the automatic one ends, cancelled)."""
         if on_quit not in QUIT_CHOICES:
             raise ValueError(f"on_quit must be one of {QUIT_CHOICES}")
         absorbed = []
         with self._lock:
-            job = Job(self, next(self._ids), kind, label, automatic, on_quit, start, cancel, gated=True)
+            job = Job(self, next(self._ids), kind, label, automatic, on_quit, start, cancel, gated=True,
+                      cause=cause)
             if not automatic:
                 for other in self._jobs:
                     if other.gated and other.automatic and other.kind == kind and other.state in (QUEUED, WAITING):
@@ -241,12 +251,13 @@ class JobRegistry:
         self._schedule()
         return job
 
-    def record(self, kind, label, cancel=None, automatic=False, on_quit="cancel", reason=None, needs=None):
+    def record(self, kind, label, cancel=None, automatic=False, on_quit="cancel", reason=None, needs=None, cause=None):
         """A job its owner started already (a child process): listed as running, never held back nor holding a gated
         job back. With a `reason` (or `needs`): listed as waiting — its owner's own wait (Connect's queued episode, one
-        not timed to its video) — until `resume()`."""
+        not timed to its video) — until `resume()`. `cause`: as `submit`'s."""
         with self._lock:
-            job = Job(self, next(self._ids), kind, label, automatic, on_quit, None, cancel, gated=False)
+            job = Job(self, next(self._ids), kind, label, automatic, on_quit, None, cancel, gated=False,
+                      cause=cause)
             job.state, job.started_at = RUNNING, time.time()
             if reason or needs:
                 job.state, job.reason, job.needs = WAITING, reason or needs, needs

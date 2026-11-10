@@ -17,7 +17,8 @@ A card you suspend in Anki says "I know this": at Surasura's next known-words sy
   card, when) for undo.
 - **The word only** (intent keeper P2.4-B, ⭐ lean, asked of Sonic): a signalled card marks its Word field's one
   word (`anki_match.card_word`), never its "Also read" lines — a suspension says "I know this word", not every word
-  of its sentence. `SIGNAL_WORD_ONLY` switches it back to the sync's fields.
+  of its sentence. A word field that holds a sentence is read as the sync reads it, whole (`anki_match.holds_sentence`:
+  the deck keeps its sentence where the word goes). `SIGNAL_WORD_ONLY` switches it back to the sync's fields.
 - **The one-time offer**: the first read finds cards already signalled → none marked; they are kept as an offer
   (*Mark their words known?*), shown until answered (`accept_offer` / `decline_offer`; accepted, only the cards that
   still carry the signal); a card you declined is never offered again, even after a profile or deck change. A changed signal (other terms, or off and on again) is a first read again: a new offer, never a

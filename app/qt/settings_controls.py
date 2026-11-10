@@ -41,7 +41,7 @@ from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, pyqt
 from PyQt6.QtGui import QActionGroup, QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton, QSizePolicy, QWidget
 
-from app import theme
+from app import scrub, theme
 from app.qt import freeze, motion, style
 from app.qt.settings_strings import ADD, CROSS, PICKED_NONE, RANGE_TO, REMOVE_NAME, STATUS_NAME, TICK
 
@@ -188,7 +188,10 @@ def gem_path(centre, w, h, cut="toggle"):
 def paint_gem(p, centre, w, h, body, shade, facet, cut="toggle"):
     """A rough gem, flat and matte: its body, and two facet planes off its table (a point a little up and left of its
     centre) — the one facing the room's light (upper left) a step lighter, the one facing away (lower right) a step
-    darker."""
+    darker. A gem with no size (a toggle painted while its row is a few pixels tall, growing in) paints nothing:
+    never a division by its size inside a paint event."""
+    if w <= 0 or h <= 0:
+        return
     pts = gem_corners(centre, w, h, cut)
     n = len(pts)
     table = QPointF(centre.x() - w * 0.08, centre.y() - h * 0.10)
@@ -359,6 +362,20 @@ class Choice(_Control):
         self._describe()
         self.update()
 
+    def set_label(self, value, label, tip=None):
+        """`value`'s option shown with these words (a live one: *Videos open in*'s program, named once chosen) — no
+        signal; the control's size follows. -> True when they changed."""
+        i = self._find(value)
+        if self._options[i][1:] == (label, tip):
+            return False
+        self._options[i] = (value, label, tip)
+        self._vein.stop()
+        self.setMouseTracking(any(t for _v, _l, t in self._options))
+        self._describe()
+        self.updateGeometry()
+        self.update()
+        return True
+
     def vein(self):
         """The vein's (left, right) as drawn now."""
         return self._vein.span or self._rest(self._index)
@@ -482,7 +499,7 @@ class Choice(_Control):
         p.setFont(_font("segmented"))
         for i, ((_v, label, _t), r) in enumerate(zip(self._options, rects)):
             p.setPen(self._ink(i == self._index))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, scrub.shown(label))
         if self.isEnabled():
             paint_vein(p, self._vein_rect(self.vein()))
         if self.hasFocus():
@@ -544,14 +561,14 @@ class Cards(Choice):
             p.setFont(bold_font)
             p.setPen(self._ink(chosen))
             p.drawText(QRectF(text.left(), text.top(), text.width(), bold.height()),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, scrub.shown(label))
             p.setFont(small_font)
             if not self.isEnabled():
                 p.setPen(_c(theme.SETTINGS_TEXT["greyed"]))
             else:
                 p.setPen(_c(theme.SETTINGS_TEXT["chosen-line" if chosen else "help"]))
             p.drawText(QRectF(text.left(), text.top() + bold.height(), text.width(), text.height() - bold.height()),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, self._lines[i])
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop, scrub.shown(self._lines[i]))
             if self.hasFocus() and i == self._cursor:
                 paint_ring(p, r, radius)
         if self.isEnabled():
@@ -820,6 +837,7 @@ class Tablets(_Control):
         x = y = 0.0
         out = []
         for kind, key, label in self._entries():
+            label = scrub.shown(label)                  # (a folder list's items are paths: scrubbed in a picture)
             w = math.ceil(fm.horizontalAdvance(label) + 2 * pad + (cross_w if kind == "item" else 0) +
                           (tick_w if kind == "option" else 0))
             if x > 0 and width > 0 and x + w > width:
@@ -932,7 +950,7 @@ class Tablets(_Control):
             if kind == "bed":
                 paint_cut(p, r, radius)
                 p.setPen(self._ink(False))
-                p.drawText(r, Qt.AlignmentFlag.AlignCenter, label)
+                p.drawText(r, Qt.AlignmentFlag.AlignCenter, scrub.shown(label))
             else:
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(_c("settings-tablet-on" if lit and enabled else "settings-tablet"))
@@ -941,7 +959,7 @@ class Tablets(_Control):
                 text = QRectF(r.left() + pad + tick, r.top(),
                               r.width() - 2 * pad - tick - (cross.width() if cross else 0), r.height())
                 p.setPen(self._ink(lit))
-                p.drawText(text, Qt.AlignmentFlag.AlignCenter, label)
+                p.drawText(text, Qt.AlignmentFlag.AlignCenter, scrub.shown(label))
                 if tick and lit:                        # Q31: a multi-pick's lit tablet, ticked
                     paint_tick(p, QRectF(r.left() + pad, r.top(), fm.horizontalAdvance(TICK), r.height()),
                                self._ink(True))
@@ -1673,7 +1691,7 @@ class Select(_Control):
         p.setPen(_c(theme.SETTINGS_TEXT["value"]) if self.isEnabled() else _c(theme.SETTINGS_TEXT["greyed"]))
         chev = 8 * _f()
         p.drawText(r.adjusted(pad, 0, -(pad + chev + 6), 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   self._options[self._index][1])
+                   scrub.shown(self._options[self._index][1]))
         pen = QPen(self._ink(False), max(1.4, 1.5 * _f()))
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -1769,5 +1787,5 @@ class StatusMark(QWidget):
         p.setPen(_c(theme.SETTINGS_TEXT["status" if self._lit else "status-off"]))
         x = stone + 7 * _f()
         p.drawText(QRectF(x, 0, self.width() - x, self.height()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   self._words)
+                   scrub.shown(self._words))
         p.end()

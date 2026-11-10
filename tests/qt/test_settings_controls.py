@@ -686,3 +686,19 @@ def test_a_gem_shows_its_two_facet_planes(qapp):
     arr = rgb_array(t.grab())
     for name in ("gem-sapphire", "gem-sapphire-facet", "gem-sapphire-shade"):
         assert count(arr, name in c and c[name], 3) >= 2, name
+
+
+@pytest.mark.parametrize("height", [1, 4, 7])
+def test_a_toggle_painted_a_few_pixels_tall_paints_without_raising(qapp, height):
+    # why (seen on GitHub, PR #290's core 1/4: a ZeroDivisionError in a toggle's paintEvent, then the shard's process
+    # died): a row growing in paints its toggle while it is a few pixels tall — its gem has no size there
+    from PyQt6.QtGui import QColor, QImage, QPainter
+    image = QImage(40, 10, QImage.Format.Format_ARGB32)
+    p = QPainter(image)
+    try:
+        sc.paint_gem(p, QPointF(5, 5), 0.0, 0.0, QColor("blue"), QColor("navy"), QColor("white"))
+    finally:
+        p.end()
+    t = sc.Toggle()
+    t.resize(36, height)
+    t.grab()                    # its paintEvent, at that height: an exception there fails the test (the Qt harness)

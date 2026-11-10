@@ -243,7 +243,8 @@ def test_status_answers_on_a_library_and_is_quick_in_the_timed_run(monkeypatch):
 
 
 def test_list_after_a_generate_killed_part_way_says_generate_again(generated):
-    """The review's #6: a run killed mid-write leaves a list cut short and no run stamp: `bad-data`, never `ok`."""
+    """The review's #6: a run killed mid-write leaves a list cut short and no run stamp: never `ok`. Alpha 6 try #6:
+    it is `busy` (exit 3, `list: unfinished`) — a moment's state the next Generate ends, so Connect waits for it."""
     results = os.path.join(h.root(), "results")
     path = os.path.join(results, "priority_learning_list.csv")
     data = open(path, "rb").read()
@@ -251,7 +252,9 @@ def test_list_after_a_generate_killed_part_way_says_generate_again(generated):
         f.write(data[: len(data) // 2])
     os.remove(os.path.join(results, analyzer.RUN_STAMP_FILE))
     code, lines = h.run_cli("list")
-    assert code == 1 and h.answer(lines)["code"] == "bad-data" and "Generate again" in h.answer(lines)["message"]
+    error = h.answer(lines)
+    assert code == 3 and error["code"] == "busy" and error["list"] == "unfinished"
+    assert "Generate again" in error["message"]
 
 
 def test_list_limit_zero_is_empty_and_a_negative_one_is_a_usage_error(generated):

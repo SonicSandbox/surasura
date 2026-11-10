@@ -20,7 +20,7 @@ pytest.importorskip("PyQt6")
 from tests.fixtures.standin_store import StandinLibrary
 from tests.qt import bench_drag
 from tests.qt.test_drag import lift, move_global, release_global, settle
-from tests.qt.test_item_menu import lst_of, middle_point, rows_of, split_parts, world  # noqa: F401
+from tests.qt.test_item_menu import lst_of, middle_point, rest, rows_of, split_parts, world  # noqa: F401
 
 TITLES = ("進撃の巨人", "葬送のフリーレン", "薬屋のひとりごと", "ぼっち・ざ・ろっく！")
 
@@ -43,7 +43,7 @@ class _Numbers:
     def __init__(self):
         self.calls = []
 
-    def after_move(self, ids, tier, before_id=None, after_id=None):
+    def after_move(self, ids, tier, before_id=None, after_id=None, landing=None, order=None, aside=None):
         self.calls.append((list(ids), tier, before_id, after_id, threading.current_thread()))
         return {}
 
@@ -180,6 +180,7 @@ def test_a_row_the_join_opened_is_closed_and_the_list_laid_out_before_the_next_m
     lift(win, b)
     to = middle_point(win, a)
     move_global(win, to)
+    rest()                                                        # (a join waits for the hold: Sonic 2026-11-01)
     release_global(win, to)
     settle()
     assert lst.model().open_key == rows_of(win)[a].key           # the window opens the joined part

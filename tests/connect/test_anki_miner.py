@@ -322,6 +322,27 @@ def test_a_missing_surasura_profile_or_an_unfinished_setup_needs_you(batch, fake
     assert "mine" not in fake_miner.commands()
 
 
+def test_an_unfinished_setup_names_only_what_a_mine_needs_never_the_ocr_tools(batch, fake_miner):
+    # Anki Miner main's (unreleased) `check` always reports ocr and video_ocr; its `ready` leaves them out, and so
+    # does the mine gate's line
+    def item(name, message=None):
+        return {"name": name, "ok": message is None, "message": message}
+    fake_miner.plan(check={"ready": False, "items": [
+        item("anki"), item("dictionary", "No offline dictionary is installed for Japanese."), item("ffmpeg"),
+        item("yt_dlp", "yt-dlp is not installed."), item("ocr", "mokuro is not installed."),
+        item("video_ocr", "Video OCR's engine or models are not installed.")]})
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        batch()
+    assert e.value.kind == "setup" and e.value.message == ("Anki Miner's setup isn't finished — dictionary: No "
+                                                           "offline dictionary is installed for Japanese.")
+    assert "mine" not in fake_miner.commands()
+    # not ready with nothing failed: the line says so, never a bare dash
+    fake_miner.plan(check={"ready": False, "items": [item("anki"), item("dictionary"), "not an item"]})
+    with pytest.raises(anki_miner.AnkiMinerError) as e:
+        batch()
+    assert e.value.message == "Anki Miner's setup isn't finished — it doesn't say what"
+
+
 def test_a_program_windows_security_blocked_is_named_never_retried(monkeypatch, fake_miner):
     def blocked(*_a, **_k):
         e = OSError(22, "Operation did not complete successfully because the file contains a virus")

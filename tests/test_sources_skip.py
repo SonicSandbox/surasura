@@ -948,11 +948,13 @@ def _show_with_extras(language, src, show=None, extras="Extras"):
 
 def _show_state(store, origins):
     """The show's own items as the learner sees them: tier, order, watched, pin, its title and piece, its file — and
-    the groups the look reads."""
+    the groups the look reads for its own folders (a specials folder's is the show's title's since Kura-G — it reads
+    the show's group, and goes with the folder's files: not the show's own)."""
     held = store.origins()
     ids = [held[ls.origin_key(p)[4:]].item_id for p in origins]
     return [store.conn.execute("SELECT id, tier, ord, watched, pinned, work_id, piece_id, rel_path FROM items "
-                               "WHERE id = ?", (i,)).fetchone() for i in ids], store.show_groups()
+                               "WHERE id = ?", (i,)).fetchone() for i in ids], \
+        {k: g for k, g in store.show_groups().items() if ls.specials_home(k) is None}
 
 
 def _under_extras(store, top, extras="Extras"):

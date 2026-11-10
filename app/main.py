@@ -574,8 +574,9 @@ class MasterDashboardApp:
 
         # Start update check in background. Skipped under test (the _no_gui_update_check fixture in
         # tests/conftest.py): it calls the real GitHub API, and every test that builds this window
-        # would otherwise go online.
-        if not os.environ.get("SURASURA_NO_UPDATE_CHECK"):
+        # would otherwise go online. *Check for updates* off (the 3.0 window's Settings → App): no request at all.
+        if not os.environ.get("SURASURA_NO_UPDATE_CHECK") and settings_manager.update_check_on(
+                getattr(self, "_current_settings", None)):
             threading.Thread(target=self.check_updates_thread, daemon=True).start()
 
         # The note naming this install's data folder, for 3.0's first start (K100). Frozen builds only; off the
@@ -2777,7 +2778,8 @@ class MasterDashboardApp:
         self.skipped_version = ""
         self.save_settings()
         self._sync_skipped_row()
-        if not os.environ.get("SURASURA_NO_UPDATE_CHECK"):
+        if not os.environ.get("SURASURA_NO_UPDATE_CHECK") and settings_manager.update_check_on(
+                getattr(self, "_current_settings", None)):
             threading.Thread(target=self.check_updates_thread, daemon=True).start()
 
     def _do_auto_update(self, dialog):

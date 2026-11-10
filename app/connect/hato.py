@@ -82,8 +82,11 @@ def find():
         raise Unavailable("hato's entry in the shared tools folder can't be used: its program isn't there, or it is "
                           "newer than this Surasura reads")
     verbs = entry.get("verbs")
-    if not isinstance(verbs, list) or VERB not in verbs:
+    if not isinstance(verbs, list):
         raise Unavailable("this hato doesn't offer its pairings (hato 1.1.0 and later do)")
+    if VERB not in verbs:                   # hato 1.1.0 switched off keeps its entry with no verbs
+        raise Unavailable("hato isn't offering its pairings now (its Connect to Surasura setting is off, or it's "
+                          "older than 1.1.0)")
     return entry
 
 

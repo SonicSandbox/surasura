@@ -73,12 +73,17 @@ def real(qapp):
         page = win.page_widgets["current"]
         assert wait_until(lambda: page.view_model is not None and page.view_model.state == "full", 15)
         settle(30)
-        made.append((win, services, store))
+        made.append((win, services, writer, store))
         return store, win, writer, switch
     yield make
-    for win, services, store in made:
+    for win, services, writer, store in made:
         win.close()
         services.shutdown(2.0)
+        # the writer made here, finished here: a test that hands the window another writer (a switch) leaves
+        # services.shutdown finishing that one, and this one's thread outlived its test asking a store whose test root
+        # was gone (train 14's late "StoreRefused (I7)", flakes-2026-11-05 #8)
+        writer.finish(time.monotonic() + 2.0)
+        assert writer._thread is None or not writer._thread.is_alive(), "the window writer outlived its test"
         store.close()
 
 
@@ -268,6 +273,21 @@ def test_the_fetcher_is_made_with_the_library_again_for_another_writer_and_stopp
     h = win.cover_fetcher()
     win.close()
     assert h._stop and qcovers.fetcher() is None
+
+
+def test_the_reader_asks_airing_through_the_fetcher_shown_and_it_stops_with_it(real, anilist):
+    """3.0.1 item 5: AniList's airing asker is the covers fetcher's own (its switch, its throttle): the library reader
+    follows the fetcher made for the writer shown, never the one a switch let go, and closing stops it."""
+    store, win, writer, _switch = real("ja", anilist, on=False)
+    reader = win.services.library
+    f = win.cover_fetcher()
+    assert reader._airing is f.airing and f.airing.on_change is not None
+    other = SimpleNamespace(can_write=lambda: True)
+    win.services.writer = other                                       # another library's writer (a switch)
+    g = win.cover_fetcher()
+    assert reader._airing is g.airing and f.airing._stop and not g.airing._stop
+    win.close()
+    assert g.airing._stop
 
 
 # --- the tray, the inset and Goal's sheet paint Q6's pictures (the seed) ------------------------------------------- #

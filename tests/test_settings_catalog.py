@@ -208,15 +208,19 @@ def test_settings_held_by_a_window_are_reached_through_its_door_row():
     is listed once, on the door row that opens that window — never in NOT_SHOWN too."""
     reached = {key: row.id for row in catalog.ROWS for key in row.reaches}
     assert reached["anki_sync_decks"] == reached["anki_sync_fields"] == "anki_decks"
-    assert reached["junban_word_fields"] == "junban_door"
-    assert reached["junban_deck"] == "junban_scope"
-    assert reached["junban_backfill_deck"] == "junban_backfill_cards"
-    assert reached["junban_backfill_fields"] == reached["junban_backfill_note_languages"] == "backfill_fields"
+    # a9.1: Junban's and Backfill's windows have one door each, on their *Which cards* row
+    assert reached["junban_word_fields"] == reached["junban_deck"] == "junban_scope"
+    assert reached["junban_backfill_deck"] == reached["junban_backfill_fields"] == "junban_backfill_cards"
+    assert reached["junban_backfill_note_languages"] == "junban_backfill_cards"
+    for opener in ("junban", "backfill"):
+        assert [row.id for row in catalog.ROWS if opener in row.door] == [
+            "junban_scope" if opener == "junban" else "junban_backfill_cards"]
     for key in ("koe_voice", "koe_model", "koe_style", "koe_temperature", "koe_daily_cap"):
         assert reached[key] == "koe_door" and key not in catalog.NOT_SHOWN
     for row in catalog.ROWS:
         if row.reaches:
-            assert row.door, f"{row.id} reaches a window's settings without a door to it"
+            # (a program row reaches its program, which its own picker writes: Sonic 2026-11-05)
+            assert row.door or row.id in catalog.PROGRAM_ROWS,                 f"{row.id} reaches a window's settings without a door to it"
 
 
 # --- change(): only the row's own keys ------------------------------------------------------------------------------- #
@@ -569,6 +573,29 @@ def _shown(settings, language, ctx=EVERYTHING):
     return {row.id for row in catalog.ROWS if catalog.visible(row, settings, language, ctx)}
 
 
+def test_check_for_updates_is_an_app_switch_on_by_default_and_update_automatically_sits_under_it():
+    """*Check for updates* (Settings → App; Sonic 2026-10-31): its own key, on by default; off hides *Update
+    automatically* (nothing is offered to update), which comes back with it."""
+    row = catalog.ROW["update_check_enabled"]
+    assert (row.section, row.kind, row.keys) == ("app", "toggle", ("update_check_enabled",))
+    assert settings_manager.DEFAULT_SETTINGS["update_check_enabled"] is True
+    assert catalog.change(row, {}, "ja", False) == ({"update_check_enabled": False}, None)
+    app = [r.id for r in catalog.rows("app")]
+    assert app.index("auto_update_enabled") == app.index("update_check_enabled") + 1
+    assert catalog.ROW["auto_update_enabled"].sub
+    for language in ("ja", "zh"):
+        assert {"update_check_enabled", "auto_update_enabled"} <= _shown({}, language)
+        assert "auto_update_enabled" not in _shown({"update_check_enabled": False}, language)
+        assert "update_check_enabled" in _shown({"update_check_enabled": False}, language)
+
+
+def test_update_check_on_reads_only_a_saved_false_as_off():
+    """`settings_manager.update_check_on`: missing, None or a frozen copy read as on (the default); only False is off."""
+    on = settings_manager.update_check_on
+    assert on({}) and on(None) and on(freeze({"update_check_enabled": True}))
+    assert not on({"update_check_enabled": False}) and not on(freeze({"update_check_enabled": False}))
+
+
 def test_japanese_rows_hide_for_chinese_and_the_script_shows_only_for_chinese():
     japanese_only = {"paren_readings", "names_katakana", "names_recurring", "names_kanji", "names_work_terms",
                      "ignore_names", "phrases_and_titles", "pronoun_bases", "phrase_rows", "exclude_single"}
@@ -658,11 +685,24 @@ def test_download_covers_is_a_connections_toggle_writing_only_its_key_and_remove
     assert catalog.change(row, {"covers_download": False}, "ja", True) == ({"covers_download": True}, None)
     assert catalog.FILLED_BY["remove_downloaded_covers"] == "app.qt.settings_live"
     assert "covers_download" not in catalog.NOT_SHOWN and "covers_download" not in catalog.FILLED_BY
-    assert row.help == ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. "
-                        "Nothing else.")                                                # what is sent, in one line
+    assert row.help == ("Sends each show's AniList id or name to AniList, and a video's id to YouTube. Near a "
+                        "show's last episode, also asks AniList whether it is still airing, so it isn't finished "
+                        "early. Nothing else.")                                         # what is sent (3.0.1: airing)
 
 
-# --- find() ------------------------------------------------------------------------------------------------------------ #
+def test_anki_miner_card_credits_zero_in_sonics_words_on_two_lines():
+    """Sonic's words for Zero, whole (2026-10-30): the line breaks before *He's*, so the card never wraps mid-sentence,
+    and Settings search still finds the card by either line. A no-break space keeps ":)" with *love* (an RC capture
+    wrapped it onto a line of its own); search folds it to a plain space, so "love :)" typed still finds the card."""
+    row = catalog.ROW["anki_miner"]
+    assert row.help == ("Makes your cards from your own videos. Free, made by Zero.\n"
+                        "He's awesome. Please give him some love :)")
+    assert "anki_miner" in catalog.find("made by zero", {}, "ja", EVERYTHING)
+    assert "anki_miner" in catalog.find("give him some love", {}, "ja", EVERYTHING)
+    assert "anki_miner" in catalog.find("some love :)", {}, "ja", EVERYTHING)
+
+
+# --- find()------------------------------------------------------------------------------------------------------------ #
 def test_find_matches_labels_help_search_words_and_choice_labels():
     assert "ignore_names" in catalog.find("ignore names", {}, "ja", EVERYTHING)
     assert "paren_readings" in catalog.find("ruby", {}, "ja", EVERYTHING)                 # its help line
@@ -703,7 +743,9 @@ def test_every_row_section_choice_and_door_has_its_words():
     """Tooltips on every button and toggle (D17); a help line is one line; the readout never says "% known" (S4)."""
     for row in catalog.ROWS:
         assert row.id in S.ROWS and row.tip, row.id
-        assert "\n" not in row.help and "\n" not in row.label, row.id
+        assert "\n" not in row.label, row.id
+        # Anki Miner's card alone: Sonic's two lines for Zero, broken before "He's" (2026-10-30)
+        assert "\n" not in row.help or row.id == "anki_miner", row.id
         if row.options and row.kind != "slider":
             labels = S.OPTIONS[row.id]
             assert all(v in labels for v in row.options), row.id
@@ -786,6 +828,18 @@ def test_readmes_data_credits_are_all_named_in_the_app():
     made_up = "## 🙏 Data Credits\n\n- [Kanjidic2](https://www.edrdg.org/) — CC BY-SA 4.0\n\n## 📜License\n"
     assert credits.missing_from_credits(made_up) == ["Kanjidic2"]
     assert credits.missing_from_credits("no credits here") == []
+
+
+def test_the_credits_card_ends_with_the_users_own_content_and_readme_has_its_section():
+    """Sonic, 2026-11-02: the user's content is theirs to answer for. The Data credits card (Settings › App) ends with
+    one line pointing at README's *Your content*, which the installer's agreement page says in full."""
+    from app import credits
+    assert credits.all_credits().endswith("\n\n" + credits.CONTENT_NOTE)
+    note = credits.CONTENT_NOTE.splitlines()
+    assert note[0] == "Your content" and len([line for line in note if line.strip()]) == 2
+    assert "you are responsible for the content you use" in note[-1] and "own or have the right to use" in note[-1]
+    with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+        assert "\n## 📂 Your content\n" in f.read()
 
 
 def test_the_licence_line_is_the_licence_files_first_and_copyright_lines(monkeypatch, tmp_path):
@@ -873,3 +927,169 @@ def test_B2_7_one_look_says_which_tools_are_here_and_one_rule_when_make_cards_is
     assert [T.make_cards_shown(level, ready=True) for level in (T.MISSING, T.INSTALLED, T.READY)] == [
         False, False, True]
     assert not T.make_cards_shown(T.INSTALLED, on=True, ready=True)
+
+
+# --- a7 (Sonic's alpha 6 try, DIAGNOSIS 3–5): where three of Connect's rows sit, and what they say ------------------- #
+CONNECT_ON = {"connect_enabled": True}
+
+
+def test_what_counts_as_known_is_one_row_each_way_never_two_answers_on_screen():
+    """DIAGNOSIS 3 put *Count as known in Anki* beside *Count suspended cards as known* — still two answers to one
+    question (Sonic, a9.1: "anything redundant we don't want"). Now one row shows at a time under *What counts as
+    known*: the sync's switch while Make cards for me is off, Connect's states while it is on; each key keeps its
+    meaning."""
+    ids = [r.id for r in catalog.ROWS]
+    row, suspended = catalog.ROW["known_from_anki"], catalog.ROW["anki_sync_include_suspended"]
+    assert (row.section, row.adv, row.kind, row.keys) == ("known", True, "tablets", ("known_from_anki",))
+    assert ids.index("known_from_anki") == ids.index("anki_sync_include_suspended") + 1
+    assert suspended.group == row.group == "counts_as_known"                     # either one under the group name
+    on, off = _shown(CONNECT_ON, "ja"), _shown({}, "ja")
+    assert "known_from_anki" in on and "anki_sync_include_suspended" not in on
+    assert "anki_sync_include_suspended" in off and "known_from_anki" not in off
+    assert "every state you pick" in row.help                                   # the "and", in the line itself
+    assert "struggled" in suspended.tip and "whenever you suspended them" in suspended.tip
+    # A7S-1: the sync reads studied cards only (`-is:new`); the signal reads new ones too — each row says which
+    assert "New cards you suspend never count" in suspended.tip and "New cards count too" in row.tip
+    # neither names the other any more: they never stand together
+    assert "Count as known in Anki" not in suspended.tip and "Count suspended cards as known" not in row.tip
+
+
+@pytest.mark.parametrize("held, picks, wanted", [
+    # the sync's switch on (set with Connect off), Suspended alone still picked: it stays, nothing written for it
+    (True, ["suspended"], {}),
+    # Suspended unpicked: the sync stops counting suspended cards too — never a count on an answer no longer shown
+    (True, [], {"known_from_anki": [], "anki_sync_include_suspended": False}),
+    # Suspended AND Marked ("and"): the sync's every-suspended-card count would break the "and" — off with it
+    (True, ["marked", "suspended"], {"known_from_anki": ["suspended", "marked"],
+                                      "anki_sync_include_suspended": False}),
+    # off stays off: this row never turns the sync's switch on (that is its own row's, with Connect off)
+    (False, ["suspended"], {}),
+    (False, ["marked"], {"known_from_anki": ["marked"]}),
+])
+def test_count_as_known_in_anki_turns_the_syncs_switch_off_when_its_answer_no_longer_holds(held, picks, wanted):
+    row = catalog.ROW["known_from_anki"]
+    settings = dict(CONNECT_ON, known_from_anki=["suspended"], anki_sync_include_suspended=held)
+    assert catalog.change(row, settings, "ja", picks)[0] == wanted
+
+
+def test_count_as_known_in_anki_with_the_syncs_switch_unwritten_reads_it_as_off():
+    """A settings.json without the key (the default, off): unpicking Suspended writes the picks alone."""
+    row = catalog.ROW["known_from_anki"]
+    assert catalog.change(row, dict(CONNECT_ON), "ja", ["marked"])[0] == {"known_from_anki": ["marked"]}
+
+
+def test_count_as_known_in_ankis_line_names_every_state_picked_so_an_and_is_never_silent():
+    """His `["suspended", "marked"]` counted only cards both suspended AND marked — almost none — with nothing on the
+    page saying so. Two states or more: the line names them, all at once; one or none: the row's own line."""
+    row = catalog.ROW["known_from_anki"]
+    two = dict(CONNECT_ON, known_from_anki=["suspended", "marked"])
+    assert catalog.help_line(row, two, "ja") == "Counts only cards that are Suspended + Marked, all at once"
+    flagged = dict(CONNECT_ON, known_from_anki=["flag:4", "marked", "suspended"])
+    assert catalog.help_line(row, flagged, "zh") == ("Counts only cards that are Suspended + Marked + Flag 4 (Blue), "
+                                                     "all at once")                # in the setting's order
+    two_flags = dict(CONNECT_ON, known_from_anki=["flag:3", "suspended", "flag:1"])
+    assert catalog.help_line(row, two_flags, "ja") == ("A card has one flag at a time: Flag 1 (Red) + Flag 3 (Green) "
+                                                       "counts no card")           # A7S-7: never a match
+    for one in (["suspended"], [], "marked", ["suspended", "flag:33"]):        # a term it doesn't know is no state
+        assert catalog.help_line(row, dict(CONNECT_ON, known_from_anki=one), "ja") == row.help, one
+    assert catalog.help_line(catalog.ROW["connect_backlog_cap"], two, "ja") == catalog.ROW["connect_backlog_cap"].help
+
+
+def test_words_to_make_cards_from_says_your_list_is_i_plus_one_and_the_rest_and_only_i_plus_one_another_set():
+    """DIAGNOSIS 4 (Sonic: "worth mentioning that it is i+1 AND the other stuff so people don't see i+1 and jump on
+    it"): `pick.py`'s *Your list* takes every listed word, an i+1 line first; *Only i+1* any word with one, list or not.
+    Both Settings (3.0's and 2.x's Tk panel) read one copy of the words."""
+    row = catalog.ROW["connect_mine_words"]
+    lines = {v: line for v, _label, line in catalog.options(row, CONNECT_ON, "ja")}
+    assert lines["list"].startswith("i+1 and more") and "every unknown word on your list" in lines["list"]
+    assert "the list's order" in row.tip                  # A7S-2: i+1 picks each card's line, never the words' order
+    assert "on your list or not" in lines["i1"] and "The rest get no card" in lines["i1"]
+    assert "i+1 lines where it can" in row.help and "Only i+1" in row.help
+    assert S.OPTION_LINES[row.id] == {v: line for v, _l, line in settings_values.WORDS}
+    assert S.OPTIONS[row.id] == {v: label for v, label, _line in settings_values.WORDS}
+
+
+def test_more_video_folders_is_an_extra_under_more_options_that_says_the_library_is_always_searched():
+    """DIAGNOSIS 5: *Where videos are looked for* asked for folders the library's own already are; it is an extra now,
+    for videos kept elsewhere — under Anki & mining's *More options*, with Connect on."""
+    row = catalog.ROW["connect_video_folders"]
+    assert (row.section, row.adv, row.kind, row.label) == ("anki", True, "list", "More video folders")
+    assert "always searched" in row.help and "somewhere else" in row.help
+    assert "connect_video_folders" in _shown(CONNECT_ON, "ja") and "connect_video_folders" not in _shown({}, "ja")
+
+
+@pytest.mark.parametrize("query, row_id", [("where videos", "connect_video_folders"),
+                                           ("more video", "connect_video_folders"),
+                                           ("suspended", "known_from_anki"),
+                                           ("count as known", "known_from_anki"),
+                                           ("i+1", "connect_mine_words")])
+def test_the_moved_rows_are_found_by_search_under_their_old_and_new_words(query, row_id):
+    assert row_id in catalog.find(query, CONNECT_ON, "ja", EVERYTHING)
+
+
+# Junban's switch as its module's default sets it: `enable_junban`'s default lives only in modules/junban
+# (SETTINGS_DEFAULTS), so with `{}` a checkout without the module (GitHub's public tree) reads the switch off and hides
+# the rows EVERYTHING says are installed — written out, the case reads the same with the modules and without
+JUNBAN_SWITCH_ON = {"enable_junban": True}
+
+
+# --- a9.1: nothing redundant — every door closed has its words where the door still is ---------------------------- #
+@pytest.mark.parametrize("query, row_id, settings", [
+    ("discord", "surasura", {}), ("website", "surasura", {}), ("surasura.dev", "surasura", {}),
+    ("star", "surasura", {}), ("github", "surasura", {}), ("join the community", "surasura", {}),
+    ("how parsing works", "how_parsing_works", {}),
+    ("processing log", "logs", {}), ("data folder", "logs", {}), ("version", "version", {}),
+    ("start over completely", "fresh_library", {}), ("new pc", "fresh_library", {}),
+    ("preview order", "junban_scope", JUNBAN_SWITCH_ON), ("undo", "junban_scope", JUNBAN_SWITCH_ON),
+    ("choose the deck", "junban_scope", JUNBAN_SWITCH_ON),
+    ("fields", "junban_backfill_cards", JUNBAN_SWITCH_ON), ("note type", "junban_backfill_cards", JUNBAN_SWITCH_ON),
+    ("restore", "junban_backfill_cards", JUNBAN_SWITCH_ON),
+    ("extract", "split_length", {}), ("add from", "enable_youtube_transcripts", {}),
+    ("preview a video", "enable_youtube_preview", {}),
+    ("suspended", "anki_sync_include_suspended", {}), ("count as known", "anki_sync_include_suspended", {}),
+])
+def test_a_door_that_closed_is_found_under_its_old_words_where_its_way_still_is(query, row_id, settings):
+    """Sonic (a9.1): "as simple to navigate as possible. Anything redundant we don't want" — the duplicate doors went
+    (three link rows, Version's data folder, Start over completely, Junban's and Backfill's extra openers, Add from, the
+    second known-cards answer); a search for what they said finds the one way left."""
+    assert row_id in catalog.find(query, settings, "ja", EVERYTHING)
+
+
+def test_the_closed_doors_are_gone_and_the_links_block_holds_three_pages_each_in_the_browser():
+    gone = {"junban_door", "backfill_door", "backfill_fields", "content_doors", "discord", "website", "star_github",
+            "start_over"}
+    assert not gone & set(catalog.ROW)
+    block = catalog.ROW["surasura"]
+    assert (block.section, block.kind, block.options) == ("app", "links", ("github", "discord", "website"))
+    assert catalog.ROWS[-1] is block                                   # the App section's last block, its own
+    assert {S.LINK_URLS[p] for p in block.options} == {S.STAR_URL, S.DISCORD_URL, S.WEBSITE_URL}
+    assert all(label and tip for label, tip, _url in S.LINKS.values())
+    assert catalog.ROW["how_parsing_works"].section == "parsing"       # where it belongs, never in the block
+    assert catalog.ROW["enable_youtube_preview"].door == ("youtube-preview",)
+    assert "extract" not in catalog.doors() and "youtube-downloader" not in catalog.doors()   # + Add has them
+
+
+def test_count_as_known_follows_the_switch_known_from_anki_obeys_make_cards_for_me_and_automation():
+    """Review B1 (a9.1): Known from Anki runs only while Make cards for me AND Automation are on
+    (`settings_manager.connect_on`). With Automation off the tablets would do nothing — the sync's own switch shows
+    instead, and nothing the tablets could write touches it."""
+    off = dict(CONNECT_ON, logic={"automation": False}, anki_sync_include_suspended=True)
+    shown = _shown(off, "ja")
+    assert "anki_sync_include_suspended" in shown and "known_from_anki" not in shown
+    row = catalog.ROW["known_from_anki"]
+    assert catalog.change(row, off, "ja", ["marked"])[0] == {"known_from_anki": ["marked"]}   # the sync's untouched
+
+
+def test_count_as_known_says_when_the_syncs_hidden_switch_counts_more_than_its_picks():
+    """Review S2 (a9.1): a settings.json from before (or the Anki window's checkbox) can hold the sync's switch on
+    beside picks that aren't Suspended alone — the screen never claims less than is counted: the line says so."""
+    row = catalog.ROW["known_from_anki"]
+    marked = dict(CONNECT_ON, known_from_anki=["marked"], anki_sync_include_suspended=True)
+    assert catalog.help_line(row, marked, "ja") == S.KNOWN_SYNC_TOO
+    two = dict(marked, known_from_anki=["suspended", "marked"])
+    assert catalog.help_line(row, two, "ja") == (S.KNOWN_ALL_OF.format(states="Suspended + Marked") + ". "
+                                                 + S.KNOWN_SYNC_TOO)
+    agrees = dict(marked, known_from_anki=["suspended"])
+    assert catalog.help_line(row, agrees, "ja") == row.help                    # the switch agrees: nothing to say
+    for odd in (None, "yes", 1):                                               # only a real True counts as on
+        assert catalog.help_line(row, dict(marked, anki_sync_include_suspended=odd), "ja") == row.help

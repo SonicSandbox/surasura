@@ -44,6 +44,7 @@ for Current's list — W3.2's tray and Goal sheet feed the same one through `beg
 import itertools
 import math
 import os
+import sys
 import time
 import weakref
 
@@ -52,9 +53,10 @@ from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, Qt, QT
 from PyQt6.QtGui import QAction, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRegion, QShortcut
 from PyQt6.QtWidgets import QApplication, QMenu, QStyleOptionViewItem, QWidget
 
-from app import theme
+from app import settings_manager, theme
 from app.qt import bridge, motion, rows, shadow, strings, style
 from app.qt import press as qpress
+from app.services import airing
 from app.services import jobs as jobs_module
 from app.services import view_rows
 
@@ -204,7 +206,11 @@ def when_done(view, row, now=None, pending=False):
     - ("finish",) — R3: it finishes by itself, through the Finish path (`DragMoves.to_finished`).
     - ("offer",) — today's *finished with it?*, for a whole title: R4 it may still be arriving (its newest file came
       in on its own lately, `view_rows.still_arriving`, or it already has files in Finished: a show still airing), R5
-      a file still to come (a hole in its numbers, one in New arrivals, a video waiting for its subtitle), R6 *Keep
+      a file still to come (a hole in its numbers, one in New arrivals, a video waiting for its subtitle); it is
+      ("offer", why) when nothing of these holds it but AniList's kept answer (`view.airing`, 3.0.1 item 5): still
+      airing (R4), or more episodes listed than its files reach (R5), or no answer yet for a show AniList can be asked
+      about (`airing.PENDING`: it waits for the answer, alpha 9 #JNFJ8Q) — asked only after 3.0's own checks, so
+      AniList never finishes one sooner; R6 *Keep
       studying watched episodes* on (nothing moves by itself), a write still on its way (`pending`: the view may not
       hold it yet), a group, a row of no title, the first screen's cache (Goal, New arrivals and Finished not read).
     - None — nothing is offered (the plain ✓; Up Next's Done says why): hato's mix; a part of a title whose other part waits in Current, in Goal or inside a
@@ -252,7 +258,27 @@ def when_done(view, row, now=None, pending=False):
             or any(r.work_id == row.work_id for m in (view.finished or ()) for r in m.rows) \
             or view_rows.numbers_gap(eps) or view_rows.still_arriving(eps, now):
         return ("offer",)
+    entry = (getattr(view, "airing", None) or {}).get(row.work_id)     # 3.0.1 item 5: AniList only holds it back
+    hold = airing.holds(entry, eps)
+    if hold:
+        return ("offer", _why(hold, entry, eps))     # AniList alone held it: the offer says why (AA-3)
     return ("finish",)
+
+
+def _why(hold, entry, eps):
+    """AA-3 (PROVISIONAL): the few words the offer says when AniList held the show back."""
+    if hold == "airing":
+        return strings.DONE_WHY_AIRING
+    if hold == "asking":
+        return strings.DONE_WHY_ASKING
+    return strings.DONE_WHY_MORE.format(n=int(entry["episodes"]), m=max(e.number for e in eps if e.number is not None))
+
+
+def offer_text(verdict, row):
+    """The finish toast's words for `when_done`'s ("offer",), or ("offer", why) with AniList's why."""
+    if len(verdict) > 1:
+        return strings.DONE_ALL_WHY.format(n=all_n(row), why=verdict[1])
+    return strings.DONE_ALL.format(n=all_n(row))
 
 
 def all_n(row):
@@ -272,21 +298,24 @@ def lines_for(view, rows_):
     """The top-20 line and the Soon line for `rows_` (the drop's order) as the reader would draw them: the top line
     after the row holding the same number of available files as before (split through it when it falls inside one),
     the Soon line where the reader draws it (`view_rows.soon_line_after`: one rule). W-1: a file counts toward the top
-    line by the store's one rule too (`library_store.counts`: a watched one only while the view's `keep_watched` is on).
+    line by the store's one rule too (`view_rows.counts_toward_top`: a watched one only while the view's `keep_watched`
+    is on; never a video waiting for its subtitle).
     """
-    from app.library_store import counts
+    counts = view_rows.counts_toward_top
     keep = bool(getattr(view, "keep_watched", False))
     out = []
     top = next((ln for ln in view.lines if ln.kind == "top"), None)
-    if top is not None:
+    n = getattr(view, "mine_line", None)             # 3.0.1 item 12: drawn once that many count, as the reader does
+    if n is None and top is not None:                # (a view that doesn't say: the line's own count, as before)
         n = 0
         for i, r in enumerate(view.rows[:top.after + 1]):
             eps = r.episodes if (i < top.after or top.split is None) else r.episodes[:top.split]
-            n += sum(1 for e in eps if not e.missing and counts(r.tier, e.watched, keep))
+            n += sum(1 for e in eps if counts(e, r.tier, keep))
+    if n:
         seen, at = 0, None
         for i, r in enumerate(rows_):
             for k, e in enumerate(r.episodes):
-                if not e.missing and counts(r.tier, e.watched, keep):
+                if counts(e, r.tier, keep):
                     seen += 1
                     if seen == n:
                         at = (i, k + 1)
@@ -307,6 +336,15 @@ def lines_for(view, rows_):
         tip = old.tip if old is not None else view_rows.STRINGS["soon_tip_nocount"]
         out.append(view_rows.Line("soon", soon_at, tip, None))
     return tuple(out)
+
+
+def topped(view, rows_):
+    """`rows_` (an order of `view`'s rows the window paints: a drop's, its marks) with which files are *in the top*
+    read again for that order by the store's rule (`view_rows.topped`: their *Waiting*, the stones' dimming), at once
+    rather than with the store's next view (3.0.1 item 12) -> (rows, the places of the rows read again)."""
+    feed = getattr(view, "connect", None)
+    return view_rows.topped(rows_, getattr(view, "mine_line", None), bool(getattr(view, "keep_watched", False)),
+                            feed.items if feed is not None and feed.on else None)
 
 
 def mines_itself(lines, place):
@@ -335,14 +373,15 @@ def reordered(view, keys, tiers=None):
         out.append(r._replace(**changes) if changes else r)
     if out and view.rows and out[0].key != view.rows[0].key:
         out[0] = view_rows._as_hero(out[0])        # the new Up Next reads as one
+    out, moved = topped(view, out)
     files = sum(r.n_files for r in out)
     counts = view.counts._replace(current_rows=len(out), current_files=files)
     lang = view_rows.LANGUAGE_NAMES.get(view.language, "")
     subline = view_rows.STRINGS["subline"].format(lang=lang, rows=len(out), files=files) if out else view.subline
     worst = view.worst
-    if [r.key for r in out[1:]] != [r.key for r in view.rows[1:]] and \
+    if any(i > 0 for i in moved) or [r.key for r in out[1:]] != [r.key for r in view.rows[1:]] and \
             {r.key for r in out[1:]} != {r.key for r in view.rows[1:]}:
-        worst = view_rows.worst_needs(out[1:])      # another row under Up Next: the one title width asked again
+        worst = view_rows.worst_needs(out[1:])      # another row under Up Next (or one read again): the width asked
     return view._replace(rows=tuple(out), lines=lines_for(view, out), counts=counts, subline=subline, worst=worst)
 
 
@@ -489,6 +528,21 @@ class _Resting(QObject):
 
 
 # --- the parting rows ------------------------------------------------------------------------------------------ #
+def part_offset(src, slot, r, h):
+    """The offset place `r` rests at while a drag from place `src` (None: from outside the list) has its slot at
+    `slot`, the slot `h` high: the rows between the dragged row's place and the slot moved by it (one rule: the parting
+    paints it, and a hold to join counts only where it is 0 — `item_menu.holds_on`)."""
+    if slot is None or r == src:
+        return 0.0
+    if src is None:
+        return float(h) if r >= slot else 0.0
+    if slot < src:
+        return float(h) if slot <= r < src else 0.0
+    if slot > src:
+        return -float(h) if src < r <= slot else 0.0
+    return 0.0
+
+
 class Parting:
     """What the list paints while a drag runs (`rows.RowsView.parting`): each row's offset as the slot travels (the
     rows between the dragged row's place and its slot moved by the slot's height, on `drag-part` springs while on
@@ -513,16 +567,7 @@ class Parting:
 
     def target(self, r):
         """The offset place `r` rests at for the current slot."""
-        s, t = self.src, self.slot
-        if t is None or r == s:
-            return 0.0
-        if s is None:
-            return float(self.h) if r >= t else 0.0
-        if t < s:
-            return float(self.h) if t <= r < s else 0.0
-        if t > s:
-            return -float(self.h) if s < r <= t else 0.0
-        return 0.0
+        return part_offset(self.src, self.slot, r, self.h)
 
     def offset(self, r):
         spring = self.springs.get(r)
@@ -785,29 +830,177 @@ class _KeptMenu(QMenu):
 def list_menu(lst, title):
     """List `lst`'s one ⋯ menu, empty, named for `title`: made once and kept hidden between opens (a new menu was a new
     native window at every open, its first show the slowest part of opening it). What an open put in it goes as it
-    hides (its actions deleted later: a pick still lands, after the hide), so a closed menu holds nothing."""
+    hides, so a closed menu holds nothing; its actions are kept, still wired (a pick lands after the hide), and taken
+    back by the next open (`menu_action`)."""
     m = getattr(lst, "row_menu", None)
     if m is None:
         m = _KeptMenu(lst)
         m.setObjectName("rowmenu")
         m.setToolTipsVisible(True)
-        m.aboutToHide.connect(lambda: _empty_menu(m))   # never exec() it, only popup(): exec's own loop could run
-        #                                                 the emptied actions' deleteLater before its pick is read
+        m.aboutToHide.connect(lambda: _empty_menu(m))   # never exec() it, only popup(): exec's own loop runs on
+        #                                                 between the hide and the pick
         lst.row_menu = m
     elif m.isVisible():
         m.hide()
     _empty_menu(m)
+    _take_back(m)
+    m.fills = getattr(m, "fills", 0) + 1             # each open's own number: an answer asked by an earlier open (a
+    #                                                  folder to skip) never lands in this one (`item_menu.offer_skip`)
     m.setAccessibleName(strings.MENU_NAME.format(title=title))
     return m
 
 
+def sub_menu(menu, label, before=None):
+    """`menu.addMenu(label)` (put before the action `before`, if given). Inside a kept menu (`list_menu`) a submenu an
+    earlier open used is taken back, emptied as that open hid, so a later open makes no widget (R5: *What is it?*,
+    *Split here…*, *Change cover…* were new menus, and new native windows, at every open); under a plain menu, a new
+    one. -> the submenu (its action's tip and state set by the caller)."""
+    top = _kept_top(menu)
+    if top is None:
+        sub = QMenu(label, menu)
+    else:
+        sub = _lend(top)
+        sub.setTitle(label)
+        act = sub.menuAction()
+        act.setToolTip("")
+        act.setEnabled(True)
+    if before is not None:
+        menu.insertMenu(before, sub)
+    else:
+        menu.addMenu(sub)
+    return sub
+
+
+def _kept_top(menu):
+    """The kept menu (`list_menu`'s) `menu` is, or is a submenu of; None under a plain menu."""
+    top = menu
+    while not isinstance(top, _KeptMenu) and isinstance(top.parent(), QMenu):
+        top = top.parent()
+    return top if isinstance(top, _KeptMenu) else None
+
+
+def menu_action(menu, label, pick):
+    """A new entry for `menu`, `pick()` called when it is picked (the caller sets its tip and state, and adds it).
+    Inside a kept menu (`list_menu`): an action an earlier open used, taken back with its words set and the rest as
+    new (enabled, unchecked, no tip) — wired once, when it was made, to whatever pick it holds — so an open makes no
+    action and wires nothing, and its close deletes nothing. (Up next at 20,000 files: the ~13 actions each ⋯ made were
+    ~13 deferred deletes in the stretch after the pick, and each wire's own proxy one more when it went: 2–5 ms each
+    while the writer's and the reader's threads ran.) Under a plain menu, a new one wired to `pick`."""
+    top = _kept_top(menu)
+    if top is None:
+        act = QAction(label, menu)
+        act.triggered.connect(lambda _c=False: pick())
+        return act
+    pool = top.__dict__.get("pool")
+    if pool:
+        act = pool.pop()
+        act.setText(label)
+    else:
+        act = QAction(label, top)
+        act.triggered.connect(lambda _c=False, a=act: _picked(a))
+    act.__dict__["pick"] = pick
+    return act
+
+
+def _picked(act):
+    pick = act.__dict__.get("pick")
+    if pick is not None:
+        pick()
+
+
+def _take_back(m):
+    """The actions the last open used (kept, still holding their picks at its hide, `_empty_menu`: a pick lands after
+    the hide, and has by now), put back as new for this open's `menu_action` — as many as one open has used at most
+    (`m.most`); any past that, deleted (an action made elsewhere, `addAction(text)`, comes back here too)."""
+    used = m.__dict__.get("used")
+    if not used:
+        return
+    pool = m.__dict__.setdefault("pool", [])
+    most = m.__dict__["most"] = max(m.__dict__.get("most", 0), len(used))
+    for act in used:
+        if sip.isdeleted(act):
+            continue
+        if len(pool) >= most or "pick" not in act.__dict__:
+            act.deleteLater()                        # (not `menu_action`'s: wired by its maker, never taken back)
+            continue
+        act.__dict__["pick"] = None
+        act.setChecked(False)
+        act.setCheckable(False)
+        act.setEnabled(True)
+        act.setToolTip("")
+        pool.append(act)
+    used.clear()
+
+
+def _lend(top):
+    spare = top.__dict__.setdefault("spare", [])
+    sub = spare.pop() if spare else None
+    if sub is None:
+        sub = QMenu(top)                             # (the kept menu's child, whichever menu it shows under)
+        sub.setObjectName("rowmenu")
+        sub.setToolTipsVisible(True)
+    top.__dict__.setdefault("lent", []).append(sub)
+    return sub
+
+
 def _empty_menu(m):
-    for act in m.actions():
-        m.removeAction(act)
-        if act.parent() is m:
-            act.deleteLater()
+    lent = m.__dict__.get("lent") or []
+    used = m.__dict__.setdefault("used", [])
+    for menu in [m] + lent:
+        for act in menu.actions():
+            menu.removeAction(act)
+            if act.parent() is menu or act.parent() is m:
+                if act.isSeparator():
+                    act.setParent(None)              # gone now: nothing can pick it (a pick lands after the hide)
+                elif act.parent() is m:
+                    used.append(act)                 # (`menu_action`'s: taken back by the next open, `_take_back`)
+                else:
+                    act.deleteLater()
+    if lent:
+        m.spare.extend(lent)
+        lent.clear()
+    kept = set(map(id, m.__dict__.get("spare") or ()))
     for sub in m.findChildren(QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly):
-        sub.deleteLater()
+        if id(sub) not in kept:
+            sub.deleteLater()
+
+
+# --- after the press's own paint ---------------------------------------------------------------------------------- #
+class _AfterPaint(QObject):
+    """Calls made once the window has painted what is waiting: each a posted event at Qt's low priority — the
+    priority Qt posts a window's update request at — so the loop delivers it after an update the press asked for
+    (posted before it), in the same pass when nothing waits to be painted."""
+    TYPE = QEvent.Type(QEvent.registerEventType())
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def post(self, fn):
+        self.calls.append(fn)
+        QApplication.postEvent(self, QEvent(self.TYPE), Qt.EventPriority.LowEventPriority.value)
+
+    def event(self, ev):
+        if ev.type() != self.TYPE:
+            return super().event(ev)
+        if self.calls:
+            fn = self.calls.pop(0)
+            try:
+                fn()
+            except Exception:
+                sys.excepthook(*sys.exc_info())
+        return True
+
+
+_after = []
+
+
+def after_paint(fn):
+    """`fn()` once the window has painted the press that asked for it (`_AfterPaint`): a press's write starts there,
+    so the writer's thread never takes Python's lock from the window's while it paints the press (`Writer.defer`)."""
+    if not _after or sip.isdeleted(_after[0]):
+        _after[:] = [_AfterPaint()]
+    _after[0].post(fn)
 
 
 # --- the writer's callbacks, on the window's thread -------------------------------------------------------------- #
@@ -836,7 +1029,8 @@ class Ticket:
     refused, undone or ends unsaved, and asks Connect's feed again once saved; Q7's *Skip a folder…* turns until saved.
     `anki` (finish-pending): its command's Anki half waits for the host's re-order — what its press marks (`_give`).
     `left`: a `relink_many` that relinked none — the pairs it left out and why (alpha 5; saved, `change.left` says it)."""
-    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left")
+    __slots__ = ("text", "keys", "ids", "change", "undo_asked", "toast", "follows", "then", "told", "anki", "left",
+                 "marks", "rides", "why")
 
     def __init__(self, text, keys=(), ids=()):
         self.text, self.keys, self.ids = text, tuple(keys), tuple(ids)
@@ -848,6 +1042,23 @@ class Ticket:
         self.told = None
         self.anki = None
         self.left = None
+        self.marks = None                            # a8: {file id: watched} its command marks (painted ahead)
+        self.rides = False                           # a Finished choice the setting made: undone with its drop
+        self.why = None                              # help cards: what Surasura did more than the press said (a Cause)
+
+
+def mines_why(lines, place):
+    """*it mines itself*'s cause (help cards §5.2: the toast's *Why?*), or None when the place makes no cards."""
+    if place == 0 or not mines_itself(lines, place):
+        return None
+    from app.services import causes
+    return causes.Cause(strings.WHY_MINES, None, "cards")
+
+
+def done_why(kind):
+    """L6.3's cause (help cards §5.2): what the last Done did more than the press said — a fixed rule, no time."""
+    from app.services import causes
+    return causes.Cause(strings.WHY_DONE[kind], None, "stones")
 
 
 def _tell(ticket, event):
@@ -919,7 +1130,7 @@ def _aside(settings, language):
 class _Drag:
     """One drag in progress."""
     __slots__ = ("src", "key", "row", "ids", "title", "source", "grab", "target", "parting", "at", "external",
-                 "holding", "many", "keys", "every")
+                 "holding", "many", "keys", "every", "home")
 
     def __init__(self):
         self.src = self.key = self.row = self.title = self.source = None
@@ -933,6 +1144,7 @@ class _Drag:
         self.at = QPoint()
         self.external = False
         self.holding = False                         # the writer and the reader held (released once, at its end)
+        self.home = None                             # (where the hand lifted, the slot it keeps there): a9 try #4
 
 
 class DragController(QObject):
@@ -966,10 +1178,22 @@ class DragController(QObject):
         self.expect_tiers = {}
         self.expect_gone = {}                        # key -> where it went (a well), until the reader says so
         self.expect_off = {}                         # LM11b G5: key -> ids taken off its row (the reader builds it so)
+        # alpha 9.1 (report 1): the reader's ask (`republish`'s number) whose answer — the store's view, read after every
+        # write landed — lets the order go (`_let_go`, `view_in`); `_unanswered` lets it go anyway if none comes
+        self._asked = None
+        self._answer_passed = False                  # ... its answer came under the hand: every view held since is newer
+        # a8: file id -> [watched, its write, views since it landed (None: waiting), the row it was painted on] —
+        # painted ahead of the store (`_marks_ahead`) until the reader's views have it (`_marks_seen`)
+        self.expect_marks = {}
+        self._mark_undos = []                        # a8: the Undos painted ahead whose word is still to come
+        self._marks_of = weakref.WeakKeyDictionary()  # a8: a saved change -> (its marks, its row's key) (Ctrl+Z)
+        self._rides = weakref.WeakKeyDictionary()     # a saved choice the setting made -> its drop's ticket (Ctrl+Z)
         self._reader_off = None                      # ... the ticket whose landing lets the reader's build go (H-C3)
         self._closed = False                         # H-T1: let go by the window (its close, a language switch)
         self.held = None                             # the reader's newest view, not shown yet
         self.tickets = []                            # commands given, not settled yet (oldest first)
+        self._airing_asking = {}                     # alpha 9 M1: work_id -> row key offered *Still asking AniList*
+        self._airing_again = False                   # ... its `_again` on its way
         self.saving_keys = frozenset()
         self.toasted = None                          # the ticket whose toast shows
         self.toast_for = ()                          # round 8 row 45: the tickets the shown toast stands for …
@@ -1026,12 +1250,17 @@ class DragController(QObject):
         if jobs is not None:
             jobs.connect(self._jobs_in)
         self.page.on_done = self.done
+        self.page.on_done_many = self.done_many      # a7: ⋯'s *…and everything before it* / *Mark all watched*
         self.page.on_nudge = self.nudge
         self.page.on_menu = self.menu
         self._settle = QTimer(self)
         self._settle.setSingleShot(True)
         self._settle.setInterval(D["settle-ms"])
         self._settle.timeout.connect(self._settled)
+        self._unanswered = QTimer(self)
+        self._unanswered.setSingleShot(True)
+        self._unanswered.setInterval(D["answer-ms"])
+        self._unanswered.timeout.connect(self._no_answer)
         # Auto-scroll is the hand's, not motion (M4.1, the lead's call IK-4): it runs under Reduced motion too, on a
         # timer of its own (never the clock, whose Reduced would stop it) — the one view timer named as allowed.
         self._scroll = QTimer(self)
@@ -1085,22 +1314,123 @@ class DragController(QObject):
     def view_in(self, view):
         """-> the view to show now, or None (held): every view while a drag runs (E6); while the window's own order is
         ahead of the store, a view of the same rows in that order (its numbers fresh), else held until it settles."""
+        if self._airing_asking:
+            self._answered(view)                     # (a view held, shown later as the window's own: its answer too)
         if self._own:
             return view
         if self._replay_owed and getattr(view, "mode", None) == "store":
             self._replay_owed = not self.writer.replay()
+        if self.expect_marks:
+            self._marks_seen(view)
         if self.running is not None:
+            if self._store_answers(view):
+                self._answer_passed = True           # (every view after it is the store's too)
             self.held = view
             return None
         if self.expect is None:
             self.held = None
-            return view
+            return self._with_marks(view)
+        if self._answer_passed or self._store_answers(view):   # the store's own view, read after every write
+            # landed, or one after it (its answer came under a drag that ended without a view of its own): it stands
+            self._order_off()
+            self.held = None
+            return self._with_marks(view)
         out = self._conform(view)
         if out is None:
             self.held = view
             return None
         self.held = None
-        return out
+        return self._with_marks(out)
+
+    # --- a8: a stone's Done painted ahead of the store ----------------------------------------------------------- #
+    # Sonic's alpha 7 try ("it lagged by at least a second before registering", more while a Generate ran): a Done's
+    # marks are painted in the click itself, as a drop's order is (`_ahead`), whatever holds the store meanwhile — and
+    # stand on every view shown until the reader's views have them: a mark whose write landed goes at the first view
+    # that shows it so, or at the second view since, whatever that shows (the reader builds one view at a time, and its
+    # views reach this thread in order with the writer's word: the first may have begun before the write landed, never
+    # the second). A write that lands as nothing (already so, refused, failed) or an Undo the store refuses: the next
+    # view is the store's, whatever it shows (nothing was written for it to begin before). The row's own fields come
+    # from `view_rows.marked` (one rule with the reader's); the top-20 line and the one title width as `reordered`
+    # draws them for a drop; which files are *in the top* (a stone's dimming, *Waiting*) as `topped` reads them for a
+    # drop too (3.0.1 item 12: the store's rule, at once — no longer with the store's next view).
+    def _holding(self, view):
+        """The places of `view`'s rows that hold a marked file: the rows they were painted on (by key) — every row
+        holding one only when a marked file isn't there (its row joined, split or gone): never a walk over every file
+        while the rows are where they were."""
+        marks, rows_ = self.expect_marks, view.rows
+        keys = {m[3] for m in marks.values()}
+        at = [k for k, r in enumerate(rows_) if r.key in keys]
+        if len({e.id for k in at for e in rows_[k].episodes if e.id in marks}) < len(marks):
+            at = [k for k, r in enumerate(rows_) if any(e.id in marks for e in r.episodes)]
+        return at
+
+    def _with_marks(self, view):
+        """`view` with the window's own marks on its rows — `view` itself when they change none."""
+        if not self.expect_marks or view is None or not getattr(view, "rows", None):
+            return view
+        marks = {i: m[0] for i, m in self.expect_marks.items()}
+        keep = bool(getattr(view, "keep_watched", False))
+        rows_ = list(view.rows)
+        changed = []
+        for k in self._holding(view):
+            row = view_rows.marked(rows_[k], marks, hero=not k, keep=keep)   # (Current's first row: Up Next)
+            if row is not rows_[k]:
+                rows_[k] = row
+                changed.append(k)
+        if not changed:
+            return view
+        rows_, moved = topped(view, rows_)          # 3.0.1 item 12: a Done moved the top (keep-watched off): at once
+        worst = view.worst if set(changed + moved) == {0} else view_rows.worst_needs(rows_[1:])
+        return view._replace(rows=tuple(rows_), lines=lines_for(view, rows_), worst=worst)
+
+    def _marks_ahead(self, write, marks, key):
+        """`marks` ({file id: watched}) of the row `key` painted now, kept for `write` (the ticket the writer hands
+        back as it lands)."""
+        for i, on in marks.items():
+            self.expect_marks[i] = [on, write, None, key]
+        view = self.page.view_model
+        if view is not None:
+            self._show(view)
+        self._settle.start()
+
+    def _awaited(self, write):
+        """Whether the writer's word for `write` is still to come (its ticket waits, or its Undo does)."""
+        return any(write is t for t in self.tickets) or any(write is u for u in self._mark_undos)
+
+    def _marks_landed(self, write=None, empty=False):
+        """`write`'s marks landed (None: every one whose word isn't awaited — the writer idle): they stand until the
+        views have them. `empty`: it landed as nothing — the next view decides. A write's word may come after the reader's
+        view of it (the store's commit wakes the reader before the writer says so): the reader is asked for a view read
+        after the word (`republish`), so a landed mark goes at the first view that shows it so — and one landed as
+        nothing at the next view — even while another write still waits and no view would come by itself
+        (flakes-2026-11-05 #4; its adversary's B1)."""
+        landed = False
+        for m in self.expect_marks.values():
+            if m[2] is None and (m[1] is write if write is not None else not self._awaited(m[1])):
+                m[2] = 1 if empty else 0
+                landed = True
+        if write is not None:
+            self._mark_undos = [u for u in self._mark_undos if u is not write]
+            ask = getattr(self.reader, "republish", None)
+            if landed and ask is not None:
+                ask()
+
+    def _marks_seen(self, view):
+        """A view from the reader: the marks whose write landed counted against it (a busy store's last view again,
+        or the first screen's cache, is no view of it)."""
+        if getattr(view, "busy", False) or getattr(view, "cached", False) or not getattr(view, "rows", None):
+            return
+        landed = [i for i, m in self.expect_marks.items() if m[2] is not None]
+        if not landed:
+            return
+        shown = {e.id: e.watched for k in self._holding(view) for e in view.rows[k].episodes
+                 if e.id in self.expect_marks}
+        for i in landed:
+            m = self.expect_marks[i]
+            if m[2] or shown.get(i, m[0]) == m[0]:
+                del self.expect_marks[i]
+            else:
+                m[2] = 1
 
     def _conform(self, view):
         if any(r.key in self.expect_off and not self.expect_off[r.key].isdisjoint(e.id for e in r.episodes)
@@ -1125,10 +1455,10 @@ class DragController(QObject):
         return reordered(v, list(self.expect), self.expect_tiers)
 
     def _show(self, view):
-        """Show a view of the window's own making (the drop's order), past the filter."""
+        """Show a view of the window's own making (the drop's order, the marks ahead), past the filter."""
         self._own = True
         try:
-            self.win.show_library(view)
+            self.win.show_library(self._with_marks(view))
         finally:
             self._own = False
 
@@ -1141,6 +1471,8 @@ class DragController(QObject):
             self.expect_gone[gone[0]] = gone[1]
         if off is not None:
             self.expect_off[off[0]] = self.expect_off.get(off[0], frozenset()) | frozenset(off[1])  # two in a row: both
+        self._asked, self._answer_passed = None, False   # (an ask before this order answers nothing of its write)
+        self._unanswered.stop()
         self._show(view)
         self._settle.start()
 
@@ -1153,25 +1485,34 @@ class DragController(QObject):
             # switch, the quit) lands nothing more here: what is left stays in its journal, and the order is let go
             self._settle.start()
             return
+        self._marks_landed()                         # a8: the writer idle: every mark no word is awaited for
         self._let_go(idle=True)
         self._undo_answered(idle=True)               # (an undo that found nothing to undo answers nothing)
         republish = getattr(self.reader, "republish", None)
-        if republish is not None:                    # every write landed: the store's own view once more, changed or
-            republish()                              # not — where it placed a row otherwise than drawn (AD2-4)
+        if republish is not None and self._asked is None:   # every write landed: the store's own view once more,
+            republish()                              # changed or not — where it placed a row otherwise than drawn (AD2-4)
 
     def _writer_stopped(self):
         stopped = getattr(self.writer, "stopped", None)
         return bool(stopped()) if stopped is not None else False
 
-    def _let_go(self, idle=False):
-        """The expectation ends: the reader's newest view stands (held, or the next one). The reader's own build of a
-        show taken off its row (`_reader_off`, LM11b G5) goes only once that command landed or failed (H-C3: never
-        while it still waits behind another that landed as nothing) — or the writer is idle or stopped."""
+    def _let_go(self, idle=False, now=False):
+        """The expectation ends: the store's own view stands — the first the reader read after every write landed
+        (alpha 9.1, report 1: never a view it began before, which put a dropped row back where it was until its next
+        build put it forward again — *"it will then move back, wait a second, and then visually go back to where i had
+        moved it"*). Until it comes the window's order stands; a writer still busy asks once it lands (the settle).
+        `now`: the newest view stands at once (a command refused: nothing was written to wait for). The reader's own
+        build of a show taken off its row (`_reader_off`, LM11b G5) goes only once that command landed or failed (H-C3:
+        never while it still waits behind another that landed as nothing) — or the writer is idle or stopped."""
         off = self._reader_off
         if off is not None and (idle or off not in self.tickets or self._writer_stopped()):
             self._reader_off = None
             self._reader_expects(None)
-        self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
+        if self._writer_stopped():                   # a8: nothing more lands here: the marks ahead let go too
+            self.expect_marks, self._mark_undos = {}, []
+        if self.expect is not None and not now and self._ask_store():
+            return
+        self._order_off()
         held, self.held = self.held, None
         if held is not None and self.running is None:
             self._show(held)
@@ -1179,6 +1520,49 @@ class DragController(QObject):
             self.held = held
         if self.reader is not None:
             self.reader.refresh()
+
+    def _ask_store(self):
+        """-> True while the window's order waits for the store's own view: asked of the reader now (the writer idle),
+        or by the settle once the writer is (`_settled`). False: nothing to wait for — the window closed or its writer
+        stopped, or a reader that can't answer."""
+        if self._asked is not None:
+            return True
+        if self._closed or self._writer_stopped():
+            return False
+        ask, answered = getattr(self.reader, "republish", None), getattr(self.reader, "answered", None)
+        if ask is None or answered is None:
+            return False
+        if self.writer.pending():
+            self._settle.start()
+            return True
+        n = ask()
+        if n is None:
+            return False
+        self._asked = n
+        self._unanswered.start()
+        return True
+
+    def _store_answers(self, view):
+        """Whether `view` is the reader's answer to the window's ask: read after it, so after every write it waited for."""
+        if self._asked is None or view is None:
+            return False
+        n, answer = self.reader.answered()
+        return answer is view and n >= self._asked
+
+    def _no_answer(self):
+        """A reader that never answered (a store that can't be read for this long): the order goes all the same — the
+        newest view stands, as before the ask. Under the hand it waits for the drop (E6)."""
+        if self._asked is None or self._closed:
+            return
+        if self.running is not None:
+            self._unanswered.start()
+            return
+        self._let_go(now=True)
+
+    def _order_off(self):
+        self._asked, self._answer_passed = None, False
+        self._unanswered.stop()
+        self.expect, self.expect_tiers, self.expect_gone, self.expect_off = None, {}, {}, {}
 
     def base(self):
         """The view the next move starts from: the reader's newest (held) when it has the same rows, else the page's."""
@@ -1221,13 +1605,27 @@ class DragController(QObject):
         kind, row, lines = model.entries[src]
         rect = self.lst.visualRect(model.index(src, 0))
         slot = self.lst.delegate.slot_rect(kind, rect, lines)
+        grab = QPointF(press[3] - slot.topLeft())
+        home = None
+        if model.open_key == row.key:                # a9 try #4: an opened row lifts closed — its ghost and its slot
+            top = rect.top()                         # the closed row's, never a picture of every part (a 300-part
+            self.lst.toggle(model.index(src, 0))     # group's was 13,000 px tall: 2 s on the window's thread here)
+            self.lst.executeDelayedItemsLayout()
+            rect = self.lst.visualRect(model.index(src, 0))
+            slot = self.lst.delegate.slot_rect(kind, rect, lines)
+            if rect.top() != top:                    # near the list's end its scroll clamped: the row moved from
+                home = (QPoint(global_pos), src)     # under the hand — its slot stays its own till the hand travels
         picked = self.lst.picked_rows
         if row.key in picked and len(picked) > 1:        # --- A4: a picked row's drag carries every pick
-            return self._begin_picks(picked, global_pos, slot.size())
+            ok = self._begin_picks(picked, global_pos, slot.size())
+            if ok and self.running is not None:
+                self.running.home = home
+            return ok
         d = _Drag()
         d.src, d.key, d.row, d.ids, d.title = src, row.key, row, ids_of(row), row.title
         d.source = "current"
-        d.grab = QPointF(press[3] - slot.topLeft())
+        d.grab = grab
+        d.home = home
         height = rect.height() - self.lst.delegate._lines_h(lines)
         pix = self._row_picture(kind, row, lines, rect, slot)
         unlit = None
@@ -1322,7 +1720,7 @@ class DragController(QObject):
             return
         kind, row, lines = model.entries[r]
         if kind not in (rows.HERO, rows.ROW) or model.open_key == row.key:
-            return                                   # (an opened row's picture is the screen's, taken at the lift)
+            return                                   # (an opened row lifts closed: its picture is baked at the lift)
         rect = lst.visualRect(model.index(r, 0))
         slot = lst.delegate.slot_rect(kind, rect, lines)
         dpr = lst.viewport().devicePixelRatioF() or 1.0
@@ -1466,8 +1864,13 @@ class DragController(QObject):
         tab = self.win.tab_buttons.get("finished")
         if tab is not None and tab.isVisible() and tab.rect().contains(tab.mapFromGlobal(global_pos)):
             return "tab", "finished"
-        if self.joins is not None and self.running is not None:     # --- W3.2 Q8: over another part of the same title
-            key = self.joins.target(self.running, global_pos)
+        d = self.running
+        if d is not None and d.home is not None:     # a9 try #4: the opened row closed under the hand: till the hand
+            if (global_pos - d.home[0]).manhattanLength() < theme.MOTION["drag-start-px"]:     # travels, its own slot
+                return "list", d.home[1]             # (a release right there moves nothing, a rest there joins
+            d.home = None                            # nothing: no hold starts on the row the close put under it)
+        if self.joins is not None and d is not None:     # --- W3.2 Q8: over another part of the same title
+            key = self.joins.target(d, global_pos)
             if key is not None:
                 return "join", key
         return "list", self.slot_at(self.lst.viewport().mapFromGlobal(global_pos).y())
@@ -1560,6 +1963,7 @@ class DragController(QObject):
             tab.set_drop_lit(False)
         if self.joins is not None:                   # --- W3.2 Q8
             self.joins.show(None)
+            self.joins.ended()
         self.win.toasts.set_dragging(False)
         if d.holding:                                # (a lift that failed before its holds holds nothing)
             d.holding = False
@@ -1575,6 +1979,9 @@ class DragController(QObject):
         held, self.held = self.held, None
         if held is not None:
             if self.expect is None:
+                self._show(held)
+            elif self._answer_passed:                # the store's answer came under the hand: it stands
+                self._order_off()
                 self._show(held)
             else:
                 out = self._conform(held)
@@ -1647,6 +2054,7 @@ class DragController(QObject):
             (strings.DRAG_PLACED_MINES if mines_itself(new.lines, place) else strings.DRAG_PLACED).format(
                 title=d.title, n=place + 1)
         ticket = Ticket(text, keys=(d.key,), ids=d.ids)
+        ticket.why = mines_why(new.lines, place)
         self._end(d, repaint=False)
         self.held = None
         self.lst.landing = d.key
@@ -1743,26 +2151,51 @@ class DragController(QObject):
         else:
             self._finish(d.title, d.ids, keys)
 
-    def _finish(self, title, ids, keys=(), many=False, text=None):
-        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) — *Keep* or *Leave its new cards out of
-        your order*, each written as `set_finished` (live, never greyed). finish-pending: the drop and *Leave its new
-        cards out* each a press until the host's re-order for it lands (Anki moves after the Generate it starts: the
-        bar's arc — the row has left this list)."""
-        ticket = Ticket(text or (strings.PICKS_FINISHED if many else strings.DRAG_FINISHED).format(title=title), keys,
-                        ids)
+    def _finish(self, title, ids, keys=(), many=False, text=None, why=None):
+        """To Finished: `set_tier(…, "graduated")`, and its toast's choice (D14) as Settings' *When you finish
+        something* says (`finish_choice`). `text`: the toast's words (a template with `{title}`; L6.3's for a finish by
+        itself). finish-pending: the drop and *Leave its new cards out* each a press until the host's re-order for it
+        lands (Anki moves after the Generate it starts: the bar's arc — the row has left this list)."""
+        how = self.finish_how()
+        template = text or (strings.PICKS_FINISHED if many else strings.DRAG_FINISHED)
+        if how == "out":
+            template = strings.FINISHED_OUT.get(template, template)
+        ticket = Ticket(template.format(title=title), keys, ids)
+        ticket.why = why
         if self._give(ticket, lambda t: self.writer.set_tier(list(ids), FINISHED, label=t), toast=False,
                       anki=on_bar) is None:
             return None
+        for work_id in [w for w, k in self._airing_asking.items() if k in keys]:
+            del self._airing_asking[work_id]         # alpha 9 M1: sent to Finished — never again by itself (its Undo)
+        self.finish_choice(ticket, ids, title, keys, many=many, how=how)
+        return ticket
 
-        def choose(keep):
+    def finish_how(self):
+        """Settings' *When you finish something* now (`settings_manager.finish_cards`): "ask", "keep" or "out"."""
+        services = getattr(self.win, "services", None)
+        return settings_manager.finish_cards(services.settings.get() if services is not None else None)
+
+    def finish_choice(self, ticket, ids, title, keys=(), many=False, how=None, anki=True):
+        """The finish toast for `ticket`, the drop to Finished (D14), as *When you finish something* says (`how`, read
+        when the drop was made): "ask" — *Keep* or *Leave its new cards out of your order*, each written as
+        `set_finished` (live, never greyed); "keep" — no question; "out" — its new cards left out with the drop, linked
+        to it (`follows`: the toast's one Undo takes both back). `anki`: the choice's Anki half a press on the bar
+        (the arrivals' own finish has none)."""
+        def choose(keep, toast=None, rides=False):
             choice = Ticket((strings.PICKS_TAKEN_OUT if many else strings.DRAG_TAKEN_OUT).format(title=title), keys,
                             ids)
             choice.follows = ticket
-            self._give(choice, lambda t: self._set_finished(list(ids), keep, t, ticket), toast=not keep,
-                       anki=None if keep else on_bar)
-        self._toast(ticket, buttons=[(strings.DRAG_KEEP, strings.DRAG_KEEP_TIP, lambda: choose(True)),
-                                     (strings.DRAG_TAKE_OUT, strings.DRAG_TAKE_OUT_TIP, lambda: choose(False))])
-        return ticket
+            choice.rides = rides
+            self._give(choice, lambda t: self._set_finished(list(ids), keep, t, ticket),
+                       toast=not keep if toast is None else toast, anki=None if keep or not anki else on_bar)
+        how = how or self.finish_how()
+        if how == "ask":
+            self._toast(ticket, buttons=[(strings.DRAG_KEEP, strings.DRAG_KEEP_TIP, lambda: choose(True)),
+                                         (strings.DRAG_TAKE_OUT, strings.DRAG_TAKE_OUT_TIP, lambda: choose(False))])
+            return
+        self._toast(ticket)                          # the drop's toast: its Undo takes the choice back too (AD-6)
+        if how == "out":                             # one finish to the learner: Ctrl+Z takes both back too (`undo`)
+            choose(False, toast=False, rides=True)
 
     def _set_finished(self, ids, keep, label, follows):
         """The Finished toast's choice, linked to the drop's change (`follows=`: the drop's Undo then undoes both). Chosen
@@ -1823,23 +2256,29 @@ class DragController(QObject):
             on_done=ghost.hide, kind="fade", owner=ghost, on_end=ghost.hide)
 
     # --- commands, toasts, Undo ------------------------------------------------------------------------------------ #
-    def _give(self, ticket, command, toast=True, anki=None):
+    def _give(self, ticket, command, toast=True, anki=None, marks=None):
         """Hand a command to the writer (`command(label)` -> its number, or None when refused); its toast with Undo.
         `anki` (finish-pending): the command's Anki half waits for the Generate it starts — `anki()` makes what its
-        press marks (None: the bar's arc), painted before the hand-over (`_anki_begin`)."""
+        press marks (None: the bar's arc), painted before the hand-over (`_anki_begin`). `marks` (a8): {file id: watched}
+        the command marks, painted as it is handed over (`_marks_ahead`)."""
         if anki is not None:
             ticket.anki = anki
             self._anki_begin(ticket)
         self._urgent()
+        defer = getattr(self.writer, "defer", None)
+        if defer is not None:                        # its write starts once the press is painted (`after_paint`, below)
+            defer()
         seq = command(ticket)
         if seq is None:                              # refused (E4 meanwhile): nothing written, the store's view stands
+            if defer is not None:
+                self.writer.go()                     # (nothing of this press waits)
             _tell(ticket, "refused")
             self._ended(ticket)
             self._anki_landed(ticket)                # (its press ends: the bar says why, below)
             if self.refused() is None:               # W3.2 P0 (AD0-5): never silent — a writer let go at a switch
                 self.say(strings.MOVE_NOT_SAVED)
             held = self.held
-            self._let_go()
+            self._let_go(now=True)
             view = getattr(self.reader, "view", None)
             view = view() if held is None and view is not None else None
             if view is not None and view is not self.page.view_model:
@@ -1851,15 +2290,20 @@ class DragController(QObject):
             QTimer.singleShot(0, self._fresh.clear)
         self._fresh.append(ticket)
         self._settle.start()
+        if marks:
+            ticket.marks = dict(marks)
+            self._marks_ahead(ticket, marks, ticket.keys[0] if ticket.keys else None)
         if toast:
             self._toast(ticket)
+        if defer is not None:                        # (posted after what the press painted asked for its update)
+            after_paint(self.writer.go)
         return seq
 
     def _toast(self, ticket, buttons=()):
         ticket.toast = True
         self.toasted = ticket
         self._showing = (ticket,)                    # what this toast stands for (`_toast_shown`, as it shows)
-        self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons)
+        self.win.toasts.show(ticket.text, undo=lambda: self.undo(ticket), buttons=buttons, why=ticket.why)
 
     # --- round 8 row 45: a write's toast reads *· saving…* while it waits (one rule, wherever the toast shows) --- #
     def _toast_shown(self):
@@ -1944,15 +2388,29 @@ class DragController(QObject):
         """A toast's Undo: that change (once the writer saved it; asked before, it is undone as it lands).
         finish-pending: a change whose Anki half waits — its press lets go, and the Undo's own waits the same way back;
         asked before the change was saved, its press stays and waits for the Undo's re-order (`_saved`)."""
+        if ticket.rides and ticket.follows is not None:
+            self.undo(ticket.follows)                # a choice the setting made: its drop's Undo takes both (AD-6)
+            return
         _tell(ticket, "undone")
+        back = {i: not on for i, on in ticket.marks.items()} if ticket.marks else None   # a8: its stones, turned back
         if ticket.change is not None:
             self._anki_drop(lambda t: t is ticket or t.follows is ticket)     # (a drop's choice with it)
-            back = self._anki_back(ticket) if ticket.anki is not None else None
+            anki = self._anki_back(ticket) if ticket.anki is not None else None
+            label = anki
+            if back and anki is None:                # a8: painted now, kept for the Undo's own word
+                label = Ticket(None)
+                self._mark_undos.append(label)
+                self._marks_ahead(label, back, ticket.keys[0] if ticket.keys else None)
             self._undo_pressed()
-            if self._undo_to_writer(ticket.change, label=back) is None and back is not None:
-                self._anki_landed(back)
+            if self._undo_to_writer(ticket.change, label=label) is None:
+                if anki is not None:
+                    self._anki_landed(anki)
+                elif label is not None:
+                    self._marks_landed(label, empty=True)
             self._let_go()
         else:
+            if back:                                 # a8: painted now, on its own ticket (`_saved` hands them on)
+                self._marks_ahead(ticket, back, ticket.keys[0] if ticket.keys else None)
             ticket.undo_asked = True
             if any(ticket is t for t in self.tickets):   # (one that landed as nothing has nothing to wait for)
                 self._undo_pressed()
@@ -1970,17 +2428,36 @@ class DragController(QObject):
             self.undo(waiting[-1])
             return
         if self.writer.can_undo() or self.writer.pending():
+            # 3.0.1 item 12: what it takes is known now when nothing queued before it can change the Undo stack (a
+            # background cover, a download's registration, Settings' lines: `Writer.newest`) — that change, painted now
+            # and named to the writer, whatever waits ahead of it; else (a move, a Done, an Undo queued) as it lands
+            newest = getattr(self.writer, "newest", None)
+            change = newest() if newest is not None else None
+            drop = self._rides.get(change) if change is not None else None
+            if drop is not None and drop.change is not None:     # the setting's choice: the drop's Undo takes both
+                self.undo(drop)
+                return
             self._undo_pressed()
-            self._undo_to_writer(label=Ticket(None))  # finish-pending: its undo waits for Anki if its change did (`_undone`)
+            label = Ticket(None)                     # finish-pending: its undo waits for Anki if its change did (`_undone`)
+            marks, key = self._marks_of.get(change, (None, None)) if change is not None else (None, None)
+            if marks:                                # a8: a Done's undo, the next the writer takes: its stones now
+                self._mark_undos.append(label)
+                self._marks_ahead(label, {i: not on for i, on in marks.items()}, key)
+            if self._undo_to_writer(change, label=label) is None and marks:
+                self._marks_landed(label, empty=True)
             self._let_go()
 
     def _saved(self, change, label):
         if isinstance(label, Ticket):
             label.change = change
             _tell(label, "saved")
+            if label.rides and label.follows is not None:
+                self._rides[change] = label.follows
             then, label.then = label.then, None
             if label.anki is not None:
                 self._anki_of[change] = label.anki   # finish-pending: Ctrl+Z's undo of it waits for Anki too
+            if label.marks:                          # a8: Ctrl+Z's undo of it painted ahead too
+                self._marks_of[change] = (label.marks, label.keys[0] if label.keys else None)
             if label.undo_asked:
                 label.undo_asked = False
                 if then is not None:                 # the drop taken back: its waiting choice with it
@@ -1988,11 +2465,22 @@ class DragController(QObject):
                     self._drop_waiting(label)
                 p = self._landing.pop(label, None)   # finish-pending: its press waits for the Undo's re-order now
                 back = self._anki_back(label, p) if p is not None else None
-                if self._undo_to_writer(change, label=back) is None and back is not None:
-                    self._anki_landed(back)
+                undo = back
+                if label.marks and back is None:     # a8: its stones turned back, kept for the Undo's own word now
+                    undo = Ticket(None)
+                    self._mark_undos.append(undo)
+                    for m in self.expect_marks.values():
+                        if m[1] is label:
+                            m[1] = undo
+                if self._undo_to_writer(change, label=undo) is None:
+                    if back is not None:
+                        self._anki_landed(back)
+                    elif undo is not None:
+                        self._marks_landed(undo, empty=True)
                 self._let_go()
             if then is not None:
                 then()
+            self._marks_landed(label)
         self._settle_ticket(label)
         if self.reader is not None:
             self.reader.refresh()
@@ -2005,7 +2493,10 @@ class DragController(QObject):
         _sources_stopped(self.win, change, undone=True, language=getattr(self.writer, "language", None))
         _trash_moved(self.win, change)
         mark = self._anki_of.pop(change, None) if change is not None else None    # (an undo that undid nothing)
+        if change is not None:
+            self._marks_of.pop(change, None)
         if isinstance(label, Ticket):
+            self._marks_landed(label)                # a8: its stones stand until the views have them
             _tell(label, "undone")
             if label not in self._landing and mark is not None and label.anki is None:
                 # finish-pending (intent finding 2): Ctrl+Z of a change whose Anki half waited — the change's press
@@ -2245,6 +2736,8 @@ class DragController(QObject):
         command landed as nothing settle (Ctrl+Z never picks one that has nothing to undo)."""
         landed = getattr(self.writer, "landed_empty", None)
         empty = landed() if landed is not None else ()
+        for e in empty:                              # a8: a mark that landed as nothing: its stone as the store has it
+            self._marks_landed(e, empty=True)
         if not self.writer.pending():
             for t in list(self.tickets):
                 then, t.then = t.then, None
@@ -2255,6 +2748,7 @@ class DragController(QObject):
             for t in settled:
                 if isinstance(t, Ticket) and t.change is None:
                     _tell(t, "ended")
+                    self._marks_landed(t, empty=True)    # a8: nothing written: the next view decides
                 self._ended(t)
             self._undo_answered(idle=True)
         else:
@@ -2299,7 +2793,8 @@ class DragController(QObject):
             if verdict is not None and verdict[0] != "offer":
                 self._by_itself(row, verdict)
             elif verdict is not None:
-                self.win.toasts.show(strings.DONE_ALL.format(n=all_n(row)), buttons=[
+                self._ask_again(view, row, verdict)
+                self.win.toasts.show(offer_text(verdict, row), buttons=[
                     (strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP, lambda: self.to_finished(row))])
             elif not finishes(row):
                 self.say(strings.WELL_UNLIT_MIX)
@@ -2312,51 +2807,103 @@ class DragController(QObject):
             text = strings.DONE_UNDONE_BACK.format(ep=ep.label) if moves_list else \
                 strings.DONE_UNDONE.format(title=title, ep=ep.label)
             ticket = Ticket(text, (row.key,), (ep.id,))
-            self._give(ticket, lambda t: self.writer.set_watched([ep.id], False, label=t))
+            self._give(ticket, lambda t: self.writer.set_watched([ep.id], False, label=t), marks={ep.id: False})
             return
+        after = [e for e in row.episodes[row.episodes.index(ep) + 1:] if not e.watched] if ep in row.episodes else []
         left = [e for e in view_rows.to_finish(row.episodes) if not e.watched and e.id != ep.id]   # H-6: never its audio
+        nxt = after[0] if after else (left[0] if left else None)
+        text = strings.DONE_NEXT.format(title=title, ep=ep.label, next=nxt.label) if nxt is not None else \
+            strings.DONE_ONE.format(title=title, ep=ep.label)
+        self._marked(row, [ep], text, strings.DONE_LEFT.format(ep=ep.label))
+
+    def done_many(self, row, eps):
+        """a7 (DIAGNOSIS 11): ⋯'s *…and everything before it* / *Mark all watched* — `eps` (the row's own, in its order)
+        marked watched in ONE writer command: one ticket, one toast, one Undo for them all. Read against the row as the
+        view holds it now (a menu left open while the row changed: a file gone is left out, one come in counts as still
+        to watch). What follows is the one Done's (`done`): when no file of the row is left unwatched, L6.3's rule
+        (`when_done`) — it finishes by itself or joins its next part, or the finish toast offers it; a group's show all
+        watched offers that show's finish (`show_finished`); else W-1's first-mark hint, once per library. One file
+        left to mark is the one Done itself, its own words."""
+        if self.refused() is not None:
+            return
+        view = self.page.view_model
+        row = next((r for r in (view.rows if view is not None else ()) if r.key == row.key), row)
+        now = {e.id: e for e in row.episodes}
+        eps = [now[e.id] for e in eps if e.id in now and not now[e.id].watched]
+        if len(eps) < 2:
+            if eps:
+                self.done(row, eps[0])
+            return
+        self._marked(row, eps, strings.DONE_MANY.format(title=row.title, n=len(eps)),
+                     strings.DONE_MANY_LEFT.format(title=row.title, n=len(eps)))
+
+    def _marked(self, row, eps, text, left_text):
+        """What a mark of `eps` watched does — ONE path for the one Done and ⋯'s mark-many (a7): `eps` in ONE writer
+        command (one ticket, one Undo), then: when no file of the row is left unwatched, L6.3's rule (`when_done`) — it
+        finishes by itself or joins its next part (`_by_itself`), or the finish toast offers it (A2 #2); a group's show
+        all watched by these marks offers that show's finish (LM11b G5, `show_finished`); W-1's first mark that moves
+        the list, its hint once per library (`left_text`); else the toast `text`."""
+        ids = [e.id for e in eps]
+        marked = set(ids)
+        on = dict.fromkeys(ids, True)                # a8: painted as it is handed over
+
+        def mark(t):
+            return self.writer.set_watched(ids, True, label=t)
+        left = [e for e in view_rows.to_finish(row.episodes) if not e.watched and e.id not in marked]
         view = self.page.view_model
         verdict = None if left else when_done(view, row, pending=bool(self.tickets))   # L6.3: the one rule
         if verdict is not None and verdict[0] != "offer":
-            ticket = Ticket(strings.DONE_ONE.format(title=title, ep=ep.label), (row.key,), (ep.id,))
-            if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
+            if self._give(Ticket(text, (row.key,), tuple(ids)), mark, toast=False, marks=on) is None:
                 return
             self._by_itself(row, verdict)
             return
-        if verdict is not None:                      # ("offer",): today's *finished with it?*
-            ticket = Ticket(strings.DONE_ALL.format(n=all_n(row)), (row.key,), (ep.id,))
-            if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
+        if verdict is not None:                      # ("offer", ...): today's *finished with it?*
+            ticket = Ticket(offer_text(verdict, row), (row.key,), tuple(ids))
+            if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
+            self._ask_again(view, row, verdict)
             self._toast(ticket, buttons=[(strings.DONE_MOVE_FINISHED, strings.DONE_MOVE_FINISHED_TIP,
                                           lambda: self.to_finished(row))])
             return
-        shown = show_finished(row, ep)               # LM11b G5: one show of a group all watched, the rest not yet
+        shown = None
+        if getattr(row, "group", False):             # LM11b G5: one show of a group all watched, the rest not yet —
+            for ep in reversed(eps):                 # asked as each show's last mark (the others marked before it)
+                shown = show_finished(row._replace(episodes=tuple(
+                    e._replace(watched=True) if e.id in marked and e.id != ep.id else e for e in row.episodes)), ep)
+                if shown is not None:
+                    break
         if shown is not None:
-            show, ids = shown
-            ticket = Ticket(strings.DONE_SHOW_IN_GROUP.format(show=show, n=len(ids)), (row.key,), (ep.id,))
-            if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
+            show, show_ids = shown
+            ticket = Ticket(strings.DONE_SHOW_IN_GROUP.format(show=show, n=len(show_ids)), (row.key,), tuple(ids))
+            if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
             self._toast(ticket, buttons=[(strings.DONE_MOVE_SHOW_FINISHED.format(show=show),
-                                          strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=len(ids)),
-                                          lambda: self.finish_show(row, show, ids))])
+                                          strings.DONE_MOVE_SHOW_FINISHED_TIP.format(show=show, n=len(show_ids)),
+                                          lambda: self.finish_show(row, show, show_ids))])
             return
-        hint = self._unseen(HINT_LEFT) if moves_list else None   # --- W-1: the first mark, once per library
+        keep = getattr(view, "keep_watched", False)  # --- W-1: the first mark, once per library
+        hint = self._unseen(HINT_LEFT) if any(view_rows.mark_moves_list(row.tier, e, keep) for e in eps) else None
         if hint is not None:
-            ticket = Ticket(strings.DONE_LEFT.format(ep=ep.label), (row.key,), (ep.id,))
-            if self._give(ticket, lambda t: self.writer.set_watched([ep.id], True, label=t), toast=False) is None:
+            ticket = Ticket(left_text, (row.key,), tuple(ids))
+            if self._give(ticket, mark, toast=False, marks=on) is None:
                 return
             self._seen(hint)
             self._toast(ticket, buttons=[(strings.DONE_KEEP, strings.DONE_KEEP_TIP,
                                           lambda: self.win.open_setting("keep_watched")),
                                          (strings.DONE_OK, strings.DONE_OK_TIP, lambda: None)])
             return
-        after = [e for e in row.episodes[row.episodes.index(ep) + 1:] if not e.watched] if ep in row.episodes else []
-        nxt = after[0] if after else (left[0] if left else None)
-        text = strings.DONE_NEXT.format(title=title, ep=ep.label, next=nxt.label) if nxt is not None else \
-            strings.DONE_ONE.format(title=title, ep=ep.label)
-        self._give(Ticket(text, (row.key,), (ep.id,)), lambda t: self.writer.set_watched([ep.id], True, label=t))
+        self._give(Ticket(text, (row.key,), tuple(ids)), mark, marks=on)
 
     # --- W-1: a hint shown once per library (settings.json's `hints_seen`: hint ids, each with the library's id) -- #
+    # (help cards WP6: read and written through the window's one helper, `app/qt/hints.py` — the store's id, the
+    # list's odd entries left out, a settings file that can't keep it never shows a hint every time)
+    def _hints(self):
+        hints = getattr(self.win, "hints", None)
+        if hints is None:
+            from app.qt import hints as hints_module
+            hints = self.win.__dict__.setdefault("_drag_hints", hints_module.Hints(self.win))
+        return hints
+
     def _hint_id(self, name):
         """`name`'s hint id for the library shown (its store id), or None before a read has found it: never keyed by
         the language, so a hint is never shown twice in one library."""
@@ -2368,10 +2915,7 @@ class DragController(QObject):
         return f"{name}:{store_id}" if store_id else None
 
     def _hints_seen(self):
-        """settings.json's `hints_seen` as a list of ids — a hand-edited value that isn't a list (a number, true, a text)
-        reads as none seen, its odd entries left out; the next write puts a clean list in its place."""
-        value = self.win.services.settings.get().get("hints_seen")
-        return [h for h in value if isinstance(h, str)] if isinstance(value, (list, tuple)) else []
+        return self._hints().seen_list()
 
     def _unseen(self, name):
         """`name`'s hint id for this library when it hasn't been shown here yet, else None."""
@@ -2386,31 +2930,78 @@ class DragController(QObject):
 
     def _seen(self, hint):
         """`hint` recorded as shown: its key alone written (`save_keys`' rule, the settings service's)."""
-        seen = self._hints_seen()
-        if hint not in seen:
-            self.win.services.settings.set({"hints_seen": seen + [hint]})
+        self._hints().mark(hint)
+        self._hints().last = self._hints().clock()   # (a hint shown: the next one waits its minute)
     # --- end W-1
 
     def to_finished(self, row, text=None):
         """*Move to Finished* (the finish toast, ⋯): the row leaves Current at once; the Finished toast (`text`: L6.3's
-        own words for a finish by itself)."""
+        own words for a finish by itself, a template with `{title}`)."""
         if self.refused() is not None:
             return
         base = self.base()
         if base is not None and any(r.key == row.key for r in base.rows):
             self._ahead(without(base, row.key, FINISHED), gone=(row.key, FINISHED))
-        self._finish(row.title, ids_of(row), (row.key,), text=text)
+        self._finish(row.title, ids_of(row), (row.key,), text=text,
+                     why=done_why("finish") if text == strings.DONE_FINISHED else None)
 
     def _by_itself(self, row, verdict):
         """L6.3: what Surasura does by itself once every file of `row` is watched (`when_done`'s "finish" or "join"),
         through the paths a hand would take — the Finish path (D14's *Keep* / *Leave out*, its Anki half after its
         Generate) or the store's join (one command). Its toast's Undo takes back that move; the ✓ stays."""
         if verdict[0] == "finish":
-            self.to_finished(row, text=strings.DONE_FINISHED.format(title=row.title))
+            self.to_finished(row, text=strings.DONE_FINISHED)        # (a template: `_finish` formats it)
             return
         _kind, pieces, ahead, ids, line = verdict
         text = (strings.DONE_JOINED if ahead else strings.DONE_CAME_UP).format(line=line)   # ahead: a Current part
-        self._give(Ticket(text, (row.key,), ids), lambda t: self.writer.join(pieces, label=t, ahead=ahead))
+        ticket = Ticket(text, (row.key,), ids)
+        ticket.why = done_why("joined" if ahead else "came_up")
+        self._give(ticket, lambda t: self.writer.join(pieces, label=t, ahead=ahead))
+
+    def _ask_again(self, view, row, verdict):
+        """Alpha 9 (M1): an offer made only because AniList hasn't answered yet (`airing.PENDING`, *Still asking*) is
+        asked again when the answer comes (`_answered`) — the show was handed to the asker by the mark itself (all
+        watched is near its end, `airing.near_end`)."""
+        entry = (getattr(view, "airing", None) or {}).get(row.work_id)
+        if len(verdict) > 1 and isinstance(entry, dict) and entry.get("status") == airing.PENDING:
+            self._airing_asking[row.work_id] = row.key
+
+    def _answered(self, view):
+        """Alpha 9 (M1; the window's thread, each view of the reader's): when a show offered *Still asking AniList* has
+        an answer in `view` — or none any more — L6.3's one rule is asked again just after it shows (`_again`)."""
+        answers = getattr(view, "airing", None) or {}
+        if not self._airing_again and any(not (isinstance(answers.get(w), dict) and
+                                               answers[w].get("status") == airing.PENDING) for w in self._airing_asking):
+            self._airing_again = True
+            QTimer.singleShot(0, self._again)
+
+    def _again(self):
+        """Alpha 9 (M1): each show offered *Still asking AniList*, read on the view shown — still asking: kept; its
+        answer come: `when_done` again, so it finishes by itself when nothing holds it now (an ended show marked all at
+        once, as before AniList), else its offer stands; no answer any more (the switch turned off) or the show gone
+        from Current, or a file of it unwatched again (an Undo of the mark): let go (AniList never finishes a show, only
+        its answer does, and only one still all watched). Kept for a later view, silently, while a drag runs, the store
+        can't take a move or a write is still on its way; nothing once the controller is let go (a close)."""
+        self._airing_again = False
+        if self._closed or sip.isdeleted(self):
+            return
+        view = self.page.view_model
+        if view is None or getattr(view, "cached", False):
+            return
+        answers = getattr(view, "airing", None) or {}
+        busy = self.running is not None or bool(self.blocked) or bool(self.tickets) or not self.writer.can_write()
+        for work_id, key in list(self._airing_asking.items()):
+            entry = answers.get(work_id)
+            if isinstance(entry, dict) and (entry.get("status") == airing.PENDING or busy):
+                continue                             # still asking, or asked at a later view
+            del self._airing_asking[work_id]
+            row = next((r for r in view.rows if r.key == key), None)
+            if row is None or not isinstance(entry, dict) or \
+                    any(not e.watched for e in view_rows.to_finish(row.episodes)):
+                continue
+            verdict = when_done(view, row)           # L6.3: the one rule
+            if verdict is not None and verdict[0] != "offer":
+                self._by_itself(row, verdict)
 
     def finish_show(self, row, show, ids):
         """LM11b G5: *Move {show} to Finished* (the Done's toast) — the finish of that show's episodes in the group alone
@@ -2504,6 +3095,7 @@ class DragController(QObject):
                 title=row.title, n=place + 1)
         ids = ids_of(row)
         ticket = Ticket(text, (row.key,), ids)
+        ticket.why = mines_why(new.lines, place)
         self._ahead(new)
         if land == row.tier and getattr(row, "soon_from", None) is None:
             self._give(ticket, lambda t: self.writer.nudge(ids, "up" if step < 0 else "down", label=t))
@@ -2538,10 +3130,9 @@ class DragController(QObject):
         """⋯: a plain menu in the theme's style (Esc closes it), its entries' tips shown."""
         m = list_menu(self.lst, row.title)
         for name, label, tip, ok in self.menu_entries(row):
-            act = QAction(label, m)
+            act = menu_action(m, label, lambda n=name: self.menu_pick(row, n))
             act.setToolTip(tip)
             act.setEnabled(ok)
-            act.triggered.connect(lambda _c=False, n=name: self.menu_pick(row, n))
             m.addAction(act)
         self.last_menu = m
         m.popup(at)
@@ -2660,6 +3251,9 @@ class DragController(QObject):
             self.cancel()
         self._closed = True
         self._settle.stop()
+        self._unanswered.stop()
+        self._airing_asking.clear()                  # (alpha 9 M1: nothing asked again past it)
+        self.expect_marks, self._mark_undos = {}, []
         self._anki_let_go()
         self._filter(False)
         for t in self.tickets:                       # round 8 row 45: nothing of this controller's left turning

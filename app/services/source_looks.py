@@ -33,9 +33,13 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
 - **+ Add → A folder…** (`add`): `Store.add_source` then its first look — a later look's landing (D6: a show never
   shown waits in New arrivals; `first=True` is setup's own first scan only). A refused folder answers its reason
   (`NotASource.reason`). **Stop reading** (`stop`): `Store.stop_source` (its items stay), its watch closed.
-- **Start a fresh library** (`fresh`, K7): `library_store.start_fresh` on the worker (the store's own write lock and
-  backup), then a first look of every folder being read (`first=True`, in full: setup's first scan, so they land in
-  Current), the window told twice — once the library is fresh (`then`), and the looks' summary after.
+- **Sort my library again** (`fresh`, K7; Fresh library 3.0.1, the spec §6.1): the watches let go (a folder inside the
+  data folder then moves by rename, never by a copy: R4), `library_store.start_fresh` on the worker (the store's own
+  locks and backup; known words always kept, Q3), *Change folders…*'s changes applied after its commit (P11), then
+  every folder read again for sorting (`first=library_store.SORT`: New arrivals, quiet, for the sort screen), the
+  window told three times — once the library is fresh (`then`), once the folders are read (`scanned`: the items taken
+  in, the load screen's next step) and the looks' summary after. **Put back** (`put_back`): a Sorted-again backup
+  through `library_store.put_back_library` (the watches let go first), then a full look of every folder.
 - **Arrival rows name their folder** (`folders(item_ids)`): each item's origin record (`connect.library.pairing_of`)
   read back to its source folder's path.
 - **What a look found to say** (alpha 4, Mattias's reports): each summary's source row carries `not_read`
@@ -45,6 +49,11 @@ on which thread, and what the window is told. Qt-free; the shell (`app/qt/shell.
   another folder) and `kept_out_ids` (those Removes' trash ids: *Bring back* is `Writer.restore(kept_out_ids)`) —
   from the look cache (`sources.notes`), so a quick look that lists nothing again keeps saying them.
   `look_at(root_id)`: one full look of that folder now (after a *Bring back*).
+- **A video's own subtitle track** (Michi-ST, `app/tracks.py`): after every look, the videos waiting for a subtitle
+  (K5) are asked of Anki Miner on a worker of their own (`_ask_tracks`): one fill at a time, an ask meanwhile folded
+  into one more after it; never on the looks' worker, so a long copy never holds a look or Refresh. The window closing
+  cancels the copy under way. Michi-NS: then, on the same worker, the ones still waiting are handed to hato
+  (`no_subs.find`, once it takes them and you said yes), and the folders it wrote into are looked at again.
 - **Skipped folders** (K6): every summary carries `skipped` (`Store.skipped_folders`: Settings' list);
   `skippable(item_ids)` answers ⋯'s *Never read this folder* submenu (`Store.skip_choices`), `skip_refused(path)`
   Settings' *Skip a folder…* (`Store.skip_refused`, Q7); *Read again* (`read_again`) drops the skip
@@ -54,7 +63,7 @@ import os
 import threading
 import time
 
-from app import settings_manager, sources
+from app import no_subs, settings_manager, sources, tracks
 from app.services.automation import Worker
 
 
@@ -155,6 +164,9 @@ class SourceLooks:
         self._kind = kind
         self._quiet = sources.SETTLE_S + AGAIN_S if quiet is None else quiet   # a watch's look, after its last report
         self._worker = Worker(f"window-sources-{language}")
+        self._tracks = Worker(f"window-tracks-{language}")   # Michi-ST: the waiting videos' tracks (`_ask_tracks`)
+        self._tracking = False                        # a fill queued or running
+        self._tracks_again = False                    # asked meanwhile: one more after it
         self._lock = threading.Lock()
         self._closing = threading.Event()             # the window closes: a look under way stops between files
         self._last = None                             # when the cadence's last look began (`sources.due`'s `last`)
@@ -257,12 +269,27 @@ class SourceLooks:
                 self._stopping.discard(root_id)
         return True
 
-    def fresh(self, forget_known=False, then=None):
-        """*Start a fresh library* (K7): `then({"done", "refused", "failed", "backup", "known", "language"})` on the
-        worker once the reset answered; every folder's first look follows, then the summary. -> False once closed."""
+    def fresh(self, then=None, folders=None, progress=None, stop=None, scanned=None):
+        """*Sort my library again* (K7; Fresh library 3.0.1): `then({"done", "refused", "failed", "backup", "known",
+        "language", "folders"})` on the worker once the reset answered; `folders` ({"add": [path], "stop": [root id],
+        "skip": [path]}, *Change folders…*'s) applied after its commit and before the re-read (P11: the backup's copy
+        holds the folder list as it was; the answer's `folders`: what each change did). Then every folder being read
+        is read again for sorting (`first=library_store.SORT`): `progress(found, shows)` all folders' so far, `stop()`
+        asked between files (what came in is kept), and — the reset done — `scanned({"ids", "found", "shows",
+        "stopped", "language"})` after it; then the summary. -> False once closed."""
         if self._closing.is_set():
             return False
-        return self._worker.put(self._fresh, bool(forget_known), then or _nothing)
+        return self._worker.put(self._fresh, then or _nothing, folders, progress, stop, scanned)
+
+    def put_back(self, folder, then=None):
+        """*Put back…* a Sorted-again backup (`folder`; *Put it back* for one a kill stopped part way too):
+        `then({"done", "refused", "failed", "backup", "put_back", "language"})` on the worker once
+        `library_store.put_back_library` answered (`backup`: the library it replaced, set aside in a backup of its
+        own); then a full look of every folder (never `first`: what is new since lands as any look's), then the
+        summary. -> False once closed."""
+        if self._closing.is_set():
+            return False
+        return self._worker.put(self._put_back, folder, then or _nothing)
 
     def fresh_counts(self, then):
         """What the fresh library's sheet names (`library_store.fresh_counts`), read on the worker: `then(counts)`, or
@@ -304,11 +331,12 @@ class SourceLooks:
             return False
         return self._worker.put(self._removed, root_id, then)
 
-    def skippable(self, item_ids, then):
+    def skippable(self, item_ids, then, own=False):
         """`then([folder path])` on the worker: ⋯'s *Never read this folder* choices for these items, deepest first (K6;
-        [] for items that came from no folder being read)."""
+        [] for items that came from no folder being read). `own`: only folders holding no other item's original (the
+        sort screen's *Ignore*, `Store.skip_choices`)."""
         ids = list(item_ids)
-        return self._worker.put(self._skippable, ids, then) if ids and not self._closing.is_set() else False
+        return self._worker.put(self._skippable, ids, then, own) if ids and not self._closing.is_set() else False
 
     def skip_refused(self, path, then, language=None):
         """Settings' *Skip a folder…* (Q7): `then(why or None)` on the worker — the store's own rule
@@ -336,10 +364,12 @@ class SourceLooks:
         self._wake.set()
         self._worker.put(self._let_go, watches)
         self._worker.close()
+        self._tracks.put(self._let_go)
+        self._tracks.close()
 
     def idle(self, timeout=None):
-        """(Tests.) Everything queued has run."""
-        return self._worker.idle(timeout)
+        """(Tests.) Everything queued has run (a look's track fill too: queued by the look, so waited for after it)."""
+        return self._worker.idle(timeout) and self._tracks.idle(timeout)
 
     # --- the worker -------------------------------------------------------------------------------------------- #
     def _queue(self, full, roots):
@@ -419,6 +449,7 @@ class SourceLooks:
                 from app import library_store as ls
                 totals["unfinished_reset"] = ls.unfinished_reset(store.user_files_dir, told=True)
             told = self._publish(store, totals)
+            self._ask_tracks()
         except Exception as e:                        # a look that failed waits for the next: never the window's fault
             print(f"Sources: the look stopped: {e!r}")
             why = str(e) or type(e).__name__
@@ -434,11 +465,54 @@ class SourceLooks:
                 if again is not None and not self._closing.is_set():
                     self._queue(*again)
 
-    def _scan(self, store, row, full=False, first=False, progress=None):
+    def _ask_tracks(self):
+        """Michi-ST: the waiting videos' subtitle tracks filled (`tracks.fill`) on their own worker, one fill at a time."""
+        with self._lock:
+            if self._closing.is_set():
+                return
+            if self._tracking:
+                self._tracks_again = True
+                return
+            self._tracking = True
+        if not self._tracks.put(self._fill_tracks):
+            with self._lock:
+                self._tracking = False
+
+    def _fill_tracks(self):
+        """(The tracks' worker.) One fill with this thread's own store handle; whatever happens, the next look asks
+        again."""
+        try:
+            store = self._store()
+            if store is not None and not self._closing.is_set():
+                away = {root for root, reached in dict(self._reachable).items() if reached is False}
+                settings = settings_manager.load_settings()
+                got = tracks.fill(store, self.language, settings, stop=self._closing.is_set, away=away)
+                if got.get("filled") or got.get("failed"):
+                    print(f"Sources: subtitle tracks inside videos: {got}")
+                # Michi-NS: the rows' subtitle notes kept true (a row that waits no more, a video changed since);
+                # then hato, for those still waiting — only once it takes a list and you said yes; what it wrote
+                # beside their videos is taken in by those folders' next look (K5)
+                no_subs.tidy(store, self.language, away=away)
+                found = no_subs.find(store, self.language, settings, stop=self._closing.is_set, away=away)
+                if found.get("asked") or found.get("failed"):
+                    print(f"Sources: hato looked for subtitles: { {k: v for k, v in found.items() if k != 'roots'} }")
+                for root in (found.get("roots") or {}) if not self._closing.is_set() else ():
+                    self.look_at(root)
+        except Exception as e:                        # never the window's fault: the next look asks again
+            print(f"Sources: the videos' subtitle tracks wait for the next look: {e!r}")
+        finally:
+            with self._lock:
+                self._tracking = False
+                again, self._tracks_again = self._tracks_again, False
+            if again:
+                self._ask_tracks()
+
+    def _scan(self, store, row, full=False, first=False, progress=None, stop=None):
         path = row["path"]
         try:
             result = sources.scan(store, self.language, row["id"], first=first, full=full, rules=self._rules_now(),
-                                  progress=progress, stop=lambda: self._closing.is_set() or row["id"] in self._stopping)
+                                  progress=progress, stop=lambda: self._closing.is_set() or row["id"] in self._stopping
+                                  or (stop is not None and bool(stop())))
         except Exception as e:                        # one folder's fault never stops the others
             print(f"Sources: {path} wasn't looked at: {e!r}")
             return None
@@ -570,9 +644,9 @@ class SourceLooks:
         if store is not None:
             self._publish(store, {})
 
-    def _fresh(self, forget_known, then):
+    def _fresh(self, then, folders, progress, stop, scanned):
         answer = {"done": False, "refused": None, "failed": None, "backup": None, "known": None,
-                  "language": self.language}
+                  "language": self.language, "folders": None}
         store = None
         try:
             store = self._store()
@@ -580,12 +654,15 @@ class SourceLooks:
                 answer["refused"] = self._why_closed()   # P-1: "no-library" (copied in) only with no 3.0 store
             else:
                 from app import library_store as ls
+                self._drop_watches()                  # R4: no watch of the looks holds a folder the reset moves
                 try:
-                    out = ls.start_fresh(store, forget_known=forget_known)
+                    out = ls.start_fresh(store)       # known words always kept (Q3)
                 except ls.ResetRefused as e:
                     answer["refused"] = e.reason
                 else:
                     answer.update(done=True, backup=out["backup"], known=out["known"])
+                    if folders:                       # P11: after the commit, before the re-read
+                        answer["folders"] = self._change_folders(store, folders)
         except Exception as e:                        # put back by the store itself (its status "undone")
             answer["failed"] = str(e) or repr(e)
             answer["aside"] = getattr(e, "folder", None)    # part of it left in the backup (`ResetNotAllBack`)
@@ -596,23 +673,120 @@ class SourceLooks:
         if store is None:
             return
         totals = {"added": 0, "waiting": 0, "full": True}
+        found = {"ids": [], "found": 0, "shows": 0, "stopped": False, "language": self.language}
         if answer["done"]:                            # committed: the folders are read again, whatever came after
             self._reachable.clear()
             with self._lock:
                 self._again_at.clear()
             try:
-                rows = store.sources(counts=False)
-                for row in rows:                      # read again from scratch: setup's first scan (SRC-1)
+                from app import library_store as ls
+                for row in store.sources(counts=False):  # read again from scratch, for sorting (setup's first scan)
                     if self._closing.is_set():
                         break
-                    result = self._scan(store, row, full=True, first=True)
+                    if row["id"] in self._stopping:
+                        continue
+                    if stop is not None and stop():
+                        found["stopped"] = True
+                        break
+                    told = None if progress is None else (
+                        lambda f, n, before=(found["found"], found["shows"]): progress(before[0] + f, before[1] + n))
+                    result = self._scan(store, row, full=True, first=ls.SORT, progress=told, stop=stop)
+                    if result is None:
+                        continue
+                    totals["added"] += result.get("added", 0)
+                    totals["waiting"] += result.get("waiting", 0)
+                    found["ids"] += list(result.get("ids") or ())
+                    found["found"] += int(result.get("found") or 0)
+                    found["shows"] += int(result.get("shows") or 0)
+                    if result.get("stopped"):
+                        found["stopped"] = True
+                        break
+            except Exception as e:
+                print(f"Sources: the fresh library's first look stopped: {e!r}")
+            if scanned is not None:
+                try:
+                    scanned(found)
+                except Exception as e:
+                    print(f"Sources: the fresh library's read wasn't shown: {e!r}")
+        self._watch_again(store)
+        self._publish(store, totals)
+
+    def _change_folders(self, store, folders):
+        """*Change folders…*'s changes, in the store after the reset's commit: every folder added, then every skip (it
+        lies inside a folder read), then every folder stopped -> {"added": [root id], "skipped": [path], "stopped":
+        [root id], "refused": [(path or root id, why)]}. One change refused never stops the others."""
+        from app import library_store as ls
+        out = {"added": [], "skipped": [], "stopped": [], "refused": []}
+        for kind, items in (("add", folders.get("add")), ("skip", folders.get("skip")), ("stop", folders.get("stop"))):
+            for item in items or ():
+                try:
+                    if kind == "add":
+                        out["added"].append(store.add_source(item))
+                    elif kind == "skip":
+                        store.skip_folder(item)
+                        out["skipped"].append(item)
+                    elif store.stop_source(item):
+                        out["stopped"].append(item)
+                        self._reachable.pop(item, None)
+                        self._gone.pop(item, None)
+                except ls.NotASource as e:
+                    out["refused"].append((item, e.reason))
+                except Exception as e:                # (a damaged store: said, the others still tried)
+                    out["refused"].append((item, str(e) or repr(e)))
+        return out
+
+    def _put_back(self, folder, then):
+        answer = {"done": False, "refused": None, "failed": None, "backup": None, "put_back": folder,
+                  "language": self.language}
+        store = None
+        try:
+            store = self._store()
+            if store is None:
+                answer["refused"] = self._why_closed()
+            else:
+                from app import library_store as ls
+                self._drop_watches()                  # R4, as Sort again's
+                try:
+                    out = ls.put_back_library(store, folder)
+                except ls.ResetRefused as e:
+                    answer["refused"] = e.reason
+                else:
+                    answer.update(done=True, backup=out.get("backup"))
+        except Exception as e:                        # an error before its commit: put back by the store itself
+            answer["failed"] = str(e) or repr(e)
+            answer["aside"] = getattr(e, "folder", None)
+        try:
+            then(answer)
+        except Exception as e:
+            print(f"Sources: the Put back's answer wasn't shown: {e!r}")
+        if store is None:
+            return
+        totals = {"added": 0, "waiting": 0, "full": True}
+        if answer["done"]:                            # the library from then: every folder looked at in full
+            self._reachable.clear()
+            with self._lock:
+                self._again_at.clear()
+            try:
+                for row in store.sources(counts=False):
+                    if self._closing.is_set():
+                        break
+                    if row["id"] in self._stopping:
+                        continue
+                    result = self._scan(store, row, full=True)
                     if result is not None:
                         totals["added"] += result.get("added", 0)
                         totals["waiting"] += result.get("waiting", 0)
-                self._follow_watches(rows)
             except Exception as e:
-                print(f"Sources: the fresh library's first look stopped: {e!r}")
+                print(f"Sources: the look after a Put back stopped: {e!r}")
+        self._watch_again(store)
         self._publish(store, totals)
+
+    def _watch_again(self, store):
+        """After Sort again or Put back (done or not): the watches followed again (`_drop_watches` closed them)."""
+        try:
+            self._follow_watches(store.sources(counts=False))
+        except Exception as e:
+            print(f"Sources: the folders' watches didn't start again: {e!r}")
 
     def _fresh_counts(self, then):
         counts = None
@@ -625,12 +799,12 @@ class SourceLooks:
             print(f"Sources: the fresh library's counts couldn't be read: {e!r}")
         then(counts)
 
-    def _skippable(self, ids, then):
+    def _skippable(self, ids, then, own=False):
         out = []
         try:
             store = self._store()
             if store is not None:
-                out = store.skip_choices(ids)
+                out = store.skip_choices(ids, own=True) if own else store.skip_choices(ids)
         except Exception as e:
             print(f"Sources: the folders to skip couldn't be read: {e!r}")
         then(out)
@@ -750,6 +924,15 @@ class SourceLooks:
         except Exception as e:
             print(f"Sources: the Removed list couldn't be read: {e!r}")
         then(out)
+
+    def _drop_watches(self):
+        """(The worker.) Every watch on the folders closed before Sort again or Put back moves the library's files: a
+        folder being read that lies inside the data folder then moves by rename, never by a copy (R4). The next
+        `_follow_watches` starts them again."""
+        with self._lock:
+            held, self._watches = dict(self._watches), {}
+        for w in held.values():
+            _close(w)
 
     def _let_go(self, watches=()):
         for w in watches:

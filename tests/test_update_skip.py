@@ -139,6 +139,17 @@ def test_offer_again_brings_the_skipped_version_back_in_one_click(dashboard, mon
     assert _offered(dashboard) == "APP"
 
 
+def test_offer_again_asks_github_nothing_with_check_for_updates_off(dashboard, monkeypatch):
+    # *Check for updates* off (the 3.0 window's Settings > App): the skip is forgotten, but nothing is asked.
+    monkeypatch.delenv("SURASURA_NO_UPDATE_CHECK", raising=False)
+    monkeypatch.setattr(main, "threading", types.SimpleNamespace(Thread=_NowThread))
+    dashboard._current_settings["update_check_enabled"] = False
+    dashboard.skipped_version = NEWER
+    dashboard.save_settings()
+    dashboard._offer_skipped_again()
+    assert dashboard.skipped_version == "" and _offered(dashboard) == "NONE"
+
+
 def test_a_failed_update_is_still_offered_as_a_download_that_says_why(dashboard):
     # The loop-breaker holds (never retried in place) — and the dialog no longer calls it "a larger update".
     dashboard.failed_update_version = NEWER

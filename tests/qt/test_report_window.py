@@ -11,9 +11,9 @@ import zipfile
 import pytest
 
 pytest.importorskip("PyQt6")
-from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtCore import QEvent, QPoint, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QFileDialog, QWidget
+from PyQt6.QtWidgets import QApplication, QFileDialog, QLabel, QPushButton, QWidget
 
 from app import report as core
 from app.qt import report as report_ui
@@ -40,6 +40,15 @@ def opened(monkeypatch):
     """The system's own opener stood in for (no Explorer window in a test): what it was asked to open."""
     asked = []
     monkeypatch.setattr(screens, "open_with_system", lambda path: asked.append(path))
+    return asked
+
+
+@pytest.fixture
+def sent(monkeypatch):
+    """Explorer's `/select,` and the browser stood in for: [("show", zip path) | ("url", link)], in the order asked."""
+    asked = []
+    monkeypatch.setattr(screens, "show_in_folder", lambda path: asked.append(("show", path)))
+    monkeypatch.setattr(windows, "open_url", lambda url: asked.append(("url", url)) or True)
     return asked
 
 
@@ -199,17 +208,21 @@ def test_show_me_lists_every_file_before_the_zip(main):
     assert f"reports/{w.reports[0].id}/report.txt" in text and "library/summary.json" in text and "Left out:" in text
 
 
-def test_make_the_zip_writes_it_where_asked_opens_that_folder_and_empties_the_list(main, opened, tmp_path):
+def test_make_a_zip_instead_writes_it_where_asked_shows_it_selected_offers_the_invite_and_empties_the_list(
+        main, sent, tmp_path):
     w = _press(main)
     _save(w, JA_WHAT)
     _save(w, ZH_WHAT)
+    assert w.dest_line.isHidden()                                      # the zip's folder: shown once one is made
     w.dest = str(tmp_path / "picked")
     w.include_results.setChecked(False)
     w.zip_button.click()
     assert wait_until(lambda: w.reports == [])
     made = [n for n in os.listdir(tmp_path / "picked") if n.endswith(".zip")]
     assert len(made) == 1
-    assert wait_until(lambda: opened == [str(tmp_path / "picked")])    # the folder opened (on a worker)
+    assert wait_until(lambda: sent == [("show", str(tmp_path / "picked" / made[0]))])   # selected (on a worker)
+    assert not w.dest_line.isHidden() and not w.invite_button.isHidden() and w.copy_button.isHidden()
+    assert w.invite_button.text() == strings.REPORT_INVITE_ZIP          # offered, never opened by itself
     with zipfile.ZipFile(tmp_path / "picked" / made[0]) as z:
         names = z.namelist()
     assert sum(n.endswith("/report.txt") for n in names) == 2 and not any(n.startswith("results/") for n in names)
@@ -321,7 +334,7 @@ def test_undo_says_so_when_the_report_couldnt_come_back(main, monkeypatch):
     assert wait_until(lambda: w.status.text() == strings.REPORT_NOT_RESTORED)
 
 
-def test_a_zip_finished_after_the_window_closed_is_said_in_the_main_bar(main, opened, tmp_path, monkeypatch):
+def test_a_zip_finished_after_the_window_closed_is_said_in_the_main_bar(main, sent, tmp_path, monkeypatch):
     import threading
     w = _press(main)
     _save(w, JA_WHAT)
@@ -338,5 +351,1093 @@ def test_a_zip_finished_after_the_window_closed_is_said_in_the_main_bar(main, op
     w.close()
     gate.set()
     assert wait_until(lambda: main.bar_line.full().startswith("Made Surasura-problems-"))
-    assert wait_until(lambda: opened == [str(tmp_path)]) and core.listed() == []
+    assert wait_until(lambda: [k for k, _v in sent] == ["show"]) and core.listed() == []
     assert wait_until(lambda: main.report_button.count == 0)
+
+
+# --- 3.0: Send report (alpha 10; SPEC §3: press → look → Send), against a fake receiver on loopback ---------------- #
+@pytest.fixture
+def receiver(monkeypatch):
+    """The fake receiver of `tests/test_send_report.py` (127.0.0.1, records each request); Send report pointed at it."""
+    from app import telemetry
+    from tests.test_send_report import Receiver
+    r = Receiver()
+    monkeypatch.setattr(telemetry, "report_receiver", lambda env="production": r.url)
+    yield r
+    r.close()
+
+
+def _send_state():
+    from app import send_report
+    return send_report.waiting(), send_report.sent_reports()
+
+
+def _outbox_empty():
+    """Nothing waiting, looked at without opening a file (a read racing a delete is refused on Windows)."""
+    from app import path_utils, send_report
+    folder = os.path.join(path_utils.persistent_root(), send_report.OUTBOX_DIR)
+    return not os.path.exists(os.path.join(folder, send_report.OUTBOX_META))
+
+
+def _look(w):
+    """Send report pressed: wait for What goes filled in (it opens at the press, gathering: try a9.1), and for the send
+    state read after it."""
+    w.send_button.click()
+    assert wait_until(lambda: w.pages.currentIndex() == w.GOES and w.outbox is not None, 15)
+    _read(w)
+
+
+def _read(w):
+    """Wait until the window has shown its newest read of the send state (waiting zip, code, name)."""
+    assert wait_until(lambda: getattr(w, "send_read", None) == w._reads, 15)
+
+
+def test_send_report_is_the_main_button_and_says_the_promise_always(main):
+    w = _press(main)
+    assert w.send_button.property("kind") == "primary" and w.zip_button.property("kind") != "primary"
+    assert w.send_button.text() == "Send report" and w.zip_button.text() == "Make a zip instead"
+    assert not w.send_button.isEnabled() and w.send_button.toolTip() == strings.REPORT_SEND_NONE_TIP
+    assert w.promise.text() == "No personal data or identification is included" and not w.promise.isHidden()
+    w.what.setPlainText(JA_WHAT)                                       # words typed: ready (they're saved first)
+    assert w.send_button.isEnabled() and w.send_button.toolTip() == strings.REPORT_SEND_TIP
+    w.what.setPlainText("")
+    assert not w.send_button.isEnabled()
+    _save(w, ZH_WHAT)                                                  # a saved report: ready with the form empty
+    assert w.send_button.isEnabled() and not w.promise.isHidden()
+    assert not hasattr(w, "discord_button")                            # SR-Q1: Send report takes its place
+
+
+def test_a_typed_discord_name_is_said_to_go_and_is_at_most_32_characters(main):
+    w = _press(main)
+    assert w.name_goes.isHidden()
+    w.name_field.setText("風景_0429")
+    assert not w.name_goes.isHidden() and w.name_goes.text() == strings.REPORT_NAME_GOES
+    w.name_field.setText("   ")
+    assert w.name_goes.isHidden()                                      # spaces only: nothing goes
+    w.name_field.setText("x" * 40)
+    assert len(w.name_field.text()) == 32
+
+
+def test_press_look_then_send_saves_whats_typed_shows_what_goes_and_sends_only_on_send(main, receiver):
+    w = _press(main)
+    w.include_results.setChecked(False)
+    w.what.setPlainText(JA_WHAT)                                       # typed, not saved: saved first
+    _look(w)
+    assert receiver.got == []                                          # nothing has left the PC
+    rid = core.listed()[0].id
+    assert f"reports/{rid}/report.txt" in w.goes_files.text() and "MANIFEST.txt" in w.goes_files.text()
+    assert "<you>" in w.goes_placeholders.text() and w.goes_name.text() == strings.REPORT_GOES_NO_NAME
+    assert w.goes_kept.text() == "Kept privately for 90 days, seen only by Surasura's developer, then deleted."
+    assert wait_until(lambda: w.goes_sender.text().startswith("Your reports are grouped as "))
+    assert w.waiting_line.isHidden()                                   # (that zip is the page's, not "waiting")
+    nonce = w.outbox.nonce
+    w.goes_send.click()
+    assert wait_until(lambda: w.status.text() == "Sent. Your report is #K3Q7PM", 15)
+    assert len(receiver.got) == 1 and receiver.got[0]["path"] == "/report"
+    headers = {k.lower(): v for k, v in receiver.got[0]["headers"].items()}
+    assert headers["x-report-nonce"] == nonce and "x-discord-name" not in headers
+    assert wait_until(lambda: w.reports == [] and main.report_button.count == 0)
+    assert w.pages.currentIndex() == w.FORM and w.what.toPlainText() == ""
+    assert not w.copy_button.isHidden() and not w.invite_button.isHidden()
+    assert w.invite_button.text() == strings.REPORT_INVITE
+    waiting, sent = _send_state()
+    assert waiting is None and [s[0] for s in sent] == ["K3Q7PM"]
+    assert wait_until(lambda: not w.sent_heading.isHidden() and w.sent_rows.count() == 1)
+    assert w.done_line.text() == strings.REPORT_SENT_WHERE_ONE.format(id="K3Q7PM")   # try a9 #6: where it went
+
+
+def _sent_open(w, rid):
+    """The *Open* of `rid`'s row under Sent reports."""
+    for i in range(w.sent_rows.count()):
+        row = w.sent_rows.itemAt(i).widget()
+        if row is not None and any(f"#{rid}" in x.text() for x in row.findChildren(QLabel)):
+            return [b for b in row.findChildren(QPushButton) if b.text() == strings.REPORT_SENT_OPEN][0]
+    raise AssertionError(f"no row for #{rid}")
+
+
+def test_after_send_the_done_line_says_where_the_reports_went_and_sent_reports_sits_right_under_it(main, receiver):
+    """try a9 #6 (Sonic: "I don't see anything and now I can't see the 5 nor the zip"): the done line counts the reports
+    the send took off the list and names Sent reports, which follows it at once (no other row between)."""
+    w = _press(main)
+    w.include_results.setChecked(False)
+    _save(w, JA_WHAT)
+    _save(w, ZH_WHAT, "风景 shows once")
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.sent_id == "K3Q7PM" and w.sent_rows.count() == 1, 15)
+    assert w.done_line.text() == strings.REPORT_SENT_WHERE_MANY.format(id="K3Q7PM", n=2)
+    assert "Sent reports" in w.done_line.text() and not w.done_line.isHidden()
+    box = w.done_line.parentWidget().layout()
+    order = []
+
+    def walk(layout):
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item.widget() is not None:
+                order.append(item.widget())
+            elif item.layout() is not None:
+                walk(item.layout())
+    walk(box)
+    shown = [x for x in order if x.isVisibleTo(w)]
+    at = shown.index(w.done_line)
+    assert shown[at + 1:at + 3] == [w.copy_button, w.invite_button] and shown[at + 3] is w.sent_box
+    assert w.sent_heading.isVisibleTo(w) and w.sent_heading.y() == 0       # its heading first in it
+
+
+def test_opening_a_sent_report_shows_the_reports_it_held_words_and_pictures(main, receiver, sent):
+    """try a9 #6: a sent #ID opens the reports it held, from the zip kept on this PC — not only the zip."""
+    from app import scrub
+    scrub.identity()                                                   # (a scrubbed picture goes with it)
+    w = _press(main)
+    w.include_results.setChecked(False)
+    _save(w, JA_WHAT, "Currentに残る")
+    _save(w, ZH_WHAT)
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.sent_rows.count() == 1, 15)
+    _sent_open(w, "K3Q7PM").click()
+    assert wait_until(lambda: w.pages.currentIndex() == w.SENT, 15)
+    assert w.sent_opened_heading.text().startswith("#K3Q7PM, sent ")
+    items = [w.sent_lines.itemAt(i).widget() for i in range(w.sent_lines.count())]
+    words = [x.text() for x in items if isinstance(x, QLabel) and x.pixmap().isNull()]
+    pictures = [x for x in items if isinstance(x, QLabel) and not x.pixmap().isNull()]
+    assert len(words) == 2 and JA_WHAT in words[0] and "Currentに残る" in words[0] and ZH_WHAT in words[1]
+    assert len(pictures) >= 1                                          # the picture that went, as it went
+    w.sent_zip.click()
+    assert wait_until(lambda: [k for k, _p in sent] == ["show"])
+    assert sent[0][1].endswith("K3Q7PM.zip")
+    w.sent_back.click()
+    assert w.pages.currentIndex() == w.FORM and w.sent_opened is None
+
+
+def test_sent_contents_reads_only_the_reports_in_order_and_scales_wide_pictures(tmp_path):
+    from PyQt6.QtGui import QColor, QImage
+    from PyQt6.QtCore import QBuffer, QIODevice
+
+    def png(width):
+        img = QImage(width, 40, QImage.Format.Format_RGB32)
+        img.fill(QColor("#2d2d2d"))
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        img.save(buf, "PNG")
+        return bytes(buf.data())
+    path = tmp_path / "K3Q7PM.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("reports/20261102-100529-1/report.txt", "What happened:\n" + ZH_WHAT + "\n")
+        z.writestr("reports/20261102-093757-2/report.txt", "What happened:\n" + JA_WHAT + "\n")
+        z.writestr("reports/20261102-093757-2/picture-10.png", png(80))
+        z.writestr("reports/20261102-093757-2/picture-2.png", png(1200))
+        z.writestr("reports/20261102-093757-2/report.json", "{}")
+        z.writestr("logs/app_debug_log.txt", "not a report")
+        z.writestr("MANIFEST.txt", "")
+    got = report_ui.sent_contents(str(path), 600)
+    assert [rid for rid, _t, _p in got] == ["20261102-093757-2", "20261102-100529-1"]     # oldest first
+    assert JA_WHAT in got[0][1] and ZH_WHAT in got[1][1] and got[1][2] == []
+    assert [img.width() for img in got[0][2]] == [600, 80]             # picture-2 before picture-10; scaled to fit
+
+
+def test_a_sent_report_read_late_never_takes_the_page_back_after_back(main, monkeypatch, tmp_path):
+    """Open on a sent #ID, then Back (or another report opened) before its zip was read: the late answer shows nothing."""
+    import threading
+    gate = threading.Event()
+    real = report_ui.sent_contents
+    monkeypatch.setattr(report_ui, "sent_contents", lambda *a: (gate.wait(10), real(*a))[1])
+    path = tmp_path / "K3Q7PM.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("reports/20261102-093757-2/report.txt", "What happened:\n" + JA_WHAT + "\n")
+    w = _press(main)
+    w.open_sent("K3Q7PM", "2026-11-02 02:05", str(path))
+    w.back()
+    gate.set()
+    assert wait_until(lambda: not report_ui.qpress.live(w, "report:sent:K3Q7PM"))
+    QTest.qWait(50)
+    assert w.pages.currentIndex() == w.FORM and w.sent_lines.count() == 0
+
+
+def test_a_sent_report_read_late_never_takes_the_page_from_show_me(main, monkeypatch, tmp_path):
+    import threading
+    gate = threading.Event()
+    real = report_ui.sent_contents
+    monkeypatch.setattr(report_ui, "sent_contents", lambda *a: (gate.wait(10), real(*a))[1])
+    path = tmp_path / "K3Q7PM.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("reports/20261102-093757-2/report.txt", "What happened:\n" + JA_WHAT + "\n")
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    w.open_sent("K3Q7PM", "2026-11-02 02:05", str(path))
+    w.show_button.click()
+    assert wait_until(lambda: w.pages.currentIndex() == w.CONTENTS)
+    gate.set()
+    assert wait_until(lambda: not report_ui.qpress.live(w, "report:sent:K3Q7PM"))
+    QTest.qWait(50)
+    assert w.pages.currentIndex() == w.CONTENTS
+
+
+def test_sent_reports_wait_while_what_goes_is_up(main, receiver):
+    """The adversary's S1: a sent #ID opened from What goes would leave its zip and the held row behind."""
+    w = _press(main)
+    w.include_results.setChecked(False)
+    _save(w, JA_WHAT)
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.sent_rows.count() == 1, 15)
+    _save(w, ZH_WHAT)
+    _look(w)
+    assert not w.sent_box.isEnabled() and not _sent_open(w, "K3Q7PM").isEnabled()
+    w.goes_back.click()
+    assert w.sent_box.isEnabled() and _sent_open(w, "K3Q7PM").isEnabled()
+
+
+def test_a_sent_zip_with_no_reports_says_so_instead_of_a_blank_page(main, tmp_path):
+    path = tmp_path / "K3Q7PM.zip"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("logs/app_debug_log.txt", "a log")
+    w = _press(main)
+    w.open_sent("K3Q7PM", "2026-11-02 02:05", str(path))
+    assert wait_until(lambda: w.status.text() == strings.REPORT_SENT_EMPTY.format(id="K3Q7PM"))
+    assert w.pages.currentIndex() == w.FORM and w.sent_opened is None
+
+
+def test_a_sent_zip_that_cant_be_read_says_so_and_stays_on_the_form(main, receiver, tmp_path):
+    w = _press(main)
+    w.open_sent("K3Q7PM", "2026-11-02 02:05", str(tmp_path / "gone.zip"))
+    assert wait_until(lambda: w.status.text().startswith("#K3Q7PM couldn't be read: "))
+    assert w.pages.currentIndex() == w.FORM and w.sent_opened is None
+
+
+def test_copy_puts_the_id_on_the_clipboard_and_the_invite_opens_the_one_link(main, receiver, sent):
+    from app.qt import settings_strings
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.sent_id == "K3Q7PM", 15)
+    w.copy_button.click()
+    assert QApplication.clipboard().text() == "#K3Q7PM" and w.status.text() == "Copied #K3Q7PM"
+    w.invite_button.click()
+    assert wait_until(lambda: sent == [("url", settings_strings.DISCORD_URL)])
+
+
+def test_back_from_what_goes_sends_nothing_and_leaves_nothing_waiting(main, receiver):
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    w.goes_back.click()
+    assert w.pages.currentIndex() == w.FORM
+    assert wait_until(_outbox_empty)
+    assert receiver.got == [] and len(core.listed()) == 1 and w.waiting_line.isHidden()
+
+
+def test_the_discord_name_goes_only_when_typed_shows_on_what_goes_and_is_remembered(main, receiver):
+    import base64
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.name_field.setText("ゆき#0429")
+    _look(w)
+    assert w.goes_name.text() == "Discord name: ゆき#0429"
+    w.goes_send.click()
+    assert wait_until(lambda: len(receiver.got) == 1, 15)
+    sent_name = {k.lower(): v for k, v in receiver.got[0]["headers"].items()}["x-discord-name"]
+    assert base64.urlsafe_b64decode(sent_name + "=" * (-len(sent_name) % 4)).decode("utf-8") == "ゆき#0429"
+    assert wait_until(lambda: w.reports == [])
+    w.close()
+    w = _press(main)
+    assert wait_until(lambda: w.name_field.text() == "ゆき#0429")      # remembered on this PC
+
+
+def test_no_connection_keeps_the_report_waiting_and_send_now_sends_the_same_one(main, receiver, monkeypatch):
+    from app import telemetry
+    from tests.test_send_report import Receiver
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    nonce = w.outbox.nonce
+    dead = Receiver()
+    dead.close()                                                       # nothing listens there any more
+    monkeypatch.setattr(telemetry, "report_receiver", lambda env="production": dead.url)
+    w.goes_send.click()
+    assert wait_until(lambda: w.status.text() == strings.REPORT_SEND_OFFLINE, 20)
+    assert len(core.listed()) == 1 and w.pages.currentIndex() == w.FORM
+    assert wait_until(lambda: not w.waiting_line.isHidden() and w.waiting_line.text() == "1 report waiting to send")
+    assert receiver.got == []
+    monkeypatch.setattr(telemetry, "report_receiver", lambda env="production": receiver.url)
+    w.send_now_button.click()                                          # online again: a press, never by itself
+    assert wait_until(lambda: w.status.text() == "Sent. Your report is #K3Q7PM", 15)
+    headers = {k.lower(): v for k, v in receiver.got[0]["headers"].items()}
+    assert headers["x-report-nonce"] == nonce                          # the same report: the same #ID
+    assert wait_until(lambda: w.reports == [] and w.waiting_line.isHidden())
+
+
+def test_a_window_opened_with_a_report_waiting_sends_nothing_by_itself(main, receiver):
+    from app import send_report
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.close()
+    send_report.build(windows.language_of(main), include_results=False)
+    w = _press(main)
+    assert wait_until(lambda: not w.waiting_line.isHidden())
+    for _ in range(20):
+        QApplication.processEvents()
+    assert receiver.got == []                                          # Q4: never sent again by itself
+
+
+def test_dont_send_deletes_the_waiting_zip_and_keeps_the_list(main, receiver):
+    from app import send_report
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.close()
+    send_report.build(windows.language_of(main), include_results=False)
+    w = _press(main)
+    assert wait_until(lambda: not w.waiting_line.isHidden())
+    w.dont_send_button.click()
+    assert wait_until(lambda: w.waiting_line.isHidden() and w.status.text() == strings.REPORT_DISCARDED)
+    assert send_report.waiting() is None and len(core.listed()) == 1 and receiver.got == []
+
+
+@pytest.mark.parametrize("status, words", [
+    (429, strings.REPORT_SEND_BUSY),
+    (503, strings.REPORT_SEND_PAUSED),
+    (413, strings.REPORT_SEND_TOO_BIG),
+    (400, strings.REPORT_SEND_REFUSED.format(status=400)),
+])
+def test_each_refusal_is_said_in_plain_words_and_the_report_is_kept(main, receiver, status, words):
+    receiver.answer = (status, {"error": "x"})
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.status.text() == words, 15)
+    assert len(core.listed()) == 1 and _send_state()[0] is not None
+
+
+def test_the_sixth_send_of_a_day_is_refused_before_anything_is_made(main, receiver):
+    import datetime
+    import json
+    from app import path_utils, send_report
+    with open(os.path.join(path_utils.get_persistent_user_data_path(), send_report.STATE_FILE), "w",
+              encoding="utf-8") as f:
+        json.dump({"day": datetime.datetime.now().astimezone().date().isoformat(), "sent": 5}, f)
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.send_button.click()
+    assert wait_until(lambda: w.status.text() == "You've sent 5 today. Send it tomorrow, or make a zip instead")
+    assert w.pages.currentIndex() == w.FORM and send_report.waiting() is None and receiver.got == []
+
+
+@pytest.mark.parametrize("raised, words", [("unsafe", strings.REPORT_SEND_UNSAFE),
+                                           ("too big", strings.REPORT_SEND_TOO_BIG)])
+def test_a_report_the_check_refuses_or_too_big_is_never_offered(main, receiver, monkeypatch, raised, words):
+    from app import send_report
+
+    def refuse(*a, **k):
+        raise core.Unsafe(["logs/app_debug_log.txt"]) if raised == "unsafe" else send_report.TooBig("12 MB")
+    monkeypatch.setattr(send_report, "build", refuse)
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.send_button.click()
+    assert wait_until(lambda: w.status.text() == words)
+    assert w.pages.currentIndex() == w.FORM and receiver.got == [] and len(core.listed()) == 1
+
+
+def test_esc_while_it_sends_lets_it_finish_and_the_main_bar_says_so(main, receiver):
+    receiver.sleep = 0.6
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    w.goes_send.click()
+    QTest.keyClick(w, Qt.Key.Key_Escape)
+    assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
+    assert wait_until(lambda: main.bar_line.full() == "Sent. Your report is #K3Q7PM", 15)
+    assert core.listed() == [] and wait_until(lambda: main.report_button.count == 0)
+
+
+def test_closing_what_goes_unsent_deletes_its_zip(main, receiver):
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    w.close()
+    assert wait_until(_outbox_empty)
+    assert receiver.got == [] and len(core.listed()) == 1
+
+
+def test_the_sender_code_shows_and_new_code_makes_another(main):
+    from app import send_report
+    w = _press(main)
+    assert wait_until(lambda: w.sender_line.text().startswith("Your reports are grouped as "))
+    old = w.sender_line.text().rsplit(" ", 1)[1]
+    assert old == send_report.sender_code() and w.new_code_button.isEnabled()
+    w.new_code_button.click()
+    assert wait_until(lambda: w.sender_line.text().rsplit(" ", 1)[1] != old)
+    assert w.sender_line.text().rsplit(" ", 1)[1] == send_report.sender_code()
+
+
+def test_send_while_a_zip_is_being_made_saves_nothing_and_says_so(main, sent, tmp_path, monkeypatch):
+    import threading
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    w.dest = str(tmp_path)
+    gate = threading.Event()
+    real = core.make_zip
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return real(*a, **k)
+    monkeypatch.setattr(core, "make_zip", slow)
+    w.zip_button.click()
+    w.what.setPlainText(JA_WHAT)
+    w.send_button.click()
+    assert w.status.text() == strings.REPORT_ZIP_BUSY and w.what.toPlainText() == JA_WHAT   # kept, never saved
+    assert not w.list.isEnabled()                                      # the first zip still holds the list
+    gate.set()
+    assert wait_until(lambda: w.reports == [] and w.list.isEnabled())
+    assert len(core.listed()) == 0 and wait_until(lambda: [k for k, _v in sent] == ["show"])
+
+
+def test_the_window_says_what_a_report_holds_and_github_is_the_quieter_way(main, sent, tmp_path):
+    """try a9 #6: Sonic thought Send went to GitHub — GitHub is named only on Make a zip instead's path, once a zip is
+    made, never beside Send."""
+    from app.qt import settings_strings
+    w = _press(main)
+    for said in ("logs", "settings", "titles in your library", "Windows name"):
+        assert said in w.hint.text()
+    assert w.send_where.isHidden() and w.issues_button.isHidden()
+    shown = [x for x in w.findChildren(QWidget) if x.isVisibleTo(w) and hasattr(x, "text")]
+    assert not any("GitHub" in x.text() for x in shown)
+    assert "GitHub" not in strings.REPORT_SEND_TIP and "GitHub" not in strings.REPORT_PROMISE
+    _save(w, JA_WHAT)
+    w.dest = str(tmp_path)
+    w.include_results.setChecked(False)
+    w.zip_button.click()
+    assert wait_until(lambda: w.reports == [] and not w.issues_button.isHidden())
+    assert w.send_where.text() == strings.REPORT_SEND_WHERE and "Make a zip instead" in strings.REPORT_SEND_WHERE
+    assert w.issues_button.toolTip() == strings.REPORT_ISSUES_TIP
+    w.issues_button.click()                                            # the quieter way: GitHub Issues, in the browser
+    assert wait_until(lambda: ("url", settings_strings.ISSUES_URL) in sent)
+
+
+def test_a_picture_taken_once_the_scrub_is_ready_is_saved_marked_and_one_before_is_not(main):
+    from app import scrub
+    scrub.identity()                                                   # ready (the first frame's worker)
+    w = _press(main)
+    assert w.scrubbed
+    _save(w, JA_WHAT)
+    assert core.listed()[0].scrubbed
+    w.close()
+    import threading
+    for t in threading.enumerate():                                    # (a first frame's worker, finished first)
+        if t.name == "scrub-identity":
+            t.join(10)
+    scrub.reset()                                                      # not ready yet: the picture isn't marked
+    w = _press(main)
+    assert not w.scrubbed
+    _save(w, ZH_WHAT)
+    assert [r.scrubbed for r in core.listed()] == [True, False]
+
+
+def test_show_in_folder_asks_explorer_to_select_the_zip(monkeypatch, tmp_path):
+    """Explorer's `/select,` with the path quoted (a folder with spaces); off Windows the folder itself."""
+    import subprocess
+    import sys
+    asked = []
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, *a, **k: asked.append(cmd))
+    path = str(tmp_path / "My Downloads" / "Surasura-problems-2026-10-30-120000.zip")
+    monkeypatch.setattr(sys, "platform", "win32")
+    screens.show_in_folder(path)
+    assert asked == [f'explorer /select,"{os.path.normpath(path)}"']
+
+
+def test_the_invite_and_issues_links_are_the_ones_checked():
+    from app.qt import settings_strings
+    assert settings_strings.DISCORD_URL == "https://surasura.dev/app/discord"     # 3.0.0: redirects to the invite
+    assert settings_strings.WEBSITE_URL == "https://surasura.dev"
+    assert settings_strings.LINK_URLS["discord"] == settings_strings.DISCORD_URL
+    assert settings_strings.LINK_URLS["website"] == settings_strings.WEBSITE_URL
+    assert settings_strings.ISSUES_URL == "https://github.com/SonicSandbox/surasura/issues"
+
+
+# --- the review's round (tracks/window/reviews/send-report-adversary.md) ------------------------------------------- #
+def test_esc_while_the_report_is_made_keeps_nothing_waiting_and_sends_nothing(main, receiver, monkeypatch):
+    # The adversary's 1: closed before What goes, the zip it made is deleted — never offered as "waiting" to Send now.
+    import threading
+    from app import send_report
+    gate = threading.Event()
+    real = send_report.build
+    made = []
+
+    def slow(*a, **k):
+        gate.wait(10)
+        made.append(real(*a, **k))
+        return made[-1]
+    monkeypatch.setattr(send_report, "build", slow)
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.send_button.click()
+    QTest.keyClick(w, Qt.Key.Key_Escape)
+    assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
+    gate.set()
+    assert wait_until(lambda: made, 15)                                # the zip was made after the close
+    for _ in range(50):
+        QApplication.processEvents()
+    for t in threading.enumerate():
+        if t.name == "report-discard":
+            t.join(5)
+    assert _outbox_empty()
+    w = _press(main)
+    assert wait_until(lambda: w.sender_line.text() != "")
+    assert w.waiting_line.isHidden() and receiver.got == [] and len(core.listed()) == 1
+
+
+def test_a_refused_press_never_deletes_a_report_already_waiting(main, receiver, monkeypatch):
+    # The adversary's 6a: the 6th send of a day makes nothing; a zip already waiting from a failed send stays.
+    import datetime
+    import json
+    from app import path_utils, send_report
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.close()
+    ob = send_report.build(windows.language_of(main), include_results=False)
+    with open(os.path.join(path_utils.get_persistent_user_data_path(), send_report.STATE_FILE), "w",
+              encoding="utf-8") as f:
+        json.dump({"day": datetime.datetime.now().astimezone().date().isoformat(), "sent": 5}, f)
+    w = _press(main)
+    w.send_button.click()
+    QTest.keyClick(w, Qt.Key.Key_Escape)                               # closed before the answer, too
+    assert wait_until(lambda: windows.opened(main, report_ui.NAME) is None)
+    for _ in range(30):
+        QApplication.processEvents()
+    assert send_report.waiting() is not None and send_report.waiting().sha256 == ob.sha256
+
+
+def test_a_cleared_discord_name_stays_cleared_and_what_goes_says_what_goes(main, receiver):
+    # The adversary's 2: the remembered name filled once, never again over the tester's edit; while What goes is up
+    # the name can't change, so the page's "No Discord name" is what is sent.
+    from app import send_report
+    send_report.remember_name("yuki0429")
+    w = _press(main)
+    assert wait_until(lambda: w.name_field.text() == "yuki0429")
+    w.name_field.setFocus()
+    w.name_field.selectAll()
+    QTest.keyClick(w.name_field, Qt.Key.Key_Backspace)                 # the tester clears it
+    _save(w, ZH_WHAT)
+    _look(w)
+    assert w.goes_name.text() == strings.REPORT_GOES_NO_NAME
+    assert not w.name_field.isEnabled() and not w.send_button.isEnabled() and not w.zip_button.isEnabled()
+    for _ in range(30):
+        QApplication.processEvents()
+    assert w.name_field.text() == ""                                   # no read filled it back
+    w.goes_send.click()
+    assert wait_until(lambda: len(receiver.got) == 1, 15)
+    assert "x-discord-name" not in {k.lower() for k in receiver.got[0]["headers"]}
+    assert wait_until(lambda: w.pages.currentIndex() == w.FORM and w.name_field.isEnabled())
+
+
+def test_back_puts_the_row_back_and_the_code_on_the_page_is_the_one_sent(main, receiver):
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    shown = w.goes_sender.text().rsplit(" ", 1)[1]
+    assert not w.new_code_button.isEnabled()                           # the code that goes can't change under it
+    w.goes_send.click()
+    assert wait_until(lambda: len(receiver.got) == 1, 15)
+    assert {k.lower(): v for k, v in receiver.got[0]["headers"].items()}["x-report-sender"] == shown
+    assert wait_until(lambda: w.new_code_button.isEnabled() and w.send_button.isEnabled() is False)   # (list empty)
+
+
+def test_what_goes_shows_the_pictures_at_the_pages_width(main, receiver):
+    # The adversary's 4: at full width, the tester's eyes being the only check on a picture.
+    from app import scrub
+    scrub.identity()
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.resize(760, 900)
+    _look(w)
+    shown = [w.goes_pictures.itemAt(i).widget() for i in range(w.goes_pictures.count())]
+    assert shown, "a scrubbed picture goes and is shown"
+    room = w.goes_scroll.viewport().width()
+    for label in shown:
+        pm = label.pixmap()
+        assert pm.width() / pm.devicePixelRatio() >= min(room - 30, main.width() - 2), (pm.width(), room)
+
+
+def test_another_windows_newer_report_is_never_deleted_by_a_late_close(main, receiver):
+    # The adversary's 6b: a delete only of the zip this window showed.
+    from app import send_report
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    shown = w.outbox.sha256
+    _save(w, ZH_WHAT)                                                  # (another report: the next build differs)
+    newer = send_report.build(windows.language_of(main), include_results=False)
+    assert newer.sha256 != shown
+    w.close()
+    for _ in range(30):
+        QApplication.processEvents()
+    import threading
+    for t in threading.enumerate():
+        if t.name == "report-discard":
+            t.join(5)
+    assert send_report.waiting() is not None and send_report.waiting().sha256 == newer.sha256
+
+
+def test_who_you_are_is_worked_out_after_the_start_or_as_the_hand_reaches_the_bug(main):
+    # GitHub's shard 3 (2026-11-01): worked out at every first frame, the read ran beside the start's own work and the
+    # drag suite's timed checks. Now: a moment after the first frame, or at once when the hand reaches the bug.
+    import threading
+    from PyQt6.QtCore import QPointF
+    from PyQt6.QtGui import QEnterEvent
+    from app import scrub
+    timer = main.report_button.prepare_timer
+    assert timer.isSingleShot() and timer.interval() == report_ui.PREPARE_AFTER_MS == 3000
+    for t in threading.enumerate():
+        if t.name == "scrub-identity":
+            t.join(10)
+    scrub.reset()
+    p = QPointF(4, 4)
+    QApplication.sendEvent(main.report_button, QEnterEvent(p, p, p))
+    QApplication.sendEvent(main.report_button, QEnterEvent(p, p, p))          # (a second pass: one worker only)
+    assert sum(t.name == "scrub-identity" for t in threading.enumerate()) <= 1
+    assert wait_until(scrub.ready, 10)
+
+
+# --- a9.1: the window kept built after its first close (Sonic: "It lags when I open up the debug screen") ---------- #
+def _close(w):
+    QTest.keyClick(w, Qt.Key.Key_Escape)
+    assert wait_until(lambda: w.gone)
+
+
+def test_the_second_press_shows_the_same_window_again_built_once(main, monkeypatch):
+    made = []
+    real = report_ui.ReportWindow.__init__
+
+    def counted(self, *a, **k):
+        made.append(1)
+        real(self, *a, **k)
+    monkeypatch.setattr(report_ui.ReportWindow, "__init__", counted)
+    w = _press(main)
+    _close(w)
+    assert windows.opened(main, report_ui.NAME) is None                # closed: no window, no icon
+    assert getattr(main, report_ui.KEPT) is w and not w.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    again = _press(main)
+    assert again is w and made == [1] and w.isVisible() and not w.gone
+    assert getattr(main, report_ui.KEPT) is None                       # in use, not kept twice
+    receivers = w.receivers(w.closed)
+    for _ in range(3):                                                 # closed and opened again: connected once
+        _close(w)
+        assert _press(main) is w
+    assert w.receivers(w.closed) == receivers
+    _close(w)
+    assert windows.opened(main, report_ui.NAME) is None
+
+
+def test_opened_again_it_is_as_new_no_page_line_row_or_picture_of_before(main):
+    w = _press(main)
+    first = list(w.pictures)
+    _save(w, JA_WHAT, "Finishedに残ると思った")
+    _save(w, ZH_WHAT)
+    w.remove(w.reports[0].id)
+    assert wait_until(lambda: len(w.reports) == 1 and w.undo_button.isVisible())
+    w.open(w.reports[0].id)
+    w.note.setPlainText("还没写完")
+    assert w.pages.currentIndex() == w.OPENED and w.status.text()     # "Removed…" said
+    w.name_field.setText("ゆき#0429")                                  # typed, never sent
+    w.include_results.setChecked(False)
+    w._done_row("Made it", invite=strings.REPORT_INVITE_ZIP)
+    for x in w.dest_row:
+        x.setVisible(True)
+    w.dest = os.path.expanduser("~")
+    _close(w)
+    w = _press(main)
+    assert w.pages.currentIndex() == w.FORM and w.opened_id is None and w.sent_opened is None and w.outbox is None
+    assert w.opened_text.toPlainText() == "" and w.note.toPlainText() == "" and w.opened_pictures.count() == 0
+    assert w.status.text() in ("", strings.REPORT_EMPTY)               # nothing said of before
+    assert not w.undo_button.isVisible() and w.last_removed is None
+    assert w.done_line.isHidden() and w.invite_button.isHidden() and all(x.isHidden() for x in w.dest_row)
+    assert w.dest == report_ui.downloads() and w.include_results.isChecked()
+    assert w.name_field.text() == "" and not w.name_goes.isVisibleTo(w)    # the typed name not kept (as a new window)
+    assert len(w.pictures) == 1 and w.pictures[0] is not first[0]       # this press's picture, its thumbnail anew
+    assert len(w._thumbs) == 1 and not w._thumbs[0].pixmap().isNull()
+    assert w.what.toPlainText() == "" and not w.save_button.isEnabled()
+
+
+def test_a_sent_reports_page_is_never_shown_again_on_the_next_press(main, receiver, sent):
+    w = _press(main)
+    w.include_results.setChecked(False)
+    _save(w, JA_WHAT)
+    _look(w)
+    w.goes_send.click()
+    assert wait_until(lambda: w.sent_rows.count() == 1, 15)
+    assert w.done_line.isVisibleTo(w) and w.copy_button.isVisibleTo(w)
+    _sent_open(w, "K3Q7PM").click()
+    assert wait_until(lambda: w.pages.currentIndex() == w.SENT, 15)
+    _close(w)
+    w = _press(main)
+    _read(w)
+    assert w.pages.currentIndex() == w.FORM and w.sent_lines.count() == 0 and w.sent_opened_heading.text() == ""
+    assert w.done_line.isHidden() and w.copy_button.isHidden() and w.sent_id is None
+    assert w.sent_rows.count() == 1                                    # Sent reports still lists it (read again)
+
+
+def test_what_goes_closed_unsent_is_never_shown_again(main, receiver):
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    _close(w)
+    assert wait_until(_outbox_empty)
+    w = _press(main)
+    _read(w)
+    assert w.pages.currentIndex() == w.FORM and w.outbox is None and w.goes_pictures.count() == 0
+    assert w.send_button.isEnabled() and w.name_field.isEnabled() and w.list.isVisibleTo(w)   # nothing held
+
+
+def test_an_answer_to_an_earlier_opening_never_lands_in_the_next(main):
+    w = _press(main)
+    landed = []
+    late = w.alive(lambda *a: landed.append(a))                        # a worker's answer, asked before the close
+    _close(w)
+    assert late("closed") is None
+    _press(main)
+    late("opened again")
+    assert landed == []
+    w.alive(lambda *a: landed.append(a))("now")                        # this opening's own answers land
+    assert landed == [("now",)]
+
+
+def test_the_draft_and_the_remembered_name_come_back_as_in_a_new_window(main):
+    from app import send_report
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    w.leave_out.setChecked(True)
+    w.name_field.setText("typed, not kept")
+    _close(w)
+    send_report.remember_name("ゆき#0429")
+    w = _press(main)
+    assert w.what.toPlainText() == JA_WHAT and w.leave_out.isChecked() and w.save_button.isEnabled()
+    assert wait_until(lambda: w.name_field.text() == "ゆき#0429")      # the remembered one, filled in again
+
+
+def test_a_window_closed_while_its_work_goes_on_is_not_kept(main, receiver, monkeypatch):
+    import threading
+    from app import send_report
+    gate = threading.Event()
+    real = send_report.build
+
+    def slow(*a, **k):
+        gate.wait(10)
+        return real(*a, **k)
+    monkeypatch.setattr(send_report, "build", slow)
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.send_button.click()
+    _close(w)
+    assert getattr(main, report_ui.KEPT, None) is None and w.gone
+    gate.set()
+    again = _press(main)
+    assert again is not w                                              # (that one finishes, and goes)
+
+
+def test_a_new_look_makes_a_new_window(main):
+    w = _press(main)
+    _close(w)
+    w.made_in = ("day",) + tuple(w.made_in[1:])                        # as if the look changed while it was kept
+    again = _press(main)
+    assert again is not w and getattr(main, report_ui.KEPT, None) is None
+    _close(again)
+    assert _press(main) is again
+
+
+def test_the_first_press_builds_the_form_and_the_other_pages_after_its_first_frame(main):
+    w = report_ui.ReportWindow(main)
+    assert w.pages.count() == 1                                        # the form alone at the press
+    w.show()
+    assert wait_until(lambda: w.pages.count() == 5)                    # after its first frame
+    assert w.pages.indexOf(w.opened_text.parentWidget()) == w.OPENED
+    assert w.pages.indexOf(w.contents.parentWidget()) == w.CONTENTS
+    w.close()
+
+
+@pytest.mark.parametrize("ask", ["open", "hold", "goes", "contents", "gather"])
+def test_whatever_needs_a_page_before_the_first_frame_builds_it_first(main, ask):
+    from app import send_report
+    w = _press(main)
+    _save(w, ZH_WHAT)
+    _close(w)
+    setattr(main, report_ui.KEPT, None)
+    w = report_ui.ReportWindow(main)                                   # never shown: no frame yet
+    assert wait_until(lambda: w.reports)
+    assert w.pages.count() == 1
+    if ask == "open":
+        w.open(w.reports[0].id)
+        assert w.pages.currentIndex() == w.OPENED and ZH_WHAT in w.opened_text.toPlainText()
+    elif ask == "hold":
+        w._hold(True)
+        assert not w.note_button.isEnabled()
+        w._hold(False)
+    elif ask == "goes":
+        ob = send_report.build(w.language, include_results=False)
+        w._show_goes(ob, [])
+        assert w.pages.currentIndex() == w.GOES and w.goes_files.text()
+        w.back()
+    elif ask == "gather":                                              # (#279: What goes opens at the press)
+        w._gather()
+        assert w.pages.currentIndex() == w.GOES and w.goes_gathering.isVisibleTo(w)
+        w.back()
+    else:
+        w.show_contents()
+        assert wait_until(lambda: w.pages.currentIndex() == w.CONTENTS)
+    assert w.pages.count() == 5
+    w.close()
+
+
+def test_kept_hidden_it_holds_no_picture_and_opens_again_at_a_fresh_ones_size(main, receiver):
+    # The adversary's S1 / S2: a hidden window held the screenshots and What goes' full-width pictures until the next
+    # press (which may never come), and a page left full could size the next opening bigger than a fresh one.
+    from app import scrub
+    scrub.identity()
+    w = _press(main)
+    _save(w, JA_WHAT)
+    _look(w)
+    assert w.goes_pictures.count() >= 1                                # the press's picture, at the page's width
+    _close(w)
+    assert w.pictures == [] and w._thumbs is None and w.picture_row.count() == 0
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert w.goes_pictures.count() == 0 and w.opened_pictures.count() == 0 and w.contents.toPlainText() == ""
+    assert _press(main) is w
+    _read(w)
+    after_goes = w.size()
+    assert len(w.pictures) == 1
+    _close(w)                                                          # (closed from the form this time)
+    assert _press(main) is w
+    _read(w)
+    assert w.size() == after_goes                                      # nothing a page showed sizes the next one
+
+
+def test_opened_again_it_is_where_it_was_left_never_in_its_icon(main):
+    # The adversary's N2 (lean, lead): a kept window comes back where the learner left it, at its size — but never
+    # minimised (closed from its icon), as `windows.bring_back` shows one.
+    w = _press(main)
+    w.move(w.pos() + QPoint(40, 30))
+    at, size = w.pos(), w.size()
+    w.setWindowState(Qt.WindowState.WindowMinimized)                   # (closed as it goes into its icon)
+    _close(w)
+    assert _press(main) is w
+    for _ in range(5):
+        QApplication.processEvents()                                   # (the platform's late state reports)
+    assert not w.isMinimized() and w.isVisible() and w.pos() == at and w.size() == size
+
+
+# --- try a9.1 (Sonic: "it lagged when i hit the button, just hung there until it got to the screen of exactly what goes.
+# need something to indicate that it's thinking"): What goes opens at the press, gathering, and counts the files in ----- #
+def _gated_build(monkeypatch, steps=()):
+    """`send_report.build` held until the gate opens, telling `steps` ((done, total) …) first, as `report._write` does:
+    what the window shows meanwhile is the press's own frame, not the zip's end."""
+    import threading
+    from app import send_report
+    gate, real, made = threading.Event(), send_report.build, []
+
+    def slow(*a, step=None, **k):
+        for done, total in steps:
+            step(done, total)
+        gate.wait(10)
+        made.append(real(*a, step=step, **k))
+        return made[-1]
+    monkeypatch.setattr(send_report, "build", slow)
+    return gate, made
+
+
+def test_send_report_opens_what_goes_in_the_press_frame_saying_it_is_gathering(main, receiver, monkeypatch):
+    import time
+    gate, _made = _gated_build(monkeypatch)
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    t0 = time.perf_counter()
+    w.send_button.click()                                              # (the frame: no worker has answered yet)
+    took = time.perf_counter() - t0
+    assert took < 0.1                                                  # press -> its page: well inside 100 ms
+    assert w.pages.currentIndex() == w.GOES and w.gathering
+    assert not w.goes_gathering.isHidden() and w.goes_gathering.text() == strings.REPORT_GATHERING
+    assert all(x.isHidden() for x in (w.goes_placeholders, w.goes_name, w.goes_kept, w.goes_files))
+    assert not w.goes_send.isEnabled() and not w.goes_open.isEnabled()  # nothing to send or open until it's made
+    assert wait_until(lambda: w.reports is not None and len(w.reports) == 1)   # saved meanwhile: still no second press
+    assert not w.send_button.isEnabled()                               # ... nor Show me / Make a zip beside it
+    assert not w.show_button.isEnabled() and not w.zip_button.isEnabled()
+    assert w.goes_back.isEnabled() and receiver.got == []
+    gate.set()
+    assert wait_until(lambda: w.outbox is not None, 15)                # made: the page fills in, the same page
+    assert w.pages.currentIndex() == w.GOES and not w.gathering and w.goes_gathering.isHidden()
+    assert not w.goes_files.isHidden() and "MANIFEST.txt" in w.goes_files.text()
+    assert w.goes_send.isEnabled() and w.goes_open.isEnabled() and receiver.got == []
+
+
+def test_the_gathering_page_counts_the_files_in_and_says_the_last_check(main, receiver, monkeypatch):
+    gate, _made = _gated_build(monkeypatch, steps=((0, 12), (4, 12)))
+    w = _press(main)
+    _save(w, ZH_WHAT)                                                  # a saved report, the form empty
+    w.send_button.click()
+    assert wait_until(lambda: w.goes_gathering.text() == strings.REPORT_GATHERING_N.format(done=5, total=12))
+    w._gathered((12, 12))                                              # every file in: the guard's read-back
+    assert w.goes_gathering.text() == strings.REPORT_GATHERING_CHECK
+    gate.set()
+    assert wait_until(lambda: w.outbox is not None, 15)
+    w._gathered((3, 12))                                               # a late count, the page made: never said
+    assert w.goes_gathering.isHidden() and w.goes_gathering.text() == strings.REPORT_GATHERING_CHECK
+
+
+def test_back_while_gathering_returns_to_the_form_and_the_zip_made_after_is_deleted(main, receiver, monkeypatch):
+    gate, made = _gated_build(monkeypatch)
+    w = _press(main)
+    _save(w, JA_WHAT)
+    w.send_button.click()
+    assert w.pages.currentIndex() == w.GOES and w.gathering
+    w.goes_back.click()                                                # changed their mind before it was made
+    assert w.pages.currentIndex() == w.FORM and not w.gathering
+    gate.set()
+    assert wait_until(lambda: made, 15)
+    assert wait_until(_outbox_empty, 15)                               # made after Back: never kept, never shown
+    assert w.pages.currentIndex() == w.FORM and w.outbox is None and receiver.got == []
+    assert wait_until(lambda: w.send_button.isEnabled() and w.list.isEnabled())
+    assert len(core.listed()) == 1                                     # the report itself stays on the list
+
+
+def test_a_save_that_fails_takes_the_gathering_page_back_to_the_form(main, receiver, monkeypatch):
+    def refuse(*a, **k):
+        raise OSError("the disk is full")
+    monkeypatch.setattr(core, "save", refuse)
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    w.send_button.click()
+    assert w.pages.currentIndex() == w.GOES                            # it reacted at once …
+    assert wait_until(lambda: w.pages.currentIndex() == w.FORM)        # … and came back with the reason
+    assert wait_until(lambda: "the disk is full" in w.status.text())
+    assert w.what.toPlainText() == JA_WHAT and not w.gathering and receiver.got == []
+
+
+def test_prepare_send_scales_wide_pictures_on_the_worker(main, receiver, monkeypatch):
+    """The What goes pictures come scaled to the page's width from the worker: the window's thread only shows them."""
+    from PyQt6.QtGui import QColor, QImage
+    w = _press(main)
+    img = QImage(3000, 400, QImage.Format.Format_RGB32)
+    img.fill(QColor("#1e1e1e"))
+    core.save(JA_WHAT, "", [report_ui.png_bytes(img)], where="Current", scrubbed=True)
+    kind, _outbox, pictures, *_code = report_ui.prepare_send("ja", False, {"language": "ja"}, {}, None, 600)
+    assert kind == "built" and [p.width() for p in pictures] == [600]
+    kind, _outbox, pictures, *_code = report_ui.prepare_send("ja", False, {"language": "ja"}, {})
+    assert kind == "built" and [p.width() for p in pictures] == [3000]  # no width: as it went
+    assert w is not None
+
+
+def test_back_while_gathering_reads_what_waits_again_and_never_shows_the_replaced_zip(main, receiver, monkeypatch):
+    """A zip left waiting (a send that didn't go) is replaced by the press's: its *Send now* row goes at the press and,
+    after Back deleted the new one, stays gone (nothing waits any more) — never a row for a zip that's gone."""
+    from app import send_report
+    w = _press(main)
+    _save(w, JA_WHAT)
+    send_report.build("ja")                                            # one waiting, as after a send that didn't go
+    w.read_send()
+    assert wait_until(lambda: not w.waiting_row[0].isHidden())
+    gate, made = _gated_build(monkeypatch)
+    w.send_button.click()
+    assert all(x.isHidden() for x in w.waiting_row)                     # never beside the gathering page
+    w.goes_back.click()
+    gate.set()
+    assert wait_until(lambda: made, 15) and wait_until(_outbox_empty, 15)
+    assert wait_until(lambda: w.waiting is None and all(x.isHidden() for x in w.waiting_row), 15)
+
+
+def test_back_during_the_save_makes_no_zip_and_a_second_press_meanwhile_says_why(main, receiver, monkeypatch):
+    import threading
+    from app import send_report
+    gate, real_save, built = threading.Event(), core.save, []
+    monkeypatch.setattr(core, "save", lambda *a, **k: (gate.wait(10), real_save(*a, **k))[1])
+    monkeypatch.setattr(send_report, "build", lambda *a, **k: built.append(a))
+    w = _press(main)
+    w.what.setPlainText(JA_WHAT)
+    w.send_button.click()                                              # saving first
+    w.goes_back.click()
+    w.what.setPlainText(JA_WHAT + "。")
+    w.send_button.click()                                              # pressed again while the first save runs
+    assert w.status.text() == strings.REPORT_ZIP_BUSY and w.pages.currentIndex() == w.FORM
+    gate.set()
+    assert wait_until(lambda: w.reports is not None and len(w.reports) == 1, 15)
+    for _ in range(30):
+        QApplication.processEvents()
+    assert built == [] and w.pages.currentIndex() == w.FORM          # Back before the zip: none made for nothing
+    assert wait_until(lambda: w.send_button.isEnabled())
+
+
+# --- Mado-SO (a9.1's kept window at 250 %: three whole paints an opening): opened again as it was left ------------- #
+def _held_list(monkeypatch):
+    """The saved reports' read held until the gate opens (a slow disk): what the window shows before it lands."""
+    import threading
+    gate = threading.Event()
+    real = core.listed
+    monkeypatch.setattr(core, "listed", lambda: (gate.wait(5), real())[1])
+    return gate
+
+
+def test_kept_it_opens_at_the_size_it_was_left_at_never_shrunk_then_grown_back(main, monkeypatch):
+    # `windows.show` sized a kept window to its hint again; its lines landing grew it back, twice (Windows' own
+    # second step): each a whole repaint at 250 %. Opened again it is the size it was left at — a learner's own too
+    from PyQt6.QtCore import QObject, QSize
+    w = _press(main)
+    for _ in range(10):
+        QApplication.processEvents()
+    w.resize(w.size() + QSize(30, 50))
+    for _ in range(10):
+        QApplication.processEvents()
+    size = w.size()
+    _close(w)
+    resized = []
+
+    class Sizes(QObject):
+        def eventFilter(self, obj, event):
+            if obj is w and event.type() == QEvent.Type.Resize and event.oldSize().isValid():
+                resized.append((event.oldSize(), event.size()))
+            return False
+    sizes = Sizes()
+    w.installEventFilter(sizes)
+    gate = _held_list(monkeypatch)
+    landed = []
+    real_show = w._show
+    monkeypatch.setattr(w, "_show", lambda got, line=None: (real_show(got, line), landed.append(len(got))))
+    main.report_button.click()
+    assert windows.opened(main, report_ui.NAME) is w and w.size() == size
+    gate.set()
+    assert wait_until(lambda: landed == [0])
+    for _ in range(10):
+        QApplication.processEvents()
+    assert w.size() == size and resized == []
+    w.removeEventFilter(sizes)
+    _close(w)
+
+
+def test_kept_with_nothing_saved_its_line_is_there_at_the_press_and_the_read_changes_nothing(main, monkeypatch):
+    w = _press(main)
+    assert wait_until(lambda: w.status.text() == strings.REPORT_EMPTY) and w.reports == []
+    _close(w)
+    gate = _held_list(monkeypatch)
+    landed = []
+    real_show = w._show
+    monkeypatch.setattr(w, "_show", lambda got, line=None: (real_show(got, line), landed.append(len(got))))
+    main.report_button.click()
+    assert windows.opened(main, report_ui.NAME) is w
+    assert w.status.text() == strings.REPORT_EMPTY and w.status.isVisibleTo(w)   # at the press, before the read
+    paints = w.status_paints
+    gate.set()
+    assert wait_until(lambda: landed == [0])
+    assert w.status.text() == strings.REPORT_EMPTY and w.status_paints == paints   # nothing it shows changed (S19)
+    _close(w)
+
+
+def test_kept_with_nothing_saved_a_report_saved_since_takes_the_empty_line_away(main, monkeypatch):
+    # the line is the list's own: put back at the press from the last read, it goes when the read finds a report
+    w = _press(main)
+    assert wait_until(lambda: w.status.text() == strings.REPORT_EMPTY)
+    _close(w)
+    core.save(JA_WHAT, "", [])                                         # (saved meanwhile: the next read finds it)
+    gate = _held_list(monkeypatch)
+    main.report_button.click()
+    assert w.status.text() == strings.REPORT_EMPTY
+    gate.set()
+    assert wait_until(lambda: w.reports is not None and len(w.reports) == 1)
+    assert w.status.text() == "" and w.status.isHidden()
+    _close(w)

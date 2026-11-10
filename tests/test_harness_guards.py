@@ -375,6 +375,103 @@ def test_helper_reaches_the_roots_at_exit():
     atexit.register(reach)
 
 
+# --- a probe run by hand on the shared test data never reaches the real profile ------------------------------------ #
+
+_SEED_PROBE = """
+import sys
+sys.path.insert(0, sys.argv[1])
+from tests.fixtures import window_seed
+from app.services import view_rows
+seed = window_seed.build(root=sys.argv[2])
+opener = seed.opener
+opener.check()
+feed = opener.handle().read_feed()
+items = {r["id"]: r for r in feed["items"]}
+works = {w["id"]: w for w in feed["works"]}
+view = view_rows.build(items, works, {}, numbers=(1, dict(seed.numbers.table)), cache=view_rows.RowCache())
+print("rows", len(view.rows))
+"""
+
+
+def test_a_probe_built_on_the_window_seed_by_hand_never_reaches_the_real_profile(tmp_path):
+    # 2026-10-31 15:43: a review agent's plain `python probe.py` (no pytest, no harness, no test root) built the window
+    # seed and its rows; a row asks whether Connect's setup record exists (view_rows -> anki_miner.mines_now ->
+    # ledger.folder -> get_local_data_path), which made the real, empty %LOCALAPPDATA%\\Houseki\\Surasura\\<install key>
+    # — and failed the lanes' runs then live. The shared test data moves the bases itself when they name the real
+    # profile (stood in for by `home`), and its folder is gone when the probe ends.
+    import site
+    home, temp, lib = tmp_path / "home", tmp_path / "temp", tmp_path / "lib"
+    for d in (home / "AppData" / "Local", home / "AppData" / "Roaming", temp, lib):
+        d.mkdir(parents=True)
+    env = dict(os.environ, USERPROFILE=str(home), HOME=str(home), LOCALAPPDATA=str(home / "AppData" / "Local"),
+               APPDATA=str(home / "AppData" / "Roaming"), XDG_DATA_HOME=str(home / ".local" / "share"),
+               TEMP=str(temp), TMP=str(temp), PYTHONIOENCODING="utf-8",
+               PYTHONUSERBASE=os.environ.get("PYTHONUSERBASE") or site.getuserbase())     # this user's packages
+    for name in ("PYTEST_CURRENT_TEST", "PYTEST_ADDOPTS", "SURASURA_TEST_ROOT"):
+        env.pop(name, None)
+    out = subprocess.run([sys.executable, "-c", _SEED_PROBE, PROJECT, str(lib)], cwd=str(tmp_path), env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+    text = out.stdout.decode("utf-8", "replace")
+    assert out.returncode == 0 and "rows " in text, text
+    made = [os.path.join(d, n) for d, ds, fs in os.walk(home) for n in ds + fs if "Houseki" in os.path.join(d, n)]
+    assert made == [], made
+    assert not [n for n in os.listdir(temp) if n.startswith(harness_guards.ROOTS_PREFIX)], os.listdir(temp)
+
+
+def test_the_shared_test_data_moves_only_bases_that_name_the_real_profile(tmp_path, monkeypatch):
+    # A bench's child (tests/qt/bench_moments.py) and an env.sh name bases of their own: kept. Unset or the user's own
+    # folders: moved. (Asked, never moved here: this process's bases are the harness's.)
+    from tests import user_bases
+    home = tmp_path / "home"
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    if sys.platform == "win32":
+        monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "bench" / "localappdata"))
+        assert user_bases.names_the_real_profile()                     # one of the two is the user's own
+        monkeypatch.setenv("APPDATA", str(tmp_path / "bench" / "appdata"))
+        assert not user_bases.names_the_real_profile()
+        monkeypatch.delenv("LOCALAPPDATA")
+        assert user_bases.names_the_real_profile()                     # unset: path_utils falls back to the profile
+    else:
+        monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+        assert user_bases.names_the_real_profile()
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "bench" / "share"))
+        assert not user_bases.names_the_real_profile()
+
+
+def test_the_root_guard_excuses_only_an_empty_folder_removed(tmp_path):
+    # 2026-10-31: the lead removing two empty leaked folders by hand failed every run then live. An empty folder gone
+    # is no loss; a populated one gone, or the root with one, still fails — as does anything made.
+    root = tmp_path / "Houseki" / "Surasura"
+    (root / "33b0ab4f8a769fe8").mkdir(parents=True)
+    (root / "bin").mkdir()
+    (root / "store").mkdir()
+    (root / "store" / "library.db").write_bytes(b"x")
+    before = harness_guards._root_state(str(root))
+    assert before[2] == ["33b0ab4f8a769fe8", "bin"]
+    (root / "33b0ab4f8a769fe8").rmdir()
+    (root / "bin").rmdir()
+    assert harness_guards._changed(before, harness_guards._root_state(str(root))) == ([], [])
+    (root / "store" / "library.db").unlink()
+    (root / "store").rmdir()
+    assert harness_guards._changed(before, harness_guards._root_state(str(root))) == ([], ["store"])
+    root.rmdir()
+    assert harness_guards._changed(before, harness_guards._root_state(str(root))) == ([], ["store"])
+    assert harness_guards._changed((True, ["a"], []), (True, ["a", "bin"], ["bin"])) == (["bin"], [])
+    assert harness_guards._changed((False, [], []), (True, [], [])) == (["(the root itself)"], [])
+
+
+def test_the_root_guard_names_another_copys_install_folder_only_in_the_true_local_root():
+    true_local = harness_guards._TRUE_HOUSEKI_ROOTS[0]
+    own = os.path.basename(harness_guards._REAL_LOCAL_DATA)
+    other = "0" * 16 if own != "0" * 16 else "1" * 16
+    if true_local not in harness_guards._REAL_HOUSEKI_ROOTS:
+        assert "another copy" in harness_guards._whose(true_local, [other])
+    assert harness_guards._whose(true_local, [own]) == "" and harness_guards._whose(true_local, ["bin"]) == ""
+    assert harness_guards._whose(harness_guards._REAL_HOUSEKI_ROOTS[0], [other]) == ""   # the run's own: its doing
+
+
 # --- Tk interpreters are freed on the main thread ----------------------------------------------------------------- #
 
 def test_an_interpreter_dropped_last_by_a_worker_thread_is_deleted_on_the_main_thread():

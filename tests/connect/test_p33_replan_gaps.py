@@ -40,7 +40,7 @@ def test_a_move_re_plans_without_loading_the_plan_file_again(lib, monkeypatch):
     first = steps.current("ja")
     loads = []
     real = plan_engine.load
-    monkeypatch.setattr(plan_engine, "load", lambda path: (loads.append(path), real(path))[1])
+    monkeypatch.setattr(plan_engine, "load", lambda path, **kw: (loads.append(path), real(path, **kw))[1])
     _move_later_to_top(store)
     again = steps.current("ja")
     assert again is not first and again.generate == "no" and again.listed != first.listed

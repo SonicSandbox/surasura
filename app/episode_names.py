@@ -110,7 +110,10 @@ _FLAGS = frozenset({"forced", "sdh", "hi", "cc", "signs", "songs", "s&s", "karao
                     "lyrics"})      # a track's flags (Plex, Jellyfin, Bazarr, Anki Miner), never a language
 # A re-timer's mark ending a subtitle's name (LF-17: `<video>.ja.synced.srt`, either side of the language): no flag, it
 # comes off the stem (the file is that video's episode) and says the file was re-timed; `.alt` stays an unknown tag
-RETIMED = frozenset({"synced", "sync", "resync", "resynced", "retimed", "timed"})
+# Michi-NS (Q4 ✅ Sonic 2026-10-31): the copy beside a video of a subtitle Anki Miner made from its audio
+# (`<video>.ja.from-audio.srt`, `no_subs`) carries a mark that comes off the same way: the file is that video's episode
+FROM_AUDIO = "from-audio"
+RETIMED = frozenset({"synced", "sync", "resync", "resynced", "retimed", "timed", FROM_AUDIO})
 _CJK = re.compile(r"((?:简体|簡體|繁体|繁體|简中|繁中|中文|日文|日语|日語|日本語|英文|英语|英語|[简簡繁中日英])+)"
                   r"(双语|雙語|双字|雙字)?(?:内嵌|內嵌|内封|內封|外挂|外掛|字幕)?")
 _CJK_PART = re.compile(r"简体|簡體|繁体|繁體|简中|繁中|中文|日文|日语|日語|日本語|英文|英语|英語|[简簡繁中日英]")
@@ -171,8 +174,9 @@ NEVER_WAIT = frozenset({"NCOP", "NCED", "PV", "CM", "MENU", "PREVIEW"})
 _SEASON_FOLDER = re.compile(r"s[\s._-]?(\d{1,3})|(?:(?:season|series)[\s._-]*(\d{1,3})|"
                             r"(\d{1,2})(?:st|nd|rd|th)[\s._-]*season|"
                             r"第\s*(\d{1,3}|[一二三四五六七八九十])\s*[期季部]|シーズン\s*(\d{1,3}))"
-                            r"(?:[\s._\-–~:(\[].*)?|(\d{1,3})\s*期", re.I)
+                            r"(?P<tail>[\s._\-–~:(\[].*)?|(\d{1,3})\s*期", re.I)
 _SPECIALS_FOLDER = re.compile(r"specials?|sps?|extras?|ova|oad", re.I)
+_SPECIALS_WORD = {"ova": "OVA", "oad": "OAD", "extra": "Extras", "extras": "Extras"}   # the rest: `Specials`
 _KATAKANA_FOLD = {c: c - 0x60 for c in range(0x30A1, 0x30F7)}     # ァ…ヶ → ぁ…ゖ (as `library_store.search_fold`)
 
 
@@ -184,6 +188,42 @@ def fold(text):
         return ""
     folded = unicodedata.normalize("NFKC", str(text)).casefold().translate(_KATAKANA_FOLD)
     return _SPACES.sub(" ", folded).strip()
+
+
+# a8 (Sonic 2026-10-31: "file the excepts as we go like gintama"; PROVISIONAL): titles whose punctuation names another
+# season or show, never folded to the title the punctuation leaves (`show_key`). One entry a title, as a release or a
+# folder writes it, with why; a title is one when `fold`ed it is the entry `fold`ed (case, width and kana aside), whole.
+# To add one: a line here — romaji and Japanese each, when both are written, and a Chinese title in Simplified too (a
+# Chinese library folds titles to Simplified) — and tests/test_library_store_same_show.py's exception test runs it.
+SHOW_KEY_EXCEPTIONS = (
+    ("Gintama'", "Gintama's 2nd season (2011): `Gintama` is the 1st, `Gintama°` the 4th"),
+    ("Gintama°", "Gintama's 4th season (2015)"),
+    ("Gintama.", "Gintama's 5th season (2017)"),
+    ("銀魂'", "銀魂's 2nd season (2011): `銀魂` is the 1st"),
+    ("銀魂°", "銀魂's 4th season (2015)"),
+    ("銀魂.", "銀魂's 5th season (2017)"),
+    ("银魂'", "银魂 (Simplified, as a Chinese library folds titles): the 2nd season"),
+    ("银魂°", "银魂 (Simplified): the 4th season"),
+    ("银魂.", "银魂 (Simplified): the 5th season"),
+    ("Working'!!", "WORKING!!'s 2nd season (2011): `Working!!` is the 1st"),
+    ("Working!!!", "WORKING!!'s 3rd season (2015)"),
+    ("Hidamari Sketch×☆☆☆", "Hidamari Sketch's 3rd season (2010): `×` and the stars are its name"),
+    ("ひだまりスケッチ×☆☆☆", "ひだまりスケッチ's 3rd season (2010)"),
+)
+_EXCEPTION_KEYS = frozenset(fold(title) for title, _why in SHOW_KEY_EXCEPTIONS)
+
+
+def show_key(text):
+    """The one "same show?" key (a8, Sonic 2026-10-31: punctuation ignored): `fold`, then letters and digits only —
+    `Show!` and `Show`, `Re:Zero` and `Re Zero` are one show (two shows apart only by punctuation count as one,
+    accepted) — except a title of `SHOW_KEY_EXCEPTIONS` (`Gintama'`), keyed as folded, marks kept: a show of its own.
+    Asked by the covers' title check, where a loose file's copy lands (`sources._show_of`), the store's loose-file
+    title, *Same title?*, a removed episode's key and the one-time join of such pairs. "" when no letter or digit is
+    left."""
+    folded = fold(text)
+    if folded in _EXCEPTION_KEYS:
+        return folded
+    return "".join(c for c in folded if unicodedata.category(c)[0] in "LN")
 
 
 def language_of(tag):
@@ -298,8 +338,35 @@ def season_folder(name):
     m = _SEASON_FOLDER.fullmatch(text)
     if not m:
         return None
-    value = next(g for g in m.groups() if g is not None)
+    tail = m.re.groupindex["tail"]
+    value = next(g for n, g in enumerate(m.groups(), 1) if g is not None and n != tail)
     return _KANJI_NUMBER.get(value) or int(value)
+
+
+def folder_title(path):
+    """A title named by its folder below the tier (L2.2 05 §5.3 (4)), read by `season_folder`: a season folder is the
+    folder above it and its season, written out (`Frieren/S01` → `Frieren Season 1`, `Frieren/第2期` → `Frieren
+    Season 2`; a season the folder above already says is said once: `Show S01/Season 01`, `Show.S01/S01` → `Show
+    Season 1`; an arc after it stays:
+    `Season 2 - Arc` → `… Season 2 - Arc`); a specials folder the folder above and `Specials` (`OVA`, `OAD`, `Extras`
+    keep their word). Any other path is as written (one folder: its name; nothing above it). Pure."""
+    parts = (path or "").split("/")
+    kind = season_folder(parts[-1]) if len(parts) > 1 else None
+    if kind is None:
+        return path or ""
+    above = folder_title("/".join(parts[:-1]))
+    if not above.strip():
+        return path                                     # no show above it to name it with
+    text = unicodedata.normalize("NFKC", parts[-1]).strip()
+    if kind == "special":
+        return f"{above} {_SPECIALS_WORD.get(text.casefold(), 'Specials')}"
+    show, said = _season(above)
+    if said is None:                                    # `Show.S01`, `Show_Season_1`: a release's dots or underscores
+        show, said = _season(re.sub(r"[._]+", " ", above).strip())
+    if said == kind and show.strip():
+        above = show.rstrip(" -–~._")
+    tail = (_SEASON_FOLDER.fullmatch(text).group("tail") or "").strip(" ._")
+    return f"{above} Season {kind}" + (f" {tail}" if tail else "")
 
 
 def _special(text, whole=False):

@@ -356,6 +356,25 @@ def test_a_replace_whose_numbers_moved_reads_again_and_asks_again(main, runs):
     assert not os.path.exists(folder)
 
 
+def test_jitens_replace_whose_numbers_moved_ends_its_own_write_once(main, runs):
+    """IK-56's Jiten path ended the replace's write twice (once itself, once through the re-read): with another write
+    of the window's still running, the window read as idle, and a question could open over that write."""
+    from app import anki_sync
+    _known(CURRENT)
+    j = importers.open_jiten(main)
+    j.key.setText(SECRET)
+    j.go.click()
+    _fetched(runs, [{"wordText": "猫", "state": 5}])
+    assert wait_until(lambda: _card(j) is not None)
+    _card(j).yes.click()
+    assert j.busy()
+    j.begin_write()                                             # another write of the window's, still running
+    runs.end(anki_sync.EXIT_CHANGED, "Error: Your known words changed since you confirmed, so nothing was replaced.")
+    assert j.busy(), "only the replace's own write ended"
+    j.end_write()
+    assert not j.busy()
+
+
 def test_each_question_names_its_language(main, runs):
     """IK-53: a question never says which list it writes; now its title names it (日本語 / 中文), and the deck's says
     that words still being learned become known."""
@@ -394,6 +413,100 @@ def test_find_it_for_me_says_what_it_found(main, runs, tmp_path):
     shutil.copy2(MIGAKU, tmp_path / "MigakuDb.db")
     w.find_it(str(tmp_path))
     assert wait_until(lambda: _card(w) is not None) and runs.calls == []
+
+
+def test_find_it_pressed_three_times_looks_once_asks_once_and_replaces_once(main, runs, tmp_path, monkeypatch):
+    """Alpha 6 (one import ran three times): *Find it* had no press of its own, so three presses read the export three
+    times and stacked three questions, and each Yes replaced the known words again. Now *Find it* and *Choose…* are one
+    press (`migaku:read`): a press while it looks or reads does nothing, *Choose…* opens no picker, one question."""
+    import shutil
+    _known(CURRENT)
+    shutil.copy2(MIGAKU, tmp_path / "MigakuDb.db")
+    picked = []
+    monkeypatch.setattr(importers, "_pick_file", lambda *a: picked.append(a) or MIGAKU)
+    looks = []
+    real = importers.importers_view.find_migaku
+    monkeypatch.setattr(importers.importers_view, "find_migaku", lambda folder=None: looks.append(folder) or real(folder))
+    w = importers.open_migaku(main)
+    for _ in range(3):
+        w.find_it(str(tmp_path))
+        w.choose.click()
+    assert wait_until(lambda: _card(w) is not None)
+    QApplication.processEvents()
+    assert len(looks) == 1 and picked == []
+    assert len([c for c in w.findChildren(confirm.Confirm) if c.answer is None]) == 1
+    _card(w).yes.click()
+    assert len(runs.calls) == 1 and runs.calls[0].argv[:2] == ["migaku_converter.py", str(tmp_path / "MigakuDb.db")]
+    w.find_it(str(tmp_path))                                  # a press while the replace runs: nothing (and disabled)
+    assert not w.find.isEnabled() and len(looks) == 1
+    runs.end(0, "Conversion complete!")
+    assert w.status.text() == strings.MIGAKU_DONE and len(runs.calls) == 1 and _card(w) is None
+
+
+def test_a_find_it_press_while_the_found_export_is_read_reads_nothing_more(main, runs, tmp_path, monkeypatch):
+    """The look and the read are one press: once the export is found and its words are being read, a press still does
+    nothing (no second look, no second read)."""
+    import shutil
+    import threading
+    from app import importers_view
+    _known(CURRENT)
+    shutil.copy2(MIGAKU, tmp_path / "MigakuDb.db")
+    reading, go, reads, looks = threading.Event(), threading.Event(), [], []
+    real_plan, real_find = importers_view.migaku_plan, importers_view.find_migaku
+
+    def slow_plan(path, language):
+        reads.append(path)
+        reading.set()
+        go.wait(10)
+        return real_plan(path, language)
+    monkeypatch.setattr(importers_view, "migaku_plan", slow_plan)
+    monkeypatch.setattr(importers_view, "find_migaku", lambda folder=None: looks.append(folder) or real_find(folder))
+    w = importers.open_migaku(main)
+    w.find_it(str(tmp_path))
+    assert wait_until(lambda: reading.is_set())
+    w.find_it(str(tmp_path))
+    w.choose.click()
+    go.set()
+    assert wait_until(lambda: _card(w) is not None)
+    QApplication.processEvents()
+    assert len(looks) == 1 and len(reads) == 1
+
+
+def test_a_newer_migaku_question_drops_the_open_one_and_a_plan_read_during_a_replace_is_never_asked(main, runs):
+    """The one-question rule (`ToolWindow.ask`), for reads already under way: the newer question stands and the older
+    is answered No with no callback (one Yes, one replace); a plan whose read ends while a replace runs asks nothing —
+    the replace moves its numbers (the window reads again if it must, IK-56)."""
+    from app import importers_view
+    _known(CURRENT)
+    w = importers.open_migaku(main)
+    plan = importers_view.migaku_plan(MIGAKU, "ja")
+    w._ask(plan, "ja")
+    first = _card(w)
+    w._ask(plan, "ja")
+    second = _card(w)
+    assert first is not None and second is not None and first is not second
+    assert first.answer is False and second.answer is None
+    second.yes.click()
+    assert len(runs.calls) == 1 and w.busy()
+    w._ask(plan, "ja")
+    assert _card(w) is None and len(runs.calls) == 1
+    runs.end(0, "Conversion complete!")
+    assert len(runs.calls) == 1 and _card(w) is None
+
+
+def test_the_deck_windows_question_is_one_at_a_time_too(main, runs):
+    """The rule is every importer window's (`ToolWindow.ask`), so the deck's keeps it: a second Import press drops the
+    first question; a question asked while its import runs never opens."""
+    d = importers.open_deck(main)
+    d.choose(DECK)
+    assert wait_until(lambda: d.deck is not None)
+    d.go.click()
+    first = _card(d)
+    d._ask()
+    assert first.answer is False and _card(d) is not first and _card(d) is not None
+    _card(d).yes.click()
+    assert len(runs.calls) == 1 and d.busy()
+    assert d.ask("t", "b", "yes", "tip", on_answer=lambda yes: None) is None and _card(d) is None
 
 
 def test_a_db_that_isnt_migakus_is_said_and_nothing_asked(main, runs, tmp_path):

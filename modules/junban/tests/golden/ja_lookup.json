@@ -1,0 +1,127 @@
+{
+ "いい": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">も〜 12%</div><div class=\"pat-form pat-src-balanced pat-thin\">よく 12%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">物わかりがいい · いい気分 · よくなる · いい自分</div>",
+  null,
+  "balanced"
+ ],
+ "おだやか": [
+  "<div class=\"pat-form pat-src-balanced pat-thin\">おだやかな 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">おだやかに 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">おだやかに呼びかける · おだやかな気持ち</div>",
+  null,
+  "balanced"
+ ],
+ "人": [
+  "<div class=\"pat-colloc pat-src-balanced pat-thin\">人の形 · 人に対する · 人をほる · 人の家</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜たち · 〜じん · ような〜</div>",
+  null,
+  "balanced"
+ ],
+ "人間": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">〜と 25%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">人間で言う · 人間を指す</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜もどき · 〜以下</div>",
+  null,
+  "balanced"
+ ],
+ "共和国": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">共和国の誇 · 共和国による · 共和国の誕生以前 · 共和国の正義</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜市民 · ある〜 · 〜製</div>",
+  null,
+  "balanced"
+ ],
+ "冒険": [
+  "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険について · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">新しい〜 · 〜家 · 素晴らしい〜</div>",
+  null,
+  "conversational"
+ ],
+ "冒険家": [
+  "<div class=\"pat-colloc pat-src-conversational pat-thin\">冒険家として</div>",
+  null,
+  "conversational"
+ ],
+ "大切な": [
+  "<div class=\"pat-form pat-src-balanced pat-thin\">大切に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">大切に思う</div>",
+  null,
+  "balanced"
+ ],
+ "少女": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 36%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">少女の思い · 少女に呼び止められる · 少女の訴え</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜らしい · 〜たち</div>",
+  null,
+  "balanced"
+ ],
+ "市民": [
+  "<div class=\"pat-colloc pat-src-balanced pat-thin\">市民として · 市民の絶賛</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜権 · 〜人類 · 〜達</div>",
+  null,
+  "balanced"
+ ],
+ "席": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">〜を 55% · 〜に 14%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">席を譲る · 席に座る · 席を有する</div>",
+  null,
+  "balanced"
+ ],
+ "座る": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">に〜 60%</div><div class=\"pat-form pat-src-balanced pat-thin\">座っている 80%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">座席に座る · 先ほど隣に座る · 隣に座る · 前に座る</div>",
+  null,
+  "balanced"
+ ],
+ "待つ": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 38%</div><div class=\"pat-form pat-src-balanced pat-thin\">待っている 50%</div><div class=\"pat-form pat-src-balanced pat-thin\">待たない 12%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">到着を待つ · 冒険が待つ · お風呂上がりを待つ · 全停止を待つ</div>",
+  null,
+  "balanced"
+ ],
+ "悪い": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">が〜 25%</div><div class=\"pat-form pat-src-balanced pat-thin\">悪く 17%</div><div class=\"pat-form pat-src-balanced pat-thin\">悪くない 8%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">バツが悪い · 悪い単語帳 · 悪く言う · 目が悪い</div>",
+  null,
+  "balanced"
+ ],
+ "持つ": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 53%</div><div class=\"pat-form pat-src-balanced pat-thin\">持っている 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">もたれる 7%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">考えを持つ · 根に持つ · 信念を持つ · 悪意を持つ</div>",
+  null,
+  "balanced"
+ ],
+ "探検": [
+  "",
+  "not found",
+  null
+ ],
+ "目": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">〜を 64%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">目を開く · 目が合う · 目にぶつかる · 目を向ける</div>",
+  null,
+  "balanced"
+ ],
+ "立つ": [
+  "<div class=\"pat-form pat-src-balanced pat-thin\">立っている 50%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">横に立つ · 女性が立つ · 前に立つ</div>",
+  null,
+  "balanced"
+ ],
+ "素直": [
+  "<div class=\"pat-form pat-src-balanced pat-thin\">素直に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">素直に従う · 素直に聞く</div>",
+  null,
+  "balanced"
+ ],
+ "老婆": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">〜に 25%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">老婆の近く · 老婆に譲る · 老婆を空く · 老婆の隣</div><div class=\"pat-frame pat-src-balanced pat-thin\">気の毒な〜</div>",
+  null,
+  "balanced"
+ ],
+ "見る": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 18%</div><div class=\"pat-form pat-src-balanced pat-thin\">見ている 18%</div><div class=\"pat-form pat-src-balanced pat-thin\">見られる 18%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">裸を見られる · 戦場に見る · 方を見る</div>",
+  null,
+  "balanced"
+ ],
+ "話が弾む": [
+  "",
+  "phrase",
+  null
+ ],
+ "譲る": [
+  "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 72%</div><div class=\"pat-form pat-src-balanced pat-thin\">譲らない 17%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">席を譲る · お年寄りに譲る · 老婆に譲る</div>",
+  null,
+  "balanced"
+ ],
+ "長い": [
+  "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い人生 · 長い脚 · 長い睫まつ毛げ · 長い銀ぎん髪ぱつ</div>",
+  null,
+  "balanced"
+ ],
+ "顔": [
+  "<div class=\"pat-form pat-src-balanced pat-thin\">顔する 11%</div><div class=\"pat-form pat-src-balanced pat-thin\">顔だ 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">顔の男 · 顔を赤らめる</div><div class=\"pat-frame pat-src-balanced pat-thin\">ない〜 · 同じ〜 · 〜ぼう</div>",
+  null,
+  "balanced"
+ ]
+}

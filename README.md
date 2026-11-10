@@ -4,7 +4,7 @@
 
 # Surasura スラスラ
 
-![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6) ![Japanese · Chinese](https://img.shields.io/badge/日本語%20·%20中文-learners-bb86fc) ![Offline](https://img.shields.io/badge/runs-offline-03dac6) ![License](https://img.shields.io/badge/license-MIT-blue.svg) [![Discord](https://img.shields.io/badge/Discord-join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/Uy8mHymrRv)
+![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6) ![Japanese · Chinese](https://img.shields.io/badge/日本語%20·%20中文-learners-bb86fc) ![Offline](https://img.shields.io/badge/runs-offline-03dac6) ![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg) [![Discord](https://img.shields.io/badge/Discord-join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/Uy8mHymrRv)
 
 **The only frequency list that matters is the one made from your own shows and books.**
 
@@ -156,4 +156,13 @@ The dictionaries, tokenizers and data Surasura is built on: [Credits](docs/CREDI
 
 ## 📜License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Surasura is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
+License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any
+later version (`GPL-3.0-or-later`; the text is in `LICENSE`, the written exception in `LICENSE-EXCEPTION.md`).
+It comes with no warranty.
+
+- **Versions up to and including 2.5.x were released under the MIT License.** Anyone holding them keeps those
+  rights; the MIT notice is kept in `licenses/Surasura-MIT-before-3.0.txt` for the code released under it.
+- The Windows program bundles third-party libraries under their own licences, listed in *Settings › App › Data
+  credits*; PyQt6's, Qt's and tsubasa's texts ship in the program's `_internal\licenses\` folder.
+- Sending a change? See `CONTRIBUTING.md`.

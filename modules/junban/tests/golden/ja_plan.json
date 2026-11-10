@@ -1,0 +1,733 @@
+{
+ "all": {
+  "by_fill": {
+   "patterns": {
+    "fill": 8,
+    "filled": 1,
+    "not found": 1,
+    "phrase": 1
+   },
+   "sentence": {
+    "fill": 2,
+    "no sentence": 9
+   }
+  },
+  "counts": {
+   "fill": 10,
+   "filled": 1,
+   "no sentence": 9,
+   "not found": 1,
+   "phrase": 1
+  },
+  "edits": {
+   "1789712000000": {
+    "ExampleSentences": {
+     "after": "<b>冒険</b>だ。<br><b>冒険</b>する？",
+     "before": ""
+    },
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険について · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">新しい〜 · 〜家 · 素晴らしい〜</div>",
+     "before": ""
+    }
+   },
+   "1789712000001": {
+    "Patterns": {
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜を 64%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">目を開く · 目が合う · 目にぶつかる · 目を向ける</div>",
+     "before": ""
+    }
+   },
+   "1789712000003": {
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">大切に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">大切に思う</div>",
+     "before": ""
+    }
+   },
+   "1789712000006": {
+    "Patterns": {
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 53%</div><div class=\"pat-form pat-src-balanced pat-thin\">持っている 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">もたれる 7%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">考えを持つ · 根に持つ · 信念を持つ · 悪意を持つ</div>",
+     "before": ""
+    }
+   },
+   "1789712000007": {
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い人生 · 長い脚 · 長い睫まつ毛げ · 長い銀ぎん髪ぱつ</div>",
+     "before": ""
+    }
+   },
+   "1789712000008": {
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">おだやかな 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">おだやかに 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">おだやかに呼びかける · おだやかな気持ち</div>",
+     "before": ""
+    }
+   },
+   "1789712000009": {
+    "Patterns": {
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">共和国の誇 · 共和国による · 共和国の誕生以前 · 共和国の正義</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜市民 · ある〜 · 〜製</div>",
+     "before": ""
+    }
+   },
+   "1789712000010": {
+    "ExampleSentences": {
+     "after": "彼は<b>冒険家</b>として非常に有名です。",
+     "before": ""
+    },
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-conversational pat-thin\">冒険家として</div>",
+     "before": ""
+    }
+   }
+  },
+  "rows": [
+   [
+    1789712000000,
+    "冒険",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険について · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">新しい〜 · 〜家 · 素晴らしい〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000000,
+    "冒険",
+    "ExampleSentences",
+    "fill",
+    "<b>冒険</b>だ。<br><b>冒険</b>する？",
+    "sentence"
+   ],
+   [
+    1789712000001,
+    "目",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜を 64%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">目を開く · 目が合う · 目にぶつかる · 目を向ける</div>",
+    "patterns"
+   ],
+   [
+    1789712000001,
+    "目",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000002,
+    "老婆",
+    "Patterns",
+    "filled",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000002,
+    "老婆",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000003,
+    "大切な",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">大切に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">大切に思う</div>",
+    "patterns"
+   ],
+   [
+    1789712000003,
+    "大切な",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000004,
+    "話が弾む",
+    "Patterns",
+    "phrase",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000004,
+    "話が弾む",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000005,
+    "探検",
+    "Patterns",
+    "not found",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000005,
+    "探検",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000006,
+    "持つ",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">を〜 53%</div><div class=\"pat-form pat-src-balanced pat-thin\">持っている 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">もたれる 7%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">考えを持つ · 根に持つ · 信念を持つ · 悪意を持つ</div>",
+    "patterns"
+   ],
+   [
+    1789712000006,
+    "持つ",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000007,
+    "長い",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い人生 · 長い脚 · 長い睫まつ毛げ · 長い銀ぎん髪ぱつ</div>",
+    "patterns"
+   ],
+   [
+    1789712000007,
+    "長い",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000008,
+    "おだやか",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">おだやかな 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">おだやかに 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">おだやかに呼びかける · おだやかな気持ち</div>",
+    "patterns"
+   ],
+   [
+    1789712000008,
+    "おだやか",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000009,
+    "共和国",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">共和国の誇 · 共和国による · 共和国の誕生以前 · 共和国の正義</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜市民 · ある〜 · 〜製</div>",
+    "patterns"
+   ],
+   [
+    1789712000009,
+    "共和国",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000010,
+    "冒険家",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-conversational pat-thin\">冒険家として</div>",
+    "patterns"
+   ],
+   [
+    1789712000010,
+    "冒険家",
+    "ExampleSentences",
+    "fill",
+    "彼は<b>冒険家</b>として非常に有名です。",
+    "sentence"
+   ]
+  ]
+ },
+ "asked": [
+  {
+   "phrases": {
+    "話が弾む": [
+     "話",
+     "が",
+     "弾む"
+    ]
+   },
+   "prefer": {
+    "共和国|キョウワコク": [
+     [
+      "共和国",
+      "の",
+      "誇り"
+     ]
+    ],
+    "冒険|ボウケン": [
+     [
+      "冒険",
+      "に",
+      "つく",
+      "て"
+     ],
+     [
+      "冒険",
+      "為る"
+     ]
+    ],
+    "冒険家|ボウケンカ": [
+     [
+      "冒険家",
+      "と",
+      "為る",
+      "て"
+     ]
+    ],
+    "大切|タイセツ": [
+     [
+      "大切",
+      "だ",
+      "思う"
+     ],
+     [
+      "大切",
+      "だ"
+     ]
+    ],
+    "持つ|モツ": [
+     [
+      "悪意",
+      "を",
+      "持つ"
+     ],
+     [
+      "持つ",
+      "て",
+      "居る"
+     ]
+    ],
+    "目|メ": [
+     [
+      "目",
+      "が",
+      "悪い"
+     ]
+    ],
+    "穏やか|オダヤカ": [
+     [
+      "穏やか",
+      "だ",
+      "呼び掛ける"
+     ],
+     [
+      "穏やか",
+      "だ"
+     ]
+    ],
+    "老婆|ロウバ": [
+     [
+      "老婆",
+      "の",
+      "近く"
+     ]
+    ],
+    "長い|ナガイ": [
+     [
+      "長い",
+      "人生"
+     ]
+    ]
+   },
+   "wanted": [
+    [
+     "共和国",
+     "キョウワコク"
+    ],
+    [
+     "冒険",
+     "ボウケン"
+    ],
+    [
+     "冒険家",
+     "ボウケンカ"
+    ],
+    [
+     "大切",
+     "タイセツ"
+    ],
+    [
+     "持つ",
+     "モツ"
+    ],
+    [
+     "探検",
+     "タンケン"
+    ],
+    [
+     "目",
+     "メ"
+    ],
+    [
+     "穏やか",
+     "オダヤカ"
+    ],
+    [
+     "老婆",
+     "ロウバ"
+    ],
+    [
+     "長い",
+     "ナガイ"
+    ]
+   ],
+   "young": [
+    [
+     "目",
+     "メ"
+    ]
+   ]
+  },
+  {
+   "phrases": {
+    "話が弾む": [
+     "話",
+     "が",
+     "弾む"
+    ]
+   },
+   "prefer": {
+    "共和国|キョウワコク": [
+     [
+      "共和国",
+      "の",
+      "誇り"
+     ]
+    ],
+    "冒険|ボウケン": [
+     [
+      "冒険",
+      "に",
+      "つく",
+      "て"
+     ],
+     [
+      "冒険",
+      "為る"
+     ]
+    ],
+    "冒険家|ボウケンカ": [
+     [
+      "冒険家",
+      "と",
+      "為る",
+      "て"
+     ]
+    ],
+    "大切|タイセツ": [
+     [
+      "大切",
+      "だ",
+      "思う"
+     ],
+     [
+      "大切",
+      "だ"
+     ]
+    ],
+    "穏やか|オダヤカ": [
+     [
+      "穏やか",
+      "だ",
+      "呼び掛ける"
+     ],
+     [
+      "穏やか",
+      "だ"
+     ]
+    ],
+    "老婆|ロウバ": [
+     [
+      "老婆",
+      "の",
+      "近く"
+     ]
+    ],
+    "長い|ナガイ": [
+     [
+      "長い",
+      "人生"
+     ]
+    ]
+   },
+   "wanted": [
+    [
+     "共和国",
+     "キョウワコク"
+    ],
+    [
+     "冒険",
+     "ボウケン"
+    ],
+    [
+     "冒険家",
+     "ボウケンカ"
+    ],
+    [
+     "大切",
+     "タイセツ"
+    ],
+    [
+     "探検",
+     "タンケン"
+    ],
+    [
+     "穏やか",
+     "オダヤカ"
+    ],
+    [
+     "老婆",
+     "ロウバ"
+    ],
+    [
+     "長い",
+     "ナガイ"
+    ]
+   ],
+   "young": [
+    [
+     "目",
+     "メ"
+    ]
+   ]
+  }
+ ],
+ "new_replace": {
+  "by_fill": {
+   "patterns": {
+    "fill": 6,
+    "not found": 1,
+    "phrase": 1,
+    "replace": 1
+   },
+   "sentence": {
+    "fill": 2,
+    "no sentence": 7
+   }
+  },
+  "counts": {
+   "fill": 8,
+   "no sentence": 7,
+   "not found": 1,
+   "phrase": 1,
+   "replace": 1
+  },
+  "edits": {
+   "1789712000000": {
+    "ExampleSentences": {
+     "after": "<b>冒険</b>だ。<br><b>冒険</b>する？",
+     "before": ""
+    },
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険について · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">新しい〜 · 〜家 · 素晴らしい〜</div>",
+     "before": ""
+    }
+   },
+   "1789712000002": {
+    "Patterns": {
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜に 25%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">老婆の近く · 老婆に譲る · 老婆を空く · 老婆の隣</div><div class=\"pat-frame pat-src-balanced pat-thin\">気の毒な〜</div>",
+     "before": "<div>もう書いてある</div>"
+    }
+   },
+   "1789712000003": {
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">大切に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">大切に思う</div>",
+     "before": ""
+    }
+   },
+   "1789712000007": {
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い人生 · 長い脚 · 長い睫まつ毛げ · 長い銀ぎん髪ぱつ</div>",
+     "before": ""
+    }
+   },
+   "1789712000008": {
+    "Patterns": {
+     "after": "<div class=\"pat-form pat-src-balanced pat-thin\">おだやかな 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">おだやかに 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">おだやかに呼びかける · おだやかな気持ち</div>",
+     "before": ""
+    }
+   },
+   "1789712000009": {
+    "Patterns": {
+     "after": "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">共和国の誇 · 共和国による · 共和国の誕生以前 · 共和国の正義</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜市民 · ある〜 · 〜製</div>",
+     "before": ""
+    }
+   },
+   "1789712000010": {
+    "ExampleSentences": {
+     "after": "彼は<b>冒険家</b>として非常に有名です。",
+     "before": ""
+    },
+    "Patterns": {
+     "after": "<div class=\"pat-colloc pat-src-conversational pat-thin\">冒険家として</div>",
+     "before": ""
+    }
+   }
+  },
+  "rows": [
+   [
+    1789712000000,
+    "冒険",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-conversational pat-thin\">冒険する 9%</div><div class=\"pat-form pat-src-conversational pat-thin\">冒険だ 9%</div><div class=\"pat-colloc pat-src-conversational pat-thin\">冒険について · 冒険が待つ · 冒険を求める · 冒険の準備</div><div class=\"pat-frame pat-src-conversational pat-thin\">新しい〜 · 〜家 · 素晴らしい〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000000,
+    "冒険",
+    "ExampleSentences",
+    "fill",
+    "<b>冒険</b>だ。<br><b>冒険</b>する？",
+    "sentence"
+   ],
+   [
+    1789712000002,
+    "老婆",
+    "Patterns",
+    "replace",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜に 25%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">老婆の近く · 老婆に譲る · 老婆を空く · 老婆の隣</div><div class=\"pat-frame pat-src-balanced pat-thin\">気の毒な〜</div>",
+    "patterns"
+   ],
+   [
+    1789712000002,
+    "老婆",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000003,
+    "大切な",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">大切に 100%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">大切に思う</div>",
+    "patterns"
+   ],
+   [
+    1789712000003,
+    "大切な",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000004,
+    "話が弾む",
+    "Patterns",
+    "phrase",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000004,
+    "話が弾む",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000005,
+    "探検",
+    "Patterns",
+    "not found",
+    "",
+    "patterns"
+   ],
+   [
+    1789712000005,
+    "探検",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000007,
+    "長い",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-balanced pat-thin\">長い人生 · 長い脚 · 長い睫まつ毛げ · 長い銀ぎん髪ぱつ</div>",
+    "patterns"
+   ],
+   [
+    1789712000007,
+    "長い",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000008,
+    "おだやか",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-form pat-src-balanced pat-thin\">おだやかな 33%</div><div class=\"pat-form pat-src-balanced pat-thin\">おだやかに 33%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">おだやかに呼びかける · おだやかな気持ち</div>",
+    "patterns"
+   ],
+   [
+    1789712000008,
+    "おだやか",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000009,
+    "共和国",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-particle pat-src-balanced pat-thin\">〜は 11%</div><div class=\"pat-colloc pat-src-balanced pat-thin\">共和国の誇 · 共和国による · 共和国の誕生以前 · 共和国の正義</div><div class=\"pat-frame pat-src-balanced pat-thin\">〜市民 · ある〜 · 〜製</div>",
+    "patterns"
+   ],
+   [
+    1789712000009,
+    "共和国",
+    "ExampleSentences",
+    "no sentence",
+    "",
+    "sentence"
+   ],
+   [
+    1789712000010,
+    "冒険家",
+    "Patterns",
+    "fill",
+    "<div class=\"pat-colloc pat-src-conversational pat-thin\">冒険家として</div>",
+    "patterns"
+   ],
+   [
+    1789712000010,
+    "冒険家",
+    "ExampleSentences",
+    "fill",
+    "彼は<b>冒険家</b>として非常に有名です。",
+    "sentence"
+   ]
+  ]
+ }
+}

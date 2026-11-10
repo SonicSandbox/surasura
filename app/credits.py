@@ -73,14 +73,32 @@ CONTENT_NOTE = """Your content
 • Surasura provides no content: you are responsible for the content you use with it. Use only content you own or have the right to use (README's Your content)."""
 
 
+# Surasura's own licence and the libraries the program bundles (the licence switch, 3.0): the GPL asks that the
+# source be offered wherever the program goes, and the bundled libraries keep their notices (packaging/Surasura.spec
+# copies their texts into _internal\licenses).
+SOFTWARE_NOTE = """Surasura and the software it bundles
+
+• Surasura — SonicSandbox, GNU General Public License version 3 or later, with an additional permission (LICENSE and LICENSE-EXCEPTION.md beside the program). It comes with no warranty. Its source code is free to get, read and change: https://github.com/SonicSandbox/surasura. Versions up to 2.5.x were released under the MIT License (licenses\\Surasura-MIT-before-3.0.txt).
+• The window: PyQt6 — Riverbank Computing, GPL-3.0; Qt 6 — The Qt Company, LGPL-3.0. Their licence texts are in the program's _internal\\licenses folder, with tsubasa's (GPL-3.0-or-later).
+• The other libraries it bundles keep their own licences: among them pysrt (GPL-3.0), EbookLib (AGPL-3.0-or-later), pandas and numpy (BSD), fugashi, jieba and Beautiful Soup (MIT), requests (Apache License 2.0)."""
+
+
 def all_credits():
-    """`data_credits()` followed by the logos' and the covers' credits, then the user's own content (`CONTENT_NOTE`):
-    what the 3.0 window's Data credits shows."""
-    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + CONTENT_NOTE
+    """`data_credits()` followed by the logos' and the covers' credits, Surasura's own licence and the libraries it
+    bundles (`SOFTWARE_NOTE`), then the user's own content (`CONTENT_NOTE`): what the 3.0 window's Data credits
+    shows."""
+    return data_credits() + "\n\n" + LOGO_CREDITS + "\n\n" + COVER_CREDITS + "\n\n" + SOFTWARE_NOTE + "\n\n" + \
+        CONTENT_NOTE
 
 
 # --- Surasura's own licence (the `LICENSE` file: its first line and its copyright line) --------------------------- #
 LICENCE_FILE = "LICENSE"
+# Since 3.0 `LICENSE` is the GPL's own text: it names no program, says no "or later", and its copyright line is the
+# Free Software Foundation's (on the licence's words, never on Surasura). So a GPL version 3 `LICENSE` is named as
+# Surasura applies it, with the copyright line of Surasura's own notice beside it (the written exception).
+EXCEPTION_FILE = "LICENSE-EXCEPTION.md"
+GPL_TITLE, GPL_VERSION = "GNU GENERAL PUBLIC LICENSE", "Version 3,"
+GPL_NAME = "GNU General Public License, version 3 or later (GPL-3.0-or-later)"
 _LICENCE = []               # read once, the first time it is asked for
 
 
@@ -92,20 +110,29 @@ def _licence_folders():
     return [os.path.dirname(os.path.dirname(os.path.abspath(__file__)))]
 
 
+def _text_lines(path):
+    """The file's lines that hold text, stripped; None when it can't be read."""
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            return [text.strip() for text in f.read().splitlines() if text.strip()]
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def licence_line():
-    """`LICENSE`'s first line and its copyright line ("MIT License · Copyright (c) 2026 SonicSandbox"), read once; ""
-    when no `LICENSE` can be read (the caller shows the line only when there is one)."""
+    """`LICENSE`'s first line and its copyright line ("MIT License · Copyright (c) 2026 SonicSandbox"), read once; for
+    the GPL version 3 text, `GPL_NAME` and the copyright line of `LICENSE-EXCEPTION.md` beside it ("GNU General Public
+    License, version 3 or later (GPL-3.0-or-later) · Copyright (C) 2026 SonicSandbox"; the name alone without that
+    file); "" when no `LICENSE` can be read (the caller shows the line only when there is one)."""
     if not _LICENCE:
         line = ""
         for folder in filter(None, _licence_folders()):
-            try:
-                with open(os.path.join(folder, LICENCE_FILE), "r", encoding="utf-8-sig") as f:
-                    lines = [text.strip() for text in f.read().splitlines() if text.strip()]
-            except (OSError, UnicodeDecodeError):
-                continue
+            lines = _text_lines(os.path.join(folder, LICENCE_FILE))
             if lines:
-                copyright_line = next((text for text in lines[1:] if text.lower().startswith("copyright")), "")
-                line = " · ".join(text for text in (lines[0], copyright_line) if text)
+                gpl = lines[0] == GPL_TITLE and len(lines) > 1 and lines[1].startswith(GPL_VERSION)
+                notice = (_text_lines(os.path.join(folder, EXCEPTION_FILE)) or []) if gpl else lines[1:]
+                copyright_line = next((text for text in notice if text.lower().startswith("copyright")), "")
+                line = " · ".join(text for text in (GPL_NAME if gpl else lines[0], copyright_line) if text)
                 break
         _LICENCE.append(line)
     return _LICENCE[0]
@@ -120,7 +147,7 @@ def __getattr__(name):
 
 # --- README's Data Credits, checked against DATA_CREDITS (S11) ----------------------------------------------------- #
 # README's own names for a source DATA_CREDITS names in other words.
-README_ALIASES = {"Japanese Wikipedia": "Wikipedia", "Chinese Wikipedia": "Wikipedia"}
+README_ALIASES = {"Japanese Wikipedia": "Wikipedia", "Chinese Wikipedia": "Wikipedia", "Anki Miner": "anki_miner"}
 _LINK = re.compile(r"\[([^\]]+)\]\(")
 
 

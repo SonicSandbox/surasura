@@ -52,7 +52,7 @@ def _sentences(path, language):
 
 def _readers_lines(path, language):
     """{sentence: (start, end) ms} as Connect reads the file: the cues `cues.tokens` puts each sentence's words in,
-    the first time it is said."""
+    the first time it is said — a line shown again until its last copy ends (SPEC card-lines rule 5)."""
     read = cues.read(path, language)
     spans = {}
     for token in cues.tokens(read, language, tokenizer=_tokenizer(language)):
@@ -60,7 +60,9 @@ def _readers_lines(path, language):
     out = {}
     for sentence, at in sorted(spans.values(), key=lambda item: min(item[1])):
         if read[min(at)].counted:
-            out.setdefault(sentence, (read[min(at)].start, read[max(at)].end))
+            first, last = min(at), max(at)
+            out.setdefault(sentence, (min([read[first].start] + [c.start for c in read if c.repeats == first]),
+                                      max([read[last].end] + [c.end for c in read if c.repeats == last])))
     return out
 
 

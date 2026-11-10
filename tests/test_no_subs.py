@@ -402,10 +402,11 @@ def test_hato_found_one_not_the_other_its_retry_date_kept_outside_the_library(tm
     open(cli, "wb").close()
     _hato(["pairings", "find"], cli)
     calls = []
+    # hato's retry date is a day ahead of the run, whatever day the suite runs on (a fixed date stopped being "ahead")
     now = time.time()
-    retry = datetime.datetime.fromtimestamp(now + 86400, datetime.timezone.utc).isoformat()      # hato's date: tomorrow
+    retry_after = datetime.datetime.fromtimestamp(now + 86400, datetime.timezone.utc).isoformat()
     lines = [{"type": "progress", "done": 1}, {"type": "video", "video": videos[0], "outcome": "CONFIDENT"},
-             {"type": "video", "video": videos[1], "outcome": "NOT_FOUND", "retry_after": retry},
+             {"type": "video", "video": videos[1], "outcome": "NOT_FOUND", "retry_after": retry_after},
              {"type": "run", "videos": 2}]
     try:
         out = no_subs.find(store, "ja", {no_subs.SETTING: True}, now=now,

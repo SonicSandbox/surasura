@@ -1042,6 +1042,8 @@ class RowDelegate(QStyledItemDelegate):
         self._hints_look = None
         self._model = view.model()                   # the list's own model, set before its delegate (`RowsView`)
         self._heights, self._h_entries, self._h_open, self._h_look = [], None, None, None
+        self.step = 1                                # every height a multiple of it: whole device px (`whole_step`,
+        self._h_step = None                          # kept by the view's `_follow_ratio`)
         self._h_unfolded = None                      # a8: the view's folds shown whole the heights were made for
         self._bytes = {"row": 0, "ep": 0}
         self._infos, self._infos_look = {}, None     # a Current row's key -> its string's plan and needs (`_info`)
@@ -1124,7 +1126,7 @@ class RowDelegate(QStyledItemDelegate):
         more is paid a few hundred times (W2.2 speed round 5: 1.4 ms of an opening's ~3.5)."""
         model = self._model
         if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look \
-                or self.view.unfolded is not self._h_unfolded:
+                or self.view.unfolded is not self._h_unfolded or self.step != self._h_step:
             self._heights_now(model)
         row = index.row()
         heights = self._heights
@@ -1134,7 +1136,8 @@ class RowDelegate(QStyledItemDelegate):
         """Every entry's height as `sizeHint` answers Qt (the same list, made again when stale): a row's place read from
         them asks Qt nothing (a `visualRect` asks the delegate again, one Python call a row)."""
         model = self._model
-        if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look                 or self.view.unfolded is not self._h_unfolded:
+        if model.entries is not self._h_entries or model.open_key != self._h_open or style.current() != self._h_look \
+                or self.view.unfolded is not self._h_unfolded or self.step != self._h_step:
             self._heights_now(model)
         return self._heights
 
@@ -1147,11 +1150,13 @@ class RowDelegate(QStyledItemDelegate):
     def _heights_now(self, model):
         """Every entry's height, from the sizes kept by what decides them (`_shape`): a refresh makes every entry a new
         tuple and an arrival every row a new object (its number moved), yet only a shape not seen before is worked out
-        (`_size_hint`)."""
-        look = style.current()
-        if look != self._hints_look:                 # a new look: every height again
+        (`_size_hint`). Each height is a whole number of device pixels (Mado-SP): rows that came or went shift the rest
+        by whole device px, so Qt moves the pixels already drawn instead of painting the shifted rows again
+        (`_repaint_spliced`; at 250 % a 73 px row was 182.5 device px)."""
+        look, step = style.current(), self.step
+        if (look, step) != self._hints_look:         # a new look or screen ratio: every height again
             self._hints.clear()
-            self._hints_look = look
+            self._hints_look = (look, step)
         open_key, hints, shape, unfolded = model.open_key, self._hints, self._shape, self.view.unfolded
         out = []
         for entry in model.entries:
@@ -1159,10 +1164,10 @@ class RowDelegate(QStyledItemDelegate):
             key = shape(entry, is_open, unfolded)
             size = hints.get(key)
             if size is None:
-                size = hints[key] = self._size_hint(entry, is_open)
+                size = hints[key] = whole_height(self._size_hint(entry, is_open), step)
             out.append(size)
         self._heights, self._h_entries, self._h_open, self._h_look = out, model.entries, open_key, look
-        self._h_unfolded = unfolded
+        self._h_unfolded, self._h_step = unfolded, step
 
     @staticmethod
     def _shape(entry, is_open, unfolded=frozenset()):
@@ -2945,11 +2950,18 @@ class RowDelegate(QStyledItemDelegate):
 
 def whole_step(dpr):
     """The smallest scroll step (logical px) whose device size is whole at this ratio: 1 at 100 / 200 %, 2 at 150 /
-    250 %, 4 at 125 / 175 % (review C-2)."""
+    250 %, 4 at 125 / 175 % (review C-2) — a row's height too (`whole_height`)."""
     for q in (1, 2, 3, 4):
         if abs(q * dpr - round(q * dpr)) < 1e-6:
             return q
     return 1
+
+
+def whole_height(size, step):
+    """`size` with its height at the nearest multiple of `step` (`whole_step`; a tie upward): whole device px."""
+    if step == 1:
+        return size
+    return QSize(size.width(), (size.height() + step // 2) // step * step)
 
 
 NO_DRAG = frozenset(("play", "more", "more-ep", "up", "down", "done", "journey", "put-back", "fold")) | ACTION_NAMES   # buttons (W3.2 Q4:
@@ -3120,6 +3132,7 @@ class RowsView(QListView):
         self.tooltips = tooltips
         self.setModel(RowsModel(self))
         self.delegate = RowDelegate(self)
+        self.delegate.step = whole_step(self.viewport().devicePixelRatioF() or 1.0)     # (`_follow_ratio` after)
         self.setItemDelegate(self.delegate)
         self.setUniformItemSizes(False)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -3223,6 +3236,8 @@ class RowsView(QListView):
         qcovers.notifier().ready.connect(self._cover_ready)              # --- W3.2 Q6
 
     def paintEvent(self, event):
+        if self._follow_ratio():
+            return                                   # laid out again at the new ratio's heights, then painted
         p = QPainter(self.viewport())
         p.fillRect(event.rect(), c("bg"))
         p.end()
@@ -4009,6 +4024,18 @@ class RowsView(QListView):
     def relayout(self):
         """A row changed height (opened, closed): lay the rows out again."""
         self.scheduleDelayedItemsLayout()
+
+    def _follow_ratio(self):
+        """The rows' heights follow the screen's ratio (`RowDelegate.step`: whole device px), read at each paint (Qt
+        tells no `changeEvent` of a new ratio: a window dragged to another monitor). -> True when it changed: the rows
+        laid out again, the screen repainted."""
+        step = whole_step(self.viewport().devicePixelRatioF() or 1.0)
+        if step == self.delegate.step:
+            return False
+        self.delegate.step = step
+        self.relayout()
+        self.viewport().update()
+        return True
 
     # open / close -------------------------------------------------------------------------------------------------- #
     def toggle(self, index):

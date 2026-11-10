@@ -10,6 +10,8 @@ Qt's QListView repaint the whole viewport whatever is asked; there the rule is t
 from its kept picture), never the area. The window is built once for the file (`work_counts.kept`); every test puts
 back what it moved, unmeasured.
 """
+import os
+
 import pytest
 
 pytest.importorskip("PyQt6")
@@ -817,6 +819,56 @@ def test_r3_after_a_row_leaves_or_up_next_hands_on_every_change_on_screen_is_pai
             elif before[k][1] != n:
                 col = QRect(r.left(), r.top(), 30, r.height())
                 assert painted(col), (k, before[k][1], n)  # its place number moved on: its column drawn
+
+
+def test_every_row_is_a_whole_number_of_device_pixels_tall_and_follows_the_screens_ratio(screen):
+    """Mado-SP: Qt moves the pixels already drawn only by whole device pixels, so a row of 73 px (182.5 device px at
+    250 %) made the rows under a row leaving Current paint again instead of moving. Every height is a multiple of the
+    ratio's whole step (`rows.whole_step`: 2 at 150 / 250 %, 4 at 125 / 175 %), the nearest one; the list follows a new
+    ratio at its next paint (a window dragged to another monitor) and back."""
+    assert [rows.whole_height(rows.QSize(9, h), q).height() for h, q in ((73, 1), (73, 2), (72, 2), (73, 4),
+                                                                          (74, 4), (75, 4))] == [73, 74, 72, 72, 76, 76]
+    seed, win, writer = screen
+    lst = lst_of(win)
+    d = lst.delegate
+    step = rows.whole_step(lst.viewport().devicePixelRatioF())
+    assert d.step == step == int(os.environ.get("SURASURA_EXPECT_STEP", "1"))     # (1: this file's 100 %)
+    plain = [s.height() for s in d.heights()]
+    assert all(h % step == 0 for h in plain)
+    try:
+        d.step = 4                                                 # as at 125 / 175 %
+        heights = [s.height() for s in d.heights()]
+        assert all(h % 4 == 0 for h in heights) and all(abs(h - p) <= 2 for h, p in zip(heights, plain))
+        assert lst.sizeHintForRow(0) == heights[0]                 # what Qt lays the rows out by: the same list
+        lst.viewport().repaint()                                   # a paint at this screen's ratio: back to its step
+        assert d.step == step
+        settle(30)
+        assert [s.height() for s in d.heights()] == plain
+        assert lst.sizeHintForRow(0) == plain[0]
+    finally:
+        d.step = step
+        lst.relayout()
+        settle(30)
+
+
+@pytest.mark.parametrize("scale", ["2.5", "1.25"])
+def test_r3_at_250_and_125_percent_a_row_leaving_moves_the_rows_under_it_as_painted(scale, tmp_path):
+    """Mado-SP: the splice tests above at a fractional ratio, each ratio in its own process (Windows' scaling stood in
+    for by QT_SCALE_FACTOR, exact): ⋯ › Goal paints the uncovered strip and what changed, never the list (before:
+    the shifted rows painted again, ⋯ › Goal 17–19 ms at 250 %), and every change on screen is still painted."""
+    import subprocess
+    import sys
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    names = ["test_every_row_is_a_whole_number_of_device_pixels_tall_and_follows_the_screens_ratio",
+             "test_r3_a_row_leaving_for_goal_repaints_only_what_changed_never_the_list",
+             "test_r3_after_a_row_leaves_or_up_next_hands_on_every_change_on_screen_is_painted",
+             "test_r3_a_row_gone_above_and_one_come_below_leave_no_row_unpainted"]
+    env = dict(os.environ, QT_SCALE_FACTOR=scale, PYTHONIOENCODING="utf-8",
+               SURASURA_EXPECT_STEP=str(rows.whole_step(float(scale))))
+    done = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--basetemp",
+                           str(tmp_path / "run")] + [f"tests/qt/test_wc_current.py::{n}" for n in names],
+                          cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", timeout=600)
+    assert done.returncode == 0 and " 5 passed" in done.stdout, done.stdout[-6000:] + done.stderr[-3000:]
 
 
 def _coverage(lst, w, before, after):

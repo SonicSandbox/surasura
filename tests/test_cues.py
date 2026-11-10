@@ -42,8 +42,13 @@ def test_srt_cues_keep_start_and_end_in_ms_and_text_as_a_generate_cleans_it():
     assert [c.index for c in read] == list(range(len(read)))
     assert all(c.caption == c.index for c in read)           # an .srt's cue is its own caption
     # the OP's ♪～ lines hold no Japanese: kept as lines (Anki Miner counts them) but never counted, and sung
-    songs = [c for c in read if not c.counted]
+    songs = [c for c in read if not c.counted and c.repeats is None]
     assert songs and all(c.sung and "♪" in c.text for c in songs)
+    # a line shown again through another speaker's (the same text, starting as it ends: ENGINE_REVISION 40) is kept
+    # as a line, not counted, naming the cue it shows again — the two in this sample
+    copies = [c for c in read if c.repeats is not None]
+    assert [(c.repeats, c.counted, c.start == read[c.repeats].end, c.text == read[c.repeats].text)
+            for c in copies] == [(c.index - 1, False, True, True) for c in copies] and len(copies) == 2
 
 
 def test_srt_text_is_the_text_a_generate_reads():

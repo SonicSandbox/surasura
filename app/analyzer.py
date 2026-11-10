@@ -178,13 +178,19 @@ ENSURE_AUDIO_EXAMPLE = False
 #     私 + 生活), and a verb's stem carries a suffix that makes a noun of it (言い方 = 言い + 方, 書き手); one that makes an
 #     adjective or a verb of it stays the verb with its grammar (読み + やすい). The reference data is rebuilt (+279
 #     affix joins, +149 compounds): SCHEMA_VERSION 22. 3.0, with 31–38.
-# 40: A set phrase shows the spelling and the reading the library uses. A phrase ending in a form of its own is that
+# 40: a subtitle line shown again is one line (shown_again; SPEC card-lines rule 5, Sonic 2026-11-09 "Yes build it"):
+#     the same text as cues back to back, each starting as the one before ends (streaming subtitles showing a line
+#     through another speaker's), or drawn twice at one time (an .ass layer) was read two or three times — its words
+#     counted again, its sentence again. It is read once; the cue reader keeps the copy, not counted (cues.Cue.repeats),
+#     so the file's cues and their order stay Anki Miner's. SCHEMA_VERSION 23: every subtitle is tokenized again. 3.0,
+#     with 31–39.
+# 41: A set phrase shows the spelling and the reading the library uses. A phrase ending in a form of its own is that
 #     form whatever its last word (ごめんなさい, never ごめんなさる; ざまあみろ; だけじゃない is no だけでなく, 何にする no
 #     何にせよ), and its Orth keeps the voicing the text gives its last word (いつもどおり, not いつもとおり) —
 #     phrases.MATCHER_VERSION 6. Phrase rows gain `Kana`, the reading of the spelling shown (いい感じ イイカンジ beside
 #     the row's ヨイカンジ; plan_rules.display_reading), shown by the journey; the row stays (Word, Reading). The plan
-#     carries each phrase row's dictionary spelling: PLAN_FORMAT 4. 3.0, with 31–39.
-ENGINE_REVISION = 40
+#     carries each phrase row's dictionary spelling: PLAN_FORMAT 4. 3.0, with 31–40.
+ENGINE_REVISION = 41
 
 # Load Logic Settings from settings.json
 LOGIC = {
@@ -3103,6 +3109,52 @@ def _captions(events, language='ja'):
     yield from (close_cue(_join_lines(texts, language)) for texts in screen.values())
 
 
+# A line shown again is one line (ENGINE_REVISION 40, SPEC card-lines rule 5): streaming subtitles show a line through
+# another speaker's by writing it again — the same text as two or three cues back to back, each starting as the one
+# before ends, the other speaker's line on screen beside them — and an .ass file draws a line twice (a glow layer, a
+# song's two layers: one timing, often lines apart in the file). A Generate read its words two or three times. Measured
+# on 2,735 subtitle files of a library: 3,283 copies, every one touching or overlapping the one before; the same text
+# 11–100 ms apart is a line said twice (83 ms is a streaming subtitle's gap between two lines), so copies touch within
+# _REPEAT_TOUCH_MS — one centisecond, an .ass file's step.
+_REPEAT_TOUCH_MS = 10
+
+_ASS_TIME_RE = re.compile(r"(\d+):(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$")
+
+
+def ass_ms(value):
+    """An ASS / SSA time ("0:00:02.42": hundredths) in milliseconds, or None."""
+    match = _ASS_TIME_RE.match((value or "").strip())
+    if not match:
+        return None
+    hours, minutes, seconds, fraction = match.groups()
+    return ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000 + int((fraction or "0").ljust(3, "0")[:3])
+
+
+def shown_again(lines):
+    """For each of `lines` — (start ms, end ms, text) in the file's order, or None for a line a Generate never reads
+    or whose times can't be read — the index of the line it shows again, or None (§ above): the same text, spaces
+    aside, as an earlier copy, its times touching or overlapping that copy's within _REPEAT_TOUCH_MS. A third copy
+    shows the first again (the copies' times taken together). The one rule for a Generate (extract_text, parse_ass)
+    and the cue reader (cues.read: the copy kept, not counted). Every earlier time of a text is looked at, not only
+    its last: an .ass file may list a layer's lines first (うん at 0:10 and 5:00), then the line itself (the same)."""
+    out, said = [], {}                  # text, spaces out -> [[start, end, the first's index]] of each line of it
+    for n, line in enumerate(lines):
+        if line is None:
+            out.append(None)
+            continue
+        start, end, text = line
+        spans = said.setdefault("".join(text.split()), [])
+        for span in spans:
+            if start <= span[1] + _REPEAT_TOUCH_MS and end >= span[0] - _REPEAT_TOUCH_MS:
+                out.append(span[2])
+                span[0], span[1] = min(span[0], start), max(span[1], end)
+                break
+        else:
+            out.append(None)
+            spans.append([start, end, n])
+    return out
+
+
 _OPEN_BRACKETS = '(（'
 _CLOSE_BRACKETS = ')）'
 
@@ -3320,6 +3372,11 @@ def parse_ass(file_path, language='ja'):
             if len(fields) > colour_index:
                 colours[fields[0].strip()] = _ass_colour_value(fields[colour_index])
 
+    # A line shown again — drawn twice, or written again through another line — is read once (shown_again)
+    again = shown_again([(start, end, text) if start is not None and end is not None else None
+                         for start, end, text in ((ass_ms(timing[0]), ass_ms(timing[1]), text)
+                                                  for timing, _colour, text in events)])
+    events = [event for event, first in zip(events, again) if first is None]
     return " ".join(caption for caption in _captions(events, language) if caption)
 
 
@@ -3490,7 +3547,7 @@ def extract_text(file_path, language='ja', facts=None):
         try:
             import pysrt   # lazy: only reading a .srt subtitle file pays this import
             subs = pysrt.from_string(read_text(file_path, language))
-            parts = []
+            said = []
             for sub in subs:
                 # Filter out lines without Target characters
                 lines = sub.text.splitlines()
@@ -3498,16 +3555,16 @@ def extract_text(file_path, language='ja', facts=None):
                 for l in lines:
                     if not has_target_language(l, language):
                         continue
-                    
+
                     cleaned = clean_subtitle_text(l, language)
                     if cleaned:
                         filtered_lines.append(cleaned)
 
                 if filtered_lines:
-                    block_text = close_cue(_join_lines(filtered_lines, language))
-                    if block_text:
-                        parts.append(block_text)
-            text = "".join(parts)
+                    said.append((sub.start.ordinal, sub.end.ordinal, _join_lines(filtered_lines, language)))
+            # A line shown again (the same text, touching times) is read once (shown_again)
+            parts = [close_cue(line[2]) for line, first in zip(said, shown_again(said)) if first is None]
+            text = "".join(part for part in parts if part)
         except Exception as e:
             print(f"Error reading SRT {file_path}: {e}")
     elif ext in ['.ass', '.ssa']:

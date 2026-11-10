@@ -52,6 +52,11 @@ except Exception as e:
     print(f"Warning: Could not read packaging/build_config.json: {e}")
 if not isinstance(modules, dict):
     modules = {}
+# Never in any build (Minato-BE, 2026-11-10): the test tools and Pygments. No Surasura code imports them, but
+# numpy.testing, pandas._testing, anyio and httpx2's command line name them inside functions, and PyInstaller follows
+# those imports: pytest froze into Surasura.exe and the CLI. package_app.py --check refuses a program carrying one.
+never_bundle = build_config.get("never_bundle") if isinstance(build_config, dict) else None
+excluded_modules += [m for m in never_bundle if isinstance(m, str)] if isinstance(never_bundle, list) else []
 enable_youtube = modules.get("youtube_downloader") is True
 enable_koe = modules.get("koe") is True
 enable_reels = modules.get("reels") is True

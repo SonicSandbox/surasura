@@ -228,6 +228,8 @@ def test_the_vendored_sqlite_is_the_recorded_one_and_its_readme_says_where_from(
     {"data_name": "../Surasura"},
     {"data_name": "スラスラ"},
     {"qt_modules": []},
+    {"never_bundle": []},
+    {"never_bundle": ["py test"]},
     {"parts": [{"name": "app", "paths": ["Surasura.exe"]}]},          # no catch-all last
     {"release": {"min_from": "3.0.0"}},
 ])
@@ -297,12 +299,16 @@ def fake_dist(site, name, version, files, licence="MIT", top=None):
     return site / info
 
 
+# The five Qt modules `_program` puts in a program, as the fake PyQt6 wheel installs them: its binaries are the site's.
+QT_PYDS = {f"PyQt6/{m}.pyd": "MZ" for m in ("QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtSvg")}
+
+
 @pytest.fixture(scope="session")
 def fake_site(tmp_path_factory):
     """The build Python's site-packages in miniature: PyQt6, Qt and sip as their wheels install them (their licence
     texts in the dist-info), what `_program`'s stand-in programs carry."""
     site = tmp_path_factory.mktemp("site-packages")
-    fake_dist(site, "PyQt6", "6.11.0", {"PyQt6/__init__.py": "", "{info}/licenses/LICENSE":
+    fake_dist(site, "PyQt6", "6.11.0", {**QT_PYDS, "PyQt6/__init__.py": "", "{info}/licenses/LICENSE":
                                         "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n"}, "GPL-3.0-only")
     fake_dist(site, "PyQt6-Qt6", "6.11.2", {"PyQt6/Qt6/bin/Qt6Core.dll": "MZ", "{info}/LICENSE":
                                             "GNU LESSER GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n"}, "LGPL v3")
@@ -317,13 +323,15 @@ def fake_site(tmp_path_factory):
 def _stand_in_archives(monkeypatch, fake_site):
     """`_program`'s programs are two-byte stand-ins, not PyInstaller archives: they freeze no module unless a test
     says otherwise (FROZEN[exe name] = {module names}); the real reader is tested on its own below. The licence texts
-    come from a made-up site-packages (`fake_site`), never this Python's: a test reads the same parts everywhere.
+    come from a made-up site-packages (`fake_site`), never this Python's: a test reads the same parts everywhere; so
+    do the binaries a program may carry (`fake_site`, and the repo's packaging/ for the vendored SQLite).
     Surasura.exe reads as an archive of Surasura's own (so its PyInstaller bootloader's licence is gathered too)."""
     FROZEN.clear()
     FROZEN["Surasura.exe"] = {"app", "app.analyzer"}
     monkeypatch.setattr(package_app, "frozen_modules", lambda exe: set(FROZEN.get(os.path.basename(exe), ())))
     monkeypatch.setattr(package_app, "archive_modules", lambda exe: set(FROZEN.get(os.path.basename(exe), ())))
     monkeypatch.setattr(package_app, "LICENCE_SITE", [str(fake_site)])
+    monkeypatch.setattr(package_app, "BINARY_ROOTS", [str(fake_site), os.path.join(PROJECT, "packaging")])
 
 
 FROZEN = {}
@@ -359,6 +367,11 @@ def test_a_whole_program_passes_every_check(tmp_path):
     (lambda f: (f / "results").mkdir(), "library"),
     (lambda f: (f / "_internal" / "PyQt6" / "QtWebEngineCore.pyd").write_bytes(b"MZ"), "doesn't use"),
     (lambda f: (f / "_internal" / "sqlite3.dll").write_bytes(b"not a dll"), "sqlite3.dll"),
+    # A DLL from the build machine's PATH (Git for Windows' OpenSSL for Qt), a Qt module that isn't the wheel's.
+    (lambda f: (f / "_internal" / "libssl-3-x64.dll").write_bytes(b"MZ"), "no copy of a file"),
+    (lambda f: (f / "_internal" / "PyQt6" / "QtCore.pyd").write_bytes(b"MZ patched"), "no copy of a file"),
+    # pytest frozen in (numpy.testing, pandas._testing and anyio name it inside functions).
+    (lambda f: FROZEN.__setitem__("surasura-cli.exe", {"_pytest", "_pytest.outcomes"}), "never_bundle"),
     (lambda f: (f / "_internal" / "build_stamp.json").write_text('{"version": "3.0.0"}', encoding="utf-8"), "stamp"),
     # An earlier 3.x's stamp (no install shape), and a shape that isn't 16 hex: the update check couldn't compare it.
     (lambda f: _restamp(f, lambda s: s.pop("install_shape")), "stamp"),
@@ -381,6 +394,9 @@ def test_each_damage_fails_its_check(tmp_path, damage, expected):
     assert any(expected in f for f in failures), failures
 
 
+FREEZE_PATHS = []          # the PATH each stubbed freeze ran with, in order (`_stubbed_build`)
+
+
 def _stubbed_build(tmp_path, monkeypatch, release, updater_builds=True, needs_installer=False, real_release=False,
                    **build_args):
     """build(release) with PyInstaller stubbed — each spec "builds" a tiny file where the real one would; the updater's
@@ -400,9 +416,11 @@ def _stubbed_build(tmp_path, monkeypatch, release, updater_builds=True, needs_in
     monkeypatch.setattr(package_app, "get_version", lambda: "3.0.0")
     monkeypatch.setattr(package_app, "_python_version", lambda: (3, 11, 4))
     frozen, seen = [], {}
+    FREEZE_PATHS.clear()
 
     def pyinstaller(cmd, **kwargs):
         frozen.append(os.path.basename(cmd[-1]))
+        FREEZE_PATHS.append((kwargs.get("env") or {}).get("PATH"))
         if frozen[-1] == "Surasura.spec":
             (tmp_path / "dist" / "Surasura" / "_internal").mkdir(parents=True)
             for exe in ("Surasura.exe", "surasura-cli.exe", "tsubasa.exe"):

@@ -97,6 +97,70 @@ def test_a_phrase_with_a_form_of_its_own_is_found_only_in_that_form(tokenizer):
     assert not phrases.fixed_form(found_in.entry(index)) and not phrases.fixed_form(found_in.entry(1))
 
 
+def test_a_phrase_ending_in_a_form_of_its_own_is_that_form_whatever_its_last_word(tokenizer):
+    """MATCHER_VERSION 6: not only grammar — a phrase JMdict spells with its last word in another form than the
+    dictionary's (ごめんなさい: なさる as なさい; ざまあみろ: みる as みろ; 何にせよ: する as せよ; だけでなく: ない as
+    なく) is that form only. だけじゃない 'it isn't only' and 何にする 'what will you have' are other words: before, they
+    were counted as だけでなく and 何にせよ. The kanji or kana before the ending is the writer's (あっち行け, あっちいけ)."""
+    found_in = phrases.PhraseSet([
+        ["御免|為さる", "ゴメン|ナサル", "cl", "ごめんなさい", "ゴメンナサイ"],
+        ["だけ|だ|無い", "ダケ|ダ|ナイ", "ggb", "だけでなく", "ダケデナク", 0, 1],
+        ["何|に|為る", "ナニ|ニ|スル", "cgl", "何にせよ", "ナンニセヨ"],
+        ["彼方|行く", "アチラ|イク", "cc", "あっち行け", "アッチイケ"],
+        ["気|が|付く", "キ|ガ|ツク", "cgc", "気がつく", "キガツク"]])
+    assert _found(found_in, tokenizer, "遅れてごめんなさい。") == [("御免為さる", "ごめんなさい")]
+    assert _found(found_in, tokenizer, "歌だけでなく、踊りも上手い。") == [("だけだ無い", "だけでなく")]
+    assert _found(found_in, tokenizer, "問題はそれだけじゃない。") == []
+    assert _found(found_in, tokenizer, "何にせよ、急ごう。") == [("何に為る", "何にせよ")]
+    assert _found(found_in, tokenizer, "夕飯は何にする？") == []
+    assert _found(found_in, tokenizer, "あっちいけ！") == [("彼方行く", "あっちいけ")]
+    assert _found(found_in, tokenizer, "猫ならあっち行ったよ。") == []
+    # one ending in its dictionary form is found in any form, as before
+    assert _found(found_in, tokenizer, "やっと気がついた。") == [("気が付く", "気がつい")]
+    assert [phrases.fixed_form(e) for e in found_in.entries] == [True, True, True, True, False]
+
+
+def test_a_spelling_that_is_no_form_of_its_own_finds_every_form(tokenizer):
+    """own_form's exceptions: the spelling's last kana differs from the lemma's, yet it is no form of its own — a kanji
+    ends the text's word (すぐ傍 is すぐそば), a potential's dictionary form (手間が省けた: 省ける, lemma 省く), a long
+    vowel written short (あっそう is あっそ), a word's last kana left off (万全を期する is 万全を期す). And a katakana
+    ending is the hiragana one (ちょいマチ is ちょい待ち)."""
+    found_in = phrases.PhraseSet([
+        ["直ぐ|側", "スグ|ガワ", "cc", "すぐそば", "スグソバ"],
+        ["手間|が|省く", "テマ|ガ|ハブク", "cgc", "手間が省ける", "テマガハブケル"],
+        ["あっ|そう", "アッ|ソウ", "cc", "あっそ", "アッソウ"],
+        ["万全|を|期する", "バンゼン|ヲ|キスル", "cgc", "万全を期す", "バンゼンヲキス"],
+        ["ちょい|待つ", "チョイ|マツ", "cc", "ちょい待ち", "チョイマチ"]])
+    assert all(phrases.fixed_form(e) for e in found_in.entries)
+    assert _found(found_in, tokenizer, "駅のすぐ傍に住んでいる。") == [("直ぐ側", "すぐ傍")]
+    assert _found(found_in, tokenizer, "おかげで手間が省けた。") == [("手間が省く", "手間が省け")]
+    assert _found(found_in, tokenizer, "あっそう、じゃあ帰る。") == [("あっそう", "あっそう")]
+    assert _found(found_in, tokenizer, "万全を期する。") == [("万全を期する", "万全を期する")]
+    assert _found(found_in, tokenizer, "ちょい待ち！") == [("ちょい待つ", "ちょい待ち")]
+    assert _found(found_in, tokenizer, "ちょい待って！") == []
+    entry = found_in.entry(found_in.of_word("ちょい待つ"))
+    assert phrases.ends_as(entry, "マチ") and not phrases.ends_as(entry, "待っ")
+
+
+def test_a_match_is_named_as_written_when_its_form_is_its_own_and_keeps_its_voicing(tokenizer):
+    """The row's spelling (Orth) is each match's dictionary form: for a phrase with a form of its own that is the form
+    as written (ごめんなさい — never the made-up ごめんなさる), and a word voiced inside the phrase keeps its voicing
+    (いつもどおり, 怖気づく — UniDic's dictionary forms are とおり, つく)."""
+    found_in = phrases.PhraseSet([
+        ["御免|為さる", "ゴメン|ナサル", "cl", "ごめんなさい", "ゴメンナサイ"],
+        ["何時|も|通り", "イツ|モ|トオリ", "cgc", "いつも通り", "イツモドオリ"],
+        ["怖じ気|付く", "オジケ|ツク", "bc", "怖気づく", "オジケヅク"]])
+
+    def named(text):
+        sentence, tokens = next(tokenizer.tokenize_sentences(text))
+        ((start, end, index),) = found_in.find(tokens, sentence)
+        return phrases.spellings(tokens, start, end, found_in.entry(index))
+    assert named("本当にごめんなさい。") == ("ごめんなさい", "ごめんなさい")
+    assert named("明日もいつもどおりでいい。") == ("いつもどおり", "いつもどおり")
+    assert named("怖気づいたのか。") == ("怖気づく", "怖気づい")
+    assert named("いつも通りでいい。") == ("いつも通り", "いつも通り")
+
+
 def test_a_pre_noun_adjectival_stands_only_before_a_word_of_its_own(tokenizer):
     """ああいう, どういう and 罪なき are what JMdict classes only as pre-noun adjectivals (adj-pn; the sixth field):
     one is found only uninflected — as its spelling ends (罪なき) or in its dictionary form (どう言う) — straight before a

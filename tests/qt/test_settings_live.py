@@ -46,7 +46,7 @@ class Fakes:
         self.known = (2468, None)
         self.level = ("common", False, PREVIEWS)
         self.hato = "1.0.9"
-        self.licence = "MIT License · Copyright (c) 2026 SonicSandbox"
+        self.licence = "GNU General Public License, version 3 or later (GPL-3.0-or-later) · Copyright (C) 2026 SonicSandbox"
         self.credits = ("Data credits — what Surasura ships or is built from\nJMdict (EDRDG) · CC BY-SA 4.0", [],
                         self.licence)
         self.probe = {"ok": True, "version": 6, "missing": [], "error": ""}

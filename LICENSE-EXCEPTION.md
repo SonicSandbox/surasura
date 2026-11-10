@@ -1,7 +1,5 @@
 # Surasura — additional permission under GNU GPL version 3, section 7
 
-DRAFT for Sonic's word (G4.0). Not in force until the licence switch is merged.
-
 Copyright (C) 2026 SonicSandbox
 
 Surasura is free software: you can redistribute it and/or modify it under the terms of the GNU General Public

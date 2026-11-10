@@ -16,7 +16,7 @@ fails at once, on every run and every machine, never one run in thirty under loa
   may happen, a clock tick between two writes — are listed with their reasons.
 
 Each allowlist names a place by (file, the test or function it is in) and says why; a place that no longer needs its
-entry fails too, so the lists stay true.
+entry fails too, so the lists stay true (not the dates' list: a listed date that has passed is no fault).
 """
 import ast
 import datetime

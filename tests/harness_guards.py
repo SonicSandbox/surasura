@@ -593,19 +593,24 @@ def _claim_anki_tries():
 # thirty, a parentless test timer deleted by a worker's collection). Qt's own message handler is the harness's: a
 # cross-thread warning fails the test during which it came, naming it and the thread, at once and every time. Every
 # message is still printed as Qt prints it. (The parentless objects themselves: tests/flake_lints.py.)
-_QT_CROSS_THREAD = re.compile(r"another thread|different thread|outside the GUI thread|not the object's thread")
+_QT_CROSS_THREAD = re.compile(r"another thread|different thread|outside the GUI thread|not the object's thread|"
+                              r"event dispatcher has already been destroyed|threads started with QThread")
 _QT_WARNINGS = []         # [message, the test running then, thread, claimed]
 _QT_PREVIOUS = [None]
 
 
 def _qt_message(kind, context, message):
-    if message and _QT_CROSS_THREAD.search(message):
-        _QT_WARNINGS.append([message, _test_now(), threading.current_thread().name, False])
-    previous = _QT_PREVIOUS[0]
-    if previous is not None:
-        previous(kind, context, message)
-    else:                                       # Qt's own default: the message on stderr
-        sys.stderr.write(f"{message}\n")
+    # never raises: an exception out of a Qt callback is PyQt6's qFatal, an abort (the shard-death class)
+    try:
+        if message and _QT_CROSS_THREAD.search(message):
+            _QT_WARNINGS.append([message, _test_now(), threading.current_thread().name, False])
+        previous = _QT_PREVIOUS[0]
+        if previous is not None:
+            previous(kind, context, message)
+        else:                                   # Qt's own default: the message's text on stderr
+            sys.stderr.write(f"{message}\n")
+    except BaseException:
+        pass
 
 
 def _guard_qt_threads():

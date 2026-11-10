@@ -24,14 +24,15 @@ def _plant(root, rel, source):
 
 
 # --- this tree -------------------------------------------------------------------------------------------------- #
-@pytest.mark.parametrize("lint, allow", [(L.parentless_qt_objects, L.PARENTLESS_ALLOWED),
-                                         (L.future_dates, L.FUTURE_DATES_ALLOWED),
-                                         (L.sleeps_in_qt_tests, L.SLEEPS_ALLOWED)],
+@pytest.mark.parametrize("lint, allow, stale_counts", [(L.parentless_qt_objects, L.PARENTLESS_ALLOWED, True),
+                                                       (L.future_dates, L.FUTURE_DATES_ALLOWED, False),
+                                                       (L.sleeps_in_qt_tests, L.SLEEPS_ALLOWED, True)],
                          ids=["parentless-qt-objects", "future-dates", "sleeps-in-qt-tests"])
-def test_this_tree_has_nothing_the_allowlist_doesnt_explain_and_no_entry_left_over(lint, allow):
+def test_this_tree_has_nothing_the_allowlist_doesnt_explain_and_no_entry_left_over(lint, allow, stale_counts):
     found = lint()
     assert L.unexplained(found, allow) == [], "fix it (FLAKES.md says how), or list it with its reason"
-    assert L.stale(found, allow) == [], "nothing left there to explain: take the entry out"
+    if stale_counts:                    # (a listed future date that has passed is no fault: never a date bomb itself)
+        assert L.stale(found, allow) == [], "nothing left there to explain: take the entry out"
 
 
 def test_every_suites_test_files_are_read_and_the_parsing_suite_is_not():
@@ -70,18 +71,21 @@ def test_the_apps_relays_count_too(tmp_path):
 
 # --- 2. future dates ---------------------------------------------------------------------------------------------- #
 def test_a_date_later_than_today_is_found_in_a_string_and_in_each_date_call(tmp_path):
-    rel = _plant(str(tmp_path), "tests/test_planted.py", """
+    # the planted dates are made from the run's own day (a planted fixed date would itself pass one day)
+    today = datetime.date.today()
+    ahead, later, soon, past = (today + datetime.timedelta(days=d) for d in (52, 111, 45, -400))
+    rel = _plant(str(tmp_path), "tests/test_planted.py", f"""
         import datetime, time
         def test_dates():
-            retry = {"retry_after": "2027-01-01T00:00:00Z", "seen": "2026-11-09"}
-            a = datetime.datetime(2027, 3, 1)
-            b = time.mktime((2026, 12, 25, 0, 0, 0, 0, 0, -1))
-            c = datetime.date(2025, 1, 1)
-            d = "not a date: 2026-13-45"
+            retry = {{"retry_after": "{ahead.isoformat()}T00:00:00Z", "seen": "{past.isoformat()}"}}
+            a = datetime.datetime({later.year}, {later.month}, {later.day})
+            b = time.mktime(({soon.year}, {soon.month}, {soon.day}, 0, 0, 0, 0, 0, -1))
+            c = datetime.date({past.year}, {past.month}, {past.day})
+            d = "not a date: {today.year}-13-45"
     """)
-    found = L.future_dates(str(tmp_path), [rel], today=datetime.date(2026, 11, 10))
-    assert [(f[2], f[3]) for f in found] == [(4, "2027-01-01"), (5, "2027-03-01"), (6, "2026-12-25")]
-    assert L.future_dates(str(tmp_path), [rel], today=datetime.date(2027, 6, 1)) == [], "past dates never count"
+    found = L.future_dates(str(tmp_path), [rel], today=today)
+    assert [(f[2], f[3]) for f in found] == [(4, ahead.isoformat()), (5, later.isoformat()), (6, soon.isoformat())]
+    assert L.future_dates(str(tmp_path), [rel], today=later) == [], "past dates never count"
 
 
 def test_a_date_relative_to_the_run_is_never_found(tmp_path):
